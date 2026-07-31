@@ -497,8 +497,8 @@ a lane parented to primary would always show zero behind.
 
 Each lane carries an optional `color` (a hex string). The color appears as
 an accent dot wherever the lane is referenced — lane list, lane tabs, the
-GitHub PR rows in `prs/tabs/GitHubTab.tsx`, the QueueTab member rows, and
-the post-merge PR toast in `AppShell`. The palette and helpers live in
+GitHub PR rows in `prs/tabs/GitHubTab.tsx`, and the post-merge PR toast in
+`AppShell`. The palette and helpers live in
 `renderer/components/lanes/laneColorPalette.ts`:
 
 - `LANE_CLASSIC_COLORS` — 12 curated hexes, each with a human label

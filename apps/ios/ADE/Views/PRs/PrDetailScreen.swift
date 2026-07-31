@@ -295,7 +295,8 @@ struct PrDetailView: View {
       linkedGroupPosition: nil,
       linkedGroupCount: 0,
       workflowDisplayState: githubItem?.workflowDisplayState,
-      cleanupState: githubItem?.cleanupState
+      cleanupState: githubItem?.cleanupState,
+      stack: githubItem?.stack
     )
   }
 
@@ -361,6 +362,10 @@ struct PrDetailView: View {
 
   private var isCurrentPrDraft: Bool {
     currentPr.state == "draft" || snapshot?.status?.state == "draft" || snapshot?.detail?.isDraft == true
+  }
+
+  private var nativeStackMembership: GitHubPrStackMembership? {
+    currentPr.stack ?? githubItem?.stack
   }
 
   private var mergeGateInfo: PrMergeGateInfo {
@@ -1099,9 +1104,19 @@ struct PrDetailView: View {
         .prListRow()
     }
 
-    // Inline merge rail with the requirement checklist (desktop merge rail).
-    PrOverviewMergeRail(model: overviewMergeRailModel, checklist: mergeChecklistItems)
+    // GitHub owns stack-wide review, rebase, and merge semantics. Keep ADE's
+    // native stack context visible, then hand the final action to GitHub.
+    if let stack = nativeStackMembership {
+      PrOverviewGitHubStackCard(
+        stack: stack,
+        prNumber: currentPr.githubPrNumber,
+        onOpenGitHub: { openGitHub(urlString: currentPr.githubUrl) }
+      )
       .prListRow()
+    } else {
+      PrOverviewMergeRail(model: overviewMergeRailModel, checklist: mergeChecklistItems)
+        .prListRow()
+    }
 
     // Metadata cards — the desktop right rail, stacked.
     if let snapshot, !snapshot.checks.isEmpty {
@@ -1244,50 +1259,60 @@ struct PrDetailView: View {
     let isAmber: Bool     // amber = need rebase first
     let action: () -> Void
     let enabled: Bool
+    let isStackHandoff = nativeStackMembership != nil
 
-    switch gate.tone {
-    case .green:
-      label = "Merge"
-      symbol = "checkmark.seal.fill"
-      isPrimary = true
+    if nativeStackMembership != nil {
+      label = "Review stack on GitHub"
+      symbol = "square.stack.3d.up.fill"
+      isPrimary = false
       isAmber = false
-      // Same structured-checklist agreement rule as overviewMergeRailModel.
-      enabled = canRunPrActions
-        && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
-        && !mergeChecklistItems.contains(where: { $0.state == .fail })
-      action = { presentMergeMethodPicker() }
-    case .amber:
-      if canRebaseFromGate {
-        label = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
-        symbol = "arrow.triangle.2.circlepath"
-      } else if gate.target == .checks {
-        label = "Checks pending"
-        symbol = "clock.badge.checkmark"
-      } else if gate.target == .reviews {
-        label = "Review needed"
-        symbol = "person.crop.circle.badge.exclamationmark"
-      } else {
-        label = "Waiting for status"
-        symbol = "clock"
+      enabled = !currentPr.githubUrl.isEmpty
+      action = { openGitHub(urlString: currentPr.githubUrl) }
+    } else {
+      switch gate.tone {
+      case .green:
+        label = "Merge"
+        symbol = "checkmark.seal.fill"
+        isPrimary = true
+        isAmber = false
+        // Same structured-checklist agreement rule as overviewMergeRailModel.
+        enabled = canRunPrActions
+          && (capabilities?.canMerge ?? actionAvailability.mergeEnabled)
+          && !mergeChecklistItems.contains(where: { $0.state == .fail })
+        action = { presentMergeMethodPicker() }
+      case .amber:
+        if canRebaseFromGate {
+          label = behindBaseBy > 0 ? "Rebase · \(behindBaseBy) behind" : "Rebase"
+          symbol = "arrow.triangle.2.circlepath"
+        } else if gate.target == .checks {
+          label = "Checks pending"
+          symbol = "clock.badge.checkmark"
+        } else if gate.target == .reviews {
+          label = "Review needed"
+          symbol = "person.crop.circle.badge.exclamationmark"
+        } else {
+          label = "Waiting for status"
+          symbol = "clock"
+        }
+        isPrimary = false
+        isAmber = true
+        enabled = canRebaseFromGate && canRunPrActions && !currentPr.laneId.isEmpty
+        action = { if canRebaseFromGate { triggerRebase() } }
+      case .red where canAttemptBlockedMerge:
+        label = "Attempt merge"
+        symbol = "arrow.triangle.merge"
+        isPrimary = false
+        isAmber = true
+        enabled = true
+        action = { presentMergeMethodPicker() }
+      case .red:
+        label = "Merge blocked"
+        symbol = "xmark.octagon.fill"
+        isPrimary = false
+        isAmber = false
+        enabled = false
+        action = { }
       }
-      isPrimary = false
-      isAmber = true
-      enabled = canRebaseFromGate && canRunPrActions && !currentPr.laneId.isEmpty
-      action = { if canRebaseFromGate { triggerRebase() } }
-    case .red where canAttemptBlockedMerge:
-      label = "Attempt merge"
-      symbol = "arrow.triangle.merge"
-      isPrimary = false
-      isAmber = true
-      enabled = true
-      action = { presentMergeMethodPicker() }
-    case .red:
-      label = "Merge blocked"
-      symbol = "xmark.octagon.fill"
-      isPrimary = false
-      isAmber = false
-      enabled = false
-      action = { }
     }
 
     return PrStickyActionBar {
@@ -1304,7 +1329,9 @@ struct PrDetailView: View {
           if isDetailBusy {
             ProgressView()
               .controlSize(.small)
-              .tint(isPrimary ? .white : (isAmber ? ADEColor.warning : ADEColor.danger))
+              .tint(
+                isPrimary ? .white : (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger))
+              )
           } else {
             Image(systemName: symbol)
               .font(.system(size: 14, weight: .bold))
@@ -1314,7 +1341,9 @@ struct PrDetailView: View {
             .lineLimit(1)
             .fixedSize(horizontal: true, vertical: false)
         }
-        .foregroundStyle(isPrimary ? Color.white : (isAmber ? ADEColor.warning : ADEColor.danger))
+        .foregroundStyle(
+          isPrimary ? Color.white : (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger))
+        )
         .frame(maxWidth: .infinity)
         .padding(.vertical, 16)
         .background {
@@ -1326,14 +1355,20 @@ struct PrDetailView: View {
               RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(PrGlassPalette.threadCard)
               RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill((isAmber ? ADEColor.warning : ADEColor.danger).opacity(0.12))
+                .fill(
+                  (isStackHandoff ? ADEColor.tintPRs : (isAmber ? ADEColor.warning : ADEColor.danger)).opacity(0.12)
+                )
             }
           }
         }
         .overlay(
           RoundedRectangle(cornerRadius: 16, style: .continuous)
             .strokeBorder(
-              isPrimary ? Color.white.opacity(0.20) : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45)),
+              isPrimary
+                ? Color.white.opacity(0.20)
+                : (isStackHandoff
+                    ? ADEColor.tintPRs.opacity(0.45)
+                    : (isAmber ? ADEColor.warning.opacity(0.45) : ADEColor.danger.opacity(0.45))),
               lineWidth: 0.75
             )
         )
@@ -1637,6 +1672,10 @@ struct PrDetailView: View {
     commitTitle: String? = nil,
     commitBody: String? = nil
   ) {
+    guard nativeStackMembership == nil else {
+      openGitHub(urlString: currentPr.githubUrl)
+      return
+    }
     // Stale-head guard: pass the SHA the status was computed against so GitHub
     // rejects (409) if the head advanced while the sheet was open.
     let expectedHeadSha = snapshot?.status?.headSha

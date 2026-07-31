@@ -72,9 +72,13 @@ Main process:
   pure GitHub Actions workflow parsing and suggested test/automation/provider
   config generation for `.ade/ade.yaml`.
 - `apps/desktop/src/main/services/github/githubService.ts` and
-  `githubRateLimit.ts` — GitHub CLI/PAT credential discovery, `/user` and
-  fine-grained repo probes, structured auth-failure classification, and REST
-  quota parsing. `GitHubStatus.authFailure` distinguishes rate limiting,
+  `githubRateLimit.ts` — GitHub App, environment, PAT, and GitHub CLI
+  credential discovery; `/user` and repository probes; structured
+  auth-failure classification; and REST quota parsing. Explicit environment
+  tokens override all stored credentials for automation. Otherwise async REST
+  operations prefer the authorized ADE GitHub App, so the desktop and bundled
+  CLI do not require a second PAT or `gh` login. `GitHubStatus.authFailure`
+  distinguishes rate limiting,
   invalid credentials, network failures, and unknown validation errors so
   clients do not flatten every failed probe into missing permissions.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
@@ -237,7 +241,8 @@ Renderer — settings:
   without an in-app preference; hosted web keeps its own affirmative browser
   choice. See [logging and product analytics](../../logging.md).
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
-  and `GitHubSection.tsx` — GitHub CLI / PAT auth, scope diagnostics,
+  and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
+  auth, scope diagnostics,
   permission guidance, structured validation failures, and the latest GitHub
   REST quota. Embedded inside General. A rate-limited credential renders
   **Rate limited**, the reset time/quota, and no auth command; only a missing,

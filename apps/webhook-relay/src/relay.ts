@@ -1,5 +1,7 @@
 import { createRemoteJWKSet, decodeJwt, jwtVerify, type JWTPayload } from "jose";
 
+const GITHUB_REST_API_VERSION = "2026-03-10";
+
 export type RelayEnv = {
   DB: D1Database;
   /** One hibernating WebSocket fanout object per lowercased owner/repo. */
@@ -778,7 +780,7 @@ async function fetchGitHubApiJson(apiBaseUrl: string, path: string, token: strin
       accept: "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       "user-agent": "ADE GitHub Webhook Relay",
-      "x-github-api-version": "2022-11-28",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
   const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;
@@ -1080,7 +1082,7 @@ async function fetchGitHubAppApiStatus(
       accept: "application/vnd.github+json",
       authorization: `Bearer ${jwt}`,
       "user-agent": "ADE GitHub Webhook Relay",
-      "x-github-api-version": "2022-11-28",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
   if (response.status === 404) {
@@ -1662,7 +1664,7 @@ async function handleWebhookHeal(request: Request, env: RelayEnv, repo: { owner:
       authorization: `Bearer ${appAuth.jwt}`,
       "content-type": "application/json",
       "user-agent": "ADE GitHub Webhook Relay",
-      "x-github-api-version": "2022-11-28",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     },
     body: JSON.stringify({ secret: webhookSecret }),
   });
@@ -1703,7 +1705,7 @@ async function handleWebhookDeliveries(request: Request, env: RelayEnv, repo: { 
       accept: "application/vnd.github+json",
       authorization: `Bearer ${appAuth.jwt}`,
       "user-agent": "ADE GitHub Webhook Relay",
-      "x-github-api-version": "2022-11-28",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     },
   });
   const payload = (await response.json().catch(() => null)) as unknown;

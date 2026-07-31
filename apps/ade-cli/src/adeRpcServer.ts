@@ -954,24 +954,6 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "create_queue",
-    description: "Create a queue PR group with ordered lanes, each targeting the same branch for sequential landing",
-    inputSchema: {
-      type: "object",
-      required: ["laneIds", "targetBranch"],
-      additionalProperties: false,
-      properties: {
-        laneIds: { type: "array", items: { type: "string", minLength: 1 } },
-        targetBranch: { type: "string", minLength: 1 },
-        titles: { type: "object", additionalProperties: { type: "string" } },
-        draft: { type: "boolean" },
-        autoRebase: { type: "boolean" },
-        ciGating: { type: "boolean" },
-        queueName: { type: "string" }
-      }
-    }
-  },
-  {
     name: "create_integration",
     description: "Create an integration lane, merge source lanes into it, and create a single integration PR",
     inputSchema: {
@@ -1172,21 +1154,6 @@ const TOOL_SPECS: ToolSpec[] = [
       properties: {
         prId: { type: "string", minLength: 1 },
         threadId: { type: "string", minLength: 1 }
-      }
-    }
-  },
-  {
-    name: "land_queue_next",
-    description: "Land the next pending PR in a queue group sequentially",
-    inputSchema: {
-      type: "object",
-      required: ["groupId", "method"],
-      additionalProperties: false,
-      properties: {
-        groupId: { type: "string", minLength: 1 },
-        method: { type: "string", minLength: 1 },
-        autoResolve: { type: "boolean" },
-        confidenceThreshold: { type: "number", minimum: 0, maximum: 1 }
       }
     }
   },
@@ -1461,7 +1428,6 @@ const MUTATION_TOOLS = new Set([
   "stash_drop",
   "stash_clear",
   "run_tests",
-  "create_queue",
   "create_integration",
   "create_pr_from_lane",
   "pr_update_title",
@@ -1470,7 +1436,6 @@ const MUTATION_TOOLS = new Set([
   "rebase_lane",
   "rebase_continue",
   "rebase_abort",
-  "land_queue_next",
   "pr_rerun_failed_checks",
   "pr_reply_to_review_thread",
   "pr_resolve_review_thread",
@@ -5061,33 +5026,6 @@ async function runTool(args: {
     return result;
   }
 
-  if (name === "create_queue") {
-
-    const laneIds = Array.isArray(toolArgs.laneIds)
-      ? toolArgs.laneIds.map((entry) => asTrimmedString(entry)).filter(Boolean)
-      : [];
-    if (!laneIds.length) {
-      throw new JsonRpcError(JsonRpcErrorCode.invalidParams, "laneIds is required and must be non-empty");
-    }
-    const targetBranch = assertNonEmptyString(toolArgs.targetBranch, "targetBranch");
-    const titles = isRecord(toolArgs.titles) ? toolArgs.titles as Record<string, string> : undefined;
-    const draft = typeof toolArgs.draft === "boolean" ? toolArgs.draft : undefined;
-    const autoRebase = typeof toolArgs.autoRebase === "boolean" ? toolArgs.autoRebase : undefined;
-    const ciGating = typeof toolArgs.ciGating === "boolean" ? toolArgs.ciGating : undefined;
-    const queueName = asOptionalTrimmedString(toolArgs.queueName);
-    const prSvc = requirePrService(runtime);
-    const result = await prSvc.createQueuePrs({
-      laneIds,
-      targetBranch,
-      ...(titles ? { titles } : {}),
-      ...(draft !== undefined ? { draft } : {}),
-      ...(autoRebase !== undefined ? { autoRebase } : {}),
-      ...(ciGating !== undefined ? { ciGating } : {}),
-      ...(queueName ? { queueName } : {})
-    });
-    return result;
-  }
-
   if (name === "create_integration") {
 
     const sourceLaneIds = Array.isArray(toolArgs.sourceLaneIds)
@@ -5247,22 +5185,6 @@ async function runTool(args: {
       prId,
       threadId,
     };
-  }
-
-  if (name === "land_queue_next") {
-
-    const groupId = assertNonEmptyString(toolArgs.groupId, "groupId");
-    const method = assertNonEmptyString(toolArgs.method, "method");
-    const autoResolve = typeof toolArgs.autoResolve === "boolean" ? toolArgs.autoResolve : undefined;
-    const confidenceThreshold = typeof toolArgs.confidenceThreshold === "number" ? toolArgs.confidenceThreshold : undefined;
-    const prSvc = requirePrService(runtime);
-    const result = await prSvc.landQueueNext({
-      groupId,
-      method: method as MergeMethod,
-      ...(autoResolve !== undefined ? { autoResolve } : {}),
-      ...(confidenceThreshold !== undefined ? { confidenceThreshold } : {})
-    });
-    return result;
   }
 
   if (name === "get_lane_conflict_state") {

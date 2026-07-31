@@ -397,7 +397,7 @@ export type PrepareResolverSessionArgs = {
   cwdLaneId?: string;
   integrationLaneName?: string;
   proposalId?: string | null;
-  sourceTab?: "rebase" | "normal" | "integration" | "queue" | "conflicts" | null;
+  sourceTab?: "rebase" | "normal" | "integration" | "conflicts" | null;
   scenario?: ResolverSessionScenario;
   model?: string | null;
   reasoningEffort?: string | null;
@@ -463,7 +463,7 @@ export type ResolutionConfig = {
 // Conflicts Tab Multi-Merge State
 // --------------------------------
 
-export type MultiMergeMode = "queue" | "integration";
+export type MultiMergeMode = "integration";
 
 export type MultiMergeLaneEntry = {
   laneId: string;

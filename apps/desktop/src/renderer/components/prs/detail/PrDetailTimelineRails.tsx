@@ -1,6 +1,7 @@
 import React, { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import { Group, Panel, Separator } from "react-resizable-panels";
 import { useLocation, useNavigate } from "react-router-dom";
+import { ArrowSquareOut, Stack } from "@phosphor-icons/react";
 import { buildPrsRouteSearch, parsePrsRouteState, type ParsedPrsRouteState } from "../prsRouteState";
 import type {
   LaneSummary,
@@ -29,7 +30,7 @@ import { PrFilesChangedCard } from "../shared/PrFilesChangedCard";
 import { PrCommentComposer } from "../shared/PrCommentComposer";
 import { PrCommandPalettes, type PaletteKind } from "../shared/PrCommandPalettes";
 import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
-import { COLORS, RADII, SPACING, floatingPane } from "../../lanes/laneDesignTokens";
+import { COLORS, RADII, SANS_FONT, SPACING, floatingPane, primaryButton } from "../../lanes/laneDesignTokens";
 
 /* ── Resizable rails ──────────────────────────────────────────────────────
  * Both rails drag-resize and persist per project, using the same localStorage
@@ -114,7 +115,6 @@ export function buildTimelineVisibleEventSearch(args: {
   return buildPrsRouteSearch({
     activeTab: tab,
     selectedPrId: args.prId,
-    selectedQueueGroupId: null,
     selectedRebaseItemId: null,
     eventId: args.eventId,
     threadId: args.current.threadId,
@@ -967,24 +967,48 @@ export const PrDetailTimelineRails = forwardRef<PrDetailTimelineRailsRef, Props>
             data-testid="pr-detail-merge-pane"
           >
             <div className="min-h-0 overflow-y-auto">
-              <PrDetailMergeRail
-                pr={pr}
-                status={status}
-                checks={checks}
-                reviews={reviews}
-                commits={commitSnapshots}
-                mergeMethod={mergeMethod}
-                actionBusy={actionBusy}
-                onMerge={onMerge}
-                onUpdateBranch={onUpdateBranch}
-                updateBranchBusy={updateBranchBusy}
-                updateBranchNotice={updateBranchNotice}
-                onDeleteBranch={onDeleteBranch}
-                deleteBranchBusy={deleteBranchBusy}
-                onOpenManageLane={onOpenManageLane}
-                onClose={onClose}
-                onReopen={onReopen}
-              />
+              {pr.stack ? (
+                <div style={{ display: "grid", gap: 10, padding: 14 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, color: "#C4B5FD" }}>
+                    <Stack size={16} weight="fill" />
+                    <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 700 }}>
+                      GitHub Stack {pr.stack.position} of {pr.stack.size}
+                    </span>
+                  </div>
+                  <p style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 11, lineHeight: 1.5, color: COLORS.textMuted }}>
+                    GitHub manages this stack&apos;s rebases, review requirements, and merge order. Finish the merge on GitHub.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void window.ade.app.openExternal(pr.githubUrl);
+                    }}
+                    style={primaryButton({ height: 34, justifyContent: "center" })}
+                  >
+                    <ArrowSquareOut size={13} />
+                    Review and merge on GitHub
+                  </button>
+                </div>
+              ) : (
+                <PrDetailMergeRail
+                  pr={pr}
+                  status={status}
+                  checks={checks}
+                  reviews={reviews}
+                  commits={commitSnapshots}
+                  mergeMethod={mergeMethod}
+                  actionBusy={actionBusy}
+                  onMerge={onMerge}
+                  onUpdateBranch={onUpdateBranch}
+                  updateBranchBusy={updateBranchBusy}
+                  updateBranchNotice={updateBranchNotice}
+                  onDeleteBranch={onDeleteBranch}
+                  deleteBranchBusy={deleteBranchBusy}
+                  onOpenManageLane={onOpenManageLane}
+                  onClose={onClose}
+                  onReopen={onReopen}
+                />
+              )}
             </div>
           </div>
         </Panel>

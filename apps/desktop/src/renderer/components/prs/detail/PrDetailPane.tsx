@@ -3,7 +3,7 @@ import {
   GithubLogo, CheckCircle, XCircle, Circle,
   CircleNotch, ArrowRight, Eye, Code,
   PencilSimple, X, Check, ArrowsClockwise, Play,
-  CaretDown, CaretRight, Stack as Layers,
+  CaretDown, CaretRight,
 } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../../ui/vcsIcons";
 import type {
@@ -353,8 +353,6 @@ type PrDetailPaneProps = {
   onNavigate: (path: string) => void;
   onShowInGraph?: (laneId: string) => void;
   onOpenRebaseTab?: (laneId?: string) => void;
-  queueContext?: { groupId: string; label?: string | null } | null;
-  onOpenQueueView?: (groupId: string) => void;
   initialDetailTab?: DetailTab | null;
   onDetailTabChange?: (tab: DetailTab) => void;
   onUnmap?: () => void;
@@ -487,8 +485,6 @@ export function PrDetailPane({
   onNavigate: _onNavigate,
   onShowInGraph,
   onOpenRebaseTab,
-  queueContext,
-  onOpenQueueView,
   initialDetailTab,
   onDetailTabChange,
   onUnmap,
@@ -1545,17 +1541,6 @@ export function PrDetailPane({
                 })}
               >
                 {unmapBusy ? "Unmapping..." : "Unmap"}
-              </button>
-            ) : null}
-            {queueContext && onOpenQueueView ? (
-              <button
-                type="button"
-                data-tour="prs.stackingIndicator"
-                onClick={() => onOpenQueueView(queueContext.groupId)}
-                style={outlineButton({ height: 30, padding: "0 10px", color: COLORS.accent, borderColor: "color-mix(in srgb, var(--color-accent) 40%, transparent)" })}
-                title={queueContext.label ?? "Open queue"}
-              >
-                <Layers size={14} /> Queue
               </button>
             ) : null}
             {onShowInGraph ? (

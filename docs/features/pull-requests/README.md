@@ -1,20 +1,18 @@
 # Pull requests
 
-ADE's pull-request surface manages lane-backed PRs, stacked PR chains,
-PR merge queues, integration (merge-plan) proposals, and GitHub
-inspection. It treats local git state as the source of truth for
+ADE's pull-request surface manages lane-backed PRs, native GitHub stacks,
+integration (merge-plan) proposals, and GitHub inspection. It treats local git state as the source of truth for
 merge/integration simulation while keeping remote GitHub state warm
 through layered caching.
 
 This folder documents:
 
-- [`stacking.md`](./stacking.md) — stacked PR chains, rebase ordering, queue-aware rebase targeting.
-- [`queue.md`](./queue.md) — PR merge queue model and landing state machine.
+- [`github-stacked-prs.md`](./github-stacked-prs.md) — native GitHub stack membership, reconciliation, and ADE UI.
 - [`conflict-simulation.md`](./conflict-simulation.md) — how ADE predicts PR merge conflicts before the user hits Merge.
 
 ## Where this runs
 
-PR mutations, GitHub polling, queue landing, integration proposal
+PR mutations, GitHub polling, stack reconciliation, integration proposal
 simulation, and the issue/rebase resolver agent dispatch all run inside
 the **active ADE runtime** (local machine runtime for local-bound
 windows, SSH-attached remote runtime for remote-bound windows). The
@@ -37,8 +35,8 @@ handlers directly for high-volume reads such as `listWithConflicts`,
 daemon startup. Mutations and long-running workflows still use the
 project runtime route where that route owns the behavior.
 
-For remote-bound windows, GitHub polling and the queue automation loop
-all execute on the remote machine. The git operations that back PR
+For remote-bound windows, GitHub polling and stack reconciliation execute on
+the remote machine. The git operations that back PR
 merges, rebases, and conflict resolution use the worktrees on the
 remote host. Status reads work exactly the same as local; the desktop
 window just sends every action through the SSH-tunneled JSON-RPC
@@ -80,14 +78,13 @@ Service files (`apps/desktop/src/main/services/prs/`):
 |------|---------------|
 | `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. `reconcileOnFocus({ force? })` is the catch-up safety net for the pollerless brain (in-memory 90 s throttle + single-flight, bounded merged-heal, 30-min `state:"all"` closed-sweep) and `syncLanePr(laneId)` is the manual per-badge sync; both heal merged/unmapped lane PRs and emit a `pr-reconcile` event. See [Keeping PR status fresh](#keeping-pr-status-fresh). |
 | `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
-| `prMergeQueue.test.ts` | Merge-queue transition and landing coverage. |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage. |
-| `prPollingService.ts` | 60 s fallback polling loop, fingerprint-based change detection, notification emission, targeted webhook reconciliation, and GitHub rate-limit backoff. `reconcilePrs(prIds)` coalesces webhook-linked PR ids and refreshes only those rows immediately; ordinary `poke()` still requests a normal tick. User/queue-driven hot windows poll affected PRs every 5 s for the first minute and 15 s until the three-minute cap, but poll results cannot start or restart a hot window. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
+| `prPollingService.ts` | 60 s fallback polling loop, fingerprint-based change detection, notification emission, targeted webhook reconciliation, and GitHub rate-limit backoff. `reconcilePrs(prIds)` coalesces webhook-linked PR ids and refreshes only those rows immediately; ordinary `poke()` still requests a normal tick. User-driven hot windows poll affected PRs every 5 s for the first minute and 15 s until the three-minute cap, but poll results cannot start or restart a hot window. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
 | `workflowGraph.ts` | `createWorkflowGraph` — reconstructs the CI pipeline DAG (`PrWorkflowGraph`) behind a swappable `WorkflowGraph` interface. GitHub's jobs API does not return `needs:`, so the graph is built by parsing the workflow YAML that actually ran and joining it to live run state. Parses **only** `jobs.<id>.needs` and `jobs.<id>.strategy.matrix`, with the existing `yaml` dep. Source order: lane worktree `git show <headSha>:.github/workflows/<file>` → GitHub Contents API `?ref=<headSha>` (fork PRs / non-local repos) → `source: "none"` with an `unavailableReason`; it never guesses an edge. A single WORKFLOW degrades to flat swimlanes (not the whole graph) when a job uses a reusable workflow (`uses:`), has a `${{ }}` `name:`, or the YAML will not parse. Matrix legs collapse into one node whose state is the worst leg (failed > running > queued > passed > skipped); `tier` is a cycle-safe longest-path rank over `needs`; `criticalPath` is the longest-duration chain. Running nodes report live elapsed. Parsed YAML is cached per `(repo, headSha)` behind a TTL; the graph itself is always recomputed from live run state. |
 | `checkLogParser.ts` | Pure parsing for `prService.getCheckLog`: strips the per-line ISO timestamp, splits a job log on top-level `##[group]` / `##[endgroup]` markers into step sections, selects the failing step's section, and lifts a framework summary headline (vitest/jest/pytest/go) — falling through to `null` rather than guessing. `prService` owns the bounded streaming download (the logs endpoint 302s to a pre-signed blob; the redirect is followed without the API token and reading stops past a few MB, setting `truncated`). |
-| `queueLandingService.ts` | Merge queue state machine (`ALLOWED_TRANSITIONS`), landing loop, auto-resolve on conflicts |
+| `githubPrStackService.ts` | Native GitHub stack decoding, persistence, and repository reconciliation |
 | `integrationPlanning.ts` | `buildIntegrationPreflight` — validates source lanes for an integration proposal |
 | `integrationValidation.ts` | `parseGitStatusPorcelain`, `hasMergeConflictMarkers` — shared helpers for integration flows |
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
@@ -112,16 +109,14 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | File | Responsibility |
 |------|---------------|
 | `PRsPage.tsx` | Top-level tab shell (GitHub vs Workflows) with URL-driven state. Consumes create-PR handoff params from either router search or hash search (`create=1`, `sourceLaneId` / `laneId`, `target=primary`) and the `prs.create` dialog bus props, then opens `CreatePrModal` with matching initial values without persisting the one-shot route as the last PR route. |
-| `state/PrsContext.tsx` | PR data provider (list, selection, queue groups, rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. Workflow queue-state reads tolerate older remote runtimes that do not expose the optional `pr.listQueueStates` action by rendering an empty queue-state set instead of failing the whole PR refresh. |
+| `state/PrsContext.tsx` | PR data provider (list, selection, GitHub stacks, and rebase needs). Selected-PR primary reads apply progressively as status/check/review/comment requests resolve, so one slow piece does not hold the whole detail pane busy; cached snapshots stay visible during GitHub rate limits. |
 | `prsRouteState.ts` | URL ↔ page state mapping plus project-scoped last-route storage. When a project root is known, the PRs tab reads only that project's stored route and does not fall back to the legacy global route from another project. |
-| `CreatePrModal.tsx` | Normal/queue/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. Normal PRs default the title to `source lane -> target lane`; a `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
+| `CreatePrModal.tsx` | Single/integration PR creation with lane warnings, branch name validation, and optional initial values for single-PR handoffs from lane/chat surfaces. Normal PRs default the title to `source lane -> target lane`; a `target: "primary"` handoff resolves the base branch from the primary lane (falling back to `main`). |
 | `tabs/NormalTab.tsx` | Normal PR list |
 | `tabs/GitHubTab.tsx` | Repository PR browser with label filters, CI badges, review indicators, ADE-vs-unmanaged scope counts, and linked-lane context. State filter is one of `open` / `closed` / `merged` / `all`. The tab ignores legacy cross-repo `externalPullRequests` payloads; the "External" scope means repo PRs that are not managed by ADE. The "create lane from PR branch" affordance has been removed — open/closed PRs on branches without a lane no longer offer the preflight + create dialog (`prsPreflightCreateLaneFromPrBranch` / `prsCreateLaneFromPrBranch` IPC channels have been deleted), so creating a lane for an existing PR now goes through the standard lane creation flow. Snapshot rows are mapped through `reconcileLinkedPrState` (using `isTerminalPrState` from `renderer/lib/prState.ts`) into `reconciledItems`; `computeTerminalOverlayItems` then appends last-seen rows for linked ADE PRs that went terminal but dropped from an open-only snapshot, producing `displayedItems`, so a terminal ADE PR state (merged/closed) overrides a stale non-terminal GitHub row and a just-merged row is not erased before a full-history fetch (see [Terminal-state precedence](#terminal-state-precedence)). The selection effect follows a PR into its new bucket on merge/close and the detail pane pins the selected PR through the transition behind a `PrBucketTransitionBanner` rather than blanking (see [Selection follow and detail-pane pinning](#selection-follow-and-detail-pane-pinning)). |
-| `tabs/QueueTab.tsx` | Merge queue UI showing queued stack members and their landing state. |
 | `tabs/IntegrationTab.tsx` | Integration (merge-plan) proposals and execution, including merge-into-lane selection, apply-and-resimulate, and adopted-lane cleanup messaging |
-| `tabs/RebaseTab.tsx` | Lane rebase needs (base + queue + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
-| `tabs/WorkflowsTab.tsx` | Container for queue/integration/rebase sub-tabs. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
-| `tabs/queueWorkflowModel.ts` | Pure model for queue tab rendering (active/history bucketing, guidance computation) |
+| `tabs/RebaseTab.tsx` | Lane rebase needs (base + PR target) and attention items. Hide/snooze controls only affect the lane rebase suggestion banner; still-behind needs remain actionable in the Rebase view. |
+| `tabs/WorkflowsTab.tsx` | Container for integration and rebase workflows. The Rebase/Merge history view is backed by actual ADE rebase operation records, while active rebase needs include any lane still behind its target regardless of banner hide/snooze state. |
 | `tabs/rebaseWorkflowModel.ts` | Pure model for active rebase bucketing and operation-history filtering |
 | `detail/PrDetailPane.tsx` | Selected PR detail pane: status, checks, reviews, comments, files, commits, merge readiness, bypass, and resolver flows. Rich detail/files/commits/action-run reads render progressively; late cached snapshot hydration can update snapshot-owned fields but cannot overwrite richer live data. Persists the selected sub-tab (`overview | files | checks`) per PR in `localStorage` under `ade:prs:detailTabs:v1`, mirrored through the `detailTab` URL param so deep links restore the selected tab. The old `activity` target remains accepted as an alias for Overview. The failing-log drawer's **Fix in chat** action queues a bounded log excerpt into the lane's most recent Work chat (or a new-chat draft) and then navigates there. |
 | `detail/PrDetailTimelineRails.tsx` | Resizable Timeline+Rails overview: central `PrTimeline`; a left rail with the commit pane plus a capped files-changed card; and a right rail ordered reviewers/metadata → checks (the vertical growth target) → merge readiness pinned at the bottom. Left/right widths are pixel-preserving, drag-resizable, and persisted per project. Seeds the timeline with description, review threads, activity-stream entries (commits, comments, reviews, label changes, merges, deployments), and check fallbacks. `buildTimelineEvents` pins the description first after the stable timestamp sort. Owns deep-link scrolling and merge-bypass plumbing. |
@@ -219,10 +214,10 @@ unmapped summaries. See [Lane PR resolution](#lane-pr-resolution-mapped--unmappe
 
 Selected channels exposed through `preload.ts`:
 
-- `ade.prs.createFromLane`, `ade.prs.createQueue`, `ade.prs.createIntegration`
-- `ade.prs.listAll`, `ade.prs.listProposals`, `ade.prs.listQueueStates`
+- `ade.prs.createFromLane`, `ade.prs.createIntegration`
+- `ade.prs.listAll`, `ade.prs.listProposals`, `ade.prs.listGithubStacks`
 - `ade.prs.listOpenForRepo` — flat list of open PRs in the project's GitHub repo as `BranchPullRequest[]` (branch / number / title / state / url / author / updatedAt). Independent of `pull_requests` cache so the lane-creation branch picker can attach PR pills to branches that have no lane yet. See [features/lanes/README.md](../lanes/README.md) for the consumer.
-- `ade.prs.land`, `ade.prs.landStack`, `ade.prs.landStackEnhanced`, `ade.prs.landQueueNext`
+- `ade.prs.land` for individual PRs; GitHub owns native stack merge and rebase actions
 - `ade.prs.updateBranch` — bring a behind PR head up to date with its base (`strategy: "merge"` uses GitHub's update-branch API; `strategy: "rebase"` runs ADE's local lane rebase + force-with-lease push and reports `hasConflicts` when it can't auto-apply)
 - `ade.prs.getStatusByGithub` — live `PrStatus` (incl. the GraphQL merge box) for an unmapped GitHub-tab PR addressed by `owner/repo#num` coords, without a `pull_requests` row
 - `ade.prs.getMergeContext`, `ade.prs.getMergeContexts`, `ade.prs.listSnapshots`, `ade.prs.getStatus`, `ade.prs.getChecks`, `ade.prs.getReviews`, `ade.prs.getComments`, `ade.prs.getFiles`, `ade.prs.getCommits`
@@ -234,7 +229,7 @@ Selected channels exposed through `preload.ts`:
 - `ade.prs.getDeployments` — deployments for the PR's head SHA, with the latest status status URL and environment URL
 - `ade.prs.getAiSummary` / `ade.prs.regenerateAiSummary` — cached/forced `PrAiSummary` per `(prId, headSha)`
 - `ade.prs.rebaseResolutionStart`
-- `ade.prs.retargetBase` — re-point a PR's base branch (used by stack-queue workflows)
+- `ade.prs.retargetBase` — re-point an individual PR's base branch
 - `ade.prs.getGitHubSnapshot` — repository PR snapshot for the active GitHub repo. The DTO still carries `externalPullRequests` and accepts `includeExternalClosed` for compatibility, but the current service returns repo PRs only and the renderer ignores legacy cross-repo external items.
 - `ade.prs.simulateIntegration`, `ade.prs.createIntegrationLaneForProposal`, `ade.prs.commitIntegration`, `ade.prs.cleanupIntegrationWorkflow`
 - `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` — read and create GitHub repo autolink references (the `key_prefix` + `url_template` rules that turn issue identifiers like `ADE-123` into GitHub-rendered hyperlinks). Used by the Linear setup flow so a project's Linear identifiers become clickable in PR bodies. `createRepoAutolink` requires `urlTemplate` to contain `<num>` and busts the autolinks ETag cache after a successful POST.
@@ -296,11 +291,11 @@ category tabs and requests additional terminal-history pages only when the
 user taps Load more; ADE/External scope counts are derived from the rows
 already reconciled on-device.
 
-PR rows in `tabs/GitHubTab.tsx` and queue member rows in `tabs/QueueTab.tsx`
-render the linked lane's color through `LaneAccentDot` (resolved from the
+PR rows in `tabs/GitHubTab.tsx` render the linked lane's color through
+`LaneAccentDot` (resolved from the
 app store via `useLaneColorById` / a `Map<laneId, color>`); the rest of the
 row text inherits the lane color so a glance correlates a PR with its lane
-across the queue / GitHub / Workflows tabs.
+across GitHub and Workflows views.
 
 ### Terminal-state precedence
 
@@ -636,7 +631,6 @@ strand the spinner.
 
 The PR page no longer assumes every tab loads every workflow query:
 
-- Queue state loads only for workflow-oriented tabs.
 - Merge contexts load lazily per selected PR.
 - Selected PR detail (status, checks, reviews, comments) loads on
   demand.
@@ -910,10 +904,10 @@ best-effort — failures log a warning and do not abort the tick.
 
 - `PRsPage` parses URL state via `parsePrsRouteState` and writes it
   back with `buildPrsRouteSearch`. Active tab, workflow sub-tab,
-  selected PR, queue group, lane, and rebase item are all encoded.
-- `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when the active tab is a workflow tab (`queue` / `integration` / `rebase`) or a PR is selected; otherwise `githubRefreshMode` is left undefined so the renderer paints from the existing snapshot. `applyLocalPrState` calls `prs.listWithConflicts({ includeConflictAnalysis: false })` and `lanes.list({ includeStatus: false })` for the plain list, then enables conflict analysis, rebase-needs scans, and auto-rebase status reads only when a workflow tab or selected PR needs them. It also listens to `window.ade.lanes.onLifecycleEvent` so lane create/rename/archive/unarchive/delete events from the desktop main process, local brain daemon, or remote runtime refresh the PR lane list; hidden events are replayed on focus/visibility instead of polling.
-- Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so queue/integration/rebase views do not pay full git status cost on render. Conflict analysis also runs as one batch over metadata-only active lanes, preserving overlap warnings against non-PR peer lanes without per-PR conflict calls.
-- `PrsContext` owns PR list, queue states, rebase needs, proposals,
+  selected PR, lane, and rebase item are all encoded.
+- `PrsContext` mounts cheaply on the plain GitHub PR list. The initial `refreshCore` only kicks a background GitHub refresh when an integration/rebase workflow or selected PR needs it; otherwise the renderer paints from the existing snapshot. It also listens to lane lifecycle events so local and remote lane changes refresh the PR mapping without polling.
+- Workflow surfaces batch PR merge context through `prs.getMergeContexts(prIds)` instead of fanning out one `getMergeContext(prId)` call per card. The service builds the batch from metadata-only lane rows so integration/rebase views do not pay full git status cost on render.
+- `PrsContext` owns PR list, GitHub stack state, rebase needs, proposals,
   and the Timeline+Rails UI state
   (`timelineFiltersByPrId`, `dismissedAiSummaries`, `viewerLogin`, `detailReviewThreads`,
   `detailDeployments`, `detailAiSummary`). It exposes
@@ -958,7 +952,7 @@ type PrMobileSnapshot = {
   stacks: PrStackInfo[];                              // lane chains with >=1 PR
   capabilities: Record<string, PrActionCapabilities>; // per-PR action gates
   createCapabilities: PrCreateCapabilities;           // which lanes can create
-  workflowCards: PrWorkflowCard[];                    // queue/integration/rebase
+  workflowCards: PrWorkflowCard[];                    // integration/rebase
   live: boolean;                                      // false → phone banner
 };
 ```
@@ -980,10 +974,9 @@ Builder responsibilities:
   through `resolveStableLaneBaseBranch`. The aggregate lane read is
   metadata-only (`includeStatus: false`); it never probes every worktree's git
   status just to paint the PR tab.
-- **Workflow cards** (`buildWorkflowCards`) — pulls non-terminal
-  queue entries from `queue_landing_state` joined with `pr_groups`,
-  active integration proposals via `listIntegrationWorkflows({ view:
-  "active" })`, and active rebase needs from
+- **Workflow cards** (`buildWorkflowCards`) — pulls active integration
+  proposals via `listIntegrationWorkflows({ view: "active" })` and active
+  rebase needs from
   `conflictService.scanRebaseNeeds()` (filtered to `kind ===
   "lane_base"` with `behindBy > 0`). Using the same source the desktop
   Rebase tab consumes
@@ -1080,9 +1073,6 @@ markdown layout cost for offscreen or folded content.
   reconciliation or normal notifications. Never reset a hot PR's start time
   from a refresh result, or active CI can consume the shared GitHub quota
   indefinitely.
-- **Queue transitions use `ALLOWED_TRANSITIONS`.** Invalid
-  transitions are logged and rejected rather than silently applied.
-  Cancel path force-fails entries in non-skippable states.
 - **Post-merge cleanup is best-effort.** Never wrap the merge itself
   in the same try-catch; the merge must be reported succeeded even
   if cleanup fails.

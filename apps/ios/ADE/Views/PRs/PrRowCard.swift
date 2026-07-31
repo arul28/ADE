@@ -118,6 +118,9 @@ struct PrRowCard: View {
   private var accessibilitySummary: String {
     var parts = ["Pull request \(data.prNumber)", data.title, "State \(data.state)"]
     if let author = data.authorLogin, !author.isEmpty { parts.append("Author \(author)") }
+    if let stack = data.githubStack {
+      parts.append("GitHub Stack \(stack.position) of \(stack.size)")
+    }
     if let head = data.headBranch, let base = data.baseBranch { parts.append("\(head) into \(base)") }
     if let ci = data.ciIndicator { parts.append(ci.title) }
     if let review = data.reviewIndicator { parts.append(review.label) }
@@ -135,6 +138,9 @@ struct PrRowCard: View {
     HStack(spacing: 5) {
       Text("#\(data.prNumber)")
         .foregroundStyle(PrRowDesktopPalette.stateColors(data.state).text)
+      if let stack = data.githubStack {
+        GitHubStackPositionBadge(stack: stack, compact: true)
+      }
       if let author = data.authorLogin, !author.isEmpty {
         Text("·")
         Text("@\(author)")
@@ -311,6 +317,7 @@ extension PrRowCard {
     let stackGroupId: String?
     let stackGroupName: String?
     let stackGroupCount: Int?
+    let githubStack: GitHubPrStackMembership?
 
     var timeAgo: String {
       prRelativeTime(updatedAt)
@@ -379,6 +386,7 @@ extension PrRowCard {
       self.stackGroupId = pr.linkedGroupId
       self.stackGroupName = pr.linkedGroupName
       self.stackGroupCount = pr.linkedGroupCount > 0 ? pr.linkedGroupCount : nil
+      self.githubStack = pr.stack
     }
 
     init(item: GitHubPrListItem, linkedPr: PullRequestListItem?) {
@@ -413,6 +421,7 @@ extension PrRowCard {
       self.stackGroupId = item.linkedGroupId
       self.stackGroupName = nil
       self.stackGroupCount = nil
+      self.githubStack = item.stack ?? linkedPr?.stack
     }
 
     private static func warnMessage(

@@ -1,6 +1,6 @@
 ---
 name: ade-pr-workflows
-description: Use this skill when working with ADE PR workflows including PR tab data, PR checks/comments, queues, rebase resolution, CI fixes, or merge readiness.
+description: Use this skill when working with ADE PR workflows including PR tab data, GitHub stacked PRs, checks/comments, rebase resolution, CI fixes, or merge readiness.
 ---
 
 # ADE PR workflows
@@ -15,6 +15,48 @@ ade prs comments <pr-id-or-number-or-url> --text
 ```
 
 Use `ade help prs` and `ade help git rebase` before guessing PR or rebase flags.
+
+## Offer stacked PRs for layered work
+
+When a request naturally divides into two or more dependency-ordered,
+independently reviewable changes, offer a GitHub stack before implementation.
+If the user accepts and has not already chosen how to run it, ask which
+execution model they prefer:
+
+- **One lane per PR** — create a child ADE lane and owning agent for every
+  layer. Recommend this when layers are still changing or several agents will
+  edit in parallel, because each PR gets an isolated worktree and ship loop.
+- **Coordinated delegation** — one lead keeps the branch chain and delegates
+  only stable, non-overlapping work to subagents. Recommend this for a tightly
+  coupled stack where one agent should own rebases and commits.
+
+Then:
+
+1. Describe the layers bottom to top and keep foundations below their consumers.
+2. Create one deliberate branch and PR per layer.
+3. Run focused quality and tests for each layer before starting the next one.
+4. Create the GitHub stack only after every PR base matches the previous PR's
+   head branch.
+5. Run the ship loop for every PR. Fix a root-layer failure once, then rebase
+   and repoll every layer above it instead of applying duplicate fixes.
+6. Apply review feedback to the lowest layer that owns the behavior, then
+   rebase every layer above it.
+7. Keep one stack progress card current and report readiness bottom to top.
+
+Use ADE's built-in commands; users and agents do not need the `gh-stack`
+extension:
+
+```bash
+ade prs stacks list --text
+ade prs stacks sync --text
+ade prs stacks create --pulls 120,121,122 --text
+ade prs stacks add --stack 8 --pulls 123 --text
+ade prs stacks unstack --stack 8 --text
+```
+
+GitHub owns stack membership, review requirements, rebases performed on
+GitHub, merge queue state, and final merging. Send final review and merge
+decisions to GitHub instead of using ADE's legacy synchronous merge path.
 
 ## PR creation closeout links
 

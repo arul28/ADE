@@ -1231,7 +1231,7 @@ describe("RemoteConnectionService", () => {
         if (succeed) {
           return { domain: "file", action: "read", result: { ok: true }, statusHints: {} };
         }
-        throw new Error("Action 'pr.listQueueStates' is not callable.");
+        throw new Error("Action 'pr.futureAction' is not callable.");
       }),
       onEntryEvicted: vi.fn(() => () => {}),
     } as unknown as RemoteConnectionPool;
@@ -1249,7 +1249,7 @@ describe("RemoteConnectionService", () => {
       await expect(
         service.callAction(previouslyConnected.id, "project-1", {
           domain: "pr",
-          action: "listQueueStates",
+          action: "futureAction",
         }),
       ).rejects.toThrow(/not callable/i);
     }

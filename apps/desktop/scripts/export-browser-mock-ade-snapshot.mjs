@@ -510,40 +510,6 @@ function buildMergeContexts(prs, lanes, projectId) {
   return contexts;
 }
 
-function rowToQueueState(row) {
-  return {
-    queueId: String(row.id),
-    groupId: String(row.group_id),
-    groupName: row.group_name ?? null,
-    targetBranch: row.target_branch ?? null,
-    state: row.state ?? "idle",
-    entries: safeJson(row.entries_json, []),
-    currentPosition: Number(row.current_position ?? 0),
-    activePrId: row.active_pr_id ?? null,
-    activeResolverRunId: row.active_resolver_run_id ?? null,
-    lastError: row.last_error ?? null,
-    waitReason: row.wait_reason ?? null,
-    config: {
-      method: "squash",
-      archiveLane: false,
-      autoResolve: false,
-      ciGating: true,
-      resolverProvider: null,
-      resolverModel: null,
-      reasoningEffort: null,
-      permissionMode: "guarded_edit",
-      confidenceThreshold: null,
-      originSurface: "manual",
-      originRunId: null,
-      originLabel: null,
-      ...safeJson(row.config_json, {}),
-    },
-    startedAt: row.started_at,
-    completedAt: row.completed_at ?? null,
-    updatedAt: row.updated_at ?? row.completed_at ?? row.started_at,
-  };
-}
-
 function rowToIntegrationWorkflow(row) {
   return {
     proposalId: String(row.id),
@@ -1365,19 +1331,6 @@ const prSnapshots = maybeAll(
   [projectId],
 ).map(normalizePrSnapshot);
 
-const queueStates = maybeAll(
-  "queue_landing_state",
-  `
-    select qls.*, pg.name as group_name, pg.target_branch as target_branch
-    from queue_landing_state qls
-    left join pr_groups pg on pg.id = qls.group_id
-    where qls.project_id = ?
-    order by qls.updated_at desc, qls.started_at desc
-    limit 50
-  `,
-  [projectId],
-).map(rowToQueueState);
-
 const integrationWorkflows = maybeAll(
   "integration_proposals",
   "select * from integration_proposals where project_id = ? order by created_at desc limit 100",
@@ -1435,7 +1388,6 @@ const snapshot = {
   prs,
   prSnapshots,
   prMergeContexts: mergeContexts,
-  queueStates,
   integrationWorkflows,
   rebaseNeeds,
   githubSnapshot,

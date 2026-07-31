@@ -25,6 +25,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
+import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import {
   classifyGitHubAuthFailure,
   GitHubRateLimitError,
@@ -681,35 +682,52 @@ export function createGithubService({
     }
   };
 
-  const readPrimaryAuthToken = (): GitHubTokenLookup | null => {
-    const patToken = readStoredPatToken();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-
+  const readEnvironmentAuthToken = (): GitHubTokenLookup | null => {
     const envToken = readEnvToken();
-    if (envToken) {
+    return envToken
+      ? {
+          token: envToken,
+          source: "environment",
+          patTokenStored: false,
+          ghCliPath: null,
+          ghAuthError: null,
+        }
+      : null;
+  };
+
+  const readPatAuthToken = (): GitHubTokenLookup | null => {
+    const patToken = readStoredPatToken();
+    return patToken
+      ? {
+          token: patToken,
+          source: "pat",
+          patTokenStored: true,
+          ghCliPath: null,
+          ghAuthError: null,
+        }
+      : null;
+  };
+
+  const readPrimaryAuthToken = (): GitHubTokenLookup | null =>
+    readEnvironmentAuthToken() ?? readPatAuthToken();
+
+  const readAuthToken = async (): Promise<GitHubTokenLookup> => {
+    const environment = readEnvironmentAuthToken();
+    if (environment) return environment;
+    const appToken = appUserAuth.getAuthStatus().tokenStored
+      ? await appUserAuth.getValidTokenForRelay().catch(() => null)
+      : null;
+    if (appToken) {
       return {
-        token: envToken,
-        source: "environment",
+        token: appToken,
+        source: "app",
         patTokenStored: false,
         ghCliPath: null,
         ghAuthError: null,
       };
     }
-
-    return null;
-  };
-
-  const readAuthToken = async (): Promise<GitHubTokenLookup> => {
-    const primary = readPrimaryAuthToken();
-    if (primary) return primary;
+    const pat = readPatAuthToken();
+    if (pat) return pat;
     const gh = await readGhAuthToken();
     return {
       ...gh,
@@ -801,7 +819,8 @@ export function createGithubService({
       headers: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${token}`,
-        "user-agent": "ade-desktop"
+        "user-agent": "ade-desktop",
+        "x-github-api-version": GITHUB_REST_API_VERSION,
       }
     });
 
@@ -850,6 +869,7 @@ export function createGithubService({
             accept: "application/vnd.github+json",
             authorization: `Bearer ${token}`,
             "user-agent": "ade-desktop",
+            "x-github-api-version": GITHUB_REST_API_VERSION,
           },
         },
       );
@@ -890,12 +910,13 @@ export function createGithubService({
   const computeGithubStatusProbe = async (
     token: string,
     repo: GitHubRepoRef | null,
+    authSource: GitHubStatus["authSource"],
   ): Promise<SharedGithubStatusProbeResult> => {
     try {
       const validated = await validateToken(token);
       let repoAccessOk: boolean | null = null;
       let repoAccessError: string | null = null;
-      if (repo && validated.tokenType === "fine-grained") {
+      if (repo && (authSource === "app" || validated.tokenType === "fine-grained")) {
         const probe = await probeRepoAccess(token, repo);
         validated.rateLimit = probe.rateLimit ?? validated.rateLimit;
         if (probe.authFailure) {
@@ -949,7 +970,7 @@ export function createGithubService({
       if (inFlight) return await inFlight;
     }
 
-    const work = computeGithubStatusProbe(token, repo);
+    const work = computeGithubStatusProbe(token, repo, "gh");
     sharedGhAuth.statusInFlight.set(key, work);
     try {
       const result = await work;
@@ -1028,7 +1049,8 @@ export function createGithubService({
       accept: args.accept?.trim() || "application/vnd.github+json",
       authorization: `Bearer ${token}`,
       "content-type": args.body != null ? "application/json" : "text/plain",
-      "user-agent": "ade-desktop"
+      "user-agent": "ade-desktop",
+      "x-github-api-version": GITHUB_REST_API_VERSION,
     };
 
     // For GET requests, send If-None-Match with cached ETag if available.
@@ -1152,12 +1174,16 @@ export function createGithubService({
   const computeConnected = (args: {
     tokenStored: boolean;
     userLogin: string | null;
+    authSource: GitHubStatus["authSource"];
     tokenType: GitHubStatus["tokenType"];
     scopes: string[];
     repo: GitHubRepoRef | null;
     repoAccessOk: boolean | null;
   }): boolean => {
     if (!args.tokenStored || !args.userLogin) return false;
+    if (args.authSource === "app") {
+      return args.repo ? args.repoAccessOk === true : true;
+    }
     if (args.tokenType === "fine-grained") {
       // No repo to probe (e.g. project without a GitHub remote): a fine-grained
       // token that authenticates as a user is the best signal we have.
@@ -1231,6 +1257,7 @@ export function createGithubService({
         const connected = computeConnected({
           tokenStored: true,
           userLogin: cachedStatus.userLogin,
+          authSource: tokenLookup.source,
           tokenType: cachedStatus.tokenType,
           scopes: cachedStatus.scopes,
           repo,
@@ -1253,7 +1280,7 @@ export function createGithubService({
     try {
       const statusProbe = tokenLookup.source === "gh"
         ? await readSharedGithubStatusProbe(token, repo, opts.forceRefresh === true)
-        : await computeGithubStatusProbe(token, repo);
+        : await computeGithubStatusProbe(token, repo, tokenLookup.source);
       if (!statusProbe.ok) {
         probeFailure = statusProbe;
         throw new Error(statusProbe.error);
@@ -1271,6 +1298,7 @@ export function createGithubService({
       const connected = computeConnected({
         tokenStored: true,
         userLogin: validated.userLogin,
+        authSource: tokenLookup.source,
         tokenType: validated.tokenType,
         scopes: validated.scopes,
         repo,

@@ -600,6 +600,39 @@ describe("Drawer PR pill", () => {
     expect(frame).toContain("[#168 ·4/6]");
   });
 
+  it("renders native stack position inside the PR pill", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "stack ui", "ade/stack-ui", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+        width={48}
+        prByLaneId={{
+          "lane-1": {
+            number: 168,
+            state: "open",
+            checksPassed: 4,
+            checksTotal: 6,
+            stack: {
+              id: "stack-18",
+              number: 18,
+              size: 3,
+              position: 2,
+              baseBranch: "main",
+            },
+          },
+        }}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("[#168 ≋2/3 ·4/6]");
+  });
+
   it("does not render closed or merged PR pills", () => {
     for (const state of ["closed", "merged"] as const) {
       const frame = stripAnsi(render(

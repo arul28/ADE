@@ -67,7 +67,6 @@ import {
 import { createPrPollingService } from "../../desktop/src/main/services/prs/prPollingService";
 import { createPrMergeAutoSettlementService } from "../../desktop/src/main/services/prs/prMergeAutoSettlementService";
 import { createPrSummaryService } from "../../desktop/src/main/services/prs/prSummaryService";
-import { createQueueLandingService } from "../../desktop/src/main/services/prs/queueLandingService";
 import { createCtoStateService } from "../../desktop/src/main/services/cto/ctoStateService";
 import { createCtoMemoryService } from "../../desktop/src/main/services/cto/ctoMemoryService";
 import type { createLinearCredentialService } from "../../desktop/src/main/services/cto/linearCredentialService";
@@ -286,7 +285,6 @@ export type AdeRuntime = {
   orchestrationService?: ReturnType<typeof createOrchestrationService> | null;
   prService?: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
-  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   fileService?: ReturnType<typeof createFileService> | null;
   ctoStateService: ReturnType<typeof createCtoStateService>;
   ctoMemoryService?: ReturnType<typeof createCtoMemoryService> | null;
@@ -1328,12 +1326,7 @@ export async function createAdeRuntime(args: {
       })
     : null;
 
-  // PR queue-landing + AI-summary services. These live on dedicated services
-  // (not on prService), so without wiring them here the runtime `pr` domain
-  // omits `listQueueStates`/queue-automation/summary actions and the desktop's
-  // `pr.listQueueStates` call over the local runtime fails with "is not
-  // callable". Mirror the desktop main-process wiring (see main.ts) so the PRs
-  // tab loads against the local runtime.
+  // PR event fan-out and AI-summary services.
   // Fan-out for the push publisher: PR lifecycle/status notifications are
   // bridged here so the publisher never has to poll GitHub itself. Populated
   // by pushPublisherService.start() (declared below), so it stays empty and inert
@@ -1364,27 +1357,6 @@ export async function createAdeRuntime(args: {
       }
     }
   };
-  const queueLandingService = createQueueLandingService({
-    db,
-    logger,
-    projectId,
-    prService: headlessLinearServices.prService,
-    laneService,
-    conflictService,
-    emitEvent: emitPrEvent,
-    onStateChanged: (state) => {
-      const hotPrIds = new Set<string>();
-      const currentEntry = state.entries[state.currentPosition];
-      const nextEntry = state.entries[state.currentPosition + 1];
-      if (state.activePrId) hotPrIds.add(state.activePrId);
-      if (currentEntry?.prId) hotPrIds.add(currentEntry.prId);
-      if (nextEntry?.prId) hotPrIds.add(nextEntry.prId);
-      if (hotPrIds.size > 0) {
-        headlessLinearServices.prService.markHotRefresh(Array.from(hotPrIds));
-      }
-    },
-  });
-  queueLandingService.init();
   const prSummaryService = createPrSummaryService({
     db,
     logger,
@@ -1719,7 +1691,6 @@ export async function createAdeRuntime(args: {
       operationService,
       prService: headlessLinearServices.prService,
       prSummaryService,
-      queueLandingService,
       sessionService,
       sessionDeltaService,
       ptyService,
@@ -1881,7 +1852,6 @@ export async function createAdeRuntime(args: {
     linearCredentialService: headlessLinearServices.linearCredentialService,
     linearOAuthService,
     prService: headlessLinearServices.prService,
-    queueLandingService,
     prSummaryService,
     fileService: headlessLinearServices.fileService,
     linearIssueTracker: headlessLinearServices.linearIssueTracker,

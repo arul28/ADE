@@ -200,6 +200,27 @@ describe("SessionCard orchestration identity", () => {
 });
 
 describe("SessionCard lineage", () => {
+  it("shows the lane's native stack position on a chat row", () => {
+    render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        githubStack={{
+          id: "stack-18",
+          number: 18,
+          size: 3,
+          position: 2,
+          baseBranch: "main",
+        }}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByLabelText("GitHub Stack 2 of 3")).toBeTruthy();
+  });
+
   it("renders the lineage glyph for a spawned session and not for a top-level one", () => {
     const { rerender } = render(
       <SessionCard

@@ -351,6 +351,27 @@ private struct PrUnmappedBannerPreviewScreen: View {
   }
 }
 
+private struct PrGitHubStackCardPreviewScreen: View {
+  var body: some View {
+    VStack {
+      PrOverviewGitHubStackCard(
+        stack: GitHubPrStackMembership(
+          id: "github-stack:966",
+          number: 966,
+          size: 5,
+          position: 4,
+          baseBranch: "main"
+        ),
+        prNumber: 972,
+        onOpenGitHub: {}
+      )
+    }
+    .padding(16)
+    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+    .background(prLiquidGlassBackdrop().ignoresSafeArea())
+  }
+}
+
 #Preview("PR detail · Overview thread") {
   PrDetailOverviewPreviewScreen()
     .preferredColorScheme(.dark)
@@ -363,5 +384,10 @@ private struct PrUnmappedBannerPreviewScreen: View {
 
 #Preview("PR detail · Unmapped banner") {
   PrUnmappedBannerPreviewScreen()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("PR detail · GitHub stack") {
+  PrGitHubStackCardPreviewScreen()
     .preferredColorScheme(.dark)
 }

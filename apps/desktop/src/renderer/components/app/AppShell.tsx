@@ -1531,7 +1531,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                               const search = buildPrsRouteSearch({
                                 activeTab: "normal",
                                 selectedPrId: toast.event.prId,
-                                selectedQueueGroupId: null,
                                 selectedRebaseItemId: null,
                                 detailTab,
                               });

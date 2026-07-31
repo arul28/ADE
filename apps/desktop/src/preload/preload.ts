@@ -312,7 +312,6 @@ import type {
   UpdateIntegrationProposalArgs,
   UpdatePrDescriptionArgs,
   LandPrArgs,
-  LandStackArgs,
   LandResult,
   UpdateBranchArgs,
   UpdateBranchResult,
@@ -483,13 +482,14 @@ import type {
   CancelResolverSessionArgs,
   SuggestResolverTargetArgs,
   SuggestResolverTargetResult,
-  CreateQueuePrsArgs,
-  CreateQueuePrsResult,
+  AddGitHubPrStackPullRequestsArgs,
+  CreateGitHubPrStackArgs,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   SimulateIntegrationArgs,
   IntegrationProposal,
   IntegrationResolutionState,
+  ListGitHubPrStacksArgs,
   ListIntegrationWorkflowsArgs,
   CreateIntegrationLaneForProposalArgs,
   CreateIntegrationLaneForProposalResult,
@@ -508,13 +508,9 @@ import type {
   PrAiResolutionStopArgs,
   PrAiResolutionEventPayload,
   CommitIntegrationArgs,
-  LandStackEnhancedArgs,
-  LandQueueNextArgs,
-  ReorderQueuePrsArgs,
-  ResumeQueueAutomationArgs,
-  StartQueueAutomationArgs,
-  QueueLandingState,
   GitHubPrSnapshot,
+  GitHubPrStack,
+  UnstackGitHubPrStackArgs,
   PrConflictAnalysis,
   PrMergeContext,
   PrHealth,
@@ -8857,10 +8853,6 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("pr", "updateBranch", { args }, () =>
         ipcRenderer.invoke(IPC.prsUpdateBranch, args),
       ),
-    landStack: async (args: LandStackArgs): Promise<LandResult[]> =>
-      callProjectRuntimeActionOr("pr", "landStack", { args }, () =>
-        ipcRenderer.invoke(IPC.prsLandStack, args),
-      ),
     retargetBase: async (args: {
       prId: string;
       baseBranch: string;
@@ -8887,10 +8879,6 @@ contextBridge.exposeInMainWorld("ade", {
       }
       await ipcRenderer.invoke(IPC.prsOpenInGitHub, { prId });
     },
-    createQueue: (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> =>
-      callProjectRuntimeActionOr("pr", "createQueuePrs", { args }, () =>
-        ipcRenderer.invoke(IPC.prsCreateQueue, args),
-      ),
     createIntegration: (
       args: CreateIntegrationPrArgs,
     ): Promise<CreateIntegrationPrResult> =>
@@ -8929,65 +8917,9 @@ contextBridge.exposeInMainWorld("ade", {
         { args },
         () => ipcRenderer.invoke(IPC.prsDeleteProposal, args),
       ),
-    landStackEnhanced: (args: LandStackEnhancedArgs): Promise<LandResult[]> =>
-      callProjectRuntimeActionOr("pr", "landStackEnhanced", { args }, () =>
-        ipcRenderer.invoke(IPC.prsLandStackEnhanced, args),
-      ),
-    landQueueNext: (args: LandQueueNextArgs): Promise<LandResult> =>
-      callProjectRuntimeActionOr("pr", "landQueueNext", { args }, () =>
-        ipcRenderer.invoke(IPC.prsLandQueueNext, args),
-      ),
-    startQueueAutomation: (
-      args: StartQueueAutomationArgs,
-    ): Promise<QueueLandingState> =>
-      callProjectRuntimeActionOr("pr", "startQueueAutomation", { args }, () =>
-        ipcRenderer.invoke(IPC.prsStartQueueAutomation, args),
-      ),
-    pauseQueueAutomation: (
-      queueId: string,
-    ): Promise<QueueLandingState | null> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "pauseQueueAutomation",
-        { arg: queueId },
-        () => ipcRenderer.invoke(IPC.prsPauseQueueAutomation, { queueId }),
-      ),
-    resumeQueueAutomation: (
-      args: ResumeQueueAutomationArgs,
-    ): Promise<QueueLandingState | null> =>
-      callProjectRuntimeActionOr("pr", "resumeQueueAutomation", { args }, () =>
-        ipcRenderer.invoke(IPC.prsResumeQueueAutomation, args),
-      ),
-    cancelQueueAutomation: (
-      queueId: string,
-    ): Promise<QueueLandingState | null> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "cancelQueueAutomation",
-        { arg: queueId },
-        () => ipcRenderer.invoke(IPC.prsCancelQueueAutomation, { queueId }),
-      ),
-    reorderQueuePrs: (args: ReorderQueuePrsArgs): Promise<void> =>
-      callProjectRuntimeActionOr("pr", "reorderQueuePrs", { args }, () =>
-        ipcRenderer.invoke(IPC.prsReorderQueue, args),
-      ),
     getHealth: (prId: string): Promise<PrHealth> =>
       callProjectRuntimeActionOr("pr", "getPrHealth", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetHealth, { prId }),
-      ),
-    getQueueState: (groupId: string): Promise<QueueLandingState | null> =>
-      callProjectRuntimeActionOr("pr", "getQueueState", { arg: groupId }, () =>
-        ipcRenderer.invoke(IPC.prsGetQueueState, { groupId }),
-      ),
-    listQueueStates: (args?: {
-      includeCompleted?: boolean;
-      limit?: number;
-    }): Promise<QueueLandingState[]> =>
-      callProjectRuntimeActionOr(
-        "pr",
-        "listQueueStates",
-        { args: args ?? {} },
-        () => ipcRenderer.invoke(IPC.prsListQueueStates, args ?? {}),
       ),
     getConflictAnalysis: (prId: string): Promise<PrConflictAnalysis | null> =>
       callProjectRuntimeActionOr(
@@ -9025,6 +8957,49 @@ contextBridge.exposeInMainWorld("ade", {
         "getGithubSnapshot",
         { args: args ?? {} },
         () => ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
+      ),
+    listGitHubStacks: (
+      args: ListGitHubPrStacksArgs = {},
+    ): Promise<GitHubPrStack[]> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "listGithubStacks",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsListGitHubStacks, args),
+      ),
+    syncGitHubStacks: (
+      args: ListGitHubPrStacksArgs = {},
+    ): Promise<GitHubPrStack[]> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "syncGithubStacks",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsSyncGitHubStacks, args),
+      ),
+    createGitHubStack: (args: CreateGitHubPrStackArgs): Promise<GitHubPrStack> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "createGithubStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsCreateGitHubStack, args),
+      ),
+    addGitHubStackPullRequests: (
+      args: AddGitHubPrStackPullRequestsArgs,
+    ): Promise<GitHubPrStack> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "addGithubStackPullRequests",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsAddGitHubStackPullRequests, args),
+      ),
+    unstackGitHubStack: (
+      args: UnstackGitHubPrStackArgs,
+    ): Promise<GitHubPrStack | null> =>
+      callProjectRuntimeActionOr(
+        "pr",
+        "unstackGithubStack",
+        { args },
+        () => ipcRenderer.invoke(IPC.prsUnstackGitHubStack, args),
       ),
     listIntegrationWorkflows: (
       args: ListIntegrationWorkflowsArgs = {},

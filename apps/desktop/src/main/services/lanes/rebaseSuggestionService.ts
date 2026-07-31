@@ -4,7 +4,7 @@ import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload, RebaseTargetCommit } from "../../../shared/types";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
-import { fetchQueueTargetTrackingBranches, fetchRemoteTrackingBranch, resolveQueueRebaseOverride } from "../shared/queueRebase";
+import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isRecord, nowIso } from "../shared/utils";
 import { serializeLaneCacheKeyFields } from "./laneCacheKey";
 
@@ -209,23 +209,6 @@ export function createRebaseSuggestionService(args: {
   ): Promise<{ parentLaneId: string; parentHeadSha: string; baseLabel: string | null; groupContext: string | null } | null> => {
     const readRef = options.readRefHeadSha ?? readRefHeadSha;
     const readWorktreeHead = options.getWorktreeHeadSha ?? getHeadSha;
-    const queueOverride = await resolveQueueRebaseOverride({
-      db,
-      projectId,
-      projectRoot,
-      laneId: lane.id,
-    });
-    if (queueOverride) {
-      const parentHeadSha = await readRef(queueOverride.comparisonRef);
-      if (!parentHeadSha) return null;
-      return {
-        parentLaneId: `queue:${queueOverride.queueGroupId}`,
-        parentHeadSha,
-        baseLabel: queueOverride.baseLabel,
-        groupContext: queueOverride.groupContext,
-      };
-    }
-
     if (lane.parentLaneId) {
       const parent = laneById.get(lane.parentLaneId);
       if (parent && shouldLaneTrackParent({ lane, parent })) {
@@ -284,14 +267,6 @@ export function createRebaseSuggestionService(args: {
 
   const computeSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
     const startedAt = Date.now();
-    if (options.refreshRemoteTracking) {
-      await fetchQueueTargetTrackingBranches({
-        db,
-        projectId,
-        projectRoot,
-      });
-    }
-
     const lanes = options.lanes ?? await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const primaryParentHeadByBranch = new Map<string, string | null>();
@@ -596,9 +571,6 @@ export function createRebaseSuggestionService(args: {
     if (!parentId) return;
 
     // Lightweight: only consider direct children; rebase runs can recurse.
-    // Skip lanes that have a queue override — their base is the queue target,
-    // not the direct parent, so writing direct-parent ids here would cause
-    // listSuggestions() to see a base identity change and reset dismissals.
     const lanes = await laneService.list({ includeArchived: false });
     const parent = lanes.find((lane) => lane.id === parentId) ?? null;
     const resolvedParentHeadSha = parent?.laneType === "primary"
@@ -609,13 +581,7 @@ export function createRebaseSuggestionService(args: {
 
     if (directChildren.length === 0) return;
 
-    const children: LaneSummary[] = [];
-    for (const child of directChildren) {
-      const queueOverride = await resolveQueueRebaseOverride({ db, projectId, projectRoot, laneId: child.id });
-      if (!queueOverride) children.push(child);
-    }
-
-    if (children.length === 0) return;
+    const children = directChildren;
 
     const ts = nowIso();
     for (const child of children) {

@@ -28,7 +28,6 @@ function createService(options?: {
   prService?: Record<string, unknown>;
   prSummaryService?: Record<string, unknown>;
   projectRoot?: string;
-  queueLandingService?: Record<string, unknown>;
   ptyService?: Record<string, unknown>;
   sessionDeltaService?: Record<string, unknown>;
   sessionService?: Record<string, unknown>;
@@ -78,7 +77,6 @@ function createService(options?: {
     laneService: options?.laneService ?? {},
     prService: options?.prService ?? {},
     ...(options?.prSummaryService ? { prSummaryService: options.prSummaryService } : {}),
-    ...(options?.queueLandingService ? { queueLandingService: options.queueLandingService } : {}),
     ptyService,
     sessionService,
     ...(options?.sessionDeltaService ? { sessionDeltaService: options.sessionDeltaService } : {}),
@@ -249,8 +247,6 @@ describe("createSyncRemoteCommandService", () => {
       "prs.getAiSummary",
       "prs.getIntegrationResolutionState",
       "prs.listProposals",
-      "prs.getQueueState",
-      "prs.listQueueStates",
       "prs.getMergeContext",
       "prs.getMergeContexts",
       "prs.listWithConflicts",
@@ -261,6 +257,7 @@ describe("createSyncRemoteCommandService", () => {
       "prs.getComments",
       "prs.getFiles",
       "prs.getGitHubSnapshot",
+      "prs.listGithubStacks",
       "prs.getReviewThreads",
       "prs.getActionRuns",
       "prs.getActivity",
@@ -420,6 +417,41 @@ describe("createSyncRemoteCommandService", () => {
       revalidate: false,
       includeStateCounts: true,
     });
+  });
+
+  it("routes GitHub stack reads and mutations with typed repository arguments", async () => {
+    const listGithubStacks = vi.fn().mockReturnValue([]);
+    const createGithubStack = vi.fn().mockResolvedValue({ number: 12 });
+    const unstackGithubStack = vi.fn().mockResolvedValue(null);
+    const { service } = createService({
+      prService: {
+        listGithubStacks,
+        createGithubStack,
+        unstackGithubStack,
+      },
+    });
+
+    await service.execute(makePayload("prs.listGithubStacks", {
+      repoOwner: "arul28",
+      repoName: "ADE",
+    }));
+    await service.execute(makePayload("prs.createGithubStack", {
+      repoOwner: "arul28",
+      repoName: "ADE",
+      pullRequests: [964, 965],
+    }));
+    await service.execute(makePayload("prs.unstackGithubStack", {
+      stackNumber: 12,
+    }));
+
+    expect(listGithubStacks).toHaveBeenCalledWith({
+      repo: { owner: "arul28", name: "ADE" },
+    });
+    expect(createGithubStack).toHaveBeenCalledWith({
+      repo: { owner: "arul28", name: "ADE" },
+      pullRequests: [964, 965],
+    });
+    expect(unstackGithubStack).toHaveBeenCalledWith({ stackNumber: 12 });
   });
 
   it("serves unmapped PR detail through one coordinate-based mobile command", async () => {
@@ -1821,16 +1853,13 @@ describe("createSyncRemoteCommandService", () => {
     }));
   });
 
-  it("delegates PR merge contexts and queue state to the injected services", async () => {
+  it("delegates PR merge contexts to the injected service", async () => {
     const getMergeContexts = vi.fn().mockResolvedValue({ "pr-1": { prId: "pr-1", mergeable: true } });
-    const getQueueStateByGroup = vi.fn().mockReturnValue({ groupId: "queue-1", entries: [] });
     const { service } = createService({
       prService: { getMergeContexts },
-      queueLandingService: { getQueueStateByGroup },
     });
 
     const contexts = await service.execute(makePayload("prs.getMergeContexts", { prIds: ["pr-1"] }));
-    const queueState = await service.execute(makePayload("prs.getQueueState", { groupId: "queue-1" }));
 
     expect(service.getDescriptor("prs.getMergeContexts")).toEqual({
       action: "prs.getMergeContexts",
@@ -1839,8 +1868,6 @@ describe("createSyncRemoteCommandService", () => {
     });
     expect(getMergeContexts).toHaveBeenCalledWith(["pr-1"]);
     expect(contexts).toEqual({ "pr-1": { prId: "pr-1", mergeable: true } });
-    expect(getQueueStateByGroup).toHaveBeenCalledWith("queue-1");
-    expect(queueState).toEqual({ groupId: "queue-1", entries: [] });
   });
 
   it("rejects missing required args for new remote-command parsers", async () => {
@@ -1953,8 +1980,6 @@ describe("createSyncRemoteCommandService", () => {
       "prs.cleanupBranch",
       "prs.listOpenForRepo",
       "prs.listProposals",
-      "prs.getQueueState",
-      "prs.listQueueStates",
       "prs.getMergeContext",
       "prs.getMergeContexts",
       "prs.listWithConflicts",

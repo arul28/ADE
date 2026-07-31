@@ -1,3 +1,5 @@
+import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
+
 export const ADE_RELEASE_REPO = { owner: "arul28", name: "ADE" } as const;
 
 export type AdeLatestRelease = {
@@ -31,6 +33,7 @@ export async function fetchAdeLatestRelease(options?: {
   const headers: Record<string, string> = {
     accept: "application/vnd.github+json",
     "user-agent": "ade-desktop",
+    "x-github-api-version": GITHUB_REST_API_VERSION,
   };
   const token = options?.token?.trim();
   if (token) headers.authorization = `Bearer ${token}`;

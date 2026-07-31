@@ -11,8 +11,6 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
-  CreateQueuePrsArgs,
-  CreateQueuePrsResult,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
   CreateIntegrationLaneForProposalArgs,
@@ -48,9 +46,6 @@ import type {
   PrReviewDecision,
   UpdateBranchArgs,
   UpdateBranchResult,
-  LandQueueNextArgs,
-  LandStackArgs,
-  LandStackEnhancedArgs,
   LaneSummary,
   LaneWorktreeLockOwnerKind,
   ListIntegrationWorkflowsArgs,
@@ -83,11 +78,6 @@ import type {
   PrStackMember,
   PrStackMemberRole,
   PrWorkflowCard,
-  QueueLandingEntry,
-  QueueLandingState,
-  QueueState,
-  QueueWaitReason,
-  ReorderQueuePrsArgs,
   RecheckIntegrationStepArgs,
   RecheckIntegrationStepResult,
   SimulateIntegrationArgs,
@@ -108,10 +98,16 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
+  AddGitHubPrStackPullRequestsArgs,
+  CreateGitHubPrStackArgs,
   GitHubPrListItem,
+  GitHubPrStack,
+  GitHubPrStackMembership,
   GitHubPrSnapshot,
   GitHubWebhookIngestArgs,
   GitHubWebhookIngestResult,
+  ListGitHubPrStacksArgs,
+  UnstackGitHubPrStackArgs,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -163,12 +159,13 @@ import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
 import { deletePullRequestRowsByIds } from "./pullRequestRowCleanup";
+import { createGithubStackStore } from "./githubStackStore";
 import { extractFirstJsonObject } from "../ai/utils";
 import { buildIntegrationPreflight } from "./integrationPlanning";
 import { createWorkflowGraph, type WorkflowFileSource } from "./workflowGraph";
 import { parseCheckLog } from "./checkLogParser";
 import { hasMergeConflictMarkers, parseGitStatusPorcelain } from "./integrationValidation";
-import { fetchRemoteTrackingBranch } from "../shared/queueRebase";
+import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { asNumber, asString, getErrorMessage, isRecord, normalizeBranchName, nowIso, resolvePathWithinRoot } from "../shared/utils";
 import { branchNameFromLaneRef, resolveStableLaneBaseBranch } from "../../../shared/laneBaseResolution";
 import { normalizePrCreationStrategy, resolvePrRebaseMode } from "../../../shared/prStrategy";
@@ -329,7 +326,6 @@ type IntegrationProposalRow = {
 
 type PrGroupLookupRow = {
   group_id: string;
-  group_type: "queue" | "integration";
 };
 
 type PrGroupMemberLookupRow = {
@@ -2001,6 +1997,7 @@ export function createPrService({
       state,
       checksPassed: checks.filter((check) => check.status === "completed" && check.conclusion === "success").length,
       checksTotal: checks.length,
+      stack: pr.stack ?? null,
     };
   };
 
@@ -4768,43 +4765,94 @@ export function createPrService({
     canBypass: boolean;
     headSha: string | null;
   } | null> => {
-    const query = `query($owner:String!,$name:String!,$number:Int!){
+    type MergeStateGraphqlData = {
+      repository?: {
+        viewerPermission?: unknown;
+        pullRequest?: {
+          mergeable?: unknown;
+          mergeStateStatus?: unknown;
+          reviewDecision?: unknown;
+          headRefOid?: unknown;
+          baseRefName?: unknown;
+          baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+          stack?: { baseRefName?: unknown } | null;
+          latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
+        } | null;
+      } | null;
+    };
+    const query = (includeStack: boolean) => `query($owner:String!,$name:String!,$number:Int!){
   repository(owner:$owner,name:$name){
     viewerPermission
     pullRequest(number:$number){
-      mergeable mergeStateStatus reviewDecision headRefOid
+      mergeable mergeStateStatus reviewDecision headRefOid baseRefName
       baseRef { branchProtectionRule { requiredApprovingReviewCount } }
+      ${includeStack ? "stack { baseRefName }" : ""}
       latestOpinionatedReviews(first:100){ nodes { state } }
     }
   }
 }`;
     try {
-      const data = await graphqlRequest<{
-        repository?: {
-          viewerPermission?: unknown;
-          pullRequest?: {
-            mergeable?: unknown;
-            mergeStateStatus?: unknown;
-            reviewDecision?: unknown;
-            headRefOid?: unknown;
-            baseRef?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
-            latestOpinionatedReviews?: { nodes?: Array<{ state?: unknown } | null> | null } | null;
-          } | null;
-        } | null;
-      }>(
-        query,
-        { owner: repo.owner, name: repo.name, number: prNumber },
-        // `mergeStateStatus` is part of GitHub's `merge-info-preview` schema
-        // preview and errors ("field requires preview header") without this Accept.
-        { accept: "application/vnd.github.merge-info-preview+json" },
-      );
+      let data: MergeStateGraphqlData;
+      try {
+        data = await graphqlRequest<MergeStateGraphqlData>(
+          query(true),
+          { owner: repo.owner, name: repo.name, number: prNumber },
+          { accept: "application/vnd.github.merge-info-preview+json" },
+        );
+      } catch (error) {
+        logger.warn("prs.computeStatus.stack_graphql_fallback", {
+          repo: `${repo.owner}/${repo.name}`,
+          prNumber,
+          error: getErrorMessage(error),
+        });
+        data = await graphqlRequest<MergeStateGraphqlData>(
+          query(false),
+          { owner: repo.owner, name: repo.name, number: prNumber },
+          { accept: "application/vnd.github.merge-info-preview+json" },
+        );
+      }
 
       const repository = data?.repository ?? null;
       const pull = repository?.pullRequest ?? null;
       if (!pull) return null;
 
-      const requiredRaw = pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount;
-      const requiredApprovals = Number.isFinite(Number(requiredRaw)) ? Number(requiredRaw) : null;
+      const directBase = asString(pull.baseRefName).trim();
+      const stackBase = asString(pull.stack?.baseRefName).trim();
+      let requiredRaw = pull.baseRef?.branchProtectionRule?.requiredApprovingReviewCount;
+      if (stackBase && stackBase !== directBase) {
+        try {
+          const stackBaseData = await graphqlRequest<{
+            repository?: {
+              ref?: { branchProtectionRule?: { requiredApprovingReviewCount?: unknown } | null } | null;
+            } | null;
+          }>(
+            `query($owner:String!,$name:String!,$qualifiedName:String!){
+  repository(owner:$owner,name:$name){
+    ref(qualifiedName:$qualifiedName){
+      branchProtectionRule { requiredApprovingReviewCount }
+    }
+  }
+}`,
+            {
+              owner: repo.owner,
+              name: repo.name,
+              qualifiedName: `refs/heads/${stackBase}`,
+            },
+          );
+          requiredRaw = stackBaseData.repository?.ref?.branchProtectionRule
+            ?.requiredApprovingReviewCount;
+        } catch (error) {
+          requiredRaw = null;
+          logger.warn("prs.computeStatus.stack_base_protection_failed", {
+            repo: `${repo.owner}/${repo.name}`,
+            prNumber,
+            error: getErrorMessage(error),
+          });
+        }
+      }
+      const requiredApprovals = requiredRaw != null && Number.isFinite(Number(requiredRaw))
+        ? Number(requiredRaw)
+        : null;
       const reviewNodes = Array.isArray(pull.latestOpinionatedReviews?.nodes)
         ? pull.latestOpinionatedReviews!.nodes!
         : [];
@@ -6728,6 +6776,16 @@ export function createPrService({
         error: userMsg
       };
     };
+    const githubStackNumber = githubStackStore.knownStackNumberForPr(
+      repo,
+      Number(row.github_pr_number),
+    );
+    if (githubStackNumber) {
+      return finishFailure(
+        "github_stack_requires_github_merge",
+        `PR #${row.github_pr_number} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
+      );
+    }
 
     const formatMergeError = (rawMsg: string): string => {
       if (rawMsg.includes("Resource not accessible by personal access token")) {
@@ -6997,160 +7055,6 @@ export function createPrService({
     }
   };
 
-  const landStack = async (args: LandStackArgs): Promise<LandResult[]> => {
-    const chain = await laneService.getStackChain(args.rootLaneId);
-    if (!chain.length) return [];
-
-    // Root base branch is derived from the root lane PR.
-    const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
-    if (!rootRow) throw new Error("Root lane has no PR linked.");
-    const baseTarget = rootRow.base_branch;
-
-    const results: LandResult[] = [];
-    for (const item of chain) {
-      const row = getActiveRowForCurrentLaneBranch(item.laneId);
-      if (!row) {
-        results.push({
-          prId: "",
-          prNumber: 0,
-          success: false,
-          mergeCommitSha: null,
-          branchDeleted: false,
-          laneArchived: false,
-          error: `Lane '${item.laneName}' has no PR linked.`
-        });
-        break;
-      }
-
-      if (row.base_branch !== baseTarget) {
-        await retargetBase(row.id, baseTarget).catch((error) => {
-          logger.warn("prs.retarget_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
-        });
-      }
-
-      const landed = await land({ prId: row.id, method: args.method });
-      results.push(landed);
-      if (!landed.success) break;
-    }
-
-    return results;
-  };
-
-  const createQueuePrs = async (args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
-    const groupId = randomUUID();
-    const now = nowIso();
-    const prs: PrSummary[] = [];
-    const errors: Array<{ laneId: string; error: string }> = [];
-
-    const lanes = await laneService.list({ includeArchived: false });
-    assertDirtyWorktreesAllowed({
-      lanes,
-      laneIds: args.laneIds,
-      allowDirtyWorktree: args.allowDirtyWorktree
-    });
-    const laneMap = new Map(lanes.map((lane) => [lane.id, lane]));
-    const queueLanesReadyToCreate: Array<{ laneId: string; headBranch: string }> = [];
-
-    for (const laneId of args.laneIds) {
-      const lane = laneMap.get(laneId);
-      if (!lane) {
-        errors.push({ laneId, error: `Lane not found: ${laneId}` });
-        continue;
-      }
-      const headBranch = branchNameFromRef(lane.branchRef);
-      if (!headBranch) {
-        errors.push({ laneId, error: `Lane "${lane.name}" has no branch checked out. Check out a branch before creating a PR.` });
-        continue;
-      }
-      try {
-        await pushLaneBranchForPr(lane, headBranch);
-        queueLanesReadyToCreate.push({ laneId, headBranch });
-      } catch (error) {
-        errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
-      }
-    }
-
-    if (errors.length > 0) {
-      return { groupId, prs, errors };
-    }
-
-    db.run(
-      `insert into pr_groups(id, project_id, group_type, name, auto_rebase, ci_gating, target_branch, created_at) values (?, ?, 'queue', ?, ?, ?, ?, ?)`,
-      [groupId, projectId, args.queueName ?? null, args.autoRebase ? 1 : 0, args.ciGating ? 1 : 0, args.targetBranch, now]
-    );
-    const queueHeadBranchByLaneId = new Map(queueLanesReadyToCreate.map((entry) => [entry.laneId, entry.headBranch] as const));
-
-    // Graphite-style chain bases: PR_0 targets args.targetBranch; PR_N targets
-    // PR_(N-1)'s branch so each PR's GitHub diff shows only its own changes.
-    // We honor the caller-provided lane order. If a pair isn't actually parent->child
-    // we still chain them (the queue is a single review unit) but warn since the
-    // resulting diffs won't be clean per-PR.
-    let previousBranch: string | null = null;
-    let previousLaneId: string | null = null;
-    for (let i = 0; i < args.laneIds.length; i++) {
-      const laneId = args.laneIds[i]!;
-      const lane = laneMap.get(laneId);
-      if (!lane) {
-        errors.push({ laneId, error: `Lane not found: ${laneId}` });
-        // Reset chain pointers so the next PR doesn't silently chain across the
-        // missing lane and end up with a polluted diff against the wrong base.
-        previousBranch = null;
-        previousLaneId = null;
-        continue;
-      }
-
-      const baseBranch = previousBranch ?? args.targetBranch;
-      const headBranch = queueHeadBranchByLaneId.get(laneId);
-      if (!headBranch) {
-        errors.push({ laneId, error: `Lane "${lane.name}" was not pushed before queue PR creation.` });
-        previousBranch = null;
-        previousLaneId = null;
-        continue;
-      }
-      if (previousLaneId && lane.parentLaneId !== previousLaneId) {
-        logger.warn("prs.queue_chain_unrelated_lanes", {
-          groupId,
-          position: i,
-          laneId,
-          previousLaneId,
-          baseBranch
-        });
-      }
-
-      const title = args.titles?.[laneId] ?? lane.name;
-      try {
-        const pr = await createFromLane({
-          laneId,
-          title,
-          body: "",
-          draft: Boolean(args.draft),
-          baseBranch,
-          allowDirtyWorktree: true,
-          skipBranchPush: true
-        });
-        prs.push(pr);
-
-        const memberId = randomUUID();
-        db.run(
-          `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role) values (?, ?, ?, ?, ?, 'source')`,
-          [memberId, groupId, pr.id, laneId, i]
-        );
-
-        previousBranch = headBranch;
-        previousLaneId = laneId;
-      } catch (error) {
-        errors.push({ laneId, error: error instanceof Error ? error.message : String(error) });
-        // Same reasoning as the missing-lane branch: don't chain the next PR
-        // onto a lane whose PR creation just failed.
-        previousBranch = null;
-        previousLaneId = null;
-        continue;
-      }
-    }
-
-    return { groupId, prs, errors };
-  };
-
   const createIntegrationPr = async (args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     if (!args.sourceLaneIds.length) throw new Error("At least one source lane is required");
     const integrationLaneName = args.integrationLaneName.trim();
@@ -7406,72 +7310,6 @@ export function createPrService({
     }
   };
 
-  const landStackEnhanced = async (args: LandStackEnhancedArgs): Promise<LandResult[]> => {
-    if (args.mode === "sequential") {
-      return await landStack({ rootLaneId: args.rootLaneId, method: args.method });
-    }
-
-    // all-at-once: land all PRs without waiting for retargeting.
-    const chain = await laneService.getStackChain(args.rootLaneId);
-    if (!chain.length) return [];
-
-    const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
-    if (!rootRow) throw new Error("Root lane has no PR linked.");
-    const baseTarget = rootRow.base_branch;
-
-    // Use an indexed array so results stay in chain order regardless of
-    // whether individual items resolve synchronously (missing PR) or
-    // asynchronously (actual land call).
-    const results: LandResult[] = new Array(chain.length);
-    const landEntries: Array<{ index: number; promise: Promise<LandResult> }> = [];
-
-    for (let i = 0; i < chain.length; i++) {
-      const item = chain[i]!;
-      const row = getActiveRowForCurrentLaneBranch(item.laneId);
-      if (!row) {
-        results[i] = {
-          prId: "",
-          prNumber: 0,
-          success: false,
-          mergeCommitSha: null,
-          branchDeleted: false,
-          laneArchived: false,
-          error: `Lane '${item.laneName}' has no PR linked.`
-        };
-        continue;
-      }
-
-      if (row.base_branch !== baseTarget) {
-        await retargetBase(row.id, baseTarget).catch((error) => {
-          logger.warn("prs.retarget_failed", { prId: row.id, error: error instanceof Error ? error.message : String(error) });
-        });
-      }
-
-      landEntries.push({ index: i, promise: land({ prId: row.id, method: args.method }) });
-    }
-
-    const settled = await Promise.allSettled(landEntries.map((entry) => entry.promise));
-    for (let j = 0; j < settled.length; j++) {
-      const result = settled[j]!;
-      const idx = landEntries[j]!.index;
-      if (result.status === "fulfilled") {
-        results[idx] = result.value;
-      } else {
-        results[idx] = {
-          prId: "",
-          prNumber: 0,
-          success: false,
-          mergeCommitSha: null,
-          branchDeleted: false,
-          laneArchived: false,
-          error: result.reason instanceof Error ? result.reason.message : String(result.reason)
-        };
-      }
-    }
-
-    return results;
-  };
-
   const getConflictAnalysis = async (prId: string): Promise<PrConflictAnalysis> => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
@@ -7581,17 +7419,15 @@ export function createPrService({
     }
 
     const members = membersByGroupId.get(group.group_id) ?? [];
-    const groupType = group.group_type === "integration" ? "integration" : "queue";
     const sourceLaneIds = members
       .filter((member) => member.role === "source")
       .map((member) => member.laneId);
 
-    const integrationLaneId =
-      groupType === "integration" ? (members.find((member) => member.role === "integration")?.laneId ?? null) : null;
+    const integrationLaneId = members.find((member) => member.role === "integration")?.laneId ?? null;
 
     return {
       ...baseMergeContext,
-      groupType,
+      groupType: "integration",
       sourceLaneIds: sourceLaneIds.length > 0 ? sourceLaneIds : [fallbackSourceLaneId],
       integrationLaneId,
       members: members.length > 0 ? members : fallbackMembers
@@ -7606,11 +7442,10 @@ export function createPrService({
     const group = db.get<PrGroupLookupRow>(
       `
         select
-          g.id as group_id,
-          g.group_type as group_type
+          g.id as group_id
         from pr_group_members m
         join pr_groups g on g.id = m.group_id
-        where g.project_id = ? and m.pr_id = ?
+        where g.project_id = ? and g.group_type = 'integration' and m.pr_id = ?
         order by g.created_at desc
         limit 1
       `,
@@ -7690,16 +7525,15 @@ export function createPrService({
       const rowPlaceholders = chunk.map(() => "?").join(", ");
       groupRows.push(...db.all<PrGroupLookupRow & { pr_id: string }>(
         `
-          select pr_id, group_id, group_type
+          select pr_id, group_id
           from (
             select
               m.pr_id as pr_id,
               g.id as group_id,
-              g.group_type as group_type,
               row_number() over (partition by m.pr_id order by g.created_at desc) as group_rank
             from pr_group_members m
             join pr_groups g on g.id = m.group_id
-            where g.project_id = ? and m.pr_id in (${rowPlaceholders})
+            where g.project_id = ? and g.group_type = 'integration' and m.pr_id in (${rowPlaceholders})
           )
           where group_rank = 1
         `,
@@ -8539,7 +8373,10 @@ export function createPrService({
     includeStateCounts = false,
   ): void => {
     if (snapshot.repo) activeGithubRepo = snapshot.repo;
-    cachedGithubSnapshot = snapshot;
+    cachedGithubSnapshot = {
+      ...snapshot,
+      stacks: snapshot.repo ? githubStackStore.list(snapshot.repo) : [],
+    };
     cachedGithubSnapshotAt = capturedAt;
     cachedGithubSnapshotIncludesClosed = includeExternalClosed;
     cachedGithubSnapshotHistoryPageLimit = includeExternalClosed ? historyPageLimit : 0;
@@ -8557,6 +8394,12 @@ export function createPrService({
     }
     if (githubStatus.tokenDecryptionFailed) {
       return "GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.";
+    }
+    if (githubStatus.authFailure?.kind === "rate_limited") {
+      const retry = githubStatus.authFailure.retryAt
+        ? ` Try again after ${githubStatus.authFailure.retryAt}.`
+        : " Try again after GitHub resets the API limit.";
+      return `GitHub API rate limit reached.${retry}`;
     }
     if (githubStatus.repo && githubStatus.repoAccessError) {
       return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
@@ -8584,8 +8427,9 @@ export function createPrService({
     laneById: Map<string, LaneSummary>;
     pullRequestRows: PullRequestRow[];
     linkedPrByRepoKey: Map<string, PullRequestRow>;
-    groupByPrId: Map<string, { pr_id: string; group_id: string; group_type: "queue" | "integration" }>;
+    groupByPrId: Map<string, { pr_id: string; group_id: string }>;
     workflowByPrId: Map<string, IntegrationProposalRow>;
+    stackByPrKey: Map<string, GitHubPrStackMembership>;
   };
 
   const loadGithubSnapshotMetadata = async (): Promise<GithubSnapshotMetadata> => {
@@ -8595,11 +8439,11 @@ export function createPrService({
     const linkedPrByRepoKey = new Map(
       pullRequestRows.map((row) => [repoPrKey(row.repo_owner, row.repo_name, Number(row.github_pr_number)), row] as const)
     );
-    const groupRows = db.all<{ pr_id: string; group_id: string; group_type: "queue" | "integration" }>(
-      `select gm.pr_id, gm.group_id, g.group_type
+    const groupRows = db.all<{ pr_id: string; group_id: string }>(
+      `select gm.pr_id, gm.group_id
        from pr_group_members gm
        join pr_groups g on g.id = gm.group_id
-       where g.project_id = ?`,
+       where g.project_id = ? and g.group_type = 'integration'`,
       [projectId]
     );
     const groupByPrId = new Map(groupRows.map((row) => [row.pr_id, row] as const));
@@ -8617,19 +8461,53 @@ export function createPrService({
       linkedPrByRepoKey,
       groupByPrId,
       workflowByPrId,
+      stackByPrKey: githubStackStore.membershipsByPr(activeGithubRepo),
     };
   };
 
   const deriveGithubSnapshotAdeKind = (
     workflow: IntegrationProposalRow | null,
-    group: { group_type: string } | null | undefined,
+    group: { group_id: string } | null | undefined,
     linked: PullRequestRow | null,
   ): GitHubPrListItem["adeKind"] => {
     if (workflow) return "integration";
-    if (group?.group_type === "queue") return "queue";
-    if (group?.group_type === "integration") return "integration";
+    if (group) return "integration";
     if (linked) return "single";
     return null;
+  };
+
+  const githubStackStore = createGithubStackStore({
+    db,
+    projectId,
+    githubService,
+    logger,
+    onSnapshotChanged: invalidateGithubSnapshotCache,
+    onReconciled: () => emitPrsUpdated(),
+  });
+  const withGithubStackMemberships = (summaries: PrSummary[]): PrSummary[] => {
+    if (summaries.length === 0) return summaries;
+    const memberships = githubStackStore.membershipsByPr();
+    return summaries.map((summary) => ({
+      ...summary,
+      stack: memberships.get(
+        repoPrKey(summary.repoOwner, summary.repoName, summary.githubPrNumber),
+      ) ?? null,
+    }));
+  };
+  const withGithubStackMembership = (summary: PrSummary | null): PrSummary | null =>
+    summary ? withGithubStackMemberships([summary])[0] ?? summary : null;
+  const resolveGithubStackRepo = async (
+    requestedRepo?: GitHubRepoRef | null,
+  ): Promise<GitHubRepoRef> => {
+    if (requestedRepo?.owner.trim() && requestedRepo.name.trim()) {
+      return {
+        owner: requestedRepo.owner.trim(),
+        name: requestedRepo.name.trim(),
+      };
+    }
+    const status = await requireGithubSnapshotAuth();
+    if (!status.repo) throw new Error("No GitHub repository is configured for this project.");
+    return status.repo;
   };
 
   const gitHubItemFromProjection = (
@@ -8673,6 +8551,7 @@ export function createPrService({
       labels: parseProjectionLabels(row.labels_json),
       isBot: Number(row.is_bot ?? 0) !== 0,
       commentCount: Number(row.comment_count ?? 0),
+      stack: metadata.stackByPrKey.get(repoPrKey(row.repo_owner, row.repo_name, githubPrNumber)) ?? null,
     };
   };
 
@@ -8725,6 +8604,9 @@ export function createPrService({
         : [],
       isBot: asString(rawPr?.user?.type).toLowerCase() === "bot",
       commentCount: Number(rawPr?.comments) || 0,
+      stack: githubStackStore.parseMembership(rawPr?.stack)
+        ?? metadata?.stackByPrKey.get(repoPrKey(repoOwner, repoName, githubPrNumber))
+        ?? null,
     };
   };
 
@@ -8835,6 +8717,14 @@ export function createPrService({
       metadata.pullRequestRows,
       { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
     );
+    const observedStackNumbers = new Set<number>();
+    for (const rawPull of repoPullRequestsRaw) {
+      const membership = githubStackStore.parseMembership(rawPull?.stack);
+      if (membership) observedStackNumbers.add(membership.number);
+    }
+    for (const stackNumber of observedStackNumbers) {
+      githubStackStore.scheduleReconcile(repo, stackNumber);
+    }
     upsertGithubPrProjectionsFromRawPulls(repo, repoPullRequestsRaw);
     // Trigger #2: strict same-repo branch auto-map (emits an Undo-able toast)
     // runs first so the user-facing path takes precedence. Best-effort — never
@@ -8888,12 +8778,25 @@ export function createPrService({
     if (cachedGithubSnapshot && !githubSnapshotMatchesStatus(cachedGithubSnapshot, githubStatus)) {
       invalidateGithubSnapshotCache();
     }
+    const forceRequestEpoch = githubSnapshotCacheEpoch;
+    if (force && githubStatus.repo) {
+      await githubStackStore.reconcileRepository(
+        githubStatus.repo,
+        { notifySnapshotChanged: false },
+      ).catch((error) => {
+        logger.warn("prs.github_stack_repository_reconcile_failed", {
+          repo: `${githubStatus.repo!.owner}/${githubStatus.repo!.name}`,
+          error: getErrorMessage(error),
+        });
+      });
+    }
 
     const startSnapshotRequest = (
       precheckedGithubStatus: GitHubStatus,
       requestOptions: GithubSnapshotOptions,
+      requestEpochOverride?: number,
     ): Promise<GitHubPrSnapshot> => {
-      const requestEpoch = githubSnapshotCacheEpoch;
+      const requestEpoch = requestEpochOverride ?? githubSnapshotCacheEpoch;
       const includeExternalClosed = requestOptions.includeExternalClosed === true;
       const historyPageLimit = normalizeGithubHistoryPageLimit(requestOptions);
       const includeStateCounts = requestOptions.includeStateCounts === true
@@ -8922,7 +8825,7 @@ export function createPrService({
               hasExactStateCounts,
             );
           }
-          return snapshot;
+          return canPublishSnapshot ? cachedGithubSnapshot ?? snapshot : snapshot;
         })
         .finally(() => {
           if (githubSnapshotInFlight === inFlight) {
@@ -8995,7 +8898,7 @@ export function createPrService({
             });
           });
         }
-        return projectedSnapshot;
+        return cachedGithubSnapshot ?? projectedSnapshot;
       }
     }
     const compatibleInFlight = githubSnapshotInFlight;
@@ -9003,14 +8906,18 @@ export function createPrService({
       return compatibleInFlight.request;
     }
 
-    return startSnapshotRequest(githubStatus, options);
+    return startSnapshotRequest(
+      githubStatus,
+      options,
+      force ? forceRequestEpoch : undefined,
+    );
   };
 
   const emitPrsUpdated = (): void => {
     emitPrEvent?.({
       type: "prs-updated",
       polledAt: nowIso(),
-      prs: listRows().map(rowToSummary),
+      prs: withGithubStackMemberships(listRows().map(rowToSummary)),
     });
   };
 
@@ -9199,6 +9106,52 @@ export function createPrService({
         pruneGithubPrProjectionsForRepo({ owner: projection.repo_owner, name: projection.repo_name });
         linkedPrIds = applyProjectionToLinkedPrRows(projection);
         const repo = { owner: projection.repo_owner, name: projection.repo_name };
+        const webhookMembership = githubStackStore.parseMembership(
+          isRecord(rawPull?.stack) ? rawPull.stack : payload.stack,
+        );
+        const previousStackNumber = githubStackStore.knownStackNumberForPr(
+          repo,
+          Number(projection.github_pr_number),
+        );
+        const stackNumber = webhookMembership?.number ?? previousStackNumber;
+        if (
+          webhookMembership
+          && previousStackNumber
+          && previousStackNumber !== webhookMembership.number
+        ) {
+          await githubStackStore.reconcileRepository(repo).catch((repositoryError) => {
+            logger.warn("prs.github_webhook_stack_reconcile_failed", {
+              eventName,
+              deliveryId,
+              repoOwner: repo.owner,
+              repoName: repo.name,
+              githubPrNumber: projection.github_pr_number,
+              previousStackNumber,
+              stackNumber: webhookMembership.number,
+              repositoryError: getErrorMessage(repositoryError),
+            });
+          });
+        } else if (stackNumber) {
+          try {
+            await githubStackStore.reconcile(repo, stackNumber);
+          } catch (stackError) {
+            // A dissolved stack returns 404 from the item endpoint. The
+            // authoritative repository list distinguishes that from a
+            // transient failure and removes stale local membership atomically.
+            await githubStackStore.reconcileRepository(repo).catch((repositoryError) => {
+              logger.warn("prs.github_webhook_stack_reconcile_failed", {
+                eventName,
+                deliveryId,
+                repoOwner: repo.owner,
+                repoName: repo.name,
+                githubPrNumber: projection.github_pr_number,
+                stackNumber,
+                stackError: getErrorMessage(stackError),
+                repositoryError: getErrorMessage(repositoryError),
+              });
+            });
+          }
+        }
         if (linkedPrIds.length === 0) {
           const lanes = await laneService.list({ includeArchived: true, includeStatus: false });
           await autoMapRawPullsByBranch([rawPull], repo, lanes)
@@ -9318,34 +9271,6 @@ export function createPrService({
     }
   };
 
-  const landQueueNext = async (args: LandQueueNextArgs): Promise<LandResult> => {
-    // Find the group members sorted by position
-    const members = db.all<PrGroupMemberLookupRow>(
-      `select gm.group_id, gm.pr_id, gm.lane_id, gm.position, gm.role,
-              l.name as lane_name, pr.github_pr_number as pr_number
-       from pr_group_members gm
-       left join lanes l on l.id = gm.lane_id
-       left join pull_requests pr on pr.id = gm.pr_id
-       where gm.group_id = ?
-       order by gm.position asc`,
-      [args.groupId]
-    );
-
-    if (!members.length) throw new Error(`No members in group: ${args.groupId}`);
-
-    // Find first open PR in the queue
-    for (const member of members) {
-      const row = getRow(member.pr_id);
-      if (!row) continue;
-      const state = (row.state ?? "").toLowerCase();
-      if (state === "open" || state === "draft") {
-        return await land({ prId: member.pr_id, method: args.method, archiveLane: args.archiveLane });
-      }
-    }
-
-    throw new Error("No open PRs remaining in queue");
-  };
-
   const getPrHealth = async (prId: string): Promise<PrHealth> => {
     const row = getRow(prId);
     if (!row) throw new Error(`PR not found: ${prId}`);
@@ -9372,54 +9297,6 @@ export function createPrService({
     };
   };
 
-  const getQueueState = async (groupId: string): Promise<QueueLandingState | null> => {
-    const row = db.get<{
-      id: string; group_id: string; state: string;
-      entries_json: string; current_position: number;
-      started_at: string; completed_at: string | null;
-      config_json?: string | null;
-      active_pr_id?: string | null;
-      active_resolver_run_id?: string | null;
-      last_error?: string | null;
-      wait_reason?: string | null;
-      updated_at?: string | null;
-    }>(
-      `select * from queue_landing_state where group_id = ? order by started_at desc limit 1`,
-      [groupId]
-    );
-    if (!row) return null;
-    return {
-      queueId: String(row.id),
-      groupId: String(row.group_id),
-      groupName: null,
-      targetBranch: null,
-      state: String(row.state) as QueueLandingState["state"],
-      entries: JSON.parse(String(row.entries_json)),
-      currentPosition: Number(row.current_position),
-      activePrId: row.active_pr_id ? String(row.active_pr_id) : null,
-      activeResolverRunId: row.active_resolver_run_id ? String(row.active_resolver_run_id) : null,
-      lastError: row.last_error ? String(row.last_error) : null,
-      waitReason: row.wait_reason ? String(row.wait_reason) as QueueLandingState["waitReason"] : null,
-      config: row.config_json ? JSON.parse(String(row.config_json)) : {
-        method: "squash",
-        archiveLane: false,
-        autoResolve: false,
-        ciGating: true,
-        resolverProvider: null,
-        resolverModel: null,
-        reasoningEffort: null,
-        permissionMode: "guarded_edit",
-        confidenceThreshold: null,
-        originSurface: "manual",
-        originRunId: null,
-        originLabel: null,
-      },
-      startedAt: String(row.started_at),
-      completedAt: row.completed_at ? String(row.completed_at) : null,
-      updatedAt: row.updated_at ? String(row.updated_at) : String(row.started_at),
-    };
-  };
-
   const listGroupPrs = async (groupId: string): Promise<PrSummary[]> => {
     const members = db.all<PrGroupMemberLookupRow>(
       `select gm.group_id, gm.pr_id, gm.lane_id, gm.position, gm.role,
@@ -9435,66 +9312,6 @@ export function createPrService({
       .map((m) => getRow(m.pr_id))
       .filter((r): r is PullRequestRow => r != null)
       .map(rowToSummary);
-  };
-
-  const reorderQueuePrs = async (args: ReorderQueuePrsArgs): Promise<void> => {
-    const groupRow = db.get<{ id: string; group_type: string }>(
-      `select id, group_type
-       from pr_groups
-       where id = ? and project_id = ?`,
-      [args.groupId, projectId],
-    );
-    if (!groupRow || groupRow.group_type !== "queue") {
-      throw new Error("Queue group not found.");
-    }
-
-    const queueState = db.get<{ state: string }>(
-      `select state
-       from queue_landing_state
-       where group_id = ? and project_id = ?
-       order by started_at desc
-       limit 1`,
-      [args.groupId, projectId],
-    );
-    if (queueState && (queueState.state === "landing" || queueState.state === "paused")) {
-      throw new Error("Queue order cannot change while landing is active or paused.");
-    }
-
-    const members = db.all<{ pr_id: string; position: number }>(
-      `select pr_id, position
-       from pr_group_members
-       where group_id = ? and role = 'source'
-       order by position asc`,
-      [args.groupId],
-    );
-    if (members.length < 2) return;
-
-    const requestedPrIds = args.prIds.map((value) => value.trim()).filter(Boolean);
-    const existingPrIds = members.map((member) => String(member.pr_id));
-    if (
-      requestedPrIds.length !== existingPrIds.length
-      || new Set(requestedPrIds).size !== requestedPrIds.length
-      || requestedPrIds.some((prId) => !existingPrIds.includes(prId))
-    ) {
-      throw new Error("Queue reorder request does not match the current queue members.");
-    }
-
-    const basePosition = Math.min(...members.map((member) => Number(member.position) || 0));
-    db.run("BEGIN");
-    try {
-      requestedPrIds.forEach((prId, index) => {
-        db.run(
-          `update pr_group_members
-           set position = ?
-           where group_id = ? and pr_id = ? and role = 'source'`,
-          [basePosition + index, args.groupId, prId],
-        );
-      });
-      db.run("COMMIT");
-    } catch (error) {
-      db.run("ROLLBACK");
-      throw error;
-    }
   };
 
   const buildConflictAnalysesForRows = async (
@@ -10254,12 +10071,14 @@ export function createPrService({
     const normalizedLaneId = String(laneId ?? "").trim();
     if (!normalizedLaneId) return null;
     try {
-      const existing = getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      const existing = withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
+      );
       if (existing && !existing.unmapped) {
         // Mapped row: refresh by id (heals merged/closed via fetchPr), then
         // return the fresh row summary so the caller sees the new state.
         const refreshed = await refreshPrIds([existing.id]);
-        return (
+        return withGithubStackMembership(
           refreshed.find((pr) => pr.id === existing.id)
           ?? getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary
           ?? null
@@ -10270,7 +10089,9 @@ export function createPrService({
       // force: true so this manual ⟳ does a live fetch (+ runs the backfill)
       // instead of returning possibly-stale local projections.
       await getGithubSnapshot({ force: true, includeExternalClosed: true });
-      return getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null;
+      return withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(normalizedLaneId)?.summary ?? null,
+      );
     } catch (error) {
       logger.warn("prs.sync_lane_pr_failed", {
         laneId: normalizedLaneId,
@@ -10302,12 +10123,14 @@ export function createPrService({
     },
 
     getForLane(laneId: string): PrSummary | null {
-      return getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null;
+      return withGithubStackMembership(
+        getDisplayCandidateForCurrentLaneBranch(laneId)?.summary ?? null,
+      );
     },
 
     listAll(args: { laneId?: string } = {}): PrSummary[] {
       const laneId = String(args.laneId ?? "").trim();
-      const summaries = listRows().map(rowToSummary);
+      const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
       return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
     },
 
@@ -10329,10 +10152,13 @@ export function createPrService({
         }))
         .filter((candidate): candidate is LanePrDisplayCandidate => candidate != null);
       const checksByPrId = new Map(listSnapshotRows().map((snapshot) => [snapshot.prId, snapshot.checks] as const));
-      return candidates.map(({ summary, mappedRow }) => summaryToLanePrSummary(
-        summary,
-        mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
-      ));
+      return candidates.map(({ summary, mappedRow }) => {
+        const enriched = withGithubStackMembership(summary) ?? summary;
+        return summaryToLanePrSummary(
+          enriched,
+          mappedRow && isActivePrState(summary.state) ? checksByPrId.get(mappedRow.id) ?? [] : [],
+        );
+      });
     },
 
     /**
@@ -10375,7 +10201,7 @@ export function createPrService({
         ...((args.prIds ?? []).map((prId) => String(prId ?? "").trim()).filter(Boolean)),
       ];
       if (requestedPrIds.length > 0) {
-        return await refreshPrIds(requestedPrIds);
+        return withGithubStackMemberships(await refreshPrIds(requestedPrIds));
       }
 
       const rows = listRows();
@@ -10391,7 +10217,7 @@ export function createPrService({
       const candidates = [...hotCandidates, ...staleCandidates];
       await refreshRowsBestEffort(candidates);
 
-      return listRows().map(rowToSummary);
+      return withGithubStackMemberships(listRows().map(rowToSummary));
     },
 
     markHotRefresh(prIds: string[]): void {
@@ -10476,16 +10302,6 @@ export function createPrService({
       });
     },
 
-    async landStack(args: LandStackArgs): Promise<LandResult[]> {
-      return await landStack(args);
-    },
-
-    /**
-     * Retarget a PR's GitHub base branch. Used by the stacked-queue land loop
-     * after a parent PR merges, to drop the next PR's base from the parent's
-     * branch to the queue's target branch (typically `main`) so it can land
-     * cleanly on top.
-     */
     async retargetBase(prId: string, baseBranch: string): Promise<void> {
       await retargetBase(prId, baseBranch);
     },
@@ -10498,10 +10314,6 @@ export function createPrService({
       const row = getRow(prId);
       if (!row) throw new Error(`PR not found: ${prId}`);
       await openExternal(row.github_url);
-    },
-
-    async createQueuePrs(args: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> {
-      return await createQueuePrs(args);
     },
 
     async createIntegrationPr(args: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> {
@@ -10529,24 +10341,8 @@ export function createPrService({
       return await commitIntegration(args);
     },
 
-    async landStackEnhanced(args: LandStackEnhancedArgs): Promise<LandResult[]> {
-      return await landStackEnhanced(args);
-    },
-
-    async landQueueNext(args: LandQueueNextArgs): Promise<LandResult> {
-      return await landQueueNext(args);
-    },
-
-    async reorderQueuePrs(args: ReorderQueuePrsArgs): Promise<void> {
-      return await reorderQueuePrs(args);
-    },
-
     async getPrHealth(prId: string): Promise<PrHealth> {
       return await getPrHealth(prId);
-    },
-
-    async getQueueState(groupId: string): Promise<QueueLandingState | null> {
-      return await getQueueState(groupId);
     },
 
     async listGroupPrs(groupId: string): Promise<PrSummary[]> {
@@ -10571,6 +10367,53 @@ export function createPrService({
 
     async getGithubSnapshot(options?: GithubSnapshotOptions): Promise<GitHubPrSnapshot> {
       return await getGithubSnapshot(options);
+    },
+
+    async listGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      return githubStackStore.list(repo);
+    },
+
+    async createGithubStack(args: CreateGitHubPrStackArgs): Promise<GitHubPrStack> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.create(repo, args.pullRequests);
+      emitPrsUpdated();
+      return stack;
+    },
+
+    async addGithubStackPullRequests(
+      args: AddGitHubPrStackPullRequestsArgs,
+    ): Promise<GitHubPrStack> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.addPullRequests(
+        repo,
+        args.stackNumber,
+        args.pullRequests,
+      );
+      emitPrsUpdated();
+      return stack;
+    },
+
+    async unstackGithubStack(args: UnstackGitHubPrStackArgs): Promise<GitHubPrStack | null> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.unstack(repo, args.stackNumber);
+      emitPrsUpdated();
+      return stack;
+    },
+
+    async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
+      return await githubStackStore.reconcile(repo, stackNumber);
+    },
+
+    async reconcileGithubStacks(repo: GitHubRepoRef): Promise<GitHubPrStack[]> {
+      return await githubStackStore.reconcileRepository(repo);
+    },
+
+    async syncGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stacks = await githubStackStore.reconcileRepository(repo);
+      emitPrsUpdated();
+      return stacks;
     },
 
     async ingestGithubWebhook(args: GitHubWebhookIngestArgs): Promise<GitHubWebhookIngestResult> {
@@ -11711,56 +11554,6 @@ export function createPrService({
 
   async function buildWorkflowCards(): Promise<PrWorkflowCard[]> {
     const cards: PrWorkflowCard[] = [];
-
-    const queueRows = db.all<{
-      id: string;
-      group_id: string;
-      group_name: string | null;
-      target_branch: string | null;
-      state: string;
-      entries_json: string;
-      current_position: number | null;
-      started_at: string;
-      completed_at: string | null;
-      active_pr_id: string | null;
-      wait_reason: string | null;
-      last_error: string | null;
-      updated_at: string | null;
-    }>(
-      `select q.id, q.group_id, g.name as group_name, g.target_branch, q.state, q.entries_json, q.current_position,
-              q.started_at, q.completed_at, q.active_pr_id, q.wait_reason, q.last_error, q.updated_at
-       from queue_landing_state q
-       left join pr_groups g on g.id = q.group_id
-       where q.project_id = ?
-       order by q.updated_at desc, q.started_at desc`,
-      [projectId],
-    );
-    for (const row of queueRows) {
-      if (row.state === "completed" || row.state === "cancelled") continue;
-      let entries: QueueLandingEntry[] = [];
-      try {
-        const parsed = JSON.parse(String(row.entries_json ?? "[]"));
-        if (Array.isArray(parsed)) entries = parsed as QueueLandingEntry[];
-      } catch {
-        entries = [];
-      }
-      cards.push({
-        kind: "queue",
-        id: `queue:${row.id}`,
-        queueId: String(row.id),
-        groupId: String(row.group_id),
-        groupName: row.group_name ?? null,
-        targetBranch: row.target_branch ?? null,
-        state: String(row.state) as QueueState,
-        activePrId: row.active_pr_id,
-        currentPosition: Number(row.current_position ?? 0),
-        totalEntries: entries.length,
-        entries,
-        waitReason: (row.wait_reason ?? null) as QueueWaitReason | null,
-        lastError: row.last_error,
-        updatedAt: row.updated_at ?? row.started_at,
-      });
-    }
 
     try {
       const proposals = await listIntegrationWorkflows({ view: "active" });

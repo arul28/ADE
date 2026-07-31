@@ -105,14 +105,12 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     draftDescription: (args: unknown) => call("prs.draftDescription", args, { title: "", body: "" }),
     land: (args: unknown) => call("prs.land", args, null, false),
     updateBranch: (args: unknown) => call("prs.updateBranch", args, null, false),
-    landStack: (args: unknown) => call("prs.landStack", args, [], false),
     retargetBase: async (args: unknown) => {
       await call("prs.retargetBase", args, undefined, false);
     },
     openInGitHub: async (prId: string) => {
       if (/^https?:\/\//.test(prId) && typeof window !== "undefined") window.open(prId, "_blank", "noopener,noreferrer");
     },
-    createQueue: (args: unknown) => call("prs.createQueue", args, null, false),
     createIntegration: (args: unknown) => call("prs.createIntegration", args, null, false),
     simulateIntegration: (args: unknown) => call("prs.simulateIntegration", args, null),
     commitIntegration: (args: unknown) => call("prs.commitIntegration", args, null, false),
@@ -134,18 +132,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       await call("prs.aiResolutionStop", args, undefined, false);
     },
     onAiResolutionEvent: () => () => {},
-    landStackEnhanced: (args: unknown) => call("prs.landStackEnhanced", args, [], false),
-    landQueueNext: (args: unknown) => call("prs.landQueueNext", args, null, false),
-    startQueueAutomation: (args: unknown) => call("prs.startQueueAutomation", args, null, false),
-    pauseQueueAutomation: (queueId: string) => call("prs.pauseQueueAutomation", { queueId }, null, false),
-    resumeQueueAutomation: (args: unknown) => call("prs.resumeQueueAutomation", args, null, false),
-    cancelQueueAutomation: (queueId: string) => call("prs.cancelQueueAutomation", { queueId }, null, false),
-    reorderQueuePrs: async (args: unknown) => {
-      await call("prs.reorderQueue", args, undefined, false);
-    },
     getHealth: (prId: string) => call("prs.getHealth", { prId }, null),
-    getQueueState: (groupId: string) => call("prs.getQueueState", { groupId }, null),
-    listQueueStates: (args?: unknown) => call("prs.listQueueStates", args, []),
     getConflictAnalysis: (prId: string) => call("prs.getConflictAnalysis", { prId }, null),
     getMergeContext: (prId: string) => read("prs.getMergeContext", { prId }, null),
     getMergeContexts: (prIds: string[]) => read(
@@ -164,6 +151,27 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     },
     listSnapshots: (args?: unknown) => read("prs.listSnapshots", args, []),
     getGitHubSnapshot: (args?: unknown) => read("prs.getGitHubSnapshot", args, null),
+    listGitHubStacks: (args?: unknown) => read("prs.listGithubStacks", args, []),
+    syncGitHubStacks: async (args?: unknown) => {
+      const result = await call("prs.syncGithubStacks", args, [], false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    createGitHubStack: async (args: unknown) => {
+      const result = await call("prs.createGithubStack", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    addGitHubStackPullRequests: async (args: unknown) => {
+      const result = await call("prs.addGithubStackPullRequests", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
+    unstackGitHubStack: async (args: unknown) => {
+      const result = await call("prs.unstackGithubStack", args, null, false);
+      commands.invalidateCache(["prs."]);
+      return result;
+    },
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void) => events.on("prsEvent", listener as never),
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),

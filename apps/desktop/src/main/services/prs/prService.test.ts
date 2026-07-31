@@ -41,7 +41,7 @@ vi.mock("./integrationValidation", () => ({
   parseGitStatusPorcelain: vi.fn(() => []),
 }));
 
-vi.mock("../shared/queueRebase", () => ({
+vi.mock("../shared/remoteTrackingBranch", () => ({
   fetchRemoteTrackingBranch: vi.fn(),
 }));
 
@@ -214,16 +214,37 @@ function makeUnmappedBranchPull(overrides?: Partial<Record<string, unknown>>) {
 function makeGithubService(overrides?: Record<string, unknown>) {
   const getTokenOrThrow = (overrides?.getTokenOrThrow as (() => string) | undefined)
     ?? vi.fn(() => "ghp_mock");
+  const apiRequestOverride = overrides?.apiRequest as
+    | ((args: { path: string; [key: string]: unknown }) => unknown)
+    | undefined;
+  const stackApiRequestOverride = overrides?.stackApiRequest as
+    | ((args: { path: string; [key: string]: unknown }) => unknown)
+    | undefined;
+  const {
+    apiRequest: _apiRequest,
+    stackApiRequest: _stackApiRequest,
+    ...remainingOverrides
+  } = overrides ?? {};
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
-    apiRequest: vi.fn(),
+    apiRequest: vi.fn(async (args: { path: string; [key: string]: unknown }) => {
+      if (
+        args.method === "GET"
+        && args.path === `/repos/${REPO.owner}/${REPO.name}/stacks`
+      ) {
+        if (stackApiRequestOverride) return await stackApiRequestOverride(args);
+        return { data: [], linkHeader: null };
+      }
+      return await apiRequestOverride?.(args);
+    }),
+    parseNextLink: vi.fn(() => null),
     createSecretGist: vi.fn(),
     getStatus: vi.fn(),
     setToken: vi.fn(),
     clearToken: vi.fn(),
     getTokenOrThrow,
     getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
-    ...overrides,
+    ...remainingOverrides,
   } as any;
 }
 
@@ -460,6 +481,8 @@ describe("prService.getForLane", () => {
     laneOrLanes: ReturnType<typeof makeFakeLane> | ReturnType<typeof makeFakeLane>[],
     rows: Array<ReturnType<typeof makePrRow>>,
     projectionRows: Array<ReturnType<typeof makeGithubProjectionRow>> = [],
+    stackRows: Array<Record<string, unknown>> = [],
+    stackEntryRows: Array<Record<string, unknown>> = [],
   ) {
     const lanes = Array.isArray(laneOrLanes) ? laneOrLanes : [laneOrLanes];
     const db = makeMockDb();
@@ -478,6 +501,12 @@ describe("prService.getForLane", () => {
     });
     db.all.mockImplementation((sql: string, params: unknown[] = []) => {
       const text = String(sql);
+      if (text.includes("from github_pr_stack_entries")) {
+        return stackEntryRows;
+      }
+      if (text.includes("from github_pr_stacks")) {
+        return stackRows;
+      }
       if (text.includes("from github_pr_projections")) {
         const mappedKeys = new Set(rows.map((row) => (
           `${String(row.repo_owner).toLowerCase()}/${String(row.repo_name).toLowerCase()}#${Number(row.github_pr_number)}`
@@ -517,6 +546,77 @@ describe("prService.getForLane", () => {
       expect.objectContaining({
         state: "merged",
         mergedAt: "2026-07-15T00:00:00Z",
+      }),
+    ]);
+  });
+
+  it("includes native GitHub stack membership in lane and list summaries", async () => {
+    const lane = makeFakeLane({ branchRef: "refs/heads/stack-ui" });
+    const service = buildGetForLaneService(
+      lane,
+      [makePrRow({
+        lane_id: lane.id,
+        github_pr_number: 91,
+        head_branch: "stack-ui",
+      })],
+      [],
+      [{
+        project_id: "proj-1",
+        repo_owner: REPO.owner,
+        repo_name: REPO.name,
+        github_stack_number: 18,
+        github_stack_id: "5018",
+        github_node_id: "STACK_node18",
+        base_branch: "main",
+        is_open: 1,
+        created_at: "2026-07-30T10:00:00Z",
+        synced_at: "2026-07-30T10:01:00Z",
+        last_error: null,
+      }],
+      [
+        {
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_stack_number: 18,
+          github_pr_number: 90,
+          position: 1,
+          state: "open",
+          is_draft: 0,
+          merged_at: null,
+          head_branch: "stack-core",
+          head_sha: "sha-core",
+        },
+        {
+          project_id: "proj-1",
+          repo_owner: REPO.owner,
+          repo_name: REPO.name,
+          github_stack_number: 18,
+          github_pr_number: 91,
+          position: 2,
+          state: "open",
+          is_draft: 0,
+          merged_at: null,
+          head_branch: "stack-ui",
+          head_sha: "sha-ui",
+        },
+      ],
+    );
+
+    const expectedStack = {
+      id: "5018",
+      number: 18,
+      size: 2,
+      position: 2,
+      baseBranch: "main",
+    };
+    expect(service.getForLane(lane.id)?.stack).toEqual(expectedStack);
+    expect(service.listAll()[0]?.stack).toEqual(expectedStack);
+    await expect(service.listPrsByLane()).resolves.toEqual([
+      expect.objectContaining({
+        laneId: lane.id,
+        number: 91,
+        stack: expectedStack,
       }),
     ]);
   });
@@ -756,6 +856,7 @@ describe("prService.getForLane", () => {
         state: pr.state === "draft" ? "open" : pr.state,
         checksPassed: 0,
         checksTotal: 0,
+        stack: pr.stack ?? null,
       }));
 
     await expect(service.listPrsByLane()).resolves.toEqual(perLane);
@@ -1451,6 +1552,53 @@ describe("prService.getGithubSnapshot", () => {
     expect(repoCalls).toBe(2);
   });
 
+  it("bootstraps repository stack state on a forced snapshot when the local store is empty", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus()),
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === `/repos/${REPO.owner}/${REPO.name}/pulls`) {
+          return { data: [] };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+      stackApiRequest: vi.fn(async () => ({
+        data: [{
+          id: 5017,
+          number: 17,
+          base: { ref: "main" },
+          open: false,
+          created_at: "2026-07-30T09:00:00Z",
+          pull_requests: [{
+            number: 70,
+            state: "closed",
+            draft: false,
+            merged_at: "2026-07-30T10:00:00Z",
+            head: { ref: "stack/completed", sha: "sha-completed" },
+          }],
+        }],
+        linkHeader: null,
+      })),
+    });
+    const db = makeMockDb();
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    await service.getGithubSnapshot({ force: true });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stacks"),
+      expect.arrayContaining(["proj-1", REPO.owner, REPO.name, 17, "5017", null, "main", 0]),
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stack_entries"),
+      expect.arrayContaining(["proj-1", REPO.owner, REPO.name, 17, 70, 1, "closed"]),
+    );
+  });
+
   it("preserves repo snapshot cache mode during stale revalidation", async () => {
     const initialNow = Date.parse("2026-01-01T00:00:00Z");
     const nowSpy = vi.spyOn(Date, "now").mockReturnValue(initialNow);
@@ -1625,7 +1773,12 @@ describe("prService.getGithubSnapshot", () => {
 
     await service.getGithubSnapshot({ force: true });
 
-    expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
     expect(githubService.apiRequest).toHaveBeenCalledWith(expect.objectContaining({
       query: expect.objectContaining({ state: "open" }),
     }));
@@ -1944,6 +2097,419 @@ describe("prService.ingestGithubWebhook", () => {
       type: "prs-updated",
       prs: [expect.objectContaining({ title: "After webhook", state: "draft" })],
     }));
+  });
+
+  it("reconciles and transactionally replaces the whole GitHub stack after a stacked webhook", async () => {
+    const db = makeMockDb();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        expect(args.path).toBe(`/repos/${REPO.owner}/${REPO.name}/stacks/18`);
+        return {
+          data: {
+            id: 5018,
+            number: 18,
+            node_id: "STACK_node18",
+            base: { ref: "main" },
+            open: true,
+            created_at: "2026-07-30T10:00:00Z",
+            pull_requests: [
+              {
+                number: 90,
+                state: "open",
+                draft: false,
+                merged_at: null,
+                head: { ref: "stack/core", sha: "sha-core" },
+              },
+              {
+                number: 91,
+                state: "open",
+                draft: true,
+                merged_at: null,
+                head: { ref: "stack/ui", sha: "sha-ui" },
+              },
+            ],
+          },
+        };
+      }),
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-stacked",
+      payload: {
+        action: "stacked",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        stack: {
+          id: 5018,
+          number: 18,
+          size: 2,
+          position: 1,
+          base: { ref: "main", sha: "sha-main" },
+        },
+        pull_request: makeGitHubPull({
+          number: 90,
+          stack: {
+            id: 5018,
+            number: 18,
+            size: 2,
+            position: 1,
+            base: { ref: "main", sha: "sha-main" },
+          },
+        }),
+      },
+    });
+    await flushMicrotasks();
+
+    expect(result).toEqual(expect.objectContaining({
+      processed: true,
+      githubPrNumber: 90,
+    }));
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(1);
+    expect(db.run).toHaveBeenCalledWith("begin immediate");
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stacks"),
+      expect.arrayContaining(["proj-1", REPO.owner, REPO.name, 18, "5018", "STACK_node18", "main"]),
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("delete from github_pr_stack_entries"),
+      ["proj-1", REPO.owner, REPO.name, 18],
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("github_pr_number = ?"),
+      ["proj-1", REPO.owner, REPO.name, 91, 18],
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stack_entries"),
+      expect.arrayContaining(["proj-1", REPO.owner, REPO.name, 18, 91, 2, "open", 1]),
+    );
+    expect(db.run).toHaveBeenCalledWith("commit");
+  });
+
+  it("atomically reconciles the repository when a pull request moves between stacks", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 17 };
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        throw new Error(`Unexpected item stack read: ${args.path}`);
+      }),
+      stackApiRequest: vi.fn(async () => ({
+        data: [
+          {
+            id: 5017,
+            number: 17,
+            base: { ref: "main" },
+            open: true,
+            created_at: "2026-07-30T09:00:00Z",
+            pull_requests: [{
+              number: 89,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "stack/remaining", sha: "sha-remaining" },
+            }],
+          },
+          {
+            id: 5018,
+            number: 18,
+            base: { ref: "main" },
+            open: true,
+            created_at: "2026-07-30T10:00:00Z",
+            pull_requests: [{
+              number: 90,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "stack/moved", sha: "sha-moved" },
+            }],
+          },
+        ],
+        linkHeader: null,
+      })),
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-restacked",
+      payload: {
+        action: "stacked",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({
+          number: 90,
+          stack: {
+            id: 5018,
+            number: 18,
+            size: 1,
+            position: 1,
+            base: { ref: "main", sha: "sha-main" },
+          },
+        }),
+      },
+    });
+
+    expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks/18`,
+    }));
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("delete from github_pr_stacks"),
+      ["proj-1", REPO.owner, REPO.name],
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stacks"),
+      expect.arrayContaining([17, "5017", "main", 1]),
+    );
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stacks"),
+      expect.arrayContaining([18, "5018", "main", 1]),
+    );
+  });
+
+  it("reconciles a previously known stack when a later PR webhook omits stack metadata", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 18 };
+      }
+      return null;
+    });
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {
+          id: 5018,
+          number: 18,
+          base: { ref: "main" },
+          open: false,
+          created_at: "2026-07-30T10:00:00Z",
+          pull_requests: [
+            {
+              number: 90,
+              state: "closed",
+              draft: false,
+              merged_at: "2026-07-30T12:00:00Z",
+              head: { ref: "stack/core", sha: "sha-core" },
+            },
+          ],
+        },
+      })),
+    });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-merged",
+      payload: {
+        action: "closed",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({
+          number: 90,
+          state: "closed",
+          merged_at: "2026-07-30T12:00:00Z",
+        }),
+      },
+    });
+    await flushMicrotasks();
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks/18`,
+    });
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("insert into github_pr_stacks"),
+      expect.arrayContaining([18, "5018", "main", 0]),
+    );
+  });
+
+  it("falls back to the repository list when a known stack has dissolved", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 18 };
+      }
+      return null;
+    });
+    const apiRequest = vi.fn().mockRejectedValueOnce(new Error("Not Found"));
+    const stackApiRequest = vi.fn().mockResolvedValueOnce({ data: [], linkHeader: null });
+    const githubService = makeGithubService({ apiRequest, stackApiRequest });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-unstacked",
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({ number: 90, stack: null }),
+      },
+    });
+
+    expect(result.processed).toBe(true);
+    expect(githubService.apiRequest).toHaveBeenNthCalledWith(2, {
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
+    expect(stackApiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
+    expect(db.run).toHaveBeenCalledWith("begin immediate");
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("delete from github_pr_stacks"),
+      ["proj-1", REPO.owner, REPO.name],
+    );
+    expect(db.run).toHaveBeenCalledWith("commit");
+  });
+
+  it("keeps a webhook processed when both stack reconciliation reads fail", async () => {
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 18 };
+      }
+      return null;
+    });
+    const apiRequest = vi.fn().mockRejectedValueOnce(new Error("Stack read timed out"));
+    const stackApiRequest = vi.fn().mockRejectedValueOnce(new Error("Repository stack list timed out"));
+    const githubService = makeGithubService({ apiRequest, stackApiRequest });
+    const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
+
+    const result = await service.ingestGithubWebhook({
+      eventName: "pull_request",
+      deliveryId: "delivery-stack-read-failed",
+      payload: {
+        action: "synchronize",
+        repository: {
+          full_name: `${REPO.owner}/${REPO.name}`,
+          owner: { login: REPO.owner },
+          name: REPO.name,
+        },
+        pull_request: makeGitHubPull({ number: 90, stack: null }),
+      },
+    });
+
+    expect(result.processed).toBe(true);
+    expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+    expect(apiRequest).toHaveBeenCalledTimes(1);
+    expect(stackApiRequest).toHaveBeenCalledTimes(1);
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("raw_payload_json = null"),
+      expect.arrayContaining(["processed"]),
+    );
+  });
+
+  it("creates a GitHub stack from pull requests ordered bottom to top", async () => {
+    const db = makeMockDb();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {
+          id: 5019,
+          number: 19,
+          node_id: "STACK_node19",
+          base: { ref: "main" },
+          open: true,
+          created_at: "2026-07-30T13:00:00Z",
+          pull_requests: [
+            {
+              number: 964,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "ade/github-stacked-prs-core", sha: "sha-core" },
+            },
+            {
+              number: 965,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "ade/github-stacked-prs-cli", sha: "sha-cli" },
+            },
+          ],
+        },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const stack = await service.createGithubStack({
+      repo: REPO,
+      pullRequests: [964, 965],
+    });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "POST",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      body: { pull_requests: [964, 965] },
+    });
+    expect(stack).toEqual(expect.objectContaining({
+      number: 19,
+      entries: [
+        expect.objectContaining({ githubPrNumber: 964, position: 1 }),
+        expect.objectContaining({ githubPrNumber: 965, position: 2 }),
+      ],
+    }));
+  });
+
+  it("rejects fractional pull request numbers before calling GitHub", async () => {
+    const githubService = makeGithubService();
+    const { service } = buildService({ githubService });
+
+    await expect(service.createGithubStack({
+      repo: REPO,
+      pullRequests: [964, 965.5],
+    })).rejects.toThrow("2 to 100 distinct pull request numbers");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("removes a dissolved GitHub stack after unstack returns no content", async () => {
+    const db = makeMockDb();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {},
+        response: new Response(null, { status: 204 }),
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.unstackGithubStack({
+      repo: REPO,
+      stackNumber: 19,
+    })).resolves.toBeNull();
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "POST",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks/19/unstack`,
+    });
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("delete from github_pr_stacks"),
+      ["proj-1", REPO.owner, REPO.name, 19],
+    );
   });
 
   it("emits a PR update when an unmapped pull request changes its projection", async () => {
@@ -2320,6 +2886,163 @@ describe("prService.getStatus", () => {
       // `unstable` is mergeable even though REST said blocked/false.
       isMergeable: true,
     }));
+  });
+
+  it("retries merge-state GraphQL without stack fields when the schema is unavailable", async () => {
+    const row = makePrRow({ id: "pr-mergebox-fallback", github_pr_number: 97 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const graphqlQueries: string[] = [];
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: unknown }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/97") {
+          return {
+            data: makeGitHubPull({
+              number: 97,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: false,
+              mergeable_state: "blocked",
+              head: { ref: "my-feature", sha: "head-97" },
+              base: { ref: "main", sha: "base-97" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-97/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-97/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/97/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-97...head-97") {
+          return { data: { behind_by: 0 } };
+        }
+        if (args.method === "POST" && args.path === "/graphql") {
+          const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+          graphqlQueries.push(query);
+          if (query.includes("stack { baseRefName }")) {
+            throw new Error("Field 'stack' doesn't exist on type 'PullRequest'");
+          }
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "CLEAN",
+                    reviewDecision: null,
+                    headRefOid: "head-97",
+                    baseRefName: "main",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-mergebox-fallback");
+
+    expect(graphqlQueries).toHaveLength(2);
+    expect(graphqlQueries[0]).toContain("stack { baseRefName }");
+    expect(graphqlQueries[1]).not.toContain("stack { baseRefName }");
+    expect(status).toEqual(expect.objectContaining({
+      mergeStateStatus: "clean",
+      isMergeable: true,
+      headSha: "head-97",
+    }));
+  });
+
+  it("uses the ultimate stack base for required approvals", async () => {
+    const row = makePrRow({ id: "pr-stacked-mergebox", github_pr_number: 96 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    let graphqlCalls = 0;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string; body?: unknown }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/96") {
+          return {
+            data: makeGitHubPull({
+              number: 96,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "stack/ui", sha: "head-96" },
+              base: { ref: "stack/core", sha: "base-96" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-96/status") {
+          return { data: { state: "success", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-96/check-runs") {
+          return { data: { check_runs: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/96/reviews") {
+          return { data: [] };
+        }
+        if (args.path === "/repos/test-owner/test-repo/compare/base-96...head-96") {
+          return { data: { behind_by: 0 } };
+        }
+        if (args.method === "POST" && args.path === "/graphql") {
+          graphqlCalls += 1;
+          if (graphqlCalls === 1) {
+            return {
+              data: {
+                data: {
+                  repository: {
+                    viewerPermission: "WRITE",
+                    pullRequest: {
+                      mergeable: "MERGEABLE",
+                      mergeStateStatus: "CLEAN",
+                      reviewDecision: null,
+                      headRefOid: "head-96",
+                      baseRefName: "stack/core",
+                      baseRef: { branchProtectionRule: { requiredApprovingReviewCount: 0 } },
+                      stack: { baseRefName: "main" },
+                      latestOpinionatedReviews: { nodes: [] },
+                    },
+                  },
+                },
+              },
+            };
+          }
+          expect(args.body).toEqual(expect.objectContaining({
+            variables: expect.objectContaining({
+              qualifiedName: "refs/heads/main",
+            }),
+          }));
+          return {
+            data: {
+              data: {
+                repository: {
+                  ref: {
+                    branchProtectionRule: { requiredApprovingReviewCount: 2 },
+                  },
+                },
+              },
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-stacked-mergebox");
+
+    expect(graphqlCalls).toBe(2);
+    expect(status.requiredApprovals).toBe(2);
   });
 
   it("keeps behindBaseBy unknown when GitHub compare fails", async () => {
@@ -3859,6 +4582,29 @@ describe("prService.land", () => {
     vi.clearAllMocks();
   });
 
+  it("directs GitHub stack merges to GitHub before starting a merge request", async () => {
+    const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const getPullRequestRow = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 19 };
+      }
+      return getPullRequestRow?.(sql, params) ?? null;
+    });
+    const githubService = makeGithubService();
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({ prId: "pr-stacked", method: "squash" });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: false,
+      error: "PR #91 is in GitHub Stack #19. Review and merge the stack on GitHub.",
+    }));
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
   it("does not send a merge request for draft PRs", async () => {
     const row = makePrRow({ id: "pr-draft", github_pr_number: 92, state: "draft" });
     const db = makeMockDb();
@@ -4837,61 +5583,6 @@ describe("prService.createFromLane", () => {
     expect(mockGit.runGit).not.toHaveBeenCalled();
     expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
     expect(ghService.apiRequest).not.toHaveBeenCalled();
-  });
-});
-
-describe("prService.createQueuePrs", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("stops before database writes or GitHub PR creation when a queued lane cannot push", async () => {
-    const laneA = makeFakeLane({
-      id: "lane-a",
-      name: "feature-a",
-      branchRef: "refs/heads/feature-a",
-      worktreePath: "/tmp/lane-a-wt",
-    });
-    const laneB = makeFakeLane({
-      id: "lane-b",
-      name: "feature-b",
-      branchRef: "refs/heads/feature-b",
-      worktreePath: "/tmp/lane-b-wt",
-    });
-    const ghService = makeGithubService({
-      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
-    });
-    const db = makeMockDb();
-    mockGit.runGit
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-a\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-b\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
-
-    const { service } = buildService({
-      githubService: ghService,
-      laneService: makeLaneService([laneA, laneB]),
-      db,
-    });
-
-    const result = await service.createQueuePrs({
-      laneIds: ["lane-a", "lane-b"],
-      targetBranch: "main",
-      draft: false,
-    });
-
-    expect(result.prs).toEqual([]);
-    expect(result.errors).toEqual([
-      expect.objectContaining({
-        laneId: "lane-b",
-        error: expect.stringContaining('The remote branch "feature-b" has 1 newer commit'),
-      }),
-    ]);
-    expect(ghService.apiRequest).not.toHaveBeenCalled();
-    expect(db.run).not.toHaveBeenCalled();
   });
 });
 

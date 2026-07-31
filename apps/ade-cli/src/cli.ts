@@ -1601,6 +1601,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Include bounded closed PR history in the GitHub snapshot
     $ ade prs github-snapshot --include-state-counts --no-revalidate
                                                     Include exact state totals without a background refresh
+    $ ade prs stacks list                           List GitHub stacks for the active repository
+    $ ade prs stacks sync                           Refresh authoritative stack state from GitHub
+    $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
+    $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
+    $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers
@@ -5947,24 +5952,6 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "land-stack" || sub === "land-stack-enhanced") {
-    return {
-      kind: "execute",
-      label: `PR ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          sub === "land-stack" ? "landStack" : "landStackEnhanced",
-          collectGenericObjectArgs(args, {
-            rootLaneId:
-              readValue(args, ["--root", "--root-lane"]) ??
-              firstPositional(args),
-          }),
-        ),
-      ],
-    };
-  }
   if (sub === "labels") {
     const mode = firstPositional(args) ?? "set";
     if (mode !== "set") throw new CliUsageError("prs labels supports set.");
@@ -6145,6 +6132,83 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
+  if (sub === "stacks" || sub === "stack") {
+    const mode = firstPositional(args) ?? "list";
+    const repoOwner = readValue(args, ["--owner", "--repo-owner"]);
+    const repoName = readValue(args, ["--repo", "--repo-name"]);
+    if ((repoOwner && !repoName) || (!repoOwner && repoName)) {
+      throw new CliUsageError("--owner and --repo must be provided together.");
+    }
+    const repoArgs: JsonObject = {
+      ...(repoOwner ? { repoOwner } : {}),
+      ...(repoName ? { repoName } : {}),
+    };
+    const readPullRequests = (): number[] => {
+      const raw = readValue(args, ["--pulls", "--pull-requests"]);
+      if (!raw) throw new CliUsageError("--pulls must contain comma-separated pull request numbers.");
+      const pullRequests = raw.split(",").map((value) => Number(value.trim()));
+      if (pullRequests.some((value) => !Number.isInteger(value) || value <= 0)) {
+        throw new CliUsageError("--pulls must contain only positive pull request numbers.");
+      }
+      return pullRequests;
+    };
+    if (mode === "list") {
+      return {
+        kind: "execute",
+        label: "GitHub stacks list",
+        steps: [actionStep("result", "pr", "listGithubStacks", repoArgs)],
+      };
+    }
+    if (mode === "sync") {
+      return {
+        kind: "execute",
+        label: "GitHub stacks sync",
+        steps: [actionStep("result", "pr", "syncGithubStacks", repoArgs)],
+      };
+    }
+    if (mode === "create") {
+      return {
+        kind: "execute",
+        label: "GitHub stack create",
+        steps: [
+          actionStep("result", "pr", "createGithubStack", {
+            ...repoArgs,
+            pullRequests: readPullRequests(),
+          }),
+        ],
+      };
+    }
+    const stackNumber = readIntOption(args, ["--stack", "--stack-number"]);
+    if (stackNumber == null || stackNumber <= 0) {
+      throw new CliUsageError(`prs stacks ${mode} requires --stack <positive number>.`);
+    }
+    if (mode === "add") {
+      return {
+        kind: "execute",
+        label: "GitHub stack add",
+        steps: [
+          actionStep("result", "pr", "addGithubStackPullRequests", {
+            ...repoArgs,
+            stackNumber,
+            pullRequests: readPullRequests(),
+          }),
+        ],
+      };
+    }
+    if (mode === "unstack") {
+      return {
+        kind: "execute",
+        label: "GitHub stack unstack",
+        steps: [
+          actionStep("result", "pr", "unstackGithubStack", {
+            ...repoArgs,
+            stackNumber,
+          }),
+        ],
+      };
+    }
+    throw new CliUsageError("prs stacks supports list, sync, create, add, and unstack.");
+  }
   if (sub === "conflicts") {
     const mode = firstPositional(args) ?? "list";
     if (mode === "list")
@@ -6160,75 +6224,6 @@ function buildPrPlan(args: string[]): CliPlan {
       kind: "execute",
       label: `PR conflicts ${mode}`,
       steps: [actionArgsListStep("result", "pr", action, [id])],
-    };
-  }
-
-  if (sub === "queue") {
-    const mode = firstPositional(args) ?? "create";
-    if (mode === "state" || mode === "list") {
-      const groupId = requireValue(
-        readValue(args, ["--group", "--group-id"]) ?? firstPositional(args),
-        "groupId",
-      );
-      return {
-        kind: "execute",
-        label: `queue ${mode}`,
-        steps: [
-          actionArgsListStep(
-            "result",
-            "pr",
-            mode === "state" ? "getQueueState" : "listGroupPrs",
-            [groupId],
-          ),
-        ],
-      };
-    }
-    if (mode === "reorder") {
-      return {
-        kind: "execute",
-        label: "queue reorder",
-        steps: [
-          actionStep(
-            "result",
-            "pr",
-            "reorderQueuePrs",
-            collectGenericObjectArgs(args, {
-              groupId:
-                readValue(args, ["--group", "--group-id"]) ??
-                firstPositional(args),
-            }),
-          ),
-        ],
-      };
-    }
-    if (mode === "land-next") {
-      return {
-        kind: "execute",
-        label: "queue land next",
-        steps: [
-          actionCallStep(
-            "result",
-            "land_queue_next",
-            collectGenericObjectArgs(args, {
-              groupId:
-                readValue(args, ["--group", "--group-id"]) ??
-                firstPositional(args),
-              method: readValue(args, ["--method"]) ?? "squash",
-            }),
-          ),
-        ],
-      };
-    }
-    return {
-      kind: "execute",
-      label: "queue create",
-      steps: [
-        actionCallStep(
-          "result",
-          "create_queue",
-          collectGenericObjectArgs(args),
-        ),
-      ],
     };
   }
 

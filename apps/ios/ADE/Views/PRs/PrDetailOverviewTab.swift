@@ -793,6 +793,65 @@ struct PrOverviewStackCard: View {
   }
 }
 
+struct PrOverviewGitHubStackCard: View {
+  let stack: GitHubPrStackMembership
+  let prNumber: Int
+  let onOpenGitHub: () -> Void
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 10) {
+      PrSectionHdr(title: "GitHub stack") {
+        Text("\(stack.position) of \(stack.size)")
+      }
+
+      HStack(alignment: .top, spacing: 12) {
+        VStack(spacing: 3) {
+          ForEach(Array((1...max(stack.size, 1)).reversed()), id: \.self) { position in
+            Circle()
+              .fill(position == stack.position ? ADEColor.tintPRs : ADEColor.textMuted.opacity(0.35))
+              .frame(width: position == stack.position ? 10 : 6, height: position == stack.position ? 10 : 6)
+              .overlay {
+                if position == stack.position {
+                  Circle().stroke(Color.white.opacity(0.45), lineWidth: 1)
+                }
+              }
+            if position > 1 {
+              Rectangle()
+                .fill(ADEColor.tintPRs.opacity(0.25))
+                .frame(width: 2, height: 14)
+            }
+          }
+        }
+        .frame(width: 18)
+
+        VStack(alignment: .leading, spacing: 6) {
+          GitHubStackPositionBadge(stack: stack)
+          Text("PR #\(prNumber) is position \(stack.position) of \(stack.size), based on \(stack.baseBranch).")
+            .font(.subheadline.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text("GitHub manages stack-wide review, rebase, and merge. Open the pull request to preview or merge the stack.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+      }
+
+      Button(action: onOpenGitHub) {
+        Label("Review and merge on GitHub", systemImage: "arrow.up.right.square")
+          .frame(maxWidth: .infinity)
+      }
+      .buttonStyle(.glassProminent)
+    }
+    .padding(.horizontal, 14)
+    .padding(.vertical, 12)
+    .prGlassCard(cornerRadius: 16)
+    .accessibilityElement(children: .contain)
+    .accessibilityLabel(
+      "GitHub Stack \(stack.number), pull request \(stack.position) of \(stack.size), base \(stack.baseBranch)"
+    )
+  }
+}
+
 // MARK: - File row
 
 private struct PrOverviewFileRow: View {

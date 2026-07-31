@@ -262,6 +262,53 @@ describe("openKvDb SQL binding", () => {
   });
 });
 
+describe("GitHub stacked pull request schema", () => {
+  it("stores repository stacks and their ordered pull requests locally", async () => {
+    const projectRoot = makeProjectRoot("ade-kvdb-github-stacks-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    activeDisposers.push(async () => db.close());
+
+    expect(
+      db.all<{ name: string }>("pragma table_info('github_pr_stacks')").map((row) => row.name),
+    ).toEqual(expect.arrayContaining([
+      "project_id",
+      "repo_owner",
+      "repo_name",
+      "github_stack_number",
+      "github_stack_id",
+      "base_branch",
+      "is_open",
+      "synced_at",
+      "last_error",
+    ]));
+    expect(
+      db.all<{ name: string }>("pragma table_info('github_pr_stack_entries')").map((row) => row.name),
+    ).toEqual(expect.arrayContaining([
+      "project_id",
+      "repo_owner",
+      "repo_name",
+      "github_stack_number",
+      "github_pr_number",
+      "position",
+      "state",
+      "is_draft",
+      "merged_at",
+      "head_branch",
+      "head_sha",
+    ]));
+    expect(
+      db.all<{ name: string; unique: number }>("pragma index_list('github_pr_stack_entries')")
+        .find((index) => index.name === "idx_github_pr_stack_entries_membership"),
+    ).toEqual(expect.objectContaining({ unique: 1 }));
+    expect(
+      db.all<{ table: string; on_delete: string }>("pragma foreign_key_list('github_pr_stack_entries')")
+        .some((foreignKey) =>
+          foreignKey.table === "github_pr_stacks" && foreignKey.on_delete.toLowerCase() === "cascade"),
+    ).toBe(true);
+  });
+});
+
 describe("lane_linear_issue_links schema", () => {
   it("does not keep a non-PK unique index that blocks crsql_as_crr", async () => {
     const projectRoot = makeProjectRoot("ade-kvdb-linear-issue-links-index-");

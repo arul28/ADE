@@ -830,16 +830,9 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "pr",
-    action: "getQueueState",
-    label: "Get queue state",
-    description: "Return the merge queue state for a PR group.",
-    params: [{ name: "groupId", type: "string", required: true }],
-  },
-  {
-    domain: "pr",
     action: "listGroupPrs",
     label: "List group PRs",
-    description: "Return every PR in a queue or integration group.",
+    description: "Return every PR in an integration group.",
     params: [{ name: "groupId", type: "string", required: true }],
   },
   {
@@ -848,22 +841,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     label: "List PRs with conflicts",
     description: "Return PRs that currently have an active conflict analysis.",
     params: [],
-  },
-  {
-    domain: "pr",
-    action: "createQueuePrs",
-    label: "Create queue PRs",
-    description: "Create a stacked queue of PRs from a lane chain.",
-    params: [
-      { name: "laneIds", type: "string-array", required: true },
-      { name: "targetBranch", type: "string", required: true },
-      { name: "titles", type: "json", description: "Optional map from laneId to PR title." },
-      { name: "draft", type: "boolean" },
-      { name: "autoRebase", type: "boolean" },
-      { name: "ciGating", type: "boolean" },
-      { name: "queueName", type: "string" },
-      { name: "allowDirtyWorktree", type: "boolean" },
-    ],
   },
   {
     domain: "pr",
@@ -975,51 +952,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
       { name: "laneId", type: "string", required: true, placeholder: "{{trigger.lane.id}}" },
     ],
   },
-  {
-    domain: "pr",
-    action: "landStack",
-    label: "Land stack",
-    description: "Merge a stack of PRs from root to leaf with the given merge method.",
-    params: [
-      { name: "rootLaneId", type: "string", required: true, placeholder: "{{trigger.lane.id}}" },
-      { name: "method", type: "enum", required: true, enumValues: ["merge", "squash", "rebase"] },
-    ],
-  },
-  {
-    domain: "pr",
-    action: "landStackEnhanced",
-    label: "Land stack (enhanced)",
-    description: "Land a stack with sequential or all-at-once mode.",
-    params: [
-      { name: "rootLaneId", type: "string", required: true, placeholder: "{{trigger.lane.id}}" },
-      { name: "method", type: "enum", required: true, enumValues: ["merge", "squash", "rebase"] },
-      { name: "mode", type: "enum", required: true, enumValues: ["sequential", "all-at-once"] },
-    ],
-  },
-  {
-    domain: "pr",
-    action: "landQueueNext",
-    label: "Land next queue PR",
-    description: "Land the next eligible PR in a queue group.",
-    params: [
-      { name: "groupId", type: "string", required: true },
-      { name: "method", type: "enum", required: true, enumValues: ["merge", "squash", "rebase"] },
-      { name: "archiveLane", type: "boolean" },
-      { name: "autoResolve", type: "boolean" },
-      { name: "confidenceThreshold", type: "number" },
-    ],
-  },
-  {
-    domain: "pr",
-    action: "reorderQueuePrs",
-    label: "Reorder queue PRs",
-    description: "Reorder PRs within a queue group.",
-    params: [
-      { name: "groupId", type: "string", required: true },
-      { name: "prIds", type: "string-array", required: true },
-    ],
-  },
-
   // ---------------------------------------------------------------------------
   // tests
   // ---------------------------------------------------------------------------

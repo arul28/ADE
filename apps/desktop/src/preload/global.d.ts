@@ -343,8 +343,8 @@ import type {
   CreateLaneFromPrBranchPreflightResult,
   CreateLaneFromPrBranchResult,
   CreatePrFromLaneArgs,
-  CreateQueuePrsArgs,
-  CreateQueuePrsResult,
+  AddGitHubPrStackPullRequestsArgs,
+  CreateGitHubPrStackArgs,
   SimulateIntegrationArgs,
   IntegrationProposal,
   IntegrationResolutionState,
@@ -362,9 +362,6 @@ import type {
   PrAiResolutionStopArgs,
   PrAiResolutionEventPayload,
   CommitIntegrationArgs,
-  LandQueueNextArgs,
-  ReorderQueuePrsArgs,
-  QueueLandingState,
   PrHealth,
   RebaseNeed,
   RebaseLaneArgs,
@@ -388,13 +385,13 @@ import type {
   DismissIntegrationCleanupArgs,
   DraftPrDescriptionArgs,
   GitHubPrSnapshot,
+  GitHubPrStack,
   LandPrArgs,
   LandResult,
   UpdateBranchArgs,
   UpdateBranchResult,
-  LandStackArgs,
-  LandStackEnhancedArgs,
   LinkPrToLaneArgs,
+  ListGitHubPrStacksArgs,
   ListIntegrationWorkflowsArgs,
   PrActionRun,
   PrActivityEvent,
@@ -420,6 +417,7 @@ import type {
   PrStatus,
   PrSummary,
   PrWithConflicts,
+  UnstackGitHubPrStackArgs,
   PrDeployment,
   PrAiSummary,
   PostPrReviewCommentArgs,
@@ -428,8 +426,6 @@ import type {
   ReactToPrCommentArgs,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
-  ResumeQueueAutomationArgs,
-  StartQueueAutomationArgs,
   AddPrCommentArgs,
   UpdatePrCommentArgs,
   UpdatePrTitleArgs,
@@ -2361,15 +2357,11 @@ declare global {
         ) => Promise<{ title: string; body: string }>;
         land: (args: LandPrArgs) => Promise<LandResult>;
         updateBranch: (args: UpdateBranchArgs) => Promise<UpdateBranchResult>;
-        landStack: (args: LandStackArgs) => Promise<LandResult[]>;
         retargetBase: (args: {
           prId: string;
           baseBranch: string;
         }) => Promise<void>;
         openInGitHub: (prId: string) => Promise<void>;
-        createQueue: (
-          args: CreateQueuePrsArgs,
-        ) => Promise<CreateQueuePrsResult>;
         createIntegration: (
           args: CreateIntegrationPrArgs,
         ) => Promise<CreateIntegrationPrResult>;
@@ -2407,29 +2399,7 @@ declare global {
         onAiResolutionEvent: (
           cb: (ev: PrAiResolutionEventPayload) => void,
         ) => () => void;
-        landStackEnhanced: (
-          args: LandStackEnhancedArgs,
-        ) => Promise<LandResult[]>;
-        landQueueNext: (args: LandQueueNextArgs) => Promise<LandResult>;
-        startQueueAutomation: (
-          args: StartQueueAutomationArgs,
-        ) => Promise<QueueLandingState>;
-        pauseQueueAutomation: (
-          queueId: string,
-        ) => Promise<QueueLandingState | null>;
-        resumeQueueAutomation: (
-          args: ResumeQueueAutomationArgs,
-        ) => Promise<QueueLandingState | null>;
-        cancelQueueAutomation: (
-          queueId: string,
-        ) => Promise<QueueLandingState | null>;
-        reorderQueuePrs: (args: ReorderQueuePrsArgs) => Promise<void>;
         getHealth: (prId: string) => Promise<PrHealth>;
-        getQueueState: (groupId: string) => Promise<QueueLandingState | null>;
-        listQueueStates: (args?: {
-          includeCompleted?: boolean;
-          limit?: number;
-        }) => Promise<QueueLandingState[]>;
         getConflictAnalysis: (prId: string) => Promise<PrConflictAnalysis | null>;
         getMergeContext: (prId: string) => Promise<PrMergeContext>;
         getMergeContexts: (
@@ -2446,6 +2416,21 @@ declare global {
           includeExternalClosed?: boolean;
           historyPageLimit?: number;
         }) => Promise<GitHubPrSnapshot>;
+        listGitHubStacks: (
+          args?: ListGitHubPrStacksArgs,
+        ) => Promise<GitHubPrStack[]>;
+        syncGitHubStacks: (
+          args?: ListGitHubPrStacksArgs,
+        ) => Promise<GitHubPrStack[]>;
+        createGitHubStack: (
+          args: CreateGitHubPrStackArgs,
+        ) => Promise<GitHubPrStack>;
+        addGitHubStackPullRequests: (
+          args: AddGitHubPrStackPullRequestsArgs,
+        ) => Promise<GitHubPrStack>;
+        unstackGitHubStack: (
+          args: UnstackGitHubPrStackArgs,
+        ) => Promise<GitHubPrStack | null>;
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
         ) => Promise<IntegrationProposal[]>;

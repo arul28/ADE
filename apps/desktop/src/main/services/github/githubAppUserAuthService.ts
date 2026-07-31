@@ -16,6 +16,7 @@ import {
   createGitHubRelayAuthAuditLog,
   type GitHubRelayAuthAuditLog,
 } from "./githubRelayConfig";
+import { GITHUB_REST_API_VERSION } from "./githubApiVersion";
 import { asString } from "../shared/utils";
 
 const GITHUB_APP_USER_TOKEN_KEY = "github.appUserToken.v1";
@@ -142,6 +143,7 @@ export function createGitHubAppUserAuthService(args: {
         accept: "application/vnd.github+json",
         authorization: `Bearer ${accessToken}`,
         "user-agent": args.userAgent,
+        "x-github-api-version": GITHUB_REST_API_VERSION,
       },
     });
     const payload = (await response.json().catch(() => ({}))) as Record<string, unknown>;

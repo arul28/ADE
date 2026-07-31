@@ -1445,6 +1445,13 @@ describe("listPrsByLane", () => {
             state: "open",
             checksPassed: 4,
             checksTotal: 6,
+            stack: {
+              id: "stack-18",
+              number: 18,
+              size: 3,
+              position: 2,
+              baseBranch: "main",
+            },
           },
         ];
       },
@@ -1457,6 +1464,13 @@ describe("listPrsByLane", () => {
         state: "open",
         checksPassed: 4,
         checksTotal: 6,
+        stack: {
+          id: "stack-18",
+          number: 18,
+          size: 3,
+          position: 2,
+          baseBranch: "main",
+        },
       },
     ]);
 

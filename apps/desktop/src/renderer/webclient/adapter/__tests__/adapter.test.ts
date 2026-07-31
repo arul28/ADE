@@ -1815,6 +1815,36 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("routes GitHub stack reads and mutations through the hosted command bridge", async () => {
+    fake.descriptors = descriptors([
+      "prs.listGithubStacks",
+      "prs.addGithubStackPullRequests",
+      "prs.unstackGithubStack",
+    ]);
+    const stack = { id: "stack-18", number: 18, entries: [] };
+    fake.commandResults.set("prs.listGithubStacks", [stack]);
+    fake.commandResults.set("prs.addGithubStackPullRequests", stack);
+    fake.commandResults.set("prs.unstackGithubStack", null);
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.prs.listGitHubStacks()).resolves.toEqual([stack]);
+    await expect(adapter.ade.prs.addGitHubStackPullRequests({
+      stackNumber: 18,
+      pullRequests: [43],
+    })).resolves.toEqual(stack);
+    await expect(adapter.ade.prs.unstackGitHubStack({
+      stackNumber: 18,
+    })).resolves.toBeNull();
+
+    expect(fake.commandCalls.map((call) => call.action)).toEqual([
+      "prs.listGithubStacks",
+      "prs.addGithubStackPullRequests",
+      "prs.unstackGithubStack",
+    ]);
+    adapter.dispose();
+  });
+
   it("does not run GitHub authentication work as a side effect of transport connect", async () => {
     fake.descriptors = descriptors(["github.getStatus"]);
     fake.commandResults.set("github.getStatus", { connected: true });

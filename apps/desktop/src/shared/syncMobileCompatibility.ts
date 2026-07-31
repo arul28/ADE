@@ -20,6 +20,13 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "session.snoozeSession",
   "session.wakeSession",
   "session.clearWokeMarker",
+  // GitHub Stacked PRs are in public preview. Mobile clients can expose these
+  // actions as they adopt stack management without limiting older builds.
+  "prs.listGithubStacks",
+  "prs.syncGithubStacks",
+  "prs.createGithubStack",
+  "prs.addGithubStackPullRequests",
+  "prs.unstackGithubStack",
 ] as const satisfies readonly SyncRemoteCommandAction[];
 
 export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
@@ -125,7 +132,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "cto.getLinearIssueComments",
   "prs.getForLane",
   "prs.createFromLane",
-  "prs.createQueue",
   "prs.land",
   "prs.close",
   "prs.reopen",
@@ -151,12 +157,6 @@ export const MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS = [
   "prs.createIntegrationLaneForProposal",
   "prs.startIntegrationResolution",
   "prs.recheckIntegrationStep",
-  "prs.landQueueNext",
-  "prs.startQueueAutomation",
-  "prs.pauseQueueAutomation",
-  "prs.resumeQueueAutomation",
-  "prs.cancelQueueAutomation",
-  "prs.reorderQueue",
   "prs.getGitHubSnapshot",
   "prs.getReviewThreads",
   "prs.getActionRuns",

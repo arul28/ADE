@@ -13,6 +13,7 @@ import {
   getPrStateBadge,
 } from "../prs/shared/prVisuals";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
+import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -114,6 +115,7 @@ export function LanePrBadgePopover({
       >
         <GitPullRequest size={10} weight="bold" />
         {formatPrBadgeLabel(pr)}
+        <GitHubStackBadge stack={pr.stack} compact bare />
       </button>
 
       {/* Hover popover — pure-CSS group-hover, positioned below the badge. No JS
@@ -141,6 +143,7 @@ export function LanePrBadgePopover({
             >
               #{pr.githubPrNumber}
             </span>
+            <GitHubStackBadge stack={pr.stack} compact />
             <span className="ml-auto text-[10.5px]" style={{ color: COLORS.textMuted }}>
               {prStateCaption(pr.state)}
             </span>

@@ -70,7 +70,6 @@ function createMockPrService() {
     getComments: vi.fn().mockResolvedValue([]),
     getFiles: vi.fn().mockResolvedValue([]),
     createFromLane: vi.fn().mockResolvedValue({ prId: "pr-1" }),
-    createQueuePrs: vi.fn().mockResolvedValue({ groupId: "group-1", prs: [], errors: [] }),
     draftDescription: vi.fn().mockResolvedValue({ title: "Draft title", body: "Draft body" }),
     land: vi.fn().mockResolvedValue({ ok: true }),
     closePr: vi.fn().mockResolvedValue(undefined),
@@ -96,8 +95,6 @@ function createMockPrService() {
     createIntegrationLaneForProposal: vi.fn().mockResolvedValue({ integrationLaneId: "lane-int", mergedCleanLanes: [], conflictingLanes: [] }),
     startIntegrationResolution: vi.fn().mockResolvedValue({ conflictFiles: [], mergedClean: true, integrationLaneId: "lane-int" }),
     recheckIntegrationStep: vi.fn().mockResolvedValue({ resolution: "resolved", remainingConflictFiles: [], allResolved: true, message: null }),
-    landQueueNext: vi.fn().mockResolvedValue({ ok: true }),
-    reorderQueuePrs: vi.fn().mockResolvedValue(undefined),
     getGithubSnapshot: vi.fn().mockResolvedValue({ generatedAt: "2026-04-01T00:00:00Z", repoPullRequests: [], externalPullRequests: [], live: true }),
     getReviewThreads: vi.fn().mockResolvedValue([]),
     getActionRuns: vi.fn().mockResolvedValue([]),
@@ -112,15 +109,6 @@ function createMockPrService() {
       workflowCards: [],
       live: true,
     }),
-  } as any;
-}
-
-function createMockQueueLandingService() {
-  return {
-    startQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
-    pauseQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "paused" }),
-    resumeQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "landing" }),
-    cancelQueue: vi.fn().mockReturnValue({ queueId: "queue-1", state: "cancelled" }),
   } as any;
 }
 
@@ -360,7 +348,6 @@ describe("createSyncRemoteCommandService", () => {
   let linearCredentialService: ReturnType<typeof createMockLinearCredentialService>;
   let conflictService: ReturnType<typeof createMockConflictService>;
   let rebaseSuggestionService: ReturnType<typeof createMockRebaseSuggestionService>;
-  let queueLandingService: ReturnType<typeof createMockQueueLandingService>;
   let service: ReturnType<typeof createSyncRemoteCommandService>;
 
   beforeEach(() => {
@@ -376,11 +363,9 @@ describe("createSyncRemoteCommandService", () => {
     linearCredentialService = createMockLinearCredentialService();
     conflictService = createMockConflictService();
     rebaseSuggestionService = createMockRebaseSuggestionService();
-    queueLandingService = createMockQueueLandingService();
     service = createSyncRemoteCommandService({
       laneService,
       prService,
-      queueLandingService,
       ptyService,
       sessionService,
       fileService,
@@ -538,7 +523,6 @@ describe("createSyncRemoteCommandService", () => {
       return createSyncRemoteCommandService({
         laneService,
         prService,
-        queueLandingService,
         ptyService,
         sessionService,
         fileService,
@@ -784,7 +768,6 @@ describe("createSyncRemoteCommandService", () => {
       const withRuntimeCleanup = createSyncRemoteCommandService({
         laneService,
         prService,
-        queueLandingService,
         ptyService,
         sessionService,
         fileService,
@@ -884,35 +867,6 @@ describe("createSyncRemoteCommandService", () => {
     it("prs.createFromLane throws when laneId or title is missing", async () => {
       await expect(service.execute(makePayload("prs.createFromLane", { laneId: "lane-1" })))
         .rejects.toThrow("prs.createFromLane requires laneId and title.");
-    });
-
-    it("prs.createQueue parses lane order, target branch, and options", async () => {
-      const result = await service.execute(makePayload("prs.createQueue", {
-        laneIds: ["lane-1", "lane-2"],
-        targetBranch: "main",
-        titles: { "lane-1": "First", "lane-2": "Second" },
-        draft: true,
-        autoRebase: false,
-        ciGating: true,
-        queueName: "Mobile queue",
-        allowDirtyWorktree: true,
-      }));
-      expect(prService.createQueuePrs).toHaveBeenCalledWith({
-        laneIds: ["lane-1", "lane-2"],
-        targetBranch: "main",
-        titles: { "lane-1": "First", "lane-2": "Second" },
-        draft: true,
-        autoRebase: false,
-        ciGating: true,
-        queueName: "Mobile queue",
-        allowDirtyWorktree: true,
-      });
-      expect(result).toEqual({ groupId: "group-1", prs: [], errors: [] });
-    });
-
-    it("prs.createQueue requires laneIds and targetBranch", async () => {
-      await expect(service.execute(makePayload("prs.createQueue", { laneIds: ["lane-1"] })))
-        .rejects.toThrow("prs.createQueue requires targetBranch.");
     });
 
     it("prs.draftDescription parses laneId and optional model controls", async () => {
@@ -1056,43 +1010,6 @@ describe("createSyncRemoteCommandService", () => {
       expect(result).toEqual({ groupId: "group-1", integrationLaneId: "lane-int", pr: { id: "pr-1" }, mergeResults: [] });
     });
 
-    it("prs.startQueueAutomation parses queue automation options", async () => {
-      const result = await service.execute(makePayload("prs.startQueueAutomation", {
-        groupId: "group-1",
-        method: "squash",
-        archiveLane: true,
-        autoResolve: true,
-        ciGating: false,
-        resolverProvider: "codex",
-        resolverModel: "gpt-5.4",
-        reasoningEffort: "medium",
-        permissionMode: "default",
-        confidenceThreshold: 0.82,
-        originLabel: "Mobile audit",
-      }));
-      expect(queueLandingService.startQueue).toHaveBeenCalledWith({
-        groupId: "group-1",
-        method: "squash",
-        archiveLane: true,
-        autoResolve: true,
-        ciGating: false,
-        resolverProvider: "codex",
-        resolverModel: "gpt-5.4",
-        reasoningEffort: "medium",
-        permissionMode: "default",
-        confidenceThreshold: 0.82,
-        originLabel: "Mobile audit",
-      });
-      expect(result).toEqual({ queueId: "queue-1", state: "landing" });
-    });
-
-    it("prs.startQueueAutomation requires a merge method", async () => {
-      await expect(service.execute(makePayload("prs.startQueueAutomation", {
-        groupId: "group-1",
-        method: "invalid",
-      }))).rejects.toThrow("prs.startQueueAutomation requires method to be merge, squash, or rebase.");
-    });
-
     it("prs.getMobileSnapshot is viewer-allowed and returns the aggregated payload", async () => {
       const policy = service.getPolicy("prs.getMobileSnapshot");
       expect(policy).not.toBeNull();
@@ -1120,7 +1037,6 @@ describe("createSyncRemoteCommandService", () => {
       return createSyncRemoteCommandService({
         laneService,
         prService,
-        queueLandingService,
         ptyService,
         sessionService,
         fileService,

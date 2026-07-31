@@ -24,6 +24,7 @@ import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -309,7 +310,17 @@ function PrDetails({
 
       <h3 className="text-[14px] font-semibold leading-snug text-fg/90">{pr.title}</h3>
 
-      {mergeReady ? (
+      {pr.stack ? (
+        <div className="rounded-lg border border-violet-400/15 bg-violet-500/[0.06] px-2.5 py-2">
+          <div className="flex items-center justify-between gap-2">
+            <GitHubStackBadge stack={pr.stack} />
+            <span className="font-mono text-[10px] text-fg/35">base {pr.stack.baseBranch}</span>
+          </div>
+          <p className="mt-1.5 text-[11px] leading-relaxed text-fg/50">
+            This pull request belongs to GitHub Stack #{pr.stack.number}. Review rebases and merge the stack on GitHub.
+          </p>
+        </div>
+      ) : mergeReady ? (
         <div className="inline-flex items-center gap-1.5 rounded-md bg-emerald-400/10 px-2 py-1 text-[11px] font-medium text-emerald-300/90">
           <Sparkle size={12} weight="fill" />
           Ready to merge

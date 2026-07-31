@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import React from "react";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
@@ -76,8 +76,8 @@ const mockLanes: LaneSummary[] = [
   }),
   makeLane({
     id: "lane-1",
-    name: "01 queue lane",
-    branchRef: "feature/queue-1",
+    name: "01 parent lane",
+    branchRef: "feature/parent",
     worktreePath: "/tmp/lane-1",
     parentLaneId: "lane-primary",
     stackDepth: 1,
@@ -86,8 +86,8 @@ const mockLanes: LaneSummary[] = [
   }),
   makeLane({
     id: "lane-2",
-    name: "02 queue lane",
-    branchRef: "feature/queue-2",
+    name: "02 sibling lane",
+    branchRef: "feature/sibling",
     worktreePath: "/tmp/lane-2",
     parentLaneId: "lane-primary",
     stackDepth: 1,
@@ -111,31 +111,24 @@ vi.mock("../../state/appStore", () => ({
   useAppStore: (selector: (state: { lanes: LaneSummary[] }) => unknown) => selector({ lanes: mockLanes }),
 }));
 
-import { CreatePrModal, reorderQueueLaneIds } from "./CreatePrModal";
+import { CreatePrModal } from "./CreatePrModal";
 
-describe("CreatePrModal queue workflow", () => {
+describe("CreatePrModal", () => {
   const originalAde = globalThis.window.ade;
-  const createQueue = vi.fn();
   const createFromLane = vi.fn();
 
   beforeEach(() => {
-    createQueue.mockReset();
     createFromLane.mockReset();
-    createQueue.mockResolvedValue({
-      groupId: "queue-group-1",
-      prs: [],
-      errors: [],
-    });
     createFromLane.mockResolvedValue({
       id: "pr-1",
       laneId: "lane-1",
       provider: "github",
       number: 1,
-      title: "Queue lane",
+      title: "Parent lane",
       body: "",
       state: "open",
       url: "https://example.test/pr/1",
-      headBranch: "feature/queue-1",
+      headBranch: "feature/parent",
       baseBranch: "main",
       mergeable: true,
       draft: false,
@@ -144,7 +137,6 @@ describe("CreatePrModal queue workflow", () => {
 
     globalThis.window.ade = {
       prs: {
-        createQueue,
         createFromLane,
         listAll: vi.fn().mockResolvedValue([]),
       },
@@ -162,54 +154,6 @@ describe("CreatePrModal queue workflow", () => {
   afterEach(() => {
     globalThis.window.ade = originalAde;
     cleanup();
-  });
-
-  it("adds selected lanes to the queue order and removes them from the queue builder", async () => {
-    const user = userEvent.setup();
-    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
-
-    await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
-    await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
-    await user.click(screen.getByRole("checkbox", { name: /02 queue lane/i }));
-
-    expect(document.querySelectorAll("[data-queue-lane-id]").length).toBe(2);
-
-    const laneOneRow = document.querySelector('[data-queue-lane-id="lane-1"]');
-    expect(laneOneRow).toBeTruthy();
-    await user.click(within(laneOneRow as HTMLElement).getByTitle("Remove lane from queue"));
-
-    expect(document.querySelectorAll("[data-queue-lane-id]").length).toBe(1);
-    expect(document.querySelector('[data-queue-lane-id="lane-1"]')).toBeNull();
-    expect((screen.getByRole("checkbox", { name: /01 queue lane/i }) as HTMLInputElement).checked).toBe(false);
-  });
-
-  it("uses the dragged queue order when creating queue PRs", async () => {
-    const user = userEvent.setup();
-    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
-
-    await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
-    await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
-    await user.click(screen.getByRole("checkbox", { name: /02 queue lane/i }));
-
-    const laneOneRow = document.querySelector('[data-queue-lane-id="lane-1"]');
-    const laneTwoRow = document.querySelector('[data-queue-lane-id="lane-2"]');
-    expect(laneOneRow).toBeTruthy();
-    expect(laneTwoRow).toBeTruthy();
-
-    fireEvent.dragStart(laneTwoRow as HTMLElement);
-    fireEvent.dragOver(laneOneRow as HTMLElement);
-    fireEvent.drop(laneOneRow as HTMLElement);
-
-    await user.click(screen.getByRole("button", { name: /next step/i }));
-    await user.click(screen.getByRole("button", { name: /create pr/i }));
-
-    await waitFor(() => expect(createQueue).toHaveBeenCalledTimes(1));
-    expect(createQueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneIds: ["lane-2", "lane-1"],
-        targetBranch: "main",
-      }),
-    );
   });
 
   it("lets single-PR creation target a different branch than Primary's current branch", async () => {
@@ -329,7 +273,7 @@ describe("CreatePrModal queue workflow", () => {
       id: "lane-child",
       name: "03 child lane",
       branchRef: "feature/child",
-      baseRef: "feature/queue-1",
+      baseRef: "feature/parent",
       parentLaneId: "lane-1",
       stackDepth: 2,
       createdAt: "2026-03-23T12:03:00.000Z",
@@ -348,7 +292,7 @@ describe("CreatePrModal queue workflow", () => {
           title: "Parent",
           state: "merged",
           baseBranch: "main",
-          headBranch: "feature/queue-1",
+          headBranch: "feature/parent",
           checksStatus: "none",
           reviewStatus: "none",
           additions: 1,
@@ -367,7 +311,7 @@ describe("CreatePrModal queue workflow", () => {
       await user.selectOptions(comboboxes[0]!, "lane-child");
 
       await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
-      expect(screen.getByText(/The lane this builds on \("01 queue lane"\) has already merged/i)).toBeTruthy();
+      expect(screen.getByText(/The lane this builds on \("01 parent lane"\) has already merged/i)).toBeTruthy();
 
       await user.click(screen.getByRole("button", { name: /next step/i }));
       await user.click(screen.getByRole("button", { name: /create pr/i }));
@@ -384,77 +328,4 @@ describe("CreatePrModal queue workflow", () => {
     }
   });
 
-  it("lets queue creation target a different branch than Primary's current branch", async () => {
-    const user = userEvent.setup();
-    renderWithRouter(<CreatePrModal open onOpenChange={vi.fn()} />);
-
-    await user.click(screen.getAllByRole("button", { name: /queue workflow/i })[0]!);
-    await user.click(screen.getByRole("checkbox", { name: /01 queue lane/i }));
-
-    // Wait for branches to load, then type a different target branch
-    await waitFor(() => expect(screen.getByDisplayValue("main")).toBeTruthy());
-    const targetInput = screen.getByDisplayValue("main");
-    await user.clear(targetInput);
-    await user.type(targetInput, "release-9");
-
-    await user.click(screen.getByRole("button", { name: /next step/i }));
-    await user.click(screen.getByRole("button", { name: /create pr/i }));
-
-    await waitFor(() => expect(createQueue).toHaveBeenCalledTimes(1));
-    expect(createQueue).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneIds: ["lane-1"],
-        targetBranch: "release-9",
-      }),
-    );
-  });
-});
-
-describe("reorderQueueLaneIds", () => {
-  it("returns the original array when dragged and target are the same", () => {
-    const ids = ["a", "b", "c"];
-    expect(reorderQueueLaneIds(ids, "b", "b")).toBe(ids);
-  });
-
-  it("returns the original array when dragged id is not found", () => {
-    const ids = ["a", "b", "c"];
-    expect(reorderQueueLaneIds(ids, "z", "b")).toBe(ids);
-  });
-
-  it("returns the original array when target id is not found", () => {
-    const ids = ["a", "b", "c"];
-    expect(reorderQueueLaneIds(ids, "a", "z")).toBe(ids);
-  });
-
-  it("moves an item forward (drag from above target)", () => {
-    // Drag "a" (index 0) to where "c" (index 2) is
-    expect(reorderQueueLaneIds(["a", "b", "c"], "a", "c")).toEqual(["b", "a", "c"]);
-  });
-
-  it("moves an item backward (drag from below target)", () => {
-    // Drag "c" (index 2) to where "a" (index 0) is
-    expect(reorderQueueLaneIds(["a", "b", "c"], "c", "a")).toEqual(["c", "a", "b"]);
-  });
-
-  it("handles adjacent swap: drag earlier to later", () => {
-    // Dragging "a" onto adjacent "b" places "a" at b's position (insert-before semantic),
-    // which after index adjustment is effectively a no-op for immediate neighbors.
-    expect(reorderQueueLaneIds(["a", "b", "c"], "a", "b")).toEqual(["a", "b", "c"]);
-  });
-
-  it("handles adjacent swap: drag later to earlier", () => {
-    expect(reorderQueueLaneIds(["a", "b", "c"], "b", "a")).toEqual(["b", "a", "c"]);
-  });
-
-  it("handles a longer list - drag from start to end", () => {
-    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "a", "e")).toEqual(["b", "c", "d", "a", "e"]);
-  });
-
-  it("handles a longer list - drag from end to start", () => {
-    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "e", "a")).toEqual(["e", "a", "b", "c", "d"]);
-  });
-
-  it("handles a longer list - drag from middle to middle", () => {
-    expect(reorderQueueLaneIds(["a", "b", "c", "d", "e"], "b", "d")).toEqual(["a", "c", "b", "d", "e"]);
-  });
 });

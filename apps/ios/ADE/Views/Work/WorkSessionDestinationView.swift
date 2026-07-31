@@ -1005,7 +1005,6 @@ struct WorkSessionDestinationView: View {
       initialLaneId: laneId.isEmpty ? nil : laneId,
       singleModeOnly: true,
       onCreateSingle: handleChatCreateSinglePr,
-      onCreateQueue: { _ in false },
       onCreateIntegration: { _ in false }
     )
     .environmentObject(syncService)

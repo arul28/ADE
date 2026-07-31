@@ -318,7 +318,7 @@ export type GitHubStatus = {
   patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
-  authSource: "pat" | "environment" | "gh" | "none";
+  authSource: "app" | "pat" | "environment" | "gh" | "none";
   tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
   repo: GitHubRepoRef | null;
   // True when the project has any `origin` remote, even non-GitHub. Distinct

@@ -4820,6 +4820,11 @@ describe("CTO-gated Linear sync commands", () => {
         "session.snoozeSession",
         "session.wakeSession",
         "session.clearWokeMarker",
+        "prs.listGithubStacks",
+        "prs.syncGithubStacks",
+        "prs.createGithubStack",
+        "prs.addGithubStackPullRequests",
+        "prs.unstackGithubStack",
       ]);
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),

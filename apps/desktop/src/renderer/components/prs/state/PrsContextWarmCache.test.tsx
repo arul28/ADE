@@ -38,7 +38,6 @@ function installAde(listSnapshots: ReturnType<typeof vi.fn>) {
     prs: {
       refresh: vi.fn().mockResolvedValue(undefined),
       listWithConflicts: vi.fn().mockResolvedValue([makeFakePr("pr-1")]),
-      listQueueStates: vi.fn().mockResolvedValue([]),
       onEvent: vi.fn(() => () => {}),
       listSnapshots,
       getStatus: vi.fn().mockResolvedValue({ state: "open" }),

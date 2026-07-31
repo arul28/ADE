@@ -616,6 +616,104 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("prefers an explicit GitHub environment token over a stored machine PAT", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    const previousGitHubToken = process.env.GITHUB_TOKEN;
+    const previousGhToken = process.env.GH_TOKEN;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-env-"));
+    process.env.ADE_GITHUB_TOKEN = "ghp_environment_token";
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.token.v1", "ghp_stale_stored_token");
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    try {
+      expect(githubService.getTokenOrThrow()).toBe("ghp_environment_token");
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        authSource: "environment",
+        connected: true,
+        userLogin: "octocat",
+      });
+      expect(fetchImpl).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          headers: expect.objectContaining({
+            authorization: "Bearer ghp_environment_token",
+          }),
+        }),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
+      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGitHubToken;
+      if (previousGhToken == null) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previousGhToken;
+    }
+  });
+
+  it("uses GitHub App authorization before a stored machine PAT for async REST calls", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-"));
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.token.v1", "ghp_stale_stored_token");
+    machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    const fetchImpl = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization");
+      if (authorization !== "Bearer ghu_app_user_token") {
+        return new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 });
+      }
+      return new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    try {
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        authSource: "app",
+        connected: true,
+        userLogin: "octocat",
+      });
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
   it("does not share Linear credentials between headless projects", () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousAdeLinearApi = process.env.ADE_LINEAR_API;

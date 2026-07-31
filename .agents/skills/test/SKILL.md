@@ -127,7 +127,7 @@ A feature folder gets ONE test file per major contract. Use this budget:
 
 **If you exceed budget**, you MUST consolidate before finishing — do not leave the folder over budget. Naming pattern:
 - `{service}.test.ts` — top-level service contract
-- `{service}{Subsystem}.test.ts` — only if Subsystem is a distinct contract (e.g. `prMergeQueue.test.ts`, `ctoWorkerLifecycle.test.ts`)
+- `{service}{Subsystem}.test.ts` — only if Subsystem is a distinct contract (e.g. `prGithubStack.test.ts`, `ctoWorkerLifecycle.test.ts`)
 
 Forbidden naming patterns (these are fragmentation signals):
 - `{service}.{minorThing}.test.ts` — folds a minor concern into its own file. Merge into `{service}.test.ts`.

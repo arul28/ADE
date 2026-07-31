@@ -78,8 +78,6 @@ import { normalizeConflictType, runGit, runGitMergeTree, runGitOrThrow } from ".
 import { redactSecretsDeep } from "../../utils/redaction";
 import { extractFirstJsonObject } from "../ai/utils";
 import { safeSegment } from "../shared/packLegacyUtils";
-import { fetchQueueTargetTrackingBranches, resolveQueueRebaseOverride } from "../shared/queueRebase";
-import type { QueueRebaseOverride } from "../shared/queueRebase";
 import { asString, isRecord, normalizeBranchName, parseDiffNameOnly, safeJsonParse, uniqueSorted } from "../shared/utils";
 
 type PredictionStatus = "clean" | "conflict" | "unknown";
@@ -293,19 +291,11 @@ async function readTouchedFiles(cwd: string, mergeBase: string, headSha: string)
 function resolveLaneRebaseTarget(args: {
   lane: LaneSummary;
   lanesById: Map<string, LaneSummary>;
-  queueOverride: QueueRebaseOverride | null;
 }): {
   comparisonRef: string;
   fallbackRef?: string;
   displayBaseBranch: string;
 } {
-  if (args.queueOverride) {
-    return {
-      comparisonRef: args.queueOverride.comparisonRef,
-      displayBaseBranch: args.queueOverride.displayBaseBranch,
-    };
-  }
-
   const parent = args.lane.parentLaneId ? args.lanesById.get(args.lane.parentLaneId) ?? null : null;
   const parentBranchRef = branchNameFromLaneRef(parent?.branchRef);
   if (parentBranchRef && shouldLaneTrackParent({ lane: args.lane, parent })) {
@@ -4322,18 +4312,6 @@ export function createConflictService({
   };
 
   const scanRebaseNeeds = async (): Promise<RebaseNeed[]> => {
-    try {
-      await fetchQueueTargetTrackingBranches({
-        db,
-        projectId,
-        projectRoot,
-      });
-    } catch (error) {
-      logger.warn("conflicts.queue_target_refresh_failed", {
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
-
     const lanes = await listActiveLanes();
     const lanesById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const needs: RebaseNeed[] = [];
@@ -4342,16 +4320,9 @@ export function createConflictService({
     const nonPrimaryLanes = lanes.filter((l) => l.laneType !== "primary");
     for (const lane of nonPrimaryLanes) {
       try {
-        const queueOverride = await resolveQueueRebaseOverride({
-          db,
-          projectId,
-          projectRoot,
-          laneId: lane.id,
-        });
         const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
           lane,
           lanesById,
-          queueOverride,
         });
         const baseHead = await readHeadSha(projectRoot, comparisonRef)
           .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
@@ -4389,7 +4360,7 @@ export function createConflictService({
           conflictPredicted: conflictingFiles.length > 0,
           conflictingFiles,
           prId: null,
-          groupContext: queueOverride?.groupContext ?? null,
+          groupContext: null,
           dismissedAt: rebaseDismissed.get(lane.id) ?? null,
           deferredUntil: rebaseDeferred.get(lane.id) ?? null
         });
@@ -4489,28 +4460,15 @@ export function createConflictService({
   };
 
   const getRebaseNeed = async (laneId: string): Promise<RebaseNeed | null> => {
-    await fetchQueueTargetTrackingBranches({
-      db,
-      projectId,
-      projectRoot,
-    });
-
     const lanes = await listActiveLanes();
     const lanesById = new Map(lanes.map((entry) => [entry.id, entry] as const));
     const lane = lanes.find((l) => l.id === laneId);
     if (!lane || lane.laneType === "primary") return null;
 
     try {
-      const queueOverride = await resolveQueueRebaseOverride({
-        db,
-        projectId,
-        projectRoot,
-        laneId: lane.id,
-      });
       const { comparisonRef, fallbackRef, displayBaseBranch } = resolveLaneRebaseTarget({
         lane,
         lanesById,
-        queueOverride,
       });
       const baseHead = await readHeadSha(projectRoot, comparisonRef)
         .catch(() => fallbackRef ? readHeadSha(projectRoot, fallbackRef) : Promise.reject())
@@ -4546,7 +4504,7 @@ export function createConflictService({
         conflictPredicted: conflictingFiles.length > 0,
         conflictingFiles,
         prId: null,
-        groupContext: queueOverride?.groupContext ?? null,
+        groupContext: null,
         dismissedAt: rebaseDismissed.get(lane.id) ?? null,
         deferredUntil: rebaseDeferred.get(lane.id) ?? null
       };
@@ -4639,16 +4597,9 @@ export function createConflictService({
         onEvent({ type: "rebase-started", laneId: args.laneId, timestamp: new Date().toISOString() });
       }
 
-      const queueOverride = await resolveQueueRebaseOverride({
-        db,
-        projectId,
-        projectRoot,
-        laneId: lane.id,
-      });
       const { comparisonRef, fallbackRef } = resolveLaneRebaseTarget({
         lane,
         lanesById,
-        queueOverride,
       });
       let rebaseTarget = comparisonRef;
       if (fallbackRef) {

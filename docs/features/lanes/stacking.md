@@ -40,7 +40,7 @@ Consumers:
 - `laneService.computeLaneStatus` — ahead/behind math
 - `laneService.rebaseStart` — target ref for rebase
 - `conflictService.resolveLaneRebaseTarget` — comparison ref for
-  conflict prediction (combined with `resolveQueueRebaseOverride`)
+  conflict prediction
 - `autoRebaseService` — head-change handling
 - `rebaseSuggestionService` — deciding when a suggestion applies
 - `rebaseNeedUtils.ts` renderer helpers — route-to-lane mapping
@@ -179,8 +179,7 @@ Per-lane rebase:
 2. Run `git rebase <target-ref>` where the target is:
    - the parent's branch when tracked, or
    - `origin/<base>` with fallback to local `<base>` when the parent
-     is primary or absent, or
-   - a queue override when a PR queue has supplied one.
+     is primary or absent.
 3. On success: capture `postHeadSha`, optionally push.
 4. On conflict: mark `status = 'conflict'`, collect conflicting
    files, pause the run until user resolves via
@@ -245,20 +244,11 @@ Key behaviors:
   queues rebases.
 - The service debounces via `RUN_DEBOUNCE_MS` (1.2 s) to batch bursts
   of head changes, and `SWEEP_DEBOUNCE_MS` (30 s) for scheduled sweeps.
-- `recordAttentionStatus` lets other subsystems (queue landing,
-  manual rebase UI) annotate a lane so it appears in the Rebase tab's
+- `recordAttentionStatus` lets other subsystems and the manual rebase UI
+  annotate a lane so it appears in the Rebase tab's
   attention section.
 - Statuses expire from the "auto-rebased" banner after
   `AUTO_REBASED_TTL_MS` (15 min).
-
-## Queue-aware rebase
-
-When a lane belongs to an active PR merge queue, its rebase target is
-the queue's tracking branch, not the lane's static base branch.
-`resolveQueueRebaseOverride` in
-`src/main/services/shared/queueRebase.ts` returns a
-`QueueRebaseOverride` that `conflictService.resolveLaneRebaseTarget`
-and `laneService.rebaseStart` both respect.
 
 ## Renderer wiring
 
@@ -275,7 +265,8 @@ and `laneService.rebaseStart` both respect.
   Rebase/Merge action list.
 - `rebaseNeedUtils.ts` on the renderer side provides
   `buildUpstreamRebaseChain` for surfacing the full upstream rebase
-  chain in the PRs Rebase tab (see `pull-requests/stacking.md`).
+  chain in the PRs Rebase tab (see
+  [Pull requests](../pull-requests/README.md#pr-context-loading)).
 
 ## Gotchas
 

@@ -12,7 +12,6 @@ struct PRsTabView: View {
   @State private var lanes: [LaneSummary] = []
   @State private var laneSnapshots: [LaneListSnapshot] = []
   @State private var integrationProposals: [IntegrationProposal] = []
-  @State private var queueStates: [QueueLandingState] = []
   @State private var mobileSnapshot: PrMobileSnapshot?
   @State private var githubSnapshot: GitHubPrSnapshot?
   @State private var githubExternalHistoryLoaded = false
@@ -170,7 +169,7 @@ struct PRsTabView: View {
     }
   }
 
-  /// Stable registry key for root-level workflow actions (queue / integration /
+  /// Stable registry key for root-level workflow actions (integration /
   /// create / link). These share one in-flight banner, so one key is correct.
   private static let rootActionKey = "prs.root"
 
@@ -213,11 +212,13 @@ struct PRsTabView: View {
   }
 
   /// Prefer the unified `PrMobileSnapshot.workflowCards` payload when available; fall back to the
-  /// legacy per-kind fetches (integrationProposals / queueStates / laneSnapshots-derived rebase)
+  /// legacy per-kind fetches (integrationProposals / laneSnapshots-derived rebase)
   /// so offline cached state still renders if the mobile snapshot fetch failed.
   private var workflowCards: [PrWorkflowCard] {
     if let mobileSnapshot {
-      return mobileSnapshot.workflowCards
+      return mobileSnapshot.workflowCards.filter {
+        $0.kind == "integration" || $0.kind == "rebase"
+      }
     }
     return legacyWorkflowCards
   }
@@ -227,9 +228,6 @@ struct PRsTabView: View {
 
     for proposal in integrationProposals {
       cards.append(legacyIntegrationCard(from: proposal))
-    }
-    for queue in queueStates {
-      cards.append(legacyQueueCard(from: queue))
     }
     for item in rebaseWorkflowItems {
       cards.append(legacyRebaseCard(from: item))
@@ -478,7 +476,7 @@ struct PRsTabView: View {
       }
       // NOTE: We intentionally do NOT cancel any action task on disappear.
       // Root PR actions now run at the service level (`runDurablePrAction`), so
-      // switching tabs must not abort in-flight queue / integration / link work.
+      // switching tabs must not abort in-flight integration or link work.
       .navigationDestination(for: String.self) { prId in
         let routeScope = prDetailRouteScopes[prId]
         PrDetailView(
@@ -1002,7 +1000,7 @@ struct PRsTabView: View {
       ADEEmptyStateView(
         symbol: "point.3.filled.connected.trianglepath.dotted",
         title: "No active PR workflows",
-        message: "Queue, integration, and rebase work appears here once the machine syncs workflow state."
+        message: "Integration and rebase work appears here once the machine syncs workflow state."
       )
       .prListRow()
     } else {
@@ -1013,36 +1011,6 @@ struct PRsTabView: View {
               card: card,
               isLive: canRunWorkflowActions,
               onOpenPr: { prId in path.append(prId) },
-              onLand: { prId, method in
-                runPrRootAction("Landing active PR") {
-                  try await syncService.mergePullRequest(prId: prId, method: method.rawValue)
-                }
-              },
-              onLandQueueNext: { groupId, method in
-                runPrRootAction("Landing queue next") {
-                  try await syncService.landQueueNext(groupId: groupId, method: method.rawValue)
-                }
-              },
-              onPauseQueue: { queueId in
-                runPrRootAction("Pausing queue") {
-                  try await syncService.pauseQueueAutomation(queueId: queueId)
-                }
-              },
-              onResumeQueue: { queueId, method in
-                runPrRootAction("Resuming queue") {
-                  try await syncService.resumeQueueAutomation(queueId: queueId, method: method.rawValue)
-                }
-              },
-              onCancelQueue: { queueId in
-                runPrRootAction("Canceling queue") {
-                  try await syncService.cancelQueueAutomation(queueId: queueId)
-                }
-              },
-              onReorderQueue: { groupId, prIds in
-                runPrRootAction("Reordering queue") {
-                  try await syncService.reorderQueue(groupId: groupId, prIds: prIds)
-                }
-              },
               onCreateIntegrationLane: { proposalId in
                 runPrRootAction("Creating integration lane") {
                   _ = try await syncService.createIntegrationLaneForProposal(proposalId: proposalId)
@@ -1144,14 +1112,10 @@ struct PRsTabView: View {
     }
     guard !cards.isEmpty else { return [] }
 
-    let queue = cards.filter { $0.kind == "queue" }
     let integration = cards.filter { $0.kind == "integration" }
     let rebase = cards.filter { $0.kind == "rebase" }
 
     var groups: [WorkflowCardGroup] = []
-    if !queue.isEmpty {
-      groups.append(WorkflowCardGroup(title: "Queue", cards: queue))
-    }
     if !integration.isEmpty {
       groups.append(WorkflowCardGroup(title: "Integration", cards: integration))
     }
@@ -1268,25 +1232,17 @@ struct PRsTabView: View {
         if !integrationProposals.isEmpty {
           integrationProposals = []
         }
-        if !queueStates.isEmpty {
-          queueStates = []
-        }
       } else if mobileSnapshot == nil {
         async let laneSnapshotsTask = syncService.fetchLaneListSnapshots()
         async let integrationTask = syncService.fetchIntegrationProposals()
-        async let queueTask = syncService.fetchQueueStates()
 
         let loadedLaneSnapshots = try await laneSnapshotsTask
         let loadedIntegrationProposals = try await integrationTask
-        let loadedQueueStates = try await queueTask
         if laneSnapshots != loadedLaneSnapshots {
           laneSnapshots = loadedLaneSnapshots
         }
         if integrationProposals != loadedIntegrationProposals {
           integrationProposals = loadedIntegrationProposals
-        }
-        if queueStates != loadedQueueStates {
-          queueStates = loadedQueueStates
         }
       }
 
@@ -1436,7 +1392,6 @@ struct PRsTabView: View {
       initialLaneId: createInitialLaneId,
       singleModeOnly: createInitialLaneId != nil,
       onCreateSingle: handleCreateSinglePr,
-      onCreateQueue: handleCreateQueuePrs,
       onCreateIntegration: handleCreateIntegrationPr
     )
     .environmentObject(syncService)
@@ -1478,27 +1433,6 @@ struct PRsTabView: View {
   }
 
   @MainActor
-  private func handleCreateQueuePrs(_ request: CreateQueuePrsRequest) async -> Bool {
-    await performPrRootAction(
-      "Creating queue PRs",
-      operation: {
-        _ = try await syncService.createQueuePrs(
-          laneIds: request.laneIds,
-          targetBranch: request.baseBranch,
-          titles: request.titles,
-          draft: request.draft,
-          autoRebase: request.autoRebase,
-          ciGating: request.ciGating,
-          queueName: request.queueName,
-          allowDirtyWorktree: nil
-        )
-      },
-      onSuccess: {
-        createPresented = false
-      }
-    )
-  }
-
   @MainActor
   private func handleCreateIntegrationPr(_ request: CreateIntegrationRequest) async -> Bool {
     await performPrRootAction(
@@ -1534,7 +1468,7 @@ struct PRsTabView: View {
     )
   }
 
-  /// Fire-and-forget root workflow action (queue / integration / link / merge /
+  /// Fire-and-forget root workflow action (integration / link / merge /
   /// rebase). The in-flight entry + Task lifecycle live on `SyncService`, so the
   /// work COMPLETES and the spinner persists even if the user switches tabs and
   /// tears this view down. The view-side closures only run if the view is still
@@ -1686,69 +1620,14 @@ struct PRsTabView: View {
 
   // MARK: - Legacy → unified workflow card adapters
   //
-  // These let the root screen keep rendering queue/integration/rebase state when the mobile
+  // These let the root screen keep rendering integration/rebase state when the mobile
   // snapshot fetch isn't available (older desktop build, or cold cache). Once every host the
   // user pairs with supports `prs.getMobileSnapshot` these can be dropped.
-
-  private func legacyQueueCard(from queue: QueueLandingState) -> PrWorkflowCard {
-    PrWorkflowCard(
-      id: "queue:\(queue.id)",
-      kind: "queue",
-      queueId: queue.queueId,
-      groupId: queue.groupId,
-      groupName: queue.groupName,
-      targetBranch: queue.targetBranch,
-      state: queue.state,
-      activePrId: queue.activePrId,
-      currentPosition: nil,
-      totalEntries: queue.entries.count,
-      entries: queue.entries,
-      waitReason: queue.waitReason,
-      lastError: queue.lastError,
-      updatedAt: nil,
-      proposalId: nil,
-      title: nil,
-      baseBranch: nil,
-      overallOutcome: nil,
-      integrationStatus: nil,
-      laneCount: nil,
-      conflictLaneCount: nil,
-      lanes: nil,
-      workflowDisplayState: nil,
-      cleanupState: nil,
-      linkedPrId: nil,
-      integrationLaneId: nil,
-      preferredIntegrationLaneId: nil,
-      mergeIntoHeadSha: nil,
-      integrationLaneOrigin: nil,
-      createdAt: nil,
-      laneId: nil,
-      laneName: nil,
-      behindBy: nil,
-      conflictPredicted: nil,
-      prId: nil,
-      prNumber: nil,
-      dismissedAt: nil,
-      deferredUntil: nil
-    )
-  }
 
   private func legacyIntegrationCard(from proposal: IntegrationProposal) -> PrWorkflowCard {
     PrWorkflowCard(
       id: "integration:\(proposal.id)",
       kind: "integration",
-      queueId: nil,
-      groupId: nil,
-      groupName: nil,
-      targetBranch: nil,
-      state: nil,
-      activePrId: nil,
-      currentPosition: nil,
-      totalEntries: nil,
-      entries: nil,
-      waitReason: nil,
-      lastError: nil,
-      updatedAt: nil,
       proposalId: proposal.id,
       title: proposal.title ?? proposal.integrationLaneName,
       baseBranch: proposal.baseBranch,
@@ -1782,18 +1661,6 @@ struct PRsTabView: View {
     PrWorkflowCard(
       id: "rebase:\(item.laneId)",
       kind: "rebase",
-      queueId: nil,
-      groupId: nil,
-      groupName: nil,
-      targetBranch: nil,
-      state: nil,
-      activePrId: nil,
-      currentPosition: nil,
-      totalEntries: nil,
-      entries: nil,
-      waitReason: nil,
-      lastError: nil,
-      updatedAt: nil,
       proposalId: nil,
       title: nil,
       baseBranch: nil,

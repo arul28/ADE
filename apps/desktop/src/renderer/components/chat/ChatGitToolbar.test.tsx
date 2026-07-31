@@ -154,6 +154,33 @@ describe("ChatGitToolbar", () => {
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
+  it("shows native GitHub stack position in the chat PR badge", async () => {
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-stack",
+      laneId: "lane-1",
+      title: "Stacked PR",
+      state: "open",
+      checksStatus: "passing",
+      githubPrNumber: 965,
+      githubUrl: "https://github.com/acme/ade/pull/965",
+      additions: 10,
+      deletions: 2,
+      updatedAt: "2026-07-30T12:00:00.000Z",
+      stack: {
+        id: "stack-966",
+        number: 966,
+        size: 4,
+        position: 2,
+        baseBranch: "main",
+      },
+    } as any);
+
+    renderToolbar();
+
+    expect(await screen.findByLabelText("GitHub Stack 2 of 4")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /PR #965/ }).title).toContain("Stacked PR");
+  });
+
   it("resolves the linked PR on first remote PR click before routing", async () => {
     resetStore({ remote: true });
     vi.mocked(window.ade.prs.getForLane).mockResolvedValue({

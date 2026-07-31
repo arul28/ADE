@@ -352,7 +352,6 @@ function createRuntime() {
     },
     prService: {
       simulateIntegration: vi.fn(async () => ({ steps: [], conflicts: [], clean: true })),
-      createQueuePrs: vi.fn(async () => ({ groupId: "group-1", prs: [] })),
       createIntegrationPr: vi.fn(async () => ({ prId: "pr-int-1", url: "https://github.com/pr/1" })),
       draftDescription: vi.fn(async () => ({ title: "Drafted PR", body: "Drafted body" })),
       createFromLane: vi.fn(async () => ({
@@ -366,7 +365,6 @@ function createRuntime() {
         status: "open",
       })),
       getPrHealth: vi.fn(async (prId: string) => ({ prId, healthy: true, checks: "pass", reviews: "approved" })),
-      landQueueNext: vi.fn(async () => ({ landed: true, prId: "pr-1", sha: "def456" })),
       getChecks: vi.fn(async () => [
         {
           name: "ci / unit",
@@ -5544,25 +5542,6 @@ describe("adeRpcServer", () => {
     });
   });
 
-  it("routes create_queue with authorization", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
-    const response = await callTool(handler, "create_queue", {
-      laneIds: ["lane-1", "lane-2"],
-      targetBranch: "main"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.createQueuePrs).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneIds: ["lane-1", "lane-2"],
-        targetBranch: "main"
-      })
-    );
-  });
-
   it("routes create_integration with authorization", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
@@ -5741,22 +5720,6 @@ describe("adeRpcServer", () => {
       prId: "pr-123",
       threadId: "thread-1",
     });
-  });
-
-  it("routes land_queue_next with authorization", async () => {
-    const fixture = createRuntime();
-    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
-
-    await initialize(handler, { callerId: "orchestrator", role: "orchestrator" });
-    const response = await callTool(handler, "land_queue_next", {
-      groupId: "group-1",
-      method: "squash"
-    });
-
-    expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.prService.landQueueNext).toHaveBeenCalledWith(
-      expect.objectContaining({ groupId: "group-1", method: "squash" })
-    );
   });
 
   it("get_lane_status returns error for unknown lane", async () => {

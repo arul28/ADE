@@ -44,7 +44,7 @@ behavior):
 | `apps/desktop/src/main/services/conflicts/conflictService.ts` | Prediction, simulation, risk matrix, proposals, external resolver runs, rebase needs, AI rebase (4.6k lines) |
 | `apps/desktop/src/main/services/git/git.ts` | `runGit`, `runGitOrThrow`, `runGitMergeTree`, conflict type normalization |
 | `apps/desktop/src/main/services/git/gitConflictState.ts` | `detectConflictKind` for live merge/rebase state |
-| `apps/desktop/src/main/services/shared/queueRebase.ts` | `resolveQueueRebaseOverride`, `fetchQueueTargetTrackingBranches`, `fetchRemoteTrackingBranch` |
+| `apps/desktop/src/main/services/shared/remoteTrackingBranch.ts` | `fetchRemoteTrackingBranch` |
 | `src/shared/laneBaseResolution.ts` | `shouldLaneTrackParent`, `branchNameFromLaneRef` for comparison ref resolution |
 
 Renderer:
@@ -322,10 +322,6 @@ In `conflictService.ts`:
   speculative patches when required file context is incomplete.
   They return `insufficientContext: true` with
   `insufficientReasons[]` rather than a best-guess patch.
-- **Queue-aware rebase overrides.** `resolveQueueRebaseOverride`
-  must run before comparing against `base_ref`. Without it, queued
-  PRs will appear misaligned relative to their queue's tracking
-  branch.
 - **Pack root dir resolution.** `conflictPacksDir` may be injected
   for tests; the derived `packsRootDir` is the parent of that path
   if injected, otherwise `resolveAdeLayout(projectRoot).packsDir`.
