@@ -557,7 +557,7 @@ export const SessionCard = React.memo(function SessionCard({
       <span
         key="lane"
         data-session-lane-identity={lane.name}
-        className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium"
+        className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
         style={{ color: laneAccent ?? undefined }}
       >
@@ -567,7 +567,7 @@ export const SessionCard = React.memo(function SessionCard({
         >
           <LaneIcon size={12} weight="regular" />
         </span>
-        <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/80")}>
+        <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/85")}>
           <LaneNamingLabel laneName={lane.name} naming={isAutoNaming} />
         </span>
       </span>,
