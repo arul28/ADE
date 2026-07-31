@@ -177,6 +177,8 @@ export function useDraftMachineRouting({
   const boundMachineId = projectBinding?.kind === "remote"
     ? projectBinding.targetId
     : "this-mac";
+  const desiredMachineId = initialDraftMachineId?.trim() || boundMachineId;
+  const routingInputKey = JSON.stringify([projectBinding?.key ?? null, desiredMachineId]);
   const lanesByMachineId = useMemo(() => {
     const byMachine = new Map<string, RoutedDraftLane[]>();
     byMachine.set(
@@ -202,24 +204,23 @@ export function useDraftMachineRouting({
     machineOptions,
   ]);
 
-  const [machineId, setMachineId] = useState(
-    () => initialDraftMachineId?.trim() || boundMachineId,
-  );
+  const [machineId, setMachineId] = useState(() => desiredMachineId);
+  // Reconciliation tracks whether the latest project/persisted input was
+  // applied. A user's machine choice inside that scope must remain ready even
+  // before the parent echoes the persisted value back through props.
+  const [reconciledRoutingInputKey, setReconciledRoutingInputKey] =
+    useState(() => routingInputKey);
   const chooseMachine = useCallback((nextMachineId: string) => {
     setMachineId(nextMachineId);
     onDraftMachineChange?.(nextMachineId === boundMachineId ? null : nextMachineId);
   }, [boundMachineId, onDraftMachineChange]);
 
   useEffect(() => {
-    const requestedMachineId = initialDraftMachineId?.trim();
-    if (
-      requestedMachineId
-      && requestedMachineId !== machineId
-      && machineOptions.some((option) => option.id === requestedMachineId)
-    ) {
-      setMachineId(requestedMachineId);
-    }
-  }, [initialDraftMachineId, machineId, machineOptions]);
+    setMachineId((currentMachineId) =>
+      currentMachineId === desiredMachineId ? currentMachineId : desiredMachineId,
+    );
+    setReconciledRoutingInputKey(routingInputKey);
+  }, [desiredMachineId, routingInputKey]);
 
   useEffect(() => {
     if (machineOptions.some((option) => option.id === machineId)) return;
@@ -408,6 +409,8 @@ export function useDraftMachineRouting({
     selectorMachines,
     selectorLanes,
     boundMachineId,
+    selectedMachineId: machineId,
+    selectionReconciled: reconciledRoutingInputKey === routingInputKey,
     executionLanes,
     executionBinding,
     selectedMachine,

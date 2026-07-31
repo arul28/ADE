@@ -228,6 +228,10 @@ import {
 } from "./useDraftMachineRouting";
 import { DraftMachinePicker } from "./DraftMachinePicker";
 import {
+  collectDraftVisualAttachmentPaths,
+  useDraftAttachmentTransfer,
+} from "./draftAttachmentTransfer";
+import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
@@ -1431,6 +1435,7 @@ type ComposerDraftStorageSnapshot = {
   executionMode: AgentChatExecutionMode;
   controls: NativeControlState;
   attachments: AgentChatFileRef[];
+  attachmentOwnerBinding: OpenProjectBinding | null;
   contextAttachments: AgentChatContextAttachment[];
   iosContextItems: IosElementContextItem[];
   appControlContextItems: AppControlContextItem[];
@@ -1438,6 +1443,33 @@ type ComposerDraftStorageSnapshot = {
   draftLaunchTargetId: string | null;
   updatedAt: string;
 };
+
+function normalizeComposerAttachmentOwnerBinding(value: unknown): OpenProjectBinding | null {
+  if (!isRecord(value)) return null;
+  const kind = value.kind;
+  const key = nonEmptyString(value.key);
+  const rootPath = nonEmptyString(value.rootPath);
+  const displayName = nonEmptyString(value.displayName);
+  if (!key || !rootPath || !displayName) return null;
+  const gitOriginUrl = nullableString(value.gitOriginUrl);
+  if (kind === "local") {
+    return { kind, key, rootPath, displayName, gitOriginUrl };
+  }
+  const targetId = nonEmptyString(value.targetId);
+  const runtimeName = nonEmptyString(value.runtimeName);
+  const projectId = nonEmptyString(value.projectId);
+  if (kind !== "remote" || !targetId || !runtimeName || !projectId) return null;
+  return {
+    kind,
+    key,
+    targetId,
+    runtimeName,
+    projectId,
+    rootPath,
+    displayName,
+    gitOriginUrl,
+  };
+}
 
 type ParallelModelRowState = NativeControlState & {
   modelId: string;
@@ -2676,6 +2708,9 @@ function normalizeStoredComposerDraft(
       defaults,
     ),
     attachments: normalizeComposerFileAttachments(value.attachments),
+    attachmentOwnerBinding: normalizeComposerAttachmentOwnerBinding(
+      value.attachmentOwnerBinding,
+    ),
     contextAttachments: normalizeComposerContextAttachments(value.contextAttachments),
     iosContextItems: normalizeComposerIosContextItems(value.iosContextItems),
     appControlContextItems: normalizeComposerAppControlContextItems(value.appControlContextItems),
@@ -3546,6 +3581,7 @@ export function AgentChatPane({
       : null,
   );
   const [attachments, setAttachments] = useState<AgentChatFileRef[]>([]);
+  const draftAttachmentOwnerBindingRef = useRef<OpenProjectBinding | null>(null);
   const [contextAttachments, setContextAttachments] = useState<AgentChatContextAttachment[]>([]);
   const [sdkSlashCommands, setSdkSlashCommands] = useState<import("../../../shared/types").AgentChatSlashCommand[]>([]);
   const [sendOnEnter, setSendOnEnter] = useState(true);
@@ -7570,12 +7606,19 @@ export function AgentChatPane({
     }));
   }, [laneId, selectedSessionId, sessionProvider]);
 
+  const claimDraftAttachmentOwner = useCallback(() => {
+    if (!selectedSessionIdRef.current) {
+      draftAttachmentOwnerBindingRef.current = draftExecutionBindingRef.current;
+    }
+  }, []);
+
   const addAttachment = useCallback((attachment: AgentChatFileRef) => {
+    claimDraftAttachmentOwner();
     setAttachments((prev) => {
       if (prev.some((entry) => entry.path === attachment.path)) return prev;
       return [...prev, attachment];
     });
-  }, []);
+  }, [claimDraftAttachmentOwner]);
 
   const saveContextScreenshot = useCallback(async (args: {
     dataUrl: string;
@@ -7610,6 +7653,7 @@ export function AgentChatPane({
   }, [addAttachment]);
 
   const addIosElementContext = useCallback(async (item: IosElementContextItem) => {
+    claimDraftAttachmentOwner();
     const nextSurface = iosContextSurface(item);
     const replacedAttachmentPaths = iosElementContextItems
       .filter((entry) => iosContextSurface(entry) !== nextSurface)
@@ -7649,9 +7693,10 @@ export function AgentChatPane({
       },
       ...current.filter((entry) => iosContextSurface(entry) === nextSurface),
     ]);
-  }, [iosElementContextItems, saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, iosElementContextItems, saveContextScreenshot]);
 
   const addAppControlContext = useCallback(async (item: AppControlContextItem) => {
+    claimDraftAttachmentOwner();
     let attachmentPath = getAppControlContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
       const saved = await saveContextScreenshot({
@@ -7679,11 +7724,12 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, [saveContextScreenshot]);
+  }, [claimDraftAttachmentOwner, saveContextScreenshot]);
 
   const addBuiltInBrowserContext = useCallback(async (rawItem: unknown) => {
     const item = normalizeBuiltInBrowserContextItem(rawItem);
     if (!item) return;
+    claimDraftAttachmentOwner();
     let attachmentPath = getBuiltInBrowserContextAttachmentPath(item);
     if (item.screenshotDataUrl && !attachmentPath) {
       const saved = await saveContextScreenshot({
@@ -7713,7 +7759,7 @@ export function AgentChatPane({
       },
       ...current.slice(0, 4),
     ]);
-  }, [saveContextScreenshot, selectedSessionId]);
+  }, [claimDraftAttachmentOwner, saveContextScreenshot, selectedSessionId]);
 
   useEffect(() => {
     const matchesThisChat = (sessionId: unknown): boolean => (
@@ -8078,6 +8124,7 @@ export function AgentChatPane({
       }
       draftsPerSessionRef.current.set(companionStateKey, saved.text);
       setDraft(saved.text);
+      draftAttachmentOwnerBindingRef.current = saved.attachmentOwnerBinding;
       setAttachments(saved.attachments);
       setContextAttachments(saved.contextAttachments);
       setIosElementContextItems(saved.iosContextItems);
@@ -8101,6 +8148,7 @@ export function AgentChatPane({
     }
     const savedText = draftsPerSessionRef.current.get(companionStateKey) ?? "";
     setDraft(savedText);
+    draftAttachmentOwnerBindingRef.current = null;
     setAttachments([]);
     setContextAttachments([]);
     setIosElementContextItems([]);
@@ -8136,6 +8184,7 @@ export function AgentChatPane({
         cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
       },
       attachments,
+      attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
       contextAttachments,
       iosContextItems: iosElementContextItems,
       appControlContextItems,
@@ -10780,6 +10829,8 @@ export function AgentChatPane({
     machineOptions: laneMachineOptions,
     selectorLanes: draftLaneSelectorLanes,
     boundMachineId: boundLaneMachineId,
+    selectedMachineId: selectedDraftMachineId,
+    selectionReconciled: draftMachineSelectionReconciled,
     executionLanes: draftExecutionLanes,
     executionBinding: draftExecutionBinding,
     selectedMachine: selectedDraftMachine,
@@ -10818,9 +10869,65 @@ export function AgentChatPane({
   const activeComposerRuntimeBinding = selectedSessionId
     ? (chatRuntimePin ?? projectBinding)
     : draftExecutionBinding;
-  const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftExecutionBinding
-    ? "Reconnect the selected machine project or choose another machine before attaching files."
-    : null;
+  const draftAttachmentMachine = useMemo(() => ({
+    id: selectedDraftMachineId,
+    name: selectedDraftMachine?.name ?? (
+      selectedDraftMachineId === boundLaneMachineId ? "This Mac" : selectedDraftMachineId
+    ),
+    binding: draftExecutionBinding,
+  }), [
+    boundLaneMachineId,
+    draftExecutionBinding,
+    selectedDraftMachineId,
+    selectedDraftMachine?.name,
+  ]);
+  const getLinkedDraftVisualAttachmentPaths = useCallback(
+    () => collectDraftVisualAttachmentPaths({
+      linkedAttachmentPaths: new Set([
+        ...linkedIosAttachmentPathsRef.current,
+        ...linkedAppControlAttachmentPathsRef.current,
+        ...linkedBuiltInBrowserAttachmentPathsRef.current,
+      ]),
+      iosContextItems: iosElementContextItems,
+      appControlContextItems,
+      builtInBrowserContextItems,
+    }),
+    [appControlContextItems, builtInBrowserContextItems, iosElementContextItems],
+  );
+  const clearDraftVisualContext = useCallback(() => {
+    setIosElementContextItems([]);
+    setAppControlContextItems([]);
+    setBuiltInBrowserContextItems([]);
+    linkedIosAttachmentPathsRef.current.clear();
+    linkedAppControlAttachmentPathsRef.current.clear();
+    linkedBuiltInBrowserAttachmentPathsRef.current.clear();
+  }, []);
+  const {
+    pending: draftAttachmentTransferPending,
+    blockedReason: draftAttachmentTransferBlockedReason,
+  } = useDraftAttachmentTransfer({
+    enabled: showDraftLaunchControls,
+    machine: draftAttachmentMachine,
+    scopeKey: composerDraftStorageKeyValue,
+    scopeReady: draftMachineSelectionReconciled,
+    attachments,
+    setAttachments,
+    attachmentOwnerBindingRef: draftAttachmentOwnerBindingRef,
+    getLinkedVisualAttachmentPaths: getLinkedDraftVisualAttachmentPaths,
+    visualContextCount:
+      iosElementContextItems.length
+      + appControlContextItems.length
+      + builtInBrowserContextItems.length,
+    clearVisualContext: clearDraftVisualContext,
+    setError,
+  });
+  const draftAttachmentUnavailableReason = showDraftLaunchControls && !draftMachineSelectionReconciled
+    ? "Restoring this project's selected machine."
+    : showDraftLaunchControls && !draftExecutionBinding
+      ? "Reconnect the selected machine project or choose another machine before attaching files."
+      : draftAttachmentTransferPending
+        ? "Moving attached images to the selected machine."
+        : draftAttachmentTransferBlockedReason;
   const auxiliaryToolDisabledReason = !activeComposerRuntimeBinding
     ? "Reconnect the selected machine project before using this tool."
     : !projectBinding || activeComposerRuntimeBinding.key !== projectBinding.key
@@ -10830,48 +10937,6 @@ export function AgentChatPane({
             : "This Mac"
         } before using this tool. Chat and attachments remain pinned to that machine.`
       : null;
-
-  const previousDraftMachineRef = useRef<{ id: string; name: string } | null>(null);
-  useEffect(() => {
-    if (!showDraftLaunchControls) {
-      previousDraftMachineRef.current = null;
-      return;
-    }
-    const currentMachine = {
-      id: selectedDraftMachine?.id ?? boundLaneMachineId,
-      name: selectedDraftMachine?.name ?? "This Mac",
-    };
-    const previousMachine = previousDraftMachineRef.current;
-    previousDraftMachineRef.current = currentMachine;
-    if (!previousMachine || previousMachine.id === currentMachine.id) return;
-
-    const removedCount =
-      attachments.length
-      + iosElementContextItems.length
-      + appControlContextItems.length
-      + builtInBrowserContextItems.length;
-    if (removedCount === 0) return;
-    setAttachments([]);
-    setIosElementContextItems([]);
-    setAppControlContextItems([]);
-    setBuiltInBrowserContextItems([]);
-    linkedIosAttachmentPathsRef.current.clear();
-    linkedAppControlAttachmentPathsRef.current.clear();
-    linkedBuiltInBrowserAttachmentPathsRef.current.clear();
-    setError(
-      `Removed ${removedCount} machine-owned attachment${removedCount === 1 ? "" : "s"} from ${previousMachine.name}. `
-      + `Attach them again on ${currentMachine.name}.`,
-    );
-  }, [
-    appControlContextItems.length,
-    attachments.length,
-    boundLaneMachineId,
-    builtInBrowserContextItems.length,
-    iosElementContextItems.length,
-    selectedDraftMachine?.id,
-    selectedDraftMachine?.name,
-    showDraftLaunchControls,
-  ]);
 
   useEffect(() => {
     if (!showDraftLaunchControls || !isTileActive) return;
@@ -11882,7 +11947,14 @@ export function AgentChatPane({
             approvalResponding={pendingInput ? respondingApprovalIds.has(pendingInput.itemId) : false}
             turnActive={turnActive}
             sendOnEnter={sendOnEnter}
-            busy={busy || projectTransitionBlocksChat || chatSelectionTransitioning}
+            busy={
+              busy
+              || projectTransitionBlocksChat
+              || chatSelectionTransitioning
+              || !draftMachineSelectionReconciled
+              || draftAttachmentTransferPending
+              || Boolean(draftAttachmentTransferBlockedReason)
+            }
             sessionProvider={sessionProvider}
             interactionMode={interactionMode}
             claudePermissionMode={claudePermissionMode}
@@ -12122,6 +12194,7 @@ export function AgentChatPane({
                   cursorConfigValues: { ...currentNativeControls.cursorConfigValues },
                 },
                 attachments: [...attachments],
+                attachmentOwnerBinding: draftAttachmentOwnerBindingRef.current,
                 contextAttachments: [...contextAttachments],
                 iosContextItems: [...iosElementContextItems],
                 appControlContextItems: [...appControlContextItems],
