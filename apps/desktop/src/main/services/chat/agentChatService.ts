@@ -21066,6 +21066,7 @@ export function createAgentChatService(args: {
       providerSlashCommand?: boolean;
       forceClaudeUserMessage?: boolean;
       onDispatched?: () => void;
+      onBackendDispatched?: () => void;
     },
   ): Promise<void> => {
     const runtimeKind = managed.runtime?.kind;
@@ -21234,8 +21235,8 @@ export function createAgentChatService(args: {
       });
 
       await promptAccepted;
-      if (args.onDispatched) {
-        args.onDispatched();
+      if (args.onBackendDispatched) {
+        args.onBackendDispatched();
       }
 
       let stepNumber = 0;
@@ -34505,7 +34506,8 @@ export function createAgentChatService(args: {
         metadata,
         laneDirectiveKey,
         providerSlashCommand,
-        onDispatched: onBackendDispatched ?? onDispatched,
+        onDispatched,
+        onBackendDispatched,
       });
       return;
     }
@@ -35134,7 +35136,10 @@ export function createAgentChatService(args: {
 
   const steerWithOptions = async (
     { sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs,
-    options?: { allowPendingInput?: boolean },
+    options?: {
+      allowPendingInput?: boolean;
+      onAcceptedDispatch?: () => void;
+    },
   ): Promise<AgentChatSteerResult> => {
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
@@ -35198,6 +35203,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35273,6 +35279,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35347,6 +35354,7 @@ export function createAgentChatService(args: {
       if (!preparedSteer) {
         return { steerId, queued: false };
       }
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
       await executePreparedSendMessage(preparedSteer);
       return { steerId, queued: false };
     }
@@ -35466,6 +35474,9 @@ export function createAgentChatService(args: {
     if (!preparedSteer) {
       return { steerId, queued: false };
     }
+    if (managed.session.provider === "opencode") {
+      preparedSteer.onBackendDispatched = options?.onAcceptedDispatch;
+    }
     if (managed.session.provider === "claude") {
       const runtime = ensureClaudeSessionRuntime(managed);
       if (runtime.busy || managed.session.status === "active") {
@@ -35529,12 +35540,39 @@ export function createAgentChatService(args: {
   const steerUserMessage = async (
     args: AgentChatSteerArgs,
   ): Promise<AgentChatSteerResult> => {
+    const managed = ensureManagedSession(args.sessionId);
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
       || (args.contextAttachments?.length ?? 0) > 0;
-    const result = await steerWithOptions(args);
-    if (routableMessage && result.reason !== "queue_full" && !args.metadata?.scheduledWake) {
+    const waitsForProviderDispatch =
+      (
+        managed.session.provider === "opencode"
+        || managed.session.provider === "cursor"
+        || managed.session.provider === "droid"
+      )
+      && !canRouteActiveSendToSteer(managed);
+    let markersCleared = false;
+    const clearAcceptedUserMarkers = (): void => {
+      if (
+        markersCleared
+        || !routableMessage
+        || args.metadata?.scheduledWake
+      ) {
+        return;
+      }
+      markersCleared = true;
       sessionService.clearTurnStartMarkers(args.sessionId);
+    };
+    const result = await steerWithOptions(args, {
+      onAcceptedDispatch: clearAcceptedUserMarkers,
+    });
+    if (
+      routableMessage
+      && result.reason !== "queue_full"
+      && !args.metadata?.scheduledWake
+      && (!waitsForProviderDispatch || markersCleared)
+    ) {
+      clearAcceptedUserMarkers();
     }
     return result;
   };

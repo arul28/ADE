@@ -713,34 +713,44 @@ export function createGithubService({
   };
 
   const readAuthToken = async (): Promise<GitHubTokenLookup> => {
+    const patLookup = readPatAuthToken();
+    const patTokenStored = Boolean(patLookup);
     let ghFallback: GitHubTokenLookup = {
       token: null,
       source: "none",
-      patTokenStored: false,
+      patTokenStored,
       ghCliPath: null,
       ghAuthError: null,
     };
     return await selectGithubOperationCredentialAsync<GitHubTokenLookup>({
-      environment: () => readEnvironmentAuthToken(),
+      environment: () => {
+        const environment = readEnvironmentAuthToken();
+        return environment ? { ...environment, patTokenStored } : null;
+      },
       gh: async () => {
         const gh = await readGhAuthToken();
-        ghFallback = { ...gh, source: "none", patTokenStored: false };
-        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+        ghFallback = { ...gh, source: "none", patTokenStored };
+        return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
       },
-      pat: () => readPatAuthToken(),
+      pat: () => patLookup,
     }) ?? ghFallback;
   };
 
   const readAuthTokenSync = (): GitHubTokenLookup => {
+    const patLookup = readPatAuthToken();
+    const patTokenStored = Boolean(patLookup);
     let ghFallback: GitHubTokenLookup = {
       token: null,
       source: "none",
-      patTokenStored: false,
+      patTokenStored,
       ghCliPath: null,
       ghAuthError: null,
     };
     return selectGithubOperationCredential<GitHubTokenLookup>({
-      environment: () => readEnvironmentAuthToken(),
+      environment: () => {
+        const environment = readEnvironmentAuthToken();
+        return environment ? { ...environment, patTokenStored } : null;
+      },
       gh: () => {
         if (process.env.ADE_DISABLE_GH_AUTH_FALLBACK === "1") {
           sharedGhAuth.authCache = null;
@@ -755,10 +765,10 @@ export function createGithubService({
           ghCliPath: null,
           ghAuthError: hostsToken ? null : "GitHub auth has not been resolved yet.",
         };
-        ghFallback = { ...gh, source: "none", patTokenStored: false };
-        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+        ghFallback = { ...gh, source: "none", patTokenStored };
+        return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
       },
-      pat: () => readPatAuthToken(),
+      pat: () => patLookup,
     }) ?? ghFallback;
   };
 

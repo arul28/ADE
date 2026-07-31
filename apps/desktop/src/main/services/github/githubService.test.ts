@@ -836,22 +836,24 @@ describe("githubService.getStatus", () => {
       jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
     );
 
-    const status = await makeService({
+    const service = makeService({
       credentialStore,
       ghAuthTokenProvider: () => ({
         token: "gho_cli_token",
         ghCliPath: "/opt/homebrew/bin/gh",
         ghAuthError: null,
       }),
-    }).getStatus();
+    });
+    const status = await service.getStatus();
 
     expect(status).toMatchObject({
       authSource: "gh",
       connected: true,
-      patTokenStored: false,
+      patTokenStored: true,
       repoAccessOk: null,
       userLogin: "alice",
     });
+    expect(service.getTokenOrThrow()).toBe("gho_cli_token");
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization)

@@ -25,12 +25,12 @@ export const adeBundledAgentSkills = [
  */
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
-  '- Working: `ade chat note "testing desktop auth fallback"`; use 3–6 words and be concrete. Long notes truncate; no sentences or vague "Working" / "Blocked".',
-  '- Blocked on user input: first `ade chat note "<what is blocked and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
-  "- The next accepted user message clears the prior hand-raise. If it does not resolve the blocker, update the note and call `ade chat ask` again before ending the turn.",
-  '- Done: say so in your final message and leave a durable one-line result via `ade chat note "<delivered result>"`.',
-  "- You cannot settle or unsettle a session; `ade chat settle` / `ade session settle` no longer exist. Filing a row as done is the user's call, or the automatic result of its PR merging.",
-  "- Waiting on something you expect to take a while? `ade session snooze <id> --for <duration>` quiets the row without claiming the work is done, and a hand-raise wakes it early.",
+  '- Working: `ade chat note "testing desktop auth fallback"`; use 3–6 words, concretely. Longer notes truncate.',
+  '- Blocked on input: call `ade chat note "<what and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
+  "- The next accepted user message clears the prior hand-raise. Re-note and re-ask before ending if still blocked.",
+  '- Done: report it and leave `ade chat note "<delivered result>"`.',
+  "- You cannot settle or unsettle a session; that is the user's call, or the automatic result of its PR merging.",
+  "- Waiting a while? `ade session snooze <id> --for <duration>` hides the row without claiming done; a hand-raise wakes it.",
 ].join("\n");
 
 /**
@@ -63,14 +63,14 @@ export function buildAdeBootstrapGuidance(
 ): string {
   return [
     "## ADE",
-    "You're working inside ADE, a local-first dev environment (lanes, chats, terminals, PRs, proof/artifacts, app & iOS-simulator & browser control). The `ade` CLI is your control plane for ADE state — it is not in your training data, so consult `ade help <command>` rather than guessing command syntax.",
-    "Your ADE capabilities ship as Agent Skills. When a task touches an ADE area (lanes/git, PRs, proof & screenshots, the built-in browser, iOS simulator, app control, Linear, deeplinks, or searching across everything in ADE), read the matching `ade-*` skill before acting; otherwise ignore them.",
+    "ADE is a local-first dev environment for lanes, chats, terminals, PRs, proof, apps, iOS, and browsers. Its `ade` CLI controls ADE state; use `ade help <command>` instead of guessing.",
+    "ADE capabilities ship as Agent Skills. For ADE tasks, read the matching `ade-*` skill before acting.",
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
-    "If your runtime does not expose those skills natively, use `ade skill list --text` to discover them and `ade skill show <name> --text` to load one on demand.",
-    "If the direct `mcp__computer_use` tools are present, use them for Codex Computer Use and honor their per-app approvals; do not initialize `@oai/sky` through `node_repl` as a substitute.",
-    "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Project secrets are available through `ade secrets`; read only the named secret the user asks you to use and avoid printing secret values. Track and clean up processes you start.",
-    "`ade chat scheduled-work create` schedules durable self-resume for bound chats and tracked provider CLIs.",
+    "If skills are not native, discover with `ade skill list --text` and load with `ade skill show <name> --text`.",
+    "For Codex Computer Use, prefer direct `mcp__computer_use` tools and honor per-app approvals; never substitute `@oai/sky` via `node_repl`.",
+    "CLI ground truth: `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Read only requested `ade secrets`, never print them, and clean up started processes.",
+    "`ade chat scheduled-work create` durably resumes bound chats and tracked provider CLIs.",
     ADE_SESSION_STATUS_PROTOCOL_GUIDANCE,
   ].join("\n");
 }
