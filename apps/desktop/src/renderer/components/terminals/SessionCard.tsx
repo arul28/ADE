@@ -76,9 +76,11 @@ import { formatFutureDuration } from "../../../shared/sessionStatusPresentation"
 
    Status lives in the row's CONTENT instead, in exactly one place: the status
    slot on line 1 (`SessionStatusSlot`). Everything that used to compete with
-   it on that line — role pills, spawn pills, Imported/grid badges, live-child
+   it on that line — role pills, spawn pills, Imported badges, live-child
    counts, wake chips, the Claude tag — moved into the hover tooltip. They are
-   real, they are just not worth a permanent seat.
+   real, they are just not worth a permanent seat. Grid membership is the one
+   compact identity marker that stays visible because it explains why a sidebar
+   session is also present in the workspace.
    ────────────────────────────────────────────────────────────────────────── */
 
 /* ── Full-bleed row geometry ───────────────────────────────────────────────
@@ -805,6 +807,20 @@ export const SessionCard = React.memo(function SessionCard({
       runtimePin={runtimePin}
     />
   );
+  const gridIndicator = gridBadge ? (
+    <span
+      data-testid="session-grid-indicator"
+      role="img"
+      className={cn(
+        "inline-flex shrink-0 items-center justify-center",
+        gridBadge === "active" ? "text-violet-300" : "text-muted-fg/40",
+      )}
+      title={gridBadge === "active" ? "In the active grid" : "In another grid"}
+      aria-label={gridBadge === "active" ? "In the active grid" : "In another grid"}
+    >
+      <GridFour size={11} weight={gridBadge === "active" ? "fill" : "bold"} />
+    </span>
+  ) : null;
 
   /* COMPACT ROWS ONLY. The full row carries lineage on line 1 now, and two
      lineage indicators on one row is exactly the duplication this pass removes.
@@ -909,6 +925,7 @@ export const SessionCard = React.memo(function SessionCard({
           {titleNode}
           {compactLineageGlyph}
           <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
+          {gridIndicator}
           {statusSlot}
         </div>
       ) : (
@@ -924,6 +941,7 @@ export const SessionCard = React.memo(function SessionCard({
                 {part}
               </React.Fragment>
             ))}
+            {gridIndicator}
             {statusSlot}
           </div>
 
