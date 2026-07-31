@@ -20,7 +20,7 @@ on:
 permissions:
   actions: read
   checks: read
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -476,6 +476,9 @@ jobs:
       - build-runtime-binaries
       - build-mac-release
       - build-win-release
+    permissions:
+      actions: read
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -619,8 +622,8 @@ jobs:
             release-assets/runtime/ade-*
           )
 
-          # This repository variable stays disabled until a clean-VM signed
-          # N -> N+1 install, relaunch, and background-brain recovery passes.
+          # This repository variable stays disabled until the signed installer
+          # passes the clean-host release checks.
           if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ]; then
             files+=(
               release-assets/win/*.exe
@@ -635,6 +638,11 @@ jobs:
           fi
 
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG_NAME" --repo "$GH_REPO" --json isDraft --jq '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::Release $TAG_NAME is already public. Refusing to overwrite published assets."
+              exit 1
+            fi
             gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$TAG_NAME" "${files[@]}" \

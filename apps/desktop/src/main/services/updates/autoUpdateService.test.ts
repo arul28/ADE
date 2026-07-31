@@ -72,9 +72,9 @@ describe("buildReleaseNotesUrl", () => {
 });
 
 describe("buildGithubReleaseUrl", () => {
-  it("points at this fork's GitHub release tag and normalizes the version", () => {
-    expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/nsxdavid/ADE/releases/tag/v1.2.18");
-    expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/nsxdavid/ADE/releases/tag/v1.2.18");
+  it("points at the upstream GitHub release tag by default and supports an override", () => {
+    expect(buildGithubReleaseUrl("1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
+    expect(buildGithubReleaseUrl("v1.2.18")).toBe("https://github.com/arul28/ADE/releases/tag/v1.2.18");
     expect(buildGithubReleaseUrl("1.2.18", "acme/custom-ade")).toBe(
       "https://github.com/acme/custom-ade/releases/tag/v1.2.18",
     );
@@ -258,7 +258,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.3",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
-      githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.3",
+      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
     });
 
     expect(JSON.parse(fs.readFileSync(globalStatePath, "utf8"))).toEqual({
@@ -266,7 +266,7 @@ describe("createAutoUpdateService", () => {
         version: "1.2.3",
         installedAt: "2026-04-06T15:21:00.000Z",
         releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
-        githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.3",
+        githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
       },
     });
     expectCacheEmpty(updaterCacheDir);
@@ -1722,7 +1722,7 @@ describe("createAutoUpdateService", () => {
       version: "1.2.4",
       installedAt: "2026-04-06T15:21:00.000Z",
       releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.4",
-      githubReleaseUrl: "https://github.com/nsxdavid/ADE/releases/tag/v1.2.4",
+      githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.4",
     });
     expectCacheEmpty(updaterCacheDir);
 

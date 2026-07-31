@@ -1,5 +1,5 @@
 export const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
-export const DEFAULT_RELEASE_REPOSITORY = "nsxdavid/ADE";
+export const DEFAULT_RELEASE_REPOSITORY = "arul28/ADE";
 
 function parseVersion(version: string): {
   core: number[];

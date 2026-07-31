@@ -36,8 +36,8 @@ Windows x64 uses electron-builder's per-user NSIS target and
 1. Electron-builder generates the installed `resources/app-update.yml` from
    the package's GitHub publish configuration. ADE does not copy the
    source-tree YAML into the package. `ADE_RELEASE_REPOSITORY=owner/repo`
-   lets CI bind the package to the repository that produced it; the fork
-   default is `nsxdavid/ADE`.
+   lets CI bind a fork package to the repository that produced it while the
+   source default remains the upstream `arul28/ADE`.
 2. `checkForUpdates()` reads `latest.yml`; ADE keeps `autoDownload` disabled
    until it has run the same cache-volume capacity preflight used on macOS.
 3. `downloadUpdate()` writes the NSIS installer and blockmap into the updater
@@ -53,9 +53,9 @@ Release generation and public availability are separate gates.
 the installer and packaged `ADE.exe` must share the pinned publisher identity
 and carry a trusted RFC3161 timestamp. `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1`
 adds the installer, blockmap, and `latest.yml` to the draft release. Keep the
-public gate disabled until an installed, signed N → N+1 update has been proven
-on a clean standard-user Windows VM, including relaunch and recovery of the
-background brain.
+public gate disabled until the signed installer passes the clean standard-user
+Windows checks. Validate version-to-version automatic updating after two signed
+Windows releases exist.
 
 ## Required-space estimate
 

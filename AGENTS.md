@@ -26,6 +26,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge). Baseline `/quality` and `/test` run before it; mutation-specific commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
+- `docs/playbooks/windows-signed-release.md` — maintainer handoff for taking the gated Windows x64 build through signing, clean-host and installed-update proof, draft verification, publication, and website enablement without changing the macOS or iOS release paths.
 
 ## Working norms
 

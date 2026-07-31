@@ -312,7 +312,7 @@
     "afterPack": "./scripts/after-pack-runtime-fixes.cjs",
     "publish": {
       "provider": "github",
-      "owner": "nsxdavid",
+      "owner": "arul28",
       "repo": "ADE",
       "releaseType": "draft",
       "publishAutoUpdate": true

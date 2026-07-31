@@ -99,14 +99,17 @@ verification. Complete these before enabling the public website/release flags:
    from the Windows package; exercise lanes/git/files/browser/App Control,
    deep links, file associations, DPI 100–200%, Snap Layouts, multiple
    monitors, high contrast, and keyboard navigation.
-6. **Signed update** — install signed N, update to N+1, relaunch, verify the
-   Scheduled Task uses the new runtime and data is preserved, then reject a
-   tampered or wrong-publisher artifact. Provision signing credentials and
-   monitor SmartScreen reputation.
-7. **Public gates** — only after the signed update proof passes, enable
-   `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`,
-   `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1`, and website build flag
-   `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED=1`.
+6. **Signed installer** — verify the installer and installed app use the approved
+   publisher, then install, relaunch, log off/on, uninstall, and reinstall.
+   Provision signing credentials and monitor SmartScreen reputation.
+7. **Public gates** — enable `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1` to produce
+   the signed test build. After the signed installer passes the clean-host
+   checks, enable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` and website build flag
+   `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED=1`. Validate automatic updating after two
+   signed Windows releases exist.
+
+The complete maintainer procedure is
+[Windows signed release and publication](../playbooks/windows-signed-release.md).
 
 ## Suggested validation commands (from repo root)
 

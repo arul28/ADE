@@ -81,7 +81,7 @@ export function DownloadPage() {
           : "Windows x64 preview builds are in release validation.",
         hint: WINDOWS_DOWNLOAD_ENABLED
           ? "The NSIS installer includes the app, ade CLI, ade code, and the background ADE brain."
-          : "Public download stays gated until a signed N → N+1 installed-update test passes.",
+          : "Public download stays off until the signed Windows release is approved.",
         actionHref: WINDOWS_DOWNLOAD_ENABLED ? LINKS.releasesLatest : LINKS.releases,
         actionLabel: WINDOWS_DOWNLOAD_ENABLED ? "Download for Windows" : "View Windows release status",
         analyticsFeature: WINDOWS_DOWNLOAD_ENABLED
@@ -264,8 +264,8 @@ export function DownloadPage() {
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Official macOS releases are signed and notarized. Windows pull-request previews may be unsigned and are
-                intended only for internal testing; public Windows download remains disabled until a signed installed
-                N → N+1 update, relaunch, and background-brain recovery pass on a clean VM.
+                intended only for internal testing; public Windows downloads use the signed installer from the approved
+                GitHub Release.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Cloud features are optional. ADE is designed to keep the repo authoritative and treat hosted results as

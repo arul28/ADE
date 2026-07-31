@@ -659,9 +659,11 @@ banner):
   do not fall back to an isolated build-mismatch runtime. On Windows,
   electron-builder generates the installed `app-update.yml` from the build's
   GitHub publish authority; package smoke requires it to match
-  `ADE_RELEASE_REPOSITORY` (fork default `nsxdavid/ADE`). The NSIS handoff uses
-  the non-macOS 60-second quit deadline. Signed/public Windows release assets
-  remain behind the independent repository-variable gates described in
+  `ADE_RELEASE_REPOSITORY`. The source default remains upstream
+  `arul28/ADE`; fork CI overrides it with the repository performing the build.
+  The NSIS handoff uses the non-macOS 60-second quit deadline. Signed/public
+  Windows release assets remain behind the independent repository-variable
+  gates described in
   [desktop-auto-update.md](./desktop-auto-update.md#windows-update-path).
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the primary update control: a small badge in the app shell top bar. Shows

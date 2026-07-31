@@ -11,6 +11,8 @@ const desktopRoot = path.resolve(scriptDir, "..");
 const repoRoot = path.resolve(desktopRoot, "..", "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(desktopRoot, "package.json"), "utf8"));
 const releaseWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release-core.yml"), "utf8").replace(/\r\n/g, "\n");
+const releaseTriggerWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8").replace(/\r\n/g, "\n");
+const prepareWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "prepare-release.yml"), "utf8").replace(/\r\n/g, "\n");
 const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n/g, "\n");
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
 const downloadPage = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "app", "pages", "DownloadPage.tsx"), "utf8");
@@ -41,10 +43,10 @@ test("Windows package carries every remote runtime sidecar its validator require
   assert.equal(commonRuntimeFilter.some((entry) => entry.startsWith("ade-linux-")), false);
 });
 
-test("electron-builder owns packaged update metadata and defaults to this fork", () => {
-  assert.equal(pkg.build.publish.owner, "nsxdavid");
+test("electron-builder owns packaged update metadata and preserves the upstream default", () => {
+  assert.equal(pkg.build.publish.owner, "arul28");
   assert.equal(pkg.build.publish.repo, "ADE");
-  assert.deepEqual(appUpdate, { provider: "github", owner: "nsxdavid", repo: "ADE" });
+  assert.deepEqual(appUpdate, { provider: "github", owner: "arul28", repo: "ADE" });
   assert.equal(pkg.build.extraResources.some((entry) => entry.to === "app-update.yml"), false);
   assert.match(pkg.scripts["package:win"], /run-electron-builder\.mjs/);
 });
@@ -83,7 +85,12 @@ test("signed packaging stops before electron-builder when credentials are absent
 
 test("Windows release assets are validated and published as one release set", () => {
   const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const workflowHeader = releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n"));
+  assert.match(workflowHeader, /contents: read/);
+  assert.doesNotMatch(workflowHeader, /contents: write/);
+  assert.match(releaseTriggerWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: write/);
   assert.match(publish, /- build-win-release/);
+  assert.match(publish, /permissions:\s*\n\s+actions: read\s*\n\s+contents: write/);
   assert.match(publish, /name: ade-win-release-/);
   assert.match(publish, /needs\.build-win-release\.result == 'success' \|\| needs\.build-win-release\.result == 'skipped'/);
   assert.match(publish, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
@@ -93,6 +100,17 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /release-assets\/win\/\*\.exe/);
   assert.match(publish, /release-assets\/win\/\*\.exe\.blockmap/);
   assert.match(publish, /release-assets\/win\/latest\.yml/);
+  assert.match(publish, /--json isDraft/);
+  assert.match(publish, /Refusing to overwrite published assets/);
+  assert.match(publish, /if \[ "\$is_draft" != "true" \]; then/);
+});
+
+test("release preflight validates the exact approved commit", () => {
+  assert.match(prepareWorkflow, /target_sha:\s*\n\s+description: Exact 40-character commit SHA/);
+  assert.match(prepareWorkflow, /ref: \$\{\{ inputs\.target_sha \}\}/);
+  assert.match(prepareWorkflow, /target_sha must be the exact 40-character commit SHA approved for release/);
+  assert.match(prepareWorkflow, /target_ref: \$\{\{ needs\.resolve\.outputs\.target_sha \}\}/);
+  assert.doesNotMatch(prepareWorkflow, /ref: main/);
 });
 
 test("pull requests build and smoke an unsigned Windows installer", () => {
@@ -118,9 +136,9 @@ test("Windows package smoke requires every bundled provider runtime", () => {
   assert.match(winArtifactValidator, /droidSdkCreateSession/);
 });
 
-test("download page gates the Windows release and enables dedicated analytics after proof", () => {
+test("download page gates the Windows release and enables dedicated analytics", () => {
   assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
-  assert.match(downloadPage, /signed N → N\+1 installed-update test passes/);
+  assert.match(downloadPage, /signed Windows release is approved/);
   assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
   assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
 });

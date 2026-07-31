@@ -18,8 +18,6 @@ Recommended direction:
 - Target Windows 10/11 x64 using the existing per-user NSIS installer.
 - Ship a bounded "Windows x64 preview" PR instead of promising complete
   platform parity.
-- Plan on 2-4 engineer-weeks for a credible beta PR and 4-8 weeks total for
-  first-class Windows GA.
 - Explicitly defer Windows ARM64, Windows as a remotely installable ADE brain,
   native Windows computer use, and iOS Simulator support.
 
@@ -54,9 +52,11 @@ working branch:
   `windows-latest`. Production Windows build and public release are separately
   gated; the signed path requires a pinned Authenticode identity, matching
   signer for installer and `ADE.exe`, and a trusted RFC3161 timestamp.
-- The updater authority follows the repository that built the package (the
-  fork default is `nsxdavid/ADE`). Windows download links and release assets
-  remain disabled until the public gates are explicitly enabled.
+- The updater authority follows the repository that built the package. The
+  source default remains upstream `arul28/ADE`, while CI passes
+  `ADE_RELEASE_REPOSITORY=${{ github.repository }}` for fork builds. Windows
+  download links and release assets remain disabled until the public gates
+  are explicitly enabled.
 - Windows chrome, AppUserModelID, microphone-denial guidance, sync health, and
   platform-aware copy/navigation are implemented. macOS-native Notch,
   computer-use, and iOS Simulator actions are hidden or capability-blocked
@@ -89,9 +89,14 @@ preview. The remaining release work is external proof: clean standard-user
 Windows 10/11 install/logoff/reboot/uninstall,
 Stable+Beta and two-user isolation, physical-iPhone CRR/firewall testing,
 provider/PTY special-character coverage, supported macOS/Linux remote
-bootstrap, and a signed installed N → N+1 update/relaunch/background-brain
-recovery test. Do not enable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` or
+bootstrap, and signed-installer launch/relaunch/background-brain recovery.
+Do not enable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` or
 `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED=1` before those checks pass.
+
+Maintainers can follow
+[`docs/playbooks/windows-signed-release.md`](docs/playbooks/windows-signed-release.md)
+for signing, draft-release verification, publication,
+and website-enable procedure.
 
 Four source follow-ups are explicitly outside this preview boundary:
 `ade brain update` continues to reject Windows because Windows as a standalone
@@ -113,7 +118,7 @@ before calling Windows a first-class remote-brain/operations platform.
 | Projects, lanes, Git, files | Windows-aware paths, Git, and junction code exist | Clean-VM functional testing |
 | Terminal/PTY | Structured Windows launch/resume, runtime-host materialization, and taskkill cleanup are implemented | Installed provider/ConPTY matrix |
 | Background brain | Per-user/channel Scheduled Task launcher is implemented | Logoff/reboot/update/uninstall proof |
-| Updater | Fork authority and fail-closed signing/publication gates are implemented | Signed N-to-N+1 installed test |
+| Updater | Fork authority and fail-closed signing/publication gates are implemented | Validate automatic updating after two signed Windows releases exist |
 | Windows developer loop | Per-user runtime pipe, successful-build-gated Electron launch, hidden background probes, and owned-runtime cleanup are implemented and host-tested | Repeat from a clean clone |
 | Sync/iPhone pairing | Intended to work | CRR roundtrip and firewall testing |
 | Built-in browser/proof ingest | Mostly platform-neutral | Windows Hello, download, and security testing |
@@ -242,15 +247,15 @@ The Windows build, download, validation, and upload blocks are commented out
 in [`.github/workflows/release-core.yml`](.github/workflows/release-core.yml).
 There is also no Windows runner in normal PR CI.
 
-More importantly for this fork, the packaged updater is hardcoded to
+At evaluation time, the packaged updater was hardcoded to upstream
 `arul28/ADE` in:
 
 - [`apps/desktop/package.json`](apps/desktop/package.json)
 - [`apps/desktop/resources/app-update.yml`](apps/desktop/resources/app-update.yml)
 - [`autoUpdateService.ts`](apps/desktop/src/main/services/updates/autoUpdateService.ts)
 
-A Windows build published by `nsxdavid/ADE` would check upstream for updates,
-where the corresponding Windows artifacts do not exist.
+A Windows build published by another fork would check upstream for updates,
+where the corresponding Windows artifacts might not exist.
 
 The distribution repository should be build metadata generated from
 `github.repository`. The production `setFeedURL` override should be removed or
@@ -344,7 +349,7 @@ A reviewable first submission should be titled along the lines of
 - Parameterize the fork's release authority.
 - Restore the release/publish workflow.
 - Fail closed on production signing.
-- Add installed N-to-N+1 signed-update testing.
+- Validate installed N-to-N+1 signed updating after two releases exist.
 
 ### 4. Platform UX and documentation
 
@@ -353,9 +358,10 @@ A reviewable first submission should be titled along the lines of
 - Add Windows download and analytics links.
 - Correct stale architecture and Windows-port documentation.
 
-Public download enablement should remain gated until the signed update test
-passes. If certificate provisioning is not ready, the PR can still produce an
-unsigned internal CI artifact while leaving public publishing disabled.
+Public download enablement should remain gated until the signed installer
+passes the clean-host checks. If certificate provisioning is not ready, the PR
+can still produce an unsigned internal CI artifact while leaving public
+publishing disabled.
 
 ## Merge gates
 
@@ -377,30 +383,28 @@ At minimum:
 - Use the Windows desktop to control an existing macOS/Linux remote runtime.
 - Exercise the built-in browser, downloads, proof ingest, and App Control CDP
   capture.
-- Complete a signed NSIS N-to-N+1 update, including cache/retry/relaunch,
-  scheduled-task repair, and data preservation.
 - Test `ade://` cold/hot deep links, file associations, the PATH wrapper, and
   uninstall cleanup.
 - Test DPI at 100/125/150/200 percent, multiple monitors, Snap Layouts, high
   contrast, and keyboard navigation.
-- Reject a tampered or incorrectly signed update.
 
 ## Explicit follow-ups
 
 These should not block the first Windows desktop build:
 
-- Windows as a remotely installable ADE brain: an additional 2-4 weeks.
-- Native Windows computer use using Windows Graphics Capture/UI Automation:
-  approximately 6-12 or more weeks.
-- Windows ARM64: approximately 2-4 weeks after all native/provider payloads
-  are available.
+- Windows as a remotely installable ADE brain.
+- Native Windows computer use using Windows Graphics Capture/UI Automation.
+- Signed N-to-N+1 automatic-update testing, including cache/retry/relaunch,
+  scheduled-task repair, data preservation, and rejection of tampered or
+  incorrectly signed updates.
+- Windows ARM64 after all native/provider payloads are available.
 - Windows resource telemetry and general orphan-agent recovery.
 
-## Effort and confidence
+## Readiness and uncertainty
 
-- Credible internal/beta x64 PR: 2-4 engineer-weeks.
-- First-class Windows x64 GA: 4-8 engineer-weeks total, plus signing-account
-  lead time and dedicated QA.
+- The source and CI support a credible internal Windows x64 preview.
+- Public Windows x64 readiness requires upstream signing configuration and the
+  external proof gates below.
 - Largest uncertainty: installed, signed runtime behavior across clean Windows
   hosts and updates.
 
@@ -408,8 +412,8 @@ The initial assessment was a read-only static evaluation. Implementation and
 targeted automated validation have since been completed on this branch.
 A full local NSIS package still requires the CI-produced Darwin/Linux runtime
 sidecars; the required Windows CI job materializes them before packaging.
-No claim is made here that the external clean-VM or signed N → N+1 release
-gates have passed.
+No claim is made here that the external clean-VM checks or automatic-update
+follow-up have passed.
 
 ## Automated validation observed
 
