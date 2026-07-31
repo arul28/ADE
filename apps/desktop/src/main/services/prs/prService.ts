@@ -8877,14 +8877,6 @@ export function createPrService({
       };
     }
 
-    if (options.force === true && githubStackStore.list(repo).length > 0) {
-      await githubStackStore.reconcileRepository(repo).catch((error) => {
-        logger.warn("prs.github_stack_repository_reconcile_failed", {
-          repo: `${repo.owner}/${repo.name}`,
-          error: getErrorMessage(error),
-        });
-      });
-    }
     let metadata = await loadGithubSnapshotMetadata();
     const historyPageLimit = normalizeGithubHistoryPageLimit(options);
     const repoPullRequestMaxPages = options.includeExternalClosed === true
@@ -8976,12 +8968,25 @@ export function createPrService({
     if (cachedGithubSnapshot && !githubSnapshotMatchesStatus(cachedGithubSnapshot, githubStatus)) {
       invalidateGithubSnapshotCache();
     }
+    const forceRequestEpoch = githubSnapshotCacheEpoch;
+    if (force && githubStatus.repo) {
+      await githubStackStore.reconcileRepository(
+        githubStatus.repo,
+        { notifySnapshotChanged: false },
+      ).catch((error) => {
+        logger.warn("prs.github_stack_repository_reconcile_failed", {
+          repo: `${githubStatus.repo!.owner}/${githubStatus.repo!.name}`,
+          error: getErrorMessage(error),
+        });
+      });
+    }
 
     const startSnapshotRequest = (
       precheckedGithubStatus: GitHubStatus,
       requestOptions: GithubSnapshotOptions,
+      requestEpochOverride?: number,
     ): Promise<GitHubPrSnapshot> => {
-      const requestEpoch = githubSnapshotCacheEpoch;
+      const requestEpoch = requestEpochOverride ?? githubSnapshotCacheEpoch;
       const includeExternalClosed = requestOptions.includeExternalClosed === true;
       const historyPageLimit = normalizeGithubHistoryPageLimit(requestOptions);
       const includeStateCounts = requestOptions.includeStateCounts === true
@@ -9091,7 +9096,11 @@ export function createPrService({
       return compatibleInFlight.request;
     }
 
-    return startSnapshotRequest(githubStatus, options);
+    return startSnapshotRequest(
+      githubStatus,
+      options,
+      force ? forceRequestEpoch : undefined,
+    );
   };
 
   const emitPrsUpdated = (): void => {
@@ -9290,9 +9299,29 @@ export function createPrService({
         const webhookMembership = githubStackStore.parseMembership(
           isRecord(rawPull?.stack) ? rawPull.stack : payload.stack,
         );
-        const stackNumber = webhookMembership?.number
-          ?? githubStackStore.knownStackNumberForPr(repo, Number(projection.github_pr_number));
-        if (stackNumber) {
+        const previousStackNumber = githubStackStore.knownStackNumberForPr(
+          repo,
+          Number(projection.github_pr_number),
+        );
+        const stackNumber = webhookMembership?.number ?? previousStackNumber;
+        if (
+          webhookMembership
+          && previousStackNumber
+          && previousStackNumber !== webhookMembership.number
+        ) {
+          await githubStackStore.reconcileRepository(repo).catch((repositoryError) => {
+            logger.warn("prs.github_webhook_stack_reconcile_failed", {
+              eventName,
+              deliveryId,
+              repoOwner: repo.owner,
+              repoName: repo.name,
+              githubPrNumber: projection.github_pr_number,
+              previousStackNumber,
+              stackNumber: webhookMembership.number,
+              repositoryError: getErrorMessage(repositoryError),
+            });
+          });
+        } else if (stackNumber) {
           try {
             await githubStackStore.reconcile(repo, stackNumber);
           } catch (stackError) {

@@ -941,19 +941,15 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           ? payload.nextCursor
           : null;
         if (responseCursor) pageLastCursor = responseCursor;
-        // Commit only after every event in this page has completed. A failed
-        // page is replayed from its previous durable cursor on the next drain.
+        if (payload.cursorExpired === true && repo) {
+          await args.prService?.reconcileGithubStacks(repo);
+        }
+        // Commit only after every event and any cursor-expiry repair in this
+        // page have completed. A failed page is replayed from its previous
+        // durable cursor on the next drain.
         if (pageLastCursor && pageLastCursor !== pageCursor) {
           setIngressCursor({ source: "github-relay", cursor: pageLastCursor });
           for (const prId of pageIngestedPrIds) committedIngestedPrIds.add(prId);
-        }
-        if (payload.cursorExpired === true && repo) {
-          await args.prService?.reconcileGithubStacks(repo).catch((error) => {
-            args.logger.warn("automations.github_stack_cursor_reconcile_failed", {
-              repo: `${repo.owner}/${repo.name}`,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          });
         }
         lastSeenCursor = pageLastCursor;
         if (useLegacyProjectRoute || payload.hasMore !== true) break;

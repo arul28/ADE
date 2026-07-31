@@ -818,9 +818,58 @@ describe("automationIngressService", () => {
       owner: "arul28",
       name: "ADE",
     });
-    expect(setIngressCursor.mock.invocationCallOrder[0]).toBeLessThan(
-      reconcileGithubStacks.mock.invocationCallOrder[0]!,
+    expect(reconcileGithubStacks.mock.invocationCallOrder[0]).toBeLessThan(
+      setIngressCursor.mock.invocationCallOrder[0]!,
     );
+  });
+
+  it("retries cursor-expiry stack repair before committing the replacement cursor", async () => {
+    const cursors = new Map<string, string | null>([["github-relay", "seq:2"]]);
+    const setIngressCursor = vi.fn(({ source, cursor }: { source: string; cursor: string | null }) => {
+      cursors.set(source, cursor);
+    });
+    const reconcileGithubStacks = vi.fn()
+      .mockRejectedValueOnce(new Error("stack list timed out"))
+      .mockResolvedValueOnce([]);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({
+      events: [],
+      nextCursor: "seq:9",
+      cursorExpired: true,
+      hasMore: false,
+    }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: {
+        updateIngressStatus: vi.fn(),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: (source: string) => cursors.get(source) ?? null,
+        setIngressCursor,
+        getIngressStatus: () => ({}),
+      } as never,
+      prService: {
+        ingestGithubWebhook: vi.fn(),
+        reconcileGithubStacks,
+      } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+    });
+
+    await service.pollNow();
+    expect(cursors.get("github-relay")).toBe("seq:2");
+    expect(setIngressCursor).not.toHaveBeenCalled();
+
+    await service.pollNow();
+    expect(reconcileGithubStacks).toHaveBeenCalledTimes(2);
+    expect(cursors.get("github-relay")).toBe("seq:9");
+    expect(setIngressCursor).toHaveBeenCalledWith({
+      source: "github-relay",
+      cursor: "seq:9",
+    });
   });
 
   it("skips a failing event and still advances the relay cursor (poison-event guard)", async () => {

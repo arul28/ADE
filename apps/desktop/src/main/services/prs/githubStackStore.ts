@@ -388,7 +388,10 @@ export function createGithubStackStore(args: {
     return request;
   };
 
-  const reconcileRepository = async (repo: GitHubRepoRef): Promise<GitHubPrStack[]> => {
+  const reconcileRepository = async (
+    repo: GitHubRepoRef,
+    options: { notifySnapshotChanged?: boolean } = {},
+  ): Promise<GitHubPrStack[]> => {
     const key = repoKey(repo);
     const existing = repositoryReconcileInFlight.get(key);
     if (existing) return existing;
@@ -439,7 +442,7 @@ export function createGithubStackStore(args: {
         }
         throw error;
       }
-      args.onSnapshotChanged();
+      if (options.notifySnapshotChanged !== false) args.onSnapshotChanged();
       return decodedStacks.map((stack) => stackFromRows(stack.row, stack.entries));
     }).finally(() => {
       if (repositoryReconcileInFlight.get(key) === request) {
