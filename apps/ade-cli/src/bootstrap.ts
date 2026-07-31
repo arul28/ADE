@@ -14,7 +14,7 @@ import {
 } from "../../desktop/src/main/services/runtime/lastFailureStore";
 import { mapKvDbOpenErrorCode } from "../../desktop/src/shared/types/recovery";
 import { detectDefaultBaseRef, toProjectInfo, upsertProjectRow } from "../../desktop/src/main/services/projects/projectService";
-import { reseedAdeSkills } from "../../desktop/src/main/services/skills/skillReseedService";
+import { cleanupLegacyAdeSkills } from "../../desktop/src/main/services/skills/legacySkillCleanupService";
 import {
   createAdeProjectService,
   initializeOrRepairAdeProject,
@@ -91,6 +91,7 @@ import type { createGithubService } from "../../desktop/src/main/services/github
 import { createFeedbackReporterService } from "../../desktop/src/main/services/feedback/feedbackReporterService";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
+  ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
   getAdeAgentSkillRootsForPrompt,
   joinAdeAgentSkillRoots,
   splitAdeAgentSkillRoots,
@@ -433,45 +434,102 @@ function prependAgentSkillsRoot(existing: string | undefined, root: string | nul
   return joinAdeAgentSkillRoots([root, ...splitAdeAgentSkillRoots(existing)]);
 }
 
-function inferAgentSkillsRootForCliEntry(cliEntry: string | null): string | null {
-  const candidates: string[] = [];
-  const resourcesPath = (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath;
-  if (resourcesPath) candidates.push(path.join(resourcesPath, "agent-skills"));
-  if (cliEntry) {
-    const cliDir = path.dirname(cliEntry);
-    candidates.push(path.resolve(cliDir, "..", "agent-skills"));
-    candidates.push(path.resolve(cliDir, "..", "..", "desktop", "resources", "agent-skills"));
-    candidates.push(path.resolve(cliDir, "..", "..", "..", "apps", "desktop", "resources", "agent-skills"));
+function canonicalDirectoryWithin(root: string | null, boundary: string | null): string | null {
+  if (!root || !boundary) return null;
+  try {
+    const canonicalRoot = fs.realpathSync(root);
+    const canonicalBoundary = fs.realpathSync(boundary);
+    if (!fs.statSync(canonicalRoot).isDirectory()) return null;
+    const relative = path.relative(canonicalBoundary, canonicalRoot);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    return canonicalRoot;
+  } catch {
+    return null;
   }
-  candidates.push(path.resolve(process.cwd(), "apps", "desktop", "resources", "agent-skills"));
-  for (const candidate of candidates) {
-    if (pathExistsDirectory(candidate)) return candidate;
+}
+
+function trustedAgentSkillsRootForCliEntry(
+  cliEntry: string | null,
+  resourcesPath: string | null,
+): string | null {
+  const packagedRoot = canonicalDirectoryWithin(
+    resourcesPath ? path.join(resourcesPath, "agent-skills") : null,
+    resourcesPath,
+  );
+  if (packagedRoot) return packagedRoot;
+  if (!cliEntry) return null;
+
+  let canonicalCliEntry: string;
+  try {
+    canonicalCliEntry = fs.realpathSync(cliEntry);
+    if (!fs.statSync(canonicalCliEntry).isFile()) return null;
+  } catch {
+    return null;
+  }
+
+  let current = path.dirname(canonicalCliEntry);
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (path.basename(current) === "ade-cli") {
+      const parent = path.dirname(current);
+      if (path.basename(parent) === "apps") {
+        const repoRoot = path.dirname(parent);
+        return canonicalDirectoryWithin(
+          path.join(repoRoot, "apps", "desktop", "resources", "agent-skills"),
+          repoRoot,
+        );
+      }
+      return canonicalDirectoryWithin(path.join(parent, "agent-skills"), parent);
+    }
+    const parent = path.dirname(current);
+    if (parent === current) break;
+    current = parent;
   }
   return null;
 }
 
-let adeSkillsReseededForCli = false;
+export function inferAgentSkillsRootForCliEntry(
+  cliEntry: string | null,
+  options: { resourcesPath?: string | null; cwd?: string | null } = {},
+): { catalogRoot: string | null; bundledRoot: string | null } {
+  const resourcesPath = options.resourcesPath
+    ?? (process as NodeJS.Process & { resourcesPath?: string }).resourcesPath
+    ?? null;
+  const bundledRoot = trustedAgentSkillsRootForCliEntry(cliEntry, resourcesPath);
+  if (bundledRoot) return { catalogRoot: bundledRoot, bundledRoot };
+
+  const cwd = options.cwd ?? process.cwd();
+  const cwdRoot = cwd
+    ? path.resolve(cwd, "apps", "desktop", "resources", "agent-skills")
+    : null;
+  return {
+    catalogRoot: pathExistsDirectory(cwdRoot) ? cwdRoot : null,
+    bundledRoot: null,
+  };
+}
+
+let legacyAdeSkillsCleanedForCli = false;
 
 /**
- * Materialize ADE's bundled `ade-*` skills into the home-level skill dirs every
- * runtime natively discovers, so agents ADE spawns pick them up via the runtime's
- * own progressive disclosure. Cheap no-op once on-disk copies are current;
- * best-effort so an unwritable home dir never blocks the CLI.
+ * Remove legacy ADE-managed user-global copies when they are provably unchanged.
+ * Session-scoped discovery now uses ADE_AGENT_SKILLS_DIRS instead.
  */
-export function reseedBundledAdeSkillsForCli(): void {
-  if (adeSkillsReseededForCli) return;
-  if (process.env.ADE_DISABLE_SKILL_RESEED === "1" || process.env.VITEST) return;
-  adeSkillsReseededForCli = true;
+export function cleanupLegacyBundledAdeSkillsForCli(): void {
+  if (legacyAdeSkillsCleanedForCli) return;
+  if (process.env.ADE_DISABLE_SKILL_CLEANUP === "1" || process.env.VITEST) return;
+  legacyAdeSkillsCleanedForCli = true;
   try {
-    const bundledRoot = inferAgentSkillsRootForCliEntry(resolveCurrentAdeCliEntry());
-    if (bundledRoot) reseedAdeSkills({ bundledRoot });
+    const { bundledRoot } = inferAgentSkillsRootForCliEntry(resolveCurrentAdeCliEntry());
+    if (bundledRoot) cleanupLegacyAdeSkills({ bundledRoot });
   } catch {
-    /* best-effort: skill re-seeding must never break agent launch */
+    /* best-effort: legacy cleanup must never break agent launch */
   }
 }
 
-function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
-  reseedBundledAdeSkillsForCli();
+export function createHeadlessAdeCliAgentEnv(
+  baseEnv: NodeJS.ProcessEnv = process.env,
+  options: { cliEntry?: string | null; resourcesPath?: string | null; cwd?: string | null } = {},
+): NodeJS.ProcessEnv {
+  cleanupLegacyBundledAdeSkillsForCli();
   const next: NodeJS.ProcessEnv = { ...baseEnv };
   const nextPath = augmentProcessPathWithShellAndKnownCliDirs({
     env: next,
@@ -479,7 +537,7 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
     timeoutMs: 1_000,
   });
   if (nextPath) setPathEnvValue(next, nextPath);
-  const cliEntry = resolveCurrentAdeCliEntry();
+  const cliEntry = options.cliEntry === undefined ? resolveCurrentAdeCliEntry() : options.cliEntry;
   if (cliEntry) {
     const shim = ensureAdeCliShim(cliEntry);
     if (shim) {
@@ -492,14 +550,20 @@ function createHeadlessAdeCliAgentEnv(baseEnv: NodeJS.ProcessEnv = process.env):
       delete next.ADE_CLI_ENTRY_PATH;
     }
   }
+  const inferredSkillRoots = inferAgentSkillsRootForCliEntry(cliEntry, options);
   next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(
     next[ADE_AGENT_SKILLS_DIRS_ENV],
-    inferAgentSkillsRootForCliEntry(cliEntry),
+    inferredSkillRoots.catalogRoot,
   );
   next[ADE_AGENT_SKILLS_DIRS_ENV] = joinAdeAgentSkillRoots(getAdeAgentSkillRootsForPrompt({
     env: next,
-    cwd: process.cwd(),
+    cwd: options.cwd ?? process.cwd(),
   }));
+  if (inferredSkillRoots.bundledRoot) {
+    next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = inferredSkillRoots.bundledRoot;
+  } else {
+    delete next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV];
+  }
   return next;
 }
 

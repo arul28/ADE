@@ -1,0 +1,9 @@
+{
+  "name": "ade",
+  "description": "ADE's bundled agent capabilities",
+  "version": "1.0.0",
+  "author": {
+    "name": "ADE"
+  },
+  "skills": "./"
+}

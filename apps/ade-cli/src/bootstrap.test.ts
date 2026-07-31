@@ -1,9 +1,139 @@
-import { describe, expect, it, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createEventBuffer, type BufferedEvent } from "./eventBuffer";
-import { emitRuntimePrCardsForChanges } from "./bootstrap";
+import {
+  createHeadlessAdeCliAgentEnv,
+  emitRuntimePrCardsForChanges,
+  inferAgentSkillsRootForCliEntry,
+} from "./bootstrap";
 import { createPrEventFanout } from "./prEventFanout";
 import { isSourceCheckoutRuntimeModule } from "./runtimePackaging";
 import type { PrCardChange } from "../../desktop/src/main/services/prs/prChatCards";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+  splitAdeAgentSkillRoots,
+} from "../../desktop/src/shared/agentSkillRoots";
+
+const tempRoots: string[] = [];
+
+function makeTempRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bootstrap-skills-"));
+  tempRoots.push(root);
+  return root;
+}
+
+function writeFile(filePath: string, contents = ""): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, contents);
+}
+
+function writeSkillsManifest(skillsRoot: string): void {
+  writeFile(
+    path.join(skillsRoot, ".claude-plugin", "plugin.json"),
+    JSON.stringify({ name: "ade", skills: "./" }),
+  );
+}
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  for (const root of tempRoots.splice(0)) {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+describe("headless ADE CLI agent skill roots", () => {
+  it("keeps a cwd-discovered catalog root untrusted and clears an inherited bundle marker", () => {
+    const root = makeTempRoot();
+    const repositorySkills = path.join(root, "apps", "desktop", "resources", "agent-skills");
+    writeSkillsManifest(repositorySkills);
+
+    const inferred = inferAgentSkillsRootForCliEntry(null, {
+      cwd: root,
+      resourcesPath: null,
+    });
+    const env = createHeadlessAdeCliAgentEnv({
+      ADE_BUNDLED_AGENT_SKILLS_DIR: repositorySkills,
+    }, {
+      cliEntry: null,
+      cwd: root,
+      resourcesPath: null,
+    });
+
+    expect(inferred).toEqual({
+      catalogRoot: repositorySkills,
+      bundledRoot: null,
+    });
+    expect(splitAdeAgentSkillRoots(env[ADE_AGENT_SKILLS_DIRS_ENV])).toContain(repositorySkills);
+    expect(env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]).toBeUndefined();
+  });
+
+  it("trusts canonical source-checkout and CLI-adjacent bundles", () => {
+    const sourceRoot = makeTempRoot();
+    const sourceCli = path.join(sourceRoot, "apps", "ade-cli", "src", "cli.ts");
+    const sourceSkills = path.join(sourceRoot, "apps", "desktop", "resources", "agent-skills");
+    writeFile(sourceCli, "export {};\n");
+    writeSkillsManifest(sourceSkills);
+
+    const packagedRoot = makeTempRoot();
+    const packagedCli = path.join(packagedRoot, "Resources", "ade-cli", "cli.cjs");
+    const packagedSkills = path.join(packagedRoot, "Resources", "agent-skills");
+    writeFile(packagedCli, "module.exports = {};\n");
+    writeSkillsManifest(packagedSkills);
+
+    expect(inferAgentSkillsRootForCliEntry(sourceCli, {
+      cwd: path.join(sourceRoot, "elsewhere"),
+      resourcesPath: null,
+    })).toEqual({
+      catalogRoot: fs.realpathSync(sourceSkills),
+      bundledRoot: fs.realpathSync(sourceSkills),
+    });
+    expect(inferAgentSkillsRootForCliEntry(packagedCli, {
+      cwd: path.join(packagedRoot, "elsewhere"),
+      resourcesPath: null,
+    })).toEqual({
+      catalogRoot: fs.realpathSync(packagedSkills),
+      bundledRoot: fs.realpathSync(packagedSkills),
+    });
+    expect(createHeadlessAdeCliAgentEnv({
+      ADE_BUNDLED_AGENT_SKILLS_DIR: "/inherited/untrusted-skills",
+    }, {
+      cliEntry: null,
+      cwd: path.join(packagedRoot, "elsewhere"),
+      resourcesPath: path.join(packagedRoot, "Resources"),
+    })[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]).toBe(fs.realpathSync(packagedSkills));
+  });
+
+  it("rejects package-resource and source bundle symlinks that escape their boundaries", () => {
+    const packagedRoot = makeTempRoot();
+    const resourcesPath = path.join(packagedRoot, "Resources");
+    const externalSkills = path.join(packagedRoot, "external-skills");
+    fs.mkdirSync(resourcesPath, { recursive: true });
+    writeSkillsManifest(externalSkills);
+    fs.symlinkSync(externalSkills, path.join(resourcesPath, "agent-skills"), "dir");
+
+    const sourceRoot = makeTempRoot();
+    const sourceExternalRoot = makeTempRoot();
+    const sourceCli = path.join(sourceRoot, "apps", "ade-cli", "dist", "cli.cjs");
+    const sourceSkills = path.join(sourceRoot, "apps", "desktop", "resources", "agent-skills");
+    const sourceExternalSkills = path.join(sourceExternalRoot, "external-skills");
+    writeFile(sourceCli, "module.exports = {};\n");
+    writeSkillsManifest(sourceExternalSkills);
+    fs.mkdirSync(path.dirname(sourceSkills), { recursive: true });
+    fs.symlinkSync(sourceExternalSkills, sourceSkills, "dir");
+
+    expect(inferAgentSkillsRootForCliEntry(null, {
+      cwd: path.join(packagedRoot, "elsewhere"),
+      resourcesPath,
+    }).bundledRoot).toBeNull();
+    expect(inferAgentSkillsRootForCliEntry(sourceCli, {
+      cwd: path.join(sourceRoot, "elsewhere"),
+      resourcesPath: null,
+    }).bundledRoot).toBeNull();
+  });
+});
 
 describe("emitRuntimePrCardsForChanges", () => {
   it("emits PR cards through the daemon-owned chat service", async () => {

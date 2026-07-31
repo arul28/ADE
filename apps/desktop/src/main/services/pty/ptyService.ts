@@ -72,6 +72,8 @@ import {
   trackedCliTitleFromPromptSeed,
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
+import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
+import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
 import { derivePreviewFromChunk } from "../../utils/terminalPreview";
@@ -1062,6 +1064,87 @@ function isCodexTrackedCliToolType(toolType: TerminalToolType | null | undefined
 
 function isClaudeTrackedCliToolType(toolType: TerminalToolType | null | undefined): toolType is "claude" | "claude-orchestrated" {
   return toolType === "claude" || toolType === "claude-orchestrated";
+}
+
+function hasClaudePluginRoot(args: string[], pluginRoot: string): boolean {
+  return args.some((arg, index) =>
+    (arg === "--plugin-dir" && args[index + 1] === pluginRoot)
+    || arg === `--plugin-dir=${pluginRoot}`,
+  );
+}
+
+function shellWordSpans(command: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  let index = 0;
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index]!)) index += 1;
+    if (index >= command.length) break;
+
+    const start = index;
+    let quote: "'" | "\"" | null = null;
+    let escaped = false;
+    while (index < command.length) {
+      const char = command[index]!;
+      if (escaped) {
+        escaped = false;
+      } else if (quote === "'") {
+        if (char === "'") quote = null;
+      } else if (quote === "\"") {
+        if (char === "\"") quote = null;
+        else if (char === "\\") escaped = true;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "'" || char === "\"") {
+        quote = char;
+      } else if (/\s/.test(char)) {
+        break;
+      }
+      index += 1;
+    }
+    spans.push({ start, end: index });
+  }
+  return spans;
+}
+
+function withBundledClaudePlugin(
+  args: string[],
+  startupCommand: string,
+  toolType: TerminalToolType | null,
+  env: NodeJS.ProcessEnv,
+): { args: string[]; startupCommand: string } {
+  if (!isClaudeTrackedCliToolType(toolType)) {
+    return { args, startupCommand };
+  }
+  const pluginRoot = claudeAgentSkillPluginRoots(env)[0];
+  if (!pluginRoot) return { args, startupCommand };
+
+  const normalizedArgs = hasClaudePluginRoot(args, pluginRoot)
+    ? args
+    : ["--plugin-dir", pluginRoot, ...args];
+  let normalizedStartupCommand = startupCommand;
+  if (startupCommand?.trim()) {
+    let commandArgs: string[] = [];
+    try {
+      commandArgs = parseCommandLine(startupCommand);
+    } catch {
+      // Keep malformed or unsupported shell input intact.
+    }
+    const claudeIndex = commandArgs.findIndex((arg, index) =>
+      arg === "claude"
+      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
+    );
+    if (claudeIndex >= 0 && !hasClaudePluginRoot(commandArgs.slice(claudeIndex + 1), pluginRoot)) {
+      const claudeSpan = shellWordSpans(startupCommand)[claudeIndex];
+      if (claudeSpan) {
+        const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
+        normalizedStartupCommand = `${startupCommand.slice(0, claudeSpan.end)} ${pluginArgs}${startupCommand.slice(claudeSpan.end)}`;
+      }
+    }
+  }
+  return {
+    args: normalizedArgs,
+    startupCommand: normalizedStartupCommand,
+  };
 }
 
 function isPersistedChatToolType(toolType: TerminalToolType | null): boolean {
@@ -4386,7 +4469,7 @@ export function createPtyService({
 
       const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
       const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
-      const directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+      let directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
@@ -4449,6 +4532,14 @@ export function createPtyService({
           startupCommand = withBundledOpenCodeCommandLine(initialResumeCommand, toolTypeHint);
         }
       }
+      const claudePluginLaunch = withBundledClaudePlugin(
+        directArgs,
+        startupCommand,
+        toolTypeHint,
+        launchEnv,
+      );
+      directArgs = claudePluginLaunch.args;
+      startupCommand = claudePluginLaunch.startupCommand;
       launchEnv = withUserCodexCliPathPriority(launchEnv, {
         toolType: toolTypeHint,
         directCommand,

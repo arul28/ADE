@@ -3,7 +3,10 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAdeCliService } from "./adeCliService";
-import { ADE_AGENT_SKILLS_DIRS_ENV } from "../../../shared/agentSkillRoots";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+} from "../../../shared/agentSkillRoots";
 
 const tmpRoots: string[] = [];
 const originalPlatform = process.platform;
@@ -81,7 +84,56 @@ describe("createAdeCliService", () => {
       cliJsPath: path.join(resourcesPath, "ade-cli", "cli.cjs"),
     });
     expect(service.agentEnv({ PATH: "/usr/bin:/bin" }).PATH?.split(path.delimiter)[0]).toBe(packagedBinDir);
-    expect(service.agentEnv({ PATH: "/usr/bin:/bin" })[ADE_AGENT_SKILLS_DIRS_ENV]).toBe(path.join(resourcesPath, "agent-skills"));
+    expect(service.agentEnv({ PATH: "/usr/bin:/bin" })[ADE_AGENT_SKILLS_DIRS_ENV])
+      .toBe(fs.realpathSync(path.join(resourcesPath, "agent-skills")));
+    expect(service.agentEnv({ PATH: "/usr/bin:/bin" })[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV])
+      .toBe(fs.realpathSync(path.join(resourcesPath, "agent-skills")));
+  });
+
+  it("marks only the canonical ADE source bundle as trusted in development", () => {
+    const root = makeTempRoot();
+    const sourceCli = path.join(root, "apps", "ade-cli", "src", "cli.ts");
+    const sourceSkills = path.join(root, "apps", "desktop", "resources", "agent-skills");
+    fs.mkdirSync(path.dirname(sourceCli), { recursive: true });
+    fs.writeFileSync(sourceCli, "export {};\n");
+    fs.mkdirSync(sourceSkills, { recursive: true });
+
+    const service = createAdeCliService({
+      isPackaged: false,
+      resourcesPath: null,
+      devRepoRoot: root,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "Electron"),
+      logger: logger() as any,
+    });
+
+    const env = service.agentEnv({
+      ADE_AGENT_SKILLS_DIRS: path.join(root, "untrusted-repository-skills"),
+    });
+    expect(env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]).toBe(fs.realpathSync(sourceSkills));
+    expect(env[ADE_AGENT_SKILLS_DIRS_ENV]?.split(path.delimiter)[0]).toBe(fs.realpathSync(sourceSkills));
+  });
+
+  it("rejects a packaged agent-skills symlink that escapes the app resources boundary", () => {
+    const root = makeTempRoot();
+    const resourcesPath = path.join(root, "Resources");
+    const externalSkills = path.join(root, "repository-controlled-skills");
+    fs.mkdirSync(resourcesPath, { recursive: true });
+    fs.mkdirSync(externalSkills, { recursive: true });
+    fs.symlinkSync(externalSkills, path.join(resourcesPath, "agent-skills"), "dir");
+
+    const service = createAdeCliService({
+      isPackaged: true,
+      resourcesPath,
+      userDataPath: path.join(root, "user-data"),
+      appExecutablePath: path.join(root, "ADE.app", "Contents", "MacOS", "ADE"),
+      logger: logger() as any,
+    });
+
+    const env = service.agentEnv({
+      ADE_BUNDLED_AGENT_SKILLS_DIR: externalSkills,
+    });
+    expect(env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]).toBeUndefined();
   });
 
   it("uses channel-specific packaged CLI commands and install targets", async () => {

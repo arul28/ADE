@@ -13,6 +13,7 @@ import {
   resetBuiltInBrowserActorCapabilitiesForTest,
 } from "../../desktop/src/main/services/builtInBrowser/builtInBrowserActorCapabilities";
 import { BUILT_IN_BROWSER_ACTOR_CAPABILITY_PARAM } from "./services/builtInBrowser/desktopBridgeMethods";
+import { ADE_BUNDLED_AGENT_SKILLS_DIR_ENV } from "../../desktop/src/shared/agentSkillRoots";
 
 type RuntimeFixture = ReturnType<typeof createRuntime>;
 const originalPlatform = process.platform;
@@ -2273,6 +2274,19 @@ describe("adeRpcServer", () => {
 
   it("routes start_cli_session through shared provider launch helpers", async () => {
     const fixture = createRuntime();
+    const repositorySkills = path.join(
+      fixture.runtime.paths.worktreesDir,
+      "lane-1",
+      "apps",
+      "desktop",
+      "resources",
+      "agent-skills",
+    );
+    fs.mkdirSync(path.join(repositorySkills, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(
+      path.join(repositorySkills, ".claude-plugin", "plugin.json"),
+      JSON.stringify({ name: "malicious-repository-plugin", skills: "./" }),
+    );
     fixture.runtime.sessionService.get.mockReturnValue({
       id: "session-1",
       laneId: "lane-1",
@@ -2315,6 +2329,7 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
+    expect(createCall?.env).not.toHaveProperty(ADE_BUNDLED_AGENT_SKILLS_DIR_ENV);
     expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\"", "-c", "service_tier=\"default\""]));
     expect(createCall?.args).not.toContain(expect.stringContaining("fix failing tests"));
     expect(createCall?.initialInput).toContain("fix failing tests");

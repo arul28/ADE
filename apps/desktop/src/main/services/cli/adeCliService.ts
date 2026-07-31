@@ -2,8 +2,13 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AdeCliInstallResult, AdeCliStatus } from "../../../shared/types/adeCli";
-import { ADE_AGENT_SKILLS_DIRS_ENV, joinAdeAgentSkillRoots, splitAdeAgentSkillRoots } from "../../../shared/agentSkillRoots";
-import { reseedAdeSkills } from "../skills/skillReseedService";
+import {
+  ADE_AGENT_SKILLS_DIRS_ENV,
+  ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
+  joinAdeAgentSkillRoots,
+  splitAdeAgentSkillRoots,
+} from "../../../shared/agentSkillRoots";
+import { cleanupLegacyAdeSkills } from "../skills/legacySkillCleanupService";
 import type { Logger } from "../logging/logger";
 import { spawnAsync } from "../shared/utils";
 import {
@@ -37,6 +42,7 @@ type DevCliEntry = {
 
 const PATH_DELIMITER = path.delimiter;
 const VALID_COMMAND_NAME = /^ade(?:-[a-z0-9][a-z0-9-]*)?$/;
+let legacySkillCleanupScheduled = false;
 
 function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
@@ -81,11 +87,44 @@ function prependAgentSkillsRoot(existing: string | undefined, root: string | nul
   return joinAdeAgentSkillRoots([root, ...splitAdeAgentSkillRoots(existing)]);
 }
 
+function canonicalDirectoryWithin(root: string | null, boundary: string | null): string | null {
+  if (!root || !boundary) return null;
+  try {
+    const canonicalRoot = fs.realpathSync(root);
+    const canonicalBoundary = fs.realpathSync(boundary);
+    if (!fs.statSync(canonicalRoot).isDirectory()) return null;
+    const relative = path.relative(canonicalBoundary, canonicalRoot);
+    if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) return null;
+    return canonicalRoot;
+  } catch {
+    return null;
+  }
+}
+
 function resolveBundledAgentSkillsRoot(args: CreateAdeCliServiceArgs): string | null {
-  const packagedRoot = args.resourcesPath ? path.join(args.resourcesPath, "agent-skills") : null;
-  if (pathExistsDirectory(packagedRoot)) return packagedRoot;
-  const devRoot = args.devRepoRoot ? path.join(args.devRepoRoot, "apps", "desktop", "resources", "agent-skills") : null;
-  return pathExistsDirectory(devRoot) ? devRoot : null;
+  if (args.isPackaged && args.resourcesPath) {
+    const packagedRoot = canonicalDirectoryWithin(
+      path.join(args.resourcesPath, "agent-skills"),
+      args.resourcesPath,
+    );
+    if (packagedRoot) return packagedRoot;
+  }
+
+  if (args.isPackaged) return null;
+
+  const devRepoCandidates = [
+    args.devRepoRoot ? path.resolve(args.devRepoRoot) : null,
+    typeof __dirname === "string" ? findRepoRoot(__dirname) : null,
+  ];
+  for (const repoRoot of devRepoCandidates) {
+    if (!repoRoot) continue;
+    const canonicalRoot = canonicalDirectoryWithin(
+      path.join(repoRoot, "apps", "desktop", "resources", "agent-skills"),
+      repoRoot,
+    );
+    if (canonicalRoot) return canonicalRoot;
+  }
+  return null;
 }
 
 function normalizePackageChannel(value: unknown): "alpha" | "beta" | null {
@@ -541,26 +580,30 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
   const commandName = resolveCommandName(args);
   const resolved = resolveCliPaths(args, commandName);
   const bundledAgentSkillsRoot = resolveBundledAgentSkillsRoot(args);
-  // Seed ADE's bundled skills into the home-level dirs every runtime discovers, so
-  // desktop-launched agents pick them up via the runtime's own progressive disclosure.
+  // Migrate away from the old user-global copies. New sessions receive the
+  // bundled root directly; unrelated harnesses should not see ADE capabilities.
   if (
     bundledAgentSkillsRoot
-    && process.env.ADE_DISABLE_SKILL_RESEED !== "1"
+    && process.env.ADE_DISABLE_SKILL_CLEANUP !== "1"
     && !process.env.VITEST
+    && !legacySkillCleanupScheduled
   ) {
-    try {
-      reseedAdeSkills({
-        bundledRoot: bundledAgentSkillsRoot,
-        version: process.env.npm_package_version,
-      });
-    } catch (error) {
-      // best-effort: skill re-seeding must never block desktop startup, but
-      // surface the failure so it can be debugged.
-      args.logger.warn("ade_cli.skill_reseed_failed", {
-        bundledRoot: bundledAgentSkillsRoot,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    }
+    legacySkillCleanupScheduled = true;
+    const cleanupTask = setImmediate(() => {
+      try {
+        cleanupLegacyAdeSkills({
+          bundledRoot: bundledAgentSkillsRoot,
+        });
+      } catch (error) {
+        // Best-effort migration: cleanup runs outside the startup critical path
+        // and must never prevent ADE from launching.
+        args.logger.warn("ade_cli.legacy_skill_cleanup_failed", {
+          bundledRoot: bundledAgentSkillsRoot,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    });
+    cleanupTask.unref?.();
   }
   const envSnapshot = args.env ?? process.env;
   const hostPathSnapshot = getPathEnvValue(envSnapshot);
@@ -572,6 +615,11 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (resolved.commandPath) next.ADE_CLI_PATH = resolved.commandPath;
     if (resolved.binDir) next.ADE_CLI_BIN_DIR = resolved.binDir;
     next[ADE_AGENT_SKILLS_DIRS_ENV] = prependAgentSkillsRoot(next[ADE_AGENT_SKILLS_DIRS_ENV], bundledAgentSkillsRoot);
+    if (bundledAgentSkillsRoot) {
+      next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = bundledAgentSkillsRoot;
+    } else {
+      delete next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV];
+    }
     return next;
   };
 
@@ -582,6 +630,11 @@ export function createAdeCliService(args: CreateAdeCliServiceArgs) {
     if (next.ADE_CLI_PATH) process.env.ADE_CLI_PATH = next.ADE_CLI_PATH;
     if (next.ADE_CLI_BIN_DIR) process.env.ADE_CLI_BIN_DIR = next.ADE_CLI_BIN_DIR;
     if (next[ADE_AGENT_SKILLS_DIRS_ENV]) process.env[ADE_AGENT_SKILLS_DIRS_ENV] = next[ADE_AGENT_SKILLS_DIRS_ENV];
+    if (next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]) {
+      process.env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV] = next[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV];
+    } else {
+      delete process.env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV];
+    }
   };
 
   const getStatus = async (): Promise<AdeCliStatus> => {

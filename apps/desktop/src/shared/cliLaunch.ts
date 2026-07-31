@@ -463,7 +463,8 @@ export function buildTrackedCliLaunchCommand(args: {
     }
     // Build a shorter startupCommand for the shell-fallback path that excludes
     // the huge --append-system-prompt blob. The direct-spawn path uses the full
-    // args array. Claude still discovers ADE skills via ADE_AGENT_SKILLS_DIRS.
+    // args array. The PTY launch boundary adds the validated bundled
+    // `--plugin-dir`; the compact prompt remains the compatibility fallback.
     const shellArgs = commandArgs.filter(
       (arg, i, arr) => arg !== "--append-system-prompt" && arr[i - 1] !== "--append-system-prompt",
     );

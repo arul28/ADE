@@ -12,6 +12,7 @@ export const adeBundledAgentSkills = [
   "ade-proof-artifacts",
   "ade-deeplinks",
   "ade-search",
+  "ade-mosaic",
 ] as const;
 
 /**
@@ -34,8 +35,8 @@ export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
 /**
  * @deprecated Superseded by {@link buildAdeBootstrapGuidance}. Kept as a thin alias so
  * existing call sites stay wired to the (now minimal) bootstrap. The previous ~1,000-token
- * blob is gone: ADE's capabilities are delivered as Agent Skills that each runtime discovers
- * natively (progressive disclosure), seeded by `skillReseedService`. Do not re-grow this.
+ * blob is gone: ADE's capabilities are delivered as session-scoped Agent Skills, with
+ * `ade skill show` as the runtime-independent activation fallback. Do not re-grow this.
  */
 export function buildAdeCliAgentGuidance(skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt()): string {
   return buildAdeBootstrapGuidance(skillRoots);
@@ -54,7 +55,7 @@ export const ADE_CLI_INLINE_GUIDANCE = buildAdeCliInlineGuidance();
  * blob. It teaches the habit (reach for the matching `ade-*` skill on demand) and the
  * ground-truth fallback (`ade help` / `ade actions list`) instead of inlining every
  * socket/browser/proof rule on every turn — those now live in their skills, which each
- * runtime discovers natively (progressive disclosure). Keep this short; do not re-grow it.
+ * runtime discovers natively when it supports extra roots. Keep this short; do not re-grow it.
  */
 export function buildAdeBootstrapGuidance(
   skillRoots: readonly string[] = getAdeAgentSkillRootsForPrompt(),
@@ -65,6 +66,7 @@ export function buildAdeBootstrapGuidance(
     "Your ADE capabilities ship as Agent Skills. When a task touches an ADE area (lanes/git, PRs, proof & screenshots, the built-in browser, iOS simulator, app control, Linear, deeplinks, or searching across everything in ADE), read the matching `ade-*` skill before acting; otherwise ignore them.",
     `Skills: ${adeBundledAgentSkills.map((name) => `\`${name}\``).join(", ")}.`,
     formatAdeAgentSkillRootsForPrompt(skillRoots),
+    "If your runtime does not expose those skills natively, use `ade skill list --text` to discover them and `ade skill show <name> --text` to load one on demand.",
     "If the direct `mcp__computer_use` tools are present, use them for Codex Computer Use and honor their per-app approvals; do not initialize `@oai/sky` through `node_repl` as a substitute.",
     "Ground truth for any `ade` invocation is `ade help <command>` and `ade actions list --text`; prefer typed commands with `--text`. Project secrets are available through `ade secrets`; read only the named secret the user asks you to use and avoid printing secret values. Track and clean up processes you start.",
     "`ade chat scheduled-work create` schedules durable self-resume for bound chats and tracked provider CLIs.",
