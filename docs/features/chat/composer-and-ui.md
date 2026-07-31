@@ -61,7 +61,9 @@ subagents, computer use). The pane derives all visible state from the
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
 | `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Web-search work-log rows render provider action details (`query` / `queries`, `title`, `url`, `snippet`) as compact result chips; URL chips route through `openUrlInAdeBrowser()`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
-| `AgentChatMessageList.tsx` → `InlineQuestionRequestCard` | Inline question / structured-question card (provider logo + verb header, dedup body, monospace/markdown previews, per-provider accent, keyboard-first answering, A/B compare). See [Pending input card](#pending-input-card). |
+| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, fixed-height previews, note row, keyboard-first answering, A/B compare, minimize). See [Pending input card](#pending-input-card). |
+| `AnsweredQuestionReceipt.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
+| `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `chatTranscriptRows.ts` also owns two message-list helpers: `shouldCollapseUserMessageText` (a user message over 600 characters or 8 lines renders collapsed) and `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
 | `apps/desktop/src/renderer/lib/visualContextFormatting.ts` | Prompt formatting for visual/tool context from attachments, iOS Simulator, App Control, and built-in browser selections. |
@@ -629,12 +631,15 @@ that could not work without it.
   count it stays `recalculating`; a failed authoritative read shows `?` /
   `unknown`. Streamed usage can move the dial during a turn, but the
   control-channel snapshot after settle/compaction is the authoritative value.
-- **Question answering.** When a question-type pending input is active,
-  the user answers (or declines) it through the inline question card.
-  Multi-select questions render a toggle list plus a preview pane
-  (sanitised via `ReactMarkdown` + `rehype-raw` + `rehype-sanitize` +
-  `remark-gfm`). The per-question draft state (`QuestionDraft`) tracks
-  `text`, `selectedValues`, and `activePreviewValue` independently.
+- **Question answering.** When a question-type pending input is active, the
+  question card *replaces* the composer textarea (`AskQuestionComposer`) and
+  the model / permission / effort footer is hidden until it resolves. Selecting
+  an option marks it and never submits; `Next` / `Enter` advances. A selection
+  and a typed note both travel, selection first — see [Answer
+  semantics](#answer-semantics). Multi-select questions render a toggle ledger
+  plus a fixed-height preview pane (sanitised via `ReactMarkdown` +
+  `rehype-raw` + `rehype-sanitize` + `remark-gfm`), disclosed by an explicit
+  click rather than hover.
 - **Composer lock while pending input is unresolved.** When
   `pendingInput.blocking` is set, the composer hard-locks: the textarea
   / rich editor are disabled, attachment, slash-command, and edit
@@ -1088,42 +1093,123 @@ still reveal the matching drawer tab through the shared
 
 ## Pending input card
 
-`InlineQuestionRequestCard` (in `AgentChatMessageList.tsx`) renders the
-first question / structured-question pending input inline in the chat
-transcript. (There is no longer a separate `AgentQuestionModal`.)
+The ask-question surface is **anchored in the composer**, not in the
+transcript. `AskQuestionComposer` replaces the composer textarea inside the
+same prompt-box frame — same border, radius, and width — so nothing shifts when
+the question resolves back into a textarea. (There is no longer a separate
+`AgentQuestionModal`, no `InlineQuestionRequestCard`, and no question-kind
+`pendingBanner`: that banner sat on a composer `composerInputLocked` had
+already hard-locked, so the composer was dead *and* wearing a sign saying so.
+`plan_approval`, `model_selection`, `approval`, and `permissions` keep their
+banners — they render real controls.)
+
+The transcript keeps only the record: `OpenQuestionReceipt` while the gate is
+open (which is also where a *queued* second question waits until it becomes the
+composer's primary gate), and `AnsweredQuestionReceipt` once it resolves.
+
+### Answer semantics
+
+`apps/desktop/src/shared/pendingInputAnswers.ts` is the contract. Four states
+per question — `EMPTY`, `PICK`, `PICK_NOTE`, `NOTE` — and five rules:
+
+1. **Both travel.** A note never replaces a selection; a selection never clears
+   a note.
+2. **Typing never deselects. Selecting never clears the note.**
+3. **Selection values come first**, note last, so a model reads the choice
+   before the qualification.
+4. **The Send label is the payload receipt.** `sendLabel` is derived from the
+   state and nothing else (`Send 1`, `Send 3 picks`, `Send 1 + note`,
+   `Send note`, `Send N answers`). If the label and the payload can disagree,
+   the implementation is wrong.
+5. **Multi-question:** Send is enabled only when every question is answered.
+
+The note row's placeholder says which of its two jobs is live: `Your answer`
+when the question has no options, `Or send your own response instead` when
+nothing is picked, `Add a note (sent with your pick)` once something is. No
+disabled state, no mode switch.
+
+This module previously did not exist and the four surfaces disagreed: desktop
+sent both as an array, the TUI let typed text *replace* the selection, and iOS
+silently dropped the note once more than one question was in play. No provider
+forces any of it — Claude's `question.reply` takes `answers: string[][]`, ADE's
+own `askUser` tool returns free-form JSON, and Droid takes a single string ADE
+joins itself (now via `flattenAnswerForSingleStringProvider`, which labels the
+note rather than comma-joining it into the picks).
+
+### The three defects this shape fixes
+
+- **Hidden mode switch.** `handleOption`'s `submitSingle` branch submitted
+  immediately on click for a single single-select question — *unless* the
+  freeform field held text, in which case the same click only selected. One
+  gesture, two outcomes, no signal. Select marks now; `Next` / `Enter`
+  advances.
+- **Hover-reflow jitter.** Options set `onMouseEnter → setFocusedOption`, which
+  swapped the preview, which changed the card's height, which made the
+  virtualizer re-measure and `reconcileMeasuredScrollTop`, so the row walked out
+  from under the cursor and the click landed on its neighbour. **Hover mutates
+  no state.** Previews open on their own disclosure control, which neither
+  selects the option nor advances the question, and the preview viewport is
+  fixed-height with internal scroll.
+- **Unbounded height.** Only the option list scrolls; header, note row, and
+  footer are pinned outside it, so Decline / Next / Send are reachable at any
+  list length. Rows that fall fully below the fold get a `⌄ N more options` row
+  **on its own line** — floating it over the list would let it cover a row the
+  user meant to click, and a shadow alone is deniable (a list that cuts cleanly
+  after option 4 reads as "there are four options").
+
+**Height budget (desktop).** `useOptionsMaxHeight` measures
+`[data-chat-appearance-root]` — the flex column holding the transcript *and* the
+composer — and gives the option list `clamp(132, height * 0.4, 420)`. Budgeting
+from that column rather than the transcript viewport is load-bearing for the
+same reason it is on iOS (`workPendingInputMaxHeight`): the column's height does
+not change when the card grows, the viewport's does, and feeding the viewport
+back in is a runaway loop that eats the screen.
+
+**Minimize.** A `⌄` beside the `×` folds the card to one line inside the prompt
+box (provider mark · `{header} — {question}` · `N/M` or `ANSWER` · `⌃`) so the
+transcript can be scrolled freely. It does **not** dismiss and does **not**
+unblock — the gate stays open, and picks survive the fold. `×` remains the
+decline; the two affordances must not be merged. iOS already ships this as
+`pendingInputCollapsed`; both share the summary string (`foldedSummary`).
 
 Anatomy:
 
-- **Header** — the provider logo (`ProviderLogo(source)`) plus a
-  kind-derived verb from `pendingInputHeaderLabel(source, kind)`:
-  `{Provider} asks` for questions, `{Provider} · Plan ready` for plan
-  approvals. No clock icon and no generic "Question from {provider}"
-  title — those were the repetition that made the old card noisy. A
-  `N of M answered` counter sits on the right for paged sets.
+Anatomy:
+
+- **Header** — the provider mark (`ProviderLogo(source)`) plus a kind-derived
+  verb from `pendingInputHeaderLabel(source, kind)`: `{Provider} asks` for
+  questions, `{Provider} · Plan ready` for plan approvals. No clock icon and no
+  generic "Question from {provider}" title. For paged sets a **dot rail** sits
+  on the right (filled = current, green = answered) and jumps between
+  questions; `N / M` lives in the footer. Then the minimize `⌄` and the decline
+  `×`.
 - **Body** — the question's short `header` renders as a kicker, then the
-  question text exactly **once**, then the options. A request-level
-  `description` only renders when it differs from the question text
-  (`extraContext`), so it never duplicates the question.
-- **Options** — carry `role="radio"`/`"checkbox"` (in a `radiogroup`/
-  `group` container) for accessibility, support multi-select, and show a
-  `(Recommended)` badge. The recommended option auto-focuses so its
-  preview shows first.
-- **Previews** — `QuestionOptionPreview` is format-aware: wireframe/ASCII
-  content (detected by `looksLikeWireframe`, or `previewFormat: "html"`)
-  renders in a column-preserving monospace `<pre>` (`white-space: pre`,
-  horizontal scroll), and prose markdown routes through the shared
-  code-fence-aware `ChatMarkdown`. This replaced a bare `ReactMarkdown`
-  that collapsed ASCII alignment. When ≥2 options carry previews, a
-  `⇄ Compare` toggle shows two previews side by side.
-- **Keyboard-first** — digits toggle the active question's options, ↑↓
-  move the highlight (and its preview), ←→ page between questions, and
-  Enter advances or sends. The card focuses itself once on first
-  appearance (guarded so the virtualized list doesn't re-steal focus).
-- **Accent** — all chrome uses `var(--chat-accent)`, which the chat
-  surface sets per provider, so the card is amber for Claude, warm-white
-  for Codex, violet for Cursor/Droid, blue for OpenCode (and honours the
-  neutral-chrome preference). The same treatment is applied to
-  `ChatProposedPlanCard`.
+  question text exactly **once**. A request-level `description` only renders
+  when it differs from the question text, so it never duplicates the question.
+- **Options — a ledger.** One column always, never a 2-col grid (three options
+  in two columns leaves a ragged orphan). A hairline between rows and nothing
+  else: no per-option border, fill, radius, or radio glyph. Selection is a `✓`
+  flush-right; the leading number stays constant. Rows carry
+  `role="radio"`/`"checkbox"` in a `radiogroup`/`group` container, support
+  multi-select, and show a quiet `Recommended` label. Nothing is preselected.
+- **Previews** — `QuestionOptionPreview` (in `questionOptionPreview.tsx`) is
+  format-aware: wireframe/ASCII content (detected by `looksLikeWireframe`, or
+  `previewFormat: "html"`) renders in a column-preserving monospace `<pre>`
+  (`white-space: pre`, horizontal scroll), and prose markdown routes through
+  the shared code-fence-aware `ChatMarkdown`. This replaced a bare
+  `ReactMarkdown` that collapsed ASCII alignment. Previews live inside the
+  scrolling list in a fixed-height viewport, so opening one cannot change the
+  card's height. When ≥2 options carry previews, a `⇄ Compare` toggle shows two
+  side by side.
+- **Keyboard-first** — `1-9` pick, `↵` next/send, `←→` page between questions,
+  `esc` declines. Digits typed into the note field are never hijacked.
+- **Accent** — chrome uses `var(--chat-accent)`, which the chat surface sets per
+  provider, so the card is amber for Claude, warm-white for Codex, violet for
+  Cursor/Droid, blue for OpenCode (and honours the neutral-chrome preference).
+  The tint count is deliberately **two** — the header mark and the selected `✓`
+  — plus one structural use: a hairline top border on the composer meaning "you
+  are in answer mode". Not a glow, not a fill. The same accent treatment is
+  applied to `ChatProposedPlanCard`.
 
 Responses are sent back via `ade.agentChat.respondToInput` (accepts
 `AgentChatRespondToInputArgs` with structured `answers`; values may be
@@ -1437,8 +1523,10 @@ These modules are pure and unit-testable:
   silently. The `tool_call` branch exists only as a fallback for hosts that
   emit a bare ask-user call with no wrapping approval.
 - **Question drafts persistence.** Question answer state (selected
-  options + freeform drafts) is local to `InlineQuestionRequestCard` on
-  desktop. If the user navigates away and back, drafts reset. This is
+  options + notes) is local to `AskQuestionComposer` on
+  desktop. If the user navigates away and back, drafts reset. Minimizing the
+  card does *not* reset them — folding to read the transcript is a normal step
+  in answering, so picks survive it. This is
   intentional to avoid stale answers leaking across sessions. iOS makes
   the opposite call for the same surface — see
   [Cross-surface parity](#cross-surface-parity) — because minimizing the

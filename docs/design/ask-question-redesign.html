@@ -317,10 +317,8 @@ section > .note code { font-family: var(--mono); font-size: 11.5px; color: var(-
 .receipt-open { margin: 4px 0 2px 27px; border-left: 1px solid var(--hairline); padding-left: 13px; }
 .receipt-open .rk { font-family: var(--mono); font-size: 9px; font-weight: 700; text-transform: uppercase;
                     letter-spacing: 0.16em; color: var(--fg-4); margin: 8px 0 5px; }
-.receipt-opt { display: grid; grid-template-columns: 14px 1fr; gap: 8px; font-size: 12px;
-               color: var(--fg-4); padding: 2.5px 0; }
+.receipt-opt { font-size: 12px; color: var(--fg-4); padding: 2.5px 0; }
 .receipt-opt.picked { color: var(--fg-2); }
-.receipt-opt .t { color: var(--chat-accent); }
 .receipt-note { font-size: 12px; color: var(--fg-2); margin: 7px 0 2px; font-style: italic; }
 
 /* ── device frames ───────────────────────────────────────────────────────── */
@@ -770,24 +768,31 @@ function AnsweredReceipt({ request, answers, accent, declined = false, defaultOp
       </button>
       {open ? (
         <div className="receipt-open">
+          {/* Header · answer · note. NOT the full offered-option list with the
+              chosen one marked — replaying every rejected option is a menu, not
+              a receipt, and it re-inflates the row this was meant to shrink. */}
           {request.questions.map((q) => {
             const a = answers[q.id];
             const values = Array.isArray(a) ? a : a ? [a] : [];
-            const labels = new Set(q.options.map((o) => o.value));
-            const noteText = values.find((v) => !labels.has(v));
+            const byValue = new Map(q.options.map((o) => [o.value, o.label]));
+            const picks = values.filter((v) => byValue.has(v)).map((v) => byValue.get(v));
+            const noteText = values.filter((v) => !byValue.has(v)).join(" ");
             return (
               <div key={q.id}>
                 <div className="rk">{q.header}</div>
-                {q.options.map((o, i) => {
-                  const picked = values.includes(o.value);
-                  return (
-                    <div key={o.value} className={`receipt-opt ${picked ? "picked" : ""}`}>
-                      <span className="t">{picked ? "✓" : ""}</span>
-                      <span>{i + 1}&nbsp;&nbsp;{o.label}</span>
-                    </div>
-                  );
-                })}
-                {noteText ? <div className="receipt-note">note: “{noteText}”</div> : null}
+                {/* An isSecret answer never reaches the persisted event at all,
+                    so there is nothing here to show. */}
+                {q.isSecret ? (
+                  <div className="receipt-opt">answer hidden</div>
+                ) : (
+                  <>
+                    {picks.length ? <div className="receipt-opt picked">{picks.join(" · ")}</div> : null}
+                    {noteText ? <div className="receipt-note">note: “{noteText}”</div> : null}
+                    {!picks.length && !noteText ? (
+                      <div className="receipt-opt">no answer recorded</div>
+                    ) : null}
+                  </>
+                )}
               </div>
             );
           })}

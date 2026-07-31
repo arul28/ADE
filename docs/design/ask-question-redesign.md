@@ -1,6 +1,6 @@
 # Ask-question surface — implementation spec
 
-**Status:** design locked, not implemented.
+**Status:** PR 1 shipped (contract + desktop + web + TUI). PR 2 (iOS) outstanding.
 **Visual reference:** `docs/design/ask-question-redesign.html` — open it in a browser.
 It is live React and the option rows, previews, minimize, and Send labels all work.
 Rendered stills are in `docs/design/renders/`.
@@ -203,8 +203,25 @@ Full detail in the HTML. The rules:
 Built from `chatCardPrimitives` on the `AdeCard` convention, so it aligns
 column-for-column with every other transcript row. Per that file's own rule — *"a quiet
 result is ONE line, no box, hairline rule"* — the resolved state is a single expandable
-line. Expanding shows every option that was offered with the chosen one marked, plus the
-note. A declined request records as declined rather than vanishing.
+line. Expanding shows, per question: the **header**, the **answer**, and the **note**.
+Not the full offered-option list with the chosen one marked — replaying every rejected
+option is a menu, not a receipt, and it re-inflates the row it was meant to shrink.
+A declined request records as declined rather than vanishing.
+
+The answers ride on `pending_input_resolved` (`answers?: Record<string, string |
+string[]>`), which is what makes the receipt survive a reload. That event is durable
+*and* replicates to every paired device and the widget App Group, so two rules bind:
+
+- An `isSecret` question's answer is **never** written — the key is dropped and the
+  receipt renders `answer hidden`. iOS already refuses to write those even to local
+  draft storage (`WorkChatComposerAndInputViews.swift:1197`); the synced event must be
+  at least as strict.
+- The payload is capped at ~2 KB with a visible truncation marker. An oversized synced
+  event has taken the desktop↔brain socket down before; the model still receives the
+  full answer, only the transcript copy is bounded.
+
+Both live in `sanitizeAnswersForTranscript` in the shared module, and both have named
+regression tests.
 
 ---
 
