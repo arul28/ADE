@@ -228,7 +228,10 @@ function makeGithubService(overrides?: Record<string, unknown>) {
   return {
     getRepoOrThrow: vi.fn(async () => REPO),
     apiRequest: vi.fn(async (args: { path: string; [key: string]: unknown }) => {
-      if (args.path === `/repos/${REPO.owner}/${REPO.name}/stacks`) {
+      if (
+        args.method === "GET"
+        && args.path === `/repos/${REPO.owner}/${REPO.name}/stacks`
+      ) {
         if (stackApiRequestOverride) return await stackApiRequestOverride(args);
         return { data: [], linkHeader: null };
       }
@@ -2267,11 +2270,9 @@ describe("prService.ingestGithubWebhook", () => {
       }
       return null;
     });
-    const githubService = makeGithubService({
-      apiRequest: vi.fn()
-        .mockRejectedValueOnce(new Error("Not Found"))
-        .mockResolvedValueOnce({ data: [], linkHeader: null }),
-    });
+    const apiRequest = vi.fn().mockRejectedValueOnce(new Error("Not Found"));
+    const stackApiRequest = vi.fn().mockResolvedValueOnce({ data: [], linkHeader: null });
+    const githubService = makeGithubService({ apiRequest, stackApiRequest });
     const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
 
     const result = await service.ingestGithubWebhook({
@@ -2294,6 +2295,11 @@ describe("prService.ingestGithubWebhook", () => {
       path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
       query: { per_page: 100, page: 1 },
     });
+    expect(stackApiRequest).toHaveBeenCalledWith({
+      method: "GET",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      query: { per_page: 100, page: 1 },
+    });
     expect(db.run).toHaveBeenCalledWith("begin immediate");
     expect(db.run).toHaveBeenCalledWith(
       expect.stringContaining("delete from github_pr_stacks"),
@@ -2310,11 +2316,9 @@ describe("prService.ingestGithubWebhook", () => {
       }
       return null;
     });
-    const githubService = makeGithubService({
-      apiRequest: vi.fn()
-        .mockRejectedValueOnce(new Error("Stack read timed out"))
-        .mockRejectedValueOnce(new Error("Repository stack list timed out")),
-    });
+    const apiRequest = vi.fn().mockRejectedValueOnce(new Error("Stack read timed out"));
+    const stackApiRequest = vi.fn().mockRejectedValueOnce(new Error("Repository stack list timed out"));
+    const githubService = makeGithubService({ apiRequest, stackApiRequest });
     const { service } = buildService({ db, githubService, laneService: makeLaneService([]) });
 
     const result = await service.ingestGithubWebhook({
@@ -2333,6 +2337,8 @@ describe("prService.ingestGithubWebhook", () => {
 
     expect(result.processed).toBe(true);
     expect(githubService.apiRequest).toHaveBeenCalledTimes(2);
+    expect(apiRequest).toHaveBeenCalledTimes(1);
+    expect(stackApiRequest).toHaveBeenCalledTimes(1);
     expect(db.run).toHaveBeenCalledWith(
       expect.stringContaining("raw_payload_json = null"),
       expect.arrayContaining(["processed"]),
