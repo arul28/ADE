@@ -4483,57 +4483,6 @@ struct IntegrationProposal: Codable, Identifiable, Equatable {
   var resolutionState: IntegrationResolutionState?
 }
 
-struct QueueAutomationConfig: Codable, Equatable {
-  var method: String
-  var archiveLane: Bool
-  var autoResolve: Bool
-  var ciGating: Bool
-  var resolverProvider: String?
-  var resolverModel: String?
-  var reasoningEffort: String?
-  var permissionMode: String?
-  var confidenceThreshold: Double?
-  var originSurface: String?
-  var originRunId: String?
-  var originLabel: String?
-}
-
-struct QueueLandingEntry: Codable, Identifiable, Equatable {
-  var id: String { prId }
-  var prId: String
-  var laneId: String
-  var laneName: String
-  var position: Int
-  var state: String
-  var prNumber: Int?
-  var githubUrl: String?
-  var resolvedByAi: Bool?
-  var resolverRunId: String?
-  var mergeCommitSha: String?
-  var waitingOn: String?
-  var updatedAt: String?
-  var error: String?
-}
-
-struct QueueLandingState: Codable, Identifiable, Equatable {
-  var id: String { queueId }
-  var queueId: String
-  var groupId: String
-  var groupName: String?
-  var targetBranch: String?
-  var state: String
-  var entries: [QueueLandingEntry]
-  var currentPosition: Int
-  var activePrId: String?
-  var activeResolverRunId: String?
-  var lastError: String?
-  var waitReason: String?
-  var config: QueueAutomationConfig
-  var startedAt: String
-  var completedAt: String?
-  var updatedAt: String
-}
-
 struct TerminalSnapshot: Codable, Equatable {
   var sessionId: String
   var transcript: String
@@ -5006,25 +4955,11 @@ struct PrIntegrationWorkflowLane: Codable, Identifiable, Equatable {
   var outcome: String
 }
 
-/// Unified mobile workflow card. Exactly one of `queue`, `integration`, or
-/// `rebase` payload fields will be populated, matching the desktop
-/// discriminated union encoded as `kind`.
+/// Unified mobile workflow card. Integration and rebase payload fields match
+/// the desktop discriminated union encoded as `kind`.
 struct PrWorkflowCard: Codable, Identifiable, Equatable {
   var id: String
   var kind: String
-  // queue
-  var queueId: String?
-  var groupId: String?
-  var groupName: String?
-  var targetBranch: String?
-  var state: String?
-  var activePrId: String?
-  var currentPosition: Int?
-  var totalEntries: Int?
-  var entries: [QueueLandingEntry]?
-  var waitReason: String?
-  var lastError: String?
-  var updatedAt: String?
   // integration
   var proposalId: String?
   var title: String?
@@ -5065,7 +5000,6 @@ struct PrWorkflowCard: Codable, Identifiable, Equatable {
   private enum CodingKeys: String, CodingKey {
     case id
     case kind
-    case queueId, groupId, groupName, targetBranch, state, activePrId, currentPosition, totalEntries, entries, waitReason, lastError, updatedAt
     case proposalId, title, baseBranch, overallOutcome
     case integrationStatus = "status"
     case laneCount, conflictLaneCount, lanes, workflowDisplayState, cleanupState, linkedPrId, integrationLaneId, preferredIntegrationLaneId, mergeIntoHeadSha, integrationLaneOrigin, createdAt
@@ -5096,17 +5030,6 @@ struct DeleteIntegrationProposalResult: Codable, Equatable {
   var proposalId: String
   var integrationLaneId: String?
   var deletedIntegrationLane: Bool
-}
-
-struct CreateQueuePrError: Codable, Equatable {
-  var laneId: String
-  var error: String
-}
-
-struct CreateQueuePrsResult: Codable, Equatable {
-  var groupId: String
-  var prs: [PrSummary]
-  var errors: [CreateQueuePrError]
 }
 
 struct IntegrationMergeResult: Codable, Equatable {

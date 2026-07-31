@@ -54,7 +54,6 @@ Evidence run ids used so far:
 | prs.github.card.select.local | Select a local ADE PR card | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs-ptm-open-local-pr` |
 | prs.github.card.select.external | Select an external PR card | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.github.card.select.external` |
 | prs.github.card.open-github | Click PR card Open on GitHub | external-skip | `GitHubTab.tsx` |
-| prs.github.card.open-queue | Click queue shortcut from PR card | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.detail.open-queue`; queue shortcut path also covered by `prs.queue.open-pr` |
 
 ## PR detail
 
@@ -95,27 +94,9 @@ Evidence run ids used so far:
 | prs.workflows.active | Select Active | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.workflows.active` |
 | prs.workflows.history | Select History | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.workflows.history`; empty history state rendered |
 | prs.workflows.integration | Select Integration | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.integration.select` |
-| prs.workflows.queue | Select Queue | measured | `prs-ui-rebase-fetch-ttl-20260512-062130` |
-| prs.workflows.rebase | Select Rebase/Merge | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.inspect-rebase` |
+| prs.workflows.rebase | Select Rebase/Merge | measured | `prs-ui-ptm-audit-20260512-0635` |
 | prs.workflows.refresh | Click Workflows Refresh | measured | stale/no-op UI plus explicit all-18 refresh evidence |
 
-## Queue workflow
-
-| id | action | state | evidence |
-| --- | --- | --- | --- |
-| prs.queue.select | Select queue group | measured | `prs-ui-rebase-fetch-ttl-20260512-062130` |
-| prs.queue.open-pr | Open a queue member PR | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.open-pr` |
-| prs.queue.open-github | Open queue member on GitHub | external-skip | `WorkflowsTab.tsx` |
-| prs.queue.inspect-rebase | Inspect queued lane rebase need | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.inspect-rebase` |
-| prs.queue.scope-next | Select Next lane only | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.scope-controls` |
-| prs.queue.scope-all | Select All affected lanes | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.scope-controls` |
-| prs.queue.rebase-ai | Rebase with AI | sandbox-only | `WorkflowsTab.tsx` / `RebaseTab.tsx` |
-| prs.queue.rebase-local | Rebase now local only | prompt-only | mutates perf-pass worktree |
-| prs.queue.rebase-push | Rebase and push | prompt-only | externally visible GitHub push |
-| prs.queue.land-current | Land current PR | prompt-only | externally visible merge |
-| prs.queue.resume | Resume queue automation | prompt-only | `WorkflowsTab.tsx` |
-| prs.queue.cancel | Cancel queue automation | prompt-only | `WorkflowsTab.tsx` |
-| prs.queue.automate | Open automate merging modal | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.automate`, opened and cancelled |
 
 ## Integration workflow
 
@@ -136,7 +117,7 @@ Evidence run ids used so far:
 
 | id | action | state | evidence |
 | --- | --- | --- | --- |
-| prs.rebase.select-need | Select a rebase need | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.queue.inspect-rebase` navigated to rebase need |
+| prs.rebase.select-need | Select a rebase need | measured | `prs-ui-ptm-audit-20260512-0635` |
 | prs.rebase.commit-expand | Expand commit/file details | measured | `prs-ui-coverage-closeout-20260512-074602`, marker `prs.rebase.commit-expand`; expanded `5c7d11f` file details |
 | prs.rebase.dismiss | Dismiss/defer rebase need | prompt-only | `RebaseTab.tsx` |
 | prs.rebase.ai | Rebase with AI | sandbox-only | `RebaseTab.tsx` |
@@ -151,7 +132,6 @@ Evidence run ids used so far:
 | --- | --- | --- | --- |
 | prs.create.open | Open Create PR modal | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.open` |
 | prs.create.mode.normal | Select normal PR mode | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.mode.normal` |
-| prs.create.mode.queue | Select queue workflow mode | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.mode.queue` |
 | prs.create.mode.integration | Select integration workflow mode | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.mode.integration` |
 | prs.create.lane-picker | Change lane/source pickers | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.lane-picker` |
 | prs.create.rebase-warning | Read rebase warning panel | measured | `prs-ui-ptm-audit-20260512-0635`, marker `prs.create.lane-picker`; warning rendered for behind lane selection |

@@ -5,9 +5,8 @@
  * resolved promise with a sensible default value so the renderer can at least
  * paint the UI without crashing.
  *
- * This mock populates all 4 PRs tabs with realistic data:
+ * This mock populates the PR surfaces with realistic data:
  *   Normal  – 5 PRs (open/draft/merged/closed, varied checks/reviews)
- *   Queue   – 4 PRs in 2 queue groups with pipeline state
  *   Integration – 2 integration PRs with multi-source merge contexts
  *   Rebase  – 6 rebase needs across all urgency categories
  *
@@ -22,7 +21,7 @@
  * Optional: generate `browser-mock-ade-snapshot.generated.json` with
  *   npm run export:browser-mock-ade
  * to mirror the current project’s `.ade/ade.db` snapshot. Exported lanes, PRs,
- * queue/rebase/history/session/process rows replace the built-in demo data so
+ * rebase/history/session/process rows replace the built-in demo data so
  * browser-only UI work follows the same local state as the desktop app.
  * Files tab: snapshot may include `filesTreeByWorkspace` / `filesContentsByWorkspace`
  * from the export script (disk walk at export time); without them, a small
@@ -539,23 +538,6 @@ const BUILTIN_MOCK_LANES: any[] = [
     "lane-onboard",
     "feature/onboarding-wizard",
     "refs/heads/feature/onboarding-wizard",
-  ),
-  // Queue PR lanes
-  makeLane("lane-payments", "feature/payments", "refs/heads/feature/payments"),
-  makeLane(
-    "lane-checkout",
-    "feature/checkout-flow",
-    "refs/heads/feature/checkout-flow",
-  ),
-  makeLane(
-    "lane-notifications",
-    "feature/notifications",
-    "refs/heads/feature/notifications",
-  ),
-  makeLane(
-    "lane-billing",
-    "feature/billing-v2",
-    "refs/heads/feature/billing-v2",
   ),
   // Integration PR lanes
   makeLane("lane-search", "feature/search-v2", "refs/heads/feature/search-v2"),
@@ -1322,58 +1304,6 @@ const NORMAL_PRS: any[] = [
   ),
 ];
 
-// ── Queue PRs (2 groups) ──────────────────────────────────────
-//
-// Group 1: "Release v3.0 — Commerce" (3 PRs: one landed, one active, one pending)
-// Group 2: "Billing Upgrade" (1 PR in queue)
-const QUEUE_PRS: any[] = [
-  makePr(
-    "pr-q1",
-    "lane-payments",
-    160,
-    "Payment gateway integration (Stripe + PayPal)",
-    {
-      state: "merged",
-      checksStatus: "passing",
-      reviewStatus: "approved",
-      additions: 1200,
-      deletions: 150,
-      createdAt: threeDaysAgo,
-      updatedAt: yesterday,
-    },
-  ),
-  makePr("pr-q2", "lane-checkout", 161, "Checkout flow with cart validation", {
-    state: "open",
-    checksStatus: "passing",
-    reviewStatus: "approved",
-    additions: 890,
-    deletions: 210,
-    createdAt: twoDaysAgo,
-  }),
-  makePr(
-    "pr-q3",
-    "lane-notifications",
-    162,
-    "Order confirmation & shipping notifications",
-    {
-      state: "open",
-      checksStatus: "pending",
-      reviewStatus: "requested",
-      additions: 430,
-      deletions: 60,
-      createdAt: yesterday,
-    },
-  ),
-  makePr("pr-q4", "lane-billing", 170, "Billing v2 — usage-based metering", {
-    state: "draft",
-    checksStatus: "none",
-    reviewStatus: "none",
-    additions: 340,
-    deletions: 45,
-    createdAt: yesterday,
-  }),
-];
-
 // ── Integration PRs (2 PRs) ──────────────────────────────────
 //
 // pr-i1: Merges search + analytics into main (multi-source)
@@ -1445,7 +1375,7 @@ const ALL_PRS = USE_ADE_DB_SNAPSHOT
   ? Array.isArray(ADE_DB_SNAPSHOT?.prs)
     ? ADE_DB_SNAPSHOT.prs
     : []
-  : [...NORMAL_PRS, ...QUEUE_PRS, ...INTEGRATION_PRS];
+  : [...NORMAL_PRS, ...INTEGRATION_PRS];
 
 // ── Merge Contexts ────────────────────────────────────────────
 const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
@@ -1494,129 +1424,6 @@ const BUILTIN_MOCK_MERGE_CONTEXTS: Record<string, any> = {
     targetLaneId: "lane-main",
     integrationLaneId: null,
     members: [],
-  },
-
-  // Queue group 1: "Release v3.0 — Commerce"
-  "pr-q1": {
-    prId: "pr-q1",
-    groupId: "queue-commerce-v3",
-    groupType: "queue",
-    sourceLaneIds: ["lane-payments"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [
-      {
-        prId: "pr-q1",
-        laneId: "lane-payments",
-        laneName: "feature/payments",
-        prNumber: 160,
-        position: 0,
-        role: "source",
-      },
-      {
-        prId: "pr-q2",
-        laneId: "lane-checkout",
-        laneName: "feature/checkout-flow",
-        prNumber: 161,
-        position: 1,
-        role: "source",
-      },
-      {
-        prId: "pr-q3",
-        laneId: "lane-notifications",
-        laneName: "feature/notifications",
-        prNumber: 162,
-        position: 2,
-        role: "source",
-      },
-    ],
-  },
-  "pr-q2": {
-    prId: "pr-q2",
-    groupId: "queue-commerce-v3",
-    groupType: "queue",
-    sourceLaneIds: ["lane-checkout"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [
-      {
-        prId: "pr-q1",
-        laneId: "lane-payments",
-        laneName: "feature/payments",
-        prNumber: 160,
-        position: 0,
-        role: "source",
-      },
-      {
-        prId: "pr-q2",
-        laneId: "lane-checkout",
-        laneName: "feature/checkout-flow",
-        prNumber: 161,
-        position: 1,
-        role: "source",
-      },
-      {
-        prId: "pr-q3",
-        laneId: "lane-notifications",
-        laneName: "feature/notifications",
-        prNumber: 162,
-        position: 2,
-        role: "source",
-      },
-    ],
-  },
-  "pr-q3": {
-    prId: "pr-q3",
-    groupId: "queue-commerce-v3",
-    groupType: "queue",
-    sourceLaneIds: ["lane-notifications"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [
-      {
-        prId: "pr-q1",
-        laneId: "lane-payments",
-        laneName: "feature/payments",
-        prNumber: 160,
-        position: 0,
-        role: "source",
-      },
-      {
-        prId: "pr-q2",
-        laneId: "lane-checkout",
-        laneName: "feature/checkout-flow",
-        prNumber: 161,
-        position: 1,
-        role: "source",
-      },
-      {
-        prId: "pr-q3",
-        laneId: "lane-notifications",
-        laneName: "feature/notifications",
-        prNumber: 162,
-        position: 2,
-        role: "source",
-      },
-    ],
-  },
-  // Queue group 2: "Billing Upgrade"
-  "pr-q4": {
-    prId: "pr-q4",
-    groupId: "queue-billing-upgrade",
-    groupType: "queue",
-    sourceLaneIds: ["lane-billing"],
-    targetLaneId: "lane-main",
-    integrationLaneId: null,
-    members: [
-      {
-        prId: "pr-q4",
-        laneId: "lane-billing",
-        laneName: "feature/billing-v2",
-        prNumber: 170,
-        position: 0,
-        role: "source",
-      },
-    ],
   },
 
   // Integration PRs — multi-source
@@ -2112,20 +1919,6 @@ const BUILTIN_MOCK_REBASE_NEEDS: any[] = [
     dismissedAt: null,
     deferredUntil: fourHoursFromNow,
   },
-  // Dismissed
-  {
-    laneId: "lane-checkout",
-    laneName: "feature/checkout-flow",
-    kind: "lane_base",
-    baseBranch: "main",
-    behindBy: 2,
-    conflictPredicted: false,
-    conflictingFiles: [],
-    prId: "pr-q2",
-    groupContext: "queue-commerce-v3",
-    dismissedAt: yesterday,
-    deferredUntil: null,
-  },
 ];
 
 const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT
@@ -2133,126 +1926,6 @@ const MOCK_REBASE_NEEDS: any[] = USE_ADE_DB_SNAPSHOT
     ? ADE_DB_SNAPSHOT.rebaseNeeds
     : []
   : BUILTIN_MOCK_REBASE_NEEDS;
-
-// ── Queue Landing State ───────────────────────────────────────
-const BUILTIN_MOCK_QUEUE_STATE: Record<string, any> = {
-  "queue-commerce-v3": {
-    queueId: "queue-commerce-v3",
-    groupId: "queue-commerce-v3",
-    groupName: "Release v3.0 - Commerce",
-    targetBranch: "main",
-    state: "landing",
-    entries: [
-      {
-        prId: "pr-q1",
-        laneId: "lane-payments",
-        laneName: "feature/payments",
-        position: 0,
-        prNumber: 160,
-        githubUrl: "https://github.com/mock/repo/pull/160",
-        state: "landed",
-        updatedAt: yesterday,
-      },
-      {
-        prId: "pr-q2",
-        laneId: "lane-checkout",
-        laneName: "feature/checkout-flow",
-        position: 1,
-        prNumber: 161,
-        githubUrl: "https://github.com/mock/repo/pull/161",
-        state: "landing",
-        updatedAt: now,
-      },
-      {
-        prId: "pr-q3",
-        laneId: "lane-notifications",
-        laneName: "feature/notifications",
-        position: 2,
-        prNumber: 162,
-        githubUrl: "https://github.com/mock/repo/pull/162",
-        state: "pending",
-        updatedAt: null,
-      },
-    ],
-    currentPosition: 1,
-    activePrId: "pr-q2",
-    activeResolverRunId: null,
-    lastError: null,
-    waitReason: null,
-    config: {
-      method: "squash",
-      archiveLane: false,
-      autoResolve: true,
-      ciGating: true,
-      resolverProvider: "claude",
-      resolverModel: "anthropic/claude-sonnet-5",
-      reasoningEffort: "medium",
-      permissionMode: "guarded_edit",
-      confidenceThreshold: null,
-      originSurface: "queue",
-      originRunId: null,
-      originLabel: "Release v3.0 - Commerce",
-    },
-    startedAt: yesterday,
-    completedAt: null,
-    updatedAt: now,
-  },
-  "queue-billing-upgrade": {
-    queueId: "queue-billing-upgrade",
-    groupId: "queue-billing-upgrade",
-    groupName: "Billing Upgrade",
-    targetBranch: "main",
-    state: "idle",
-    entries: [
-      {
-        prId: "pr-q4",
-        laneId: "lane-billing",
-        laneName: "feature/billing-v2",
-        position: 0,
-        prNumber: 170,
-        githubUrl: "https://github.com/mock/repo/pull/170",
-        state: "pending",
-        updatedAt: null,
-      },
-    ],
-    currentPosition: 0,
-    activePrId: null,
-    activeResolverRunId: null,
-    lastError: null,
-    waitReason: null,
-    config: {
-      method: "squash",
-      archiveLane: false,
-      autoResolve: false,
-      ciGating: true,
-      resolverProvider: null,
-      resolverModel: "anthropic/claude-sonnet-5",
-      reasoningEffort: "medium",
-      permissionMode: "guarded_edit",
-      confidenceThreshold: null,
-      originSurface: "queue",
-      originRunId: null,
-      originLabel: "Billing Upgrade",
-    },
-    startedAt: now,
-    completedAt: null,
-    updatedAt: now,
-  },
-};
-
-const MOCK_QUEUE_STATE: Record<string, any> = USE_ADE_DB_SNAPSHOT
-  ? Object.fromEntries(
-      (Array.isArray(ADE_DB_SNAPSHOT?.queueStates)
-        ? ADE_DB_SNAPSHOT.queueStates
-        : []
-      ).flatMap((state: any) => {
-        const keys = [state?.groupId, state?.queueId]
-          .filter(Boolean)
-          .map(String);
-        return keys.map((key) => [key, state]);
-      }),
-    )
-  : BUILTIN_MOCK_QUEUE_STATE;
 
 // ── Integration simulation result ─────────────────────────────
 const BUILTIN_MOCK_INTEGRATION_SIMULATION: any = {
@@ -6083,10 +5756,8 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         body: "AI-drafted body",
       }),
       land: resolvedArg({ success: true, prNumber: 142, sha: "abc123" }),
-      landStack: resolvedArg([]),
       retargetBase: resolvedArg(undefined),
       openInGitHub: resolvedArg(undefined),
-      createQueue: resolvedArg({}),
       createIntegration: resolvedArg({}),
       simulateIntegration: resolvedArg(MOCK_INTEGRATION_SIMULATION),
       commitIntegration: resolvedArg({
@@ -6095,63 +5766,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         pr: USE_ADE_DB_SNAPSHOT ? null : (INTEGRATION_PRS[0] ?? null),
         mergeResults: [],
       }),
-      landStackEnhanced: resolvedArg([]),
-      landQueueNext: resolvedArg({
-        success: true,
-        prNumber: 161,
-        sha: "def456",
-      }),
-      startQueueAutomation: async (args: {
-        groupId: string;
-        autoResolve?: boolean;
-        archiveLane?: boolean;
-        ciGating?: boolean;
-        method?: string;
-        resolverModel?: string;
-        reasoningEffort?: string;
-      }) => {
-        const state = MOCK_QUEUE_STATE[args.groupId];
-        if (!state) throw new Error(`Unknown queue group: ${args.groupId}`);
-        state.state = "landing";
-        state.config = {
-          ...state.config,
-          autoResolve: args.autoResolve ?? state.config.autoResolve,
-          archiveLane: args.archiveLane ?? state.config.archiveLane,
-          ciGating: args.ciGating ?? state.config.ciGating,
-          method: args.method ?? state.config.method,
-          resolverModel: args.resolverModel ?? state.config.resolverModel,
-          reasoningEffort: args.reasoningEffort ?? state.config.reasoningEffort,
-        };
-        return state;
-      },
-      pauseQueueAutomation: async (queueId: string) => {
-        const state =
-          Object.values(MOCK_QUEUE_STATE).find(
-            (candidate) => candidate.queueId === queueId,
-          ) ?? null;
-        if (state) state.state = "paused";
-        return state;
-      },
-      resumeQueueAutomation: async (args: { queueId: string }) => {
-        const state =
-          Object.values(MOCK_QUEUE_STATE).find(
-            (candidate) => candidate.queueId === args.queueId,
-          ) ?? null;
-        if (state) state.state = "landing";
-        return state;
-      },
-      cancelQueueAutomation: async (queueId: string) => {
-        const state =
-          Object.values(MOCK_QUEUE_STATE).find(
-            (candidate) => candidate.queueId === queueId,
-          ) ?? null;
-        if (state) state.state = "cancelled";
-        return state;
-      },
       getHealth: resolvedArg({}),
-      getQueueState: async (groupId: string) =>
-        MOCK_QUEUE_STATE[groupId] ?? null,
-      listQueueStates: async () => Object.values(MOCK_QUEUE_STATE),
       getConflictAnalysis: resolvedArg({}),
       getMergeContext: async (prId: string) =>
         MOCK_MERGE_CONTEXTS[prId] ?? {
@@ -6313,7 +5928,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       setReviewThreadResolved: resolvedArg(undefined),
       reactToComment: resolvedArg(undefined),
       cleanupBranch: resolvedArg({ deleted: false, reason: "browser-mock" }),
-      reorderQueuePrs: resolvedArg(undefined),
       aiResolutionGetSession: resolvedArg(null),
       getActionRuns: resolvedArg([]),
       getActivity: resolvedArg([]),

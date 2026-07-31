@@ -18,7 +18,6 @@ import type {
   MergeMethod,
   RebaseNeed,
   RebaseEventPayload,
-  QueueLandingState,
   PrEventPayload,
   LaneSummary,
   AutoRebaseLaneStatus,
@@ -38,7 +37,7 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 import { refreshPrsCoalesced } from "../../../lib/prReadCache";
 import { useDebouncedLaneLifecycleRefresh } from "../../../hooks/useLaneListInvalidation";
 
-type PrTab = "normal" | "queue" | "integration" | "rebase";
+type PrTab = "normal" | "integration" | "rebase";
 
 type PrRefreshArgs = { prId?: string; prIds?: string[] };
 
@@ -100,7 +99,6 @@ type PrsState = {
   lanes: LaneSummary[];
   mergeContextByPrId: Record<string, PrMergeContext>;
   selectedPrId: string | null;
-  selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
   mergeMethod: MergeMethod;
   loading: boolean;
@@ -123,9 +121,6 @@ type PrsState = {
   rebaseNeeds: RebaseNeed[];
   autoRebaseStatuses: AutoRebaseLaneStatus[];
 
-  // Queue state
-  queueStates: Record<string, QueueLandingState>;
-
   // Inline terminal
   inlineTerminal: InlineTerminalState;
 
@@ -143,7 +138,6 @@ type PrsState = {
 type PrsContextValue = PrsState & {
   setActiveTab: (tab: PrTab) => void;
   setSelectedPrId: (id: string | null) => void;
-  setSelectedQueueGroupId: (id: string | null) => void;
   setSelectedRebaseItemId: (id: string | null) => void;
   setMergeMethod: (method: MergeMethod) => void;
   setResolverModel: (model: string) => void;
@@ -183,7 +177,6 @@ type PrsContextWarmCache = {
   lanes: LaneSummary[];
   mergeContextByPrId: Record<string, PrMergeContext>;
   selectedPrId: string | null;
-  selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
   mergeMethod: MergeMethod;
   detailStatus: PrStatus | null;
@@ -196,7 +189,6 @@ type PrsContextWarmCache = {
   detailSnapshotsByPrId: Record<string, PrSnapshotHydration>;
   rebaseNeeds: RebaseNeed[];
   autoRebaseStatuses: AutoRebaseLaneStatus[];
-  queueStates: Record<string, QueueLandingState>;
   inlineTerminal: InlineTerminalState;
   resolverSessionsByContextKey: Record<string, PrAiResolutionSessionInfo>;
   viewerLogin: string | null;
@@ -214,15 +206,6 @@ function prsContextCacheKey(projectRoot?: string | null): string {
 function readPrsContextWarmCache(projectRoot?: string | null): PrsContextWarmCache | null {
   if (PRS_CONTEXT_CACHE_DISABLED) return null;
   return prsContextWarmCacheByProject.get(prsContextCacheKey(projectRoot)) ?? null;
-}
-
-async function listWorkflowQueueStates(): Promise<QueueLandingState[]> {
-  try {
-    return await window.ade.prs.listQueueStates({ includeCompleted: true, limit: 50 });
-  } catch (err) {
-    console.warn("[PrsContext] Failed to load workflow queue states:", err);
-    return [];
-  }
 }
 
 function readBoolLs(key: string, fallback: boolean): boolean {
@@ -324,7 +307,6 @@ function readPersistedReasoningLevel(): string {
 function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
   activeTab: PrTab;
   selectedPrId: string | null;
-  selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
 } {
   try {
@@ -336,7 +318,6 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
       route.tab
       || route.workflowTab
       || route.prId
-      || route.queueGroupId
       || route.laneId
       || route.detailTab
     );
@@ -344,7 +325,6 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
       return {
         activeTab: fallback.activeTab,
         selectedPrId: fallback.selectedPrId,
-        selectedQueueGroupId: fallback.selectedQueueGroupId,
         selectedRebaseItemId: fallback.selectedRebaseItemId,
       };
     }
@@ -355,7 +335,6 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
     return {
       activeTab,
       selectedPrId: !resolved.isWorkflowRoute ? route.prId : null,
-      selectedQueueGroupId: resolved.effectiveWorkflow === "queue" ? route.queueGroupId : null,
       // Mirror PRsPage's resolver so the shape of this id matches what the
       // rebase UI later expects. rebaseNeeds are empty at provider mount, so
       // this returns the bare lane id; PRsPage's syncFromLocation effect runs
@@ -369,7 +348,6 @@ function readInitialRouteState(fallback?: PrsContextWarmCache | null): {
   return {
     activeTab: "normal",
     selectedPrId: null,
-    selectedQueueGroupId: null,
     selectedRebaseItemId: null,
   };
 }
@@ -448,7 +426,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     () => warmCache?.mergeContextByPrId ?? {},
   );
   const [selectedPrId, setSelectedPrId] = useState<string | null>(initialRouteState.selectedPrId);
-  const [selectedQueueGroupId, setSelectedQueueGroupId] = useState<string | null>(initialRouteState.selectedQueueGroupId);
   const [selectedRebaseItemId, setSelectedRebaseItemId] = useState<string | null>(initialRouteState.selectedRebaseItemId);
   const [mergeMethod, setMergeMethod] = useState<MergeMethod>(() => warmCache?.mergeMethod ?? "squash");
   const [loading, setLoading] = useState(!warmCache);
@@ -542,11 +519,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   const autoRebaseStatusesRef = React.useRef<AutoRebaseLaneStatus[]>([]);
   React.useEffect(() => { rebaseNeedsRef.current = rebaseNeeds; }, [rebaseNeeds]);
   React.useEffect(() => { autoRebaseStatusesRef.current = autoRebaseStatuses; }, [autoRebaseStatuses]);
-
-  // Queue state
-  const [queueStates, setQueueStates] = useState<Record<string, QueueLandingState>>(
-    () => warmCache?.queueStates ?? {},
-  );
 
   // Inline terminal
   const [inlineTerminal, setInlineTerminal] = useState<InlineTerminalState>(() => warmCache?.inlineTerminal ?? null);
@@ -722,24 +694,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
   // Track whether the initial data load has completed
   const initialLoadDone = React.useRef(Boolean(warmCache));
 
-  const refreshQueueStates = useCallback(async (groupIds: string[]) => {
-    if (!active) return;
-    const uniqueGroupIds = [...new Set(groupIds.map((groupId) => String(groupId ?? "").trim()).filter(Boolean))];
-    if (uniqueGroupIds.length === 0) return;
-    await Promise.all(uniqueGroupIds.map(async (groupId) => {
-      try {
-        const queueState = await window.ade.prs.getQueueState(groupId);
-        if (!queueState) return;
-        setQueueStates((prev) => {
-          const next = { ...prev, [groupId]: queueState };
-          return jsonEqual(prev, next) ? prev : next;
-        });
-      } catch (err) {
-        console.warn("[PrsContext] Failed to refresh queue state for group:", groupId, err);
-      }
-    }));
-  }, [active]);
-
   // Core refresh (guarded against concurrent calls).
   // If a refresh is requested while one is already in flight, we set a
   // pending flag so that once the current flight completes it immediately
@@ -752,15 +706,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     const shouldLoadWorkflowState = activeTabRef.current !== "normal";
     const shouldLoadRebaseState = (options.includeWorkflowDiagnostics ?? true)
       && (options.forceRebaseDiagnostics === true || shouldLoadWorkflowState || selectedPrIdRef.current !== null);
-    // Block only on the fast DB reads (PR list, lanes, queue states). Rebase
+    // Block only on the fast DB reads (PR list and lanes). Rebase
     // scanning is git work on disk — let it populate in the background so the
     // PR list renders immediately when the user opens the tab.
-    const [prList, laneList, queueStateList] = await Promise.all([
+    const [prList, laneList] = await Promise.all([
       window.ade.prs.listWithConflicts({ includeConflictAnalysis: shouldLoadWorkflowState }),
       window.ade.lanes.list({ includeStatus: false }),
-      shouldLoadWorkflowState
-        ? listWorkflowQueueStates()
-        : Promise.resolve([] as QueueLandingState[]),
     ]);
     const changedPrIds = diffPrIds(prsRef.current, prList);
 
@@ -768,12 +719,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     // to avoid unnecessary re-render cascades in child components.
     setPrs((prev) => (jsonEqual(prev, prList) ? prev : prList));
     setLanes((prev) => (jsonEqual(prev, laneList) ? prev : laneList));
-    if (shouldLoadWorkflowState) {
-      setQueueStates((prev) => {
-        const next = Object.fromEntries(queueStateList.map((state) => [state.groupId, state] as const));
-        return jsonEqual(prev, next) ? prev : next;
-      });
-    }
     prsRef.current = prList;
 
     // Fire-and-forget rebase scans — these were the long pole on PRs-tab cold
@@ -799,16 +744,8 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
 
     if (changedPrIds.length > 0) {
       void refreshMergeContexts(changedPrIds);
-      const affectedQueueGroupIds = new Set<string>();
-      for (const prId of changedPrIds) {
-        const context = mergeContextByPrIdRef.current[prId];
-        if (context?.groupType === "queue" && context.groupId) {
-          affectedQueueGroupIds.add(context.groupId);
-        }
-      }
-      void refreshQueueStates([...affectedQueueGroupIds]);
     }
-  }, [active, refreshMergeContexts, refreshQueueStates]);
+  }, [active, refreshMergeContexts]);
 
   const refreshCore = useCallback(async (options: RefreshCoreOptions = {}) => {
     if (!active) return;
@@ -1449,22 +1386,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     void refreshConflictAnalyses();
   }, [active, activeTab, prsConflictRefreshKey, refreshConflictAnalyses]);
 
-  useEffect(() => {
-    if (!active || activeTab === "normal") return;
-    let cancelled = false;
-    listWorkflowQueueStates()
-      .then((states) => {
-        if (cancelled) return;
-        setQueueStates((prev) => {
-          const next = Object.fromEntries(states.map((state) => [state.groupId, state] as const));
-          return jsonEqual(prev, next) ? prev : next;
-        });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [active, activeTab]);
-
   // Subscribe to PR events
   useEffect(() => {
     if (!active) return;
@@ -1498,14 +1419,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
           if (activeTabRef.current !== "normal") {
             void refreshConflictAnalyses();
           }
-          const affectedQueueGroupIds = new Set<string>();
-          for (const prId of changedPrIds) {
-            const context = mergeContextByPrIdRef.current[prId];
-            if (context?.groupType === "queue" && context.groupId) {
-              affectedQueueGroupIds.add(context.groupId);
-            }
-          }
-          void refreshQueueStates([...affectedQueueGroupIds]);
         }
 
         // Also refresh detail data for the actively viewed PR only when it changed.
@@ -1513,20 +1426,12 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
         if (activePrId && changedPrIds.includes(activePrId)) {
           refreshDetailSilently(activePrId);
         }
-      } else if (event.type === "queue-state" || event.type === "queue-step") {
-        window.ade.prs.getQueueState(event.groupId).then((qs) => {
-          if (qs) {
-            setQueueStates((prev) => ({ ...prev, [event.groupId]: qs }));
-          }
-        }).catch((err) => {
-          console.warn("[PrsContext] Failed to fetch queue state for group:", event.groupId, err);
-        });
       }
     });
     return () => {
       unsub();
     };
-  }, [active, refreshConflictAnalyses, refreshDetailSilently, refreshMergeContexts, refreshQueueStates]);
+  }, [active, refreshConflictAnalyses, refreshDetailSilently, refreshMergeContexts]);
 
   // Subscribe to rebase events
   useEffect(() => {
@@ -1597,7 +1502,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       lanes,
       mergeContextByPrId,
       selectedPrId,
-      selectedQueueGroupId,
       selectedRebaseItemId,
       mergeMethod,
       detailStatus,
@@ -1610,7 +1514,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailSnapshotsByPrId,
       rebaseNeeds,
       autoRebaseStatuses,
-      queueStates,
       inlineTerminal,
       resolverSessionsByContextKey,
       viewerLogin,
@@ -1634,11 +1537,9 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
     mergeContextByPrId,
     mergeMethod,
     prs,
-    queueStates,
     rebaseNeeds,
     resolverSessionsByContextKey,
     selectedPrId,
-    selectedQueueGroupId,
     selectedRebaseItemId,
     viewerLogin,
   ]);
@@ -1650,7 +1551,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       lanes,
       mergeContextByPrId,
       selectedPrId,
-      selectedQueueGroupId,
       selectedRebaseItemId,
       mergeMethod,
       loading,
@@ -1668,7 +1568,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
-      queueStates,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,
@@ -1679,7 +1578,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       viewerLogin,
       setActiveTab,
       setSelectedPrId,
-      setSelectedQueueGroupId,
       setSelectedRebaseItemId,
       setMergeMethod,
       setResolverModel,
@@ -1696,7 +1594,7 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       isGithubRateLimited,
       noteGithubRateLimit,
     }),
-    // Note: setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId,
+    // Note: setActiveTab, setSelectedPrId, setSelectedRebaseItemId,
     // setMergeMethod, setInlineTerminal, and setViewerLogin are intentionally excluded from this dependency
     // array because they are useState setters which are guaranteed to be referentially stable
     // across re-renders per the React useState contract. Resolver preference setters are
@@ -1707,7 +1605,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       lanes,
       mergeContextByPrId,
       selectedPrId,
-      selectedQueueGroupId,
       selectedRebaseItemId,
       mergeMethod,
       loading,
@@ -1725,7 +1622,6 @@ export function PrsProvider({ active = true, children }: { active?: boolean; chi
       detailBusy,
       rebaseNeeds,
       autoRebaseStatuses,
-      queueStates,
       inlineTerminal,
       resolverModel,
       resolverReasoningLevel,

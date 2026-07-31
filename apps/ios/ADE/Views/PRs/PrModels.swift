@@ -53,7 +53,6 @@ enum PrRootSurface: String, CaseIterable, Identifiable {
 
 enum PrWorkflowKindFilter: String, CaseIterable, Identifiable {
   case all
-  case queue
   case integration
   case rebase
 
@@ -62,7 +61,6 @@ enum PrWorkflowKindFilter: String, CaseIterable, Identifiable {
   var title: String {
     switch self {
     case .all: return "All"
-    case .queue: return "Queue"
     case .integration: return "Integration"
     case .rebase: return "Rebase"
     }

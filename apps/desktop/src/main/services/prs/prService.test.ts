@@ -41,7 +41,7 @@ vi.mock("./integrationValidation", () => ({
   parseGitStatusPorcelain: vi.fn(() => []),
 }));
 
-vi.mock("../shared/queueRebase", () => ({
+vi.mock("../shared/remoteTrackingBranch", () => ({
   fetchRemoteTrackingBranch: vi.fn(),
 }));
 
@@ -5583,61 +5583,6 @@ describe("prService.createFromLane", () => {
     expect(mockGit.runGit).not.toHaveBeenCalled();
     expect(ghService.getRepoOrThrow).not.toHaveBeenCalled();
     expect(ghService.apiRequest).not.toHaveBeenCalled();
-  });
-});
-
-describe("prService.createQueuePrs", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("stops before database writes or GitHub PR creation when a queued lane cannot push", async () => {
-    const laneA = makeFakeLane({
-      id: "lane-a",
-      name: "feature-a",
-      branchRef: "refs/heads/feature-a",
-      worktreePath: "/tmp/lane-a-wt",
-    });
-    const laneB = makeFakeLane({
-      id: "lane-b",
-      name: "feature-b",
-      branchRef: "refs/heads/feature-b",
-      worktreePath: "/tmp/lane-b-wt",
-    });
-    const ghService = makeGithubService({
-      apiRequest: vi.fn().mockRejectedValue(new Error("should not create")),
-    });
-    const db = makeMockDb();
-    mockGit.runGit
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-a\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "0\t1\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "origin/feature-b\n", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "", stderr: "" })
-      .mockResolvedValueOnce({ exitCode: 0, stdout: "1\t0\n", stderr: "" });
-
-    const { service } = buildService({
-      githubService: ghService,
-      laneService: makeLaneService([laneA, laneB]),
-      db,
-    });
-
-    const result = await service.createQueuePrs({
-      laneIds: ["lane-a", "lane-b"],
-      targetBranch: "main",
-      draft: false,
-    });
-
-    expect(result.prs).toEqual([]);
-    expect(result.errors).toEqual([
-      expect.objectContaining({
-        laneId: "lane-b",
-        error: expect.stringContaining('The remote branch "feature-b" has 1 newer commit'),
-      }),
-    ]);
-    expect(ghService.apiRequest).not.toHaveBeenCalled();
-    expect(db.run).not.toHaveBeenCalled();
   });
 });
 

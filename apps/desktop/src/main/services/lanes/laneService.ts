@@ -6,7 +6,7 @@ import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { deletePullRequestRowsByIds, deletePullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
-import { fetchRemoteTrackingBranch, resolveQueueRebaseOverride, type QueueRebaseOverride } from "../shared/queueRebase";
+import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { detectConflictKind } from "../git/gitConflictState";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
@@ -2437,32 +2437,6 @@ export function createLaneService({
   }> => {
     const statusCache = new Map<string, LaneStatus>();
     const worktreeAvailabilityCache = new Map<string, boolean>();
-    const queueOverrideCache = new Map<string, QueueRebaseOverride | null>();
-
-    if (args.includeStatus) {
-      const laneIdsToResolve = new Set<string>();
-      for (const row of args.rows) {
-        laneIdsToResolve.add(row.id);
-        if (row.parent_lane_id) laneIdsToResolve.add(row.parent_lane_id);
-      }
-      await Promise.all(
-        [...laneIdsToResolve].map(async (laneId) => {
-          try {
-            const override = await resolveQueueRebaseOverride({
-              db,
-              projectId,
-              projectRoot,
-              laneId,
-            });
-            queueOverrideCache.set(laneId, override);
-          } catch (err) {
-            logger.warn(`laneService.${args.logContext}.queue_override_failed`, { laneId, error: String(err) });
-            queueOverrideCache.set(laneId, null);
-          }
-        }),
-      );
-    }
-
     const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
       const cached = worktreeAvailabilityCache.get(row.id);
       if (cached != null) return cached;
@@ -2483,12 +2457,11 @@ export function createLaneService({
         return status;
       }
       const parent = row.parent_lane_id ? args.rowsById.get(row.parent_lane_id) : null;
-      const queueOverride = queueOverrideCache.get(row.id) ?? null;
-      let baseRef = queueOverride?.comparisonRef ?? (rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref);
+      let baseRef = rowTracksParent(row, parent) ? parent?.branch_ref ?? row.base_ref : row.base_ref;
 
       // For primary lanes with no parent, compare against the upstream tracking ref
       // instead of base_ref (which equals branchRef, giving 0 behind).
-      if (!queueOverride && !parent && row.lane_type === "primary") {
+      if (!parent && row.lane_type === "primary") {
         const upstreamRes = await runGit(
           ["rev-parse", "--verify", `${row.branch_ref}@{upstream}`],
           { cwd: row.worktree_path, timeoutMs: 5_000 }

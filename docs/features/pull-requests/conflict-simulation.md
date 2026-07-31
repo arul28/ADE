@@ -6,8 +6,8 @@ ADE predicts PR merge conflicts before the user hits Merge by running
 1. **PR-to-base** — will this PR land cleanly on its base branch?
 2. **Pairwise integration** — do any two source PRs in an integration
    proposal conflict with each other?
-3. **Queue-aware rebase** — is the lane behind its queue's tracking
-   branch, and if so, does rebasing produce conflicts?
+3. **Lane rebase** — is the lane behind its parent or base branch, and
+   if so, does rebasing produce conflicts?
 
 All three use the shared conflict service primitives documented in
 [`../conflicts/README.md`](../conflicts/README.md) and
@@ -149,7 +149,6 @@ lane, `scanRebaseNeeds` computes:
 
 The comparison ref is resolved via `resolveLaneRebaseTarget`:
 
-- Queue override (if the lane is in a merge queue)
 - Parent lane branch (if non-primary parent and `shouldLaneTrackParent`)
 - `origin/<baseRef>` with fallback to local `<baseRef>`
 

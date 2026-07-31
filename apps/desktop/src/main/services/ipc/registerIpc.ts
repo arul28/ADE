@@ -260,9 +260,6 @@ import type {
   AddGitHubPrStackPullRequestsArgs,
   CreateIntegrationPrArgs,
   CreateIntegrationPrResult,
-  CreateQueuePrsArgs,
-  CreateQueuePrsResult,
-  ReorderQueuePrsArgs,
   CommitIntegrationArgs,
   CleanupIntegrationWorkflowArgs,
   CleanupIntegrationWorkflowResult,
@@ -296,8 +293,6 @@ import type {
   PrAgentPermissionMode,
   LinkPrToLaneArgs,
   LandResult,
-  LandStackEnhancedArgs,
-  LandQueueNextArgs,
   CleanupPrBranchArgs,
   CleanupPrBranchResult,
   PrCheck,
@@ -312,7 +307,6 @@ import type {
   PrReview,
   PrStatus,
   PrSummary,
-  QueueLandingState,
   ReplyToPrReviewThreadArgs,
   ResolvePrReviewThreadArgs,
   PostPrReviewCommentArgs,
@@ -324,7 +318,6 @@ import type {
   UpdateBranchArgs,
   UpdateBranchResult,
   UnstackGitHubPrStackArgs,
-  LandStackArgs,
   GetLaneConflictStatusArgs,
   GetDiffChangesArgs,
   GetFileDiffArgs,
@@ -673,7 +666,6 @@ import { fetchAdeLatestRelease, type createGithubService } from "../github/githu
 import { createAccountBridge } from "../account/accountBridge";
 import type { createPrService } from "../prs/prService";
 import type { createPrPollingService } from "../prs/prPollingService";
-import type { createQueueLandingService } from "../prs/queueLandingService";
 import type { createPrSummaryService } from "../prs/prSummaryService";
 import type { createReviewService } from "../review/reviewService";
 import type { createSearchService } from "../search/searchService";
@@ -965,7 +957,6 @@ export type AppContext = {
   projectScaffoldService: ReturnType<typeof createProjectScaffoldService>;
   prService: ReturnType<typeof createPrService> | null;
   prPollingService: ReturnType<typeof createPrPollingService> | null;
-  queueLandingService: ReturnType<typeof createQueueLandingService> | null;
   prSummaryService: ReturnType<typeof createPrSummaryService> | null;
   reviewService: ReturnType<typeof createReviewService> | null;
   searchService?: ReturnType<typeof createSearchService> | null;
@@ -1557,9 +1548,6 @@ function mapExternalResolverStatusToPrAi(status: ConflictExternalResolverRunSumm
 function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   if (context.sourceTab === "rebase") {
     return "Resolve this rebase with AI.";
-  }
-  if (context.sourceTab === "queue") {
-    return "Resolve this queued PR with AI.";
   }
   if (context.sourceTab === "integration") {
     return context.proposalId
@@ -9518,13 +9506,6 @@ export function registerIpc({
     return result;
   });
 
-  ipcMain.handle(IPC.prsLandStack, async (_event, arg: LandStackArgs): Promise<LandResult[]> => {
-    const ctx = ensurePrMutationContext();
-    const result = await ctx.prService.landStack(arg);
-    ctx.prPollingService.poke();
-    return result;
-  });
-
   ipcMain.handle(IPC.prsRetargetBase, async (_event, arg: { prId: string; baseBranch: string }): Promise<void> => {
     const ctx = ensurePrMutationContext();
     await ctx.prService.retargetBase(arg.prId, arg.baseBranch);
@@ -9539,13 +9520,6 @@ export function registerIpc({
   ipcMain.handle(IPC.prsCreateIntegration, async (_event, arg: CreateIntegrationPrArgs): Promise<CreateIntegrationPrResult> => {
     const ctx = ensurePrMutationContext();
     const result = await ctx.prService.createIntegrationPr(arg);
-    ctx.prPollingService.poke();
-    return result;
-  });
-
-  ipcMain.handle(IPC.prsLandStackEnhanced, async (_event, arg: LandStackEnhancedArgs): Promise<LandResult[]> => {
-    const ctx = ensurePrMutationContext();
-    const result = await ctx.prService.landStackEnhanced(arg);
     ctx.prPollingService.poke();
     return result;
   });
@@ -9623,13 +9597,6 @@ export function registerIpc({
     },
   );
 
-  ipcMain.handle(IPC.prsCreateQueue, async (_event, arg: CreateQueuePrsArgs): Promise<CreateQueuePrsResult> => {
-    const ctx = ensurePrMutationContext();
-    const result = await ctx.prService.createQueuePrs(arg);
-    ctx.prPollingService.poke();
-    return result;
-  });
-
   ipcMain.handle(IPC.prsSimulateIntegration, async (_event, arg: SimulateIntegrationArgs): Promise<IntegrationProposal> =>
     ensurePrReadContext().prService.simulateIntegration(arg));
 
@@ -9664,44 +9631,10 @@ export function registerIpc({
     await ensurePrReadContext().prService.cleanupIntegrationWorkflow(arg),
   );
 
-  ipcMain.handle(IPC.prsLandQueueNext, async (_event, arg: LandQueueNextArgs): Promise<LandResult> => {
-    const ctx = ensurePrMutationContext();
-    const result = await ctx.prService.landQueueNext(arg);
-    ctx.prPollingService.poke();
-    return result;
-  });
-
-  ipcMain.handle(IPC.prsStartQueueAutomation, async (_event, arg) => {
-    const ctx = getCtx();
-    if (!ctx.queueLandingService) throw new Error("Queue automation is unavailable in this runtime.");
-    return await ctx.queueLandingService.startQueue(arg);
-  });
-
-  ipcMain.handle(IPC.prsPauseQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.pauseQueue(arg.queueId) ?? null);
-
-  ipcMain.handle(IPC.prsResumeQueueAutomation, async (_event, arg) => {
-    const ctx = getCtx();
-    return ctx.queueLandingService?.resumeQueue(arg) ?? null;
-  });
-
-  ipcMain.handle(IPC.prsCancelQueueAutomation, async (_event, arg) => getCtx().queueLandingService?.cancelQueue(arg.queueId) ?? null);
-
-  ipcMain.handle(IPC.prsReorderQueue, async (_event, arg: ReorderQueuePrsArgs): Promise<void> => {
-    const ctx = ensurePrMutationContext();
-    await ctx.prService.reorderQueuePrs(arg);
-    ctx.prPollingService.poke();
-  });
-
   ipcMain.handle(IPC.prsGetHealth, async (_event, arg: { prId: string }): Promise<PrHealth> => {
     const ctx = ensurePrReadContext();
     return ctx.prService.getPrHealth(arg.prId);
   });
-
-  ipcMain.handle(IPC.prsGetQueueState, async (_event, arg: { groupId: string }): Promise<QueueLandingState | null> =>
-    getCtx().queueLandingService?.getQueueStateByGroup(arg.groupId) ?? null
-  );
-
-  ipcMain.handle(IPC.prsListQueueStates, async (_event, arg = {}) => getCtx().queueLandingService?.listQueueStates(arg) ?? []);
 
   ipcMain.handle(IPC.prsCreateIntegrationLaneForProposal, async (_event, arg: CreateIntegrationLaneForProposalArgs): Promise<CreateIntegrationLaneForProposalResult> =>
     ensurePrReadContext().prService.createIntegrationLaneForProposal(arg));

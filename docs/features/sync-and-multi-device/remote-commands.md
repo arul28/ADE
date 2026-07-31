@@ -473,15 +473,12 @@ a boolean.
   `aiResolutionStart`
 - `listProposals`, `getMergeContext`, `getMergeContexts`,
   `listWithConflicts`, `listSnapshots`
-- `getQueueState`, `listQueueStates`
-- `createFromLane`, `createQueue`, `draftDescription`, `land`,
+- `createFromLane`, `draftDescription`, `land`,
   `close`, `reopen`, `requestReviewers`, `rerunChecks`, `addComment`
 - `simulateIntegration`, `commitIntegration`,
   `listIntegrationWorkflows`, `updateIntegrationProposal`,
   `deleteIntegrationProposal`, `startIntegrationResolution`,
   `recheckIntegrationStep`
-- `landQueueNext`, `startQueueAutomation`, `pauseQueueAutomation`,
-  `resumeQueueAutomation`, `cancelQueueAutomation`
 - `getMobileSnapshot` — aggregate read that returns
   `PrMobileSnapshot` (summaries, stacks, per-PR capabilities,
   create-PR eligibility, workflow cards). Consumed by the iOS PRs

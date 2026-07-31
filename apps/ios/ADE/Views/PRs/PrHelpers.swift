@@ -949,7 +949,6 @@ func prAdeKindLabel(_ adeKind: String?) -> String? {
   guard let adeKind, !adeKind.isEmpty else { return nil }
   switch adeKind {
   case "single": return "ADE"
-  case "queue": return "ADE QUEUE"
   case "integration": return "ADE INT"
   default: return "ADE"
   }
@@ -1314,7 +1313,7 @@ struct PrTagChip: View {
 #Preview("PrTagChip") {
   HStack(spacing: 6) {
     PrTagChip(label: "ADE", color: ADEColor.tintPRs, filled: true)
-    PrTagChip(label: "Queue", color: ADEColor.warning)
+    PrTagChip(label: "Stacked", color: ADEColor.warning)
     PrTagChip(label: "Draft", color: ADEColor.textSecondary)
   }
   .padding()

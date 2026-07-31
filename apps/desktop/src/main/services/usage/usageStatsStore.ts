@@ -123,19 +123,16 @@ const MEANINGFUL_ACTIONS = new Set([
   "git.stashPop",
   "orchestration.runCreate",
   "prs.createFromLane",
-  "prs.createQueue",
   "prs.land",
   "prs.updateDescription",
   "prs.updateBranch",
   "prs.retargetBase",
   "prs.delete",
-  "prs.reorderQueue",
   "prs.close",
   "prs.reopen",
   "prs.addComment",
   "prs.submitReview",
   "prs.rerunChecks",
-  "prs.startQueueAutomation",
   "automations.triggerManually",
 ]);
 
@@ -166,8 +163,6 @@ export function usageActionFromRpcDomain(domain: string, action: string): string
   if (domain === "lane") return `lanes.${action}`;
   if (domain === "pr") {
     const aliases: Record<string, string> = {
-      createQueuePrs: "createQueue",
-      reorderQueuePrs: "reorderQueue",
       closePr: "close",
       reopenPr: "reopen",
       postReviewComment: "addComment",

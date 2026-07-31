@@ -1,10 +1,9 @@
 import SwiftUI
 
 /// Bottom-sheet stack visualizer for a PR group. Renders the chain returned
-/// by the host as a vertical-rail DAG (`PrStackDiagramView`), surfaces an
-/// inline merge plan, and offers top-level Rebase/Land actions in a sticky
-/// bottom bar. Tapping a member with a PR pushes into PrDetailView inside
-/// the sheet.
+/// by the host as a vertical-rail DAG (`PrStackDiagramView`) and offers a
+/// rebase action for its integration lanes. Tapping a member with a PR pushes
+/// into PrDetailView inside the sheet.
 struct PrStackSheet: View {
   @EnvironmentObject private var syncService: SyncService
   @Environment(\.dismiss) private var dismiss
@@ -130,23 +129,6 @@ struct PrStackSheet: View {
               .prGlassCard(cornerRadius: 18)
               .padding(.horizontal, 16)
 
-              PrSectionHdr(title: "Merge plan") {
-                Text("strategy: rebase up")
-              }
-
-              VStack(spacing: 0) {
-                let steps = mergePlanSteps
-                ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
-                  PrMergePlanRow(step: step)
-                  if index < steps.count - 1 {
-                    Divider().overlay(Color.white.opacity(0.06))
-                      .padding(.horizontal, 14)
-                  }
-                }
-              }
-              .prGlassCard(cornerRadius: 18)
-              .padding(.horizontal, 16)
-
               Color.clear.frame(height: 90) // leave room for sticky bar
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -156,17 +138,10 @@ struct PrStackSheet: View {
               Button("Rebase stack") {
                 dispatchRebaseStack()
               }
-              .buttonStyle(.glass)
-              .frame(maxWidth: .infinity)
-              .disabled(isDispatchingStackAction || rebaseTargetLaneId == nil)
-
-              Button("Land stack") {
-                dispatchLandStack()
-              }
               .buttonStyle(.glassProminent)
               .tint(PrGlassPalette.purpleBright)
               .frame(maxWidth: .infinity)
-              .disabled(isDispatchingStackAction || landTargetPrId == nil)
+              .disabled(isDispatchingStackAction || rebaseTargetLaneId == nil)
             }
           }
         }
@@ -270,53 +245,6 @@ struct PrStackSheet: View {
     }
   }
 
-  private var mergePlanSteps: [PrMergePlanStep] {
-    let rows = stackRows
-    guard !rows.isEmpty else { return [] }
-    var steps: [PrMergePlanStep] = []
-    var number = 1
-    for row in rows where row.role != .base {
-      let status: String
-      if row.state == "closed" {
-        status = "blocked"
-      } else if row.state == "draft" {
-        status = "blocked"
-      } else if row.state == "merged" {
-        status = "queued"
-      } else {
-        status = "ready"
-      }
-      let sub: String?
-      if row.dirty {
-        sub = "Dirty worktree · resolve before land"
-      } else {
-        sub = nil
-      }
-      steps.append(
-        PrMergePlanStep(
-          id: "\(row.id)-step",
-          number: number,
-          label: "Land #\(row.prNumber) · \(row.title)",
-          status: status,
-          sub: sub
-        )
-      )
-      number += 1
-    }
-    // Final merge-to-base step.
-    let baseBranch = rows.first?.baseBranch ?? "main"
-    steps.append(
-      PrMergePlanStep(
-        id: "merge-base",
-        number: number,
-        label: "Merge integration → \(baseBranch)",
-        status: "queued",
-        sub: nil
-      )
-    )
-    return steps
-  }
-
   /// Lane to rebase when the user taps "Rebase stack". We prefer the head of
   /// the stack (the most-child PR) because rebasing the head cascades through
   /// ancestors via auto-rebase. Falls back to the first non-base row.
@@ -326,12 +254,6 @@ struct PrStackSheet: View {
       return head.laneId
     }
     return rows.first(where: { $0.role != .base })?.laneId
-  }
-
-  /// PR to merge when the user taps "Land stack". Prefer the earliest ready
-  /// non-base row (i.e. next in the land order).
-  private var landTargetPrId: String? {
-    stackRows.first(where: { $0.role != .base && $0.prId != nil && $0.state == "open" })?.prId
   }
 
   private func dispatchRebaseStack() {
@@ -345,23 +267,6 @@ struct PrStackSheet: View {
       do {
         try await syncService.startLaneRebase(laneId: laneId)
         actionMessage = "Rebase started."
-      } catch {
-        actionErrorMessage = error.localizedDescription
-      }
-    }
-  }
-
-  private func dispatchLandStack() {
-    guard !isDispatchingStackAction, let prId = landTargetPrId else { return }
-    isDispatchingStackAction = true
-    errorMessage = nil
-    actionMessage = nil
-    actionErrorMessage = nil
-    Task { @MainActor in
-      defer { isDispatchingStackAction = false }
-      do {
-        try await syncService.mergePullRequest(prId: prId, method: PrMergeMethodOption.squash.rawValue)
-        actionMessage = "Landing started."
       } catch {
         actionErrorMessage = error.localizedDescription
       }
@@ -412,87 +317,6 @@ struct PrStackSheet: View {
       bestMatch = (stack, overlap)
     }
     return bestMatch?.stack
-  }
-}
-
-// MARK: - Merge plan
-
-private struct PrMergePlanStep: Identifiable, Equatable {
-  let id: String
-  let number: Int
-  let label: String
-  let status: String
-  let sub: String?
-}
-
-private struct PrMergePlanRow: View {
-  let step: PrMergePlanStep
-
-  private var tint: Color {
-    switch step.status {
-    case "blocked": return PrGlassPalette.danger
-    case "ready": return PrGlassPalette.success
-    case "queued": return PrGlassPalette.purple
-    default: return PrGlassPalette.blue
-    }
-  }
-
-  private var label: String {
-    switch step.status {
-    case "blocked": return "Blocked"
-    case "ready": return "Ready"
-    case "queued": return "Queued"
-    default: return step.status.capitalized
-    }
-  }
-
-  var body: some View {
-    HStack(alignment: .center, spacing: 12) {
-      // Gradient numbered tile with soft glow.
-      ZStack {
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .fill(
-            LinearGradient(
-              colors: [tint, tint.opacity(0.7)],
-              startPoint: .topLeading,
-              endPoint: .bottomTrailing
-            )
-          )
-        RoundedRectangle(cornerRadius: 8, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.35), lineWidth: 0.5)
-        Text("\(step.number)")
-          .font(.system(size: 12, weight: .heavy))
-          .foregroundStyle(.white)
-      }
-      .frame(width: 26, height: 26)
-      .shadow(color: tint.opacity(0.45), radius: 8, x: 0, y: 2)
-
-      VStack(alignment: .leading, spacing: 2) {
-        Text(step.label)
-          .font(.system(size: 13, weight: .semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-          .lineLimit(2)
-        if let sub = step.sub {
-          Text(sub)
-            .font(.system(size: 10.5, design: .monospaced))
-            .foregroundStyle(ADEColor.textSecondary)
-            .lineLimit(1)
-        }
-      }
-
-      Spacer(minLength: 0)
-
-      Text(label.uppercased())
-        .font(.system(size: 9, weight: .bold))
-        .tracking(0.8)
-        .foregroundStyle(tint)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 3)
-        .background(Capsule(style: .continuous).fill(tint.opacity(0.16)))
-        .overlay(Capsule(style: .continuous).strokeBorder(tint.opacity(0.45), lineWidth: 0.5))
-    }
-    .padding(.horizontal, 14)
-    .padding(.vertical, 11)
   }
 }
 

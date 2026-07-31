@@ -4,7 +4,6 @@ import SQLite3
 private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 private let localDeleteColumnId = "-1"
 private let legacyDeleteColumnId = "__ade_deleted"
-private let queueOverhaulWipeMarkerKey = "queue_landing_state.wiped_for_stacked_overhaul.v1"
 
 extension Notification.Name {
   static let adeDatabaseDidChange = Notification.Name("ADE.DatabaseDidChange")
@@ -230,24 +229,6 @@ final class DatabaseService {
     let resolutionStateJson: String?
   }
 
-  private struct QueueStateRow {
-    let queueId: String
-    let groupId: String
-    let groupName: String?
-    let targetBranch: String?
-    let state: String
-    let entriesJson: String
-    let configJson: String
-    let currentPosition: Int
-    let activePrId: String?
-    let activeResolverRunId: String?
-    let lastError: String?
-    let waitReason: String?
-    let startedAt: String
-    let completedAt: String?
-    let updatedAt: String?
-  }
-
   // Serializes ALL public DatabaseService access (one raw SQLite connection,
   // FULLMUTEX) so the off-main SyncService apply Task and every @MainActor
   // read/write are mutually exclusive. Without this, concurrent BEGIN/commit on
@@ -387,9 +368,7 @@ final class DatabaseService {
           cl: Int(sqlite3_column_int64(statement, 7)),
           seq: Int(sqlite3_column_int64(statement, 8)),
         )
-        if !isLocalOnlyQueueWipeMarkerChange(change) {
-          rows.append(change)
-        }
+        rows.append(change)
       }
       return rows
     }
@@ -423,9 +402,7 @@ final class DatabaseService {
         cl: Int(sqlite3_column_int64(statement, 7)),
         seq: Int(sqlite3_column_int64(statement, 8)),
       )
-      if !isLocalOnlyQueueWipeMarkerChange(change) {
-        rows.append(change)
-      }
+      rows.append(change)
     }
     return rows
   }
@@ -457,9 +434,6 @@ final class DatabaseService {
         values (?, ?, ?, ?, ?, ?, ?, ?, ?)
       """
       for rawChange in changes {
-        if isLocalOnlyQueueWipeMarkerChange(rawChange) {
-          continue
-        }
         if shouldIgnoreIncomingSyncTable(rawChange.table) {
           continue
         }
@@ -2373,7 +2347,11 @@ final class DatabaseService {
 
     let prGroupJoins = hasPrGroupContext
       ? """
-        left join pr_group_members gm on gm.pr_id = pr.id
+        left join pr_group_members gm
+          on gm.pr_id = pr.id
+         and gm.group_id in (
+           select id from pr_groups where group_type = 'integration'
+         )
         left join pr_groups g on g.id = gm.group_id
         left join (
           select group_id, count(*) as member_count
@@ -2464,8 +2442,6 @@ final class DatabaseService {
       let adeKind: String?
       if row.workflowDisplayState != nil || row.cleanupState != nil {
         adeKind = "integration"
-      } else if row.groupType == "queue" {
-        adeKind = "queue"
       } else if row.groupType == "integration" {
         adeKind = "integration"
       } else {
@@ -2536,6 +2512,7 @@ final class DatabaseService {
        where gm.group_id = ?
          and g.project_id = ?
          and pr.project_id = ?
+         and g.group_type = 'integration'
        order by gm.position asc, pr.updated_at desc
     """
 
@@ -2678,84 +2655,6 @@ final class DatabaseService {
     return preferred == integration ? "adopted" : "ade-created"
   }
 
-  func fetchQueueStates() -> [QueueLandingState] {
-    withLock { fetchQueueStatesLocked() }
-  }
-
-  private func fetchQueueStatesLocked() -> [QueueLandingState] {
-    let sql = """
-      select q.id,
-             q.group_id,
-             g.name,
-             g.target_branch,
-             q.state,
-             q.entries_json,
-             q.config_json,
-             q.current_position,
-             q.active_pr_id,
-             q.active_resolver_run_id,
-             q.last_error,
-             q.wait_reason,
-             q.started_at,
-             q.completed_at,
-             q.updated_at
-        from queue_landing_state q
-        left join pr_groups g on g.id = q.group_id
-       order by q.updated_at desc, q.started_at desc
-    """
-
-    return query(sql) { statement in
-      QueueStateRow(
-        queueId: stringValue(statement, index: 0) ?? "",
-        groupId: stringValue(statement, index: 1) ?? "",
-        groupName: stringValue(statement, index: 2),
-        targetBranch: stringValue(statement, index: 3),
-        state: stringValue(statement, index: 4) ?? "idle",
-        entriesJson: stringValue(statement, index: 5) ?? "[]",
-        configJson: stringValue(statement, index: 6) ?? "{}",
-        currentPosition: Int(sqlite3_column_int64(statement, 7)),
-        activePrId: stringValue(statement, index: 8),
-        activeResolverRunId: stringValue(statement, index: 9),
-        lastError: stringValue(statement, index: 10),
-        waitReason: stringValue(statement, index: 11),
-        startedAt: stringValue(statement, index: 12) ?? "",
-        completedAt: stringValue(statement, index: 13),
-        updatedAt: stringValue(statement, index: 14)
-      )
-    }.map { row in
-      QueueLandingState(
-        queueId: row.queueId,
-        groupId: row.groupId,
-        groupName: row.groupName,
-        targetBranch: row.targetBranch,
-        state: row.state,
-        entries: decodeJson(row.entriesJson, as: [QueueLandingEntry].self) ?? [],
-        currentPosition: row.currentPosition,
-        activePrId: row.activePrId,
-        activeResolverRunId: row.activeResolverRunId,
-        lastError: row.lastError,
-        waitReason: row.waitReason,
-        config: decodeJson(row.configJson, as: QueueAutomationConfig.self) ?? QueueAutomationConfig(
-          method: "squash",
-          archiveLane: false,
-          autoResolve: false,
-          ciGating: false,
-          resolverProvider: nil,
-          resolverModel: nil,
-          reasoningEffort: nil,
-          permissionMode: nil,
-          confidenceThreshold: nil,
-          originSurface: nil,
-          originRunId: nil,
-          originLabel: nil
-        ),
-        startedAt: row.startedAt,
-        completedAt: row.completedAt,
-        updatedAt: row.updatedAt ?? row.startedAt
-      )
-    }
-  }
-
   func fetchPullRequestSnapshot(prId: String) -> PullRequestSnapshot? {
     withLock { fetchPullRequestSnapshotLocked(prId: prId) }
   }
@@ -2824,7 +2723,6 @@ final class DatabaseService {
     let bootstrapSQL = try loadBootstrapSQL()
     try executeBootstrapSQL(bootstrapSQL)
     try ensureHydrationProjectionColumns()
-    try wipeQueueLandingStateForStackedOverhaulIfNeeded()
     try ensureSyncMetadataTables()
     try ensureCrrTables()
     try repairPullRequestProjectionIntegrity()
@@ -3063,14 +2961,7 @@ final class DatabaseService {
     try ensureColumn(tableName: "integration_proposals", columnName: "preferred_integration_lane_id", definition: "text")
     try ensureColumn(tableName: "integration_proposals", columnName: "merge_into_head_sha", definition: "text")
 
-    try ensureColumn(tableName: "queue_landing_state", columnName: "config_json", definition: "text not null default '{}'")
-    try ensureColumn(tableName: "queue_landing_state", columnName: "active_pr_id", definition: "text")
-    try ensureColumn(tableName: "queue_landing_state", columnName: "active_resolver_run_id", definition: "text")
-    try ensureColumn(tableName: "queue_landing_state", columnName: "last_error", definition: "text")
-    try ensureColumn(tableName: "queue_landing_state", columnName: "wait_reason", definition: "text")
-    try ensureColumn(tableName: "queue_landing_state", columnName: "updated_at", definition: "text")
     try exec("create index if not exists idx_pull_requests_project_updated on pull_requests(project_id, updated_at desc)")
-    try exec("create index if not exists idx_queue_landing_state_project_updated on queue_landing_state(project_id, updated_at desc, started_at desc)")
     try ensureColumn(tableName: "worker_agents", columnName: "linear_identity_json", definition: "text not null default '{}'")
   }
 
@@ -3192,25 +3083,6 @@ final class DatabaseService {
       )
     """)
     try exec("create index if not exists idx_integration_proposals_project on integration_proposals(project_id)")
-    try exec("""
-      create table if not exists queue_landing_state (
-        id text primary key,
-        group_id text not null,
-        project_id text not null,
-        state text not null,
-        entries_json text not null,
-        config_json text not null default '{}',
-        current_position integer not null default 0,
-        active_pr_id text,
-        active_resolver_run_id text,
-        last_error text,
-        wait_reason text,
-        started_at text not null,
-        completed_at text,
-        updated_at text
-      )
-    """)
-    try exec("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)")
   }
 
   private func ensureColumn(tableName: String, columnName: String, definition: String) throws {
@@ -3424,77 +3296,6 @@ final class DatabaseService {
     return retiredSessionIds.count
   }
 
-  private func wipeQueueLandingStateForStackedOverhaulIfNeeded() throws {
-    guard hasTable(named: "kv") else { return }
-    let markerExists = queryInt64("select 1 from kv where key = ? limit 1", bind: { [self] statement in
-      try self.bindText(queueOverhaulWipeMarkerKey, to: statement, index: 1)
-    }) != nil
-    if markerExists { return }
-
-    try deleteAllRowsWithoutCrrReplication(tableName: "queue_landing_state")
-
-    let previousCaptureState = shouldCaptureLocalChanges
-    shouldCaptureLocalChanges = false
-    defer { shouldCaptureLocalChanges = previousCaptureState }
-    _ = try execute(
-      "insert into kv (key, value) values (?, ?) on conflict(key) do update set value = excluded.value"
-    ) { statement in
-      try bindText(queueOverhaulWipeMarkerKey, to: statement, index: 1)
-      try bindText(ISO8601DateFormatter().string(from: Date()), to: statement, index: 2)
-    }
-  }
-
-  private func deleteAllRowsWithoutCrrReplication(tableName: String) throws {
-    guard hasTable(named: tableName) else { return }
-    let clockTableName = "\(tableName)__crsql_clock"
-    let pksTableName = "\(tableName)__crsql_pks"
-    let hasCrrTriggers = queryInt64(
-      "select 1 from sqlite_master where type = 'trigger' and name in (?, ?, ?) limit 1",
-      bind: { [self] statement in
-        try self.bindText(insertTriggerName(for: tableName), to: statement, index: 1)
-        try self.bindText(updateTriggerName(for: tableName), to: statement, index: 2)
-        try self.bindText(deleteTriggerName(for: tableName), to: statement, index: 3)
-      }
-    ) != nil
-    let hasMasterRows = hasTable(named: "crsql_master") && queryInt64(
-      "select 1 from crsql_master where tbl_name = ? limit 1",
-      bind: { [self] statement in
-        try self.bindText(tableName, to: statement, index: 1)
-      }
-    ) != nil
-    let hasChangesRows = hasTable(named: "crsql_changes") && queryInt64(
-      "select 1 from crsql_changes where [table] = ? limit 1",
-      bind: { [self] statement in
-        try self.bindText(tableName, to: statement, index: 1)
-      }
-    ) != nil
-    let hasCrrMetadata = (
-      hasTable(named: clockTableName)
-        || hasTable(named: pksTableName)
-        || hasCrrTriggers
-        || hasMasterRows
-        || hasChangesRows
-    )
-
-    if hasCrrMetadata {
-      try dropCrrTriggers(for: tableName)
-      try exec("drop table if exists \(quoteIdentifier(clockTableName))")
-      try exec("drop table if exists \(quoteIdentifier(pksTableName))")
-      if hasMasterRows {
-        _ = try execute("delete from crsql_master where tbl_name = ?") { statement in
-          try bindText(tableName, to: statement, index: 1)
-        }
-      }
-      if hasChangesRows {
-        _ = try execute("delete from crsql_changes where [table] = ?") { statement in
-          try bindText(tableName, to: statement, index: 1)
-        }
-      }
-    }
-
-    try exec("delete from \(quoteIdentifier(tableName))")
-  }
-
   /// Tables that exist on the iOS client only as local read-through caches.
   /// They are populated from sync responses, never edited by the user, and
   /// the host does NOT register them as CRR — so exporting CRDT changes for
@@ -3528,6 +3329,7 @@ final class DatabaseService {
 
   /// Tables removed locally that older desktop or phone peers may still export.
   private static let droppedIncomingSyncTables: Set<String> = retiredExecutionTables.union([
+    "queue_landing_state",
     "unified_memories",
     "unified_memories_fts",
   ])
@@ -4678,10 +4480,6 @@ final class DatabaseService {
       return packedCrsqlPrimaryKey(pk) ?? pk
     }
     return pk
-  }
-
-  private func isLocalOnlyQueueWipeMarkerChange(_ change: CrsqlChangeRow) -> Bool {
-    change.table == "kv" && primaryKey(change.pk, matchesText: queueOverhaulWipeMarkerKey)
   }
 
   private func primaryKey(_ value: SyncScalarValue, matchesText text: String) -> Bool {

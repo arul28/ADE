@@ -44,7 +44,6 @@ export const docs = {
   syncMultiDevice: `${DOCS_BASE}/sync-and-multi-device`,
   settingsGeneral: `${DOCS_BASE}/configuration/settings`,
   prsOverview: `${DOCS_BASE}/tools/pull-requests`,
-  prsQueues: `${DOCS_BASE}/tools/pull-requests/queues`,
   historyOverview: `${DOCS_BASE}/tools/history`,
 
   // Guides

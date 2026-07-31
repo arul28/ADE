@@ -513,6 +513,11 @@ _    ____  _____
                                                     Include bounded closed PR history in the GitHub snapshot
     $ ade prs github-snapshot --include-state-counts --no-revalidate
                                                     Include exact state totals without a background refresh
+    $ ade prs stacks list                           List GitHub stacks for the active repository
+    $ ade prs stacks sync                           Refresh authoritative stack state from GitHub
+    $ ade prs stacks create --pulls 12,13,14        Create a stack, ordered bottom to top
+    $ ade prs stacks add --stack 8 --pulls 15       Add pull requests above the current stack top
+    $ ade prs stacks unstack --stack 8              Remove eligible pull requests from a GitHub stack
     $ ade prs resolve-thread <pr> --thread <id>     Resolve a review thread
     $ ade prs labels set <pr> ready-to-merge        Replace labels
     $ ade prs reviewers request <pr> alice bob      Request reviewers

@@ -16,8 +16,6 @@ number as the remote identity.
 - GitHub remains the final review and merge surface. ADE opens that surface in
   the built-in browser and does not recreate GitHub's merge box.
 - ADE may create, extend, unstack, rebase, adopt, and locally repair stacks.
-- The old ADE Queue PR landing engine, terminology, state, commands, UI, tests,
-  skills, and docs are removed rather than deprecated.
 - Existing integration PR workflows remain independent from stacked PRs.
 - Users do not need to install `gh-stack`; ADE uses GitHub's API directly.
 
@@ -151,13 +149,17 @@ history.
 Bundled ADE skills teach agents to:
 
 1. Propose dependency-ordered, independently reviewable layers before coding.
-2. Put foundations below their consumers.
-3. Create and validate one deliberate branch layer at a time.
-4. Delegate only work whose dependency boundary is already stable.
-5. Apply feedback to the correct layer, then rebase every layer above it.
-6. Review and report progress bottom-up.
-7. Keep one stack card current instead of emitting repeated status messages.
-8. Send final review and merge decisions to GitHub.
+2. Ask whether the user wants one isolated ADE lane and owner per PR, or one
+   lead coordinating subagents across stable boundaries.
+3. Put foundations below their consumers.
+4. Create and validate one deliberate branch layer at a time.
+5. Run the ship loop for every PR and fix shared failures at the lowest owning
+   layer before cascading the result upward.
+6. Delegate only work whose dependency boundary is already stable.
+7. Apply feedback to the correct layer, then rebase every layer above it.
+8. Review and report progress bottom-up.
+9. Keep one stack card current instead of emitting repeated status messages.
+10. Send final review and merge decisions to GitHub.
 
 ## Delivery stack
 
@@ -169,8 +171,8 @@ The implementation is itself delivered as stacked pull requests:
 3. Desktop and hosted-web PR list, grouping, routing, and inspector.
 4. Work card protocol plus desktop and `ade code` rendering.
 5. iOS PR and Work parity.
-6. Remove Queue PR code, state, tests, tools, copy, and docs; finish analytics
-   and documentation.
+6. Remove superseded ADE-owned landing machinery and finish analytics and
+   documentation.
 
 Each layer runs focused quality review, contract tests, type checks for touched
 packages, and the normal PR ship loop before the stack is merged.

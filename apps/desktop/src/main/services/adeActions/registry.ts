@@ -493,7 +493,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "createIntegrationLane",
     "createIntegrationLaneForProposal",
     "createIntegrationPr",
-    "createQueuePrs",
     "createGithubStack",
     "delete",
     "deleteIntegrationProposal",
@@ -527,7 +526,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getMobileGithubDetail",
     "getMobileSnapshot",
     "getPrHealth",
-    "getQueueState",
     "getAiSummary",
     "getReviewThreads",
     "getReviewThreadsByGithub",
@@ -536,12 +534,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "getStatus",
     "ingestGithubWebhook",
     "land",
-    "landQueueNext",
-    "landStack",
-    "landStackEnhanced",
     "linkToLane",
     "listAll",
-    "listQueueStates",
     "listGroupPrs",
     "listIntegrationProposals",
     "listIntegrationWorkflows",
@@ -553,7 +547,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "reactToComment",
     "recheckIntegrationStep",
     "refresh",
-    "reorderQueuePrs",
     "addGithubStackPullRequests",
     "requestReviewers",
     "resolveReviewThread",
@@ -566,11 +559,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "setReviewThreadResolved",
     "simulateIntegration",
     "startIntegrationResolution",
-    "startQueueAutomation",
-    "pauseQueueAutomation",
     "preflightCreateLaneFromPrBranch",
-    "resumeQueueAutomation",
-    "cancelQueueAutomation",
     "submitReview",
     "syncGithubStacks",
     "unstackGithubStack",
@@ -3060,7 +3049,6 @@ function mapExternalResolverStatusToPrAi(status: string): PrAiResolutionSessionS
 
 function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   if (context.sourceTab === "rebase") return "Resolve this rebase with AI.";
-  if (context.sourceTab === "queue") return "Resolve this queued PR with AI.";
   if (context.sourceTab === "integration") {
     return context.proposalId
       ? "Resolve this integration proposal with AI."
@@ -3399,7 +3387,6 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
 function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
   const prService = runtime.prService;
   if (!prService) return null;
-  const queueLandingService = runtime.queueLandingService ?? null;
   const prSummaryService = runtime.prSummaryService ?? null;
 
   return {
@@ -3416,28 +3403,6 @@ function buildPrDomainService(runtime: AdeRuntime): OpaqueService | null {
     aiResolutionStop(args?: unknown) {
       return getPrAiRuntimeBridge(runtime).stop(args);
     },
-    ...(queueLandingService
-      ? {
-          async startQueueAutomation(args?: unknown) {
-            return await queueLandingService.startQueue(asActionRecord(args) as Parameters<typeof queueLandingService.startQueue>[0]);
-          },
-          pauseQueueAutomation(args?: unknown) {
-            return queueLandingService.pauseQueue(readStringActionArg(args, "queueId"));
-          },
-          resumeQueueAutomation(args?: unknown) {
-            return queueLandingService.resumeQueue(asActionRecord(args) as Parameters<typeof queueLandingService.resumeQueue>[0]);
-          },
-          cancelQueueAutomation(args?: unknown) {
-            return queueLandingService.cancelQueue(readStringActionArg(args, "queueId"));
-          },
-          getQueueState(args?: unknown) {
-            return queueLandingService.getQueueStateByGroup(readStringActionArg(args, "groupId"));
-          },
-          listQueueStates(args?: unknown) {
-            return queueLandingService.listQueueStates(asActionRecord(args) as Parameters<typeof queueLandingService.listQueueStates>[0]);
-          },
-        }
-      : {}),
     ...(prSummaryService
       ? {
           getAiSummary(prId: unknown) {

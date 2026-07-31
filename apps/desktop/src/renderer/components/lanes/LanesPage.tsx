@@ -2075,7 +2075,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       const search = buildPrsRouteSearch({
         activeTab: "rebase",
         selectedPrId: null,
-        selectedQueueGroupId: null,
         selectedRebaseItemId: trimmedLaneId,
       });
       navigate(`/prs${search}`);
@@ -2089,7 +2088,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       buildPrsRouteSearch({
         activeTab: "rebase",
         selectedPrId: null,
-        selectedQueueGroupId: null,
         selectedRebaseItemId: laneId,
       }).slice(1),
     );
@@ -3455,7 +3453,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                       navigate(`/prs${buildPrsRouteSearch({
                         activeTab: "normal",
                         selectedPrId: lanePr.linkedPrId,
-                        selectedQueueGroupId: null,
                         selectedRebaseItemId: null,
                       })}`);
                       return;

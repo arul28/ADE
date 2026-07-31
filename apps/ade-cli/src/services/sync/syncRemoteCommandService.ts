@@ -71,12 +71,10 @@ import type {
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ClosePrArgs,
-  CancelQueueAutomationArgs,
   CleanupPrBranchArgs,
   CtoIdentity,
   CreateChildLaneArgs,
   CommitIntegrationArgs,
-  CreateQueuePrsArgs,
   CreateLaneArgs,
   CreateLaneFromPrBranchArgs,
   CreateLaneFromUnstagedArgs,
@@ -115,9 +113,7 @@ import type {
   GitSyncArgs,
   ImportBranchLaneArgs,
   LandPrArgs,
-  LandQueueNextArgs,
   LinearConnectionStatus,
-  PauseQueueAutomationArgs,
   PersonalChatScopeContract,
   PrGithubCoords,
   PublishProjectInput,
@@ -153,14 +149,11 @@ import type {
   ReplyToPrReviewThreadArgs,
   ReparentLaneArgs,
   RequestPrReviewersArgs,
-  ReorderQueuePrsArgs,
-  ResumeQueueAutomationArgs,
   RerunPrChecksArgs,
   SetPrLabelsArgs,
   SetPrReviewThreadResolvedArgs,
   SimulateIntegrationArgs,
   StartIntegrationResolutionArgs,
-  StartQueueAutomationArgs,
   SubmitPrReviewArgs,
   UnstackGitHubPrStackArgs,
   ExternalSessionImportArgs,
@@ -273,7 +266,6 @@ import { createOrchestrationDomainService } from "../../../../desktop/src/main/s
 import type { createOrchestrationService } from "../../../../desktop/src/main/services/orchestration/orchestrationService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
-import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createUsageTrackingService } from "../../../../desktop/src/main/services/usage/usageTrackingService";
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
@@ -316,7 +308,6 @@ type SyncRemoteCommandServiceArgs = {
   laneService: ReturnType<typeof createLaneService>;
   prService: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
-  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   ptyService: ReturnType<typeof createPtyService>;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
@@ -1879,7 +1870,6 @@ function mapExternalResolverStatusToPrAi(status: string): PrAiResolutionSessionS
 
 function buildPrAiDisplayText(context: PrAiResolutionContext): string {
   if (context.sourceTab === "rebase") return "Resolve this rebase with AI.";
-  if (context.sourceTab === "queue") return "Resolve this queued PR with AI.";
   if (context.sourceTab === "integration") {
     return context.proposalId
       ? "Resolve this integration proposal with AI."
@@ -3004,22 +2994,6 @@ function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs
   };
 }
 
-function parseCreateQueuePrsArgs(value: Record<string, unknown>): CreateQueuePrsArgs {
-  const laneIds = requireStringArray(value.laneIds, "prs.createQueue requires laneIds.");
-  const targetBranch = requireString(value.targetBranch, "prs.createQueue requires targetBranch.");
-  const titles = asStringRecord(value.titles);
-  return {
-    laneIds,
-    targetBranch,
-    ...(titles ? { titles } : {}),
-    ...(typeof value.draft === "boolean" ? { draft: value.draft } : {}),
-    ...(typeof value.autoRebase === "boolean" ? { autoRebase: value.autoRebase } : {}),
-    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
-    ...(asTrimmedString(value.queueName) ? { queueName: asTrimmedString(value.queueName)! } : {}),
-    ...(typeof value.allowDirtyWorktree === "boolean" ? { allowDirtyWorktree: value.allowDirtyWorktree } : {}),
-  };
-}
-
 function parseLinkPrToLaneArgs(value: Record<string, unknown>): LinkPrToLaneArgs {
   return {
     laneId: requireString(value.laneId, "prs.linkToLane requires laneId."),
@@ -3301,83 +3275,6 @@ function parseRecheckIntegrationStepArgs(value: Record<string, unknown>): Rechec
   return {
     proposalId: requireString(value.proposalId, "prs.recheckIntegrationStep requires proposalId."),
     laneId: requireString(value.laneId, "prs.recheckIntegrationStep requires laneId."),
-  };
-}
-
-function parseLandQueueNextArgs(value: Record<string, unknown>): LandQueueNextArgs {
-  const method = asTrimmedString(value.method) as LandQueueNextArgs["method"];
-  if (!method || !["merge", "squash", "rebase"].includes(method)) {
-    throw new Error("prs.landQueueNext requires method to be merge, squash, or rebase.");
-  }
-  return {
-    groupId: requireString(value.groupId, "prs.landQueueNext requires groupId."),
-    method,
-    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
-    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
-    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
-  };
-}
-
-function parseStartQueueAutomationArgs(value: Record<string, unknown>): StartQueueAutomationArgs {
-  const method = asTrimmedString(value.method);
-  if (!method || !["merge", "squash", "rebase"].includes(method)) {
-    throw new Error("prs.startQueueAutomation requires method to be merge, squash, or rebase.");
-  }
-  const pipeline = isRecord(value.pipeline) ? (value.pipeline as StartQueueAutomationArgs["pipeline"]) : undefined;
-  const resolverProvider = asTrimmedString(value.resolverProvider);
-  const resolverModel = asTrimmedString(value.resolverModel);
-  const reasoningEffort = asTrimmedString(value.reasoningEffort);
-  const permissionMode = asTrimmedString(value.permissionMode);
-  const confidenceThreshold = asConfidenceThreshold(value.confidenceThreshold);
-  const originLabel = asTrimmedString(value.originLabel);
-  return {
-    groupId: requireString(value.groupId, "prs.startQueueAutomation requires groupId."),
-    method: method as StartQueueAutomationArgs["method"],
-    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
-    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
-    ...(pipeline ? { pipeline } : {}),
-    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
-    ...(resolverProvider ? { resolverProvider: resolverProvider as StartQueueAutomationArgs["resolverProvider"] } : {}),
-    ...(resolverModel ? { resolverModel } : {}),
-    ...(reasoningEffort ? { reasoningEffort } : {}),
-    ...(permissionMode ? { permissionMode: permissionMode as StartQueueAutomationArgs["permissionMode"] } : {}),
-    ...(confidenceThreshold != null ? { confidenceThreshold } : {}),
-    ...(originLabel ? { originLabel } : {}),
-  };
-}
-
-function parseReorderQueuePrsArgs(value: Record<string, unknown>): ReorderQueuePrsArgs {
-  return {
-    groupId: requireString(value.groupId, "prs.reorderQueue requires groupId."),
-    prIds: requireStringArray(value.prIds, "prs.reorderQueue requires prIds."),
-  };
-}
-
-function parsePauseQueueAutomationArgs(value: Record<string, unknown>): PauseQueueAutomationArgs {
-  return {
-    queueId: requireString(value.queueId, "prs.pauseQueueAutomation requires queueId."),
-  };
-}
-
-function parseResumeQueueAutomationArgs(value: Record<string, unknown>): ResumeQueueAutomationArgs {
-  const method = asTrimmedString(value.method);
-  if (method && !["merge", "squash", "rebase"].includes(method)) {
-    throw new Error("prs.resumeQueueAutomation requires method to be merge, squash, or rebase when provided.");
-  }
-  return {
-    queueId: requireString(value.queueId, "prs.resumeQueueAutomation requires queueId."),
-    ...(method ? { method: method as ResumeQueueAutomationArgs["method"] } : {}),
-    ...(typeof value.archiveLane === "boolean" ? { archiveLane: value.archiveLane } : {}),
-    ...(typeof value.autoResolve === "boolean" ? { autoResolve: value.autoResolve } : {}),
-    ...(typeof value.ciGating === "boolean" ? { ciGating: value.ciGating } : {}),
-    ...(asConfidenceThreshold(value.confidenceThreshold) != null ? { confidenceThreshold: asConfidenceThreshold(value.confidenceThreshold)! } : {}),
-    ...(asTrimmedString(value.originLabel) ? { originLabel: asTrimmedString(value.originLabel)! } : {}),
-  };
-}
-
-function parseCancelQueueAutomationArgs(value: Record<string, unknown>): CancelQueueAutomationArgs {
-  return {
-    queueId: requireString(value.queueId, "prs.cancelQueueAutomation requires queueId."),
   };
 }
 
@@ -5287,12 +5184,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.cleanupBranch", { viewerAllowed: false, queueable: true }, async (payload) =>
     args.prService.cleanupBranch(parseCleanupPrBranchArgs(payload)));
   register("prs.listProposals", { viewerAllowed: true, observesAbort: true }, async () => args.prService.listIntegrationProposals());
-  register("prs.getQueueState", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.queueLandingService?.getQueueStateByGroup(
-      requireString(payload.groupId, "prs.getQueueState requires groupId."),
-    ) ?? null);
-  register("prs.listQueueStates", { viewerAllowed: true, observesAbort: true }, async (payload) =>
-    args.queueLandingService?.listQueueStates(payload) ?? []);
   register("prs.getMergeContext", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getMergeContext(requirePrId(payload, "prs.getMergeContext")));
   register("prs.getMergeContexts", { viewerAllowed: true, observesAbort: true }, async (payload) =>
@@ -5365,7 +5256,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     args.prService.addGithubStackPullRequests(parseAddGithubStackPullRequestsArgs(payload)));
   register("prs.unstackGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.unstackGithubStack(parseUnstackGithubStackArgs(payload)));
-  register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
   register("prs.createLaneFromPrBranch", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
@@ -5447,28 +5337,6 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
     startRemotePrAiResolution(args, prAiState, payload));
   register("prs.recheckIntegrationStep", { viewerAllowed: true, queueable: true }, async (payload) =>
     args.prService.recheckIntegrationStep(parseRecheckIntegrationStepArgs(payload)));
-  register("prs.landQueueNext", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.prService.landQueueNext(parseLandQueueNextArgs(payload)));
-  register("prs.startQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
-    return args.queueLandingService.startQueue(parseStartQueueAutomationArgs(payload));
-  });
-  register("prs.pauseQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
-    return args.queueLandingService.pauseQueue(parsePauseQueueAutomationArgs(payload).queueId);
-  });
-  register("prs.resumeQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
-    return args.queueLandingService.resumeQueue(parseResumeQueueAutomationArgs(payload));
-  });
-  register("prs.cancelQueueAutomation", { viewerAllowed: true, queueable: true }, async (payload) => {
-    if (!args.queueLandingService) throw new Error("Queue automation is not available.");
-    return args.queueLandingService.cancelQueue(parseCancelQueueAutomationArgs(payload).queueId);
-  });
-  register("prs.reorderQueue", { viewerAllowed: true, queueable: true }, async (payload) => {
-    await args.prService.reorderQueuePrs(parseReorderQueuePrsArgs(payload));
-    return { ok: true };
-  });
   register("prs.getMobileSnapshot", { viewerAllowed: true, observesAbort: true }, async () => args.prService.getMobileSnapshot());
 }
 

@@ -355,7 +355,7 @@ struct PrsSurfaceToggle: View {
   }
 }
 
-// MARK: - Workflow kind filter pills (Queue / Integration / Rebase / All).
+// MARK: - Workflow kind filter pills (Integration / Rebase / All).
 
 struct PrsWorkflowFilterPills: View {
   @Binding var selection: PrWorkflowKindFilter
@@ -387,7 +387,6 @@ struct PrsWorkflowFilterPills: View {
   private func iconFor(_ filter: PrWorkflowKindFilter) -> String {
     switch filter {
     case .all: return "square.grid.2x2"
-    case .queue: return "list.number"
     case .integration: return "arrow.triangle.merge"
     case .rebase: return "arrow.triangle.2.circlepath"
     }
@@ -396,7 +395,6 @@ struct PrsWorkflowFilterPills: View {
   private func tintFor(_ filter: PrWorkflowKindFilter) -> Color {
     switch filter {
     case .all: return PrsGlass.accentTop
-    case .queue: return PrsGlass.openTop
     case .integration: return PrsGlass.externalTop
     case .rebase: return PrsGlass.draftTop
     }

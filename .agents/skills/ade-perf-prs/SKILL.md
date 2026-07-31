@@ -15,14 +15,14 @@ metadata:
 
 Use this as engineering guidance for keeping the PRs tab fast while adding
 features. The PRs tab combines external GitHub search, local lane links,
-mergeability, queue/integration workflows, merge readiness, review threads,
+mergeability, GitHub stacks, integration workflows, merge readiness, review threads,
 files, CI, and activity. Keep first paint local and defer expensive live GitHub
 or Git operations until the visible surface needs them.
 
 ## Measurement posture
 
 - Test the real Electron `/prs` route against a private `perf-pass` GitHub repo
-  with enough PRs to cover single, queue, integration, and rebase/merge flows.
+  with enough PRs to cover single, stacked, integration, and rebase/merge flows.
 - Drive visible UI actions with Computer Use and mark important spans with
   `window.ade.perf.recordEvent({ kind: "manualStep", ... })`.
 - Do not measure only one PR forever. Seed several lanes and PRs per workflow
@@ -121,9 +121,9 @@ or Git operations until the visible surface needs them.
 
 ### Keep workflow lane reads status-light
 
-- **Why it helped**: Queue workflow reloads still paid full lane Git status and
+- **Why it helped**: Workflow reloads still paid full lane Git status and
   auto-rebase status cleanup even though the visible workflow cards only needed
-  lane identity, branch, color, queue state, rebase needs, and merge context.
+  lane identity, branch, color, rebase needs, and merge context.
 - **Apply when**: Editing `PrsContext`, workflow tabs, or auto-rebase status
   hydration for PRs.
 - **Avoid**: `window.ade.lanes.list({ includeStatus: true })` on PR workflow

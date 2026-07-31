@@ -115,7 +115,6 @@ export function buildTimelineVisibleEventSearch(args: {
   return buildPrsRouteSearch({
     activeTab: tab,
     selectedPrId: args.prId,
-    selectedQueueGroupId: null,
     selectedRebaseItemId: null,
     eventId: args.eventId,
     threadId: args.current.threadId,

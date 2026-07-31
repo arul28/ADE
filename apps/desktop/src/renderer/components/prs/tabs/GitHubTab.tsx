@@ -80,7 +80,6 @@ type GitHubTabProps = {
   onDetailTabChange?: (tab: PrDetailRouteTab) => void;
   onRefreshAll: (args?: { prId?: string; prIds?: string[] }) => Promise<void>;
   onOpenRebaseTab?: (laneId?: string) => void;
-  onOpenQueueView?: (groupId: string) => void;
   relocateHeaderChrome?: boolean;
   onHeaderChromeChange?: (state: GitHubHeaderChromeState | null) => void;
 };
@@ -455,11 +454,6 @@ const ADE_KIND_STYLES: Record<string, { color: string; background: string; borde
     background: "linear-gradient(135deg, rgba(245,158,11,0.14) 0%, rgba(217,119,6,0.06) 100%)",
     border: "1px solid rgba(245,158,11,0.22)",
   },
-  queue: {
-    color: "#60A5FA",
-    background: "linear-gradient(135deg, rgba(59,130,246,0.14) 0%, rgba(37,99,235,0.06) 100%)",
-    border: "1px solid rgba(59,130,246,0.22)",
-  },
 };
 
 function AdeKindBadge({ kind }: { kind: GitHubPrListItem["adeKind"] }): React.ReactElement | null {
@@ -730,7 +724,6 @@ export function GitHubTab({
   onDetailTabChange,
   onRefreshAll,
   onOpenRebaseTab,
-  onOpenQueueView,
   relocateHeaderChrome = false,
   onHeaderChromeChange,
 }: GitHubTabProps) {
@@ -1304,16 +1297,6 @@ export function GitHubTab({
     [lanes, selectedItem],
   );
 
-  const selectedQueueContext = React.useMemo(() => {
-    if (!selectedLinkedPr) return null;
-    const mergeContext = mergeContextByPrId[selectedLinkedPr.id];
-    if (mergeContext?.groupType !== "queue" || !mergeContext.groupId) return null;
-    return {
-      groupId: mergeContext.groupId,
-      label: "Open queue",
-    };
-  }, [mergeContextByPrId, selectedLinkedPr]);
-
   const selectedStack = React.useMemo(() => {
     const membership = selectedItem?.stack;
     if (!membership) return null;
@@ -1782,7 +1765,6 @@ export function GitHubTab({
                   selectedItemId={selectedItemId}
                   prsByIdMap={prsByIdMap}
                   onSelect={handleSelectItem}
-                  onOpenQueueView={onOpenQueueView}
                   onHydrationItemsChange={handleHydrationItemsChange}
                 />
               ) : (
@@ -1793,7 +1775,6 @@ export function GitHubTab({
                     selected={item.id === selectedItemId}
                     linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
                     onSelect={handleSelectItem}
-                    onOpenQueueView={onOpenQueueView}
                   />
                 ))
               )}
@@ -1877,8 +1858,6 @@ export function GitHubTab({
                 onRefresh={handleSync}
                 onNavigate={navigate}
                 onOpenRebaseTab={onOpenRebaseTab}
-                queueContext={selectedQueueContext}
-                onOpenQueueView={onOpenQueueView}
                 initialDetailTab={selectedDetailTab}
                 onDetailTabChange={onDetailTabChange}
                 onUnmap={selectedItem.linkedPrId ? () => handleUnlink(selectedItem) : undefined}
@@ -1971,13 +1950,11 @@ function GitHubTabPrRow({
   selected,
   linkedPr,
   onSelect,
-  onOpenQueueView,
 }: {
   item: GitHubPrListItem;
   selected: boolean;
   linkedPr: PrSummary | null;
   onSelect: (item: GitHubPrListItem) => void;
-  onOpenQueueView?: (groupId: string) => void;
 }) {
   const sc = stateColor(item.state);
   const ci = ciDotColor(linkedPr);
@@ -2180,39 +2157,6 @@ function GitHubTabPrRow({
         {item.cleanupState === "required" ? (
           <span style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>cleanup</span>
         ) : null}
-        {item.adeKind === "queue" && item.linkedGroupId && onOpenQueueView ? (
-          <span
-            role="button"
-            tabIndex={0}
-            onClick={(event) => {
-              event.stopPropagation();
-              onOpenQueueView(item.linkedGroupId!);
-            }}
-            onKeyDown={(event) => {
-              if (event.key === "Enter" || event.key === " ") {
-                event.preventDefault();
-                event.stopPropagation();
-                onOpenQueueView(item.linkedGroupId!);
-              }
-            }}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              padding: "2px 7px",
-              fontSize: 10,
-              fontWeight: 600,
-              fontFamily: SANS_FONT,
-              color: COLORS.info,
-              background: "rgba(59,130,246,0.10)",
-              border: "1px solid rgba(59,130,246,0.18)",
-              borderRadius: 5,
-              cursor: "pointer",
-            }}
-            title="Open queue workflow"
-          >
-            open queue
-          </span>
-        ) : null}
         <span
           role="link"
           tabIndex={0}
@@ -2237,7 +2181,6 @@ function GitHubTabVirtualList({
   selectedItemId,
   prsByIdMap,
   onSelect,
-  onOpenQueueView,
   onHydrationItemsChange,
 }: {
   parentRef: React.RefObject<HTMLDivElement | null>;
@@ -2245,7 +2188,6 @@ function GitHubTabVirtualList({
   selectedItemId: string | null;
   prsByIdMap: Map<string, PrSummary>;
   onSelect: (item: GitHubPrListItem) => void;
-  onOpenQueueView?: (groupId: string) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
 }) {
   const virtualizer = useVirtualizer({
@@ -2288,7 +2230,6 @@ function GitHubTabVirtualList({
               selected={item.id === selectedItemId}
               linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
               onSelect={onSelect}
-              onOpenQueueView={onOpenQueueView}
             />
           </div>
         );

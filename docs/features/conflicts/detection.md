@@ -42,7 +42,7 @@ Two kinds of predictions are stored:
 
 1. **Lane-to-base** — `lane_b_id IS NULL`. Compares the lane's head
    against its base ref (resolved through
-   `shouldLaneTrackParent` / queue override / `base_ref` fallback).
+   `shouldLaneTrackParent` / `base_ref` fallback).
 2. **Pairwise** — `lane_a_id`, `lane_b_id` both set. Compares two
    lane heads at their merge base.
 
@@ -173,19 +173,17 @@ This ensures the UI always sees a deterministic, deduplicated list
 even when the prediction run recorded overlaps separately from the
 merge-tree conflict output.
 
-## Queue-aware comparison ref
+## Lane comparison ref
 
-`resolveLaneRebaseTarget({ lane, lanesById, queueOverride })` picks
+`resolveLaneRebaseTarget({ lane, lanesById })` picks
 the comparison ref for rebase predictions:
 
-1. If `queueOverride` present: use
-   `queueOverride.comparisonRef` and `displayBaseBranch`.
-2. Else if parent is non-primary and
+1. If parent is non-primary and
    `shouldLaneTrackParent({ lane, parent })`: use the parent's
    branch ref, with `origin/<parent-branch>` as a fallback.
-3. Else if `lane.baseRef` present: use `origin/<baseRef>` with
+2. Else if `lane.baseRef` present: use `origin/<baseRef>` with
    local `<baseRef>` as fallback.
-4. Else: use `lane.baseRef` directly and display it.
+3. Else: use `lane.baseRef` directly and display it.
 
 This resolver is used by both `scanRebaseNeeds` (batch) and
 `getRebaseNeed` (single). `rebaseLane` (AI-assisted) applies the

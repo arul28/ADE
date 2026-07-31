@@ -111,7 +111,6 @@ import { createPrMergeAutoSettlementService } from "./services/prs/prMergeAutoSe
 import {
   emitPrCardsForChange,
 } from "./services/prs/prChatCards";
-import { createQueueLandingService } from "./services/prs/queueLandingService";
 import { createPrSummaryService } from "./services/prs/prSummaryService";
 import { openExternalUrl } from "./services/shared/externalLinks";
 import {
@@ -2984,28 +2983,6 @@ app.whenReady().then(async () => {
 
     let orchestrationServiceRef: ReturnType<typeof createOrchestrationService> | null =
       null;
-    const queueLandingService = createQueueLandingService({
-      db,
-      logger,
-      projectId,
-      prService,
-      laneService,
-      conflictService,
-      emitEvent: emitPrEvent,
-      onStateChanged: (state) => {
-        const hotPrIds = new Set<string>();
-        const currentEntry = state.entries[state.currentPosition];
-        const nextEntry = state.entries[state.currentPosition + 1];
-        if (state.activePrId) hotPrIds.add(state.activePrId);
-        if (currentEntry?.prId) hotPrIds.add(currentEntry.prId);
-        if (nextEntry?.prId) hotPrIds.add(nextEntry.prId);
-        if (hotPrIds.size > 0) {
-          prServiceRef?.markHotRefresh(Array.from(hotPrIds));
-        }
-      },
-    });
-    queueLandingService.init();
-
     const prSummaryService = createPrSummaryService({
       db,
       logger,
@@ -3819,7 +3796,6 @@ app.whenReady().then(async () => {
       diffService,
       conflictService,
       prService,
-      queueLandingService,
       sessionService,
       ptyService,
       projectConfigService,
@@ -4223,7 +4199,6 @@ app.whenReady().then(async () => {
       agentChatService,
       prService,
       prSummaryService,
-      queueLandingService,
       fileService,
       searchService,
       externalSessionsService,
@@ -4488,7 +4463,6 @@ app.whenReady().then(async () => {
       computerUseArtifactBrokerService,
       iosSimulatorService,
       appControlService,
-      queueLandingService,
       prSummaryService,
       reviewService,
       searchService,
@@ -4697,7 +4671,6 @@ app.whenReady().then(async () => {
       feedbackReporterService: null,
       prService: null,
       prPollingService: null,
-      queueLandingService: null,
       prSummaryService: null,
       reviewService: null,
       jobEngine: null,

@@ -203,11 +203,6 @@ changesets are byte-for-byte wire compatible. A row originating on an
 iPhone is indistinguishable from a row originating on a Mac (beyond
 the `site_id`), and round-trips through the host without translation.
 
-Both desktop and iOS filter the
-`queue_landing_state.wiped_for_stacked_overhaul.v1` kv marker from
-CRDT import/export. The marker records local upgrade work for the
-stacked-PR queue overhaul and must not replicate as shared state.
-
 ### Legacy iOS cache DB
 
 On first launch the iOS app detects and replaces the legacy

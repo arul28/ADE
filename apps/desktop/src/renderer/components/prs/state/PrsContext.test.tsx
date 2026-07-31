@@ -21,7 +21,7 @@ import { PrsProvider, usePrs } from "./PrsContext";
 const originalAde = globalThis.window.ade;
 
 function Harness() {
-  const { refresh, rebaseNeeds, autoRebaseStatuses, loading, queueStates } = usePrs();
+  const { refresh, rebaseNeeds, autoRebaseStatuses, loading } = usePrs();
   return (
     <div>
       <button type="button" onClick={() => void refresh()}>
@@ -30,7 +30,6 @@ function Harness() {
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="needs-count">{rebaseNeeds.length}</div>
       <div data-testid="auto-count">{autoRebaseStatuses.length}</div>
-      <div data-testid="queue-count">{Object.keys(queueStates).length}</div>
     </div>
   );
 }
@@ -63,12 +62,11 @@ function DualRefreshHarness() {
 }
 
 function RouteHarness() {
-  const { activeTab, selectedPrId, selectedQueueGroupId, selectedRebaseItemId } = usePrs();
+  const { activeTab, selectedPrId, selectedRebaseItemId } = usePrs();
   return (
     <div>
       <div data-testid="active-tab">{activeTab}</div>
       <div data-testid="selected-pr-id">{selectedPrId ?? ""}</div>
-      <div data-testid="selected-queue-group-id">{selectedQueueGroupId ?? ""}</div>
       <div data-testid="selected-rebase-item-id">{selectedRebaseItemId ?? ""}</div>
     </div>
   );
@@ -78,8 +76,8 @@ function TabSwitchHarness() {
   const { activeTab, setActiveTab, loading } = usePrs();
   return (
     <div>
-      <button type="button" onClick={() => setActiveTab("queue")}>
-        queue
+      <button type="button" onClick={() => setActiveTab("integration")}>
+        integration
       </button>
       <div data-testid="loading">{loading ? "loading" : "idle"}</div>
       <div data-testid="active-tab">{activeTab}</div>
@@ -215,7 +213,6 @@ describe("PrsContext refresh", () => {
       prs: {
         refresh: vi.fn().mockResolvedValue(undefined),
         listWithConflicts: vi.fn().mockResolvedValue([]),
-        listQueueStates: vi.fn().mockResolvedValue([]),
         onEvent: vi.fn(() => () => {}),
       },
       lanes: {
@@ -403,33 +400,6 @@ describe("PrsContext refresh", () => {
     });
   });
 
-  it("keeps workflow PRs usable when queue states are unavailable on the runtime", async () => {
-    window.location.hash = "#/prs?tab=workflows&workflow=integration";
-    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.mocked(window.ade.prs.listWithConflicts).mockResolvedValue([makeFakePr("pr-1")]);
-    vi.mocked(window.ade.prs.listQueueStates).mockRejectedValue(
-      new Error("action 'pr.listQueueStates' is not callable"),
-    );
-
-    render(
-      <PrsProvider>
-        <Harness />
-      </PrsProvider>,
-    );
-
-    await waitFor(() => {
-      expect(screen.getByTestId("loading").textContent).toBe("idle");
-    });
-    expect(window.ade.prs.listWithConflicts).toHaveBeenCalledWith({ includeConflictAnalysis: true });
-    expect(window.ade.lanes.list).toHaveBeenCalledWith({ includeStatus: false });
-    expect(screen.getByTestId("queue-count").textContent).toBe("0");
-    expect(warnSpy).toHaveBeenCalledWith(
-      "[PrsContext] Failed to load workflow queue states:",
-      expect.any(Error),
-    );
-    warnSpy.mockRestore();
-  });
-
   it("runs a GitHub PR refresh for explicit refresh actions", async () => {
     const user = userEvent.setup();
 
@@ -522,10 +492,10 @@ describe("PrsContext refresh", () => {
     });
     vi.mocked(window.ade.prs.refresh).mockClear();
 
-    await user.click(screen.getByRole("button", { name: "queue" }));
+    await user.click(screen.getByRole("button", { name: "integration" }));
 
     await waitFor(() => {
-      expect(screen.getByTestId("active-tab").textContent).toBe("queue");
+      expect(screen.getByTestId("active-tab").textContent).toBe("integration");
     });
     expect(window.ade.prs.refresh).not.toHaveBeenCalled();
   });
@@ -1381,7 +1351,6 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("active-tab").textContent).toBe("rebase");
     });
     expect(screen.getByTestId("selected-pr-id").textContent).toBe("");
-    expect(screen.getByTestId("selected-queue-group-id").textContent).toBe("");
     expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("lane-1");
 
   });
@@ -1423,7 +1392,6 @@ describe("PrsContext refresh", () => {
       expect(screen.getByTestId("active-tab").textContent).toBe("normal");
     });
     expect(screen.getByTestId("selected-pr-id").textContent).toBe("pr-123");
-    expect(screen.getByTestId("selected-queue-group-id").textContent).toBe("");
     expect(screen.getByTestId("selected-rebase-item-id").textContent).toBe("");
 
     window.history.replaceState(null, "", "/");

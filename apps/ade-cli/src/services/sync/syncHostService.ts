@@ -138,7 +138,6 @@ import type { createOrchestrationService } from "../../../../desktop/src/main/se
 import type { createPtyService } from "../../../../desktop/src/main/services/pty/ptyService";
 import type { createPrService } from "../../../../desktop/src/main/services/prs/prService";
 import type { createPrSummaryService } from "../../../../desktop/src/main/services/prs/prSummaryService";
-import type { createQueueLandingService } from "../../../../desktop/src/main/services/prs/queueLandingService";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import type { createComputerUseArtifactBrokerService } from "../../../../desktop/src/main/services/computerUse/computerUseArtifactBrokerService";
@@ -869,7 +868,6 @@ type SyncHostServiceArgs = {
   operationService?: ReturnType<typeof createOperationService> | null;
   prService: ReturnType<typeof createPrService>;
   prSummaryService?: ReturnType<typeof createPrSummaryService> | null;
-  queueLandingService?: ReturnType<typeof createQueueLandingService> | null;
   sessionService: ReturnType<typeof createSessionService>;
   sessionDeltaService?: ReturnType<typeof createSessionDeltaService> | null;
   ptyService: ReturnType<typeof createPtyService>;
@@ -2161,7 +2159,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     ctoMemoryService: args.ctoMemoryService,
     linearCredentialService: args.linearCredentialService,
     getLinearIssueTracker: args.getLinearIssueTracker,
-    queueLandingService: args.queueLandingService,
     projectConfigService: args.projectConfigService,
     portAllocationService: args.portAllocationService,
     laneEnvironmentService: args.laneEnvironmentService,

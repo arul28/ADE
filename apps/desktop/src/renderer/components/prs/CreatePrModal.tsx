@@ -1,7 +1,7 @@
 import React from "react";
 import { useNavigate } from "react-router-dom";
 import * as Dialog from "@radix-ui/react-dialog";
-import { GitPullRequest, GitMerge, Stack as Layers, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check, DotsSixVertical, Trash, ArrowUp, ArrowDown } from "@phosphor-icons/react";
+import { GitPullRequest, GitMerge, CheckCircle, Warning, CircleNotch, X, ArrowRight, ArrowLeft, Check } from "@phosphor-icons/react";
 import { BranchIcon } from "../ui/vcsIcons";
 import { useAppStore } from "../../state/appStore";
 import type {
@@ -23,7 +23,7 @@ import { isDirtyWorktreeErrorMessage, stripDirtyWorktreePrefix } from "./shared/
 import { branchNameFromRef, describePrTargetDiff, resolveLaneBaseBranch } from "./shared/laneBranchTargets";
 import { buildLaneRebaseRecommendedLaneIds, describeLanePrIssues } from "./shared/lanePrWarnings";
 
-type CreateMode = "normal" | "queue" | "integration";
+type CreateMode = "normal" | "integration";
 export type CreatePrModalInitialValues = {
   sourceLaneId?: string | null;
   target?: "primary" | null;
@@ -58,7 +58,6 @@ const MERGE_METHODS: { id: MergeMethod; label: string; desc: string }[] = [
 
 const MODES: { id: CreateMode; label: string; icon: React.ElementType; desc: string }[] = [
   { id: "normal", label: "Single PR", icon: GitPullRequest, desc: "Single lane creates one PR." },
-  { id: "queue", label: "Queue workflow", icon: Layers, desc: "Multiple lanes targeting the same branch, landed sequentially." },
   { id: "integration", label: "Integration workflow", icon: GitMerge, desc: "Merge multiple lanes into one integration branch, then open a PR." },
 ];
 
@@ -313,19 +312,6 @@ function describeMergedParentIssue(args: {
   return `The lane this builds on ("${parent.name}") has already merged. Update this lane from ${targetBranch} before creating its PR so the diff starts from merged code.`;
 }
 
-export function reorderQueueLaneIds(queueLaneIds: string[], draggedLaneId: string, targetLaneId: string): string[] {
-  const draggedIndex = queueLaneIds.indexOf(draggedLaneId);
-  const targetIndex = queueLaneIds.indexOf(targetLaneId);
-  if (draggedIndex < 0 || targetIndex < 0 || draggedIndex === targetIndex) return queueLaneIds;
-
-  const next = [...queueLaneIds];
-  const [removed] = next.splice(draggedIndex, 1);
-  // After removing the dragged item, adjust target index if dragged was above
-  const adjustedTarget = draggedIndex < targetIndex ? targetIndex - 1 : targetIndex;
-  next.splice(adjustedTarget, 0, removed);
-  return next;
-}
-
 function LaneCheckboxList({
   lanes: displayLanes,
   selectedIds,
@@ -537,12 +523,6 @@ export function CreatePrModal({
   const normalTitleDefaultRef = React.useRef("");
   const normalLinearBodyDefaultRef = React.useRef("");
 
-  // Queue PRs
-  const [queueLaneIds, setQueueLaneIds] = React.useState<string[]>([]);
-  const [queueDraft, setQueueDraft] = React.useState(false);
-  const [queueDragLaneId, setQueueDragLaneId] = React.useState<string | null>(null);
-  const [queueTargetBranch, setQueueTargetBranch] = React.useState("");
-
   // Body
   const [normalBody, setNormalBody] = React.useState("");
 
@@ -604,12 +584,6 @@ export function CreatePrModal({
     return [v, ...targetBranchOptions.filter((b) => b !== v)];
   }, [targetBranchOptions, normalBaseBranch]);
 
-  const queueBranchSelectOptions = React.useMemo(() => {
-    const v = queueTargetBranch.trim();
-    if (!v.length) return targetBranchOptions;
-    return [v, ...targetBranchOptions.filter((b) => b !== v)];
-  }, [targetBranchOptions, queueTargetBranch]);
-
   const integrationBranchSelectOptions = React.useMemo(() => {
     const v = integrationBaseBranch.trim();
     if (!v.length) return targetBranchOptions;
@@ -623,7 +597,6 @@ export function CreatePrModal({
   const [integrationResult, setIntegrationResult] = React.useState<CreateIntegrationPrResult | null>(null);
   const [integrationProgress, setIntegrationProgress] = React.useState<string | null>(null);
   const [integrationBranchError, setIntegrationBranchError] = React.useState<string | null>(null);
-  const [queueErrors, setQueueErrors] = React.useState<Array<{ laneId: string; error: string }>>([]);
 
   const openRebaseTab = React.useCallback((laneId: string) => {
     onOpenChange(false);
@@ -646,10 +619,6 @@ export function CreatePrModal({
       setNormalCloseLinearIssueOnMerge(true);
       normalTitleDefaultRef.current = "";
       normalLinearBodyDefaultRef.current = "";
-      setQueueLaneIds([]);
-      setQueueDraft(false);
-      setQueueDragLaneId(null);
-      setQueueTargetBranch("");
       setBusy(false);
       setExecError(null);
       setResults(null);
@@ -666,7 +635,6 @@ export function CreatePrModal({
       setIntegrationResult(null);
       setIntegrationProgress(null);
       setIntegrationBranchError(null);
-      setQueueErrors([]);
       setAvailableBranches([]);
       setBranchLoadError(null);
       setKnownPrs([]);
@@ -782,7 +750,6 @@ export function CreatePrModal({
   React.useEffect(() => {
     if (!open) return;
     const primaryBranch = branchNameFromRef(primaryLane?.branchRef ?? "main");
-    setQueueTargetBranch((current) => current || primaryBranch);
     setIntegrationBaseBranch((current) => current || primaryBranch);
   }, [open, primaryLane?.branchRef]);
 
@@ -833,7 +800,6 @@ export function CreatePrModal({
     setNumericStep(1);
     setExecError(null);
     setResults(null);
-    setQueueErrors([]);
     setIntegrationResult(null);
     setProposal(null);
 
@@ -879,7 +845,6 @@ export function CreatePrModal({
   const handleCreate = async () => {
     setBusy(true);
     setExecError(null);
-    setQueueErrors([]);
     setIntegrationProgress(null);
     let lastProgressLabel: string | null = null;
     try {
@@ -904,24 +869,6 @@ export function CreatePrModal({
         });
         setResults([pr]);
         await onCreated?.([pr]);
-        setNumericStep(3);
-      } else if (mode === "queue") {
-        const trimmedQueueTargetBranch = (queueTargetBranch ?? "").trim();
-        const baseBranch = (trimmedQueueTargetBranch || branchNameFromRef(primaryLane?.branchRef ?? "main")).trim();
-        const result = await runWithDirtyWorktreeConfirmation({
-          confirmMessage: "Continue and create the queue PRs anyway?",
-          run: async (allowDirtyWorktree) => await window.ade.prs.createQueue({
-            laneIds: queueLaneIds,
-            targetBranch: baseBranch,
-            draft: queueDraft,
-            ...(allowDirtyWorktree ? { allowDirtyWorktree: true } : {})
-          })
-        });
-        if (result.errors.length > 0) {
-          setQueueErrors(result.errors);
-        }
-        setResults(result.prs);
-        await onCreated?.(result.prs);
         setNumericStep(3);
       } else if (mode === "integration") {
         if (!proposal) {
@@ -983,21 +930,6 @@ export function CreatePrModal({
     }
   }, [integrationMergeIntoLaneId, integrationSources]);
 
-  const toggleQueueLane = (laneId: string) => {
-    setQueueLaneIds((prev) =>
-      prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId]
-    );
-  };
-
-  const handleQueueLaneDrop = React.useCallback((targetLaneId: string) => {
-    if (!queueDragLaneId || queueDragLaneId === targetLaneId) {
-      setQueueDragLaneId(null);
-      return;
-    }
-    setQueueLaneIds((prev) => reorderQueueLaneIds(prev, queueDragLaneId, targetLaneId));
-    setQueueDragLaneId(null);
-  }, [queueDragLaneId]);
-
   const toggleIntegrationSource = (laneId: string) => {
     setIntegrationSources((prev) =>
       prev.includes(laneId) ? prev.filter((id) => id !== laneId) : [...prev, laneId]
@@ -1018,7 +950,6 @@ export function CreatePrModal({
   /* Can user advance to step 2 or submit from step 2? Same readiness check. */
   const canProceed =
     (mode === "normal" && !!normalLaneId) ||
-    (mode === "queue" && queueLaneIds.length > 0) ||
     (mode === "integration" && canCreateIntegration);
 
   const goToStep2 = () => {
@@ -1063,17 +994,6 @@ export function CreatePrModal({
     if (!messages.length) return [];
     return [{ laneId: selectedNormalLane.id, laneName: selectedNormalLane.name, messages }];
   }, [knownPrs, laneWarningItemsById, lanes, normalBaseBranch, primaryLane?.branchRef, selectedNormalLane]);
-  const selectedQueueWarnings = React.useMemo<LaneWarningSummary[]>(() => {
-    return buildLaneWarningSummaries({
-      selectedLaneIds: queueLaneIds,
-      lanes,
-      allLanes: nonPrimaryLanes,
-      laneWarningItemsById,
-      pullRequests: knownPrs,
-      targetBranch: queueTargetBranch,
-      primaryBranchRef: primaryLane?.branchRef ?? null,
-    });
-  }, [knownPrs, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef, queueLaneIds, queueTargetBranch]);
   const selectedIntegrationWarnings = React.useMemo<LaneWarningSummary[]>(() => {
     return buildLaneWarningSummaries({
       selectedLaneIds: integrationSources,
@@ -1086,15 +1006,10 @@ export function CreatePrModal({
     });
   }, [integrationBaseBranch, integrationSources, knownPrs, laneWarningItemsById, lanes, nonPrimaryLanes, primaryLane?.branchRef]);
   const selectedNormalLoading = Boolean(normalLaneId) && laneSyncLoadingById[normalLaneId] === true;
-  const selectedQueueLoading = queueLaneIds.some((laneId) => laneSyncLoadingById[laneId] === true);
   const selectedIntegrationLoading = integrationSources.some((laneId) => laneSyncLoadingById[laneId] === true);
   const selectedNormalRebaseLaneIds = React.useMemo(
     () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: normalLaneId ? [normalLaneId] : [] }),
     [lanes, normalLaneId],
-  );
-  const selectedQueueRebaseLaneIds = React.useMemo(
-    () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: queueLaneIds }),
-    [lanes, queueLaneIds],
   );
   const selectedIntegrationRebaseLaneIds = React.useMemo(
     () => buildLaneRebaseRecommendedLaneIds({ lanes, selectedLaneIds: integrationSources }),
@@ -1404,228 +1319,6 @@ export function CreatePrModal({
                   </>
                 )}
 
-                {/* ── Queue mode: Lane selection ─────────────────── */}
-                {mode === "queue" && (
-                  <div>
-                    <span style={labelStyle}>BUILD QUEUE</span>
-                    <div style={{ display: "grid", gap: 12, gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))" }}>
-                      <div>
-                        <div style={{ ...labelStyle, marginBottom: 6 }}>AVAILABLE LANES</div>
-                        <LaneCheckboxList
-                          lanes={nonPrimaryLanes}
-                          selectedIds={queueLaneIds}
-                          warningItemsById={laneWarningItemsById}
-                          onToggle={toggleQueueLane}
-                        />
-                        <div style={{ marginTop: 8, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
-                          Select lanes to add them to the queue.
-                        </div>
-                      </div>
-
-                      <div>
-                        <div style={{ ...labelStyle, marginBottom: 6 }}>QUEUE ORDER</div>
-                        <div style={{
-                          minHeight: 240,
-                          background: C.bgInput,
-                          border: `1px solid ${C.border}`,
-                          borderRadius: 0,
-                          padding: 8,
-                          display: "flex",
-                          flexDirection: "column",
-                          gap: 6,
-                        }}>
-                          {queueLaneIds.length === 0 ? (
-                            <div style={{
-                              flex: 1,
-                              display: "flex",
-                              alignItems: "center",
-                              justifyContent: "center",
-                              padding: 16,
-                              color: C.textMuted,
-                              fontFamily: MONO_FONT,
-                              fontSize: 11,
-                              textAlign: "center",
-                              border: `1px dashed ${C.borderSubtle}`,
-                            }}>
-                              Add lanes, then drag this list to set landing order.
-                            </div>
-                          ) : (
-                            queueLaneIds.map((laneId, idx) => {
-                              const lane = lanes.find((entry) => entry.id === laneId);
-                              const isDragged = queueDragLaneId === laneId;
-                              return (
-                                <div
-                                  key={laneId}
-                                  draggable={queueLaneIds.length > 1}
-                                  data-queue-lane-id={laneId}
-                                  onDragStart={() => setQueueDragLaneId(laneId)}
-                                  onDragEnd={() => setQueueDragLaneId(null)}
-                                  onDragOver={(event) => event.preventDefault()}
-                                  onDrop={() => handleQueueLaneDrop(laneId)}
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: 10,
-                                    padding: "10px 12px",
-                                    border: `1px solid ${isDragged ? C.accent : C.borderSubtle}`,
-                                    background: isDragged ? C.accentSubtleBg : "transparent",
-                                    opacity: isDragged ? 0.7 : 1,
-                                  }}
-                                >
-                                  <DotsSixVertical size={14} style={{ color: C.textMuted, cursor: "grab", flexShrink: 0 }} />
-                                  <span style={{
-                                    minWidth: 24,
-                                    color: C.accent,
-                                    fontFamily: MONO_FONT,
-                                    fontSize: 11,
-                                    fontWeight: 700,
-                                  }}>
-                                    #{idx + 1}
-                                  </span>
-                                  <div style={{ minWidth: 0, flex: 1 }}>
-                                    <div style={{
-                                      fontFamily: MONO_FONT,
-                                      fontSize: 12,
-                                      fontWeight: 700,
-                                      color: C.textPrimary,
-                                      overflow: "hidden",
-                                      textOverflow: "ellipsis",
-                                      whiteSpace: "nowrap",
-                                    }}>
-                                      {lane?.name ?? laneId}
-                                    </div>
-                                    <div style={{ fontFamily: MONO_FONT, fontSize: 11, color: C.textMuted }}>
-                                      {lane?.branchRef ?? "---"}
-                                    </div>
-                                  </div>
-                                  {idx > 0 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setQueueLaneIds((prev) => {
-                                        const next = [...prev];
-                                        [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-                                        return next;
-                                      })}
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        padding: 4,
-                                        background: "transparent",
-                                        border: "none",
-                                        color: C.textMuted,
-                                        cursor: "pointer",
-                                        flexShrink: 0,
-                                      }}
-                                      title="Move up"
-                                    >
-                                      <ArrowUp size={13} />
-                                    </button>
-                                  )}
-                                  {idx < queueLaneIds.length - 1 && (
-                                    <button
-                                      type="button"
-                                      onClick={() => setQueueLaneIds((prev) => {
-                                        const next = [...prev];
-                                        [next[idx], next[idx + 1]] = [next[idx + 1], next[idx]];
-                                        return next;
-                                      })}
-                                      style={{
-                                        display: "inline-flex",
-                                        alignItems: "center",
-                                        justifyContent: "center",
-                                        padding: 4,
-                                        background: "transparent",
-                                        border: "none",
-                                        color: C.textMuted,
-                                        cursor: "pointer",
-                                        flexShrink: 0,
-                                      }}
-                                      title="Move down"
-                                    >
-                                      <ArrowDown size={13} />
-                                    </button>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => setQueueLaneIds((prev) => prev.filter((id) => id !== laneId))}
-                                    style={{
-                                      display: "inline-flex",
-                                      alignItems: "center",
-                                      justifyContent: "center",
-                                      padding: 4,
-                                      background: "transparent",
-                                      border: "none",
-                                      color: C.textMuted,
-                                      cursor: "pointer",
-                                      flexShrink: 0,
-                                    }}
-                                    title="Remove lane from queue"
-                                  >
-                                    <Trash size={13} />
-                                  </button>
-                                </div>
-                              );
-                            })
-                          )}
-                        </div>
-                        <div style={{ marginTop: 8, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
-                          Drag queued lanes to choose the exact PR creation and landing order.
-                        </div>
-                      </div>
-                    </div>
-                    <LaneWarningPanel
-                      items={selectedQueueWarnings}
-                      loading={selectedQueueLoading}
-                      rebaseLaneIds={selectedQueueRebaseLaneIds}
-                      onOpenRebase={openRebaseTab}
-                    />
-                    {queueLaneIds.length > 0 && (
-                      <div style={{
-                        marginTop: 8,
-                        fontSize: 11,
-                        fontFamily: "var(--font-sans)",
-                        color: C.textSecondary,
-                      }}>
-                        {queueLaneIds.length} lane{queueLaneIds.length !== 1 ? "s" : ""} selected
-                      </div>
-                    )}
-                    <div style={{ marginTop: 12 }}>
-                      <span style={labelStyle}>TARGET BRANCH</span>
-                      <div style={{ position: "relative" }}>
-                        <BranchIcon
-                          size={14}
-                          weight="bold"
-                          style={{
-                            position: "absolute",
-                            left: 12,
-                            top: "50%",
-                            transform: "translateY(-50%)",
-                            color: C.textMuted,
-                            pointerEvents: "none",
-                            zIndex: 1,
-                          }}
-                        />
-                        <input
-                          list="queueBranchOptions"
-                          value={queueTargetBranch}
-                          onChange={(e) => setQueueTargetBranch(e.target.value)}
-                          aria-label="Target branch"
-                          placeholder="Type or select a branch"
-                          style={selectStyle}
-                          onFocus={(e) => { e.currentTarget.style.borderColor = C.accent; }}
-                          onBlur={(e) => { e.currentTarget.style.borderColor = C.borderSubtle; }}
-                        />
-                        <datalist id="queueBranchOptions">
-                          {queueBranchSelectOptions.map((name) => (
-                            <option key={name} value={name} />
-                          ))}
-                        </datalist>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {/* ── Integration mode: Source lanes + simulation ─── */}
                 {mode === "integration" && (
                   <>
@@ -1874,7 +1567,7 @@ export function CreatePrModal({
                   </>
                 )}
 
-                {/* ── Merge method (normal & queue only) ────────── */}
+                {/* ── Merge method (single PR only) ─────────────── */}
                 {mode !== "integration" && (
                   <div>
                     <span style={labelStyle}>MERGE METHOD (ON LAND)</span>
@@ -2077,72 +1770,6 @@ export function CreatePrModal({
                   </>
                 )}
 
-                {mode === "queue" && (
-                  <>
-                    <div style={{
-                      background: C.bgInput,
-                      border: `1px solid ${C.border}`,
-                      borderRadius: 0,
-                      padding: 16,
-                    }}>
-                      <span style={labelStyle}>QUEUE ORDER</span>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        {queueLaneIds.map((laneId, idx) => {
-                          const lane = lanes.find((l) => l.id === laneId);
-                          return (
-                            <div key={laneId} style={{
-                              display: "flex",
-                              alignItems: "center",
-                              gap: 8,
-                              fontFamily: "var(--font-sans)",
-                              fontSize: 12,
-                              color: C.textPrimary,
-                            }}>
-                              <span style={{
-                                fontSize: 10,
-                                fontWeight: 700,
-                                color: C.accent,
-                                minWidth: 20,
-                              }}>
-                                #{idx + 1}
-                              </span>
-                              <span style={{ flex: 1 }}>{lane?.name ?? laneId}</span>
-                              <span style={{ fontSize: 11, color: C.textMuted }}>{lane?.branchRef}</span>
-                            </div>
-                          );
-                        })}
-                      </div>
-                      <div style={{ marginTop: 10, fontSize: 11, color: C.textMuted, fontFamily: MONO_FONT }}>
-                        This order will be used exactly when ADE creates the queue PRs.
-                      </div>
-                    </div>
-
-                    <label style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 10,
-                      fontFamily: "var(--font-sans)",
-                      fontSize: 12,
-                      color: C.textPrimary,
-                      cursor: "pointer",
-                    }}>
-                      <input
-                        type="checkbox"
-                        checked={queueDraft}
-                        onChange={(e) => setQueueDraft(e.target.checked)}
-                        style={{ accentColor: C.accent }}
-                      />
-                      CREATE AS DRAFTS
-                    </label>
-                    <LaneWarningPanel
-                      items={selectedQueueWarnings}
-                      loading={selectedQueueLoading}
-                      rebaseLaneIds={selectedQueueRebaseLaneIds}
-                      onOpenRebase={openRebaseTab}
-                    />
-                  </>
-                )}
-
                 {mode === "integration" && (
                   <>
                     {/* Summary of what's being integrated */}
@@ -2300,33 +1927,16 @@ export function CreatePrModal({
                       gap: 8,
                       marginBottom: 12,
                     }}>
-                      {queueErrors.length > 0 ? (
-                        <Warning size={18} weight="fill" style={{ color: C.warning }} />
-                      ) : (
-                        <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
-                      )}
+                      <CheckCircle size={18} weight="fill" style={{ color: C.success }} />
                       <span style={{
                         fontFamily: "var(--font-sans)",
                         fontSize: 16,
                         fontWeight: 700,
                         color: C.textPrimary,
                       }}>
-                        {queueErrors.length > 0
-                          ? `Created ${results.length} of ${results.length + queueErrors.length} PRs. ${queueErrors.length} failed.`
-                          : `Created ${results.length} PR${results.length !== 1 ? "s" : ""}`}
+                        {`Created ${results.length} PR${results.length !== 1 ? "s" : ""}`}
                       </span>
                     </div>
-                    {queueErrors.length > 0 && (
-                      <div style={{
-                        ...errorBannerStyle,
-                        marginBottom: 10,
-                      }}>
-                        {queueErrors.map((e) => {
-                          const lane = lanes.find((l) => l.id === e.laneId);
-                          return `${lane?.name ?? e.laneId}: ${e.error}`;
-                        }).join("\n")}
-                      </div>
-                    )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {results.map((pr) => (
                         <div

@@ -8426,47 +8426,6 @@ final class ADETests: XCTestCase {
     database.close()
   }
 
-  func testDatabaseTreatsQueueWipeMarkerAsLocalOnlySyncState() throws {
-    let baseURL = makeTemporaryDirectory()
-    let database = DatabaseService(baseURL: baseURL, bootstrapSQL: """
-      create table if not exists kv (key text primary key, value text not null);
-    """)
-    XCTAssertNil(database.initializationError)
-
-    let marker = "queue_landing_state.wiped_for_stacked_overhaul.v1"
-    let initialVersion = database.currentDbVersion()
-    try database.executeSqlForTesting("""
-      update kv set value = 'locally-updated' where key = '\(marker)'
-    """)
-
-    let exported = database.exportChangesSince(version: initialVersion)
-    XCTAssertFalse(exported.contains {
-      $0.table == "kv" && ($0.pk == packedDesktopTextPrimaryKey(marker) || $0.pk == .string(marker))
-    })
-
-    let markerValueBeforeApply = try kvValue(in: baseURL, key: marker)
-    let versionBeforeApply = database.currentDbVersion()
-    let result = try database.applyChanges([
-      CrsqlChangeRow(
-        table: "kv",
-        pk: packedDesktopTextPrimaryKey(marker),
-        cid: "value",
-        val: .string("remote-marker-should-not-apply"),
-        colVersion: 999,
-        dbVersion: versionBeforeApply + 1,
-        siteId: "ffffffffffffffffffffffffffffffff",
-        cl: 1,
-        seq: 0
-      )
-    ])
-
-    XCTAssertEqual(result.appliedCount, 0)
-    XCTAssertTrue(result.touchedTables.isEmpty)
-    XCTAssertEqual(database.currentDbVersion(), versionBeforeApply)
-    XCTAssertEqual(try kvValue(in: baseURL, key: marker), markerValueBeforeApply)
-    database.close()
-  }
-
   func testDatabaseIgnoresUnknownIncomingSyncTable() throws {
     let database = makeDatabase(baseURL: makeTemporaryDirectory())
     XCTAssertNil(database.initializationError)
@@ -11130,16 +11089,16 @@ final class ADETests: XCTestCase {
       PullRequestListItem(
         id: "pr-2",
         laneId: "lane-2",
-        laneName: "Queue lane",
+        laneName: "Draft work",
         projectId: "project-1",
         repoOwner: "arul",
         repoName: "ade",
         githubPrNumber: 12,
         githubUrl: "https://github.com/arul/ade/pull/12",
-        title: "Draft queue workflow",
+        title: "Draft review workflow",
         state: "draft",
         baseBranch: "main",
-        headBranch: "feature/queue",
+        headBranch: "feature/review",
         checksStatus: "pending",
         reviewStatus: "requested",
         additions: 30,
@@ -11147,12 +11106,12 @@ final class ADETests: XCTestCase {
         lastSyncedAt: nil,
         createdAt: "2026-03-20T00:00:00.000Z",
         updatedAt: "2026-03-20T00:00:00.000Z",
-        adeKind: "queue",
-        linkedGroupId: "group-1",
-        linkedGroupType: "queue",
-        linkedGroupName: "Queue",
-        linkedGroupPosition: 1,
-        linkedGroupCount: 2,
+        adeKind: "single",
+        linkedGroupId: nil,
+        linkedGroupType: nil,
+        linkedGroupName: nil,
+        linkedGroupPosition: nil,
+        linkedGroupCount: 0,
         workflowDisplayState: nil,
         cleanupState: nil
       ),
@@ -20377,20 +20336,6 @@ final class ADETests: XCTestCase {
       },
       "workflowCards": [
         {
-          "kind": "queue",
-          "id": "queue:q-1",
-          "groupId": "group-1",
-          "groupName": null,
-          "targetBranch": null,
-          "state": "landing",
-          "activePrId": "pr-root",
-          "currentPosition": 0,
-          "totalEntries": 2,
-          "waitReason": null,
-          "lastError": null,
-          "updatedAt": "2026-04-16T00:00:00Z"
-        },
-        {
           "kind": "integration",
           "id": "integration:prop-1",
           "proposalId": "prop-1",
@@ -20467,12 +20412,8 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(blocked?.hasExistingPr ?? false)
     XCTAssertTrue((blocked?.blockedReason ?? "").contains("#7"))
 
-    // Workflow cards — one of each kind, decoded through the discriminated union.
-    XCTAssertEqual(snapshot.workflowCards.count, 3)
-    let queueCard = snapshot.workflowCards.first(where: { $0.kind == "queue" })
-    XCTAssertEqual(queueCard?.groupId, "group-1")
-    XCTAssertEqual(queueCard?.totalEntries, 2)
-    XCTAssertEqual(queueCard?.activePrId, "pr-root")
+    // Workflow cards decode through the discriminated union.
+    XCTAssertEqual(snapshot.workflowCards.count, 2)
 
     let integrationCard = snapshot.workflowCards.first(where: { $0.kind == "integration" })
     XCTAssertEqual(integrationCard?.proposalId, "prop-1")

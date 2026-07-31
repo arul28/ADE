@@ -35,7 +35,7 @@ function scopedLastWorkflowTabKey(projectRoot?: string | null): string {
 function readLastWorkflowTab(projectRoot?: string | null): WorkflowCategory {
   try {
     const value = window.localStorage.getItem(scopedLastWorkflowTabKey(projectRoot));
-    if (value === "integration" || value === "queue" || value === "rebase") return value;
+    if (value === "integration" || value === "rebase") return value;
   } catch {
     /* ignore */
   }
@@ -116,8 +116,6 @@ function PRsPageInner() {
     mergeMethod,
     selectedPrId,
     setSelectedPrId,
-    selectedQueueGroupId,
-    setSelectedQueueGroupId,
     rebaseNeeds,
     selectedRebaseItemId,
     setSelectedRebaseItemId,
@@ -217,9 +215,6 @@ function PRsPageInner() {
             setSelectedDetailTab(routeState.detailTab);
           }
         }
-        if (resolved.effectiveWorkflow === "queue") {
-          setSelectedQueueGroupId(routeState.queueGroupId ?? null);
-        }
         if (resolved.effectiveWorkflow === "rebase") {
           setSelectedRebaseItemId(routeRebaseItemId);
         }
@@ -242,7 +237,7 @@ function PRsPageInner() {
       window.removeEventListener("popstate", syncFromLocation);
       window.removeEventListener("hashchange", syncFromLocation);
     };
-  }, [location.search, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedQueueGroupId, setSelectedRebaseItemId]);
+  }, [location.search, prs, rebaseNeeds, setActiveTab, setSelectedPrId, setSelectedRebaseItemId]);
 
   React.useEffect(() => {
     const current = parsePrsRouteState({ search: location.search });
@@ -259,7 +254,6 @@ function PRsPageInner() {
     const nextSearch = buildPrsRouteSearch({
       activeTab,
       selectedPrId,
-      selectedQueueGroupId,
       selectedRebaseItemId,
       detailTab: activeTab === "normal" ? selectedDetailTab : null,
       ...deepLinks,
@@ -269,7 +263,6 @@ function PRsPageInner() {
   }, [
     activeTab,
     selectedPrId,
-    selectedQueueGroupId,
     selectedRebaseItemId,
     selectedDetailTab,
     location.pathname,
@@ -505,10 +498,6 @@ function PRsPageInner() {
             onOpenRebaseTab={(laneId) => {
               if (laneId) setSelectedRebaseItemId(laneId);
               setActiveTab("rebase");
-            }}
-            onOpenQueueView={(groupId) => {
-              setSelectedQueueGroupId(groupId);
-              setActiveTab("queue");
             }}
           />
         ) : (

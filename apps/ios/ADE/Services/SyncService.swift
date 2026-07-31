@@ -3348,7 +3348,7 @@ final class SyncService: ObservableObject {
   // these published values; the service OWNS the Task lifecycle.
 
   /// In-flight PR actions keyed by a stable string (prId, or
-  /// `"<scope>:<id>"` for queue/integration/root actions). The views read this
+  /// `"<scope>:<id>"` for integration/root actions). The views read this
   /// to render per-row / per-control spinners that survive a tab switch +
   /// remount. Owned exclusively by `beginPrAction`/`endPrAction`.
   @Published private(set) var prActionsInFlight: [String: PrInFlightAction] = [:]
@@ -5218,7 +5218,6 @@ final class SyncService: ObservableObject {
       "pr_groups",
       "pr_group_members",
       "integration_proposals",
-      "queue_landing_state",
       "lanes",
       "lane_list_snapshots",
     ].contains(table)
@@ -8807,10 +8806,6 @@ final class SyncService: ObservableObject {
     database.fetchIntegrationProposals()
   }
 
-  func fetchQueueStates() async throws -> [QueueLandingState] {
-    database.fetchQueueStates()
-  }
-
   func fetchPullRequestSnapshot(prId: String) async throws -> PullRequestSnapshot? {
     database.fetchPullRequestSnapshot(prId: prId)
   }
@@ -12315,38 +12310,6 @@ final class SyncService: ObservableObject {
     ])
   }
 
-  func landQueueNext(groupId: String, method: String, archiveLane: Bool = true, autoResolve: Bool = true) async throws {
-    _ = try await sendCommand(action: "prs.landQueueNext", args: [
-      "groupId": groupId,
-      "method": method,
-      "archiveLane": archiveLane,
-      "autoResolve": autoResolve,
-    ])
-  }
-
-  func pauseQueueAutomation(queueId: String) async throws {
-    _ = try await sendCommand(action: "prs.pauseQueueAutomation", args: ["queueId": queueId])
-  }
-
-  func resumeQueueAutomation(queueId: String, method: String? = nil) async throws {
-    var args: [String: Any] = ["queueId": queueId]
-    if let method, !method.isEmpty {
-      args["method"] = method
-    }
-    _ = try await sendCommand(action: "prs.resumeQueueAutomation", args: args)
-  }
-
-  func cancelQueueAutomation(queueId: String) async throws {
-    _ = try await sendCommand(action: "prs.cancelQueueAutomation", args: ["queueId": queueId])
-  }
-
-  func reorderQueue(groupId: String, prIds: [String]) async throws {
-    _ = try await sendCommand(action: "prs.reorderQueue", args: [
-      "groupId": groupId,
-      "prIds": prIds,
-    ])
-  }
-
   @discardableResult
   func createIntegrationLaneForProposal(proposalId: String) async throws -> CreateIntegrationLaneForProposalResult {
     try await sendDecodableCommand(action: "prs.createIntegrationLaneForProposal", args: ["proposalId": proposalId], as: CreateIntegrationLaneForProposalResult.self)
@@ -12407,49 +12370,6 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(action: "prs.updateIntegrationProposal", args: args)
   }
 
-  @discardableResult
-  func createQueuePrs(
-    laneIds: [String],
-    targetBranch: String? = nil,
-    titles: [String: String]? = nil,
-    draft: Bool? = nil,
-    autoRebase: Bool? = nil,
-    ciGating: Bool? = nil,
-    queueName: String? = nil,
-    allowDirtyWorktree: Bool? = nil
-  ) async throws -> CreateQueuePrsResult {
-    var args: [String: Any] = ["laneIds": laneIds]
-    if let targetBranch, !targetBranch.isEmpty { args["targetBranch"] = targetBranch }
-    if let titles, !titles.isEmpty { args["titles"] = titles }
-    if let draft { args["draft"] = draft }
-    if let autoRebase { args["autoRebase"] = autoRebase }
-    if let ciGating { args["ciGating"] = ciGating }
-    if let queueName, !queueName.isEmpty { args["queueName"] = queueName }
-    if let allowDirtyWorktree { args["allowDirtyWorktree"] = allowDirtyWorktree }
-    return try await sendDecodableCommand(action: "prs.createQueue", args: args, as: CreateQueuePrsResult.self)
-  }
-
-  func startQueueAutomation(
-    groupId: String,
-    method: String,
-    archiveLane: Bool? = nil,
-    autoResolve: Bool? = nil,
-    ciGating: Bool? = nil,
-    resolverProvider: String? = nil,
-    resolverModel: String? = nil
-  ) async throws {
-    var args: [String: Any] = [
-      "groupId": groupId,
-      "method": method,
-    ]
-    if let archiveLane { args["archiveLane"] = archiveLane }
-    if let autoResolve { args["autoResolve"] = autoResolve }
-    if let ciGating { args["ciGating"] = ciGating }
-    if let resolverProvider, !resolverProvider.isEmpty { args["resolverProvider"] = resolverProvider }
-    if let resolverModel, !resolverModel.isEmpty { args["resolverModel"] = resolverModel }
-    _ = try await sendCommand(action: "prs.startQueueAutomation", args: args)
-  }
-
   func simulateIntegration(
     sourceLaneIds: [String],
     baseBranch: String? = nil,
@@ -12491,14 +12411,6 @@ final class SyncService: ObservableObject {
     var args: [String: Any] = [:]
     if let view, !view.isEmpty { args["view"] = view }
     return try await sendDecodableCommand(action: "prs.listIntegrationWorkflows", args: args, as: [IntegrationProposal].self)
-  }
-
-  func landStackEnhanced(rootLaneId: String, method: String, mode: String) async throws -> [LandResult] {
-    try await sendDecodableCommand(action: "prs.landStackEnhanced", args: [
-      "rootLaneId": rootLaneId,
-      "method": method,
-      "mode": mode,
-    ], as: [LandResult].self)
   }
 
   private func saveProfile(_ profile: HostConnectionProfile?) {

@@ -297,16 +297,6 @@ function optionalRemoteActionFallbackResult(
       },
     };
   }
-  if (request.domain === "pr" && request.action === "listQueueStates") {
-    return {
-      domain: "pr",
-      action: "listQueueStates",
-      result: [],
-      statusHints: {
-        optionalActionMissing: true,
-      },
-    };
-  }
   return null;
 }
 

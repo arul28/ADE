@@ -1,4 +1,4 @@
-export type PrWorkflowTab = "queue" | "integration" | "rebase";
+export type PrWorkflowTab = "integration" | "rebase";
 export type PrActiveTab = "github" | "normal" | PrWorkflowTab;
 export type PrDetailRouteTab = "overview" | "files" | "checks";
 
@@ -15,7 +15,6 @@ export type ParsedPrsRouteState = {
   laneId: string | null;
   prId: string | null;
   prNumber: number | null;
-  queueGroupId: string | null;
   eventId: string | null;
   threadId: string | null;
   commitSha: string | null;
@@ -26,7 +25,7 @@ function parseSearch(search: string): URLSearchParams {
   return new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
 }
 
-const WORKFLOW_TABS: ReadonlySet<string> = new Set<PrWorkflowTab>(["queue", "integration", "rebase"]);
+const WORKFLOW_TABS: ReadonlySet<string> = new Set<PrWorkflowTab>(["integration", "rebase"]);
 const VALID_TABS: ReadonlySet<string> = new Set(["github", "normal", "workflows", ...WORKFLOW_TABS]);
 const DETAIL_TABS: ReadonlySet<string> = new Set<PrDetailRouteTab>(["overview", "files", "checks"]);
 
@@ -85,7 +84,6 @@ export function parsePrsRouteState(args: { search?: string | null; hash?: string
     laneId: pick("laneId"),
     prId: pick("prId"),
     prNumber: parseOptionalNumber(routeParams.get("pr")),
-    queueGroupId: pick("queueGroupId"),
     eventId: pick("eventId"),
     threadId: pick("threadId"),
     commitSha: pick("commitSha"),
@@ -134,14 +132,14 @@ export type ResolvedPrsRoute = {
  * Collapse a parsed route into a single activeTab decision.
  *
  * Routing bounce-back guard: the presence of a `workflow=` param, or a
- * workflow-alias `tab=` value (queue/integration/rebase), is treated as
+ * workflow-alias `tab=` value (integration/rebase), is treated as
  * authoritative evidence of a workflow route. This prevents a stale
  * `?tab=normal` in the outer search (BrowserRouter mock mode) from shadowing
  * a hash-based workflow URL.
  */
 export function resolvePrsActiveTab(route: ParsedPrsRouteState): ResolvedPrsRoute {
   const workflowAlias: PrWorkflowTab | null =
-    route.tab === "queue" || route.tab === "integration" || route.tab === "rebase"
+    route.tab === "integration" || route.tab === "rebase"
       ? route.tab
       : null;
   const effectiveWorkflow = route.workflowTab ?? workflowAlias;
@@ -167,7 +165,6 @@ export function buildPrsRouteSearch(args: {
   selectedLaneId?: string | null;
   repoOwner?: string | null;
   repoName?: string | null;
-  selectedQueueGroupId: string | null;
   selectedRebaseItemId: string | null;
   eventId?: string | null;
   threadId?: string | null;
@@ -192,9 +189,6 @@ export function buildPrsRouteSearch(args: {
   } else {
     params.set("tab", "workflows");
     params.set("workflow", args.activeTab);
-    if (args.activeTab === "queue" && args.selectedQueueGroupId) {
-      params.set("queueGroupId", args.selectedQueueGroupId);
-    }
     if (args.activeTab === "rebase" && args.selectedRebaseItemId) {
       params.set("laneId", args.selectedRebaseItemId);
     }

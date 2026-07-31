@@ -27,8 +27,8 @@ import { buildLinearPrReference } from "../../../shared/linearMagicWords";
  * `LaneCombobox` target dropdown (no free-text) → title / description / create.
  * There are no section labels: the source is visibly immutable (lock glyph, no
  * box) and the target is visibly a dropdown, so the old uppercase captions and
- * the two identical 46px tiles they distinguished are gone. No PR-type selector
- * here — queue/integration live in the full composer ("Open in PRs tab").
+ * the two identical 46px tiles they distinguished are gone. Integration PR
+ * creation lives in the full composer ("Open in PRs tab").
  *
  * Linear magic words and the "Open in ADE" deeplink footer are owned by
  * prService on create (idempotently), so the editable fields stay clean.
@@ -188,8 +188,8 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
     }
   }, [body, defaultTitle, laneId, linearIssue, onCreated, resolvedBaseBranch, title]);
 
-  // The full composer (queue / integration + multi-lane ordering) lives in the
-  // PRs tab; this just hands off with the lane pre-selected.
+  // The full integration composer lives in the PRs tab; this hands off with the
+  // lane pre-selected.
   const openFullComposer = useCallback(() => {
     const params = new URLSearchParams({ tab: "normal", create: "1", sourceLaneId: laneId, target: "primary" });
     navigate(`/prs?${params.toString()}`);
@@ -319,7 +319,7 @@ export const ChatPrInlineCreator = React.memo(function ChatPrInlineCreator({
         )}
       </button>
 
-      {/* Hand off to the full PRs-tab composer (queue / integration / review steps). */}
+      {/* Hand off to the full PRs-tab composer for integration and review steps. */}
       <button
         type="button"
         onClick={openFullComposer}

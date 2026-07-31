@@ -55,9 +55,9 @@ const DEFAULT_HINTS: Hint[] = [
     docUrl: docs.prsOverview,
   },
   {
-    id: "prs-queues",
-    body: "The PRs tab models stacks, merge queues, integration proposals, and rebase needs from the same local git truth.",
-    docUrl: docs.prsQueues,
+    id: "prs-stacks",
+    body: "The PRs tab shows native GitHub stacks alongside ADE integration proposals and rebase needs.",
+    docUrl: docs.prsOverview,
   },
   {
     id: "graph-projection",

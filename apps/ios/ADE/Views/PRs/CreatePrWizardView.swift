@@ -1,28 +1,25 @@
 import SwiftUI
 
-// MARK: - Create PR mode (single / queue / integration)
+// MARK: - Create PR mode (single / integration)
 
 enum CreatePrMode: String, CaseIterable, Identifiable {
-  case single, queue, integration
+  case single, integration
   var id: String { rawValue }
   var title: String {
     switch self {
     case .single: return "Single"
-    case .queue: return "Queue"
     case .integration: return "Integration"
     }
   }
   var symbol: String {
     switch self {
     case .single: return "doc.badge.plus"
-    case .queue: return "rectangle.stack.badge.plus"
     case .integration: return "arrow.triangle.merge"
     }
   }
   var description: String {
     switch self {
     case .single: return "One branch, one PR"
-    case .queue: return "Land multiple PRs in order, auto-rebasing"
     case .integration: return "Merge several lanes into one integration PR"
     }
   }
@@ -42,8 +39,6 @@ struct CreatePrWizardView: View {
   let createCapabilities: PrCreateCapabilities?
   /// Single-PR submit: (laneId, title, body, draft, baseBranch, labels, reviewers, strategy).
   let onCreateSingle: (String, String, String, Bool, String, [String], [String], String?) async -> Bool
-  /// Queue PR batch submit.
-  let onCreateQueue: (CreateQueuePrsRequest) async -> Bool
   /// Integration PR submit (caller runs simulateIntegration → commitIntegration).
   let onCreateIntegration: (CreateIntegrationRequest) async -> Bool
   let initialLaneId: String?
@@ -55,7 +50,6 @@ struct CreatePrWizardView: View {
     initialLaneId: String? = nil,
     singleModeOnly: Bool = false,
     onCreateSingle: @escaping (String, String, String, Bool, String, [String], [String], String?) async -> Bool,
-    onCreateQueue: @escaping (CreateQueuePrsRequest) async -> Bool,
     onCreateIntegration: @escaping (CreateIntegrationRequest) async -> Bool
   ) {
     self.lanes = lanes
@@ -63,7 +57,6 @@ struct CreatePrWizardView: View {
     self.initialLaneId = initialLaneId
     self.singleModeOnly = singleModeOnly
     self.onCreateSingle = onCreateSingle
-    self.onCreateQueue = onCreateQueue
     self.onCreateIntegration = onCreateIntegration
   }
 
@@ -81,10 +74,7 @@ struct CreatePrWizardView: View {
   @State private var errorMessage: String?
   @State private var editPresented = false
   @State private var lastAutoTitle = ""
-  // Queue / integration-only state.
-  @State private var queueName = ""
-  @State private var autoRebase = true
-  @State private var ciGating = true
+  // Integration-only state.
   @State private var integrationLaneName = ""
   // Cached eligible lane options — recomputed only when the source-of-truth
   // (capabilities / lanes) shifts, not on every keystroke.
@@ -275,8 +265,6 @@ struct CreatePrWizardView: View {
     case .integration:
       let source = integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines)
       return Self.defaultPrTitle(source: source.isEmpty ? "Integration" : source, target: targetDisplayName)
-    case .queue:
-      return ""
     }
   }
 
@@ -307,8 +295,6 @@ struct CreatePrWizardView: View {
       let hasTitle = !effectiveTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       let hasBase = !baseBranch.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       return hasTitle && hasBase
-    case .queue:
-      return selectedLaneIds.count >= 1
     case .integration:
       let hasName = !integrationLaneName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -352,14 +338,6 @@ struct CreatePrWizardView: View {
             reviewersSection
             labelsSection
             finalReviewSection
-          case .queue:
-            multiLaneSection(mode: .queue)
-            targetBranchSection(title: "Target branch")
-            queueSettingsSection
-            stanceSection
-            reviewersSection
-            labelsSection
-            queueReviewSection
           case .integration:
             multiLaneSection(mode: .integration)
             targetBranchSection(title: "Target branch")
@@ -432,8 +410,8 @@ struct CreatePrWizardView: View {
           // Restore single-mode defaults using the currently selected lane.
           applyDefaultTitleIfUntouched()
         } else {
-          // Queue + integration share the multi-select; reset the title input
-          // so it doesn't carry over the single-lane suggestion.
+          // Reset the title input so it doesn't carry over the single-lane
+          // suggestion.
           title = ""
           lastAutoTitle = ""
           bodyText = ""
@@ -820,14 +798,14 @@ struct CreatePrWizardView: View {
     }
   }
 
-  // MARK: - Multi-lane select (queue + integration)
+  // MARK: - Multi-lane select
 
   @ViewBuilder
   private func multiLaneSection(mode: CreatePrMode) -> some View {
     let options = cachedLaneOptions.isEmpty ? eligibleLaneOptions : cachedLaneOptions
     VStack(spacing: 0) {
       PrSectionHdr(title: "Lanes") {
-        let minCount = mode == .integration ? 2 : 1
+        let minCount = 2
         let label = selectedLaneIds.count >= minCount
           ? "\(selectedLaneIds.count) selected"
           : "select \(minCount)+"
@@ -870,56 +848,6 @@ struct CreatePrWizardView: View {
     errorMessage = nil
   }
 
-  // MARK: - Queue settings
-
-  private var queueSettingsSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Queue")
-      VStack(alignment: .leading, spacing: 10) {
-        TextField("queue name (optional)", text: $queueName)
-          .font(.system(size: 13, design: .monospaced))
-          .foregroundStyle(ADEColor.textPrimary)
-          .autocorrectionDisabled()
-          .textInputAutocapitalization(.never)
-          .padding(.horizontal, 14)
-          .padding(.vertical, 12)
-          .prGlassCard(cornerRadius: 14)
-
-        Toggle(isOn: $autoRebase) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text("Auto-rebase")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("Rebase each PR on the one ahead of it as the queue lands.")
-              .font(.system(size: 11))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .tint(PrGlassPalette.purpleBright)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .prGlassCard(cornerRadius: 14)
-
-        Toggle(isOn: $ciGating) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text("CI gating")
-              .font(.system(size: 13, weight: .semibold))
-              .foregroundStyle(ADEColor.textPrimary)
-            Text("Wait for green checks before advancing to the next PR.")
-              .font(.system(size: 11))
-              .foregroundStyle(ADEColor.textMuted)
-          }
-        }
-        .tint(PrGlassPalette.purpleBright)
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .prGlassCard(cornerRadius: 14)
-      }
-      .padding(.horizontal, 16)
-      .padding(.bottom, 10)
-    }
-  }
-
   // MARK: - Integration settings
 
   private var integrationSettingsSection: some View {
@@ -941,31 +869,6 @@ struct CreatePrWizardView: View {
       }
       .padding(.horizontal, 16)
       .padding(.bottom, 10)
-    }
-  }
-
-  // MARK: - Review (queue + integration)
-
-  private var queueReviewSection: some View {
-    VStack(spacing: 0) {
-      PrSectionHdr(title: "Review") {
-        PrMonoText(text: "queue", color: ADEColor.purpleAccent, size: 10)
-      }
-      let count = selectedLaneIds.count
-      let base = baseBranch.isEmpty ? defaultTargetBranch : baseBranch
-      VStack(alignment: .leading, spacing: 6) {
-        ReviewLine(label: "PRs to open", value: "\(count)")
-        ReviewLine(label: "Target", value: base)
-        ReviewLine(label: "Auto-rebase", value: autoRebase ? "on" : "off")
-        ReviewLine(label: "CI gating", value: ciGating ? "on" : "off")
-        if !queueName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-          ReviewLine(label: "Queue", value: queueName)
-        }
-      }
-      .padding(14)
-      .wizardCard()
-      .padding(.horizontal, 16)
-      .padding(.bottom, 8)
     }
   }
 
@@ -1034,13 +937,11 @@ struct CreatePrWizardView: View {
     if isSubmitting {
       switch createMode {
       case .single: return "Opening…"
-      case .queue: return "Queueing…"
       case .integration: return "Merging…"
       }
     }
     switch createMode {
     case .single: return "Open"
-    case .queue: return "Queue"
     case .integration: return "Integrate"
     }
   }
@@ -1079,27 +980,6 @@ struct CreatePrWizardView: View {
       isSubmitting = false
       if !completed {
         errorMessage = "The pull request was not created."
-      }
-    case .queue:
-      let laneIds = orderedSelectedLaneIds
-      let trimmedName = queueName.trimmingCharacters(in: .whitespacesAndNewlines)
-      let baseTrim = baseBranch.trimmingCharacters(in: .whitespacesAndNewlines)
-      let targetBranch = baseTrim.isEmpty ? defaultTargetBranch : baseTrim
-      let completed = await onCreateQueue(
-        CreateQueuePrsRequest(
-          laneIds: laneIds,
-          queueName: trimmedName.isEmpty ? nil : trimmedName,
-          draft: draft,
-          autoRebase: autoRebase,
-          ciGating: ciGating,
-          // v2 TODO: per-lane title overrides.
-          titles: nil,
-          baseBranch: targetBranch
-        )
-      )
-      isSubmitting = false
-      if !completed {
-        errorMessage = "The queue PRs were not created."
       }
     case .integration:
       let laneIds = orderedSelectedLaneIds
@@ -1513,19 +1393,6 @@ struct CreatePrLaneOption: Identifiable, Equatable {
   let branchRef: String
   let defaultBaseBranch: String
   let subtitle: String?
-}
-
-/// Queue-PR batch submit payload passed from the wizard to the host.
-struct CreateQueuePrsRequest: Equatable {
-  let laneIds: [String]
-  let queueName: String?
-  let draft: Bool
-  let autoRebase: Bool
-  let ciGating: Bool
-  /// Per-lane title overrides, keyed by laneId. v1 leaves this nil and lets
-  /// the host derive defaults; v2 will expose a disclosure for editing.
-  let titles: [String: String]?
-  let baseBranch: String?
 }
 
 /// Integration-PR submit payload. Caller runs simulateIntegration →

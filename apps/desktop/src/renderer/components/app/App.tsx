@@ -1209,7 +1209,6 @@ function AppNavigationBridge() {
         repoOwner: target.repoOwner ?? null,
         repoName: target.repoName ?? null,
         detailTab: target.detailTab ?? null,
-        selectedQueueGroupId: null,
         selectedRebaseItemId: null,
       })}`);
       return true;

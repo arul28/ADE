@@ -37,20 +37,17 @@ type MockUnmappedAffordance = {
 vi.mock("../detail/PrDetailPane", () => ({
   PrDetailPane: ({
     pr,
-    queueContext,
     onUnmap,
     unmapped,
     unmappedAffordance,
   }: {
     pr: { id: string };
-    queueContext?: { groupId: string } | null;
     onUnmap?: () => void;
     unmapped?: boolean;
     unmappedAffordance?: MockUnmappedAffordance | null;
   }) => (
     <div data-testid="pr-detail-pane" data-unmapped={unmapped ? "true" : "false"}>
       {pr.id}
-      {queueContext ? <span data-testid="queue-context">{queueContext.groupId}</span> : null}
       {onUnmap ? <button type="button" onClick={onUnmap}>Unmap from lane</button> : null}
       {unmappedAffordance ? (
         <div data-testid="pr-unmapped-affordance">
@@ -163,20 +160,6 @@ const snapshot: GitHubPrSnapshot = {
       linkedLaneId: "lane-merged",
       linkedLaneName: "lane-merged",
     }),
-    makeGitHubPr({
-      id: "repo-queue",
-      githubPrNumber: 103,
-      githubUrl: "https://github.com/ade-dev/ade/pull/103",
-      title: "Queue PR",
-      headBranch: "feature/queue",
-      createdAt: "2026-03-13T10:30:00.000Z",
-      updatedAt: "2026-03-13T11:45:00.000Z",
-      linkedPrId: "pr-queue",
-      linkedGroupId: "queue-group-1",
-      linkedLaneId: "lane-queue",
-      linkedLaneName: "lane-queue",
-      adeKind: "queue",
-    }),
   ],
   externalPullRequests: [],
 };
@@ -234,11 +217,8 @@ describe("GitHubTab", () => {
       prs: [
         { id: "pr-open", state: "open", checksStatus: "pending", reviewStatus: "requested", additions: 12, deletions: 3 },
         { id: "pr-merged", state: "merged", checksStatus: "passing", reviewStatus: "approved", additions: 5, deletions: 1 },
-        { id: "pr-queue", state: "open", checksStatus: "passing", reviewStatus: "approved", additions: 7, deletions: 2 },
       ] satisfies Partial<PrWithConflicts>[],
-      mergeContextByPrId: {
-        "pr-queue": { groupType: "queue", groupId: "queue-group-1", members: [] },
-      },
+      mergeContextByPrId: {},
       detailStatus: null,
       detailChecks: [],
       detailReviews: [],
@@ -340,12 +320,10 @@ describe("GitHubTab", () => {
   function renderTab(overrides: Partial<{
     selectedPrId: string | null;
     onSelectPr: ReturnType<typeof vi.fn>;
-    onOpenQueueView: ReturnType<typeof vi.fn>;
     onRefreshAll: ReturnType<typeof vi.fn>;
     lanes: LaneSummary[];
   }> = {}) {
     const onSelectPr = overrides.onSelectPr ?? vi.fn();
-    const onOpenQueueView = overrides.onOpenQueueView ?? vi.fn();
     const onRefreshAll = overrides.onRefreshAll ?? vi.fn().mockResolvedValue(undefined);
     render(
       <MemoryRouter>
@@ -355,11 +333,10 @@ describe("GitHubTab", () => {
           selectedPrId={overrides.selectedPrId ?? null}
           onSelectPr={onSelectPr}
           onRefreshAll={onRefreshAll}
-          onOpenQueueView={onOpenQueueView}
         />
       </MemoryRouter>,
     );
-    return { onSelectPr, onOpenQueueView, onRefreshAll };
+    return { onSelectPr, onRefreshAll };
   }
 
   it("shows and manages the selected GitHub stack from the cached snapshot", async () => {
@@ -479,7 +456,6 @@ describe("GitHubTab", () => {
           selectedPrId={selectedPrId}
           onSelectPr={vi.fn()}
           onRefreshAll={vi.fn().mockResolvedValue(undefined)}
-          onOpenQueueView={vi.fn()}
         />
       </MemoryRouter>
     );
@@ -668,16 +644,6 @@ describe("GitHubTab", () => {
     });
   });
 
-  it("opens the linked queue from a queue-tagged GitHub row", async () => {
-    const user = userEvent.setup();
-    const { onOpenQueueView } = renderTab();
-
-    const queueLinks = await screen.findAllByText("open queue");
-    await user.click(queueLinks[0]!);
-
-    expect(onOpenQueueView).toHaveBeenCalledWith("queue-group-1");
-  });
-
   it("shares the snapshot viewer login with PR context", async () => {
     const setViewerLogin = vi.fn();
     mockUsePrs.mockReturnValue({
@@ -712,14 +678,6 @@ describe("GitHubTab", () => {
     expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     expect(screen.queryByText(/Error invoking remote method/)).toBeNull();
     expect(screen.getByRole("button", { name: /connect github/i })).toBeTruthy();
-  });
-
-  it("passes queue context into the normal PR detail pane", async () => {
-    renderTab({ selectedPrId: "pr-queue" });
-
-    await waitFor(() => {
-      expect(screen.getByTestId("queue-context").textContent).toContain("queue-group-1");
-    });
   });
 
   it("requires confirmation before unmapping a GitHub PR from its lane", async () => {

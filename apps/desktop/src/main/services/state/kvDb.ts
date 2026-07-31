@@ -37,6 +37,7 @@ const RETIRED_EXECUTION_TABLES = [
 const SYNC_RETIRED_TABLES = new Set([
   "unified_memories",
   "unified_memories_fts",
+  "queue_landing_state",
   ...RETIRED_EXECUTION_TABLES,
 ]);
 
@@ -923,62 +924,20 @@ function deleteAllRowsWithoutCrrReplication(
   runStatement(db, `delete from ${quoteIdentifier(tableName)}`);
 }
 
-const QUEUE_OVERHAUL_WIPE_MARKER = "queue_landing_state.wiped_for_stacked_overhaul.v1";
-
-function rawCrsqlPrimaryKeyMatchesText(value: unknown, text: string): boolean {
-  if (value === text) return true;
-  if (!(value instanceof Uint8Array)) return false;
-
-  const packed = packedCrsqlPrimaryKey(text);
-  return isSyncScalarBytes(packed)
-    && Buffer.from(value).equals(Buffer.from(packed.base64, "base64"));
-}
-
-function syncScalarPrimaryKeyMatchesText(value: SyncScalar, text: string): boolean {
-  if (value === text) return true;
-
-  const packed = packedCrsqlPrimaryKey(text);
-  return isSyncScalarBytes(value)
-    && isSyncScalarBytes(packed)
-    && value.base64 === packed.base64;
-}
-
-function isLocalOnlyQueueWipeMarkerRawChange(change: { table_name: string; pk: unknown }): boolean {
-  return change.table_name === "kv"
-    && rawCrsqlPrimaryKeyMatchesText(change.pk, QUEUE_OVERHAUL_WIPE_MARKER);
-}
-
-function isLocalOnlyQueueWipeMarkerChange(change: CrsqlChangeRow): boolean {
-  return change.table === "kv"
-    && syncScalarPrimaryKeyMatchesText(change.pk, QUEUE_OVERHAUL_WIPE_MARKER);
-}
-
-/**
- * One-shot local wipe of legacy queue_landing_state on upgrade to the stacked-PR
- * queue overhaul. Must run after migrations and before ensureCrrTables so queue
- * deletes do not replicate to peers that have not upgraded yet. The marker is
- * stored in kv for compatibility with the original migration, but filtered from
- * CRDT import/export because it records local upgrade work, not shared state.
- */
-function wipeQueueLandingStateForStackedOverhaulIfNeeded(db: DatabaseSyncType, logger?: Logger): void {
-  try {
-    const row = getRow<{ value: string }>(
-      db,
-      "select value from kv where key = ?",
-      [QUEUE_OVERHAUL_WIPE_MARKER],
-    );
-    if (row) return;
-
+function removeLegacyQueueStorage(db: DatabaseSyncType, logger?: Logger): void {
+  if (rawHasTable(db, "queue_landing_state")) {
     deleteAllRowsWithoutCrrReplication(db, "queue_landing_state", logger);
+    runStatement(db, "drop table if exists queue_landing_state");
+  }
+  if (rawHasTable(db, "pr_group_members") && rawHasTable(db, "pr_groups")) {
     runStatement(
       db,
-      "insert into kv (key, value) values (?, ?) on conflict(key) do update set value = excluded.value",
-      [QUEUE_OVERHAUL_WIPE_MARKER, new Date().toISOString()],
+      "delete from pr_group_members where group_id in (select id from pr_groups where group_type = 'queue')",
     );
-  } catch {
-    // Table may not exist on a brand-new DB; initialization will create both
-    // tables and the next startup will record the marker. Skipping the wipe
-    // on a fresh DB is correct (nothing to wipe).
+    runStatement(db, "delete from pr_groups where group_type = 'queue'");
+  }
+  if (rawHasTable(db, "kv")) {
+    runStatement(db, "delete from kv where key = 'queue_landing_state.wiped_for_stacked_overhaul.v1'");
   }
 }
 
@@ -2800,7 +2759,7 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   }
   db.run("create index if not exists idx_automation_scheduled_cleanups_due on automation_scheduled_cleanups(project_id, status, due_at)");
 
-  // Phase 8+ PR groups (queue / integration).
+  // Integration workflow groups.
   db.run(`
     create table if not exists pr_groups (
       id text primary key,
@@ -2866,35 +2825,6 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table integration_proposals add column cleanup_completed_at text");
   safeAddColumn(db, "alter table integration_proposals add column preferred_integration_lane_id text");
   safeAddColumn(db, "alter table integration_proposals add column merge_into_head_sha text");
-
-  // Queue landing state table (crash recovery for sequential landing)
-  db.run(`
-    create table if not exists queue_landing_state (
-      id text primary key,
-      group_id text not null,
-      project_id text not null,
-      state text not null,
-      entries_json text not null,
-      config_json text not null default '{}',
-      current_position integer not null default 0,
-      active_pr_id text,
-      active_resolver_run_id text,
-      last_error text,
-      wait_reason text,
-      started_at text not null,
-      completed_at text,
-      updated_at text,
-      foreign key(group_id) references pr_groups(id),
-      foreign key(project_id) references projects(id)
-    )
-  `);
-  db.run("create index if not exists idx_queue_landing_state_group on queue_landing_state(group_id)");
-  safeAddColumn(db, "alter table queue_landing_state add column config_json text not null default '{}'");
-  safeAddColumn(db, "alter table queue_landing_state add column active_pr_id text");
-  safeAddColumn(db, "alter table queue_landing_state add column active_resolver_run_id text");
-  safeAddColumn(db, "alter table queue_landing_state add column last_error text");
-  safeAddColumn(db, "alter table queue_landing_state add column wait_reason text");
-  safeAddColumn(db, "alter table queue_landing_state add column updated_at text");
 
   // Rebase dismiss/defer persistence
   db.run(`
@@ -3896,7 +3826,7 @@ export async function openKvDb(
       removeExcludedCrrMetadata(db, logger);
     }
 
-    wipeQueueLandingStateForStackedOverhaulIfNeeded(db, logger);
+    removeLegacyQueueStorage(db, logger);
 
     if (crsqliteLoaded) {
       loadCrsqliteIfAvailable();
@@ -4197,7 +4127,6 @@ export async function openKvDb(
         ? Math.max(1, Math.floor(options.maxRows))
         : null;
       const survivesExportFilters = (row: ExportedChangeRow): boolean => {
-        if (isLocalOnlyQueueWipeMarkerRawChange(row)) return false;
         const suppressedThroughVersion = suppressions.get(row.table_name);
         if (suppressedThroughVersion == null || Number(row.db_version) > suppressedThroughVersion) {
           return true;
@@ -4308,7 +4237,6 @@ export async function openKvDb(
       runStatement(db, "BEGIN IMMEDIATE");
       try {
         for (const rawChange of changes) {
-          if (isLocalOnlyQueueWipeMarkerChange(rawChange)) continue;
           if (!rawHasTable(db, rawChange.table)) {
             if (isRetiredIncomingSyncTable(rawChange.table)) continue;
             throw new Error(`unknown_sync_table:${rawChange.table}`);

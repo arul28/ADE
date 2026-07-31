@@ -1661,7 +1661,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   const need = findLaneBaseNeed(rebaseNeeds, s.laneId);
                   setSelectedRebaseItemId(need ? rebaseNeedItemKey(need) : null);
                 }
-                setActiveTab(tab as "normal" | "queue" | "integration" | "rebase");
+                setActiveTab(tab as "normal" | "integration" | "rebase");
               }}
             />
           </div>
@@ -2239,7 +2239,7 @@ export function IntegrationTab({ prs, lanes, mergeContextByPrId, mergeMethod, se
                   Legacy simulation data detected
                 </div>
                 <div className="font-mono" style={{ fontSize: 10, color: "#D4A857", marginTop: 3 }}>
-                  This proposal was generated before pairwise conflict metadata. Outcomes can look queue-like. Re-simulate for accurate pairwise conflicts.
+                  This proposal was generated before pairwise conflict metadata. Outcomes can look sequential. Re-simulate for accurate pairwise conflicts.
                 </div>
               </div>
               <button

@@ -5952,24 +5952,6 @@ function buildPrPlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "land-stack" || sub === "land-stack-enhanced") {
-    return {
-      kind: "execute",
-      label: `PR ${sub}`,
-      steps: [
-        actionStep(
-          "result",
-          "pr",
-          sub === "land-stack" ? "landStack" : "landStackEnhanced",
-          collectGenericObjectArgs(args, {
-            rootLaneId:
-              readValue(args, ["--root", "--root-lane"]) ??
-              firstPositional(args),
-          }),
-        ),
-      ],
-    };
-  }
   if (sub === "labels") {
     const mode = firstPositional(args) ?? "set";
     if (mode !== "set") throw new CliUsageError("prs labels supports set.");
@@ -6242,75 +6224,6 @@ function buildPrPlan(args: string[]): CliPlan {
       kind: "execute",
       label: `PR conflicts ${mode}`,
       steps: [actionArgsListStep("result", "pr", action, [id])],
-    };
-  }
-
-  if (sub === "queue") {
-    const mode = firstPositional(args) ?? "create";
-    if (mode === "state" || mode === "list") {
-      const groupId = requireValue(
-        readValue(args, ["--group", "--group-id"]) ?? firstPositional(args),
-        "groupId",
-      );
-      return {
-        kind: "execute",
-        label: `queue ${mode}`,
-        steps: [
-          actionArgsListStep(
-            "result",
-            "pr",
-            mode === "state" ? "getQueueState" : "listGroupPrs",
-            [groupId],
-          ),
-        ],
-      };
-    }
-    if (mode === "reorder") {
-      return {
-        kind: "execute",
-        label: "queue reorder",
-        steps: [
-          actionStep(
-            "result",
-            "pr",
-            "reorderQueuePrs",
-            collectGenericObjectArgs(args, {
-              groupId:
-                readValue(args, ["--group", "--group-id"]) ??
-                firstPositional(args),
-            }),
-          ),
-        ],
-      };
-    }
-    if (mode === "land-next") {
-      return {
-        kind: "execute",
-        label: "queue land next",
-        steps: [
-          actionCallStep(
-            "result",
-            "land_queue_next",
-            collectGenericObjectArgs(args, {
-              groupId:
-                readValue(args, ["--group", "--group-id"]) ??
-                firstPositional(args),
-              method: readValue(args, ["--method"]) ?? "squash",
-            }),
-          ),
-        ],
-      };
-    }
-    return {
-      kind: "execute",
-      label: "queue create",
-      steps: [
-        actionCallStep(
-          "result",
-          "create_queue",
-          collectGenericObjectArgs(args),
-        ),
-      ],
     };
   }
 

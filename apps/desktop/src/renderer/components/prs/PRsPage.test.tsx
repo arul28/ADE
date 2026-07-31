@@ -61,8 +61,6 @@ function baseValue(overrides: Record<string, unknown> = {}) {
     mergeMethod: "merge",
     selectedPrId: null,
     setSelectedPrId: vi.fn(),
-    selectedQueueGroupId: null,
-    setSelectedQueueGroupId: vi.fn(),
     rebaseNeeds: [],
     selectedRebaseItemId: null,
     setSelectedRebaseItemId: vi.fn(),

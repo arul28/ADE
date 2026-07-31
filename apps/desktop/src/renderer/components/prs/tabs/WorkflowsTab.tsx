@@ -19,15 +19,12 @@ import type {
   PrWithConflicts,
 } from "../../../../shared/types";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
-import { PrLaneCleanupBanner } from "../shared/PrLaneCleanupBanner";
 import { formatTimestampShort } from "../shared/prFormatters";
-import { QueueTab } from "./QueueTab";
 import { RebaseTab } from "./RebaseTab";
 import { IntegrationTab } from "./IntegrationTab";
 import { rebaseNeedItemKey } from "../shared/rebaseNeedUtils";
 import { filterRebaseAttentionStatuses } from "../shared/rebaseAttentionUtils";
 import { usePrs } from "../state/PrsContext";
-import { getQueueWorkflowBucket } from "./queueWorkflowModel";
 import {
   getActiveRebaseNeeds,
   getRebaseHistoryOperations,
@@ -39,11 +36,10 @@ import { selectActiveProjectRoot, useAppStore } from "../../../state/appStore";
 
 const CATEGORY_THEMES = {
   integration: { color: "#8B5CF6", bg: "rgba(139, 92, 246, 0.08)", border: "rgba(139, 92, 246, 0.20)", bgSubtle: "rgba(139, 92, 246, 0.04)" },
-  queue: { color: "#F59E0B", bg: "rgba(245, 158, 11, 0.08)", border: "rgba(245, 158, 11, 0.20)", bgSubtle: "rgba(245, 158, 11, 0.04)" },
   rebase: { color: "#14B8A6", bg: "rgba(20, 184, 166, 0.08)", border: "rgba(20, 184, 166, 0.20)", bgSubtle: "rgba(20, 184, 166, 0.04)" },
 } as const;
 
-export type WorkflowCategory = "integration" | "queue" | "rebase";
+export type WorkflowCategory = "integration" | "rebase";
 type WorkflowView = "active" | "history";
 const WORKFLOWS_VIEW_STORAGE_KEY = "ade:prs:workflows:view";
 const WORKFLOWS_CACHE_TTL_MS = 120_000;
@@ -97,15 +93,6 @@ type WorkflowsTabProps = {
   integrationRefreshNonce?: number;
 };
 
-type QueueGroupSummary = {
-  groupId: string;
-  name: string | null;
-  targetBranch: string | null;
-  bucket: WorkflowView;
-  members: Array<{ prId: string; laneId: string; laneName: string; position: number; pr: PrWithConflicts | null }>;
-  landingState: import("../../../../shared/types").QueueLandingState | null;
-};
-
 function outcomeColor(outcome: string): string {
   switch (outcome) {
     case "clean": return COLORS.success;
@@ -125,140 +112,6 @@ function cleanupBadgeStyle(cleanupState: string | null | undefined): React.CSSPr
     default:
       return null;
   }
-}
-
-function buildQueueWorkflowGroups(args: {
-  prs: PrWithConflicts[];
-  mergeContextByPrId: Record<string, PrMergeContext>;
-  lanes: LaneSummary[];
-  queueStates: Record<string, import("../../../../shared/types").QueueLandingState>;
-}): QueueGroupSummary[] {
-  const laneById = new Map(args.lanes.map((lane) => [lane.id, lane]));
-  const prById = new Map(args.prs.map((pr) => [pr.id, pr] as const));
-  const groupMap = new Map<string, QueueGroupSummary>();
-
-  function toMembers(entries: Array<{ prId: string; laneId: string; laneName: string; position: number }>): QueueGroupSummary["members"] {
-    return entries.map((entry) => ({
-      prId: entry.prId,
-      laneId: entry.laneId,
-      laneName: laneById.get(entry.laneId)?.name ?? entry.laneName,
-      position: entry.position,
-      pr: prById.get(entry.prId) ?? null,
-    }));
-  }
-
-  for (const queueState of Object.values(args.queueStates)) {
-    const members = toMembers(queueState.entries);
-    groupMap.set(queueState.groupId, {
-      groupId: queueState.groupId,
-      name: queueState.groupName,
-      targetBranch: queueState.targetBranch,
-      bucket: getQueueWorkflowBucket({ landingState: queueState, members }),
-      landingState: queueState,
-      members,
-    });
-  }
-
-  for (const pr of args.prs) {
-    const context = args.mergeContextByPrId[pr.id];
-    if (!context?.groupId || context.groupType !== "queue") continue;
-    if (groupMap.has(context.groupId)) continue;
-    const members = toMembers(context.members);
-    const landingState = args.queueStates[context.groupId] ?? null;
-    groupMap.set(context.groupId, {
-      groupId: context.groupId,
-      name: null,
-      targetBranch: pr.baseBranch ?? null,
-      bucket: getQueueWorkflowBucket({ landingState, members }),
-      landingState,
-      members,
-    });
-  }
-
-  return [...groupMap.values()].sort((a, b) => {
-    const aTs = Date.parse(a.landingState?.updatedAt ?? "");
-    const bTs = Date.parse(b.landingState?.updatedAt ?? "");
-    if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
-    return (a.name ?? a.groupId).localeCompare(b.name ?? b.groupId);
-  });
-}
-
-function QueueHistoryPanel({
-  groups,
-  lanes,
-  onOpenGitHubTab,
-  loading,
-}: {
-  groups: QueueGroupSummary[];
-  lanes: LaneSummary[];
-  onOpenGitHubTab: (prId: string) => void;
-  loading?: boolean;
-}) {
-  const navigate = useNavigate();
-  const laneById = React.useMemo(() => new Map(lanes.map((lane) => [lane.id, lane] as const)), [lanes]);
-
-  if (loading && !groups.length) {
-    return (
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", padding: 32, gap: 8 }}>
-        <ArrowsClockwise size={16} className="animate-spin" style={{ color: COLORS.textMuted }} />
-        <span style={{ fontSize: 13, color: COLORS.textMuted, fontFamily: SANS_FONT }}>Loading queue history...</span>
-      </div>
-    );
-  }
-
-  if (!groups.length) {
-    return <EmptyState title="No queue history" description="Completed and cancelled queue workflows will appear here." />;
-  }
-
-  const theme = CATEGORY_THEMES.queue;
-  return (
-    <div style={{ display: "grid", gap: 14, padding: 16 }}>
-      {groups.map((group) => (
-        <div key={group.groupId} style={cardStyle({ background: theme.bgSubtle, borderColor: theme.border, borderLeft: `3px solid ${theme.color}` })}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: COLORS.textPrimary, fontFamily: SANS_FONT }}>
-                {group.name ?? `Queue ${group.groupId.slice(0, 8)}`}
-              </div>
-              <div style={{ marginTop: 4, fontSize: 12, color: COLORS.textMuted, fontFamily: SANS_FONT }}>
-                target <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{group.targetBranch ?? "main"}</span> · <span style={{ fontFamily: MONO_FONT, fontSize: 11 }}>{group.members.length}</span> PRs
-              </div>
-            </div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", justifyContent: "flex-end" }}>
-              {group.landingState ? <span style={inlineBadge(group.landingState.state === "completed" ? COLORS.success : theme.color, { background: `${group.landingState.state === "completed" ? COLORS.success : theme.color}18`, fontWeight: 600 })}>{group.landingState.state}</span> : null}
-            </div>
-          </div>
-          <div style={{ display: "grid", gap: 10 }}>
-            {group.members.map((member) => (
-              <div key={member.prId} style={{ display: "flex", flexDirection: "column", gap: 10, padding: "10px 12px", borderRadius: 10, background: "rgba(255,255,255,0.03)", border: "1px solid rgba(255,255,255,0.04)" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: COLORS.textPrimary, fontFamily: SANS_FONT, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                      {member.pr?.title ?? member.laneName}
-                    </div>
-                    <div style={{ marginTop: 3, fontFamily: MONO_FONT, fontSize: 11, color: COLORS.textMuted }}>
-                      {member.laneName}
-                    </div>
-                  </div>
-                  {member.pr ? (
-                    <button type="button" onClick={() => onOpenGitHubTab(member.prId)} style={outlineButton({ height: 30, borderColor: theme.border, color: theme.color, background: theme.bgSubtle })}>
-                      <GithubLogo size={14} /> Open PR
-                    </button>
-                  ) : null}
-                </div>
-                <PrLaneCleanupBanner
-                  pr={member.pr}
-                  lane={laneById.get(member.laneId) ?? null}
-                  compact
-                  onNavigate={(path) => navigate(path)}
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      ))}
-    </div>
-  );
 }
 
 function RebaseHistoryPanel({
@@ -685,14 +538,10 @@ export function WorkflowsTab({
     lanes,
     mergeContextByPrId,
     mergeMethod,
-    selectedQueueGroupId,
-    setSelectedQueueGroupId,
     selectedRebaseItemId,
     setSelectedRebaseItemId,
     rebaseNeeds,
     autoRebaseStatuses,
-    queueStates,
-    loading: prsLoading,
     resolverModel,
     resolverReasoningLevel,
     resolverPermissionMode,
@@ -797,18 +646,10 @@ export function WorkflowsTab({
     ]);
   }, [loadRebaseHistory, loadWorkflows, onRefreshAll]);
 
-  const queueWorkflowGroups = React.useMemo(
-    () => buildQueueWorkflowGroups({ prs, mergeContextByPrId, lanes, queueStates }),
-    [prs, mergeContextByPrId, lanes, queueStates],
-  );
   const integrationByView = React.useMemo(() => ({
     active: integrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "active"),
     history: integrationWorkflows.filter((workflow) => workflow.workflowDisplayState === "history"),
   }), [integrationWorkflows]);
-  const queueByView = React.useMemo(() => ({
-    active: queueWorkflowGroups.filter((group) => group.bucket === "active"),
-    history: queueWorkflowGroups.filter((group) => group.bucket === "history"),
-  }), [queueWorkflowGroups]);
   const rebaseByView = React.useMemo(() => ({
     active: getActiveRebaseNeeds(rebaseNeeds),
     history: rebaseHistoryOperations,
@@ -842,7 +683,6 @@ export function WorkflowsTab({
 
   const counts = {
     integration: integrationByView[view].length,
-    queue: queueByView[view].length,
     rebase: view === "history"
       ? rebaseHistoryOperations.length
       : rebaseByView.active.length + rebaseAttentionByView.active.length,
@@ -894,7 +734,6 @@ export function WorkflowsTab({
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           {([
             { id: "integration" as WorkflowCategory, label: "Integration", icon: GitBranch },
-            { id: "queue" as WorkflowCategory, label: "Queue", icon: CaretRight },
             { id: "rebase" as WorkflowCategory, label: "Rebase/Merge", icon: Sparkle },
           ]).map((category) => {
             const selected = activeCategory === category.id;
@@ -987,23 +826,6 @@ export function WorkflowsTab({
               onRefresh={refreshWorkflows}
               onOpenGitHubTab={onOpenGitHubTab}
             />
-          )
-        ) : null}
-
-        {activeCategory === "queue" ? (
-          view === "active" ? (
-            <QueueTab
-              prs={prs}
-              lanes={lanes}
-              mergeContextByPrId={mergeContextByPrId}
-              mergeMethod={mergeMethod}
-              workflowView="active"
-              selectedGroupId={selectedQueueGroupId}
-              onSelectGroup={setSelectedQueueGroupId}
-              onRefresh={refreshWorkflows}
-            />
-          ) : (
-            <QueueHistoryPanel groups={queueByView.history} lanes={lanes} onOpenGitHubTab={onOpenGitHubTab} loading={prsLoading} />
           )
         ) : null}
 

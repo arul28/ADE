@@ -251,7 +251,6 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
         activeTab: "normal",
         selectedPrId: prId,
         selectedLaneId: laneId,
-        selectedQueueGroupId: null,
         selectedRebaseItemId: null,
       })}`);
     };
