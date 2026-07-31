@@ -38,6 +38,7 @@ import type {
   AgentChatStopMode,
   ClaudeActiveGoal,
   CodexThreadGoal,
+  PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
@@ -8689,7 +8690,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       sessionId,
       itemId: approval.itemId,
       decision: "accept",
-      answers: buildPendingInputAnswers(approval.request, trimmed),
+      // Pass the live selection state so a typed note rides alongside whatever
+      // the user had already marked instead of replacing it.
+      answers: buildPendingInputAnswers(
+        approval.request,
+        trimmed,
+        pendingQuestionStateRef.current?.itemId === approval.itemId ? pendingQuestionStateRef.current : null,
+      ),
       responseText: trimmed,
     });
     addNotice("Answered request.", "success");
@@ -8710,14 +8717,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!baseState) return false;
     const activeQuestion = questions[baseState.activeQuestionIndex] ?? questions[0] ?? null;
     if (!activeQuestion) return false;
-    // A typed answer for the active question is mapped through answerForQuestion
-    // (option-label matching + multi-select comma split) and merged into the
-    // accumulated answers, so it advances the multi-question flow instead of
-    // rebuilding a single-shot payload that would drop earlier answers.
-    const typed = typedAnswer?.trim();
-    const activeAnswer: string | string[] | null = typed
-      ? answerForQuestion(activeQuestion, typed)
-      : pendingQuestionSelectionValue(request, baseState);
+    // The typed text is folded into the selection rather than replacing it:
+    // `1` or an option label still picks, and anything else rides along as the
+    // note, selection first. Letting the note replace the pick was the TUI half
+    // of the divergence `shared/pendingInputAnswers` now settles.
+    const typed = typedAnswer?.trim() ?? "";
+    // Only the first question inherits the request-level `options` fallback, so
+    // drop it when the active question is not that one.
+    const singleQuestionRequest: PendingInputRequest = {
+      ...request,
+      questions: [activeQuestion],
+      ...(baseState.activeQuestionIndex === 0 ? {} : { options: [] }),
+    };
+    const activeAnswer: string | string[] | null = buildPendingInputAnswers(
+      singleQuestionRequest,
+      typed,
+      baseState,
+    )?.[activeQuestion.id] ?? null;
     if (activeAnswer == null || (typeof activeAnswer === "string" && activeAnswer.length === 0)) {
       addNotice("Type an answer in the prompt for this question.", "info");
       return true;
@@ -16744,7 +16760,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ) : null}
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
-              <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} />
+              <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} draft={prompt} />
             ) : (gridViewActive && multiView) ? (
               <MultiChatGrid
                 tiles={multiView.tiles}
@@ -16817,7 +16833,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   selection={chatMouseSelection}
                   width={chatWrapWidth}
                 />
-                <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} />
+                <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} draft={prompt} />
               </>
             )}
           </Box>

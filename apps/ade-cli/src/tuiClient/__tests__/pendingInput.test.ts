@@ -60,6 +60,51 @@ describe("pendingInput", () => {
     expect(buildPendingInputAnswers(request, "1, Manual")).toEqual({ path: ["recommended", "manual"] });
   });
 
+  // Bug 1. The TUI used to hand the typed text straight to answerForQuestion
+  // and return it as the whole answer, so a note typed alongside a selection
+  // threw that selection away. Both must travel, selection first, note last —
+  // the same contract desktop and the web client answer under.
+  it("regression: a typed note accumulates onto the selection instead of replacing it", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
+
+    expect(buildPendingInputAnswers(baseRequest, "only if the pin survives a restart", selected))
+      .toEqual({ path: ["manual", "only if the pin survives a restart"] });
+  });
+
+  it("regression: a typed note accumulates onto every multi-select pick", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ ...baseRequest.questions[0]!, multiSelect: true }],
+    };
+    let state = createPendingQuestionSelectionState(questionApproval(request))!;
+    state = selectPendingQuestionOptionIndex(request, state, 0);
+    state = selectPendingQuestionOptionIndex(request, state, 1);
+
+    expect(buildPendingInputAnswers(request, "and roll back if CI is red", state))
+      .toEqual({ path: ["recommended", "manual", "and roll back if CI is red"] });
+  });
+
+  it("keeps typing an option number a pick rather than a note", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    expect(buildPendingInputAnswers(baseRequest, "2", state)).toEqual({ path: "manual" });
+  });
+
+  it("sends the selection alone when nothing was typed", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
+    expect(buildPendingInputAnswers(baseRequest, "", selected)).toEqual({ path: "manual" });
+  });
+
+  it("sends a freeform answer alone when the question offers no options", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ id: "path", question: "Which path?", allowsFreeform: true }],
+    };
+    const state = createPendingQuestionSelectionState(questionApproval(request))!;
+    expect(buildPendingInputAnswers(request, "something else", state)).toEqual({ path: "something else" });
+  });
+
   it("returns the latest unresolved pending input request", () => {
     const events: AgentChatEventEnvelope[] = [
       {

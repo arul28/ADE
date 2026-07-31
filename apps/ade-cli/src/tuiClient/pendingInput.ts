@@ -4,6 +4,7 @@ import type {
   PendingInputQuestion,
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
+import { buildAnswers } from "../../../desktop/src/shared/pendingInputAnswers";
 import { renderObject } from "./format";
 import type { PendingApproval } from "./types";
 
@@ -302,21 +303,96 @@ export function movePendingQuestionFocus(
   };
 }
 
+/**
+ * The values the user has actually marked for a question, in the order the
+ * options were offered.
+ *
+ * For a multi-select that is the toggled set; for a single-select it is the
+ * highlighted row, which in this TUI *is* the selection — arrow keys move it
+ * and Enter sends it.
+ */
+export function selectedValuesForQuestion(
+  request: PendingInputRequest | undefined,
+  state: PendingQuestionSelectionState | null | undefined,
+  questionIndex: number,
+): string[] {
+  const question = request?.questions?.[questionIndex];
+  if (!question || !state) return [];
+  const options = optionsForPendingQuestion(request, question, questionIndex);
+  if (!options.length) return [];
+  if (question.multiSelect) {
+    const selected = state.selectedValuesByQuestionId[question.id] ?? [];
+    return options.map((option) => option.value).filter((value) => selected.includes(value));
+  }
+  const index = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const option = options[index];
+  return option ? [option.value] : [];
+}
+
+/**
+ * Fold one question's typed text into its picks and its note.
+ *
+ * Typing `2` or an option's label is how this TUI picks — that idiom stays, so
+ * text that resolves to an offered option becomes a pick (replacing the single
+ * -select pick, since there can only be one). Anything else is the note, and
+ * the note is *appended*: it never replaces what was already selected.
+ */
+function foldTypedAnswer(
+  question: PendingInputQuestion,
+  options: PendingInputOption[],
+  picks: string[],
+  typed: string,
+): { picks: string[]; note: string } {
+  const trimmed = typed.trim();
+  if (!trimmed.length) return { picks, note: "" };
+  if (!options.length) return { picks, note: trimmed };
+  const resolved = answerForQuestion(question, trimmed);
+  const values = Array.isArray(resolved) ? resolved : [resolved];
+  const optionValues = new Set(options.map((option) => option.value));
+  const typedPicks = values.filter((value) => optionValues.has(value));
+  const residue = values.filter((value) => !optionValues.has(value));
+  if (!typedPicks.length) return { picks, note: residue.join(", ") };
+  const merged = question.multiSelect
+    ? options.map((option) => option.value).filter((value) => picks.includes(value) || typedPicks.includes(value))
+    : typedPicks.slice(0, 1);
+  return { picks: merged, note: residue.join(", ") };
+}
+
+/**
+ * The answer payload for `chat.respondToInput`.
+ *
+ * This used to hand the typed text straight to `answerForQuestion` and return
+ * it as the whole answer, so a note the user typed alongside a selection threw
+ * that selection away — the exact divergence
+ * `shared/pendingInputAnswers.buildAnswers` exists to end. Both travel now,
+ * selection values first and the note last, identically to desktop and the web
+ * client.
+ */
 export function buildPendingInputAnswers(
   request: PendingInputRequest | undefined,
   text: string,
+  state?: PendingQuestionSelectionState | null,
 ): Record<string, string | string[]> | undefined {
   const questions = request?.questions ?? [];
   if (questions.length === 0) return undefined;
-  if (questions.length === 1) {
-    const question = questions[0]!;
-    return { [question.id]: answerForQuestion(question, text) };
-  }
-  const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-  return Object.fromEntries(questions.map((question, index) => [
-    question.id,
-    answerForQuestion(question, lines[index] ?? text),
-  ]));
+  const lines = questions.length > 1
+    ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+    : [];
+  const picksById: Record<string, string[]> = {};
+  const notesById: Record<string, string> = {};
+  questions.forEach((question, index) => {
+    const options = optionsForPendingQuestion(request, question, index);
+    const typed = questions.length === 1 ? text : lines[index] ?? text;
+    const folded = foldTypedAnswer(
+      question,
+      options,
+      selectedValuesForQuestion(request, state, index),
+      typed,
+    );
+    picksById[question.id] = folded.picks;
+    notesById[question.id] = folded.note;
+  });
+  return buildAnswers(questions, picksById, notesById);
 }
 
 function clearPendingQuestionDigitSelection(state: PendingQuestionSelectionState): PendingQuestionSelectionState {

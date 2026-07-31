@@ -8,9 +8,11 @@ import { SectionHeader, Pill, StatusDot, KeyHints, Rule } from "./designKit";
 import {
   optionsForPendingQuestion,
   pendingQuestionAnsweredCount,
+  selectedValuesForQuestion,
   type PendingQuestionSelectionState,
 } from "../pendingInput";
 import { pendingInputHeaderLabel } from "../../../../desktop/src/shared/pendingInputLabels";
+import { notePlaceholder, sendLabel } from "../../../../desktop/src/shared/pendingInputAnswers";
 
 // Default inner widths. The parent never passes a width, so the card sizes
 // itself: a fixed, centered column when modal (high-stakes), and a comfortable
@@ -101,11 +103,19 @@ export function ApprovalPrompt({
   modal = false,
   questionState = null,
   width,
+  draft = "",
 }: {
   approval: PendingApproval | null;
   modal?: boolean;
   questionState?: PendingQuestionSelectionState | null;
   width?: number;
+  /**
+   * The live prompt-line text. The TUI types its note in the main prompt rather
+   * than inside the card, so the card has to be told about it to derive the
+   * same Send label the desktop button carries — the label is the payload
+   * receipt on every surface or it is a receipt on none.
+   */
+  draft?: string;
 }) {
   const hoveredId = useHoveredHitId();
   const { stdout } = useStdout();
@@ -211,6 +221,36 @@ export function ApprovalPrompt({
   const answeredCount = isQuestion
     ? pendingQuestionAnsweredCount(approval.request, questionState?.answers ?? {})
     : 0;
+  /**
+   * The answer state of the question the user is on, expressed exactly as the
+   * desktop card expresses it: what the note field is for right now, and what
+   * pressing Enter will actually send. Both come from
+   * `shared/pendingInputAnswers`, so the TUI cannot drift from the payload.
+   */
+  const activeQuestionIndex = questionState?.activeQuestionIndex ?? 0;
+  const activeQuestion = questions[activeQuestionIndex] ?? null;
+  const activeOptions = optionsForPendingQuestion(approval.request, activeQuestion ?? undefined, activeQuestionIndex);
+  const activePicks = selectedValuesForQuestion(approval.request, questionState, activeQuestionIndex);
+  const noteHint = isQuestion && activeQuestion
+    ? notePlaceholder({
+        hasOptions: activeOptions.length > 0,
+        picks: activePicks,
+        multi: activeQuestion.multiSelect === true,
+      })
+    : null;
+  const activeAlreadyBanked = activeQuestion
+    ? Object.prototype.hasOwnProperty.call(questionState?.answers ?? {}, activeQuestion.id)
+    : false;
+  const activeContributes = activePicks.length > 0 || draft.trim().length > 0;
+  const sendHint = isQuestion && activeQuestion
+    ? sendLabel({
+        picks: activePicks,
+        note: draft,
+        isLast: activeQuestionIndex === questions.length - 1,
+        totalAnswered: answeredCount + (!activeAlreadyBanked && activeContributes ? 1 : 0),
+        totalQuestions: questions.length,
+      })
+    : null;
   const briefingRows = kind === "model_selection"
     ? modelSelectionBriefing(approval.request?.providerMetadata)
     : [];
@@ -365,6 +405,24 @@ export function ApprovalPrompt({
               </Box>
             );
           })}
+        </Box>
+      ) : null}
+
+      {/* The note row's job, and what Enter will actually send — the same two
+          strings the desktop card shows, derived from the same module, so a
+          selection plus a typed note reads the same on both surfaces. */}
+      {noteHint || sendHint ? (
+        <Box flexDirection="column" marginTop={1}>
+          {noteHint ? (
+            <Text color={theme.color.t4} dimColor wrap="truncate-end">
+              {truncateEnd(`✎ ${noteHint}`, textWidth)}
+            </Text>
+          ) : null}
+          {sendHint ? (
+            <Text color={providerAccent} bold wrap="truncate-end">
+              {truncateEnd(`↵ ${sendHint}`, textWidth)}
+            </Text>
+          ) : null}
         </Box>
       ) : null}
 

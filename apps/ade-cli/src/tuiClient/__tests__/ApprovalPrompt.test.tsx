@@ -67,6 +67,90 @@ describe("ApprovalPrompt", () => {
     expect(frame).toContain("pick");
     expect(frame).toContain("enter");
     expect(frame).toContain("next/send");
+    // The card carries the same two shared strings the desktop card does: what
+    // the note is for right now, and what Enter will actually send.
+    expect(frame).toContain("Add a note (sent with your pick)");
+    expect(frame).toContain("Next");
+  });
+
+  // Parity with the desktop regression: the Send label is derived from the
+  // answer state, so a note typed alongside a pick reads as BOTH travelling.
+  it("regression: the send label reports the pick and the note together", () => {
+    const approval: PendingApproval = {
+      itemId: "item-send-label",
+      description: "Claude needs an answer.",
+      highStakes: false,
+      mode: "question",
+      request: {
+        requestId: "req-send-label",
+        source: "claude",
+        kind: "structured_question",
+        title: "One question",
+        description: "How separate should it be?",
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        questions: [
+          {
+            id: "isolation",
+            header: "Isolation",
+            question: "How separate should it be?",
+            options: [
+              { label: "Hide it", value: "hide" },
+              { label: "Own lane", value: "lane" },
+            ],
+          },
+        ],
+      },
+    };
+    const state = createPendingQuestionSelectionState(approval);
+
+    const picked = stripAnsi(render(
+      <ApprovalPrompt approval={approval} questionState={state} width={100} />,
+    ).lastFrame() ?? "");
+    expect(picked).toContain("Send 1");
+    expect(picked).toContain("Add a note (sent with your pick)");
+
+    const withNote = stripAnsi(render(
+      <ApprovalPrompt
+        approval={approval}
+        questionState={state}
+        width={100}
+        draft="only if the pin survives a restart"
+      />,
+    ).lastFrame() ?? "");
+    expect(withNote).toContain("Send 1 + note");
+  });
+
+  it("labels the note row as the answer when the question offers no options", () => {
+    const approval: PendingApproval = {
+      itemId: "item-freeform",
+      description: "Claude needs an answer.",
+      highStakes: false,
+      mode: "question",
+      request: {
+        requestId: "req-freeform",
+        source: "claude",
+        kind: "question",
+        title: "Name it",
+        description: "What should I name it?",
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        questions: [{ id: "name", header: "Name", question: "What should I name it?" }],
+      },
+    };
+
+    const frame = stripAnsi(render(
+      <ApprovalPrompt
+        approval={approval}
+        questionState={createPendingQuestionSelectionState(approval)}
+        width={100}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("Your answer");
+    expect(frame).toContain("Send");
   });
 
   it("renders every legacy request-level option", () => {
