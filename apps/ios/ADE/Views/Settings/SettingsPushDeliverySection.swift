@@ -46,66 +46,62 @@ struct SettingsPushDeliverySnapshot: Equatable {
 }
 
 struct SettingsPushDeliverySection: View {
+    enum Content: Equatable {
+        case controls
+        case diagnostics
+    }
+
     let snapshot: SettingsPushDeliverySnapshot
     /// Observed for instant toggle / prefs feedback (the snapshot is throttled).
     @ObservedObject var pushService: PushNotificationService
-
-    /// The low-level delivery diagnostics are collapsed by default (M8) — most
-    /// users only care about the toggles above.
-    @State private var showsDiagnostics = false
+    var content: Content = .controls
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            SettingsSectionHeader(
-                label: "PUSH DELIVERY",
-                hint: "Remote notifications and Live Activities"
-            )
-
-            enableNotificationsControl
-
-            VStack(spacing: 8) {
-                PushToggleRow(
-                    symbol: "bell.badge",
-                    title: "Notifications",
-                    subtitle: "Approvals, replies, and failures",
-                    isOn: notificationsBinding
-                )
-                PushToggleRow(
-                    symbol: "square.stack.3d.up",
-                    title: "Live Activities",
-                    subtitle: "Agent runs on the Lock Screen",
-                    isOn: liveActivitiesBinding
-                )
-                PushToggleRow(
-                    symbol: "eye.slash",
-                    title: "Hide details",
-                    subtitle: "Use private Lock Screen previews",
-                    isOn: hideDetailsBinding
-                )
-                PushToggleRow(
-                    symbol: "moon",
-                    title: "Quiet hours",
-                    subtitle: pushService.prefs.quietHoursEnabled
-                        ? "\(pushService.prefs.quietHoursStart)–\(pushService.prefs.quietHoursEnd) · \(Self.shortTimezone(pushService.prefs.quietHoursTimezone))"
-                        : "Mute pushes on a schedule",
-                    isOn: quietHoursBinding
+            if content == .controls {
+                SettingsSectionHeader(
+                    label: "PUSH DELIVERY",
+                    hint: "Remote notifications and Live Activities"
                 )
 
-                if pushService.prefs.quietHoursEnabled {
-                    quietHoursPickers
+                enableNotificationsControl
+
+                VStack(spacing: 8) {
+                    PushToggleRow(
+                        symbol: "bell.badge",
+                        title: "Notifications",
+                        subtitle: "Approvals, replies, and failures",
+                        isOn: notificationsBinding
+                    )
+                    PushToggleRow(
+                        symbol: "square.stack.3d.up",
+                        title: "Live Activities",
+                        subtitle: "Agent runs on the Lock Screen",
+                        isOn: liveActivitiesBinding
+                    )
+                    PushToggleRow(
+                        symbol: "eye.slash",
+                        title: "Hide details",
+                        subtitle: "Use private Lock Screen previews",
+                        isOn: hideDetailsBinding
+                    )
+                    PushToggleRow(
+                        symbol: "moon",
+                        title: "Quiet hours",
+                        subtitle: pushService.prefs.quietHoursEnabled
+                            ? "\(pushService.prefs.quietHoursStart)–\(pushService.prefs.quietHoursEnd) · \(Self.shortTimezone(pushService.prefs.quietHoursTimezone))"
+                            : "Mute pushes on a schedule",
+                        isOn: quietHoursBinding
+                    )
+
+                    if pushService.prefs.quietHoursEnabled {
+                        quietHoursPickers
+                    }
                 }
-            }
-
-            DisclosureGroup(isExpanded: $showsDiagnostics) {
+            } else {
+                SettingsSectionHeader(label: "DELIVERY DIAGNOSTICS")
                 diagnosticsContent
-                    .padding(.top, 8)
-            } label: {
-                Label("Delivery diagnostics", systemImage: "stethoscope")
-                    .font(.subheadline)
-                    .foregroundStyle(ADEColor.textSecondary)
-                    .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             }
-            .tint(ADEColor.textSecondary)
         }
         .task {
             await pushService.refreshNotificationSettings()

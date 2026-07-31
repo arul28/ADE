@@ -3,31 +3,29 @@ import SwiftUI
 struct SettingsPairingSection: View {
   let snapshot: SettingsPairingSnapshot
   @Binding var presentedSheet: SettingsPairSheetRoute?
-  @State private var showsOtherWays = false
+  @State private var showsAddMachine = false
   @ObservedObject private var accountService = AccountService.shared
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      VStack(spacing: 8) {
-        SettingsPairActionRow(
-          icon: "qrcode.viewfinder",
-          title: "Scan a pairing code",
-          subtitle: "Scan the code shown in ADE on your Mac"
-        ) {
-          presentedSheet = .scan
-        }
-
-        SettingsPairActionRow(
-          icon: "dot.radiowaves.left.and.right",
-          title: "Find a nearby Mac",
-          subtitle: discoverSubtitle
-        ) {
-          presentedSheet = .discover
-        }
-      }
-
-      DisclosureGroup(isExpanded: $showsOtherWays) {
+      DisclosureGroup(isExpanded: $showsAddMachine) {
         VStack(spacing: 8) {
+          SettingsPairActionRow(
+            icon: "qrcode.viewfinder",
+            title: "Scan a pairing code",
+            subtitle: "Scan the code shown in ADE on your Mac"
+          ) {
+            presentedSheet = .scan
+          }
+
+          SettingsPairActionRow(
+            icon: "dot.radiowaves.left.and.right",
+            title: "Find a nearby Mac",
+            subtitle: discoverSubtitle
+          ) {
+            presentedSheet = .discover
+          }
+
           SettingsPairActionRow(
             icon: "terminal",
             title: "Set up with SSH",
@@ -38,7 +36,7 @@ struct SettingsPairingSection: View {
         }
         .padding(.top, 8)
       } label: {
-        Label("Other ways to connect", systemImage: "ellipsis.circle")
+        Label("Add new machine", systemImage: "plus.circle")
           .font(.subheadline)
           .foregroundStyle(ADEColor.textSecondary)
           .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)

@@ -5,11 +5,19 @@ func settingsVersionLabel(marketingVersion: String, build: String) -> String {
 }
 
 struct SettingsDiagnosticsSection: View {
+  enum Content: Equatable {
+    case all
+    case connection
+    case about
+  }
+
   let snapshot: SettingsDiagnosticsSnapshot
+  var content: Content = .all
 
   var body: some View {
     VStack(alignment: .leading, spacing: 18) {
-      if snapshot.connectionRoute != nil || snapshot.connectionPerformance != nil {
+      if content != .about,
+         snapshot.connectionRoute != nil || snapshot.connectionPerformance != nil {
         VStack(alignment: .leading, spacing: 10) {
           SettingsSectionHeader(label: "CONNECTION DETAILS")
 
@@ -33,38 +41,40 @@ struct SettingsDiagnosticsSection: View {
         }
       }
 
-      VStack(alignment: .leading, spacing: 10) {
-        SettingsSectionHeader(label: "ABOUT")
+      if content != .connection {
+        VStack(alignment: .leading, spacing: 10) {
+          SettingsSectionHeader(label: "ABOUT")
 
-        VStack(spacing: 10) {
-          SettingsDetailRow(
-            symbol: "app.badge",
-            label: "ADE",
-            value: Self.appVersionString
-          )
-
-          if let identity = snapshot.pairedMachineIdentity {
+          VStack(spacing: 10) {
             SettingsDetailRow(
-              symbol: "desktopcomputer.and.arrow.down",
-              label: "Paired machine",
-              value: identity
+              symbol: "app.badge",
+              label: "ADE",
+              value: Self.appVersionString
             )
-          }
 
-          if let lastSync = snapshot.lastSyncDescription {
-            SettingsDetailRow(
-              symbol: "clock.arrow.circlepath",
-              label: "Last sync",
-              value: lastSync
-            )
-          }
+            if let identity = snapshot.pairedMachineIdentity {
+              SettingsDetailRow(
+                symbol: "desktopcomputer.and.arrow.down",
+                label: "Paired machine",
+                value: identity
+              )
+            }
 
-          if let deviceId = snapshot.deviceIdentity {
-            SettingsDetailRow(
-              symbol: "iphone",
-              label: "This device",
-              value: deviceId
-            )
+            if let lastSync = snapshot.lastSyncDescription {
+              SettingsDetailRow(
+                symbol: "clock.arrow.circlepath",
+                label: "Last sync",
+                value: lastSync
+              )
+            }
+
+            if let deviceId = snapshot.deviceIdentity {
+              SettingsDetailRow(
+                symbol: "iphone",
+                label: "This device",
+                value: deviceId
+              )
+            }
           }
         }
       }

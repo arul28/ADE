@@ -103,13 +103,60 @@ struct ConnectionSettingsView: View {
             SettingsUsageQuotaSection(syncService: syncService)
               .padding(.horizontal, 16)
 
-            SettingsDiagnosticsSection(snapshot: presentationModel.diagnosticsSnapshot)
-              .padding(.horizontal, 16)
+            VStack(spacing: 8) {
+              SettingsNavigationRow(
+                title: "Connection details",
+                subtitle: "Route and connection performance",
+                systemImage: "point.3.connected.trianglepath.dotted"
+              ) {
+                SettingsDestinationPage(title: "Connection details") {
+                  SettingsDiagnosticsSection(
+                    snapshot: presentationModel.diagnosticsSnapshot,
+                    content: .connection
+                  )
+                }
+              }
 
-            SettingsPushDeliverySection(
-              snapshot: presentationModel.pushDeliverySnapshot,
-              pushService: PushNotificationService.shared
-            )
+              SettingsNavigationRow(
+                title: "About",
+                subtitle: "App, machine, and device information",
+                systemImage: "info.circle"
+              ) {
+                SettingsDestinationPage(title: "About") {
+                  SettingsDiagnosticsSection(
+                    snapshot: presentationModel.diagnosticsSnapshot,
+                    content: .about
+                  )
+                }
+              }
+
+              SettingsNavigationRow(
+                title: "Push delivery",
+                subtitle: "Notifications and Live Activities",
+                systemImage: "bell.badge"
+              ) {
+                SettingsDestinationPage(title: "Push delivery") {
+                  SettingsPushDeliverySection(
+                    snapshot: presentationModel.pushDeliverySnapshot,
+                    pushService: PushNotificationService.shared
+                  )
+                }
+              }
+
+              SettingsNavigationRow(
+                title: "Delivery diagnostics",
+                subtitle: "Push registration and relay status",
+                systemImage: "stethoscope"
+              ) {
+                SettingsDestinationPage(title: "Delivery diagnostics") {
+                  SettingsPushDeliverySection(
+                    snapshot: presentationModel.pushDeliverySnapshot,
+                    pushService: PushNotificationService.shared,
+                    content: .diagnostics
+                  )
+                }
+              }
+            }
               .padding(.horizontal, 16)
           }
 
@@ -245,6 +292,73 @@ struct ConnectionSettingsView: View {
         pinPreset = .qr(payload)
       }
     }
+  }
+}
+
+private struct SettingsNavigationRow<Destination: View>: View {
+  let title: String
+  let subtitle: String
+  let systemImage: String
+  @ViewBuilder let destination: () -> Destination
+
+  var body: some View {
+    NavigationLink(destination: destination) {
+      HStack(spacing: 14) {
+        Image(systemName: systemImage)
+          .font(.system(size: 15, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent)
+          .frame(width: 34, height: 34)
+          .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+              .fill(ADEColor.purpleAccent.opacity(0.14))
+          )
+
+        VStack(alignment: .leading, spacing: 2) {
+          Text(title)
+            .font(.body.weight(.medium))
+            .foregroundStyle(ADEColor.textPrimary)
+          Text(subtitle)
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+        }
+
+        Spacer(minLength: 8)
+
+        Image(systemName: "chevron.right")
+          .font(.system(size: 12, weight: .semibold))
+          .foregroundStyle(ADEColor.purpleAccent.opacity(0.65))
+      }
+      .padding(.horizontal, 14)
+      .padding(.vertical, 12)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .background(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .fill(ADEColor.surfaceBackground.opacity(0.5))
+      )
+      .glassEffect(in: .rect(cornerRadius: 14))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .stroke(ADEColor.glassBorder, lineWidth: 0.75)
+      )
+    }
+    .buttonStyle(ADEScaleButtonStyle())
+  }
+}
+
+private struct SettingsDestinationPage<Content: View>: View {
+  let title: String
+  @ViewBuilder let content: () -> Content
+
+  var body: some View {
+    ScrollView {
+      content()
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+    .background(SettingsAuroraBackground().ignoresSafeArea())
+    .adeNavigationGlass()
+    .navigationTitle(title)
+    .navigationBarTitleDisplayMode(.inline)
   }
 }
 
