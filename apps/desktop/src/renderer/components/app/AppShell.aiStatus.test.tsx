@@ -724,7 +724,7 @@ describe("AppShell AI provider status", () => {
     } as any);
     const NavigateWithinPrs = () => {
       const navigate = useNavigate();
-      return <button onClick={() => navigate("/prs?tab=workflows&workflow=integration")}>Open workflows</button>;
+      return <button onClick={() => navigate("/prs/stack")}>Open stack</button>;
     };
 
     render(
@@ -752,7 +752,7 @@ describe("AppShell AI provider status", () => {
     expect(githubGetStatusMock).toHaveBeenCalledTimes(1);
     expect(githubGetStatusMock).toHaveBeenLastCalledWith({ forceRefresh: true });
 
-    fireEvent.click(screen.getByRole("button", { name: "Open workflows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open stack" }));
     await act(async () => {
       vi.advanceTimersByTime(11_999);
       await Promise.resolve();
@@ -783,7 +783,7 @@ describe("AppShell AI provider status", () => {
       .mockResolvedValue({ authenticated: true, source: "new-route" } as any);
     const NavigateWithinPrs = () => {
       const navigate = useNavigate();
-      return <button onClick={() => navigate("/prs?tab=workflows&workflow=integration")}>Open workflows</button>;
+      return <button onClick={() => navigate("/prs/stack")}>Open stack</button>;
     };
     render(
       <MemoryRouter initialEntries={["/prs"]}>
@@ -806,7 +806,7 @@ describe("AppShell AI provider status", () => {
       vi.advanceTimersByTime(750);
       await Promise.resolve();
     });
-    fireEvent.click(screen.getByRole("button", { name: "Open workflows" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open stack" }));
     await act(async () => {
       vi.advanceTimersByTime(12_000);
       await Promise.resolve();
