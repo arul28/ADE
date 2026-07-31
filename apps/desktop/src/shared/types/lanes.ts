@@ -486,8 +486,8 @@ export type LaneDeleteEvent = {
 };
 
 /**
- * Fired once when a lane reaches a terminal lifecycle transition, so the
- * renderer can surface a toast without polling. Distinct from
+ * Fired once when a lane reaches a lifecycle transition, or when its persisted
+ * branch identity changes and every renderer surface must refresh. Distinct from
  * {@link LaneDeleteEvent}, which streams per-step delete progress; this fires a
  * single time on successful completion. `lane` carries the full summary for
  * created lanes (the create paths already have it); archive/delete/rename and
@@ -498,7 +498,7 @@ export type LaneLifecycleEvent = {
   type:
     | "lane-created"
     | "lane-renamed"
-    | "lane-updated"
+    | "lane-branch-updated"
     | "lane-archived"
     | "lane-unarchived"
     | "lane-reclaimed"

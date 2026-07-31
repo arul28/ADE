@@ -4,6 +4,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { render } from "ink-testing-library";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import type { LaneSummary } from "../../../../desktop/src/shared/types/lanes";
+import type { BufferedEvent } from "../../eventBuffer";
 import type { AdeCodeConnection, ProjectLaunchContext } from "../types";
 import { captureTuiProductAnalytics, deriveTuiAnalyticsScreen } from "../productAnalytics";
 
@@ -204,6 +205,10 @@ async function unmountApp(instance: ReturnType<typeof render>) {
 
 describe("AdeCodeApp polling", () => {
   let chatListeners: Set<(event: AgentChatEventEnvelope) => void>;
+  let runtimeListeners: Array<{
+    category: BufferedEvent["category"] | null | undefined;
+    callback: (event: BufferedEvent) => void;
+  }>;
   let connection: AdeCodeConnection;
   const project: ProjectLaunchContext = {
     launchCwd: "/repo",
@@ -218,6 +223,7 @@ describe("AdeCodeApp polling", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     chatListeners = new Set();
+    runtimeListeners = [];
     connection = {
       mode: "attached",
       projectRoot: "/repo",
@@ -233,7 +239,13 @@ describe("AdeCodeApp polling", () => {
           chatListeners.delete(callback);
         };
       }),
-      subscribeRuntimeEvents: vi.fn(async () => () => {}),
+      subscribeRuntimeEvents: vi.fn(async (args, callback) => {
+        const listener = { category: args.category, callback };
+        runtimeListeners.push(listener);
+        return () => {
+          runtimeListeners = runtimeListeners.filter((candidate) => candidate !== listener);
+        };
+      }),
       close: vi.fn(async () => {}),
     };
     mocks.connectToAde.mockResolvedValue(connection);
@@ -291,6 +303,39 @@ describe("AdeCodeApp polling", () => {
 
     expect(mocks.listLanes.mock.calls.filter(([, options]) => options?.includeStatus === true))
       .toHaveLength(2);
+    await unmountApp(instance);
+  });
+
+  it("refreshes lane identity immediately when the branch update lifecycle event arrives", async () => {
+    const instance = await renderApp(<AdeCodeApp project={project} />);
+    const initialLaneCalls = mocks.listLanes.mock.calls.length;
+    const runtimeListener = runtimeListeners.find((listener) => listener.category === "runtime");
+    expect(runtimeListener).toBeTruthy();
+
+    mocks.listLanes.mockResolvedValue([
+      lane({ name: "Automatic lane naming", branchRef: "ade/automatic-lane-naming" }),
+    ]);
+    await act(async () => {
+      runtimeListener!.callback({
+        id: 1,
+        timestamp: "2026-01-01T00:00:01.000Z",
+        category: "runtime",
+        payload: {
+          type: "lane_lifecycle_event",
+          event: {
+            type: "lane-branch-updated",
+            laneId: "lane-1",
+            laneName: "Automatic lane naming",
+          },
+        },
+      });
+    });
+    await flushAsyncEffects();
+
+    expect(mocks.listLanes.mock.calls.length).toBeGreaterThan(initialLaneCalls);
+    expect(mocks.listLanes).toHaveBeenLastCalledWith(connection, { includeStatus: true });
+    expect(stripAnsi(instance.frames.join("\n"))).toContain("ade/automatic-lane-naming");
+
     await unmountApp(instance);
   });
 

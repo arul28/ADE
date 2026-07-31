@@ -622,6 +622,24 @@ export function createHeadlessGitHubService(
         ghAuthError: null,
       };
     }
+    const patToken = await readStoredPatTokenAsync();
+    if (patToken) {
+      return {
+        token: patToken,
+        source: "pat",
+        patTokenStored: true,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const gh = await ghAuthTokenAsync();
+    if (gh.token) {
+      return {
+        ...gh,
+        source: "gh",
+        patTokenStored: false,
+      };
+    }
     const appToken = appUserAuth.getAuthStatus().tokenStored
       ? await appUserAuth.getValidTokenForRelay().catch(() => null)
       : null;
@@ -634,20 +652,9 @@ export function createHeadlessGitHubService(
         ghAuthError: null,
       };
     }
-    const patToken = await readStoredPatTokenAsync();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    const gh = await ghAuthTokenAsync();
     return {
       ...gh,
-      source: gh.token ? "gh" : "none",
+      source: "none",
       patTokenStored: false,
     };
   };

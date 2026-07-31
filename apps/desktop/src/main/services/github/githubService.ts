@@ -712,8 +712,16 @@ export function createGithubService({
     readEnvironmentAuthToken() ?? readPatAuthToken();
 
   const readAuthToken = async (): Promise<GitHubTokenLookup> => {
-    const environment = readEnvironmentAuthToken();
-    if (environment) return environment;
+    const primary = readPrimaryAuthToken();
+    if (primary) return primary;
+    const gh = await readGhAuthToken();
+    if (gh.token) {
+      return {
+        ...gh,
+        source: "gh",
+        patTokenStored: false,
+      };
+    }
     const appToken = appUserAuth.getAuthStatus().tokenStored
       ? await appUserAuth.getValidTokenForRelay().catch(() => null)
       : null;
@@ -726,12 +734,9 @@ export function createGithubService({
         ghAuthError: null,
       };
     }
-    const pat = readPatAuthToken();
-    if (pat) return pat;
-    const gh = await readGhAuthToken();
     return {
       ...gh,
-      source: gh.token ? "gh" : "none",
+      source: "none",
       patTokenStored: false,
     };
   };

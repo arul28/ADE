@@ -5604,7 +5604,7 @@ export function createLaneService({
           const reconciledLane = getLaneRow(args.laneId);
           if (reconciledLane) {
             broadcastLifecycleEvent({
-              type: "lane-updated",
+              type: "lane-branch-updated",
               laneId: args.laneId,
               laneName: reconciledLane.name,
               color: reconciledLane.color,
@@ -6666,7 +6666,7 @@ export function createLaneService({
       const updated = getLaneRow(laneId);
       if (updated) {
         broadcastLifecycleEvent({
-          type: "lane-updated",
+          type: "lane-branch-updated",
           laneId,
           laneName: updated.name,
           color: updated.color,

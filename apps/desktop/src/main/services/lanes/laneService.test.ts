@@ -815,7 +815,7 @@ describe("laneService automatic lane identity", () => {
         defaultBaseRef: "main",
         worktreesDir: path.join(repoRoot, "worktrees"),
         onLifecycleEvent: (event) => {
-          if (event.type !== "lane-updated") return;
+          if (event.type !== "lane-branch-updated") return;
           const row = db.get<{ branch_ref: string }>(
             "select branch_ref from lanes where id = ?",
             ["lane-child"],

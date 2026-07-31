@@ -764,10 +764,82 @@ describe("githubService.getStatus", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("uses GitHub App authorization before a stored PAT for async REST calls", async () => {
+  it("keeps a stored PAT ahead of GitHub App authorization for async REST calls", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.token.v1", "ghp_stale_stored_token");
+    credentialStore.setSync("github.token.v1", "ghp_stored_token");
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "pat",
+      connected: true,
+      patTokenStored: true,
+      repoAccessOk: null,
+      userLogin: "alice",
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization)
+      .toBe("Bearer ghp_stored_token");
+  });
+
+  it("keeps GitHub CLI auth ahead of GitHub App authorization for async REST calls", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(
+      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+    );
+
+    const status = await makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "gh",
+      connected: true,
+      patTokenStored: false,
+      repoAccessOk: null,
+      userLogin: "alice",
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization)
+      .toBe("Bearer gho_cli_token");
+  });
+
+  it("falls back to GitHub App authorization when no local credential is available", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
     credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
       accessToken: "ghu_app_user_token",
       tokenType: "bearer",

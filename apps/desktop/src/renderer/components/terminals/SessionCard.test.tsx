@@ -953,6 +953,32 @@ describe("SessionCard status vocabulary", () => {
     expect(status().textContent).toContain("16s");
   });
 
+  it("uses the last activity boundary for active chats from older hosts", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          status: "running",
+          runtimeState: "running",
+          currentTurnStartedAt: undefined,
+          lastActivityAt: "2026-07-09T11:59:46.000Z",
+          startedAt: "2026-07-01T00:00:00.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]")!;
+    expect(status.getAttribute("data-session-status")).toBe("Working");
+    expect(status.textContent).toContain("14s");
+    expect(status.textContent).not.toContain("8d");
+  });
+
   it("puts role=status on the label alone so the ticker is not announced every second", () => {
     render(
       <SessionCard

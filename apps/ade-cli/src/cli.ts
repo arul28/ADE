@@ -1216,6 +1216,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     - login keeps one connection open for the whole device flow because the
       device-auth session lives in runtime memory; do not split start and poll
       across separate invocations in headless mode.
+    - GitHub operations prefer environment tokens, stored PATs, and GitHub CLI
+      auth in that order; GitHub App user authorization is the fallback.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's
