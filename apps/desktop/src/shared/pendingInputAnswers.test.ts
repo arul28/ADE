@@ -6,6 +6,7 @@ import {
   answerState,
   answeredQuestionCount,
   buildAnswers,
+  flattenAnswerForSingleStringProvider,
   foldedSummary,
   notePlaceholder,
   sanitizeAnswersForTranscript,
@@ -126,6 +127,35 @@ describe("answeredQuestionCount", () => {
   it("counts a pick or a note as answered", () => {
     expect(answeredQuestionCount(questions, { a: ["x"] }, { b: "typed" })).toBe(2);
     expect(answeredQuestionCount(questions, {}, { c: "  " })).toBe(0);
+  });
+});
+
+describe("flattenAnswerForSingleStringProvider", () => {
+  const withOptions = {
+    options: [
+      { label: "Hide it", value: "hide" },
+      { label: "Own lane", value: "lane" },
+    ],
+  };
+
+  it("joins picks plainly when there is no note", () => {
+    expect(flattenAnswerForSingleStringProvider(withOptions, ["hide", "lane"])).toBe("hide, lane");
+    expect(flattenAnswerForSingleStringProvider(withOptions, "hide")).toBe("hide");
+  });
+
+  it("labels the note so a pick and a qualification stay distinguishable", () => {
+    expect(flattenAnswerForSingleStringProvider(withOptions, ["hide", "only if the pin survives"]))
+      .toBe("hide\nNote: only if the pin survives");
+  });
+
+  it("passes a note-only answer through unlabelled", () => {
+    expect(flattenAnswerForSingleStringProvider(withOptions, ["something else entirely"]))
+      .toBe("something else entirely");
+  });
+
+  it("returns an empty string for an unanswered question", () => {
+    expect(flattenAnswerForSingleStringProvider(withOptions, undefined)).toBe("");
+    expect(flattenAnswerForSingleStringProvider(withOptions, [])).toBe("");
   });
 });
 

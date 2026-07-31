@@ -342,6 +342,10 @@ import {
 } from "../../../shared/types";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
+  flattenAnswerForSingleStringProvider,
+  sanitizeAnswersForTranscript,
+} from "../../../shared/pendingInputAnswers";
+import {
   CROSS_MACHINE_FORK_BRIEF_STUB,
   CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
   CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
@@ -14972,6 +14976,16 @@ export function createAgentChatService(args: {
       itemId: string;
       decision: AgentChatApprovalDecision;
       turnId?: string | null;
+      /**
+       * The answers dispatched to the provider. Recorded on the event so the
+       * transcript receipt survives a reload — always through
+       * `sanitizeAnswersForTranscript`, which drops `isSecret` answers outright
+       * (the event is durable and syncs to every paired device) and caps the
+       * payload so one pasted essay cannot become an oversized synced event.
+       */
+      answers?: Record<string, string | string[]> | undefined;
+      /** The request's questions, needed to know which answers are secret. */
+      questions?: readonly PendingInputQuestion[] | undefined;
     },
   ): void => {
     const resolution: "cancelled" | "declined" | "accepted" = (() => {
@@ -14979,10 +14993,14 @@ export function createAgentChatService(args: {
       if (args.decision === "decline") return "declined";
       return "accepted";
     })();
+    const recordedAnswers = resolution === "accepted"
+      ? sanitizeAnswersForTranscript(args.questions ?? [], args.answers)
+      : undefined;
     emitChatEvent(managed, {
       type: "pending_input_resolved",
       itemId: args.itemId,
       resolution,
+      ...(recordedAnswers ? { answers: recordedAnswers } : {}),
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
     persistChatState(managed);
@@ -32630,7 +32648,12 @@ export function createAgentChatService(args: {
         answers: req.questions.map((question, index) => ({
           index,
           question: question.question,
-          answer: response.answers[question.id]?.join(", ") ?? response.responseText ?? "",
+          // Droid takes one string per question, so the pick and any typed
+          // qualification have to share it. Labelled rather than comma-joined,
+          // or "manual, only if it survives a restart" reads as two choices.
+          answer: flattenAnswerForSingleStringProvider(question, response.answers[question.id])
+            || response.responseText
+            || "",
         })),
       };
     };
@@ -38380,6 +38403,8 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: localPending.request.turnId ?? null,
+        answers,
+        questions: localPending.request.questions,
       });
       localPending.resolve({ decision: resolvedDecision, answers, responseText });
       if (managed.runtime?.kind === "codex") {
@@ -38437,6 +38462,8 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
           turnId: pending.request?.turnId ?? null,
+          answers,
+          questions: pending.request?.questions,
         });
         resumeCodexTurnWatchdogAfterInput(
           managed,
@@ -38542,6 +38569,8 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: pending.request?.turnId ?? null,
+        answers,
+        questions: pending.request?.questions,
       });
       return;
     }
@@ -38582,6 +38611,8 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: pending.request?.turnId ?? null,
+        answers,
+        questions: pending.request?.questions,
       });
       return;
     }

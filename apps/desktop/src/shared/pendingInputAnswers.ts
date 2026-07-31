@@ -222,6 +222,29 @@ export function sanitizeAnswersForTranscript(
   return result;
 }
 
+/**
+ * Flatten one question's answer for a provider that only accepts a single
+ * string (Droid's `onAskUserRequest`).
+ *
+ * A bare `.join(", ")` makes a chosen option and a typed qualification
+ * indistinguishable — "Hide it, keep the pin, only if it survives a restart"
+ * reads as three choices. Splitting on the question's own option values lets
+ * the picks stay a plain list and gives the note its own labelled line.
+ */
+export function flattenAnswerForSingleStringProvider(
+  question: Pick<PendingInputQuestion, "options">,
+  value: string | readonly string[] | undefined,
+): string {
+  const values = Array.isArray(value) ? [...value] : value ? [value] : [];
+  if (!values.length) return "";
+  const optionValues = new Set((question.options ?? []).map((option) => option.value));
+  const picks = values.filter((entry) => optionValues.has(entry));
+  const notes = values.filter((entry) => !optionValues.has(entry));
+  if (!picks.length) return notes.join("\n");
+  if (!notes.length) return picks.join(", ");
+  return `${picks.join(", ")}\nNote: ${notes.join(" ")}`;
+}
+
 /** Flatten one question's answer into the display string used by the receipt. */
 export function answerDisplayText(value: string | string[] | undefined): string {
   if (Array.isArray(value)) return value.filter(Boolean).join(" · ");
