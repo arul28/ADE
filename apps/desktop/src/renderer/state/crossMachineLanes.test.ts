@@ -348,7 +348,9 @@ describe("machine marker", () => {
           targetId: "target-studio",
           projectId: "project-a",
           binding: activeBinding,
-          online: true,
+          // The active target stays represented by its primary list, but its
+          // retained slice remains the reachability source of truth.
+          online: false,
           lanes: [activeLane],
           sessions: [makeSession({ id: "session-duplicate", laneId: activeLane.id })],
           lastSyncedAtMs: Date.now(),
@@ -379,6 +381,7 @@ describe("machine marker", () => {
       lane: activeLane,
       machineId: "target-studio",
       machineName: "Mac Studio (12)",
+      online: false,
       isThisMachine: false,
       isActiveBinding: true,
     });

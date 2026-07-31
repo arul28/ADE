@@ -355,12 +355,19 @@ export function buildCrossMachineLaneRows(input: {
     ? activeBinding.runtimeName
     : THIS_MACHINE_NAME;
   const activeRemoteBinding = activeBinding?.kind === "remote" ? activeBinding : null;
+  // The active target's retained slice is omitted from the union below to avoid
+  // duplicate rows, but it is still the source of truth for a dropped target.
+  // A local binding (and an active target without a retained slice) stays live
+  // until the connection snapshot has recorded otherwise.
+  const activeMachineOnline = activeRemoteBinding
+    ? input.machines[activeRemoteBinding.targetId]?.online ?? true
+    : true;
   for (const lane of input.localLanes) {
     rows.push({
       lane,
       machineId: activeMachineId,
       machineName: activeMachineName,
-      online: true,
+      online: activeMachineOnline,
       isThisMachine: activeMachineId === THIS_MACHINE_ID,
       isActiveBinding: true,
       sessions: [],
