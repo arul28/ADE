@@ -101,22 +101,38 @@ public enum ADESharedTheme {
 
     // MARK: - Semantic status colors
 
-    /// Attention phase colors mirror the desktop attention center so the same
-    /// state reads identically on every ADE surface.
+    // Attention phase colors mirror the desktop attention center so the same
+    // state reads identically on every ADE surface. One hue, one meaning —
+    // see `AgentRunPhase` and `sessionStatusPresentation.ts` for why:
+    //
+    //   statusRunning  blue     work is happening, nothing is asked of you
+    //   warningAmber   amber    YOUR MOVE — and nothing else, ever
+    //   statusSuccess  emerald  finished cleanly, unseen
+    //   statusFailed   red      it broke
+    //   statusIdle     neutral  true, but not actionable
+
+    /// Blue (#60A5FA), deliberately not a green — emerald belongs to "done"
+    /// alone, so in-flight and finished work never share a colour.
     public static let statusRunning = Color(red: 0x60 / 255.0, green: 0xA5 / 255.0, blue: 0xFA / 255.0) // #60A5FA
     public static let statusFailed = Color(red: 0xF8 / 255.0, green: 0x71 / 255.0, blue: 0x71 / 255.0) // #F87171
     public static let statusReview = Color(red: 0xA7 / 255.0, green: 0x8B / 255.0, blue: 0xFA / 255.0) // #A78BFA
     public static let statusSuccess = Color(red: 0x34 / 255.0, green: 0xD3 / 255.0, blue: 0x99 / 255.0) // #34D399
+    /// Reserved for states that are literally waiting on the user. If you are
+    /// reaching for this to say "in progress", "syncing", "stale" or "offline",
+    /// reach for `statusIdle` instead — amber that means five things means none.
     public static let warningAmber = Color(red: 0xFB / 255.0, green: 0xBF / 255.0, blue: 0x24 / 255.0) // #FBBF24
+    /// Alias for the same "your move" amber, read from attention surfaces.
     public static let statusAttention = warningAmber
-    /// Neutral gray used for idle / pending.
+    /// Neutral gray for everything that is true but not actionable — idle,
+    /// pending, stale, syncing, offline.
     public static let statusIdle = Color(red: 0x71 / 255.0, green: 0x71 / 255.0, blue: 0x7A / 255.0)
 
-    /// Connection-dot color mapping.
+    /// Connection-dot color mapping. Syncing is neutral rather than amber: a
+    /// transport catching up asks nothing of the user.
     public static func connectionColor(for status: String) -> Color {
         switch status.lowercased() {
         case "connected": return statusSuccess
-        case "syncing":   return statusAttention
+        case "syncing":   return statusIdle
         default:          return statusFailed
         }
     }

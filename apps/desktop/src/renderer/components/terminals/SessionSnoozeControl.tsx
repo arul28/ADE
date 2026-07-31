@@ -3,54 +3,92 @@ import { createPortal } from "react-dom";
 import { Moon } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
-import { SNOOZE_DURATION_OPTIONS, type SnoozeDurationKey } from "../../lib/sessionSnooze";
+import {
+  resolveSnoozePresets,
+  snoozeWakeDescription,
+  type SnoozeDurationKey,
+  type SnoozePreset,
+} from "../../lib/sessionSnooze";
 import { snoozeSessionForDuration, wakeSessionNow } from "./sessionLifecycleActions";
 import { cn } from "../ui/cn";
 
 /**
- * Hover-revealed snooze affordance on a session row. Kept out of `SessionCard`'s
- * render body so the hot Work list only pays for a single always-mounted button
- * (revealed with CSS, not a hover state that would re-render the row) plus menu
- * state that exists only after a click.
+ * Snooze affordance for a session row, living inside the row's status slot
+ * (`SessionStatusSlot`). Kept out of `SessionCard`'s render body so the hot
+ * Work list only pays for a single always-mounted button plus menu state that
+ * exists only after a click.
+ *
+ * Visibility is NOT this component's business any more: the status slot swaps
+ * the whole action cluster in on hover/focus, so a second hover rule here would
+ * fight it. The button is always painted; the slot decides whether the slot is.
  *
  * The menu is a locally-owned fixed popover clamped to the viewport, matching
  * `SessionContextMenu` — no document-level listener is added; the backdrop
  * element closes it.
+ *
+ * Its rows are NOT a constant: `resolveSnoozePresets` computes them against the
+ * wall clock, so the list is resolved on open (see `openMenu`) rather than
+ * built once at module load.
  */
 export function SessionSnoozeControl({
   session,
   snoozed,
   compact = false,
   runtimePin = null,
+  onOpenChange,
 }: {
-  session: Pick<TerminalSessionSummary, "id">;
+  session: Pick<TerminalSessionSummary, "id" | "snoozedUntil">;
   /** Already snoozed rows offer "Wake now" instead of a duration menu. */
   snoozed: boolean;
   compact?: boolean;
   runtimePin?: OpenProjectBinding | null;
+  /**
+   * Reported on every open/close so the status slot can pin itself visible
+   * while the popover is up — the pointer is over the menu, not the row, and
+   * the hover-driven actions would otherwise fade out from under it.
+   */
+  onOpenChange?: (open: boolean) => void;
 }) {
   const buttonRef = useRef<HTMLButtonElement | null>(null);
   const [anchor, setAnchor] = useState<{ x: number; y: number } | null>(null);
+  // Resolved once per open rather than per render: the rows are time-dependent
+  // (see `resolveSnoozePresets`) and a list that reshuffled underneath an open
+  // menu would move the row the pointer is already travelling towards.
+  const [presets, setPresets] = useState<readonly SnoozePreset[]>([]);
   const { ref: menuRef, position } = useClampedFixedPosition(anchor);
 
-  const close = useCallback(() => setAnchor(null), []);
+  const close = useCallback(() => {
+    setAnchor(null);
+    onOpenChange?.(false);
+  }, [onOpenChange]);
 
   const openMenu = useCallback((event: React.MouseEvent) => {
     event.preventDefault();
     event.stopPropagation();
     const rect = buttonRef.current?.getBoundingClientRect();
+    setPresets(resolveSnoozePresets(Date.now()));
     setAnchor(rect ? { x: rect.left, y: rect.bottom + 4 } : { x: event.clientX, y: event.clientY });
-  }, []);
+    onOpenChange?.(true);
+  }, [onOpenChange]);
 
   const choose = useCallback(
     (key: SnoozeDurationKey) => {
       close();
+      // Re-resolved at click time, not the deadline shown when the menu opened:
+      // a menu left open across the hour would otherwise write a deadline in
+      // the past. The time column can drift by the age of the open menu; the
+      // deadline may not.
       void snoozeSessionForDuration(session, key, Date.now(), runtimePin);
     },
     [close, runtimePin, session],
   );
 
   const label = snoozed ? "Wake session now" : "Snooze session";
+  // The button's tooltip is the one place a snoozed row can state its wake time
+  // in full — the status slot beside it only has room for the "wakes in 3h"
+  // countdown.
+  const wakeDescription = snoozed ? snoozeWakeDescription(session.snoozedUntil) : null;
+  const title = wakeDescription ? `${label} · wakes ${wakeDescription}` : label;
 
   return (
     <>
@@ -61,13 +99,14 @@ export function SessionSnoozeControl({
         aria-label={label}
         aria-haspopup={snoozed ? undefined : "menu"}
         aria-expanded={snoozed ? undefined : anchor != null}
-        title={label}
+        title={title}
         className={cn(
-          "inline-flex shrink-0 items-center justify-center rounded-md border border-white/[0.08] bg-bg/85 text-muted-fg/60 backdrop-blur-sm transition-colors",
-          "hover:border-white/[0.14] hover:text-fg/85 focus-visible:opacity-100",
-          // Revealed by the row's `group` hover; always focusable for keyboard users.
-          snoozed || anchor ? "opacity-100" : "opacity-0 focus:opacity-100 group-hover:opacity-100",
-          compact ? "h-4 w-4" : "h-5 w-5",
+          "inline-flex shrink-0 cursor-pointer items-center justify-center rounded-md bg-transparent text-muted-fg/70 transition-colors",
+          // Same hover pill as `SESSION_ACTION_BUTTON_CLASS` in
+          // SessionStatusSlot (spelled out rather than imported: that module
+          // renders THIS one, and importing back would close a module cycle).
+          "hover:bg-white/[0.06] hover:text-fg focus-visible:bg-white/[0.06] focus-visible:text-fg",
+          compact ? "px-1" : "px-1.5",
         )}
         onClick={(event) => {
           if (snoozed) {
@@ -79,12 +118,12 @@ export function SessionSnoozeControl({
           openMenu(event);
         }}
       >
-        <Moon size={compact ? 10 : 12} weight={snoozed ? "fill" : "regular"} />
+        <Moon size={compact ? 11 : 13} weight={snoozed ? "fill" : "regular"} aria-hidden />
       </button>
 
-      {/* Portalled: the row's hover-action wrapper is `pointer-events-none`
-          until hovered, and a fixed child would inherit that and stop being
-          clickable the moment the pointer left the card. */}
+      {/* Portalled: the menu must outlive the row's hover state. Rendered in
+          place it would sit inside the status slot's opacity/position swap and
+          vanish the moment the pointer left the card to reach it. */}
       {anchor && typeof document !== "undefined" ? createPortal(
         <>
           <div
@@ -103,7 +142,7 @@ export function SessionSnoozeControl({
             ref={menuRef}
             role="menu"
             aria-label="Snooze session"
-            className="ade-liquid-glass-menu fixed z-50 min-w-[180px] py-1"
+            className="ade-liquid-glass-menu fixed z-50 min-w-[210px] py-1"
             style={{
               ...(position ?? { left: anchor.x, top: anchor.y }),
               visibility: position ? "visible" : "hidden",
@@ -111,15 +150,22 @@ export function SessionSnoozeControl({
             onClick={(event) => event.stopPropagation()}
             onPointerDown={(event) => event.stopPropagation()}
           >
-            {SNOOZE_DURATION_OPTIONS.map((option) => (
+            {/* Two columns: what you are choosing on the left, when it lands on
+                the right. The time column is the whole reason the labels stay
+                day-shaped ("Tomorrow", not "Until tomorrow 9am") — see
+                `SNOOZE_DURATION_OPTIONS`. */}
+            {presets.map((preset) => (
               <button
-                key={option.key}
+                key={preset.key}
                 type="button"
                 role="menuitem"
-                className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
-                onClick={() => choose(option.key)}
+                className="flex w-full items-center gap-3 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40"
+                onClick={() => choose(preset.key)}
               >
-                {option.label}
+                <span className="flex-1 truncate">{preset.label}</span>
+                <span className="shrink-0 text-[10px] tabular-nums text-muted-fg/50">
+                  {preset.whenLabel}
+                </span>
               </button>
             ))}
           </div>

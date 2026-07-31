@@ -2,9 +2,17 @@ import Combine
 import Foundation
 import SwiftUI
 
+/// Presentation bucket for a drawer row — what glyph and hue it wears.
+///
+/// `awaitingInput` is the only amber kind, and that is deliberate: amber means
+/// "your move" and nothing else (see `AgentRunPhase` and the desktop's
+/// `sessionStatusPresentation`). `blocked` is a separate, neutral kind for
+/// exactly that reason — it used to share `awaitingInput`, which put a raised
+/// hand and an unmet dependency under one bell and one colour.
 @available(iOS 17.0, *)
 public enum AttentionKind: String, Codable, Hashable, Sendable {
     case awaitingInput
+    case blocked
     case failed
     case ciFailing
     case reviewRequested
@@ -119,6 +127,7 @@ public struct AttentionItem: Identifiable, Equatable {
     private static func defaultPhaseLabel(for kind: AttentionKind) -> String {
         switch kind {
         case .awaitingInput: return "Needs you"
+        case .blocked: return "Blocked"
         case .failed: return "Failed"
         case .ciFailing: return "Checks failing"
         case .reviewRequested: return "Review"
@@ -127,7 +136,10 @@ public struct AttentionItem: Identifiable, Equatable {
         case .open: return "Open"
         case .completed: return "Done"
         case .merged: return "Merged"
-        case .stale: return "Offline"
+        // "Stale", not "Offline": the run is reachable and silent. Calling it
+        // offline points at the network, which is the one thing that is not
+        // wrong here.
+        case .stale: return "Stale"
         }
     }
 }
@@ -258,10 +270,13 @@ public final class AttentionDrawerModel: ObservableObject {
                     )
                 )
             } else if Self.isAgentLive(agent) {
+                let isBlocked = Self.nonEmpty(agent.phase)?.lowercased() == "blocked"
                 live.append(
                     AttentionItem(
                         id: "live:\(agent.sessionId)",
-                        kind: machineOnline ? .running : .stale,
+                        kind: machineOnline
+                            ? (isBlocked ? .blocked : .running)
+                            : .stale,
                         title: Self.humanAgentTitle(agent),
                         subtitle: Self.nonEmpty(agent.preview)
                             ?? Self.agentPhaseLabel(agent.phase)
@@ -541,10 +556,13 @@ public final class AttentionDrawerModel: ObservableObject {
         case .reviewRequested: return 3
         case .mergeReady:      return 4
         case .running:         return 5
-        case .stale:           return 6
-        case .open:            return 7
-        case .completed:       return 7
-        case .merged:          return 7
+        // Blocked sorts below live work and above a silent one: it is not
+        // asking for anything, but it has not gone quiet either.
+        case .blocked:         return 6
+        case .stale:           return 7
+        case .open:            return 8
+        case .completed:       return 8
+        case .merged:          return 8
         }
     }
 
@@ -570,7 +588,7 @@ public final class AttentionDrawerModel: ObservableObject {
         guard let phase = nonEmpty(phase)?.lowercased() else { return nil }
         switch phase {
         case "starting": return "Starting"
-        case "running": return "Running"
+        case "running": return "Working"
         case "planning", "plan": return "Planning"
         case "development", "developing", "implementation", "implementing": return "Building"
         case "testing", "test": return "Testing"
@@ -580,7 +598,7 @@ public final class AttentionDrawerModel: ObservableObject {
         case "waiting_for_approval", "needs_approval": return "Needs approval"
         case "waiting_for_input", "awaiting_input", "needs_you": return "Needs reply"
         case "blocked": return "Blocked"
-        case "completed", "done": return "Completed"
+        case "completed", "done": return "Done"
         case "failed", "error": return "Failed"
         case "stale": return "Stale"
         default: return nil
@@ -618,9 +636,15 @@ public final class AttentionDrawerModel: ObservableObject {
         let kind: AttentionKind
         let collection: AttentionCollection
         switch source.phase {
-        case .needsYou, .blocked:
+        case .needsYou:
             kind = .awaitingInput
-            collection = source.phase == .blocked ? .live : .needsYou
+            collection = .needsYou
+        // Blocked already filed itself under `live` rather than `needsYou` —
+        // the drawer never thought it was the user's move. It now looks the
+        // part too, instead of borrowing the amber bell from a raised hand.
+        case .blocked:
+            kind = .blocked
+            collection = .live
         case .failed:
             kind = .failed
             collection = .needsYou

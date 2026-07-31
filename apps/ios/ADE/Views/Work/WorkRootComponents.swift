@@ -623,10 +623,8 @@ struct WorkSessionListRow: View {
       && canonicalPhase == .settled
   }
 
-  private var snoozeOptions: [(duration: WorkSnoozeDuration, deadline: Date)] {
-    WorkSnoozeDuration.allCases.compactMap { duration in
-      duration.deadline().map { (duration, $0) }
-    }
+  private var snoozeOptions: [WorkSnoozeOption] {
+    workSnoozeOptions()
   }
 
   var body: some View {

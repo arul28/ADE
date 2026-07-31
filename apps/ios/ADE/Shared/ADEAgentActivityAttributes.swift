@@ -368,6 +368,27 @@ public enum PullRequestPhase: String, CaseIterable, Sendable {
 /// Phase of a single agent run, with the color / symbol / label mapping the
 /// widget and Dynamic Island render. Colors reuse `ADESharedTheme` so the Live
 /// Activity stays in lockstep with the lock-screen widget's palette.
+///
+/// This is the iOS mirror of the desktop's one presentation vocabulary
+/// (`apps/desktop/src/shared/sessionStatusPresentation.ts`). The hue rule is
+/// the whole point of that module and must hold here too, because a user who
+/// learns a color on the sidebar reads the same color on their Lock Screen:
+///
+///   blue     work is happening, nothing is asked of you
+///   amber    YOUR MOVE — and nothing else, ever
+///   emerald  finished cleanly, you have not looked yet
+///   red      it broke
+///   neutral  true, but not actionable (stale)
+///
+/// Amber previously carried five unrelated meanings across ADE, so it meant
+/// nothing. Anything that is merely *interesting* — a stale run, a sync in
+/// flight, an offline host — is neutral. Spending amber on it is what trains
+/// people to stop looking at the one color that should always mean "act".
+///
+/// The raw values are the push / Live Activity wire format (see
+/// `apps/desktop/src/shared/sessionCanonicalState.ts`). Presentation here is
+/// free to change; the slugs are not — desktop versions already in the field
+/// send them.
 public enum AgentRunPhase: String, CaseIterable, Sendable {
     case starting
     case running
@@ -383,17 +404,30 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
         self == .waitingForApproval || self == .waitingForInput
     }
 
+    /// Whether the state should pull the eye. Mirrors `prominent` in the
+    /// desktop's `sessionStatusPresentation`: an outcome (done, failed) or a
+    /// raised hand earns colour and weight; work in flight does not, because
+    /// prominence is a request for attention, not a progress report.
+    public var isProminent: Bool {
+        needsAttention || self == .completed || self == .failed
+    }
+
     public var isTerminal: Bool {
         self == .completed || self == .failed
     }
 
     public var tint: Color {
         switch self {
+        // `statusRunning` is blue (#60A5FA), not green: green/emerald is spent
+        // on `.completed` alone, so in-flight work and finished work can never
+        // be confused at a glance.
         case .starting, .running: return ADESharedTheme.statusRunning
         case .waitingForApproval: return ADESharedTheme.warningAmber
         case .waitingForInput: return ADESharedTheme.warningAmber
         case .completed: return ADESharedTheme.statusSuccess
         case .failed: return ADESharedTheme.statusFailed
+        // Neutral, not amber and not blue. A stale run is alive but silent —
+        // true, and worth reporting, but it is not asking you for anything.
         case .stale: return ADESharedTheme.statusIdle
         }
     }
@@ -402,21 +436,29 @@ public enum AgentRunPhase: String, CaseIterable, Sendable {
         switch self {
         case .starting: return "hourglass"
         case .running: return "circle.dotted"
+        // iOS splits the desktop's single "needs-you" glyph in two: the
+        // Lock Screen can offer Approve/Deny inline, so it is worth saying up
+        // front which kind of answer is wanted.
         case .waitingForApproval: return "bell.badge.fill"
         case .waitingForInput: return "keyboard.badge.ellipsis"
         case .completed: return "checkmark.circle.fill"
         case .failed: return "xmark.octagon.fill"
-        case .stale: return "wifi.slash"
+        // A clock, not `wifi.slash`. Stale means the process is alive and has
+        // produced no output for hours — a silence problem, not a network one,
+        // and the old glyph sent people to check their connection.
+        case .stale: return "clock.badge.exclamationmark"
         }
     }
 
-    /// Short trailing phase label. Sentence case, matching ADE copy norms.
+    /// Short trailing phase label. Sentence case, matching ADE copy norms and
+    /// the desktop vocabulary word-for-word ("Working", not "Running"; "Done",
+    /// not "Completed").
     public var label: String {
         switch self {
         case .starting: return "Starting"
-        case .running: return "Running"
+        case .running: return "Working"
         case .waitingForApproval, .waitingForInput: return "Needs you"
-        case .completed: return "Completed"
+        case .completed: return "Done"
         case .failed: return "Failed"
         case .stale: return "Stale"
         }

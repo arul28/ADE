@@ -333,7 +333,8 @@ Browser shell and routes:
   `data-ade-session-lifecycle="ready" | "unsupported"`. Under
   `@media (pointer: coarse)` the snooze button becomes a 2rem touch target with
   `opacity: 1`, the row's `pointer-events-none` action wrapper is re-enabled, and
-  the four snooze duration menu rows get a 44px minimum height.
+  the snooze duration menu rows get a 44px minimum height (the row count varies
+  with the time of day — see `resolveSnoozePresets`).
 - `apps/desktop/src/renderer/webclient/shell/webRoutes.ts` - thin web route
   layer over `apps/desktop/src/shared/deeplinks.ts`.
 

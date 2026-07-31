@@ -107,6 +107,7 @@ import { filterChatModelIdsForSession } from "../../../shared/chatModelSwitching
 import { CURSOR_AVAILABLE_MODE_IDS } from "../../../shared/cursorModes";
 import { cn } from "../ui/cn";
 import { AgentChatComposer, type ParallelComposerControlSlot } from "./AgentChatComposer";
+import { ChatLifecycleBanner } from "./ChatLifecycleBanner";
 import { resolveModelDescriptorWithRuntimeCatalog, descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { latestContextUsageInput, toUsageViewModel, type ContextUsageViewModel } from "./usage/contextUsageModel";
 import { getSharedRuntimeCatalog } from "../shared/ModelPicker/runtimeCatalogCache";
@@ -11671,7 +11672,8 @@ export function AgentChatPane({
         sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
-        className="space-y-0 p-0"
+        className="h-8 space-y-0 p-0"
+        testId="work-chat-session-header"
       />
 
       {!lockSessionId && !hideSessionTabs ? (
@@ -11803,6 +11805,13 @@ export function AgentChatPane({
       />
     </div>
   ) : null;
+  // Settled/snoozed notice pinned above the composer. The header chips say WHAT
+  // the state is; this says what sending will do about it, where the eye already
+  // is while typing. Renders null for a live chat, so nothing below it moves.
+  const lifecycleBanner = composerSessionId ? (
+    <ChatLifecycleBanner sessionId={composerSessionId} />
+  ) : null;
+
   const composerMachineBinding = activeComposerRuntimeBinding;
   const composerMachineId = selectedSessionId
     ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.targetId : "this-mac")
@@ -12452,6 +12461,7 @@ export function AgentChatPane({
       {authStickyBar}
       {awayDigestStrip}
       <LaneBranchDriftStrip laneId={laneId} />
+      {lifecycleBanner}
       {composerElement}
     </div>
   );
@@ -12900,6 +12910,7 @@ export function AgentChatPane({
                         {authStickyBar}
                         {awayDigestStrip}
                         <LaneBranchDriftStrip laneId={laneId} />
+                        {lifecycleBanner}
                         {composerElement}
                       </div>
                     ) : null}

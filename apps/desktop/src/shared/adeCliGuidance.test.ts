@@ -33,15 +33,12 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("tracked provider CLIs");
     expect(bootstrap).toContain('ade chat note "running e2e shard 2/4"');
     expect(bootstrap).toContain('ade chat ask "<the exact question>"');
-    expect(bootstrap).toContain("ade chat settle --outcome");
-    expect(bootstrap).toContain("the entire session is terminal");
-    expect(bootstrap).toContain("Settle only when ALL are true");
-    expect(bootstrap).toContain("Do NOT settle during discussion");
-    expect(bootstrap).toContain("“let’s discuss”");
-    expect(bootstrap).toContain("“for now”");
-    expect(bootstrap).toContain("“don’t change yet”");
-    expect(bootstrap).toContain("The runtime rejects settlement while structured work remains");
-    expect(bootstrap).toContain("If uncertain, do not settle");
+    // Settlement is user- and PR-merge-driven only: the bootstrap must tell the
+    // agent it CANNOT settle, and must never hand it a settle command again.
+    expect(bootstrap).toContain("You cannot settle or unsettle a session");
+    expect(bootstrap).toContain("the user's call, or the automatic result of its PR merging");
+    expect(bootstrap).not.toContain("ade chat settle --outcome");
+    expect(bootstrap).toContain("ade session snooze <id> --for <duration>");
     // The skill index is still advertised so the model knows what exists.
     for (const skillName of adeBundledAgentSkills) {
       expect(bootstrap).toContain(`\`${skillName}\``);

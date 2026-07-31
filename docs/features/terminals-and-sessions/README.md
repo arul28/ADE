@@ -243,19 +243,41 @@ Shared types and IPC:
   input so a typo can never be mistaken for "clear"; `"clear"` / `"none"` / `""`
   / null are the explicit clear sentinels, and clients that cannot encode a JSON
   null (iOS) send the string.
+- `apps/desktop/src/shared/sessionStatusPresentation.ts` — the shared
+  phase-to-label/glyph/tone/prominence vocabulary consumed by the Work sidebar
+  and Attention Center and mirrored by iOS widgets/Attention Drawer. Blue means
+  work in flight, amber is reserved exclusively for `Needs you`, emerald is a
+  clean unseen outcome, red is failure, and neutral is true but non-actionable.
+  It also owns the short working-duration formatter; renderer icon components
+  map its dependency-free glyph ids to platform symbols.
 - `apps/desktop/src/renderer/lib/sessionSnooze.ts` — the desktop half of snooze
   presentation. The derivations themselves live in `shared/sessionCanonicalState.ts`
   and are shared with `ade code` and iOS; this module owns the re-export plus the
   client-side deadline math behind the duration menu.
-  `SNOOZE_DURATION_OPTIONS` is fixed-order, shortest window first: `1 hour`,
-  `Until this evening` (local 18:00), `Until tomorrow 9am` (local 09:00), and
+  `SNOOZE_DURATION_OPTIONS` is the fixed-order static superset, shortest window
+  first: `In 1 hour`, `This evening` (local 18:00), `Tomorrow` (local 09:00),
+  `Next week` (next Monday 09:00, a full week out when today is Monday), and
   `Until I'm asked`. The last one has no clock deadline, so it parks the row
   ~100 years out — only a hand-raise (needs-you / error / turn complete) brings
   it back, and any deadline past a year reads as open-ended rather than a
-  countdown. `snoozeDeadlineIso`, `snoozeConfirmationLabel`, `snoozeWakeLabel`
+  countdown. Labels name the DAY, never the clock time, because every menu
+  renders a separate time column beside them.
+  `resolveSnoozePresets(nowMs)` is what the menus actually render: it resolves
+  each row's `whenLabel` (the time column: "9:00 AM", "Mon 9:00 AM", "on a
+  hand-raise") and `untilIso` against local time, and drops `This evening` once
+  18:00 is within an hour (it would duplicate `In 1 hour`) or already past (the
+  row would silently mean *tomorrow* evening). `Until I'm asked` is never
+  suppressed and always sorts last. Callers must not cache the result at module
+  load — a long-lived process would freeze the suppression decision at startup.
+  Day arithmetic advances by calendar day, never by `+24h` in milliseconds: a
+  spring-forward day is 23 hours, so a fixed offset from 23:30 skips the whole
+  next day.
+  `snoozeDeadlineIso`, `snoozeConfirmationLabel`, `snoozeWakeLabel`
   ("wakes in 3h" / "wakes tomorrow" / "wakes when asked" / "wakes now"),
-  `sessionWokeMarker`, and `nextSnoozeDeadlineMs` are the exported helpers;
-  nothing here reads or writes a canonical phase.
+  `snoozeWakeDescription` (the absolute wake time for menus and toasts —
+  "9:00 AM" / "tomorrow 9:00 AM" / "Mon 9:00 AM" / "Apr 20, 9:00 AM" /
+  "when you're asked"), `sessionWokeMarker`, and `nextSnoozeDeadlineMs` are the
+  exported helpers; nothing here reads or writes a canonical phase.
 - `apps/desktop/src/renderer/components/terminals/sessionLifecycleActions.ts` —
   one place for the Work tab's snooze / wake / settle-override writes, so the
   sidebar row menu, the row context menu, and the chat header chips can never
@@ -266,13 +288,23 @@ Shared types and IPC:
   no-ops. Exports `snoozeSessionForDuration`, `wakeSessionNow`,
   `setSessionSettleOverride`, and `clearSessionWokeMarker`.
 - `apps/desktop/src/renderer/components/terminals/SessionSnoozeControl.tsx` —
-  hover-revealed snooze affordance on a session row, kept out of `SessionCard`'s
-  render body so the hot Work list pays only for a single always-mounted button
-  (revealed with CSS, not a hover state that would re-render the row) plus menu
-  state that exists only after a click. The duration menu is a locally-owned
-  fixed popover clamped to the viewport like `SessionContextMenu`, with no
-  document-level listener. Already-snoozed rows offer **Wake now** instead of
-  the duration list.
+  snooze affordance mounted in `SessionStatusSlot`'s action cluster. The hot
+  Work list pays only for a single always-mounted button plus menu state that
+  exists after a click. The duration menu is a locally-owned fixed popover
+  clamped to the viewport like `SessionContextMenu`, with no document-level
+  listener. Already-snoozed rows offer **Wake now** instead of the duration
+  list.
+- `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
+  the row's single status surface and no-layout-shift hover/focus action swap.
+  It maps shared presentation glyph ids to Phosphor icons, ticks Working/Stale
+  elapsed time, and replaces the status label with snooze plus binding-aware
+  settle/un-settle controls while the row is hovered or keyboard-focused.
+- `apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx` —
+  one-second hover-intent detail pane positioned to the right of the full-bleed
+  source row. Direct row-to-row movement after a card opens hands off
+  immediately; any other entry earns a fresh delay. It renders icon-led facts,
+  supports clickable PR/parent-thread rows, cancels on scroll/resize, clamps to
+  the viewport, and uses a reduced-motion-aware fade/slide.
 - `apps/desktop/src/renderer/components/work/SessionLifecycleChips.tsx` —
   ambient settled/snoozed chips for a chat surface header, mounted by
   `WorkSurfaceHeader` through its `lifecycleSessionId` prop. A chat pane
@@ -636,35 +668,18 @@ Renderer surfaces:
   landing after a project-tab switch cannot suppress the new scope's first lane
   read.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
-  per-session card (status dot, title, preview line, tool type, lane,
-  delta chips). Any session with `orchestrationParentSessionId` renders a
-  small deterministic lineage identicon immediately left of the status dot;
-  its tooltip names the parent when available, and clicking it opens the
-  parent without selecting the child card. Chat summaries with a future
-  `nextWakeAt` render a compact
-  `⏰ <duration>` chip that refreshes while the row is mounted; paused or
-  overdue schedules omit the chip because their session summary reports no
-  future wake. The canonical phase drives a filled status dot or the hollow
-  settled ring plus one-word attention capsules: amber `Needs you`, red
-  `Failed`, and an outlined muted `Stale` after three hours without activity.
-  The preview line prefers an escalated `ade chat ask` question, then
-  `statusNote` (prefixed `done:` when settled), then a sanitized 120-character
-  `lastOutputPreview`, then summary, then goal. Terminal output fallback strips
-  ANSI/control sequences, collapses whitespace, and stays plain text rather
-  than linkifying output controlled by a subprocess. Long-running
-  non-chat CLI/shell rows can additionally show the separate 24-hour process
-  cleanup warning pip described below. The
-  A row that woke early shows a compact woke marker naming the reason until it
-  is opened, and mounts `SessionSnoozeControl` for the hover-revealed
-  snooze/wake affordance. The
-  card also reports its multi-select state via `isMultiSelected`. While
-  the card's lane is mid background AI auto-naming it swaps the preview
-  line for an "Auto-naming lane underway…" status and warm-highlights the
-  title when it changes (subscribes to `laneNamingStore.ts`). Sessions
-  carrying `importedFrom` provenance render an `Imported` badge. The optional
-  `disabledReason` blocks selection, dragging, and the context menu while
-  rendering a centered progress overlay; Work uses it for sessions whose lane
-  is being deleted.
+  full-bleed three-line Work row. Line one adapts machine, pin, singleton lane,
+  spawn lineage, drifted branch, singleton PR, diff, and last-activity identity
+  around `SessionStatusSlot`; line two is the title; line three keeps the
+  sanitized preview, Claude TTL, failure exit code, and provider mark. Grouped
+  lane headers own repeated machine/PR identity, while a lane with exactly one
+  session has no redundant header and promotes the lane identity onto the card.
+  After one second `SessionHoverCard` carries the lower-frequency metadata
+  removed from the row (including clickable PR and parent-thread facts). The
+  title still warm-highlights when background AI naming lands, and
+  `disabledReason` blocks selection, dragging, and the context menu during lane
+  deletion. Selection/hover use the row background; non-prominent lifecycle
+  states recede instead of spending lane-tinted card surfaces.
 - `apps/desktop/src/renderer/state/laneNamingStore.ts` — ephemeral,
   renderer-only zustand store tracking which lanes have an AI
   auto-naming pass in flight. `setLaneNaming(laneId, on)` is the
@@ -951,18 +966,19 @@ Renderer surfaces:
   the new viewport, and restore focus/scroll without waiting for a
   resize event that will never come.
 - `apps/desktop/src/renderer/components/terminals/SessionContextMenu.tsx`
-  and `SessionInfoPopover.tsx` — right-click actions and info overlay.
-  Ended chat sessions get an additional "Delete chat" action wired to
-  `ade.agentChat.delete`. Fixed-position context menus measure their
-  rendered size and clamp to the renderer viewport before opening near
-  a pointer edge. The menu carries one exhaustive lifecycle block holding every
-  action that changes where the sidebar files the row: **Snooze…** expands into
-  the four durations (or **Wake now**, with the wake label, when the row is
-  already snoozed), and settle actions operate only on explicit declarations.
-  A declared settle has a `settled_at` for Unsettle to clear, while
-  `settleOverride` can explicitly pin either state. A row
-  reaching the end of that block with nothing rendered would be a row the user
-  cannot un-hide, which is why the block is kept exhaustive.
+  and `SessionInfoPopover.tsx` — grouped right-click actions and explicit info
+  overlay. The context menu sections identity, Lifecycle, Go to, Copy, optional
+  singleton-lane actions, and fenced destructive rows; Copy, Snooze, and Lane
+  are pointer/keyboard submenus. Ended chat sessions get Delete chat wired to
+  `ade.agentChat.delete`. Fixed-position menus measure and clamp to the renderer
+  viewport.
+- `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
+  `LaneActionsSubmenu.tsx`, and
+  `apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx` — shared compact PR
+  state/deep-link badge, the singleton session row's lane submenu, and the
+  pointer-safe/keyboard-accessible submenu primitive. `LaneActionsSubmenu`
+  renders the same `buildLaneMenuGroups()` definitions as the lane divider's
+  context menu, so the two surfaces cannot drift.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
   Ordinary callers coalesce compatible in-flight reads; forced reads bypass
@@ -1224,8 +1240,11 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    a still-running session with no activity for three hours is `stale` but is
    not settled. Chat idle between turns is the quiet `ready` phase. Explicit
    Settle/Unsettle is available from the session context menu and multi-select
-   footer. `ade chat settle --outcome ...` also stores the outcome as
-   `statusNote`. A `needs_you` row becomes **Dismiss & settle**. For an SDK
+   footer — and, since 2026-07, *only* from user surfaces plus the PR-merge
+   policy. `ade chat settle` / `ade session settle` were removed because
+   "is this work finished" is a subjective judgment agents are unreliable at,
+   and a self-settling chat drops out of the user's active list on the agent's
+   say-so. A `needs_you` row becomes **Dismiss & settle**. For an SDK
    chat, the service interrupts Claude/Codex/OpenCode/Cursor/Droid work,
    cancels live and restored waiters, removes Codex plan follow-ups, persists
    idle state, and only then settles. A tracked CLI may dismiss an explicit
@@ -1249,9 +1268,10 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    settle; `"active"` is the explicit keep-active pin; `null` returns the row
    to the declared rules. An explicit settle drops a stale `"active"` pin, and
    unsettle drops only a `"settled"` pin. `attention_source` and
-   `settle_source` record whether the current declaration came from an agent,
-   user, provider request, operator, or lane PR merge; Session Info displays
-   that provenance.
+   `settle_source` record where the current declaration came from. The
+   `settle_source` enum still carries `agent_explicit` for rows settled before
+   the 2026-07 removal of agent settlement; new settles are only `user`,
+   `operator` (CTO), or `pr_merge`. Session Info displays that provenance.
 
 8. **Snooze and early wake** — snooze is a synced **visibility overlay**, never
    a lifecycle phase: `canonicalSessionState()` does not read it, only the
@@ -1282,20 +1302,22 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    Agent- and operator-reachable entry points:
 
    - CLI — `ade session snooze <id> --for 1h|--until <iso>|--until-asked`,
-     `ade session wake <id> [--reason ...]`,
-     `ade session settle <id> [--outcome ...] [--keep-active]`,
-     `ade session unsettle <id> [--keep-active]`, `ade session clear-woke <id>`,
+     `ade session wake <id> [--reason ...]`, `ade session clear-woke <id>`,
      `ade session show <id> --text`, and `ade session actions --text` for the
      raw action list. Each takes the id as a positional, accepts
      `--session <id>`, and falls back to `$ADE_CHAT_SESSION_ID`, so a bound
-     agent can file itself. `--keep-active` on either settle or unsettle writes
-     the `"active"` override rather than touching `settled_at`. Duration grammar
-     and the 30-day cap come from `sessionSnoozeDuration.ts`, shared verbatim
-     with `ade code`'s `/session …` commands.
-   - Action registry (`session` domain) — `snoozeSession`, `snoozeSessions`,
-     `wakeSession`, `wakeSessions`, `setSettleOverride`, `clearWokeMarker`,
-     alongside the existing `settleSelfSession` / `unsettleSelfSession` /
-     `settleSessions` / `unsettleSessions`.
+     agent can file itself. Duration grammar and the 30-day cap come from
+     `sessionSnoozeDuration.ts`, shared verbatim with `ade code`'s
+     `/session …` commands. `ade session settle | unsettle | keep-active` and
+     `ade chat settle | unsettle` are **retired**: they exit 2 with a message
+     naming the two remaining paths (the user, and the PR-merge policy).
+   - Action registry (`session` domain) — agent-reachable: `snoozeSession`,
+     `snoozeSessions`, `wakeSession`, `wakeSessions`, `clearWokeMarker`.
+     CTO-only (i.e. reachable from the desktop renderer's remote-runtime client
+     and `ade code`, both of which authenticate at cto role, but refused for a
+     session-bound agent): `settleSession`, `unsettleSession`, `settleSessions`,
+     `unsettleSessions`, `setSettleOverride`. The caller-scoped
+     `settleSelfSession` / `unsettleSelfSession` pair no longer exists.
    - Sync (`session.*` remote commands) — the only path for mobile and the
      hosted web client, which have no local DB. Advertised in
      `hello_ok.features.commandRouting.actions`, and listed in

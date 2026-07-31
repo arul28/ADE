@@ -719,7 +719,7 @@ func workSessionGroupsByStatus(
     groups.append(WorkSessionGroup(id: "status:pinned", label: "Pinned", icon: .statusDot, tint: ADEColor.accent, sessions: pinned))
   }
   if !running.isEmpty {
-    groups.append(WorkSessionGroup(id: "status:running", label: "Running", icon: .statusDot, tint: ADEColor.success, sessions: running))
+    groups.append(WorkSessionGroup(id: "status:running", label: "Working", icon: .statusDot, tint: ADEColor.info, sessions: running))
   }
   if !ended.isEmpty {
     groups.append(WorkSessionGroup(id: "status:ended", label: "Ended", icon: .statusDot, tint: ADEColor.textMuted, sessions: ended))

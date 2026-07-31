@@ -8,14 +8,27 @@ import {
   Trash,
   X,
 } from "@phosphor-icons/react";
-import type { TerminalSessionStatus, TerminalSessionSummary } from "../../../shared/types";
-import { sanitizeTerminalInlineText } from "../../lib/terminalAttention";
+import type { TerminalSessionSummary } from "../../../shared/types";
+import {
+  canonicalInputFromSummary,
+  sanitizeTerminalInlineText,
+  sessionCanonicalUiState,
+  sessionStatusDisplay,
+} from "../../lib/terminalAttention";
+import { SESSION_TONE_TEXT_CLASS } from "../../../shared/sessionStatusPresentation";
 import { formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
 import { getTerminalRuntimeSnapshot } from "./TerminalView";
 import { SessionDeltaCard } from "./SessionDeltaCard";
 import { Button } from "../ui/Button";
 import { SmartTooltip } from "../ui/SmartTooltip";
 
+/**
+ * The raw PROCESS column, not a session status. This is a different axis from
+ * the row's state — "the pty is idle" is a fact about the process, not a claim
+ * about whether the session wants you — so it carries no tone and never
+ * competes with the canonical label above it. Keeping it is not a second status
+ * vocabulary; it is the only place the runtime column is spelled out.
+ */
 function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): string {
   if (state === "waiting-input") return "Waiting for input";
   if (state === "exited") return "Exited";
@@ -25,16 +38,9 @@ function runtimeStateLabel(state: TerminalSessionSummary["runtimeState"]): strin
   return state;
 }
 
-function formatSessionStatus(s: TerminalSessionStatus): string {
-  const map: Record<TerminalSessionStatus, string> = {
-    running: "Running",
-    completed: "Completed",
-    failed: "Failed",
-    disposed: "Disposed",
-    detached: "Ended",
-  };
-  return map[s] ?? s;
-}
+/** `[label, value]`, plus an optional class for the value — only the canonical
+ *  status row uses it, and only with a class from the shared tone table. */
+type InfoRow = readonly [label: string, value: string, valueClassName?: string];
 
 function formatWhen(iso: string): string {
   try {
@@ -153,6 +159,23 @@ export function SessionInfoPopover({
 
   const { session, anchor } = popover;
   const isChat = isChatToolType(session.toolType);
+
+  /* The "State" row reads through the ONE presentation vocabulary, same as the
+     sidebar row, the attention center and iOS: `running` → "Working",
+     `ready`/`idle` → "Done", amber only for "your move", `stopped` neutral
+     rather than red. This popover used to keep its own table and was the last
+     surface in the app still saying "Completed".
+
+     `settled` is the single phase the shared module deliberately returns null
+     for: on a row the settled *section* is the status, so the slot shows a
+     timestamp instead. A key/value sheet has no section to lean on, so it names
+     the phase. That is the documented gap, not a second table. */
+  const canonicalInput = canonicalInputFromSummary(session);
+  const canonicalPhase = sessionCanonicalUiState(canonicalInput).phase;
+  const statusPresentation = sessionStatusDisplay(canonicalInput);
+  const statusLabel = statusPresentation?.label
+    ?? (canonicalPhase === "settled" ? "Settled" : canonicalPhase);
+  const statusToneClass = SESSION_TONE_TEXT_CLASS[statusPresentation?.tone ?? "neutral"];
   const runtime = getTerminalRuntimeSnapshot(session.id);
   const health = !isChat && runtime ? runtime.health ?? null : null;
 
@@ -189,7 +212,12 @@ export function SessionInfoPopover({
     <div
       ref={ref}
       className="ade-liquid-glass ade-liquid-glass-menu fixed z-[2000] max-h-[min(80dvh,720px)] w-[min(100vw-1rem,22.5rem)] overflow-hidden rounded-2xl border border-white/[0.08] shadow-2xl"
-      style={{ left, top, width: popoverWidth }}
+      /* `position` inline, not from the `fixed` utility above: this element also
+         carries `.ade-liquid-glass`, which declares `position: relative` at the
+         same specificity as Tailwind's `.fixed` and wins on source order. The
+         hover card hit exactly this and laid out hundreds of pixels below the
+         fold before it was caught. Inline beats both. */
+      style={{ position: "fixed", left, top, width: popoverWidth }}
     >
       <div className="sticky top-0 z-10 flex items-center justify-between gap-2 border-b border-white/[0.06] bg-[color:color-mix(in_srgb,var(--color-card)_88%,transparent)] px-3 py-2.5 backdrop-blur-md">
         <span className="min-w-0 text-[13px] font-semibold leading-tight text-fg/90">
@@ -215,7 +243,9 @@ export function SessionInfoPopover({
                 [
                   ["Title", (session.goal ?? session.title).trim() || "—"],
                   ["Lane", session.laneName || "—"],
-                  ["State", formatSessionStatus(session.status)],
+                  // The one row that carries a hue, and it comes from the
+                  // shared tone table — never from a colour picked here.
+                  ["State", statusLabel, statusToneClass],
                   ["Process", runtimeStateLabel(session.runtimeState)],
                   session.toolType ? ["Tool", formatToolTypeLabel(session.toolType)] : null,
                   session.exitCode != null ? ["Exit code", String(session.exitCode)] : null,
@@ -231,11 +261,11 @@ export function SessionInfoPopover({
                   isChat && session.archivedAt ? ["Archived", formatWhen(session.archivedAt)] : null,
                   ["Started", formatWhen(session.startedAt)],
                   session.endedAt ? ["Ended", formatWhen(session.endedAt)] : null,
-                  ["Session id", session.id] as [string, string],
-                ] as const
+                  ["Session id", session.id],
+                ] as ReadonlyArray<InfoRow | null>
               )
-                .filter((row): row is [string, string] => row != null)
-                .map(([label, value]) => (
+                .filter((row): row is InfoRow => row != null)
+                .map(([label, value, valueClassName]) => (
                   <div
                     key={label}
                     className="flex min-h-[1.75rem] items-start justify-between gap-2 rounded-lg px-1.5 py-0.5 text-xs transition-colors hover:bg-white/[0.04]"
@@ -246,7 +276,12 @@ export function SessionInfoPopover({
                         {value}
                       </code>
                     ) : (
-                      <span className="min-w-0 text-right font-medium text-fg/90">{value}</span>
+                      <span
+                        className={`min-w-0 text-right font-medium ${valueClassName ?? "text-fg/90"}`}
+                        data-session-info-row={label}
+                      >
+                        {value}
+                      </span>
                     )}
                   </div>
                 ))}

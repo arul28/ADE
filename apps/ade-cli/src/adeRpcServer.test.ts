@@ -1555,19 +1555,6 @@ describe("adeRpcServer", () => {
             "Waiting for release choice",
           ),
         },
-        {
-          action: "settleSelfSession",
-          args: { outcome: "Shipped" },
-          assert: () => expect(runtime.sessionService.settleSession).toHaveBeenCalledWith(
-            "chat-1",
-            { outcome: "Shipped", source: "agent_explicit" },
-          ),
-        },
-        {
-          action: "unsettleSelfSession",
-          args: {},
-          assert: () => expect(runtime.sessionService.unsettleSession).toHaveBeenCalledWith("chat-1"),
-        },
       ];
       for (const lifecycle of lifecycleCalls) {
         const result = await callTool(handler, "run_ade_action", {
@@ -1590,12 +1577,24 @@ describe("adeRpcServer", () => {
         "Cross-session write",
       );
 
-      const manualSettleDenied = await callTool(handler, "run_ade_action", {
-        domain: "session",
-        action: "settleSession",
-        args: { sessionId: "chat-1", outcome: "Bypass blockers" },
-      });
-      expect(manualSettleDenied.isError).toBe(true);
+      // Settlement is user- and PR-merge-driven only (2026-07). A session-bound
+      // caller gets no settle writer at all: the caller-scoped `*SelfSession`
+      // pair was deleted, and every survivor is CTO-only while binding caps the
+      // caller below cto.
+      for (const settleAttempt of [
+        { action: "settleSession", args: { sessionId: "chat-1", outcome: "Bypass blockers" } },
+        { action: "unsettleSession", args: { sessionId: "chat-1" } },
+        { action: "settleSelfSession", args: { sessionId: "chat-1", outcome: "Shipped" } },
+        { action: "unsettleSelfSession", args: { sessionId: "chat-1" } },
+        { action: "settleSessions", args: { sessionIds: ["chat-1"] } },
+        { action: "unsettleSessions", args: { sessionIds: ["chat-1"] } },
+        { action: "setSettleOverride", args: { sessionId: "chat-1", override: "settled" } },
+      ]) {
+        const denialResult = await callTool(handler, "run_ade_action", settleAttempt);
+        expect(denialResult.isError).toBe(true);
+      }
+      expect(runtime.sessionService.settleSession).not.toHaveBeenCalled();
+      expect(runtime.sessionService.unsettleSession).not.toHaveBeenCalled();
     });
   });
 
@@ -2236,7 +2235,7 @@ describe("adeRpcServer", () => {
     expect(finalArg).toContain("clean up processes you start");
     expect(finalArg).toContain("ade chat note");
     expect(finalArg).toContain("ade chat ask");
-    expect(finalArg).toContain("ade chat settle");
+    expect(finalArg).toContain("You cannot settle or unsettle a session");
     expect(finalArg.endsWith("Implement API wiring")).toBe(true);
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
@@ -2268,7 +2267,7 @@ describe("adeRpcServer", () => {
     const finalArg = createCall.args?.at(-1) ?? "";
     expect(finalArg).toContain("ade chat note");
     expect(finalArg).toContain("ade chat ask");
-    expect(finalArg).toContain("ade chat settle");
+    expect(finalArg).toContain("You cannot settle or unsettle a session");
     expect(createCall.args).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
     expect(createCall.startupCommand).not.toContain("--full-auto");

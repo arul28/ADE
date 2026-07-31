@@ -570,8 +570,8 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.unsettleSession = tool({
     description:
-      "Return a settled ADE session to the active lifecycle. An explicit keep-active pin survives; " +
-      "to force a derived-settle row back to active use setSessionSettleOverride with 'active'.",
+      "Return a settled ADE session to the active lifecycle. This clears a declared settle plus a " +
+      "'settled' pin; an explicit keep-active pin survives.",
     inputSchema: z.object({
       sessionId: z.string().trim().min(1),
     }),

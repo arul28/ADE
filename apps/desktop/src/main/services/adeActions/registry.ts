@@ -25,7 +25,6 @@ import type {
   AutomationSaveDraftRequest,
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
-import type { AgentSessionSettlementResult } from "../../../shared/types/sessions";
 import type {
   AttentionPreferences,
   AttentionPresence,
@@ -232,7 +231,22 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
   storage: ["cleanup", "runMaintenanceNow"],
   search: ["rebuildIndex"],
   project_secret: ["exportEnv"],
-  session: ["settleSession", "settleSessions", "unsettleSessions", "updateLifecycleSettings"],
+  // Every settle WRITER is CTO-only on purpose. "Is this work actually done?"
+  // is a subjective judgment and agents are unreliable at it, so settlement is
+  // reachable only from surfaces that connect at cto role — the desktop
+  // renderer's remote-runtime client and the `ade code` TUI, both of which are
+  // driven by the user — plus the deterministic PR-merge policy, which never
+  // goes through this bridge at all. A session-bound agent CLI authenticates as
+  // `agent`/`orchestrator` and is refused here. Do not add a self-service
+  // settle action back: see the note above `unsettleSession` below.
+  session: [
+    "settleSession",
+    "unsettleSession",
+    "settleSessions",
+    "unsettleSessions",
+    "setSettleOverride",
+    "updateLifecycleSettings",
+  ],
   // Stashes are unsent user-authored drafts. Desktop runtime clients connect
   // without a chat binding at CTO role; session-bound agents must never read
   // or mutate this private composer state through `ade actions`.
@@ -709,10 +723,9 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "snoozeSession",
     "snoozeSessions",
     "settleSession",
-    "settleSelfSession",
     "settleSessions",
     "updateLifecycleSettings",
-    "unsettleSelfSession",
+    "unsettleSession",
     "unsettleSessions",
     "updateMeta",
     "wakeSession",
@@ -1940,43 +1953,23 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId };
     },
-    settleSelfSession: async (args?: unknown) => {
-      const record = readObjectActionArg(args, "session.settleSelfSession");
-      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
-      const outcome = typeof record.outcome === "string" ? record.outcome.trim() : "";
-      if (!outcome) {
-        throw new Error("Agent settlement requires a concrete non-empty outcome.");
-      }
-      const session = sessionService.get(sessionId);
-      if (!session) throw new Error(`Session '${sessionId}' was not found.`);
-      const blockers = runtime.agentChatService
-        ? await runtime.agentChatService.getSettlementBlockers(sessionId)
-        : [
-            ...(session.attentionRequestedAt || session.pendingInputItemId
-              ? [{ code: "pending_input", message: "Resolve the pending input before settling." } as const]
-              : []),
-            ...(session.lastTurnFailedAt
-              ? [{ code: "turn_failed", message: "The latest turn failed; complete or recover it before settling." } as const]
-              : []),
-          ];
-      if (blockers.length > 0) {
-        return {
-          ok: false,
-          sessionId,
-          blockers,
-        } satisfies AgentSessionSettlementResult;
-      }
-      if (!await settleTerminalSession({
-        sessionId,
-        opts: { outcome, source: "agent_explicit" },
-        sessionService,
-        agentChatService: runtime.agentChatService,
-        ptyService: runtime.ptyService,
-      })) {
-        throw new Error(`Session '${sessionId}' was not found.`);
-      }
-      return { ok: true, sessionId } satisfies AgentSessionSettlementResult;
-    },
+    // -----------------------------------------------------------------------
+    // There is deliberately NO `settleSelfSession` / `unsettleSelfSession`
+    // pair here any more (removed 2026-07). An agent used to be able to file
+    // its own Work row into the quiet tier via `ade chat settle` — but whether
+    // work is genuinely finished is a subjective judgment, and agents are
+    // unreliable at making it. A chat that settles itself vanishes from the
+    // user's active list on the agent's say-so, which is exactly the wrong
+    // default. Settlement now has only two writers:
+    //   1. a human, through the desktop rows/bulk actions or the `ade code`
+    //      TUI (both connect at cto role, hence the CTO-only gate above), and
+    //   2. the deterministic PR-merge policy in
+    //      services/prs/prMergeAutoSettlementService.ts, which calls
+    //      sessionService directly and never touches this bridge.
+    // If you are about to re-add a caller-scoped settle action, don't: the
+    // product decision is that agents declare outcomes in prose, not by
+    // mutating lifecycle columns.
+    // -----------------------------------------------------------------------
     settleSession: async (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
@@ -1999,8 +1992,13 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       }
       return { ok: true, sessionId };
     },
-    unsettleSelfSession: (args?: unknown) => {
-      const record = readObjectActionArg(args, "session.unsettleSelfSession");
+    // Single-row unsettle for the same user-driven surfaces as `settleSession`
+    // (desktop row menu on a remote-bound project, `ade code`'s
+    // `/session unsettle`). It is the undo for a user's own settle, so it is
+    // gated identically — an agent lifting a settle the user deliberately took
+    // is the same category of problem as an agent taking one.
+    unsettleSession: (args?: unknown) => {
+      const record = readObjectActionArg(args, "session.unsettleSession");
       const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
       if (!sessionService.unsettleSession(sessionId)) {
         throw new Error(`Session '${sessionId}' was not found.`);
@@ -2008,8 +2006,7 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       return { ok: true, sessionId };
     },
     // Bulk settle/unsettle for renderer surfaces on remote-bound projects
-    // (mirrors deleteSession's generic trust posture; the *SelfSession pair
-    // stays caller-scoped for env-bound agents).
+    // (mirrors deleteSession's generic trust posture).
     settleSessions: (args?: unknown) => {
       const record = readObjectActionArg(args, "session.settleSessions");
       const sessionIds = Array.isArray(record.sessionIds)

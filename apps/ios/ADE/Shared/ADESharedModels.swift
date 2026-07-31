@@ -274,14 +274,17 @@ public enum AccountAttentionPhase: String, Codable, Hashable, Sendable {
     case merged
     case closed
 
+    /// Row copy for the Attention Drawer. Same words as `AgentRunPhase.label`
+    /// and the desktop sidebar — "Working", not "Running"; "Done", not
+    /// "Completed" — so one device never describes one session two ways.
     public var displayLabel: String {
         switch self {
         case .starting: return "Starting"
-        case .running: return "Running"
+        case .running: return "Working"
         case .needsYou: return "Needs you"
         case .blocked: return "Blocked"
         case .failed: return "Failed"
-        case .completed: return "Completed"
+        case .completed: return "Done"
         case .stale: return "Stale"
         case .checksFailing: return "Checks failing"
         case .reviewRequested: return "Review requested"

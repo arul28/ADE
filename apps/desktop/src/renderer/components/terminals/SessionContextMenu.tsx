@@ -5,10 +5,13 @@ import { isChatToolType } from "../../lib/sessions";
 import { sessionCanonicalUiState } from "../../lib/terminalAttention";
 import {
   isSessionSnoozed,
+  resolveSnoozePresets,
   snoozeWakeLabel,
-  SNOOZE_DURATION_OPTIONS,
   type SnoozeDurationKey,
 } from "../../lib/sessionSnooze";
+import { MenuSectionLabel, MenuSeparator, MenuSubmenu } from "../ui/MenuSubmenu";
+import { LaneActionsSubmenu } from "./LaneActionsSubmenu";
+import { WorkManageLaneDialogHost } from "./WorkManageLaneDialogHost";
 import {
   setSessionSettleOverride,
   snoozeSessionForDuration,
@@ -16,13 +19,43 @@ import {
   wakeSessionNow,
 } from "./sessionLifecycleActions";
 
+/* `hover:bg-muted/40` used to be the hover here and read as nothing at all:
+   `--color-muted` is #1E1B28, a near-black purple, so 40% of it over an already
+   dark menu is imperceptible. Menu rows now use the same white-alpha fill every
+   other hoverable surface in the sidebar uses, so "this row is under my cursor"
+   is actually visible. */
 const MENU_ITEM_CLASS =
-  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-muted/40";
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs transition-colors hover:bg-white/[0.07] focus-visible:bg-white/[0.07] outline-none";
+const DESTRUCTIVE_ITEM_CLASS =
+  "flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 transition-colors hover:bg-red-500/10";
+
+/**
+ * Carried only by a row whose lane renders WITHOUT a divider (the singleton
+ * form). That row is the lane's only visible surface, so right-clicking it is
+ * the only gesture left that could reach lane management — without this the
+ * whole lane menu (rename, pin, colour, manage, delete) is unreachable for a
+ * one-chat lane.
+ *
+ * The lane's actions render as a hover submenu built from the SAME item
+ * definitions and the SAME action wiring the lane divider's own menu uses
+ * (`buildLaneMenuGroups` + `useLaneMenuActions`), so the two surfaces cannot
+ * drift. `open` survives as the escape hatch for a lane this renderer cannot
+ * resolve from the store, where re-opening the real portal is still the only
+ * correct answer.
+ */
+export type SessionContextMenuLaneActions = {
+  laneId: string;
+  laneName: string;
+  /** Opens the real lane context menu, anchored where the session menu opened. */
+  open: (position: { x: number; y: number }) => void;
+};
 
 export type SessionContextMenuState = {
   session: TerminalSessionSummary;
   binding?: OpenProjectBinding | null;
   machineName?: string | null;
+  /** Present only for a singleton lane's card (see the type above). */
+  laneActions?: SessionContextMenuLaneActions | null;
   x: number;
   y: number;
 } | null;
@@ -75,7 +108,34 @@ type SessionContextMenuProps = {
   onRemoveFromGrid?: (session: TerminalSessionSummary) => void;
 };
 
-export function SessionContextMenu({
+/**
+ * Shell. Owns nothing but the lane manage dialog, which has to outlive the menu
+ * that opened it — "Manage Lane" closes the menu, so a dialog hosted inside the
+ * panel would unmount in the same tick it was asked for.
+ */
+export function SessionContextMenu(props: SessionContextMenuProps) {
+  const [managedLaneId, setManagedLaneId] = useState<string | null>(null);
+
+  return (
+    <>
+      {props.menu ? (
+        <SessionContextMenuPanel
+          {...props}
+          menu={props.menu}
+          onManageLane={setManagedLaneId}
+        />
+      ) : null}
+      {managedLaneId ? (
+        <WorkManageLaneDialogHost
+          laneId={managedLaneId}
+          onClose={() => setManagedLaneId(null)}
+        />
+      ) : null}
+    </>
+  );
+}
+
+function SessionContextMenuPanel({
   menu,
   onClose,
   onStopRuntime,
@@ -94,15 +154,22 @@ export function SessionContextMenu({
   pinnedSessionIds,
   gridSessionIds,
   onRemoveFromGrid,
-}: SessionContextMenuProps) {
+  onManageLane,
+}: Omit<SessionContextMenuProps, "menu"> & {
+  menu: NonNullable<SessionContextMenuState>;
+  onManageLane: (laneId: string) => void;
+}) {
   const [renaming, setRenaming] = useState(false);
   const [tagging, setTagging] = useState(false);
-  const [snoozing, setSnoozing] = useState(false);
+  // Captured when the submenu opens rather than on every render: a list that
+  // re-resolved mid-render could drop the row the pointer is already over if
+  // the 17:00 boundary happened to pass while the menu was open.
+  const [snoozePresets, setSnoozePresets] = useState(() => resolveSnoozePresets());
   const [draft, setDraft] = useState("");
   const inputRef = useRef<HTMLInputElement>(null);
   const finalizedRef = useRef(false);
   const { ref: menuRef, position: clampedPosition } = useClampedFixedPosition(
-    menu ? { x: menu.x, y: menu.y } : null,
+    { x: menu.x, y: menu.y },
     renaming || tagging,
   );
 
@@ -110,7 +177,6 @@ export function SessionContextMenu({
   useEffect(() => {
     setRenaming(false);
     setTagging(false);
-    setSnoozing(false);
     setDraft("");
     finalizedRef.current = false;
   }, [menu]);
@@ -123,9 +189,7 @@ export function SessionContextMenu({
     }
   }, [renaming, tagging]);
 
-  if (!menu) return null;
-
-  const { session, binding = null, x, y } = menu;
+  const { session, binding = null, laneActions = null, x, y } = menu;
   const menuPosition = clampedPosition ?? { left: x, top: y };
   const isRunning = session.status === "running";
   const isChat = isChatToolType(session.toolType);
@@ -143,6 +207,7 @@ export function SessionContextMenu({
   const snoozeWake = isSnoozed ? snoozeWakeLabel(session.snoozedUntil) : null;
   const isSettled = canonicalPhase === "settled";
   const isDeclaredSettled = Boolean(session.settledAt);
+  const canStopRuntime = isRunning && Boolean(session.ptyId) && !isChat;
   const chooseSnooze = (key: SnoozeDurationKey) => {
     void snoozeSessionForDuration(session, key, Date.now(), binding);
     onClose();
@@ -165,6 +230,55 @@ export function SessionContextMenu({
     onClose();
   };
 
+  // Hoisted out of the JSX only because the settle branch is a four-way chain;
+  // inline it would bury the grouping it sits inside.
+  const settleRow = isSettled ? (
+    <>
+      <button
+        type="button"
+        className={MENU_ITEM_CLASS}
+        onClick={() => {
+          // Declared settles clear the column; derived settles have no
+          // column to clear, so the keep-active pin is the only unsettle.
+          // Both branches live in the shared lifecycle action.
+          void unsettleSession(session, binding);
+          onClose();
+        }}
+      >
+        Unsettle
+      </button>
+      {isDeclaredSettled ? (
+        <button
+          type="button"
+          className={MENU_ITEM_CLASS}
+          title="Pin this session active so a clean exit cannot re-settle it"
+          onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
+        >
+          Keep active
+        </button>
+      ) : null}
+    </>
+  ) : !isActivelyRunning && onSettle && canDismissNeedsYou ? (
+    <button
+      type="button"
+      className={MENU_ITEM_CLASS}
+      onClick={() => { onSettle(session, binding); onClose(); }}
+    >
+      {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
+    </button>
+  ) : canonicalPhase === "needs_you" && !canDismissNeedsYou ? (
+    <button
+      type="button"
+      className="flex w-full cursor-not-allowed items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted-fg/45"
+      disabled
+      title="Resolve the terminal prompt before settling this session"
+    >
+      Resolve input to settle
+    </button>
+  ) : null;
+
+  const deletingLabel = deletingSessionId === session.id ? "Deleting…" : null;
+
   return (
     <>
       {/* Backdrop */}
@@ -180,6 +294,8 @@ export function SessionContextMenu({
         }}
         onPointerDown={(e) => e.stopPropagation()}
       >
+        {/* ── Identity: what this row is called and where it sits. Unlabelled;
+            it is the first block under the cursor and needs no signpost. ── */}
         {renaming && (
           <div className="px-3 py-1.5">
             <input
@@ -220,7 +336,8 @@ export function SessionContextMenu({
         )}
         {!renaming && !tagging && (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            type="button"
+            className={MENU_ITEM_CLASS}
             onClick={() => { setDraft(session.title); setRenaming(true); }}
           >
             Rename
@@ -230,7 +347,8 @@ export function SessionContextMenu({
             ended sessions), so only offer the item while the session runs. */}
         {!renaming && !tagging && session.toolType === "claude-chat" && isRunning && onSetChatTag ? (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            type="button"
+            className={MENU_ITEM_CLASS}
             onClick={() => {
               finalizedRef.current = false;
               setDraft(session.claudeTag ?? "");
@@ -240,10 +358,35 @@ export function SessionContextMenu({
             Set tag…
           </button>
         ) : null}
-
-        {isRunning && session.ptyId && !isChat ? (
+        {onTogglePinned ? (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onTogglePinned(session); onClose(); }}
+          >
+            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
+          </button>
+        ) : null}
+        {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onRemoveFromGrid(session); onClose(); }}
+          >
+            Remove from grid
+          </button>
+        ) : null}
+
+        {/* ── Lifecycle — every action that changes where the sidebar files this
+            row: stop (runtime), snooze/wake (visibility) and settle/keep-active
+            (state). Keep it exhaustive: a row that reaches the end of this block
+            with nothing rendered is a row the user cannot un-hide. ── */}
+        <MenuSeparator />
+        <MenuSectionLabel>Lifecycle</MenuSectionLabel>
+        {canStopRuntime ? (
+          <button
+            type="button"
+            className={MENU_ITEM_CLASS}
             onClick={() => {
               onStopRuntime({ ptyId: session.ptyId!, sessionId: session.id }, binding);
               onClose();
@@ -253,20 +396,6 @@ export function SessionContextMenu({
           </button>
         ) : null}
 
-        {isRunning && session.ptyId && !isChat ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
-            disabled={deletingSessionId === session.id}
-            onClick={() => { onStopAndDelete(session, binding); onClose(); }}
-          >
-            {deletingSessionId === session.id ? "Deleting…" : "Stop & delete"}
-          </button>
-        ) : null}
-
-        {/* Lifecycle block — every action that changes where the sidebar files
-            this row lives here: snooze/wake (visibility) and settle/keep-active
-            (state). Keep it exhaustive: a row that reaches the end of this block
-            with nothing rendered is a row the user cannot un-hide. */}
         {isSnoozed ? (
           <button
             type="button"
@@ -278,146 +407,122 @@ export function SessionContextMenu({
               <span className="ml-auto shrink-0 text-[10px] text-muted-fg/50">{snoozeWake}</span>
             ) : null}
           </button>
-        ) : snoozing ? (
-          SNOOZE_DURATION_OPTIONS.map((option) => (
-            <button
-              key={option.key}
-              type="button"
-              className={`${MENU_ITEM_CLASS} pl-6`}
-              onClick={() => chooseSnooze(option.key)}
-            >
-              {option.label}
-            </button>
-          ))
         ) : (
-          <button
-            type="button"
+          <MenuSubmenu
+            label="Snooze…"
             className={MENU_ITEM_CLASS}
-            aria-expanded={false}
-            onClick={() => setSnoozing(true)}
+            // Resolved against the wall clock at the moment the submenu opens,
+            // NOT from the static vocabulary. The static list would offer "This
+            // evening" at 11pm, which silently resolves to TOMORROW evening — a
+            // menu that quietly does something other than what it says. The
+            // hover popover and the `ade code` TUI resolve the same way.
+            onOpen={() => setSnoozePresets(resolveSnoozePresets())}
           >
-            Snooze…
-          </button>
-        )}
-
-        {isSettled ? (
-          <>
-            <button
-              type="button"
-              className={MENU_ITEM_CLASS}
-              onClick={() => {
-                // Declared settles clear the column; derived settles have no
-                // column to clear, so the keep-active pin is the only unsettle.
-                // Both branches live in the shared lifecycle action.
-                void unsettleSession(session, binding);
-                onClose();
-              }}
-            >
-              Unsettle
-            </button>
-            {isDeclaredSettled ? (
+            {snoozePresets.map((preset) => (
               <button
+                key={preset.key}
                 type="button"
                 className={MENU_ITEM_CLASS}
-                title="Pin this session active so a clean exit cannot re-settle it"
-                onClick={() => { void setSessionSettleOverride(session, "active", binding); onClose(); }}
+                onClick={() => chooseSnooze(preset.key)}
               >
-                Keep active
+                {preset.label}
+                <span className="ml-auto shrink-0 pl-4 text-[10px] text-muted-fg/50">
+                  {preset.whenLabel}
+                </span>
               </button>
-            ) : null}
-          </>
-        ) : !isActivelyRunning && onSettle && canDismissNeedsYou ? (
-          <button
-            type="button"
-            className={MENU_ITEM_CLASS}
-            onClick={() => { onSettle(session, binding); onClose(); }}
-          >
-            {canonicalPhase === "needs_you" ? "Dismiss & settle" : "Settle"}
-          </button>
-        ) : canonicalPhase === "needs_you" && !canDismissNeedsYou ? (
-          <button
-            type="button"
-            className="flex w-full cursor-not-allowed items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-muted-fg/45"
-            disabled
-            title="Resolve the terminal prompt before settling this session"
-          >
-            Resolve input to settle
-          </button>
-        ) : null}
+            ))}
+          </MenuSubmenu>
+        )}
 
-        {isChat ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
-            disabled={deletingSessionId === session.id}
-            onClick={() => { onDeleteChat(session, binding); onClose(); }}
-          >
-            {deletingSessionId === session.id ? "Deleting…" : "Delete chat"}
-          </button>
-        ) : null}
+        {settleRow}
 
-        {!isRunning && !isChat ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs text-red-300 hover:bg-red-500/10 transition-colors"
-            disabled={deletingSessionId === session.id}
-            onClick={() => { onDeleteSession(session, binding); onClose(); }}
-          >
-            {deletingSessionId === session.id ? "Deleting…" : "Delete session"}
-          </button>
-        ) : null}
-
-        <div className="my-0.5 h-px bg-border/10" />
-
+        {/* ── Go to: the surfaces outside this menu that show the same session. ── */}
+        <MenuSeparator />
+        <MenuSectionLabel>Go to</MenuSectionLabel>
         <button
-          className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+          type="button"
+          className={MENU_ITEM_CLASS}
           onClick={() => { onGoToLane(session, binding); onClose(); }}
         >
           Go to lane
         </button>
-
-        <button
-          className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-          onClick={() => { onCopySessionId(session.id); onClose(); }}
-        >
-          Copy session ID
-        </button>
-
-        {onCopySessionDeepLink ? (
-          <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onCopySessionDeepLink(session); onClose(); }}
-          >
-            Copy session deep link
-          </button>
-        ) : null}
-
         {onOpenSessionInWeb ? (
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
+            type="button"
+            className={MENU_ITEM_CLASS}
             onClick={() => { onOpenSessionInWeb(session); onClose(); }}
           >
             Open in web
           </button>
         ) : null}
 
-        {onTogglePinned ? (
+        {/* ── Copy: near-identical clipboard rows, collapsed behind one. ── */}
+        <MenuSubmenu label="Copy" className={MENU_ITEM_CLASS}>
           <button
-            className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-            onClick={() => { onTogglePinned(session); onClose(); }}
+            type="button"
+            className={MENU_ITEM_CLASS}
+            onClick={() => { onCopySessionId(session.id); onClose(); }}
           >
-            {(pinnedSessionIds ?? []).includes(session.id) ? "Unpin from front" : "Pin to front"}
+            Session ID
           </button>
+          {onCopySessionDeepLink ? (
+            <button
+              type="button"
+              className={MENU_ITEM_CLASS}
+              onClick={() => { onCopySessionDeepLink(session); onClose(); }}
+            >
+              Session deep link
+            </button>
+          ) : null}
+        </MenuSubmenu>
+
+        {/* Lane section — only on a singleton row, which has no lane divider to
+            right-click. Appended to THIS menu rather than bound to a second
+            gesture on some sub-region of the card: a hidden gesture nobody can
+            discover is the same as no gesture at all. */}
+        {laneActions ? (
+          <LaneActionsSubmenu
+            laneId={laneActions.laneId}
+            laneName={laneActions.laneName}
+            onClose={onClose}
+            onManageLane={onManageLane}
+            onFallbackOpen={laneActions.open}
+            anchor={{ x, y }}
+            triggerClassName={MENU_ITEM_CLASS}
+          />
         ) : null}
 
-        {onRemoveFromGrid && (gridSessionIds ?? []).includes(session.id) ? (
-          <>
-            <div className="my-0.5 h-px bg-border/10" />
-            <button
-              className="flex w-full items-center gap-2 rounded px-3 py-1.5 text-left text-xs hover:bg-muted/40 transition-colors"
-              onClick={() => { onRemoveFromGrid(session); onClose(); }}
-            >
-              Remove from grid
-            </button>
-          </>
+        {/* ── Destructive, last and fenced off. ── */}
+        {canStopRuntime || isChat || (!isRunning && !isChat) ? <MenuSeparator /> : null}
+        {canStopRuntime ? (
+          <button
+            type="button"
+            className={DESTRUCTIVE_ITEM_CLASS}
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onStopAndDelete(session, binding); onClose(); }}
+          >
+            {deletingLabel ?? "Stop & delete"}
+          </button>
+        ) : null}
+        {isChat ? (
+          <button
+            type="button"
+            className={DESTRUCTIVE_ITEM_CLASS}
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onDeleteChat(session, binding); onClose(); }}
+          >
+            {deletingLabel ?? "Delete chat"}
+          </button>
+        ) : null}
+        {!isRunning && !isChat ? (
+          <button
+            type="button"
+            className={DESTRUCTIVE_ITEM_CLASS}
+            disabled={deletingSessionId === session.id}
+            onClick={() => { onDeleteSession(session, binding); onClose(); }}
+          >
+            {deletingLabel ?? "Delete session"}
+          </button>
         ) : null}
       </div>
     </>

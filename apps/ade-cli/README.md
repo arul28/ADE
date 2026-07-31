@@ -420,16 +420,11 @@ ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
 ade chat note "running e2e shard 2/4"                       # update the caller's Work sidebar status; add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
-ade chat settle --outcome "opened PR #841, CI green"       # settle only when runtime lifecycle checks pass; exits 1 with exact blockers otherwise
-ade chat unsettle                                           # return the caller to the active lifecycle; add --session <id> to target explicitly
 ade session show session-id --text                          # settle/snooze state, and why a snoozed row came back
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d
 ade session snooze session-id --until 2026-07-26T18:00:00Z  # explicit ISO-8601 deadline (must be in the future)
 ade session snooze session-id --until-asked                 # open-ended, matching the desktop/iOS "Until I'm asked" preset: only a hand-raise brings it back
 ade session wake session-id --reason manual                 # timer|needs_you|error|turn_complete|manual
-ade session settle session-id --outcome "CI green"          # same as `ade chat settle`, but works for CLI/terminal sessions too
-ade session settle session-id --keep-active                 # pin active instead; the only way to hold a clean-exit row out of the quiet tier
-ade session unsettle session-id
 ade session clear-woke session-id                           # drop the "woke early" marker after visiting the row
 ade session actions --text                                  # raw session service actions
 ade chat schedules session-id --pause              # pause this agent session's durable wakeups/cron/loops (omit flag to inspect, --resume to re-arm)

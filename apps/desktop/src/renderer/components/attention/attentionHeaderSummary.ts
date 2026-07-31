@@ -11,7 +11,12 @@ import type { AttentionTone } from "./attentionPresentation";
  * inflating the count. Everything the header claims is derived here, once, so
  * the trigger, its label, and the popover can never disagree.
  */
-export type AttentionHeaderBucketId = "needs_you" | "blocked" | "review" | "live";
+export type AttentionHeaderBucketId =
+  | "needs_you"
+  | "blocked"
+  | "review"
+  | "done"
+  | "live";
 
 export type AttentionHeaderBucket = {
   id: AttentionHeaderBucketId;
@@ -44,20 +49,31 @@ const BUCKET_ORDER: AttentionHeaderBucketId[] = [
   "needs_you",
   "blocked",
   "review",
+  "done",
   "live",
 ];
 
 const BUCKET_LABEL: Record<AttentionHeaderBucketId, string> = {
   needs_you: "Needs you",
   blocked: "Failing or blocked",
-  review: "Done, unreviewed",
+  review: "Waiting on review",
+  done: "Done, unreviewed",
   live: "Live now",
 };
 
+/**
+ * Amber appears exactly once in this table, on `needs_you`, and that is the
+ * whole point: the header is the loudest surface ADE has, so the hue that means
+ * "your move" must not be shared with anything else. `done` is emerald because
+ * a finished run you have not looked at yet is an outcome, not a request —
+ * previously it rode in the same violet bucket as an outstanding PR review,
+ * which made "go look" and "go review" one indistinguishable colour.
+ */
 const BUCKET_TONE: Record<AttentionHeaderBucketId, AttentionTone> = {
   needs_you: "amber",
   blocked: "red",
   review: "violet",
+  done: "emerald",
   live: "blue",
 };
 
@@ -65,6 +81,7 @@ function bucketSummary(id: AttentionHeaderBucketId, count: number): string {
   if (id === "needs_you") return `${count} need${count === 1 ? "s" : ""} you`;
   if (id === "blocked") return `${count} failing or blocked`;
   if (id === "review") return `${count} to review`;
+  if (id === "done") return `${count} done`;
   return `${count} live`;
 }
 
@@ -78,6 +95,15 @@ function isExpired(item: AttentionItem, now: number): boolean {
  * Phases the header deliberately stays quiet about: `open`, `stale`, `closed`,
  * and outcomes the user already acknowledged. They are neither in motion nor
  * asking for anything, so they belong to the full Attention center.
+ *
+ * `stale` in particular is a silence, not a signal — it stays out of every
+ * bucket so it can never inflate the badge. The same holds for a session the
+ * user stopped: it never reaches the header at all, because a stopped run is an
+ * outcome the user chose.
+ *
+ * The loud tier is exactly `needs_you`. Nothing else may enter it — a resting
+ * or finished chat lands in `done`, never in the bucket that colours the header
+ * amber.
  */
 export function attentionHeaderBucketFor(
   item: AttentionItem,
@@ -96,7 +122,7 @@ export function attentionHeaderBucketFor(
       return "review";
     case "completed":
     case "merged":
-      return item.seenAt ? null : "review";
+      return item.seenAt ? null : "done";
     case "starting":
     case "running":
       return "live";

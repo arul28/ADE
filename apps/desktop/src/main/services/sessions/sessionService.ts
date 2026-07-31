@@ -1299,8 +1299,9 @@ export function createSessionService({ db }: { db: AdeDb }) {
      * derived preview line is blank or unchanged (spinners, repeated status
      * lines), so the stale-session detector does not treat live work as idle.
      * PTY-only. Ordinary shell output un-settles by default; tracked agent
-     * CLIs opt out because their own `ade chat settle` command and final line
-     * are still PTY output. Their next input explicitly clears the markers.
+     * CLIs opt out because an agent's trailing output would otherwise undo a
+     * settle the user just took on the row. Their next input explicitly clears
+     * the markers.
      */
     touchSessionActivity(
       sessionId: string,

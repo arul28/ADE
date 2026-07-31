@@ -271,6 +271,18 @@ export type UseUniversalSearchResult = {
   toggleExpandKind: (kind: SearchDocKind) => void;
 };
 
+export type UseUniversalSearchOptions = {
+  /**
+   * Session ids already rendered by the palette's local "Recent threads" group.
+   * A thread that matches on its title almost always matches on its content
+   * too, so without this the same chat appears twice — once instantly from the
+   * local index, once again a beat later under "Chats". Excluding them here
+   * (rather than at the render site) keeps `flatEntities` the single source of
+   * truth for the keyboard index.
+   */
+  excludeSessionIds?: ReadonlySet<string>;
+};
+
 /**
  * Owns the debounced `window.ade.search.query` call, its generation guard,
  * loading state, kind-grouped sections, and the expand-per-kind state. `query`
@@ -280,7 +292,9 @@ export type UseUniversalSearchResult = {
 export function useUniversalSearch(
   query: string,
   enabled: boolean,
+  options: UseUniversalSearchOptions = {},
 ): UseUniversalSearchResult {
+  const excludeSessionIds = options.excludeSessionIds;
   const [results, setResults] = useState<SearchResultItem[] | null>(null);
   const [totalByKind, setTotalByKind] = useState<
     Partial<Record<SearchDocKind, number>>
@@ -339,7 +353,18 @@ export function useUniversalSearch(
   const sections = useMemo<EntitySection[]>(() => {
     if (!results || results.length === 0) return [];
     const byKind = new Map<SearchDocKind, SearchResultItem[]>();
+    // Count what the exclusion removed per kind so each section's "show N more"
+    // total stays honest against the rows actually rendered.
+    const excludedByKind = new Map<SearchDocKind, number>();
     for (const item of results) {
+      if (
+        excludeSessionIds &&
+        item.sessionId &&
+        excludeSessionIds.has(item.sessionId)
+      ) {
+        excludedByKind.set(item.kind, (excludedByKind.get(item.kind) ?? 0) + 1);
+        continue;
+      }
       const bucket = byKind.get(item.kind);
       if (bucket) bucket.push(item);
       else byKind.set(item.kind, [item]);
@@ -348,15 +373,16 @@ export function useUniversalSearch(
     for (const kind of ENTITY_KIND_ORDER) {
       const rows = byKind.get(kind);
       if (!rows || rows.length === 0) continue;
+      const reportedTotal = totalByKind[kind] ?? rows.length;
       next.push({
         kind,
         label: ENTITY_KIND_LABEL[kind],
         rows,
-        total: totalByKind[kind] ?? rows.length,
+        total: Math.max(rows.length, reportedTotal - (excludedByKind.get(kind) ?? 0)),
       });
     }
     return next;
-  }, [results, totalByKind]);
+  }, [excludeSessionIds, results, totalByKind]);
 
   // Flattened, keyboard-navigable sequence of entity rows + show-more rows,
   // continuing after the command items in the shared flat index.

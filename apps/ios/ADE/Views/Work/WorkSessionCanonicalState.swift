@@ -461,20 +461,24 @@ func resolveSessionWakeReason(
 /// The snooze windows offered on iOS. Keys, copy, and deadline math mirror the
 /// desktop `SNOOZE_DURATION_OPTIONS` / `snoozeDeadlineIso` exactly, so the same
 /// choice means the same instant on both surfaces. Menu order is fixed:
-/// shortest window first, open-ended last.
+/// shortest window first, open-ended last. `thisEvening` is omitted from the
+/// resolved menu once 18:00 is within an hour or already past, matching
+/// desktop's `resolveSnoozePresets`.
 enum WorkSnoozeDuration: String, CaseIterable, Identifiable {
   case oneHour
   case thisEvening
   case tomorrowMorning
+  case nextWeek
   case untilAsked
 
   var id: String { rawValue }
 
   var label: String {
     switch self {
-    case .oneHour: return "1 hour"
-    case .thisEvening: return "Until this evening"
-    case .tomorrowMorning: return "Until tomorrow 9am"
+    case .oneHour: return "In 1 hour"
+    case .thisEvening: return "This evening"
+    case .tomorrowMorning: return "Tomorrow"
+    case .nextWeek: return "Next week"
     case .untilAsked: return "Until I'm asked"
     }
   }
@@ -484,6 +488,7 @@ enum WorkSnoozeDuration: String, CaseIterable, Identifiable {
     case .oneHour: return "clock"
     case .thisEvening: return "sunset"
     case .tomorrowMorning: return "sunrise"
+    case .nextWeek: return "calendar"
     case .untilAsked: return "hand.raised"
     }
   }
@@ -509,9 +514,41 @@ enum WorkSnoozeDuration: String, CaseIterable, Identifiable {
       return evening > now ? evening : atLocalHour(Self.eveningHour, dayOffset: 1)
     case .tomorrowMorning:
       return atLocalHour(Self.morningHour, dayOffset: 1)
+    case .nextWeek:
+      // Calendar weekday values are Sunday = 1, Monday = 2. A choice made on
+      // Monday means the following Monday, never a few hours later today.
+      let monday = 2
+      let today = calendar.component(.weekday, from: now)
+      let daysUntilMonday = (monday - today + 7) % 7
+      return atLocalHour(Self.morningHour, dayOffset: daysUntilMonday == 0 ? 7 : daysUntilMonday)
     case .untilAsked:
       return calendar.date(byAdding: .day, value: workSnoozeIndefiniteDays, to: now)
     }
+  }
+}
+
+struct WorkSnoozeOption: Equatable {
+  let duration: WorkSnoozeDuration
+  let deadline: Date
+}
+
+/// Resolve the native menu from one wall-clock snapshot so filtering and
+/// deadlines cannot disagree around the 17:00 / 18:00 boundary.
+func workSnoozeOptions(
+  now: Date = Date(),
+  calendar: Calendar = .current
+) -> [WorkSnoozeOption] {
+  let eveningIsUseful: Bool = {
+    guard let evening = calendar.date(bySettingHour: 18, minute: 0, second: 0, of: now) else {
+      return false
+    }
+    return evening.timeIntervalSince(now) > 60 * 60
+  }()
+
+  return WorkSnoozeDuration.allCases.compactMap { duration in
+    if duration == .thisEvening && !eveningIsUseful { return nil }
+    guard let deadline = duration.deadline(from: now, calendar: calendar) else { return nil }
+    return WorkSnoozeOption(duration: duration, deadline: deadline)
   }
 }
 

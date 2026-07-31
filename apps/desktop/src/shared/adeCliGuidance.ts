@@ -14,15 +14,21 @@ export const adeBundledAgentSkills = [
   "ade-search",
 ] as const;
 
+/**
+ * The status protocol agents actually get. Note what is NOT here: settling.
+ * `ade chat settle` was removed in 2026-07 — deciding that work is finished is
+ * a subjective call agents are unreliable at, and a self-settling chat drops
+ * out of the user's active list on the agent's say-so. Rows leave the active
+ * list when the user settles them or when their PR merges. Keep this guidance
+ * pointed at note/ask; do not re-add settle instructions.
+ */
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
   '- Working: `ade chat note "running e2e shard 2/4"`; keep it current.',
   '- Blocked on user input without a structured ask: `ade chat ask "<the exact question>"`.',
-  "- Settlement means the entire session is terminal, not merely the current turn or CLI process.",
-  "- Settle only when ALL are true: delivered and verified; no work, check, approval, question, subagent, job, schedule, goal, plan item, or follow-up remains; the next reply would be new scope.",
-  "- Do NOT settle during discussion, planning, review, monitoring, or waiting. “let’s discuss”, “for now”, “don’t change yet”, open questions, and feedback invitations are non-terminal.",
-  '- Only then run `ade chat settle --outcome "<one-line delivered result>"`. The runtime rejects settlement while structured work remains.',
-  "- If uncertain, do not settle; update `ade chat note` and leave it in Your move.",
+  '- Done: say so in your final message and leave a durable one-line result via `ade chat note "<delivered result>"`.',
+  "- You cannot settle or unsettle a session; `ade chat settle` / `ade session settle` no longer exist. Filing a row as done is the user's call, or the automatic result of its PR merging.",
+  "- Waiting on something you expect to take a while? `ade session snooze <id> --for <duration>` quiets the row without claiming the work is done, and a hand-raise wakes it early.",
 ].join("\n");
 
 /**

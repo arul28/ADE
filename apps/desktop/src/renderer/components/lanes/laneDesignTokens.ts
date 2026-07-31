@@ -124,6 +124,40 @@ export function laneSurfaceTint(
   };
 }
 
+/**
+ * The vertical rail drawn beside an expanded lane group's indented rows.
+ *
+ * It is deliberately a TINT, not a stripe: at ~25% the lane accent is enough to
+ * say which group the rows belong to while staying quieter than the lane name it
+ * hangs under, so a column of expanded groups doesn't read as a set of coloured
+ * bars competing with the cards. A lane with no accent falls back to the same
+ * neutral hairline every other divider in the sidebar uses.
+ */
+export function laneRailTint(color: string | null | undefined, percent = 25): string {
+  const c = typeof color === "string" ? color.trim() : "";
+  if (!c) return "rgba(255,255,255,0.07)";
+  // Every lane colour ADE assigns is a hex literal, and resolving it to `rgba`
+  // here rather than leaning on `color-mix` keeps the value a real colour any
+  // engine can parse — jsdom included, so the rail is assertable in tests.
+  const rgb = hexToRgb(c);
+  if (rgb) return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${percent / 100})`;
+  return `color-mix(in srgb, ${c} ${percent}%, transparent)`;
+}
+
+function hexToRgb(value: string): [number, number, number] | null {
+  const match = /^#([0-9a-f]{3}|[0-9a-f]{6})$/i.exec(value);
+  if (!match) return null;
+  const digits = match[1]!;
+  const full = digits.length === 3
+    ? digits.split("").map((d) => `${d}${d}`).join("")
+    : digits;
+  return [
+    Number.parseInt(full.slice(0, 2), 16),
+    Number.parseInt(full.slice(2, 4), 16),
+    Number.parseInt(full.slice(4, 6), 16),
+  ];
+}
+
 export function outlineButton(overrides?: CSSProperties): CSSProperties {
   return {
     display: "inline-flex",

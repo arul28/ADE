@@ -7,8 +7,8 @@ import { chatSurfaceVars } from "./chatSurfaceTheme";
 
 export type ChatSurfaceShellLayoutVariant = "standard" | "mobile";
 
-/** Shared padding for chat shell headers (title row, git toolbar, actions). */
-export const CHAT_SHELL_HEADER_CLASS = "space-y-1 px-2 py-1";
+/** Canonical chat-header gutter; each title rail inside it owns its 32px height. */
+export const CHAT_SHELL_HEADER_CLASS = "px-2";
 
 export function ChatSurfaceShell({
   mode,

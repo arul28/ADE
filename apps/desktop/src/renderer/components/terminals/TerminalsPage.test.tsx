@@ -228,6 +228,8 @@ vi.mock("../../state/appStore", () => ({
     laneDeleteProgressByLaneId: Record<string, never>;
     switchRemoteProject: typeof workMocks.fns.switchRemoteProject;
     switchProjectToPath: typeof workMocks.fns.switchProjectToPath;
+    selectLane: typeof workMocks.fns.selectLane;
+    focusSession: typeof workMocks.fns.focusSession;
     setWorkViewState: typeof workMocks.fns.setWorkViewState;
   }) => T): T =>
     selector({
@@ -236,6 +238,8 @@ vi.mock("../../state/appStore", () => ({
       projectBinding: workMocks.projectBinding,
       switchRemoteProject: workMocks.fns.switchRemoteProject,
       switchProjectToPath: workMocks.fns.switchProjectToPath,
+      selectLane: workMocks.fns.selectLane,
+      focusSession: workMocks.fns.focusSession,
       setWorkViewState: workMocks.fns.setWorkViewState,
       project: workMocks.projectRoot
         ? { rootPath: workMocks.projectRoot }
@@ -656,6 +660,66 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-spawned-child");
     expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith("chat-spawned-child");
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
+  });
+
+  it("writes a foreign select-session event into the destination project state", async () => {
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+    window.dispatchEvent(
+      new CustomEvent("ade:work:select-session", {
+        detail: {
+          sessionId: "chat-foreign",
+          laneId: "lane-foreign",
+          binding,
+        },
+      }),
+    );
+
+    await waitFor(() => {
+      expect(workMocks.fns.switchRemoteProject).toHaveBeenCalledWith("target-studio", "project-a");
+      expect(workMocks.fns.setWorkViewState).toHaveBeenCalledWith(
+        binding.key,
+        expect.any(Function),
+      );
+    });
+    expect(workMocks.fns.selectLane).toHaveBeenCalledWith("lane-foreign");
+    expect(workMocks.fns.focusSession).toHaveBeenCalledWith("chat-foreign");
+    expect(workMocks.currentWork.openSessionTab).not.toHaveBeenCalledWith("chat-foreign");
+    expect(workMocks.currentWork.setSelectedSessionId).not.toHaveBeenCalledWith("chat-foreign");
+
+    const updateDestination = workMocks.fns.setWorkViewState.mock.calls.at(-1)?.[1] as
+      (previous: {
+        openItemIds: string[];
+        selectedItemId: string | null;
+        activeItemId: string | null;
+      }) => {
+        openItemIds: string[];
+        selectedItemId: string | null;
+        activeItemId: string | null;
+      };
+    expect(updateDestination({
+      openItemIds: [],
+      selectedItemId: null,
+      activeItemId: null,
+    })).toMatchObject({
+      openItemIds: ["chat-foreign"],
+      selectedItemId: "chat-foreign",
+      activeItemId: "chat-foreign",
+    });
   });
 
   it("opens the Browser sidebar only for matching project open requests", async () => {

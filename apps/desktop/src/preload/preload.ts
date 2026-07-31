@@ -5803,7 +5803,7 @@ contextBridge.exposeInMainWorld("ade", {
       await callPinnedOrBoundRuntimeActionOr<unknown>(
         pin,
         "session",
-        "unsettleSelfSession",
+        "unsettleSession",
         { args: { sessionId } },
         () => ipcRenderer.invoke(IPC.sessionsUnsettle, { sessionId }),
       );

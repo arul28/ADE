@@ -147,7 +147,7 @@ function PreviewShellHeader({ provider }: { provider: PreviewProviderKey }) {
   const { name, Logo } = PREVIEW_PROVIDER_META[provider];
   return (
     <div className={CHAT_SHELL_HEADER_CLASS}>
-      <div className="flex items-center gap-2">
+      <div className="flex h-8 items-center gap-2">
         <div className="flex min-w-0 shrink items-center gap-1.5">
           <Logo size={16} className="shrink-0 opacity-90" />
           <span className="min-w-0 shrink truncate font-sans text-[length:calc(var(--chat-font-size)*12/14)] font-bold tracking-tight text-fg/90">

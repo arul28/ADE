@@ -101,13 +101,30 @@ Lists sessions grouped by one of three modes (controlled by
 Each group uses a `StickyGroupHeader` with collapsed-state persistence
 via `workCollapsedLaneIds` / `workCollapsedSectionIds`. There are **two** quiet
 tiers, not one. Settled is a lifecycle phase; Snoozed sits one tier above it and
-is a visibility overlay — a snoozed row keeps its own status dot and is simply
+is a visibility overlay — a snoozed row keeps its canonical status and is simply
 filed elsewhere. Status and time views render one final section per tier, while
 lane view renders collapsible snoozed and settled tails inside each lane. Rows
 in either tail are always reachable; there is no separate visibility filter
 because Status grouping already exposes the complete lifecycle. Every global
 section and per-lane tail starts collapsed. User-expanded state is persisted,
 and collapsed tails do not contribute ids to shift-range selection.
+
+Every disclosure has one visual shape and one toggle contract: clicking either
+the label or far-right chevron toggles it, while the label remains the only
+keyboard/assistive-technology stop. A collapsed header folds its count into the
+label (`Lane name (3)`, `Settled (12)`); an expanded header drops the count
+because its rows are visible. Fully quiet lanes and the global Snoozed/Settled
+shelves are closed-by-default three-state disclosures: no marker means never
+touched and closed, `shelf-open:*` / `lane-open:*` means explicitly opened, and
+removing the marker closes them again. Notification deep links add the open
+marker so a Settled destination cannot remain hidden.
+
+Lane groups with two or more sessions render an accent-coloured lane name,
+optional machine/PR markers, then indent the cards beside a lane-tinted rail.
+A lane with exactly one session suppresses the redundant divider and rail; the
+full-width card carries lane identity and PR state instead, and its context
+menu inherits the lane actions. The singleton/header transition participates
+in the same layout animation as lane reordering.
 
 Filing comes from `sessionFilingBucket`, which combines canonical lifecycle
 with the snooze visibility overlay in one shared answer. Snooze still yields to
@@ -195,18 +212,18 @@ the handoff fails.
 
 Also renders:
 
-- draft-kind switcher (chat vs terminal) at the top
-- group selector (Lane / Status / Time) and lane filter (`LaneCombobox`)
-- search input
+- a 32 px toolbar with borderless Search, Filters, and New chat actions; Search
+  opens the command palette and displays the configured shortcut
+- an expandable filter panel with group selector (Lane / Status / Time), lane
+  sort, status/tool chips, Has PR / Dirty, and `LaneCombobox`
 - the actual list of `SessionCard` rows (memoized)
-- an "Open new" button that sets `draftKind` and routes to
-  `WorkStartSurface`
-- an Add Lane button that opens `CreateLaneDialogHost` in-place. The
+- a bottom **New lane** action that opens `CreateLaneDialogHost` in-place. The
   Work flow uses the host's `close-on-create` behavior: it closes as
   soon as the lane row is created, then runs lane environment setup
   detached from the sidebar component and leaves a sticky retry toast if
   setup fails.
-- a bulk-action footer that appears when `selectedSessionIds` is
+- a compact selection toolbar beneath the header that appears when
+  `selectedSessionIds` is
   non-empty: "Stop N" for running PTYs, "Settle N", "Delete N" for
   deletable ended rows, "Stop & delete N" when the selection includes a
   running runtime, and a clear-selection X. The footer
@@ -226,76 +243,64 @@ a parent even when search, lane filtering, or a collapsed group hides its row.
 
 ### `SessionCard.tsx`
 
-Three rows:
+The full card is one full-bleed row with three lines:
 
-1. **Status dot + title + relative time** — `sessionStatusDot()` and
-   `primarySessionLabel()` drive these. The relative time comes from
-   `relativeTimeCompact`. Disposed CLI rows render a small inline
-   "Stopped" label immediately before the red status dot rather than an
-   attention capsule. Settled rows use a hollow ring; every non-settled phase
-   uses the filled green/amber/red vocabulary. When
-   `orchestrationParentSessionId` is present, a small deterministic
-   `ChatSubagentGlyph` appears immediately left of the status dot.
-   `SessionListPane` supplies the parent title from its unfiltered session
-   index for the tooltip; clicking the glyph stops card selection and routes
-   to the parent through `navigateToSpawnedChat`. The glyph is a mouse
-   shortcut inside the existing card button; a spawned chat's **View parent
-   thread** header control remains the keyboard/assistive-technology route.
-2. **Preview line** (conditional) — when the card's lane is mid
+1. **Where + status** — an adaptive identity slot on the left and
+   `SessionStatusSlot` on the right. The identity slot can carry the owning
+   machine, a pin, the lane identity for a singleton lane, spawned-chat
+   lineage, a branch only when it differs from the lane's declared branch, and
+   the lane PR for a singleton. When none of those apply, session delta or
+   last-activity time is the floor, so the line never renders empty. A grouped
+   lane owns machine identity and PR state in its header; child rows do not
+   repeat them. Lane identity always uses the lane accent and `LaneIcon`;
+   branch identity is always muted and uses `BranchIcon`.
+2. **Title** — `primarySessionLabel()` is the prominent element. When the
+   card's lane is mid
    background AI auto-naming (`useLaneNaming(lane.id)` from
-   `renderer/state/laneNamingStore.ts` is true), this row instead shows an
-   italic "Auto-naming lane underway…" status. Otherwise it shows
+   `renderer/state/laneNamingStore.ts` is true), a title change gets a short
+   lane-accent highlight.
+3. **Preview + quiet metadata** — while auto-naming it shows
+   "Auto-naming lane underway…"; otherwise it shows
    an explicit `attentionMessage` first, then `statusNote` (`done: …` in the
    settled tier), then a sanitized `lastOutputPreview`, then
    `session.summary`, then `session.goal`. Output fallback is plain text (never
    linkified), capped at 120 characters, and strips ANSI/control sequences plus
-   repeated whitespace via `sanitizeTerminalInlineText`. The title (row 1) gets a brief warm
-   accent-tinted highlight whenever its displayed text changes — e.g. when
-   the deterministic/seed name is replaced by the background AI name —
-   skipped on first mount.
-3. **Tool type + lane + badges** — `ToolLogo`, `shortToolTypeLabel`,
-   lane icon/name, `ClaudeCacheTtlBadge` (Claude chat only), delta chips
-   from `useSessionDelta`, exit code badge.
+   repeated whitespace via `sanitizeTerminalInlineText`. The trailing cluster
+   is limited to Claude cache TTL, a non-stop exit code, and `ToolLogo`; delta
+   moved to line one so preview text owns the width it needs.
 
-Hover actions include the info button and `SessionSnoozeControl`, the snooze
-affordance. It lives in its own component rather than inside the card body so
-the hot Work list pays only for one always-mounted button revealed with CSS —
-a hover *state* would re-render the row — plus menu state that exists only after
-a click. Its duration menu is a locally-owned fixed popover clamped to the
-viewport, with no document-level listener; an already-snoozed row offers **Wake
-now** instead. A row whose snooze ended early shows a compact woke marker naming
-the reason (`needs_you` / `error` / `turn_complete` / `timer` / `manual`) until
-it is opened, at which point `TerminalsPage` clears the marker — opening *is*
-the acknowledgement. Ended agent CLI sessions are
-continued from the transcript surface by typing into the lightweight
-composer; the card itself does not expose a separate continuation action.
+`SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
+words, glyphs, tone, prominence, and elapsed-time behavior through
+`shared/sessionStatusPresentation.ts`. Working and stale tick once per second
+from last activity. On row hover or keyboard focus the status swaps, without
+reflow, for `SessionSnoozeControl` and the context-appropriate Settle or
+Un-settle action. An open snooze menu pins the action slot visible. A row whose
+snooze ended early shows the shared Woke presentation until it is opened, at
+which point `TerminalsPage` clears the marker — opening is the acknowledgement.
+
+After one second of uninterrupted hover, `SessionHoverCard` opens over the
+content area to the right of the sidebar. It uses icon-led fact rows rather
+than `Label: value` text and carries details intentionally removed from the hot
+row: lane, machine, branch, provider, PR, parent thread, orchestration role,
+spawn kind, live-child count, import provenance, grid membership, Claude tag,
+next scheduled wake, non-zero exit, and the long-running process cleanup hint.
+PR and parent-thread facts are clickable. Moving directly from a row whose card
+is open to another session row opens the next card immediately; entering from
+blank space, the content pane, or a row whose timer never fired starts a fresh
+one-second delay. Pointer leave before the delay, list scroll, and resize cancel
+the card. The portal is viewport-clamped and fades/slides right from the source
+row, with motion disabled under reduced-motion preferences.
 
 When `disabledReason` is set, the card disables selection, dragging, and its
 context menu, lowers opacity, and renders a centered spinner/status overlay.
 This is used while the card's owning lane is being deleted.
 
-The selected card adds a left accent border and elevated background.
-Cards in the multi-selection set (`isMultiSelected`) reuse the same
-accent and add a subtle ring so shift / meta click selection reads
-clearly even when the primary single-selection points elsewhere.
-
-`sessionCapsuleBadge()` renders only three interrupt-relevant facts next to the
-title: amber `Needs you`, red `Failed`, or outlined `Stale` with a clock.
-Stale means a still-running session with a real `lastActivityAt` at least three
-hours old; it remains in Running and is not automatically settled. Ready chats
-and idle CLIs sit in Your move without a capsule. This is the two-tier
-attention contract: the list keeps quiet resting work visible, while only
-canonical `needs_you` contributes to the Work-tab highlight, notifications, and
-Dock badge. `useAppWideSessionAttention` owns that count at `AppShell` rather
-than inside Work, so Files, PRs, Lanes, and other project routes continue to
-receive PTY/chat/session events. It cancels old refreshes on project switch and
-clears the badge when the project closes.
-
-This lifecycle capsule is distinct from the amber process-cleanup warning pip.
-`getStaleRunningCliSessionAgeHours(session)` flags non-chat, non-run-owned
-CLI/shell processes only after 24 hours without output and powers both the
-inline cleanup hint and the AppShell toast. It can coexist with the canonical
-three-hour `Stale` capsule.
+Selected and hovered rows spend the reserved background surface; multi-select
+adds a subtle ring. Non-prominent states (working, starting, stale, stopped,
+ended, snoozed, and settled) recede until hovered, while Needs you, Done, and
+Failed keep full weight. Only canonical `needs_you` contributes to the Work-tab
+highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
+that count at `AppShell`, so it remains live outside Work.
 
 ## Work view: `WorkViewArea.tsx`
 
@@ -741,11 +746,15 @@ Launch commands are built by `apps/desktop/src/shared/cliLaunch.ts`:
 
 ## Context menu: `SessionContextMenu.tsx`
 
-Right-click menu with branches per session type:
+The right-click menu uses one grouped, liquid-glass menu vocabulary:
 
-- All rows: Rename (inline text input, sets `manuallyNamed: true`), Go to lane,
-  Copy session ID, and optional pin/deeplink/grid actions supplied by the
-  parent.
+- The unlabelled identity block carries Rename (inline text input,
+  `manuallyNamed: true`), optional Set tag, pin, and grid removal.
+- **Lifecycle** carries runtime stop, Snooze/Wake, and Settle/Un-settle.
+- **Go to** carries lane and optional web navigation.
+- **Copy** is a hover/keyboard submenu for the session ID and deep link.
+- Destructive Stop & delete / Delete chat / Delete session actions are fenced
+  into the final red block.
 - Chat: Set tag… (running Claude only), Settle/Unsettle when at rest,
   **Dismiss & settle** for `Needs you`, and Delete chat. Dismissal routes
   through the backend settlement transaction; it interrupts the provider and
@@ -757,10 +766,12 @@ Right-click menu with branches per session type:
   prompt shows the disabled **Resolve input to settle** row.
 
 Every row also carries one exhaustive lifecycle block holding each action that
-changes where the sidebar files it. **Snooze…** expands in place into the four
-durations (`1 hour`, `Until this evening`, `Until tomorrow 9am`,
-`Until I'm asked`); an already-snoozed row instead shows **Wake now** with its
-wake label. Settle actions operate on explicit declarations: a declared settle
+changes where the sidebar files it. **Snooze…** expands in place into the
+durations resolved by `resolveSnoozePresets` (`In 1 hour`, `This evening`,
+`Tomorrow`, `Next week`, `Until I'm asked` — each with a time column beside it,
+and `This evening` dropped once 18:00 is within an hour or past, so the row
+count varies with the time of day); an already-snoozed row instead shows
+**Wake now** with its wake label. Settle actions operate on explicit declarations: a declared settle
 has `settledAt` for **Unsettle** to clear and can additionally be pinned with
 **Keep active**, while `settleOverride` explicitly pins either state. The block
 is kept exhaustive on purpose: a
@@ -769,6 +780,12 @@ un-hide. All writes go through
 `components/terminals/sessionLifecycleActions.ts`, which also owns the
 five-second undo toast, so the row menu, the hover `SessionSnoozeControl`, and
 the chat header chips can never disagree about what an action does.
+
+A singleton lane has no divider to right-click, so its session menu adds a
+**Lane** hover submenu. `LaneActionsSubmenu` renders the exact
+`buildLaneMenuGroups()` model used by `LaneContextMenu`; it does not transcribe
+the actions. Menu subpanels share `MenuSubmenu`'s 180 ms open delay, 300 ms
+pointer-safe close grace, viewport clamping, and keyboard navigation.
 
 The rename input uses a local state and submits via
 `sessions.updateMeta({ title, manuallyNamed: true })`. Errors bubble
@@ -955,10 +972,12 @@ nothing when no delta is available.
   `snoozedUntil` to now. The Work hook's single timer only bumps a counter to
   force a re-derive; a watchdog that mutated rows on expiry would give a second,
   divergent answer on every surface not running it.
-- A derived settle has no `settledAt`, so plain Unsettle does nothing to it. Any
-  new lifecycle affordance must branch on declared vs derived or it will ship a
-  row the user cannot lift out of the quiet tier — the `"active"` keep-active
-  pin is the only unsettle those rows have.
+- Nothing *derives* a settle. A clean process exit leaves a row `ended`, never
+  `settled` (`sessionCanonicalState.ts`), so every settled row has either a
+  `settledAt` or a `"settled"` override and plain Unsettle clears both. The
+  `"active"` keep-active pin exists to hold a row out of the quiet tier when
+  something later declares a settle on it (the PR-merge policy), not to rescue
+  an inferred one.
 - Refresh ordering for launches — use the synchronous `ptyCreate` /
   chat-create result to `openSessionTab` before the background forced
   refresh, then merge any stale persisted row with the optimistic row.

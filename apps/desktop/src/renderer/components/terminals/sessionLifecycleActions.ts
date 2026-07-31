@@ -5,6 +5,10 @@ import type {
 } from "../../../shared/types";
 import { showToast } from "../app/toast/toastStore";
 import {
+  canonicalInputFromSummary,
+  sessionNeedsYou,
+} from "../../lib/terminalAttention";
+import {
   snoozeConfirmationLabel,
   snoozeDeadlineIso,
   type SnoozeDurationKey,
@@ -93,6 +97,27 @@ export async function setSessionSettleOverride(
       : window.ade.sessions.setSettleOverride(session.id, override));
   } catch (error) {
     reportFailure(override === "active" ? "Keep active" : "Settle", session.id, error);
+  }
+}
+
+/**
+ * Settle one session through the binding-aware endpoint. Needs-you rows require
+ * an explicit dismissal flag so resolving their attention and filing them away
+ * remains one atomic lifecycle action.
+ */
+export async function settleSession(
+  session: TerminalSessionSummary,
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const options = sessionNeedsYou(canonicalInputFromSummary(session))
+    ? { dismissPendingInput: true }
+    : undefined;
+  try {
+    await (pin
+      ? window.ade.sessions.settle(session.id, options, pin)
+      : window.ade.sessions.settle(session.id, options));
+  } catch (error) {
+    reportFailure("Settle", session.id, error);
   }
 }
 

@@ -162,7 +162,8 @@ export const WORK_SURFACE_HEADER_ACTION_BASE =
 export const WORK_SURFACE_HEADER_ACTION_IDLE =
   "border-white/[0.06] bg-white/[0.02] text-muted-fg/40 hover:border-white/[0.10] hover:text-fg/65";
 
-export const WORK_SURFACE_HEADER_CLASS = "space-y-1 px-2 py-1";
+/** Canonical 32px title rail shared by chat and CLI work surfaces. */
+export const WORK_SURFACE_HEADER_CLASS = "flex h-8 items-center px-2";
 
 export type WorkSurfaceHeaderProps = {
   /** Primary surface title (chat name, CLI session label, etc.). */
@@ -258,7 +259,7 @@ export function WorkSurfaceHeader({
   const tileDragProps = embeddedChrome?.dragHandleProps ?? null;
   return (
     <div className={cn(WORK_SURFACE_HEADER_CLASS, className)} data-testid={testId} onContextMenu={onContextMenu}>
-      <div className="flex items-center gap-2">
+      <div className="flex w-full items-center gap-2">
         {onToggleSessionsPane ? (
           <WorkHeaderSidebarToggle
             collapsed={sessionsPaneCollapsed}

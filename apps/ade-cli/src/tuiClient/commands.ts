@@ -74,7 +74,7 @@ export const BUILTIN_COMMANDS: BuiltinCommand[] = [
   { name: "/session wake", description: "Wake a snoozed session back into the attention list", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/session settle", description: "Mark a session settled", placement: "right", argumentHint: "[session-id] [outcome]", category: "Chats" },
   { name: "/session unsettle", description: "Remove a session's settled state", placement: "right", argumentHint: "[session-id]", category: "Chats" },
-  { name: "/session keep-active", description: "Pin a session active so it never settles on its own", placement: "right", argumentHint: "[session-id]", category: "Chats" },
+  { name: "/session keep-active", description: "Pin a session active against a later settle", placement: "right", argumentHint: "[session-id]", category: "Chats" },
   { name: "/tag", description: "Tag the active Claude chat", placement: "right", argumentHint: "<tag|clear>", providers: ["claude"], category: "Model" },
   { name: "/output-style", description: "List or select the active Claude output style", placement: "right", argumentHint: "[style]", providers: ["claude"], category: "Model" },
   { name: "/plugin", description: "List, reload, or manage Claude plugins", placement: "right", argumentHint: "[reload|native args]", providers: ["claude"], category: "Model" },

@@ -172,21 +172,30 @@ background a raw CLI and then guess at its state:
   the full command line and exclude yourself (`pgrep -f "codex exec" | grep -v $$`),
   never the bare program name.
 
-### Session lifecycle: settle, snooze, wake
+### Session lifecycle: snooze, wake (settling is not yours)
 
-The work-session lifecycle is reachable from every surface, including yours. The
-typed family takes the session id as a positional, also accepts `--session`, and
-falls back to `ADE_CHAT_SESSION_ID` when you omit it — so you can drive your own
-session or another one.
+**You cannot settle a session.** `ade chat settle`, `ade chat unsettle`,
+`ade session settle`, and `ade session unsettle` were removed: whether work is
+actually finished is a subjective judgment, and a chat that settles itself
+disappears from the user's active list on your say-so. A row leaves the active
+list only when the user settles it in ADE, or when its PR merges and the
+deterministic `autoSettleLaneSessionsOnPrMerge` policy files the lane's
+sessions. Running a removed command fails with that explanation.
+
+What to do instead when you finish: say so in your final message, and use
+`ade chat note "<one-line status>"` to leave a durable status line on the Work
+row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
+
+Snooze is the lifecycle verb you *do* own. The typed family takes the session id
+as a positional, also accepts `--session`, and falls back to
+`ADE_CHAT_SESSION_ID` when you omit it.
 
 ```bash
 ade session show <id> --text                 # lifecycle state incl. wake reason
 ade session snooze <id> --for 1h             # also 30m, 4h, 1d (cap 30d)
 ade session snooze <id> --until <iso>        # mutually exclusive with --for
+ade session snooze <id> --until-asked        # no deadline; only a hand-raise returns it
 ade session wake <id> [--reason <reason>]
-ade session settle <id> [--outcome "..."]
-ade session settle <id> --keep-active        # pin: beats a derived clean-exit settle
-ade session unsettle <id>
 ade session clear-woke <id>
 ```
 
@@ -195,18 +204,21 @@ Semantics that hold on every surface:
 - **Snooze is a visibility overlay, not a lifecycle state.** It never changes a
   session's canonical phase; it only files the row in a quiet tier. Timer expiry
   is derived by comparing `snoozedUntil` to now — nothing schedules a wakeup.
+  This is why snooze is safe for you and settling is not: snooze quiets a row
+  you are waiting on without claiming the work is done.
 - **A snoozed session hand-raises early** when it needs approval or input, when
   it hits an error *newer than* the snooze, or when a running turn completes.
   The row then carries a woke marker plus the reason (`needs approval`,
   `errored`, `turn finished`, `snooze ended`).
-- **Settle override is tri-state** (`settled` / `active` / cleared). `--keep-active`
-  sets the `active` pin, which is how you un-settle a session that settled itself
-  on a clean exit and therefore has no settle timestamp to clear.
+- **Nothing derives a settle.** A clean process exit means the CLI ended, not
+  that the work is done — such a row is `ended`, never `settled`.
 
-Generic action-domain equivalents: `session.snoozeSession`, `session.snoozeSessions`,
-`session.wakeSession`, `session.wakeSessions`, `session.setSettleOverride`,
-`session.clearWokeMarker`, alongside the existing `session.settleSessions` /
-`session.unsettleSessions`.
+Generic action-domain equivalents you can call: `session.snoozeSession`,
+`session.snoozeSessions`, `session.wakeSession`, `session.wakeSessions`,
+`session.clearWokeMarker`. The settle writers (`session.settleSession`,
+`session.unsettleSession`, `session.settleSessions`,
+`session.unsettleSessions`, `session.setSettleOverride`) are CTO-only and will
+refuse your calls.
 
 ### Lane branch drift
 

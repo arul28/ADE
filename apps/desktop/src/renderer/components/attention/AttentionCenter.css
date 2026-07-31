@@ -48,7 +48,9 @@
      literal, so it is safe to hold here. */
   --tone-color: #a1a1aa;
   --tone-on: #0e1111;
-  --attn-warn: #fbbf24;
+  /* No --attn-warn here on purpose. A free-floating amber token is how amber
+     leaked onto four unrelated things; the only amber left in this file is
+     .attention-tone-amber, which a phase must earn by meaning "your move". */
   --attn-danger: #f87171;
   --attn-ok: #34d399;
   --attn-idle: #71717a;
@@ -70,7 +72,6 @@
   --attn-sheen: rgba(255, 255, 255, 0.6);
   --attn-shadow-popover: 0 24px 60px -28px rgba(15, 23, 42, 0.28);
   --attn-shadow-menu: 0 18px 44px -22px rgba(15, 23, 42, 0.22);
-  --attn-warn: #b45309;
   --attn-danger: #b91c1c;
   --attn-ok: #047857;
   --attn-idle: #71717a;
@@ -160,6 +161,10 @@
   box-shadow: inset 0 1px 0 var(--attn-sheen), 0 8px 22px -14px var(--color-accent);
 }
 
+/* The bell badge counts the whole inbox — needs-you, failures, review requests
+   and unseen outcomes together — so it is an aggregate, not a request. It used
+   to be amber, which is exactly how amber came to mean four things at once;
+   neutral-strong keeps it legible and leaves the meaning to the per-row tones. */
 .attention-title-icon > span {
   position: absolute;
   top: -5px;
@@ -170,10 +175,10 @@
   align-items: center;
   justify-content: center;
   padding: 0 4px;
-  color: #1c1500;
+  color: var(--color-bg);
   border: 2px solid var(--color-bg);
   border-radius: 99px;
-  background: #fbbf24;
+  background: var(--color-fg);
   font-family: var(--font-mono);
   font-size: var(--attn-fs-2xs);
   font-weight: 750;
@@ -475,12 +480,15 @@
   white-space: nowrap;
 }
 
+/* Jump-to-inbox affordance. Accent, not amber: the number behind it is the
+   whole inbox (failures and review requests included), and amber is reserved
+   for states where the user personally has to move. */
 .attention-panel-heading button {
   flex: 0 0 auto;
   padding: 4px 7px;
-  color: var(--attn-warn);
+  color: var(--color-accent-bright, var(--color-accent));
   border-radius: 6px;
-  background: color-mix(in srgb, var(--attn-warn) 12%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
   font-size: var(--attn-fs-xs);
   font-weight: 600;
   white-space: nowrap;
@@ -488,7 +496,7 @@
 }
 
 .attention-panel-heading button:hover {
-  background: color-mix(in srgb, var(--attn-warn) 20%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 22%, transparent);
 }
 
 .attention-roster-scroll {
@@ -953,10 +961,14 @@
   line-height: 1.45;
 }
 
+/* "This machine is offline, you're reading last-known state" is true but not
+   actionable — the user cannot reconnect it from here. It was one of the five
+   things amber used to mean; it is neutral now, per the one-hue rule in
+   apps/desktop/src/shared/sessionStatusPresentation.ts. */
 .attention-offline-banner {
-  color: var(--attn-warn);
-  border: 1px solid color-mix(in srgb, var(--attn-warn) 26%, transparent);
-  background: color-mix(in srgb, var(--attn-warn) 8%, transparent);
+  color: var(--color-muted-fg);
+  border: 1px solid color-mix(in srgb, var(--attn-idle) 30%, transparent);
+  background: color-mix(in srgb, var(--attn-idle) 10%, transparent);
 }
 
 .attention-ack-error {

@@ -232,7 +232,6 @@ type FormatterId =
   | "chat-read"
   | "session-lifecycle"
   | "lane-drift"
-  | "session-settlement"
   | "scheduled-work-create"
   | "tests-runs"
   | "proof-list"
@@ -622,10 +621,9 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade terminal list | resume | read | write | signal
                                                     Control an attached session terminal
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
-    $ ade chat list | create | send | ask | note
-               settle | unsettle | interrupt
+    $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session snooze | wake | settle | unsettle File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1669,6 +1667,12 @@ const HELP_BY_COMMAND: Record<string, string> = {
   the session id as a positional, accepts --session <id>, and falls back to
   $ADE_CHAT_SESSION_ID so an agent can file its own session with no id.
 
+  Settling is NOT here: 'settle' and 'unsettle' were removed because deciding
+  that work is finished is the user's call. A row leaves the active list when
+  the user settles it in ADE or when its PR merges. Snooze is the agent-safe
+  way to quiet a row you are waiting on — it hides the row without claiming
+  the work is done, and a hand-raise wakes it early.
+
     $ ade session show <id> --text                  Print settle/snooze state and the wake reason
     $ ade session snooze <id> --for 1h              Snooze until now + 1h (30m, 1h, 4h, 1d, 1.5h; bare number = minutes)
     $ ade session snooze <id> --until 2026-07-26T18:00:00Z
@@ -1676,9 +1680,6 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade session snooze <id> --until-asked          Snooze open-ended (the desktop/iOS "Until I'm asked" preset):
                                                     no clock deadline, so only a hand-raise brings the row back
     $ ade session wake <id>                         Clear the snooze now (--reason timer|needs_you|error|turn_complete|manual)
-    $ ade session settle <id> --outcome "CI green"  Mark the session complete
-    $ ade session settle <id> --keep-active         Pin the session active instead (beats the derived clean-exit settle)
-    $ ade session unsettle <id>                     Return the session to the active lifecycle
     $ ade session clear-woke <id>                   Drop the "woke early" marker after visiting the row
     $ ade session actions --text                    List raw session service actions
 
@@ -1711,10 +1712,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
-    $ ade chat settle --outcome "PR #841, CI green" Settle only after runtime lifecycle checks pass
-                                                    Exits 1 and prints exact blockers when rejected
-    $ ade chat unsettle                             Return this session to the active lifecycle
-                                                    These four commands default to the caller and accept --session <id>
+                                                    'note' and 'ask' default to the caller and accept --session <id>.
+                                                    'chat settle' / 'chat unsettle' were removed: only the user (or a
+                                                    merged PR) settles a session — report your outcome with 'chat note'.
     $ ade chat steer <session> --personal --text "focus on the tradeoffs"
     $ ade chat models --personal --provider codex
     $ ade chat update <session> --personal --title "Trip planning"
@@ -6824,12 +6824,12 @@ function buildTerminalPlan(args: string[]): CliPlan {
 
 /**
  * `ade session …` — the session-lifecycle surface. Unlike `ade chat`, these
- * commands are about *filing* a session rather than talking to it: settle it,
- * pin it active, or snooze it out of the attention surfaces until a deadline.
+ * commands are about *filing* a session rather than talking to it: snooze it
+ * out of the attention surfaces until a deadline, wake it, or read its state.
  *
  * Every subcommand takes the session id as a positional, accepts `--session`
  * as an alias, and falls back to $ADE_CHAT_SESSION_ID so an agent can file its
- * own session with no id at all — the same defaulting `ade chat settle` uses.
+ * own session with no id at all.
  */
 function buildSessionPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "show";
@@ -6911,77 +6911,6 @@ function buildSessionPlan(args: string[]): CliPlan {
     };
   }
 
-  // `--keep-active` is the explicit keep-active pin (settle_override =
-  // 'active'). It is the only way to hold a clean-exit row in the active tier,
-  // because those rows derive their settle and have no settled_at to clear.
-  const keepActive = readFlag(args, ["--keep-active", "--pin-active"]);
-
-  if (sub === "settle") {
-    if (keepActive) {
-      return {
-        kind: "execute",
-        label: "session settle --keep-active",
-        formatter: "session-lifecycle",
-        steps: [
-          actionStep(
-            "result",
-            "session",
-            "setSettleOverride",
-            collectGenericObjectArgs(args, { sessionId, override: "active" }),
-          ),
-        ],
-      };
-    }
-    const outcome = readValue(args, ["--outcome"]);
-    return {
-      kind: "execute",
-      label: "session settle",
-      formatter: "session-lifecycle",
-      steps: [
-        actionStep(
-          "result",
-          "session",
-          "settleSelfSession",
-          collectGenericObjectArgs(args, {
-            sessionId,
-            ...(outcome !== null ? { outcome } : {}),
-          }),
-        ),
-      ],
-    };
-  }
-
-  if (sub === "unsettle") {
-    if (keepActive) {
-      return {
-        kind: "execute",
-        label: "session unsettle --keep-active",
-        formatter: "session-lifecycle",
-        steps: [
-          actionStep(
-            "result",
-            "session",
-            "setSettleOverride",
-            collectGenericObjectArgs(args, { sessionId, override: "active" }),
-          ),
-        ],
-      };
-    }
-    return {
-      kind: "execute",
-      label: "session unsettle",
-      formatter: "session-lifecycle",
-      steps: [
-        actionStep(
-          "result",
-          "session",
-          "unsettleSelfSession",
-          collectGenericObjectArgs(args, { sessionId }),
-        ),
-      ],
-    };
-  }
-
   if (sub === "clear-woke" || sub === "clear-wake") {
     return {
       kind: "execute",
@@ -6999,7 +6928,7 @@ function buildSessionPlan(args: string[]): CliPlan {
   }
 
   throw new CliUsageError(
-    `Unknown session subcommand '${sub}'. Try: show, snooze, wake, settle, unsettle, clear-woke.`,
+    `Unknown session subcommand '${sub}'. Try: show, snooze, wake, clear-woke.`,
   );
 }
 
@@ -7007,6 +6936,11 @@ function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
     return buildPersonalChatPlan(sub, args);
+  }
+  if (sub === "settle" || sub === "unsettle") {
+    throw new CliUsageError(
+      "'chat settle' / 'chat unsettle' were removed: only the user (or a merged PR) settles a session — report your outcome with 'chat note'.",
+    );
   }
   if (sub === "actions")
     return {
@@ -7035,11 +6969,9 @@ function buildChatPlan(args: string[]): CliPlan {
     && (args[0] === "list" || args[0] === "create" || args[0] === "cancel")
     ? firstStandalonePositional(args)
     : null;
-  const selfLifecycleSub =
-    sub === "ask" ||
-    sub === "note" ||
-    sub === "settle" ||
-    sub === "unsettle";
+  // `ask` / `note` take free text, not a session positional — they default to
+  // the caller's own $ADE_CHAT_SESSION_ID and accept --session <id>.
+  const selfLifecycleSub = sub === "ask" || sub === "note";
   const explicitSessionId = readValue(args, ["--session", "--session-id"]);
   const sessionId =
     explicitSessionId ??
@@ -7081,43 +7013,6 @@ function buildChatPlan(args: string[]): CliPlan {
           "session",
           "setSessionStatusNote",
           withSession({ note }),
-        ),
-      ],
-    };
-  }
-  if (sub === "settle") {
-    const outcome = requireValue(
-      readValue(args, ["--outcome"]),
-      "outcome",
-    );
-    return {
-      kind: "execute",
-      label: "chat settle",
-      formatter: "session-settlement",
-      steps: [
-        actionStep(
-          "result",
-          "session",
-          "settleSelfSession",
-          withSession({
-            outcome,
-          }),
-        ),
-      ],
-      exitCodeFromResult: (result) =>
-        isRecord(result) && result.ok === false ? 1 : 0,
-    };
-  }
-  if (sub === "unsettle") {
-    return {
-      kind: "execute",
-      label: "chat unsettle",
-      steps: [
-        actionStep(
-          "result",
-          "session",
-          "unsettleSelfSession",
-          withSession(),
         ),
       ],
     };
@@ -19084,24 +18979,6 @@ function formatTextOutput(
       return formatSessionLifecycle(value);
     case "lane-drift":
       return formatLaneDrift(value);
-    case "session-settlement": {
-      if (!isRecord(value)) return JSON.stringify(value, null, 2);
-      const sessionId = asString(value.sessionId) ?? "unknown";
-      if (value.ok === true) {
-        return `Session ${sessionId} settled.`;
-      }
-      const blockers = Array.isArray(value.blockers)
-        ? value.blockers.filter(isRecord)
-        : [];
-      return [
-        `Session ${sessionId} was not settled.`,
-        ...blockers.map((blocker) => {
-          const code = asString(blocker.code) ?? "blocked";
-          const message = asString(blocker.message) ?? "Settlement is blocked.";
-          return `- ${code}: ${message}`;
-        }),
-      ].join("\n");
-    }
     case "scheduled-work-create": {
       const result = isRecord(value) && isRecord(value.result) ? value.result : value;
       const item = isRecord(result) && isRecord(result.item) ? result.item : {};

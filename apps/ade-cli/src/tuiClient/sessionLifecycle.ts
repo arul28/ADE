@@ -1,5 +1,5 @@
 import {
-  SNOOZE_DURATION_OPTIONS,
+  resolveSnoozePresets,
   sessionWokeMarker,
   snoozeConfirmationLabel,
   snoozeDeadlineIso,
@@ -133,14 +133,31 @@ export function resolveSessionTarget(args: {
 // Duration choices
 // ---------------------------------------------------------------------------
 
-export type SnoozeChoice = { key: SnoozeDurationKey; label: string };
+export type SnoozeChoice = {
+  key: SnoozeDurationKey;
+  label: string;
+  /** The palette's time column ("9:00 AM", "Mon 9:00 AM", "on a hand-raise"). */
+  whenLabel: string;
+};
 
-/** The palette rows, in the shared fixed order (shortest window first,
- *  open-ended last). Free-text durations bypass this list entirely. */
-export const SNOOZE_CHOICES: readonly SnoozeChoice[] = SNOOZE_DURATION_OPTIONS.map((option) => ({
-  key: option.key,
-  label: option.label,
-}));
+/**
+ * The palette rows, in the shared order (shortest window first, open-ended
+ * last). Free-text durations bypass this list entirely.
+ *
+ * A FUNCTION, not a module-level constant, and that is the whole point: the
+ * shared resolver drops "This evening" once 6pm is within an hour or already
+ * past, and a list derived once at import time would freeze that decision at
+ * process start. `ade code` sessions run for hours — one opened at 2pm would
+ * still be offering "This evening" at 11pm, pointing at a deadline in the past,
+ * which is exactly the bug the suppression exists to prevent.
+ */
+export function resolveSnoozeChoices(nowMs: number = Date.now()): readonly SnoozeChoice[] {
+  return resolveSnoozePresets(nowMs).map((preset) => ({
+    key: preset.key,
+    label: preset.label,
+    whenLabel: preset.whenLabel,
+  }));
+}
 
 export type SnoozeResolution =
   | { ok: true; untilIso: string; confirmation: string }

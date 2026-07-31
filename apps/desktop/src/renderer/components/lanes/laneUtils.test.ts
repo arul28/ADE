@@ -10,8 +10,10 @@ import {
   validateBranchName,
 } from "./laneUtils";
 import {
+  ALLOCATABLE_LANE_COLORS,
   LANE_COLOR_PALETTE,
   LANE_FALLBACK_COLORS,
+  PRIMARY_LANE_COLOR,
   colorsInUse,
   getLaneAccent,
   laneColorName,
@@ -195,15 +197,25 @@ describe("laneColorPalette", () => {
   });
 
   describe("nextAvailableColor", () => {
-    it("returns the first palette entry when nothing is in use", () => {
-      expect(nextAvailableColor([])).toBe(LANE_COLOR_PALETTE[0].hex);
+    it("returns the first ALLOCATABLE entry when nothing is in use", () => {
+      // Not `LANE_COLOR_PALETTE[0]`: that is the reserved Primary purple, which
+      // no auto-assigned lane may claim.
+      expect(nextAvailableColor([])).toBe(ALLOCATABLE_LANE_COLORS[0]!.hex);
+    });
+
+    it("never allocates the reserved Primary purple", () => {
+      const taken = ALLOCATABLE_LANE_COLORS.map((c) => makeLane({ id: c.hex, color: c.hex }));
+      // Purple is the one palette entry left unused, and it is still not offered.
+      expect(nextAvailableColor(taken)).toBeNull();
+      expect(ALLOCATABLE_LANE_COLORS.some((c) => c.hex === PRIMARY_LANE_COLOR)).toBe(false);
+      expect(LANE_FALLBACK_COLORS).not.toContain(PRIMARY_LANE_COLOR);
     });
 
     it("skips colors already taken by an active lane", () => {
-      const taken = LANE_COLOR_PALETTE.slice(0, 3).map((c) =>
+      const taken = ALLOCATABLE_LANE_COLORS.slice(0, 3).map((c) =>
         makeLane({ id: c.hex, color: c.hex }),
       );
-      expect(nextAvailableColor(taken)).toBe(LANE_COLOR_PALETTE[3].hex);
+      expect(nextAvailableColor(taken)).toBe(ALLOCATABLE_LANE_COLORS[3]!.hex);
     });
 
     it("returns null when every palette color is already in use", () => {

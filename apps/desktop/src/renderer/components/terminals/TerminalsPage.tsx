@@ -5,7 +5,11 @@ import { useWorkSessions } from "./useWorkSessions";
 import { SessionListPane } from "./SessionListPane";
 import { WorkViewArea } from "./WorkViewArea";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
-import { SessionContextMenu, type SessionContextMenuState } from "./SessionContextMenu";
+import {
+  SessionContextMenu,
+  type SessionContextMenuLaneActions,
+  type SessionContextMenuState,
+} from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import type { AgentChatSession, OpenProjectBinding, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
@@ -135,6 +139,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
+  const selectLaneInStore = useAppStore((s) => s.selectLane);
+  const focusSessionInStore = useAppStore((s) => s.focusSession);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const selectedLaneId = useAppStore((s) => s.selectedLaneId);
   const sortedLanes = useMemo(() => sortLanesForTabs(work.lanes), [work.lanes]);
@@ -330,6 +336,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       e: React.MouseEvent,
       binding?: OpenProjectBinding | null,
       machineName?: string | null,
+      // Supplied only for a singleton lane's card, where no lane divider exists
+      // to right-click; the session menu then also carries the lane section.
+      laneActions?: SessionContextMenuLaneActions | null,
     ) => {
       setContextMenu({
         session,
@@ -337,6 +346,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         y: e.clientY,
         ...(binding ? { binding } : {}),
         ...(machineName ? { machineName } : {}),
+        ...(laneActions ? { laneActions } : {}),
       });
     },
     [],
@@ -380,21 +390,69 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // the buttons are dead (the event had no subscriber).
   useEffect(() => {
     const handler = (event: Event) => {
-      const detail = (event as CustomEvent<{ sessionId?: string; laneId?: string }>).detail;
+      const detail = (event as CustomEvent<{
+        sessionId?: string;
+        laneId?: string;
+        /**
+         * Set only by callers that can target a session on ANOTHER machine —
+         * currently the command palette, whose thread search spans the same
+         * cross-machine union the Work sidebar shows. Without it a foreign
+         * session id would be focused against the locally-bound project and
+         * silently resolve to nothing (or, worse, a same-id local session).
+         */
+        binding?: OpenProjectBinding | null;
+      }>).detail;
       const sessionId = detail?.sessionId;
       if (!sessionId) return;
-      // Callers (spawn cards, subagents pane) often don't know the target's
-      // lane. Resolve it from the loaded session list so cross-lane jumps
-      // land on the right lane instead of focusing an off-lane session.
-      const laneId = detail.laneId ?? work.sessions.find((s) => s.id === sessionId)?.laneId ?? null;
-      if (laneId) work.selectLane(laneId);
-      work.focusSession(sessionId);
-      work.openSessionTab(sessionId);
-      work.setSelectedSessionId(sessionId);
+      const focusActiveProject = () => {
+        // Callers (spawn cards, subagents pane) often don't know the target's
+        // lane. Resolve it from the loaded session list so cross-lane jumps
+        // land on the right lane instead of focusing an off-lane session.
+        const laneId = detail.laneId ?? work.sessions.find((s) => s.id === sessionId)?.laneId ?? null;
+        if (laneId) work.selectLane(laneId);
+        work.focusSession(sessionId);
+        work.openSessionTab(sessionId);
+        work.setSelectedSessionId(sessionId);
+      };
+      const binding = detail.binding ?? null;
+      if (!binding) {
+        focusActiveProject();
+        return;
+      }
+      // Foreign target: write the destination project's state directly after
+      // switching. Calling `work.*` here would use the hook instance captured
+      // before the switch and persist the selection into the old project.
+      const destinationProjectKey = binding.kind === "remote" ? binding.key : binding.rootPath;
+      const switching = binding.kind === "remote"
+        ? switchRemoteProject(binding.targetId, binding.projectId)
+        : switchProjectToPath(binding.rootPath);
+      void switching
+        .then(() => {
+          if (detail.laneId) selectLaneInStore(detail.laneId);
+          focusSessionInStore(sessionId);
+          setWorkViewState(destinationProjectKey, (previous) => ({
+            ...previous,
+            openItemIds: previous.openItemIds.includes(sessionId)
+              ? previous.openItemIds
+              : [...previous.openItemIds, sessionId],
+            selectedItemId: sessionId,
+            activeItemId: sessionId,
+          }));
+        })
+        .catch((error: unknown) => {
+          setSessionActionError(error instanceof Error ? error.message : String(error));
+        });
     };
     window.addEventListener("ade:work:select-session", handler as EventListener);
     return () => window.removeEventListener("ade:work:select-session", handler as EventListener);
-  }, [work]);
+  }, [
+    focusSessionInStore,
+    selectLaneInStore,
+    setWorkViewState,
+    switchProjectToPath,
+    switchRemoteProject,
+    work,
+  ]);
 
   const handleGoToLane = useCallback(
     (

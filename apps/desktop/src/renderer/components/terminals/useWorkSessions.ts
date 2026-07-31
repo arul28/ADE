@@ -516,9 +516,18 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       sessionListOrganization:
         deeplinkViewOverride.sessionListOrganization ?? persisted.sessionListOrganization,
       workCollapsedSectionIds: deeplinkViewOverride.expandSectionId
-        ? (persisted.workCollapsedSectionIds ?? []).filter(
-          (sectionId) => sectionId !== deeplinkViewOverride.expandSectionId,
-        )
+        ? [
+          ...(persisted.workCollapsedSectionIds ?? []).filter(
+            (sectionId) => sectionId !== deeplinkViewOverride.expandSectionId,
+          ),
+          // The quiet shelves (`status:snoozed` / `status:settled`) default to
+          // COLLAPSED, so dropping their id is not enough to open one — absence
+          // is their closed state. They read an explicit `shelf-open:` marker
+          // instead (see `quietShelfOpenMarker` in SessionListPane), which this
+          // transient layer supplies for the navigation. Harmless for every
+          // other section: nothing consults a marker they do not use.
+          `shelf-open:${deeplinkViewOverride.expandSectionId}`,
+        ]
         : persisted.workCollapsedSectionIds,
     };
   }, [deeplinkViewOverride, projectStateKey, workViewByProject]);

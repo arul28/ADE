@@ -4754,7 +4754,7 @@ describe("ADE database usage aggregation", () => {
     expect(usageActionFromIpcChannel("ade.sessions.settle")).toBe("work.settleSession");
     expect(usageActionFromIpcChannel("ade.sessions.settleMany")).toBe("work.settleSession");
     expect(usageActionFromIpcChannel("ade.sessions.unsettleMany")).toBe("work.unsettleSession");
-    expect(usageActionFromRpcDomain("session", "settleSelfSession")).toBe("work.settleSession");
+    expect(usageActionFromRpcDomain("session", "settleSession")).toBe("work.settleSession");
     expect(usageActionFromRpcDomain("session", "unsettleSessions")).toBe("work.unsettleSession");
     expect(isMeaningfulUsageAction("work.settleSession")).toBe(true);
     expect(isMeaningfulUsageAction("work.unsettleSession")).toBe(true);

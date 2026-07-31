@@ -75,16 +75,34 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("session", "requestSessionAttention")).toBe(true);
     expect(isAllowedAdeAction("session", "setSessionStatusNote")).toBe(true);
     expect(isAllowedAdeAction("session", "settleSession")).toBe(true);
-    expect(isAllowedAdeAction("session", "settleSelfSession")).toBe(true);
-    expect(isAllowedAdeAction("session", "unsettleSelfSession")).toBe(true);
+    expect(isAllowedAdeAction("session", "unsettleSession")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "settleSession")).toBe(true);
+    expect(isCtoOnlyAdeAction("session", "unsettleSession")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "settleSessions")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "unsettleSessions")).toBe(true);
     expect(isCtoOnlyAdeAction("session", "updateLifecycleSettings")).toBe(true);
-    expect(isCtoOnlyAdeAction("session", "settleSelfSession")).toBe(false);
-    expect(isAutomationAllowedAdeAction("session", "settleSelfSession")).toBe(true);
     expect(isAutomationAllowedAdeAction("session", "settleSession")).toBe(false);
     expect(isAutomationAllowedAdeAction("session", "updateLifecycleSettings")).toBe(false);
+  });
+
+  // Regression guard for the 2026-07 removal of agent self-settlement: "is this
+  // work done" is a subjective call agents are unreliable at, so no settle
+  // writer may be reachable by a session-bound agent (role `agent`) or an
+  // automation. Only cto-role human surfaces and the deterministic PR-merge
+  // policy settle rows.
+  it("gives agents no way to settle or unsettle a session", () => {
+    expect(isAllowedAdeAction("session", "settleSelfSession")).toBe(false);
+    expect(isAllowedAdeAction("session", "unsettleSelfSession")).toBe(false);
+    for (const action of [
+      "settleSession",
+      "unsettleSession",
+      "settleSessions",
+      "unsettleSessions",
+      "setSettleOverride",
+    ]) {
+      expect(isCtoOnlyAdeAction("session", action)).toBe(true);
+      expect(isAutomationAllowedAdeAction("session", action)).toBe(false);
+    }
   });
 
   it("exposes snooze/wake/settle-override and lane branch drift to generic actions", () => {
@@ -1447,7 +1465,7 @@ describe("runtime session actions", () => {
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
   });
 
-  it("enforces caller settlement blockers without requiring agentChatService", async () => {
+  it("exposes caller note/ask writes but no caller-scoped settle action", async () => {
     const requestAttention = vi.fn(() => true);
     const setStatusNote = vi.fn(() => true);
     const settleSession = vi.fn(() => true);
@@ -1484,22 +1502,20 @@ describe("runtime session actions", () => {
     const sessionActions = getAdeActionDomainServices(runtime).session as {
       requestSessionAttention: (args: { sessionId: string; message: string }) => unknown;
       setSessionStatusNote: (args: { sessionId: string; note: string }) => unknown;
-      settleSelfSession: (args: {
-        sessionId: string;
-        outcome?: string;
-        dismissPendingInput?: boolean;
-      }) => unknown;
-      unsettleSelfSession: (args: { sessionId: string }) => unknown;
+      unsettleSession: (args: { sessionId: string }) => unknown;
     } & Record<string, unknown>;
 
-    expect(listAllowedAdeActionNames("session", sessionActions)).toEqual(
+    const allowed = listAllowedAdeActionNames("session", sessionActions);
+    expect(allowed).toEqual(
       expect.arrayContaining([
         "requestSessionAttention",
         "setSessionStatusNote",
-        "settleSelfSession",
-        "unsettleSelfSession",
       ]),
     );
+    // The caller-scoped settle pair is gone for good — an agent declares its
+    // outcome in prose, it does not file its own row into the quiet tier.
+    expect(allowed).not.toContain("settleSelfSession");
+    expect(allowed).not.toContain("unsettleSelfSession");
     expect(sessionActions.requestSessionAttention({
       sessionId: "session-1",
       message: "Which account should I use?",
@@ -1519,23 +1535,13 @@ describe("runtime session actions", () => {
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(setStatusNote).toHaveBeenCalledWith("session-1", null);
 
-    await expect(sessionActions.settleSelfSession({
-      sessionId: "session-1",
-      outcome: "PR #841 merged",
-      dismissPendingInput: true,
-    }))
-      .resolves.toEqual({
-        ok: false,
-        sessionId: "session-1",
-        blockers: [{
-          code: "pending_input",
-          message: "Resolve the pending input before settling.",
-        }],
-      });
-    expect(setSessionRuntimeState).not.toHaveBeenLastCalledWith("session-1", "idle");
+    expect(sessionActions.settleSelfSession).toBeUndefined();
+    expect(sessionActions.unsettleSelfSession).toBeUndefined();
     expect(settleSession).not.toHaveBeenCalled();
 
-    expect(sessionActions.unsettleSelfSession({ sessionId: "session-1" }))
+    // The user-driven single-row unsettle (desktop row menu on a remote-bound
+    // project, `ade code`'s /session unsettle) survives under a cto-gated name.
+    expect(sessionActions.unsettleSession({ sessionId: "session-1" }))
       .toEqual({ ok: true, sessionId: "session-1" });
     expect(unsettleSession).toHaveBeenCalledWith("session-1");
   });
@@ -1715,42 +1721,6 @@ describe("runtime session actions", () => {
     expect(dismissPendingInputForSettlement.mock.invocationCallOrder[0]).toBeLessThan(
       settleSession.mock.invocationCallOrder[0]!,
     );
-  });
-
-  it("returns structured runtime blockers instead of settling an unfinished agent session", async () => {
-    const blockers = [{
-      code: "unfinished_goal" as const,
-      message: "Mark the active Codex goal complete or clear it before settling.",
-    }];
-    const getSettlementBlockers = vi.fn(async () => blockers);
-    const settleSession = vi.fn(() => true);
-    const runtime = {
-      sessionService: {
-        get: vi.fn(() => ({ id: "chat-1", toolType: "codex-chat" })),
-        list: vi.fn(),
-        settleSession,
-      },
-      agentChatService: {
-        getSettlementBlockers,
-      },
-    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
-    const sessionActions = getAdeActionDomainServices(runtime).session as {
-      settleSelfSession: (args: {
-        sessionId: string;
-        outcome: string;
-      }) => Promise<unknown>;
-    };
-
-    await expect(sessionActions.settleSelfSession({
-      sessionId: "chat-1",
-      outcome: "Done",
-    })).resolves.toEqual({
-      ok: false,
-      sessionId: "chat-1",
-      blockers,
-    });
-    expect(getSettlementBlockers).toHaveBeenCalledWith("chat-1");
-    expect(settleSession).not.toHaveBeenCalled();
   });
 
   it("does not pretend a native CLI prompt was dismissed while its process is still blocked", async () => {
