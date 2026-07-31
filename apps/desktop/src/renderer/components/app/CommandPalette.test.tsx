@@ -17,6 +17,7 @@ import {
   SESSION_TONE_TEXT_CLASS,
 } from "../../../shared/sessionStatusPresentation";
 import { useAppStore } from "../../state/appStore";
+import { THIS_MACHINE_ID } from "../../../shared/machineIdentity";
 
 /** Surfaces the router location so navigation assertions read the real URL. */
 function LocationProbe() {
@@ -1030,13 +1031,122 @@ describe("CommandPalette", () => {
         expect(
           document.querySelectorAll('[data-thread-id="session-1"]'),
         ).toHaveLength(1);
-        // The deduped row keeps the LOCAL identity — no machine marker, no
-        // binding — so picking it takes the synchronous path.
-        expect(
-          document
-            .querySelector<HTMLElement>('[data-thread-id="session-1"]')
-            ?.dataset.machineId,
-        ).toBeUndefined();
+        // The deduped row keeps the LOCAL identity — so picking it takes the
+        // synchronous path. It is attributed to this Mac rather than to nothing
+        // (that is what makes it findable by machine name), and attribution is
+        // precisely what withholds the marker: a badge means "not here".
+        const row = document.querySelector<HTMLElement>('[data-thread-id="session-1"]');
+        expect(row?.dataset.machineId).toBe(THIS_MACHINE_ID);
+        expect(row?.dataset.machineOnline).toBeUndefined();
+        expect(row?.querySelector("[data-machine-marker-mode]")).toBeNull();
+      });
+
+      it("finds a remote-bound tab's own threads by that machine's name", async () => {
+        // The payoff of attributing the tab's own sessions. The scorer has always
+        // matched machine names; those entries simply had no machine to match,
+        // so with the tab bound to the Studio, typing "studio" found every
+        // thread on every OTHER machine and none of the ones right in front of
+        // you.
+        // A remote-bound tab keys its caches by the BINDING key, not the root
+        // path — see `selectActiveProjectStateKey`.
+        const boundKey = "remote:target-studio:project-a";
+        seedStore({
+          projectBinding: {
+            kind: "remote",
+            key: boundKey,
+            targetId: "target-studio",
+            runtimeName: "Arul's Mac Studio",
+            projectId: "project-a",
+            rootPath: PROJECT_ROOT,
+            displayName: "Repo A",
+          },
+          lanes: [makeLane()],
+          sessionsCacheByProject: {
+            [boundKey]: [makeSession({ id: "session-1", title: "Audit rebase settings" })],
+          },
+          workViewByProject: { [boundKey]: { activeItemId: null } },
+          crossMachineLanesByMachineId: {
+            "target-studio": makeForeignMachine({ online: false, sessions: [] }),
+          },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        await screen.findByText("Recent threads");
+        fireEvent.change(
+          screen.getByPlaceholderText("Search commands, projects, and threads…"),
+          { target: { value: "studio" } },
+        );
+
+        const row = await waitFor(() => {
+          const found = document.querySelector<HTMLElement>('[data-thread-id="session-1"]');
+          expect(found).toBeTruthy();
+          return found!;
+        });
+        // Found by machine, and marked as elsewhere — the tab points at the
+        // Studio but the app is running on this Mac.
+        expect(row.dataset.machineId).toBe("target-studio");
+        expect(row.dataset.machineOnline).toBe("false");
+        expect(row.dataset.dimmed).toBe("true");
+        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
+      });
+
+      it("uses the bound target connection when its retained Work slice is absent", async () => {
+        const boundKey = "remote:target-studio:project-a";
+        seedStore({
+          projectBinding: {
+            kind: "remote",
+            key: boundKey,
+            targetId: "target-studio",
+            runtimeName: "Arul's Mac Studio",
+            projectId: "project-a",
+            rootPath: PROJECT_ROOT,
+            displayName: "Repo A",
+          },
+          lanes: [makeLane()],
+          sessionsCacheByProject: {
+            [boundKey]: [makeSession({ id: "session-1", title: "Audit rebase settings" })],
+          },
+          workViewByProject: { [boundKey]: { activeItemId: null } },
+          // The work-union refresh is still in flight, so it has not retained
+          // a lane slice for the bound target yet.
+          crossMachineLanesByMachineId: {},
+        });
+        globalThis.window.ade.remoteRuntime = {
+          getConnectionSnapshot: vi.fn(async () => ({
+            connectedCount: 0,
+            updatedAt: Date.now(),
+            connections: [{
+              target: { id: "target-studio", name: "Arul's Mac Studio" },
+              state: "error",
+              projects: [],
+              lastError: "Connection lost",
+              lastAttemptedAt: Date.now(),
+              connectedAt: null,
+              arch: null,
+              version: null,
+            }],
+          })),
+          onConnectionSnapshotChanged: vi.fn(() => () => {}),
+        } as any;
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        const row = await waitFor(() => {
+          const found = document.querySelector<HTMLElement>('[data-thread-id="session-1"]');
+          expect(found?.dataset.machineOnline).toBe("false");
+          return found!;
+        });
+        expect(row.dataset.dimmed).toBe("true");
+        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
     });
   });

@@ -1588,12 +1588,41 @@ describe("SessionCard where line", () => {
       />,
     );
 
-    const marker = container.querySelector("[data-session-machine]") as HTMLElement;
+    // A runtime pin alone says WHICH machine, never that the machine is
+    // elsewhere — so on its own it paints no badge. The badge is the union
+    // resolver's verdict, handed down as `machineMarker`.
+    expect(container.querySelector("[data-session-machine]")).toBeNull();
+
+    const { container: badged } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={branchLane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        machineMarker={{
+          machineId: "studio",
+          machineName: "Mac Studio",
+          online: true,
+          mode: "glyph",
+          title: "Mac Studio",
+          sameBranchElsewhere: false,
+        }}
+      />,
+    );
+    const marker = badged.querySelector("[data-session-machine]") as HTMLElement;
     expect(marker.getAttribute("data-session-machine")).toBe("Mac Studio");
-    expect(container.querySelector("[data-session-status-slot]")?.contains(marker)).toBe(false);
+    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio");
+    // Identity, not status: it sits beside the status slot, never inside it.
+    expect(badged.querySelector("[data-session-status-slot]")?.contains(marker)).toBe(false);
   });
 
-  it("labels a local runtime pin with the machine, not the project display name", () => {
+  it("never badges a lane that is on this Mac, but still names it in the detail card", () => {
+    // The whole vocabulary of the badge is "this work isn't here", so a local
+    // binding earns no glyph however it is pinned. The fact is not lost — the
+    // hover card still answers it, and still says the MACHINE rather than the
+    // project folder name.
+    vi.useFakeTimers();
     const { container } = render(
       <SessionCard
         session={makeSession()}
@@ -1610,9 +1639,38 @@ describe("SessionCard where line", () => {
       />,
     );
 
+    expect(container.querySelector("[data-session-machine]")).toBeNull();
+    openRowTooltip(container);
+    expect(hoverRow("machine").textContent).toContain("This Mac");
+    expect(hoverRow("machine").textContent).not.toContain("t3code-6754bb34");
+  });
+
+  it("dims the badge for a lane whose machine has gone unreachable", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={branchLane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        machineMarker={{
+          machineId: "studio",
+          machineName: "Mac Studio",
+          online: false,
+          mode: "glyph",
+          title: "Mac Studio",
+          sameBranchElsewhere: false,
+        }}
+      />,
+    );
+
     const marker = container.querySelector("[data-session-machine]") as HTMLElement;
-    expect(marker.getAttribute("data-session-machine")).toBe("This Mac");
-    expect(marker.textContent).not.toContain("t3code-6754bb34");
+    // Offline changes the COLOUR, never the shape: a badge that grew a name when
+    // a machine dropped would reflow the row for an invisible reason.
+    expect(marker.getAttribute("data-machine-online")).toBe("false");
+    expect(marker.getAttribute("data-machine-marker-mode")).toBe("glyph");
+    expect(marker.getAttribute("aria-label")).toBe("On Mac Studio, offline");
+    expect(marker.textContent).toBe("");
   });
 
   it("drops the machine chip when the lane header already names the machine — but keeps the fact", () => {

@@ -558,7 +558,11 @@ Cross-machine Work union:
   replaces it when the owning runtime returns the authoritative row. Foreign
   lane presentation applies the same active/snoozed/settled filing and quiet
   collapse rules as local lanes while keeping runtime-pinned actions directed
-  to the owner.
+  to the owner. Its machine marker follows the physical Mac, not the selected
+  tab binding: `isActiveBinding` decides where the lane renders, while
+  `isThisMachine` decides whether the amber elsewhere glyph appears. Thus a
+  remote-bound tab still labels every remotely owned lane, including those in
+  its primary list rather than the foreign union.
 - `apps/desktop/src/renderer/components/terminals/TerminalsPage.tsx`,
   `SessionListPane.tsx`, and
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created

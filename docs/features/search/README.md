@@ -104,11 +104,14 @@ Desktop ⌘K command palette:
   universal-search seam: `useUniversalSearch` (debounced `window.ade.search`
   query), the `KindIcon` / highlight helpers, and the `SearchResultRow` entity
   rows grouped by kind (`ENTITY_KIND_ORDER` / `ENTITY_KIND_LABEL`).
-- `apps/desktop/src/renderer/components/app/CommandPalette.tsx` — hosts the
-  flat-index interleaving of command matches and entity results, and
-  `activateResult`'s `kind → navigate` switch (chat/terminal/pr/lane/commit/
-  branch/file/linear/artifact → the matching tab, relying on the deep-link
-  navigate listener to focus the target).
+- `apps/desktop/src/renderer/components/app/CommandPalette.tsx` and
+  `commandPaletteThreads.tsx` — host the flat-index interleaving of command,
+  thread, and entity results, and `activateResult`'s `kind → navigate` switch
+  (chat/terminal/pr/lane/commit/branch/file/linear/artifact → the matching tab,
+  relying on the deep-link navigate listener to focus the target). Thread entries
+  always retain their owner machine name for matching; results show an amber
+  name marker only when that owner is not This Mac, including threads from the
+  remote-bound active tab.
 
 `ade search` CLI + agent skill:
 
