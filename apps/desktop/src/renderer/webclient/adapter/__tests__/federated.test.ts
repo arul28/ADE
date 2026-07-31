@@ -79,7 +79,7 @@ function managerFixture() {
     projects: [{
       id: `project-${targetId}`,
       displayName: targetId,
-      rootPath: `/repos/${targetId}`,
+      rootPath: `/repos/${targetId}` as string | null,
       defaultBaseRef: "main",
       lastOpenedAt: null,
       laneCount: 0,
@@ -316,5 +316,50 @@ describe("createFederatedWebAdapter", () => {
       "project-machine-a-next",
     );
     expect(federated.getActiveBinding()?.projectId).toBe("project-machine-a-next");
+  });
+
+  it("uses a stable remote identity when a project has no root path", async () => {
+    const fixture = managerFixture();
+    fixture.sessions[0].projects[0].rootPath = null;
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "rootless-project",
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    const opened = await federated.openProject("machine-a", "project-machine-a");
+
+    expect(opened.rootPath).toBe("remote:project-machine-a");
+    expect(fixture.targetA.adapter.bindProject).toHaveBeenLastCalledWith(
+      {
+        rootPath: "remote:project-machine-a",
+        displayName: "machine-a",
+        baseRef: "main",
+      },
+      "project-machine-a",
+    );
+  });
+
+  it("disposes project adapters after their persisted binding closes", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "closed-binding-disposal",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    const bindingB = await federated.openProject("machine-b", "project-machine-b");
+
+    await federated.ade.app.setWindowProjectBindings!([bindingB]);
+
+    expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
+    expect(fixture.targetB.adapter.dispose).not.toHaveBeenCalled();
+    expect(federated.getOpenBindings()).toEqual([bindingB]);
+
+    federated.dispose();
+    expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
+    expect(fixture.targetB.adapter.dispose).toHaveBeenCalledOnce();
   });
 });

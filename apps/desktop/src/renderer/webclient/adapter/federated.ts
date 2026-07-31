@@ -24,12 +24,19 @@ type WebWorkspaceState = {
 const WORKSPACE_STORAGE_PREFIX = "ade-web:workspace:v1:";
 
 function projectInfo(project: {
+  id: string;
+  rootPath: string | null;
+  displayName: string;
+  defaultBaseRef?: string | null;
+} | {
+  projectId: string;
   rootPath: string | null;
   displayName: string;
   defaultBaseRef?: string | null;
 }): ProjectInfo {
+  const projectId = "id" in project ? project.id : project.projectId;
   return {
-    rootPath: project.rootPath ?? "",
+    rootPath: project.rootPath || `remote:${projectId}`,
     displayName: project.displayName,
     baseRef: project.defaultBaseRef ?? "main",
   };
@@ -120,6 +127,7 @@ export function createFederatedWebAdapter({
   let workspace = readWorkspaceState(accountKey);
   const fallbackAdapter = createAdeWebAdapter(fallbackClient, [], accountClient);
   const adaptersByBinding = new Map<string, {
+    kind: "project" | "chats";
     targetId: string;
     client: AdeSyncClient;
     adapter: AdeWebAdapter;
@@ -189,7 +197,12 @@ export function createFederatedWebAdapter({
       accountClient,
     );
     adapter.bindProject(projectInfo(binding), binding.projectId);
-    adaptersByBinding.set(binding.key, { targetId: binding.targetId, client, adapter });
+    adaptersByBinding.set(binding.key, {
+      kind: "project",
+      targetId: binding.targetId,
+      client,
+      adapter,
+    });
     adapters.add(adapter);
     return adapter;
   };
@@ -206,9 +219,20 @@ export function createFederatedWebAdapter({
     }
     const adapter = createAdeWebAdapter(client, manager.getCatalog(targetId), accountClient);
     adapter.bindProject(null);
-    adaptersByBinding.set(key, { targetId, client, adapter });
+    adaptersByBinding.set(key, { kind: "chats", targetId, client, adapter });
     adapters.add(adapter);
     return adapter;
+  };
+
+  const disposeClosedProjectAdapters = (bindings: RemoteBinding[]) => {
+    const referencedKeys = new Set(bindings.map((binding) => binding.key));
+    for (const [key, entry] of adaptersByBinding) {
+      if (entry.kind !== "project" || referencedKeys.has(key)) continue;
+      entry.adapter.dispose();
+      adapters.delete(entry.adapter);
+      adaptersByBinding.delete(key);
+      if (currentAdapter === entry.adapter) setCurrentAdapter(fallbackAdapter);
+    }
   };
 
   const rememberBinding = (binding: RemoteBinding) => {
@@ -332,6 +356,7 @@ export function createFederatedWebAdapter({
             : null,
       };
       if (workspace.activeBindingKey == null) activeBinding = null;
+      disposeClosedProjectAdapters(remoteBindings);
       persist();
       return { openProjectBindings: remoteBindings };
     },
@@ -411,6 +436,7 @@ export function createFederatedWebAdapter({
         activeBindingKey: activeBinding?.targetId === targetId ? null : workspace.activeBindingKey,
       };
       if (activeBinding?.targetId === targetId) activeBinding = null;
+      disposeClosedProjectAdapters(workspace.openBindings);
       persist();
       return { removed: true };
     },
