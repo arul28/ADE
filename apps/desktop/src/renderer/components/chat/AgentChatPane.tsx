@@ -226,6 +226,7 @@ import {
   useDraftMachineRouting,
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
+import { DraftMachinePicker } from "./DraftMachinePicker";
 import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
@@ -3481,6 +3482,21 @@ export function AgentChatPane({
   const [runtimeCatalogVersion, setRuntimeCatalogVersion] = useState(0);
   const [reasoningEffort, setReasoningEffort] = useState<string | null>(null);
   const [fastMode, setFastMode] = useState(false);
+  /**
+   * Synchronous mirror of `fastMode`.
+   *
+   * The ModelPicker's fast chip can enable fast mode *and* change the model in
+   * one click, firing both handlers in the same tick. The model-change persist
+   * below reads the fast bit to include it in `updateSession`, and a render
+   * closure there still holds the pre-click value — so the write would send the
+   * stale bit and the reconcile would then clobber the freshly enabled one back
+   * off. Reading the ref makes that path see the user's actual intent.
+   */
+  const fastModeRef = useRef(false);
+  const setFastModeState = useCallback((enabled: boolean) => {
+    fastModeRef.current = enabled;
+    setFastMode(enabled);
+  }, []);
   const [executionMode, setExecutionMode] = useState<AgentChatExecutionMode>("focused");
   const [interactionMode, setInteractionMode] = useState<AgentChatInteractionMode>(initialNativeControls.interactionMode);
   // Seed availableModelIds, aiStatus, and providerConnections synchronously
@@ -5262,7 +5278,7 @@ export function AgentChatPane({
       preferred: config.reasoningEffort,
       modelId: config.modelId,
     }));
-    setFastMode(modelSupportsFastMode(desc) && config.fastMode);
+    setFastModeState(modelSupportsFastMode(desc) && config.fastMode);
     setExecutionMode(config.executionMode);
     setInteractionMode(config.controls.interactionMode);
     setClaudePermissionMode(config.controls.claudePermissionMode);
@@ -5273,7 +5289,7 @@ export function AgentChatPane({
     setDroidPermissionMode(config.controls.droidPermissionMode);
     setCursorModeId(config.controls.cursorModeId);
     setCursorConfigValues({ ...config.controls.cursorConfigValues });
-  }, [workDraftKind]);
+  }, [setFastModeState, workDraftKind]);
 
   const syncComposerToSession = useCallback((session: AgentChatSessionSummary | null) => {
     if (!session) {
@@ -5294,7 +5310,7 @@ export function AgentChatPane({
       setDroidPermissionMode(initialNativeControls.droidPermissionMode);
       setCursorModeId(initialNativeControls.cursorModeId);
       setCursorConfigValues(initialNativeControls.cursorConfigValues);
-      setFastMode(false);
+      setFastModeState(false);
       return;
     }
     const nextModelId = session.modelId ?? resolveRegistryModelId(session.model);
@@ -5302,7 +5318,7 @@ export function AgentChatPane({
       setModelId(nextModelId);
     }
     setReasoningEffort(session.reasoningEffort ?? null);
-    setFastMode(session.fastMode === true);
+    setFastModeState(session.fastMode === true);
     setExecutionMode(session.executionMode ?? "focused");
     setInteractionMode(session.interactionMode ?? initialNativeControls.interactionMode);
     setClaudePermissionMode(session.claudePermissionMode ?? initialNativeControls.claudePermissionMode);
@@ -5323,7 +5339,13 @@ export function AgentChatPane({
           .flatMap((option) => option.currentValue == null ? [] : [[option.id, option.currentValue]]),
       ),
     );
-  }, [applyLaunchConfigToComposer, draftLaunchConfigScopeKey, initialNativeControls, lastLaunchConfigStorageKeys]);
+  }, [
+    applyLaunchConfigToComposer,
+    draftLaunchConfigScopeKey,
+    initialNativeControls,
+    lastLaunchConfigStorageKeys,
+    setFastModeState,
+  ]);
   const executionModeOptions = useMemo(
     () => getExecutionModeOptions(selectedModelDesc),
     [selectedModelDesc],
@@ -10665,6 +10687,7 @@ export function AgentChatPane({
     refreshSessions,
     selectedSessionId,
     sessionMutationKind,
+    setFastModeState,
   ]);
 
   const handleFastModeChange = useCallback((enabled: boolean) => {
@@ -10672,7 +10695,10 @@ export function AgentChatPane({
     if (!selectedSessionId) {
       draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
     }
-    setFastMode(enabled);
+    // Written synchronously, not left to the mirroring effect: the picker's
+    // fast chip can enable fast mode and change the model in the same tick, and
+    // the model-change persist reads this ref in that same tick.
+    setFastModeState(enabled);
     if (!selectedSessionId) return;
     if (isPersistentIdentitySurface && sessionMutationKind) return;
 
@@ -10696,13 +10722,13 @@ export function AgentChatPane({
       const reconciled = updatedSession.fastMode === true;
       patchSessionSummary(targetSessionId, { fastMode: reconciled });
       if (selectedSessionIdRef.current === targetSessionId) {
-        setFastMode(reconciled);
+        setFastModeState(reconciled);
       }
       void refreshSessions().catch(() => {});
     }).catch((err) => {
       if (updateId === fastModeUpdateCounterRef.current
         && selectedSessionIdRef.current === targetSessionId) {
-        setFastMode(previousFastMode);
+        setFastModeState(previousFastMode);
         patchSessionSummary(targetSessionId, { fastMode: previousFastMode });
       }
       void refreshSessions().catch(() => {});
@@ -10752,15 +10778,12 @@ export function AgentChatPane({
     && (workDraftKind === "chat" || isWorkCliLaunchDraft);
   const {
     machineOptions: laneMachineOptions,
-    selectorMachines: draftLaneSelectorMachines,
     selectorLanes: draftLaneSelectorLanes,
     boundMachineId: boundLaneMachineId,
     executionLanes: draftExecutionLanes,
     executionBinding: draftExecutionBinding,
     selectedMachine: selectedDraftMachine,
-    selectedLaneIsPrimary: selectedDraftLaneIsPrimary,
     machineUnavailable: draftMachineUnavailable,
-    selectorValue: draftLaneSelectorValue,
     handleMachineChange: handleDraftMachineChange,
     handleLaneSelectionChange: handleDraftLaneSelectionChange,
   } = useDraftMachineRouting({
@@ -10778,6 +10801,16 @@ export function AgentChatPane({
     setDraftLaunchTargetId,
     setError,
   });
+  // The shelf picks the machine separately, so its lane list is already scoped
+  // to one machine — a flat list of bare lane ids rather than the grouped,
+  // machine-qualified option ids the combined selector needed.
+  const draftShelfLanes = useMemo(
+    () => [AUTO_CREATE_LANE_OPTION, ...draftExecutionLanes],
+    [draftExecutionLanes],
+  );
+  const draftShelfLaneValue = draftLaunchTargetIsAutoCreate
+    ? AUTO_CREATE_LANE_OPTION.id
+    : (laneId ?? "");
   draftExecutionLanesRef.current = draftExecutionLanes;
   draftExecutionBindingRef.current = draftExecutionBinding;
   draftExecutionBindingRequiredRef.current = showDraftLaunchControls;
@@ -11813,33 +11846,10 @@ export function AgentChatPane({
   ) : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;
-  const composerMachineId = selectedSessionId
-    ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.targetId : "this-mac")
-    : (selectedDraftMachine?.id ?? boundLaneMachineId);
-  const composerMachineName = selectedSessionId
-    ? (composerMachineBinding?.kind === "remote" ? composerMachineBinding.runtimeName : "This Mac")
-    : (selectedDraftMachine?.name ?? "This Mac");
-  const composerMachineSelectable = Boolean(
-    showDraftLaunchControls
-    && (draftLaunchTargetIsAutoCreate || selectedDraftLaneIsPrimary),
-  );
 
   const composerElement = (
       <AgentChatComposer
             surfaceMode={surfaceMode}
-            // Drives the composer's machine chip. A chat inherits its machine
-            // from its lane, so the chip only becomes a picker while the lane is
-            // still "auto-create" — that is the one moment no machine is settled
-            // yet. Any other value keeps it read-only.
-            laneSelectionId={draftLaneSelectorValue}
-            machineSelectable={composerMachineSelectable}
-            machineId={composerMachineId}
-            machineName={composerMachineName}
-            machineOptions={laneMachineOptions.map((machine) => ({
-              id: machine.id,
-              name: machine.name,
-            }))}
-            onMachineChange={handleDraftMachineChange}
             layoutVariant={layoutVariant}
             composerMaxHeightPx={composerMaxHeightPx}
             isActive={isTileActive}
@@ -11952,7 +11962,7 @@ export function AgentChatPane({
             }}
             orchestratorModeActive={isOrchestratorDraft || isOrchestratorLead}
             orchestrationRole={isOrchestratorDraft ? "lead" : activeOrchestrationRole}
-            onModelChange={(nextModelId) => {
+            onModelChange={(nextModelId, options) => {
               const modelAllowed =
                 modelSelectionConstrained
                   ? effectiveAvailableModelIds.includes(nextModelId)
@@ -11970,6 +11980,11 @@ export function AgentChatPane({
               }
               if (!selectedSessionId) {
                 draftLaunchConfigTouchedKeyRef.current = draftLaunchConfigScopeKey;
+              }
+              const previousModelId = modelId;
+              const previousFastMode = fastModeRef.current;
+              if (options) {
+                setFastModeState(options.fastMode);
               }
               const snapshot = buildModelSelectionSnapshot(nextModelId);
               if (!selectedSessionId || turnActive) {
@@ -12003,7 +12018,7 @@ export function AgentChatPane({
                 sessionId: selectedSessionId,
                 modelId: nextModelId,
                 reasoningEffort: snapshot.nextReasoningEffort,
-                ...(modelSupportsFastMode(snapshot.nextDesc) ? { fastMode } : {}),
+                ...(modelSupportsFastMode(snapshot.nextDesc) ? { fastMode: fastModeRef.current } : {}),
                 ...nextNativeControlPayload,
               }, ...chatPinArgsFor(chatRuntimePinRef)).then((updatedSession) => {
                 applyModelSelectionSnapshot(snapshot);
@@ -12041,6 +12056,8 @@ export function AgentChatPane({
                 }
                 void refreshSessions().catch(() => {});
               }).catch((err) => {
+                setModelId(previousModelId);
+                setFastModeState(previousFastMode);
                 void refreshSessions().catch(() => {});
                 setError(err instanceof Error ? err.message : String(err));
               }).finally(() => {
@@ -12271,7 +12288,7 @@ export function AgentChatPane({
                 return cur;
               });
             }}
-            onParallelSlotModelChange={(index, nextModelId) => {
+            onParallelSlotModelChange={(index, nextModelId, options) => {
               if (modelSelectionConstrained && !effectiveAvailableModelIds.includes(nextModelId)) return;
               const desc = resolveModelDescriptorWithRuntimeCatalog(nextModelId) ?? getModelById(nextModelId);
               const tiers = desc?.reasoningTiers ?? [];
@@ -12288,6 +12305,7 @@ export function AgentChatPane({
               patchParallelSlot(index, {
                 modelId: nextModelId,
                 reasoningEffort: nextEffort,
+                ...(options ? { fastMode: options.fastMode } : {}),
                 executionMode: nextExecOpts.some((o) => o.value === parallelModelSlots[index]?.executionMode)
                   ? parallelModelSlots[index]!.executionMode
                   : (nextExecOpts[0]?.value ?? "focused"),
@@ -12966,7 +12984,7 @@ export function AgentChatPane({
                     )}>
                       <div className={cn(
                         "flex max-h-full w-full flex-col items-center gap-3 text-center",
-                        appPanelOpen ? null : "max-w-[820px]",
+                        appPanelOpen ? null : "max-w-[680px]",
                       )}>
                         <motion.div
                           className={cn(
@@ -12986,27 +13004,68 @@ export function AgentChatPane({
                           />
                         </motion.div>
 
-                        <h2 className="shrink-0 font-sans text-[18px] font-semibold tracking-tight text-fg/80">
-                          {isOrchestratorDraft ? "Orchestrate a swarm of agents" : "Start a new conversation"}
-                        </h2>
+                        {/* Only a non-default mode earns a line here. The wordmark
+                            above already says which app this is, so a generic
+                            "Start a new conversation" was a caption on a thing
+                            that needs no caption — and a whole band of vertical
+                            space spent saying nothing the user did not know. */}
+                        {isOrchestratorDraft ? (
+                          <h2 className="shrink-0 font-sans text-[18px] font-semibold tracking-tight text-fg/80">
+                            Orchestrate a swarm of agents
+                          </h2>
+                        ) : null}
 
-                        {/* Lane selector pill */}
+                        {/* Inline composer for empty state (only when sim drawer closed) */}
+                        {!appPanelOpen ? (
+                          <div data-chat-composer-wrapper className="relative z-10 w-full shrink-0">
+                            {composerWithTypographyRoot}
+                          </div>
+                        ) : null}
+
+                        {/* Launch shelf — everything that answers "where does this
+                            run". It is drawn as a recessed drawer tucked under the
+                            composer rather than as another centered band: the lane
+                            is a setting on the prompt above it, and Shell / Import
+                            act on whatever lane is selected here, so nesting them
+                            under it encodes the dependency the old stacked layout
+                            inverted. */}
                         {showWorkspaceChrome && draftLaneSelectorLanes.length > 0 && onLaneChange ? (
                           <motion.div
-                            className="flex shrink-0 justify-center"
+                            className={cn(
+                              "shrink-0",
+                              // Only tucks under the composer when the composer is
+                              // actually above it. With an app panel open the
+                              // composer moves to a bottom bar, so the shelf is a
+                              // plain row in the column instead of a drawer
+                              // emerging from nothing.
+                              appPanelOpen
+                                ? "w-full"
+                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                            )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
-                            <div className="flex flex-col items-center gap-2">
+                            <div className="flex min-w-0 items-center gap-2">
+                              {/* Machine first, then that machine's lanes. Splitting
+                                  the two keeps the lane list flat and one machine
+                                  long instead of growing with machine count. */}
+                              <DraftMachinePicker
+                                machines={laneMachineOptions}
+                                selectedMachineId={selectedDraftMachine?.id ?? null}
+                                onChange={handleDraftMachineChange}
+                                disabled={shellLaunchBusy}
+                              />
                               <LaneCombobox
-                                lanes={draftLaneSelectorLanes}
-                                machines={draftLaneSelectorMachines}
-                                value={draftLaneSelectorValue}
+                                lanes={draftShelfLanes}
+                                value={draftShelfLaneValue}
                                 onChange={handleDraftLaneSelectionChange}
                                 variant="pill"
+                                // Matches the 28px control height the composer
+                                // pills directly above the shelf already use.
+                                compact
                                 aria-label="Select lane"
                               />
                               {onOpenShellSession || onImportedSession ? (
-                                <div className="flex flex-wrap justify-center gap-2">
+                                <div className="ml-auto flex shrink-0 items-center gap-1">
                                   {onOpenShellSession ? (
                                     <SmartTooltip
                                       content={{
@@ -13018,8 +13077,9 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate || shellLaunchBusy}
+                                        data-draft-open-shell
                                         aria-label="Open shell in selected lane"
                                         onClick={() => void launchShellForDraftLane()}
                                       >
@@ -13039,13 +13099,14 @@ export function AgentChatPane({
                                     >
                                       <button
                                         type="button"
-                                        className="inline-flex h-8 items-center justify-center gap-1.5 rounded-full border border-white/[0.08] bg-white/[0.04] px-3.5 text-[11px] font-medium text-muted-fg/80 transition-colors hover:bg-white/[0.08] hover:text-fg disabled:cursor-not-allowed disabled:opacity-45"
+                                        className="inline-flex h-7 items-center justify-center gap-1.5 rounded-md px-2 font-sans text-[11px] font-medium text-muted-fg/70 transition-colors hover:bg-white/[0.06] hover:text-fg/85 disabled:cursor-not-allowed disabled:opacity-35"
                                         disabled={!laneId || draftLaunchTargetIsAutoCreate}
+                                        data-draft-import-session
                                         aria-label="Import an external CLI session"
                                         onClick={() => setImportBrowserOpen(true)}
                                       >
                                         <DownloadSimple size={13} weight="regular" />
-                                        Import session
+                                        Import
                                       </button>
                                     </SmartTooltip>
                                   ) : null}
@@ -13055,8 +13116,12 @@ export function AgentChatPane({
                           </motion.div>
                         ) : showWorkspaceChrome && laneDisplayLabel ? (
                           <motion.div
-                            className="flex shrink-0 items-center gap-2 rounded-full px-4 py-1.5"
-                            style={{ background: "rgba(255,255,255,0.04)", border: "1px solid rgba(255,255,255,0.08)" }}
+                            className={cn(
+                              "flex shrink-0 items-center gap-2",
+                              appPanelOpen
+                                ? "rounded-full border border-white/[0.08] bg-white/[0.04] px-4 py-1.5"
+                                : "ade-chat-launch-shelf w-[calc(100%-6rem)]",
+                            )}
                             exit={{ opacity: 0, transition: { duration: 0.15 } }}
                           >
                             {laneAccentColor ? (
@@ -13071,13 +13136,6 @@ export function AgentChatPane({
                               {laneDisplayLabel}
                             </span>
                           </motion.div>
-                        ) : null}
-
-                        {/* Inline composer for empty state (only when sim drawer closed) */}
-                        {!appPanelOpen ? (
-                          <div className="w-full shrink-0">
-                            {composerWithTypographyRoot}
-                          </div>
                         ) : null}
 
                         {isWorkDraftComposer && !appPanelOpen ? (

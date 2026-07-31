@@ -60,6 +60,14 @@ const PERMISSION_MODE_TONE_STYLES: Record<
   PermissionModeTone,
   {
     dot: string;
+    /**
+     * Resting chrome for the collapsed trigger. Only a mode that can actually
+     * hurt you earns colour out here: a toolbar where every control is a
+     * saturated pill has no way left to say "this one is different", so the
+     * safe modes inherit the neutral `PERMISSION_TRIGGER_CLASS` chrome and let
+     * their tone read from the glyph alone. The full tone palette still applies
+     * inside the open popover, where there is room to differentiate.
+     */
     trigger: string;
     iconSurface: string;
     rowActive: string;
@@ -68,42 +76,45 @@ const PERMISSION_MODE_TONE_STYLES: Record<
 > = {
   green: {
     dot: "bg-emerald-400",
-    trigger: "border-emerald-400/24 bg-emerald-500/[0.08] text-emerald-100",
+    trigger: "",
     iconSurface: "border-emerald-300/20 bg-emerald-500/[0.12] text-emerald-200",
     rowActive: "bg-emerald-500/[0.12] text-emerald-50",
     rowHover: "hover:bg-emerald-500/[0.08] hover:text-emerald-50",
   },
   amber: {
     dot: "bg-amber-400",
-    trigger: "border-amber-300/22 bg-amber-500/[0.08] text-amber-100",
+    trigger: "",
     iconSurface: "border-amber-300/20 bg-amber-500/[0.12] text-amber-200",
     rowActive: "bg-amber-500/[0.12] text-amber-50",
     rowHover: "hover:bg-amber-500/[0.08] hover:text-amber-50",
   },
   blue: {
     dot: "bg-sky-400",
-    trigger: "border-sky-300/22 bg-sky-500/[0.08] text-sky-100",
+    trigger: "",
     iconSurface: "border-sky-300/20 bg-sky-500/[0.12] text-sky-200",
     rowActive: "bg-sky-500/[0.12] text-sky-50",
     rowHover: "hover:bg-sky-500/[0.08] hover:text-sky-50",
   },
   purple: {
     dot: "bg-violet-400",
-    trigger: "border-violet-300/24 bg-violet-500/[0.09] text-violet-100",
+    trigger: "",
     iconSurface: "border-violet-300/20 bg-violet-500/[0.14] text-violet-200",
     rowActive: "bg-violet-500/[0.14] text-violet-50",
     rowHover: "hover:bg-violet-500/[0.08] hover:text-violet-50",
   },
   red: {
     dot: "bg-red-400",
-    trigger: "border-red-300/24 bg-red-500/[0.09] text-red-100",
+    // The one tone that keeps colour in the toolbar — bypassed permissions are
+    // the only setting here that can do damage. It is a tint, not a filled
+    // pill: enough to catch the eye without shouting over the send button.
+    trigger: "border-red-400/25 text-red-100/90",
     iconSurface: "border-red-300/20 bg-red-500/[0.14] text-red-200",
     rowActive: "bg-red-500/[0.14] text-red-50",
     rowHover: "hover:bg-red-500/[0.08] hover:text-red-50",
   },
   slate: {
     dot: "bg-slate-300",
-    trigger: "border-white/[0.08] bg-white/[0.045] text-fg/80",
+    trigger: "",
     iconSurface: "border-white/[0.08] bg-white/[0.06] text-fg/72",
     rowActive: "bg-white/[0.08] text-fg/90",
     rowHover: "hover:bg-white/[0.055] hover:text-fg/90",

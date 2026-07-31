@@ -11,6 +11,7 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { MagnifyingGlass } from "@phosphor-icons/react";
 import {
   MODEL_REGISTRY,
+  modelSupportsFastMode,
   resolveCliProviderForModel,
   type AuthType,
   type ModelDescriptor,
@@ -125,7 +126,7 @@ export type ModelPickerContentProps = {
   models: readonly ModelDescriptor[];
   isAvailable: (modelId: string) => boolean;
   providerAuthStatus?: Partial<Record<ProviderFamily, AuthStatus>>;
-  onSelect: (modelId: string) => void;
+  onSelect: (modelId: string, options?: { fastMode: boolean }) => void;
   onRequestClose: () => void;
   onProviderRailSelect?: (family: ProviderFamily) => void;
   /**
@@ -147,6 +148,14 @@ export type ModelPickerContentProps = {
   cursorAvailabilityMode?: "chat" | "cli" | "all";
   allowRegistryExpansion?: boolean;
   registryFilter?: (model: ModelDescriptor) => boolean;
+  /**
+   * Fast mode is a single bit on the surface, and it belongs to whichever model
+   * is selected — so only the selected row ever draws an "on" chip. Without
+   * `onFastModeChange` the surface has not opted in and no row shows a fast
+   * affordance.
+   */
+  fastMode?: boolean;
+  onFastModeChange?: (next: boolean) => void;
 };
 
 export const ModelPickerContent = memo(function ModelPickerContent({
@@ -165,6 +174,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   cursorAvailabilityMode = allowCliOnlyModels ? "cli" : "chat",
   allowRegistryExpansion = true,
   registryFilter,
+  fastMode = false,
+  onFastModeChange,
 }: ModelPickerContentProps) {
   // hidePermissionRail is currently a forward-compat hook (see prop docs).
   // Reference it so unused-var lint stays quiet, and so future code paths
@@ -481,6 +492,18 @@ export const ModelPickerContent = memo(function ModelPickerContent({
     [cursorAvailabilityMode, effectiveAuth, familyIsReady, isAvailable, matchesCursorAvailabilityMode],
   );
 
+  const handleRowSelect = useCallback(
+    (modelId: string) => {
+      recordUsage(modelId);
+      // Fast mode belongs to the model it was enabled for, so a plain switch to
+      // a different model starts clean instead of inheriting the previous
+      // model's bit. The fast chip re-enables it explicitly (see
+      // `handleFastChipChange`).
+      onSelect(modelId, modelId !== value && fastMode ? { fastMode: false } : undefined);
+    },
+    [fastMode, onSelect, recordUsage, value],
+  );
+
   const handleListKeyDown = useCallback(
     (event: React.KeyboardEvent) => {
       if (event.key === "Escape") {
@@ -514,29 +537,44 @@ export const ModelPickerContent = memo(function ModelPickerContent({
           onOpenSignIn?.(target.family);
           return;
         }
-        recordUsage(target.id);
-        onSelect(target.id);
+        handleRowSelect(target.id);
       }
     },
     [
       flatVisibleIds,
       focusedIndex,
+      handleRowSelect,
       isAvailableForUse,
       modelListVirtualizer,
       onOpenSignIn,
       onRequestClose,
-      onSelect,
-      recordUsage,
       visibleModels,
     ],
   );
 
-  const handleRowSelect = useCallback(
-    (modelId: string) => {
+  /**
+   * One press on a non-selected row's chip means "use this model, fast" — it
+   * commits the selection and turns fast on. On the selected row it is a plain
+   * toggle that leaves both the selection and the open popover alone.
+   */
+  const handleFastChipChange = useCallback(
+    (modelId: string, next: boolean) => {
+      const model = expandedModels.find((m) => m.id === modelId);
+      if (!model || !modelSupportsFastMode(model)) return;
+      if (modelId === value) {
+        onFastModeChange?.(next);
+        return;
+      }
+      if (!isAvailableForUse(model)) {
+        onOpenSignIn?.(model.family, model.authTypes);
+        return;
+      }
       recordUsage(modelId);
-      onSelect(modelId);
+      // Model + service tier are one selection. Emitting a single change keeps
+      // controlled consumers from rebuilding two patches from the same render.
+      onSelect(modelId, { fastMode: true });
     },
-    [onSelect, recordUsage],
+    [expandedModels, isAvailableForUse, onFastModeChange, onOpenSignIn, onSelect, recordUsage, value],
   );
 
   const handleSetSurfaceDefault = useCallback(
@@ -643,7 +681,13 @@ export const ModelPickerContent = memo(function ModelPickerContent({
               aria-label="Search models"
               className={cn(
                 "min-w-0 flex-1 bg-transparent text-[12px] font-medium leading-tight",
-                "text-fg placeholder:text-muted-fg/45 outline-none",
+                // The field is auto-focused on open, which is right — you opened
+                // it to search. The focus *ring* is the part that reads as an
+                // error box around the whole row, so suppress the shadow-based
+                // ring too; `outline-none` alone does not cover it.
+                "text-fg placeholder:text-muted-fg/45 outline-none focus:outline-none focus-visible:outline-none",
+                "shadow-none focus:shadow-none focus-visible:shadow-none focus:ring-0 focus-visible:ring-0",
+                "border-b border-transparent focus-visible:border-white/20",
               )}
             />
             <button
@@ -773,6 +817,8 @@ export const ModelPickerContent = memo(function ModelPickerContent({
                         onToggleFavorite={toggleFavorite}
                         onCopyId={handleCopyId}
                         onSetSurfaceDefault={handleSetSurfaceDefault}
+                        fastModeOn={fastMode && isActive}
+                        {...(onFastModeChange ? { onFastModeChange: handleFastChipChange } : {})}
                         {...(onOpenSignIn ? { onSignIn: () => onOpenSignIn(m.family, m.authTypes) } : {})}
                       />
                     </div>

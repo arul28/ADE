@@ -1,33 +1,48 @@
 /* @vitest-environment jsdom */
 
 import React from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LaneLinearIssue } from "../../../shared/types";
 import type { BatchLaunchItemState } from "../../lib/linearBatchLaunch";
 import { defaultNativeControls } from "../../lib/nativeLaunchControls";
 import { SessionLaunchModelControls } from "../shared/SessionLaunchModelControls";
 import { BatchLaunchStatusToast } from "./BatchLaunchStatusToast";
 
+afterEach(cleanup);
+
 vi.mock("../shared/ModelPicker/ModelPicker", () => ({
   ModelPicker: ({
-    fastModeActive,
+    fastMode,
     fastModeSupported,
-    onFastModeToggle,
+    onFastModeChange,
+    onChange,
   }: {
-    fastModeActive: boolean;
+    fastMode: boolean;
     fastModeSupported: boolean;
-    onFastModeToggle: (next: boolean) => void;
-  }) => fastModeSupported ? (
-    <button
-      type="button"
-      aria-label="Fast mode"
-      aria-pressed={fastModeActive}
-      onClick={() => onFastModeToggle(!fastModeActive)}
-    >
-      Fast
-    </button>
-  ) : null,
+    onFastModeChange: (next: boolean) => void;
+    onChange: (modelId: string, options?: { fastMode: boolean }) => void;
+  }) => (
+    <>
+      {fastModeSupported ? (
+        <button
+          type="button"
+          aria-label="Fast mode"
+          aria-pressed={fastMode}
+          onClick={() => onFastModeChange(!fastMode)}
+        >
+          Fast
+        </button>
+      ) : null}
+      <button
+        type="button"
+        aria-label="Choose another model in Fast mode"
+        onClick={() => onChange("openai/gpt-5.5", { fastMode: true })}
+      >
+        Choose fast model
+      </button>
+    </>
+  ),
 }));
 
 vi.mock("../shared/ModelPicker/ReasoningEffortPicker", () => ({
@@ -94,6 +109,31 @@ describe("LinearQuickViewButton batch-launch UI", () => {
     expect(fastControls).toHaveLength(1);
     fireEvent.click(fastControls[0]!);
     expect(onChange).toHaveBeenCalledWith({ fastMode: true });
+  });
+
+  it("routes a model and Fast selection as one atomic patch", () => {
+    const onChange = vi.fn();
+    render(
+      <SessionLaunchModelControls
+        config={{
+          modelId: "anthropic/claude-opus-4-8",
+          reasoningEffort: null,
+          fastMode: false,
+          sessionType: "chat",
+          nativeControls: defaultNativeControls(),
+        }}
+        onChange={onChange}
+        surfaceKey="linear-batch-atomic-test"
+        showSessionType={false}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Choose another model in Fast mode" }));
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith({
+      modelId: "openai/gpt-5.5",
+      fastMode: true,
+    });
   });
 
   it("keeps created sessions with kickoff errors openable and out of Retry failed", () => {

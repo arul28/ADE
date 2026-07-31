@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import {
   createDynamicCursorCliModelDescriptor,
@@ -159,7 +159,7 @@ vi.mock("./modelOrdering", () => ({
   sortModelItems: <T extends { modelId: string }>(items: T[]): T[] => [...items],
 }));
 
-import { ModelPicker } from "./ModelPicker";
+import { composeModelPickerTriggerLabel, ModelPicker } from "./ModelPicker";
 import {
   rememberRuntimeCatalog,
   resetModelPickerRuntimeCatalogForTests,
@@ -218,6 +218,28 @@ const GPT: ModelDescriptor = {
   isCliWrapped: true,
 };
 
+const FAST_GPT: ModelDescriptor = {
+  ...GPT,
+  serviceTiers: ["fast"],
+};
+
+const FAST_GPT_ALT: ModelDescriptor = {
+  ...GPT,
+  id: "openai/gpt-5.4-mini",
+  shortId: "gpt-5.4-mini",
+  displayName: "GPT-5.4 Mini",
+  providerModelId: "gpt-5.4-mini",
+  serviceTiers: ["fast"],
+};
+
+const SLOW_GPT: ModelDescriptor = {
+  ...GPT,
+  id: "openai/gpt-5.4-thinking",
+  shortId: "gpt-5.4-thinking",
+  displayName: "GPT-5.4 Thinking",
+  providerModelId: "gpt-5.4-thinking",
+};
+
 const OPENCODE_MODEL: ModelDescriptor = {
   id: "opencode/anthropic/claude-sonnet-5",
   shortId: "claude-sonnet-5",
@@ -272,6 +294,49 @@ function renderPicker(overrides: Partial<React.ComponentProps<typeof ModelPicker
   );
   return { ...utils, onChange };
 }
+
+// The open picker expands into the full registry, so fast-mode assertions have
+// to be scoped to a specific row rather than counted across the list.
+async function findModelRow(modelId: string): Promise<HTMLElement> {
+  return await waitFor(() => {
+    const row = document.querySelector<HTMLElement>(`[data-model-id="${modelId}"]`);
+    if (!row) throw new Error(`row not rendered for ${modelId}`);
+    return row;
+  });
+}
+
+describe("composeModelPickerTriggerLabel", () => {
+  it("appends Fast only when fast mode is on and the model supports it", () => {
+    expect(composeModelPickerTriggerLabel({ model: FAST_GPT, value: FAST_GPT.id, fastMode: true }))
+      .toBe(`${FAST_GPT.displayName} Fast`);
+    expect(composeModelPickerTriggerLabel({ model: FAST_GPT, value: FAST_GPT.id, fastMode: false }))
+      .toBe(FAST_GPT.displayName);
+    expect(composeModelPickerTriggerLabel({ model: OPUS, value: OPUS.id, fastMode: true }))
+      .toBe(OPUS.displayName);
+  });
+
+  it("honours an explicit capability override", () => {
+    expect(composeModelPickerTriggerLabel({
+      model: OPUS,
+      value: OPUS.id,
+      fastMode: true,
+      fastModeSupported: true,
+    })).toBe(`${OPUS.displayName} Fast`);
+    expect(composeModelPickerTriggerLabel({
+      model: FAST_GPT,
+      value: FAST_GPT.id,
+      fastMode: true,
+      fastModeSupported: false,
+    })).toBe(FAST_GPT.displayName);
+  });
+
+  it("falls back to the raw value, then to a placeholder, and never suffixes either", () => {
+    expect(composeModelPickerTriggerLabel({ model: undefined, value: "vendor/mystery", fastMode: true }))
+      .toBe("vendor/mystery");
+    expect(composeModelPickerTriggerLabel({ model: undefined, value: "  ", fastMode: true }))
+      .toBe("Select model");
+  });
+});
 
 describe("ModelPicker", () => {
   it("renders the active model on the trigger and opens the popover on click", async () => {
@@ -531,33 +596,272 @@ describe("ModelPicker", () => {
     expect(chip).toBeNull();
   });
 
-  it("renders the fast-mode toggle outside the trigger when supported", async () => {
-    const onToggle = vi.fn();
-    const FAST: ModelDescriptor = {
-      ...GPT,
-      serviceTiers: ["fast"],
-    };
+  it("renders a fast affordance only on fast-capable rows, and only when the surface opts in", async () => {
+    const user = userEvent.setup();
+    const onFastModeChange = vi.fn();
     render(
       <ModelPicker
-        value={FAST.id}
+        value={FAST_GPT.id}
         onChange={vi.fn()}
         surfaceKey="test"
-        models={[FAST, SONNET]}
-        fastModeActive={false}
+        models={[FAST_GPT, SLOW_GPT]}
+        fastMode={false}
+        onFastModeChange={onFastModeChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const chip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    expect(chip.getAttribute("aria-label")).toBe(`Fast mode for ${FAST_GPT.displayName}`);
+    expect(chip.getAttribute("aria-pressed")).toBe("false");
+    // Same provider rail, no fast service tier — that row stays chip-free.
+    expect(
+      within(await findModelRow(SLOW_GPT.id)).queryByRole("button", { name: /Fast mode for/i }),
+    ).toBeNull();
+  });
+
+  it("omits the fast affordance entirely when onFastModeChange is not supplied", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT, SONNET]}
+        fastMode
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    await screen.findAllByRole("option");
+    expect(screen.queryByRole("button", { name: /Fast mode for/i })).toBeNull();
+    expect(document.querySelector('[data-model-picker-fast-toggle="true"]')).toBeNull();
+  });
+
+  it("toggles fast mode without closing the picker or changing the selected model", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={onChange}
+        surfaceKey="test"
+        models={[FAST_GPT, SONNET]}
+        fastMode={false}
+        onFastModeChange={onFastModeChange}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    await user.click(trigger);
+
+    const chip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    await user.click(chip);
+
+    expect(onFastModeChange).toHaveBeenCalledWith(true);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("toggles fast mode from the keyboard", async () => {
+    const onFastModeChange = vi.fn();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT, SONNET]}
+        fastMode
+        onFastModeChange={onFastModeChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const chip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    expect(chip.tabIndex).toBe(0);
+    chip.focus();
+    expect(document.activeElement).toBe(chip);
+    expect(chip.getAttribute("aria-pressed")).toBe("true");
+    fireEvent.keyDown(chip, { key: "Enter" });
+    expect(onFastModeChange).toHaveBeenCalledWith(false);
+  });
+
+  it("lights the fast chip only on the selected row", async () => {
+    const user = userEvent.setup();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT, FAST_GPT_ALT]}
+        fastMode
+        onFastModeChange={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const selectedChip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    const otherChip = await within(await findModelRow(FAST_GPT_ALT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    expect(selectedChip.getAttribute("aria-pressed")).toBe("true");
+    expect(otherChip.getAttribute("aria-pressed")).toBe("false");
+  });
+
+  it("selects the model and enables fast when the chip is clicked on a non-selected row", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={onChange}
+        surfaceKey="test"
+        models={[FAST_GPT, FAST_GPT_ALT]}
+        fastMode={false}
+        onFastModeChange={onFastModeChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    const otherChip = await within(await findModelRow(FAST_GPT_ALT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    await user.click(otherChip);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(FAST_GPT_ALT.id, { fastMode: true });
+    expect(onFastModeChange).not.toHaveBeenCalled();
+  });
+
+  it("turns fast off again when the selected row's chip is clicked twice", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    const props = {
+      value: FAST_GPT.id,
+      onChange,
+      surfaceKey: "test",
+      models: [FAST_GPT, FAST_GPT_ALT],
+      onFastModeChange,
+    };
+    const { rerender } = render(<ModelPicker {...props} fastMode={false} />);
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    await user.click(trigger);
+
+    const chip = await within(await findModelRow(FAST_GPT.id))
+      .findByRole("button", { name: /Fast mode for/i });
+    await user.click(chip);
+    expect(onFastModeChange).toHaveBeenLastCalledWith(true);
+
+    rerender(<ModelPicker {...props} fastMode />);
+    await user.click(
+      await within(await findModelRow(FAST_GPT.id)).findByRole("button", { name: /Fast mode for/i }),
+    );
+
+    expect(onFastModeChange).toHaveBeenLastCalledWith(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  });
+
+  it("clears a stale fast bit when a different model is picked by a plain row click", async () => {
+    const user = userEvent.setup();
+    const onChange = vi.fn();
+    const onFastModeChange = vi.fn();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={onChange}
+        surfaceKey="test"
+        models={[FAST_GPT, SLOW_GPT]}
+        fastMode
+        onFastModeChange={onFastModeChange}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+    // A model without a fast service tier has no chip at all, and inherits nothing.
+    const slowRow = await findModelRow(SLOW_GPT.id);
+    expect(within(slowRow).queryByRole("button", { name: /Fast mode for/i })).toBeNull();
+    await user.click(slowRow);
+
+    expect(onChange).toHaveBeenCalledTimes(1);
+    expect(onChange).toHaveBeenCalledWith(SLOW_GPT.id, { fastMode: false });
+    expect(onFastModeChange).not.toHaveBeenCalled();
+  });
+
+  it("renders a presentational lightning glyph on the trigger when fast mode is on", async () => {
+    const { rerender } = render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT]}
+        fastMode={false}
+        onFastModeChange={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    expect(trigger.querySelector('[data-model-picker-fast-glyph="true"]')).toBeNull();
+
+    rerender(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT]}
+        fastMode
+        onFastModeChange={vi.fn()}
+      />,
+    );
+    const glyph = trigger.querySelector('[data-model-picker-fast-glyph="true"]');
+    expect(glyph).not.toBeNull();
+    expect(glyph?.getAttribute("aria-hidden")).toBe("true");
+    // The accessible name stays text-only.
+    expect(trigger.getAttribute("aria-label")).toBe(
+      `Select model (current: ${FAST_GPT.displayName} Fast)`,
+    );
+  });
+
+  it("keeps the deprecated sibling chip for surfaces still on onFastModeToggle", async () => {
+    const onToggle = vi.fn();
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT, SLOW_GPT]}
+        fastModeActive
         onFastModeToggle={onToggle}
       />,
     );
-    const fastButton = screen.getByRole("button", { name: /Fast mode/i });
-    expect(fastButton.getAttribute("data-model-picker-fast-toggle")).toBe("true");
     const trigger = screen.getByRole("button", { name: /Select model/i });
-    expect(trigger.contains(fastButton)).toBe(false);
-    await userEvent.click(fastButton);
-    expect(onToggle).toHaveBeenCalledWith(true);
-    // Clicking fast did NOT open the popover
-    expect(trigger.getAttribute("aria-expanded")).toBe("false");
+    const legacyChip = screen.getByRole("button", { name: "Fast mode" });
+    expect(trigger.contains(legacyChip)).toBe(false);
+    // The legacy chip already carries the state, so the label stays unsuffixed.
+    expect(trigger.textContent).not.toContain("Fast");
+    await userEvent.click(legacyChip);
+    expect(onToggle).toHaveBeenCalledWith(false);
   });
 
-  it("renders the fast-mode toggle for Cursor runtime models that advertise fast service", async () => {
+  it("suffixes the trigger label with Fast while fast mode is on", () => {
+    render(
+      <ModelPicker
+        value={FAST_GPT.id}
+        onChange={vi.fn()}
+        surfaceKey="test"
+        models={[FAST_GPT, SONNET]}
+        fastMode
+        onFastModeChange={vi.fn()}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: /Select model/i });
+    expect(trigger.textContent).toContain(`${FAST_GPT.displayName} Fast`);
+  });
+
+  it("renders the fast affordance for Cursor runtime models that advertise fast service", async () => {
     providerAuthStatusInternal = { cursor: "ok" };
     const onToggle = vi.fn();
     const cursorFast = createDynamicCursorCliModelDescriptor("composer-2.5", "Composer 2.5", {
@@ -599,12 +903,13 @@ describe("ModelPicker", () => {
         onChange={vi.fn()}
         surfaceKey="test"
         models={[cursorFast]}
-        fastModeActive={true}
-        onFastModeToggle={onToggle}
+        fastMode
+        onFastModeChange={onToggle}
       />,
     );
+    await userEvent.click(screen.getByRole("button", { name: /Select model/i }));
 
-    const fastButton = screen.getByRole("button", { name: /Fast mode/i });
+    const fastButton = await screen.findByRole("button", { name: /Fast mode for/i });
     expect(fastButton.getAttribute("aria-pressed")).toBe("true");
     await userEvent.click(fastButton);
     expect(onToggle).toHaveBeenCalledWith(false);

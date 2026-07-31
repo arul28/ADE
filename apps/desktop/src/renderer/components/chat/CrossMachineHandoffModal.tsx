@@ -10,7 +10,6 @@ import {
   GitBranch,
   GitFork,
   HardDrives,
-  Lightning,
   LockKey,
   ShieldWarning,
   Warning,
@@ -1080,12 +1079,18 @@ export function CrossMachineHandoffModal({
                     <div className="flex flex-wrap items-center gap-1.5">
                       <ModelPicker
                         value={modelId}
-                        onChange={onModelChange}
+                        onChange={(nextModelId, options) => {
+                          if (options) onFastModeChange?.(options.fastMode);
+                          onModelChange(nextModelId);
+                        }}
                         surfaceKey="cross-machine-handoff"
                         compact
                         {...(modelIdsForMode ? { availableModelIds: modelIdsForMode } : {})}
                         {...(mode === "fork" ? { filter: forkModelFilter } : {})}
                         {...(onOpenSignIn ? { onOpenSignIn } : {})}
+                        fastMode={Boolean(fastMode)}
+                        fastModeSupported={destinationFastModeSupported}
+                        {...(onFastModeChange ? { onFastModeChange } : {})}
                       />
                       {onReasoningEffortChange ? (
                         <ReasoningEffortPicker
@@ -1094,20 +1099,6 @@ export function CrossMachineHandoffModal({
                           onChange={onReasoningEffortChange}
                           compact
                         />
-                      ) : null}
-                      {destinationFastModeSupported && onFastModeChange ? (
-                        <button
-                          type="button"
-                          aria-pressed={Boolean(fastMode)}
-                          onClick={() => onFastModeChange(!fastMode)}
-                          className={cn(
-                            PERMISSION_TRIGGER_CLASS,
-                            fastMode && "border-amber-300/30 bg-amber-400/[0.10] text-amber-100",
-                          )}
-                        >
-                          <Lightning size={10} weight="fill" />
-                          Fast
-                        </button>
                       ) : null}
                       {destinationPermissionPicker}
                     </div>

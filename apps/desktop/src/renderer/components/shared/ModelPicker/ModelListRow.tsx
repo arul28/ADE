@@ -1,9 +1,10 @@
 import { memo, useCallback } from "react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 import { Star, Lightning } from "@phosphor-icons/react";
-import type { ModelDescriptor } from "../../../../shared/modelRegistry";
+import { modelSupportsFastMode, type ModelDescriptor } from "../../../../shared/modelRegistry";
 import { ModelRowLogo } from "../ProviderLogos";
 import { cn } from "../../ui/cn";
+import { usePrefersReducedMotion } from "../../../hooks/usePrefersReducedMotion";
 
 const LOCAL_FAMILIES = new Set(["ollama", "lmstudio"]);
 
@@ -41,6 +42,19 @@ export type ModelListRowProps = {
   onViewDocs?: (modelId: string) => void;
   onSignIn?: () => void;
   inlineReasoningChip?: InlineReasoningChipState;
+  /**
+   * Whether *this row's* chip reads as on. Fast mode is one bit on the surface,
+   * but it only applies to the model it was enabled for — the parent derives
+   * this as `fastMode && isActive` so a toggle never lights every fast-capable
+   * row at once.
+   */
+  fastModeOn?: boolean;
+  /**
+   * Absent when the surface has not opted into fast mode — no chip is drawn.
+   * Takes the model id because the handler's behaviour differs for the selected
+   * row (plain toggle) and a non-selected one (select + enable).
+   */
+  onFastModeChange?: (modelId: string, next: boolean) => void;
 };
 
 const REASONING_LABELS: Record<string, string> = {
@@ -72,9 +86,13 @@ export const ModelListRow = memo(function ModelListRow({
   onViewDocs,
   onSignIn,
   inlineReasoningChip,
+  fastModeOn = false,
+  onFastModeChange,
 }: ModelListRowProps) {
   const sub = subProviderLabel(model);
   const localBadge = isLocalModel(model);
+  const showFastChip = Boolean(onFastModeChange) && modelSupportsFastMode(model);
+  const reducedMotion = usePrefersReducedMotion();
 
   const handleSelect = useCallback(() => {
     if (!isAvailable) {
@@ -141,6 +159,29 @@ export const ModelListRow = memo(function ModelListRow({
       }
     },
     [reasoningCycleCb],
+  );
+
+  // The chip never falls through to the row's own click handler; whether the
+  // press also commits a model selection is the parent's call (see
+  // `ModelPickerContent`), because only it knows which row is selected.
+  const handleFastChipClick = useCallback(
+    (event: React.MouseEvent) => {
+      event.stopPropagation();
+      event.preventDefault();
+      onFastModeChange?.(model.id, !fastModeOn);
+    },
+    [fastModeOn, model.id, onFastModeChange],
+  );
+
+  const handleFastChipKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        event.stopPropagation();
+        onFastModeChange?.(model.id, !fastModeOn);
+      }
+    },
+    [fastModeOn, model.id, onFastModeChange],
   );
 
   const handleRowKeyDown = useCallback(
@@ -249,6 +290,39 @@ export const ModelListRow = memo(function ModelListRow({
               </button>
             ) : null}
           </span>
+
+          {showFastChip ? (
+            <button
+              type="button"
+              tabIndex={0}
+              data-model-picker-fast-toggle="true"
+              aria-label={`Fast mode for ${model.displayName}`}
+              aria-pressed={fastModeOn}
+              data-fast-on={fastModeOn ? "true" : undefined}
+              title={
+                fastModeOn
+                  ? "Fast mode on"
+                  : isActive
+                    ? "Enable fast mode"
+                    : `Use ${model.displayName} in fast mode`
+              }
+              onClick={handleFastChipClick}
+              onKeyDown={handleFastChipKeyDown}
+              className={cn(
+                "ml-1 inline-flex h-4 shrink-0 items-center gap-1 self-center rounded-full border px-1.5",
+                "text-[9px] font-semibold uppercase leading-none tracking-wide",
+                // Rest reads as plainly off; hover only darkens; the press itself
+                // is the depress; "on" is the only violet state.
+                reducedMotion ? "transition-none" : "transition-[color,background-color,border-color,transform] duration-100 active:scale-[0.97]",
+                fastModeOn
+                  ? "border-violet-400/50 bg-violet-500/85 text-white shadow-[0_0_0_1px_rgba(139,92,246,0.20)] hover:bg-violet-500 active:bg-violet-500/70"
+                  : "border-white/[0.08] bg-white/[0.02] text-muted-fg/55 hover:border-white/[0.18] hover:bg-white/[0.08] hover:text-fg/80 active:bg-white/[0.12]",
+              )}
+            >
+              <Lightning size={8} weight={fastModeOn ? "fill" : "regular"} />
+              <span>Fast</span>
+            </button>
+          ) : null}
 
           {!isAvailable && onSignIn ? (
             <button

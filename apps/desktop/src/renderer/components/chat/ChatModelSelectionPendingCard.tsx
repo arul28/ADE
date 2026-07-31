@@ -122,8 +122,9 @@ export const ChatModelSelectionPendingCard = memo(function ChatModelSelectionPen
   // When the user picks a different model, infer the new provider from the
   // model registry or runtime-catalog prefix so the dispatched ModelSelection
   // stays internally consistent (provider + modelId always agree).
-  const handleModelChange = useCallback((nextModelId: string) => {
+  const handleModelChange = useCallback((nextModelId: string, options?: { fastMode: boolean }) => {
     setModelId(nextModelId);
+    if (options) setFastMode(options.fastMode);
     setProvider(resolveSelectionProvider(nextModelId, fallbackProvider));
   }, [fallbackProvider]);
 

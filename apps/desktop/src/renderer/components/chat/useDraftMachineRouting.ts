@@ -315,25 +315,68 @@ export function useDraftMachineRouting({
         : (laneId ?? "")
     );
 
+  /**
+   * Switching machines re-points the lane, but how far depends on what was
+   * selected. Auto-create and the primary lane are the two targets ADE
+   * guarantees exist on every machine running it, so a selection sitting on
+   * either is still meaningful after the switch and is preserved — primary
+   * re-points to the new machine's own primary (same role, different lane id),
+   * and auto-create needs no re-pointing at all. Any other lane is specific to
+   * the machine it was created on and cannot follow, so it lands on that
+   * machine's primary instead of leaving the picker pointing at a lane that
+   * does not exist there.
+   */
   const handleMachineChange = useCallback((nextMachineId: string) => {
     const nextMachine = machineOptions.find((candidate) => candidate.id === nextMachineId);
     if (!nextMachine) return;
-    const primary = primaryLaneForMachine(nextMachineId);
-    if (!primary) {
-      setError(`${nextMachine.name} has no primary lane for this repository.`);
-      return;
-    }
     setError(null);
+    const wasAutoCreate = draftLaunchTargetIsAutoCreate;
     chooseMachine(nextMachineId);
-    onLaneChange?.(primary.id);
-  }, [chooseMachine, machineOptions, onLaneChange, primaryLaneForMachine, setError]);
+
+    const fallback = primaryLaneForMachine(nextMachineId);
+    if (fallback) {
+      onLaneChange?.(fallback.id);
+    }
+    // Re-assert auto-create *after* re-pointing the lane. `onLaneChange` moves
+    // the lane pointer to the new machine's primary, and a bare lane pointer
+    // reads as "a specific lane is selected" — which would silently convert an
+    // auto-create draft into a primary-lane draft, change the composer's draft
+    // key, and discard whatever the user had typed. A machine with no lanes at
+    // all lands here too: auto-create is the one target always launchable.
+    if (wasAutoCreate || !fallback) {
+      setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
+    }
+  }, [
+    chooseMachine,
+    draftLaunchTargetIsAutoCreate,
+    machineOptions,
+    onLaneChange,
+    primaryLaneForMachine,
+    setDraftLaunchTargetId,
+    setError,
+  ]);
 
   const handleLaneSelectionChange = useCallback((nextLaneId: string) => {
     if (isAutoCreateLaneOptionId(nextLaneId)) {
       setDraftLaunchTargetId(AUTO_CREATE_LANE_OPTION_ID);
-      const nextMachineId = machineIdFromAutoCreateLaneOptionId(nextLaneId)
-        ?? machineOptions[0]?.id
-        ?? boundMachineId;
+      // A bare auto-create id carries no machine. That used to mean "the first
+      // machine", which was right when one grouped list owned both choices —
+      // every auto-create row was machine-qualified. The shelf now picks the
+      // machine in its own control and passes bare ids, so defaulting here
+      // would silently drag the selection back to the bound machine. Keep
+      // whatever the machine picker already chose.
+      const explicitMachineId = machineIdFromAutoCreateLaneOptionId(nextLaneId);
+      const machineIsAvailable = (candidate: string | null | undefined) =>
+        Boolean(candidate && machineOptions.some((option) => option.id === candidate));
+      const nextMachineId = machineIsAvailable(explicitMachineId)
+        ? explicitMachineId!
+        : machineIsAvailable(machineId)
+          ? machineId
+          : (
+              machineOptions.find((option) => option.isBound)?.id
+              ?? machineOptions[0]?.id
+              ?? boundMachineId
+            );
       chooseMachine(nextMachineId);
       const primary = primaryLaneForMachine(nextMachineId);
       if (primary) onLaneChange?.(primary.id);
@@ -350,8 +393,8 @@ export function useDraftMachineRouting({
     setDraftLaunchTargetId(null);
     onLaneChange?.(actualLaneId);
   }, [
-    boundMachineId,
     chooseMachine,
+    boundMachineId,
     lanesByMachineId,
     machineId,
     machineOptions,

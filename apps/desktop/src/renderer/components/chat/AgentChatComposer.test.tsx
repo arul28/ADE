@@ -234,6 +234,21 @@ function makeLinearIssue(overrides: Partial<NormalizedLinearIssue> = {}): Normal
   };
 }
 
+/**
+ * Issue context lives in the composer's overflow control, which renders as a
+ * plain button when it holds a single entry and as a menu when it holds more.
+ * Tests care about reaching it, not about which form it took.
+ */
+function openIssueContext() {
+  const inline = screen.queryByRole("button", { name: "Issue context" });
+  if (inline) {
+    fireEvent.click(inline);
+    return;
+  }
+  fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+  fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Issue context/ }));
+}
+
 describe("AgentChatComposer", () => {
   it("re-resolves credentialed smart-link previews when the composer is reused", async () => {
     const url = "https://github.com/arul28/ADE/pull/835";
@@ -1092,30 +1107,110 @@ describe("AgentChatComposer", () => {
     });
   });
 
-  it("toggles Codex fast mode for supported models", () => {
-    const onFastModeChange = vi.fn();
+  it("renders the overflow entry directly when only one control survives gating", () => {
+    // A "⋯" that opens onto a single row is a menu pretending to be a button.
+    // Surfaces gate these entries independently, so on a CLI draft only one may
+    // survive — it should be reachable in one click, not two.
+    renderComposer({ turnActive: false, draft: "" });
+
+    expect(screen.queryByRole("button", { name: "More composer controls" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
+  });
+
+  it("moves focus through the overflow menu and returns it after keyboard selection", async () => {
+    const onToggleAppControl = vi.fn();
+    renderComposer({
+      turnActive: false,
+      draft: "",
+      showAppControlToggle: true,
+      onToggleAppControl,
+    });
+
+    const trigger = screen.getByRole("button", { name: "More composer controls" });
+    fireEvent.click(trigger);
+    const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
+    const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
+    expect((issue as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(appControl));
+    fireEvent.keyDown(appControl, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(appControl);
+    fireEvent.keyDown(appControl, { key: "Enter" });
+    expect(onToggleAppControl).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
+  });
+
+  it("focuses and keyboard-navigates the portalled Send options", async () => {
+    // Two adjacent circular buttons both carrying an arrow read as one control
+    // duplicated, so background launch is a row on Send's caret instead.
+    renderComposer({
+      turnActive: false,
+      draft: "Launch this.",
+      onSubmitInBackground: vi.fn(),
+    });
+
+    const splitControl = document.querySelector("[data-composer-idle-send-control]");
+    expect(splitControl).toBeTruthy();
+    expect(within(splitControl as HTMLElement).getByRole("button", { name: "Send" })).toBeTruthy();
+    const caret = within(splitControl as HTMLElement).getByRole("button", { name: "Send options" });
+
+    fireEvent.click(caret);
+    const sendRow = screen.getByRole("menuitem", { name: /^Send/ });
+    const backgroundRow = screen.getByRole("menuitem", { name: /Launch in background/ });
+    await waitFor(() => expect(document.activeElement).toBe(sendRow));
+    fireEvent.keyDown(sendRow, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(backgroundRow);
+    fireEvent.keyDown(backgroundRow, { key: "Escape" });
+    await waitFor(() => expect(document.activeElement).toBe(caret));
+    expect(screen.queryByRole("menu", { name: "Send options" })).toBeNull();
+  });
+
+  it("skips disabled Send options during arrow navigation", async () => {
+    renderComposer({
+      turnActive: false,
+      draft: "Launch this.",
+      onSubmitInBackground: vi.fn(),
+      backgroundLaunchBusy: true,
+    });
+
+    const caret = screen.getByRole("button", { name: "Send options" });
+    caret.focus();
+    fireEvent.click(caret);
+    const sendRow = screen.getByRole("menuitem", { name: /^Send/ });
+    const disabledBackground = screen.getByRole("menuitem", { name: /Launching/ });
+    expect((sendRow as HTMLButtonElement).disabled).toBe(true);
+    expect((disabledBackground as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(caret));
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Send options" }), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(caret);
+  });
+
+  it("no longer owns a standalone fast-mode toolbar control", () => {
+    // Fast mode is a property of the model, so it moved onto the model row in
+    // the shared ModelPicker (toggle behaviour is covered by ModelPicker.test).
+    // What this suite owns is that the composer stopped rendering a fourth pill
+    // beside the model name.
     renderComposer({
       sessionProvider: "codex",
       modelId: "openai/gpt-5.5",
       availableModelIds: ["openai/gpt-5.5"],
       fastMode: false,
-      onFastModeChange,
+      onFastModeChange: vi.fn(),
     });
 
-    const fastButton = screen.getByRole("button", { name: "Fast mode" });
-    expect(fastButton.getAttribute("aria-pressed")).toBe("false");
+    expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
+    expect(document.querySelector("[data-chat-composer-fast-toggle]")).toBeNull();
+  });
 
-    const toolbarButtons = screen.getAllByRole("button");
-    expect(toolbarButtons.indexOf(screen.getByRole("button", { name: /Select model/i }))).toBeLessThan(
-      toolbarButtons.indexOf(screen.getByRole("button", { name: "Reasoning effort" })),
-    );
-    expect(toolbarButtons.indexOf(screen.getByRole("button", { name: "Reasoning effort" }))).toBeLessThan(
-      toolbarButtons.indexOf(fastButton),
-    );
+  it("names fast mode on the collapsed model trigger", () => {
+    renderComposer({
+      sessionProvider: "codex",
+      modelId: "openai/gpt-5.5",
+      availableModelIds: ["openai/gpt-5.5"],
+      fastMode: true,
+      onFastModeChange: vi.fn(),
+    });
 
-    fireEvent.click(fastButton);
-
-    expect(onFastModeChange).toHaveBeenCalledWith(true);
+    expect(document.querySelector("[data-model-picker-trigger]")?.textContent).toMatch(/Fast/);
   });
 
   it("hides Codex fast mode for unsupported models", () => {
@@ -1138,7 +1233,7 @@ describe("AgentChatComposer", () => {
       hideModelControls: true,
     });
 
-    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(document.querySelector("[data-model-picker-trigger]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
@@ -1156,7 +1251,7 @@ describe("AgentChatComposer", () => {
       ],
     });
 
-    expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+    expect(document.querySelector("[data-model-picker-trigger]")).toBeNull();
     expect(screen.queryByRole("button", { name: "Reasoning effort" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Fast mode" })).toBeNull();
   });
@@ -1378,7 +1473,10 @@ describe("AgentChatComposer", () => {
     });
 
     expect((screen.getByRole("button", { name: "Send" }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Launch in background" }) as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Send options" }));
+    expect(
+      (screen.getByRole("menuitem", { name: /Launch in background/ }) as HTMLButtonElement).disabled,
+    ).toBe(true);
 
     fireEvent.keyDown(screen.getByRole("textbox"), { key: "Enter" });
 
@@ -1566,8 +1664,8 @@ describe("AgentChatComposer", () => {
       onStartOrchestratorChat,
     });
 
-    const button = screen.getByRole("button", { name: "Start orchestrator mode" });
-    fireEvent.click(button);
+    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Start orchestrator mode/ }));
 
     expect(onStartOrchestratorChat).toHaveBeenCalledTimes(1);
   });
@@ -1582,11 +1680,16 @@ describe("AgentChatComposer", () => {
       orchestratorModeActive: true,
     });
 
-    const button = screen.getByRole("button", { name: "Orchestrator mode active" });
-    expect(button.getAttribute("aria-pressed")).toBe("true");
+    // Active state has to survive being folded away, so the collapsed trigger
+    // carries a dot and the row itself reports aria-checked.
+    const trigger = screen.getByRole("button", { name: "More composer controls" });
+    fireEvent.click(trigger);
+
+    const row = screen.getByRole("menuitemcheckbox", { name: /Orchestrator mode/ });
+    expect(row.getAttribute("aria-checked")).toBe("true");
     expect(container.querySelector("[data-chat-composer-orchestrator-glow]")).toBeTruthy();
 
-    fireEvent.click(button);
+    fireEvent.click(row);
     expect(onStopOrchestratorChat).toHaveBeenCalledTimes(1);
   });
 
@@ -1620,7 +1723,7 @@ describe("AgentChatComposer", () => {
       onAddContextAttachment: vi.fn(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    openIssueContext();
 
     const menu = document.body.querySelector("[data-issue-context-menu]");
     const composerShell = container.querySelector("[data-chat-composer-mode]");
@@ -1653,7 +1756,7 @@ describe("AgentChatComposer", () => {
       onOpenLinearSettings,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    openIssueContext();
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await screen.findByText(/Linear token missing/i);
@@ -1689,7 +1792,7 @@ describe("AgentChatComposer", () => {
       onAddContextAttachment,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    openIssueContext();
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(searchLinearIssues).toHaveBeenCalled());
@@ -1755,7 +1858,7 @@ describe("AgentChatComposer", () => {
       onAddContextAttachment: vi.fn(),
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "Attach issue context" }));
+    openIssueContext();
     fireEvent.click(screen.getByRole("button", { name: /Linear issue/i }));
 
     await waitFor(() => expect(screen.getAllByText("ADE-123").length).toBeGreaterThan(0));
@@ -2201,7 +2304,8 @@ describe("AgentChatComposer", () => {
       onParallelChatModeChange,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /Parallel models/i }));
+    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
+    fireEvent.click(screen.getByRole("menuitemcheckbox", { name: /Parallel models/i }));
 
     expect(onParallelChatModeChange).toHaveBeenCalledWith(true);
   });
@@ -2318,68 +2422,5 @@ describe("AgentChatComposer", () => {
     }
   });
 
-  describe("machine chip", () => {
-    const REMOTE_TAB = {
-      kind: "remote" as const,
-      key: "remote:target-1:project-1",
-      targetId: "target-1",
-      runtimeName: "MacBook Pro (97)",
-      projectId: "project-1",
-      rootPath: "/remote/ADE",
-      displayName: "ADE",
-    };
-
-    afterEach(() => {
-      useAppStore.setState({
-        projectBinding: null,
-        openRemoteProjectTabs: [],
-      } as any);
-    });
-
-    it("states the machine as read-only fact once a lane is selected", () => {
-      useAppStore.setState({
-        projectBinding: REMOTE_TAB,
-        openRemoteProjectTabs: [REMOTE_TAB],
-      } as any);
-
-      renderComposer({ turnActive: false, draft: "", laneSelectionId: "lane-7" });
-
-      const chip = document.querySelector('[data-chat-composer-machine-chip="readonly"]');
-      expect(chip).toBeTruthy();
-      expect(chip?.textContent).toContain("MacBook Pro (97)");
-      expect(document.querySelector('[data-chat-composer-machine-chip="picker"]')).toBeNull();
-    });
-
-    it("names This Mac absolutely when the tab is bound locally", () => {
-      renderComposer({ turnActive: false, draft: "", laneSelectionId: "lane-7" });
-
-      const chip = document.querySelector('[data-chat-composer-machine-chip="readonly"]');
-      expect(chip?.textContent).toContain("This Mac");
-      expect(chip?.textContent).not.toMatch(/remote/i);
-    });
-
-    it("becomes a picker while the lane is still auto-create", () => {
-      const onMachineChange = vi.fn();
-      useAppStore.setState({ openRemoteProjectTabs: [REMOTE_TAB] } as any);
-
-      renderComposer({
-        turnActive: false,
-        draft: "",
-        laneSelectionId: "__ade_auto_create_lane__",
-        onMachineChange,
-      });
-
-      const trigger = screen.getByRole("button", {
-        name: "Choose machine, currently This Mac",
-      });
-      expect(trigger.textContent).toContain("This Mac");
-      expect(trigger.textContent).not.toContain("Run on");
-
-      fireEvent.click(trigger);
-      fireEvent.click(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ }));
-
-      expect(onMachineChange).toHaveBeenCalledWith("target-1");
-    });
-  });
 
 });

@@ -13,9 +13,15 @@ import type {
   UsageSnapshot,
 } from "../../../shared/types";
 import { HeaderUsageControl } from "./HeaderUsageControl";
-import { ActivityModule, WorkActivityModule, readActivityPersisted } from "./ActivityModule";
+import {
+  ActivityModule,
+  WorkActivityModule,
+  readActivityPersisted,
+} from "./ActivityModule";
+import { computeHeatmapLayout } from "./ActivityHeatmap";
 import { AdeUsageSection } from "../settings/AdeUsageSection";
 import { UsageQuotaPanel } from "./UsageQuotaPanel";
+import { bucketActivityIntensity, trimLeadingInactiveDays } from "./activityIntensity";
 import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
@@ -29,6 +35,27 @@ type UsageComponentTestBridge = {
   >;
   ai: Pick<Window["ade"]["ai"], "getStatus">;
 };
+
+function makeActivityDay(
+  date: string,
+  overrides: Partial<AdeUsageDailyPoint> = {},
+): AdeUsageDailyPoint {
+  return {
+    date,
+    inputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 0,
+    cachedTokens: 0,
+    commits: 0,
+    prs: 0,
+    insertions: 0,
+    deletions: 0,
+    filesChanged: 0,
+    sessions: 0,
+    interactions: 0,
+    ...overrides,
+  };
+}
 
 function makeEmptySnapshot(): UsageSnapshot {
   return {
@@ -864,7 +891,7 @@ describe("usage components", () => {
 
         expect(screen.queryByText("Your activity will appear here after your first chat.")).toBeNull();
         const cell = container.querySelector('[aria-label="Daily activity heatmap"]')!.children[0] as HTMLElement;
-        expect(Number(cell.getAttribute("data-intensity"))).toBeGreaterThan(0);
+        expect(Number(cell.getAttribute("data-level"))).toBeGreaterThan(0);
         unmount();
       }
     });
@@ -916,12 +943,15 @@ describe("usage components", () => {
       expect(screen.getByRole("button", { name: "30d" })).toBeTruthy();
     });
 
-    it("scales the heatmap to fill the box: one row for short ranges, seven for long", () => {
+    it("lays the heatmap out as square cells: one row for short ranges, seven for long", () => {
       const short = makeActivityStats();
       const { rerender, container } = render(<ActivityModule stats={short} preset="7d" onPresetChange={vi.fn()} />);
-      const grid1 = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      const grid1 = container.querySelector('[aria-label="Daily activity heatmap"]')! as HTMLElement;
       expect(grid1.getAttribute("data-heatmap-rows")).toBe("1");
       expect(grid1.children.length).toBe(short.daily.length);
+      // Height derives from the square cell size, not from a fixed chart band.
+      expect(grid1.getAttribute("data-heatmap-cell")).toBe("16");
+      expect(grid1.style.height).toBe("16px");
 
       const long = makeActivityStats({
         daily: Array.from({ length: 30 }, (_, i) => ({
@@ -931,9 +961,134 @@ describe("usage components", () => {
         })),
       } as unknown as Partial<AdeUsageStats>);
       rerender(<ActivityModule stats={long} preset="30d" onPresetChange={vi.fn()} />);
-      const grid2 = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      const grid2 = container.querySelector('[aria-label="Daily activity heatmap"]')! as HTMLElement;
       expect(grid2.getAttribute("data-heatmap-rows")).toBe("7");
       expect(grid2.children.length).toBe(30);
+      // 7 rows of 16px cells plus six 3px gaps.
+      expect(grid2.style.height).toBe("130px");
+    });
+
+    it("clamps the heatmap window to the first active day", () => {
+      const daily = Array.from({ length: 20 }, (_, i) =>
+        makeActivityDay(`2026-06-${String(i + 1).padStart(2, "0")}`),
+      );
+      // Active on the 16th and the 20th; the 17th-19th gap must survive.
+      daily[15] = { ...daily[15]!, totalTokens: 1_500, sessions: 1, interactions: 2 };
+      daily[19] = { ...daily[19]!, totalTokens: 900_000, sessions: 4, interactions: 30 };
+      const { container } = render(
+        <ActivityModule stats={makeActivityStats({ daily } as unknown as Partial<AdeUsageStats>)} preset="30d" onPresetChange={vi.fn()} />,
+      );
+
+      const grid = container.querySelector('[aria-label="Daily activity heatmap"]')!;
+      expect(grid.children.length).toBe(5);
+      expect(Array.from(grid.children, (cell) => cell.getAttribute("data-level"))).toEqual(["1", "0", "0", "0", "4"]);
+    });
+
+    it("computes a content-sized heatmap layout, shrinking cells when the natural width does not fit", () => {
+      // Unmeasured: natural size at the max cell, nothing dropped.
+      expect(computeHeatmapLayout({ cellCount: 30, maxCell: 13, availableWidth: 0 })).toEqual({
+        rows: 7, cols: 5, cell: 13, width: 5 * 13 + 4 * 3, visible: 30,
+      });
+
+      // Fits with room to spare: cells stay at max and the grid stops short of
+      // the available width — the card is what shrinks, not the cells.
+      const roomy = computeHeatmapLayout({ cellCount: 30, maxCell: 13, availableWidth: 800 });
+      expect(roomy).toMatchObject({ cell: 13, cols: 5, visible: 30 });
+      expect(roomy.width).toBeLessThan(800);
+
+      // Natural width exceeds available: cells shrink toward the floor, every
+      // day still renders, and the grid fits.
+      const tight = computeHeatmapLayout({ cellCount: 371, maxCell: 13, availableWidth: 800 });
+      expect(tight.cell).toBeLessThan(13);
+      expect(tight.cell).toBeGreaterThanOrEqual(6);
+      expect(tight.visible).toBe(371);
+      expect(tight.width).toBeLessThanOrEqual(800);
+
+      // Past the floor: oldest columns are dropped rather than overflowing.
+      const overflowing = computeHeatmapLayout({ cellCount: 900, maxCell: 13, availableWidth: 800 });
+      expect(overflowing.cell).toBe(6);
+      expect(overflowing.visible).toBeLessThan(900);
+      expect(overflowing.visible % 7).toBe(0);
+      expect(overflowing.width).toBeLessThanOrEqual(800);
+    });
+
+    it("sizes the card to the heatmap grid instead of stretching it across the slot", () => {
+      const observers: Array<{ callback: ResizeObserverCallback; targets: Element[] }> = [];
+      class TestResizeObserver implements ResizeObserver {
+        private readonly entry: { callback: ResizeObserverCallback; targets: Element[] };
+        constructor(callback: ResizeObserverCallback) {
+          this.entry = { callback, targets: [] };
+          observers.push(this.entry);
+        }
+        observe(target: Element): void { this.entry.targets.push(target); }
+        unobserve(): void {}
+        disconnect(): void {}
+      }
+      const original = globalThis.ResizeObserver;
+      Object.assign(globalThis, { ResizeObserver: TestResizeObserver });
+      const emit = (width: number) => {
+        for (const observer of observers) {
+          observer.callback(
+            observer.targets.map((target) => ({ target, contentRect: { width } }) as unknown as ResizeObserverEntry),
+            {} as ResizeObserver,
+          );
+        }
+      };
+      const dailyFrom = (days: number) =>
+        Array.from({ length: days }, (_, index) => {
+          const date = new Date(Date.UTC(2024, 0, 1 + index)).toISOString().slice(0, 10);
+          return makeActivityDay(date, {
+            inputTokens: 100,
+            outputTokens: 50,
+            totalTokens: 150,
+            sessions: 1,
+            interactions: 1,
+          });
+        });
+
+      try {
+        const { container, rerender } = render(
+          <ActivityModule
+            stats={makeActivityStats({ daily: dailyFrom(400) } as unknown as Partial<AdeUsageStats>)}
+            variant="compact"
+            preset="all"
+            onPresetChange={vi.fn()}
+            className="w-full max-w-[820px]"
+          />,
+        );
+        act(() => emit(820));
+
+        const card = container.querySelector("[data-activity-module]") as HTMLElement;
+        const grid = container.querySelector('[aria-label="Daily activity heatmap"]') as HTMLElement;
+        const cardWidth = Number.parseFloat(card.style.width);
+        const gridWidth = Number.parseFloat(grid.style.width);
+        // Card = grid + its own padding, and it stops short of the 820px slot:
+        // the leftover becomes centring margin, not dead space inside the card.
+        expect(gridWidth).toBeGreaterThan(0);
+        expect(cardWidth).toBe(gridWidth + 20);
+        expect(cardWidth).toBeLessThan(820);
+        expect(Number(grid.getAttribute("data-heatmap-cell"))).toBeLessThanOrEqual(13);
+        expect(grid.children.length).toBe(400);
+
+        // Far past the natural fit: cells bottom out at the floor, the grid
+        // still fits the slot, and the oldest columns are dropped.
+        rerender(
+          <ActivityModule
+            stats={makeActivityStats({ daily: dailyFrom(900) } as unknown as Partial<AdeUsageStats>)}
+            variant="compact"
+            preset="all"
+            onPresetChange={vi.fn()}
+            className="w-full max-w-[820px]"
+          />,
+        );
+        const wide = container.querySelector('[aria-label="Daily activity heatmap"]') as HTMLElement;
+        expect(wide.getAttribute("data-heatmap-cell")).toBe("6");
+        expect(Number.parseFloat(wide.style.width)).toBeLessThanOrEqual(800);
+        expect(wide.children.length).toBeLessThan(900);
+      } finally {
+        if (original) Object.assign(globalThis, { ResizeObserver: original });
+        else Reflect.deleteProperty(globalThis, "ResizeObserver");
+      }
     });
 
     it("shows a per-tab hint when the active tab is empty but the module has data", () => {
@@ -1050,5 +1205,62 @@ describe("usage components", () => {
       expect(screen.getByText(/Provider totals scoped to this project/)).toBeTruthy();
       expect(screen.getByText(/Updated .* ago/)).toBeTruthy();
     });
+  });
+});
+
+describe("activity heatmap intensity", () => {
+  it("spreads an outlier-dominated distribution across all four levels", () => {
+    const levels = bucketActivityIntensity([
+      1_000, 4_000, 9_000, 20_000, 60_000, 150_000, 400_000, 35_900_000_000,
+    ]);
+
+    expect(levels).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
+    expect(new Set(levels).size).toBe(4);
+  });
+
+  it.each([
+    [[500, 500, 500, 500], [4, 4, 4, 4]],
+    [[0, 0, 7, 0], [0, 0, 4, 0]],
+    [[0, 0, 0], [0, 0, 0]],
+    [[], []],
+  ])("maps $0 to $1", (values, expected) => {
+    expect(bucketActivityIntensity(values)).toEqual(expected);
+  });
+
+  it("ignores empty days when computing quartiles and keeps the busiest day at level 4", () => {
+    const dense = bucketActivityIntensity([10, 20, 30, 40]);
+    const sparse = bucketActivityIntensity([0, 10, 0, 20, 0, 30, 0, 40, 0]);
+
+    expect(sparse.filter((level) => level > 0)).toEqual(dense);
+    expect(bucketActivityIntensity([1, 100]).at(-1)).toBe(4);
+    expect(bucketActivityIntensity([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]).at(-1)).toBe(4);
+  });
+
+  it("trims only leading inactive days and preserves interior and trailing gaps", () => {
+    const points = [
+      makeActivityDay("2026-01-01"),
+      makeActivityDay("2026-01-02"),
+      makeActivityDay("2026-01-03", { totalTokens: 1_000 }),
+      makeActivityDay("2026-01-04"),
+      makeActivityDay("2026-01-05", { commits: 2 }),
+      makeActivityDay("2026-01-06"),
+    ];
+
+    expect(trimLeadingInactiveDays(points).map((point) => point.date)).toEqual([
+      "2026-01-03",
+      "2026-01-04",
+      "2026-01-05",
+      "2026-01-06",
+    ]);
+  });
+
+  it("keeps empty/already-active series stable and counts GitHub-only activity", () => {
+    const empty = [makeActivityDay("2026-01-01"), makeActivityDay("2026-01-02")];
+    const active = [makeActivityDay("2026-01-01", { sessions: 1 }), makeActivityDay("2026-01-02")];
+    const github = [makeActivityDay("2026-01-01"), makeActivityDay("2026-01-02", { githubCommits: 3 })];
+
+    expect(trimLeadingInactiveDays(empty)).toEqual(empty);
+    expect(trimLeadingInactiveDays(active)).toBe(active);
+    expect(trimLeadingInactiveDays(github).map((point) => point.date)).toEqual(["2026-01-02"]);
   });
 });

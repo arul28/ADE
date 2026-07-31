@@ -15,6 +15,15 @@ import type {
 } from "../../../shared/types";
 import { formatTokens } from "../../lib/format";
 import { useAppStore } from "../../state/appStore";
+import { usePrefersReducedMotion } from "../../hooks/usePrefersReducedMotion";
+import {
+  dayHasActivity,
+} from "./activityIntensity";
+import {
+  ActivityHeatmap,
+  computeHeatmapLayout,
+  useHeatmapCells,
+} from "./ActivityHeatmap";
 
 // ---------------------------------------------------------------------------
 // Persistence
@@ -90,25 +99,6 @@ function persistActivityPatch(patch: Partial<PersistedState>): void {
 }
 
 // ---------------------------------------------------------------------------
-// Reduced-motion
-// ---------------------------------------------------------------------------
-
-function usePrefersReducedMotion(): boolean {
-  const [reduced, setReduced] = useState(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return false;
-    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  });
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
-    const onChange = () => setReduced(query.matches);
-    query.addEventListener?.("change", onChange);
-    return () => query.removeEventListener?.("change", onChange);
-  }, []);
-  return reduced;
-}
-
-// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -126,40 +116,6 @@ function formatDay(date: string): string {
   return parsed.toLocaleDateString([], { month: "short", day: "numeric" });
 }
 
-/**
- * Single source of truth for a day's activity magnitude. Both the heatmap
- * intensity (dayValue) and the has-activity predicate (dayHasActivity) derive
- * from this, so the two can never drift over which daily-point dimensions
- * count. Every activity dimension is covered: tokens, sessions, interactions,
- * local git commits/PRs/files/lines, and the GitHub-reported counterparts.
- * Counts (sessions, commits, PRs, files) carry heavier weights than raw line
- * counts, which are additive.
- */
-function dayActivityScore(point: AdeUsageDailyPoint): number {
-  return (
-    point.totalTokens
-    + point.sessions * 4_000
-    + (point.interactions ?? 0) * 1_500
-    + point.commits * 3_000
-    + point.prs * 5_000
-    + point.filesChanged * 500
-    + point.insertions
-    + point.deletions
-    + (point.githubCommits ?? 0) * 3_000
-    + (point.githubPrs ?? 0) * 5_000
-    + (point.githubAdditions ?? 0)
-    + (point.githubDeletions ?? 0)
-  );
-}
-
-function dayValue(point: AdeUsageDailyPoint): number {
-  return dayActivityScore(point);
-}
-
-function dayHasActivity(point: AdeUsageDailyPoint): boolean {
-  return dayActivityScore(point) > 0;
-}
-
 function sessionsTotal(stats: AdeUsageStats): number {
   return (stats.summary.chatSessions ?? 0) + (stats.summary.terminalSessions ?? 0);
 }
@@ -170,7 +126,6 @@ function sessionsTotal(stats: AdeUsageStats): number {
 
 const TOKEN_COLORS = { input: "#5B93F5", output: "#E0A82E", cache: "#8892A6" } as const;
 const CODE_COLORS = { insertions: "#3FB950", deletions: "#E5595C", github: "#8892A6" } as const;
-const HEATMAP_HUE = "#5B93F5";
 
 const CLIENT_COLORS: Record<AdeUsageClientSurface, string> = {
   desktop: "#5B93F5",
@@ -315,62 +270,28 @@ function ChartFrame({
   );
 }
 
-function ActivityHeatmap({
-  points,
-  height,
-  reduced,
-  tooltip,
-}: {
-  points: AdeUsageDailyPoint[];
-  height: number;
-  reduced: boolean;
-  tooltip: ReturnType<typeof useDayTooltip>;
-}) {
-  const cells = useMemo(() => {
-    const ordered = [...points].sort((a, b) => a.date.localeCompare(b.date));
-    const max = Math.max(1, ...ordered.map(dayValue));
-    return ordered.map((point) => ({ point, intensity: Math.max(0, Math.min(1, dayValue(point) / max)) }));
-  }, [points]);
+/** Horizontal padding of the card, per variant — subtracted from the measured
+ * slot to get the width the grid actually has, and added back to turn the
+ * grid's natural width into a card width. */
+const CARD_PADDING_X_COMPACT = 20;
+const CARD_PADDING_X_FULL = 24;
+/** Below this the tab row and the footer line start colliding, so a very short
+ * range widens the card past its grid rather than squeezing the chrome. */
+const MIN_CARD_WIDTH = 380;
 
-  // Fill the chart box instead of leaving it mostly blank: a short range lays out
-  // as one tall row of large cells; longer ranges use a 7-row calendar-style grid
-  // (columns = weeks) whose cells stretch to fill the available width and height.
-  const rows = cells.length <= 7 ? 1 : 7;
-  const cols = Math.max(1, Math.ceil(cells.length / rows));
-
-  return (
-    <div
-      className="grid min-h-0 w-full flex-1 gap-[3px]"
-      style={{
-        height,
-        gridAutoFlow: "column",
-        gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
-        gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`,
-      }}
-      role="img"
-      aria-label="Daily activity heatmap"
-      data-heatmap-rows={rows}
-    >
-      {cells.map(({ point, intensity }) => (
-        <span
-          key={point.date}
-          className="rounded-[2px]"
-          data-intensity={intensity.toFixed(2)}
-          style={{
-            background:
-              intensity === 0
-                ? "color-mix(in srgb, var(--color-fg) 7%, transparent)"
-                : `color-mix(in srgb, ${HEATMAP_HUE} ${Math.round(24 + intensity * 68)}%, var(--color-card))`,
-            transition: reduced ? undefined : "background 120ms ease",
-            cursor: "default",
-          }}
-          onPointerEnter={(event) => tooltip.show(point, event.currentTarget)}
-          onPointerLeave={tooltip.hide}
-          onClick={(event) => tooltip.toggle(point, event.currentTarget)}
-        />
-      ))}
-    </div>
-  );
+/** Tracks a container's width so the heatmap can be sized from it. */
+function useMeasuredWidth(ref: React.RefObject<HTMLElement | null>): number {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const node = ref.current;
+    if (!node || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(([entry]) => {
+      setWidth(entry?.contentRect.width ?? 0);
+    });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [ref]);
+  return width;
 }
 
 /** Muted, centered hint for a tab whose own series is empty while the module
@@ -601,7 +522,15 @@ function WarmEmpty({ height }: { height: number }) {
 
 function TabRow({ tab, onTabChange }: { tab: ActivityTab; onTabChange: (tab: ActivityTab) => void }) {
   return (
-    <div role="tablist" aria-label="Activity views" className="flex items-center gap-0.5">
+    // A quiet segmented control: one recessed track, only the active segment
+    // lifted. Four equally prominent buttons read as a toolbar and pulled focus
+    // away from the composer this module sits under.
+    <div
+      role="tablist"
+      aria-label="Activity views"
+      className="flex items-center rounded-md p-[2px]"
+      style={{ background: "color-mix(in srgb, var(--color-fg) 4%, transparent)" }}
+    >
       {TABS.map((value) => {
         const active = value === tab;
         return (
@@ -610,10 +539,10 @@ function TabRow({ tab, onTabChange }: { tab: ActivityTab; onTabChange: (tab: Act
             type="button"
             role="tab"
             aria-selected={active}
-            tabIndex={active ? 0 : -1}
+            tabIndex={0}
             onClick={() => onTabChange(value)}
-            className={`rounded-md px-2 py-1 text-[11px] font-medium transition-colors ${
-              active ? "bg-white/[0.08] text-fg" : "text-muted-fg hover:text-fg/85"
+            className={`rounded-[5px] px-1.5 py-[3px] text-[10px] font-medium transition-colors ${
+              active ? "bg-white/[0.07] text-fg/90" : "text-muted-fg/70 hover:text-fg/75"
             }`}
           >
             {TAB_LABELS[value]}
@@ -641,7 +570,7 @@ function RangeControl({
           value={preset}
           onChange={(event) => onPresetChange(event.target.value as AdeUsageRangePreset)}
           aria-label="Time range"
-          className="cursor-pointer appearance-none rounded-md border border-white/[0.08] bg-white/[0.03] py-1 pl-2 pr-6 text-[11px] font-medium text-fg/85 outline-none hover:bg-white/[0.06] focus-visible:ring-1 focus-visible:ring-white/20"
+          className="cursor-pointer appearance-none rounded-md border border-white/[0.06] bg-transparent py-[3px] pl-1.5 pr-5 text-[10px] font-medium text-muted-fg/80 outline-none hover:bg-white/[0.05] hover:text-fg/80 focus-visible:ring-1 focus-visible:ring-white/20"
         >
           {RANGE_OPTIONS.map((option) => (
             <option key={option.preset} value={option.preset}>
@@ -649,7 +578,7 @@ function RangeControl({
             </option>
           ))}
         </select>
-        <span className="pointer-events-none absolute right-1.5 text-muted-fg">▾</span>
+        <span className="pointer-events-none absolute right-1 text-[9px] text-muted-fg/70">▾</span>
       </label>
     );
   }
@@ -721,14 +650,14 @@ function FooterChip({
   return (
     <span
       ref={ref}
-      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium"
+      className="inline-flex shrink-0 items-center gap-1 rounded-full border px-1.5 py-[1px] text-[9px] font-medium"
       style={{
         borderColor: "color-mix(in srgb, var(--color-accent) 30%, transparent)",
         background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
         color: "color-mix(in srgb, var(--color-accent) 70%, var(--color-fg))",
       }}
     >
-      {chip.icon === "trophy" ? <Trophy size={11} weight="fill" /> : <Fire size={11} weight="fill" />}
+      {chip.icon === "trophy" ? <Trophy size={9} weight="fill" /> : <Fire size={9} weight="fill" />}
       {chip.label}
     </span>
   );
@@ -763,15 +692,38 @@ export function ActivityModule({
 }) {
   const reduced = usePrefersReducedMotion();
   const [tab, setTab] = useState<ActivityTab>(() => readActivityPersisted().tab);
+  const slotRef = useRef<HTMLDivElement | null>(null);
   const cardRef = useRef<HTMLElement | null>(null);
   const tooltip = useDayTooltip(cardRef);
   const chip = useFooterChip(stats);
 
   const compactMode = variant === "compact";
-  const chartHeight = compactMode ? 84 : 132;
+  const chartHeight = compactMode ? 76 : 124;
+  const heatmapMaxCell = compactMode ? 13 : 16;
   const maxBars = compactMode ? 40 : 64;
   const chartPoints = useChartPoints(stats?.daily ?? [], maxBars);
   const hasActivity = (stats?.daily ?? []).some(dayHasActivity);
+
+  // The card is sized to the heatmap rather than stretched to the slot: a
+  // ~53-column grid of 13px cells simply does not fill 820px, and the leftover
+  // was showing up as dead space along the card's right edge. Measuring the
+  // slot (always full width) instead of the card keeps this off a resize loop.
+  const cardPaddingX = compactMode ? CARD_PADDING_X_COMPACT : CARD_PADDING_X_FULL;
+  const slotWidth = useMeasuredWidth(slotRef);
+  const heatmapCells = useHeatmapCells(stats?.daily ?? []);
+  const heatmapLayout = useMemo(
+    () => computeHeatmapLayout({
+      cellCount: heatmapCells.length,
+      maxCell: heatmapMaxCell,
+      availableWidth: slotWidth > 0 ? Math.max(0, slotWidth - cardPaddingX) : 0,
+    }),
+    [heatmapCells.length, heatmapMaxCell, slotWidth, cardPaddingX],
+  );
+  // Held across tabs so switching to Tokens does not resize the card underneath
+  // the pointer; the bar charts just fill whatever width the heatmap earned.
+  const cardWidth = slotWidth > 0 && heatmapLayout.width > 0
+    ? Math.min(slotWidth, Math.max(MIN_CARD_WIDTH, heatmapLayout.width + cardPaddingX))
+    : undefined;
 
   const changeTab = useCallback((next: ActivityTab) => {
     setTab(next);
@@ -782,6 +734,10 @@ export function ActivityModule({
   const summary = stats?.summary;
   const activeDays = summary?.activeDays;
 
+  // The heatmap is the one view whose height is content-derived, so it opts out
+  // of the reserved chart band the fixed-height bar charts still need.
+  const heatmapView = tab === "activity" && stats != null && hasActivity;
+
   let chart: React.ReactNode;
   if (loading && !stats) {
     chart = <SkeletonChart height={chartHeight} bars={compactMode ? 20 : 32} />;
@@ -790,7 +746,7 @@ export function ActivityModule({
   } else if (!hasActivity) {
     chart = <WarmEmpty height={chartHeight} />;
   } else if (tab === "activity") {
-    chart = <ActivityHeatmap points={stats.daily} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
+    chart = <ActivityHeatmap cells={heatmapCells} layout={heatmapLayout} reduced={reduced} tooltip={tooltip} />;
   } else if (tab === "tokens") {
     chart = <TokenBars points={chartPoints} height={chartHeight} reduced={reduced} tooltip={tooltip} />;
   } else if (tab === "code") {
@@ -800,55 +756,60 @@ export function ActivityModule({
   }
 
   return (
-    <section
-      ref={cardRef}
-      className={`relative flex flex-col rounded-xl border ${compactMode ? "gap-2 px-3 py-2.5" : "gap-3 p-4"} ${className}`}
-      style={{
-        background: "color-mix(in srgb, var(--color-card) 92%, transparent)",
-        borderColor: "color-mix(in srgb, var(--color-border) 70%, transparent)",
-      }}
-      aria-label={ariaSummary(stats, preset)}
-      data-activity-module
-    >
-      <div className="flex items-center justify-between gap-3">
-        <TabRow tab={tab} onTabChange={changeTab} />
-        {showRangeControl && onPresetChange ? (
-          <RangeControl preset={preset} onPresetChange={onPresetChange} variant={variant} />
-        ) : null}
-      </div>
-
-      <div
-        role="tabpanel"
-        aria-label={TAB_LABELS[tab]}
-        className={`relative flex min-h-0 flex-col ${compactMode ? "min-h-[96px]" : "min-h-[148px]"}`}
+    <div ref={slotRef} className={`flex justify-center ${className}`}>
+      <section
+        ref={cardRef}
+        className={`relative flex max-w-full flex-col rounded-xl border ${compactMode ? "gap-1.5 px-2.5 py-2" : "gap-2 p-3"}`}
+        style={{
+          width: cardWidth,
+          background: "color-mix(in srgb, var(--color-card) 92%, transparent)",
+          borderColor: "color-mix(in srgb, var(--color-border) 70%, transparent)",
+        }}
+        aria-label={ariaSummary(stats, preset)}
+        data-activity-module
       >
-        {chart}
-        {tooltip.tip ? <DayTooltip tip={tooltip.tip} /> : null}
-      </div>
+        <div className="flex items-center justify-between gap-3">
+          <TabRow tab={tab} onTabChange={changeTab} />
+          {showRangeControl && onPresetChange ? (
+            <RangeControl preset={preset} onPresetChange={onPresetChange} variant={variant} />
+          ) : null}
+        </div>
 
-      <div className="flex items-center justify-between gap-3 border-t pt-2" style={{ borderColor: "color-mix(in srgb, var(--color-border) 55%, transparent)" }}>
-        <span className="min-w-0 truncate text-[11px] text-muted-fg">
-          {stats ? (
-            <>
-              <b className="font-semibold text-fg/85">{formatTokens(stats.summary.totalTokens)}</b> tokens
-              {" · "}
-              <b className="font-semibold text-fg/85">{compact(sessionsTotal(stats))}</b> sessions
-              {activeDays != null ? (
-                <>
-                  {" · "}
-                  <b className="font-semibold text-fg/85">{activeDays}</b> active {activeDays === 1 ? "day" : "days"}
-                </>
-              ) : null}
-            </>
-          ) : loading ? (
-            "Loading activity…"
-          ) : (
-            "No activity yet"
-          )}
-        </span>
-        {chip ? <FooterChip chip={chip} reduced={reduced} /> : null}
-      </div>
-    </section>
+        <div
+          role="tabpanel"
+          aria-label={TAB_LABELS[tab]}
+          className={`relative flex min-h-0 flex-col ${
+            heatmapView ? "" : compactMode ? "min-h-[88px]" : "min-h-[140px]"
+          }`}
+        >
+          {chart}
+          {tooltip.tip ? <DayTooltip tip={tooltip.tip} /> : null}
+        </div>
+
+        <div className="flex items-center justify-between gap-2 border-t pt-1.5" style={{ borderColor: "color-mix(in srgb, var(--color-border) 45%, transparent)" }}>
+          <span className="min-w-0 truncate text-[10px] text-muted-fg/80">
+            {stats ? (
+              <>
+                <b className="font-medium text-fg/75">{formatTokens(stats.summary.totalTokens)}</b> tokens
+                {" · "}
+                <b className="font-medium text-fg/75">{compact(sessionsTotal(stats))}</b> sessions
+                {activeDays != null ? (
+                  <>
+                    {" · "}
+                    <b className="font-medium text-fg/75">{activeDays}</b> active {activeDays === 1 ? "day" : "days"}
+                  </>
+                ) : null}
+              </>
+            ) : loading ? (
+              "Loading activity…"
+            ) : (
+              "No activity yet"
+            )}
+          </span>
+          {chip ? <FooterChip chip={chip} reduced={reduced} /> : null}
+        </div>
+      </section>
+    </div>
   );
 }
 
@@ -905,6 +866,9 @@ export function WorkActivityModule() {
     persistActivityPatch({ preset: next });
   }, []);
 
+  // max-w bounds the module to the composer's column; the card itself is sized
+  // to its own content inside that. mt- settles it further from the composer so
+  // it reads as an ambient footer rather than a second panel stacked on it.
   return (
     <ActivityModule
       stats={stats}
@@ -912,7 +876,7 @@ export function WorkActivityModule() {
       variant="compact"
       preset={preset}
       onPresetChange={changePreset}
-      className="w-full max-w-[640px]"
+      className="mt-5 w-full max-w-[820px]"
     />
   );
 }
