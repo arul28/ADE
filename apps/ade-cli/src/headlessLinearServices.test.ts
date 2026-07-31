@@ -466,6 +466,47 @@ describe("headlessLinearServices", () => {
     services.dispose();
   });
 
+  it("answers the CTO operator tool chat surface instead of throwing TypeError", async () => {
+    // The CTO operator tools and the chat.* sync commands call these on
+    // `runtime.agentChatService` unconditionally — the call sites only guard a
+    // null service, not a missing method. A stub missing any of them turns
+    // `ade actions run` / a phone tap into "x is not a function".
+    const services = createHeadlessLinearServices(createDeps());
+    const session = await services.agentChatService.createSession({ laneId: "lane-1" });
+
+    expect(await services.agentChatService.getCtoAttention()).toEqual({
+      awaitingInput: false,
+      since: null,
+    });
+    expect(await services.agentChatService.listSubagents({ sessionId: session.id })).toEqual([]);
+
+    // Headless steers are delivered immediately (queued: false), so there is
+    // never a queued steer to pull back: a plain cancel is a no-op, and a
+    // requireQueued cancel must fail the way the desktop service does.
+    await expect(
+      services.agentChatService.cancelSteer({ sessionId: session.id, steerId: "steer-missing" }),
+    ).resolves.toBeUndefined();
+    await expect(
+      services.agentChatService.cancelSteer({
+        sessionId: session.id,
+        steerId: "steer-missing",
+        requireQueued: true,
+      }),
+    ).rejects.toThrow(/no longer queued/);
+
+    // Headless raises no approvals, so approving one must be an honest error
+    // rather than a silent success the caller would misread as "approved".
+    await expect(
+      services.agentChatService.approveToolUse({
+        sessionId: session.id,
+        itemId: "tool-1",
+        decision: "accept",
+      }),
+    ).rejects.toThrow(/No pending approval/);
+
+    services.dispose();
+  });
+
   it("dispose removes session and transcript data", async () => {
     const services = createHeadlessLinearServices(createDeps());
 

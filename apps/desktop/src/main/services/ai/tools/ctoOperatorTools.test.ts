@@ -62,15 +62,12 @@ function buildDeps(overrides: Partial<CtoOperatorToolDeps> = {}): CtoOperatorToo
       truncated: false,
       totalEntries: 1,
     }),
+    steerChat: vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true }),
+    cancelSteer: vi.fn().mockResolvedValue(undefined),
+    listSubagents: vi.fn().mockResolvedValue([]),
+    approveToolUse: vi.fn().mockResolvedValue(undefined),
     createChat: vi.fn().mockResolvedValue(baseSession),
     updateChatSession: vi.fn().mockResolvedValue(baseSession),
-    previewSessionToolNames: vi.fn(() => [
-      "prRefreshIssueInventory",
-      "prGetReviewComments",
-      "prRerunFailedChecks",
-      "prReplyToReviewThread",
-      "prResolveReviewThread",
-    ]),
     sendChatMessage: vi.fn().mockResolvedValue(undefined),
     interruptChat: vi.fn().mockResolvedValue(undefined),
     ensureCtoSession: vi.fn().mockResolvedValue({ ...baseSession, id: "cto-session" }),
@@ -180,6 +177,148 @@ describe("createCtoOperatorTools", () => {
       });
 
     expect(gitService.stashPop).not.toHaveBeenCalled();
+  });
+
+  // The CTO session is pinned to the project's primary lane, so `defaultLaneId`
+  // IS primary. A mutating git call with the lane omitted used to mean "write to
+  // the primary worktree" — the thing lanes exist to prevent.
+  describe("mutating git tools refuse to default the lane", () => {
+    const MUTATIONS: Array<[string, Record<string, unknown>]> = [
+      ["gitCommit", { message: "wip" }],
+      ["gitPush", {}],
+      ["gitPull", {}],
+      ["gitUndoLastHeadChange", {}],
+      ["gitRedoLastHeadChange", {}],
+      ["gitStashPush", {}],
+      ["gitStashPop", {}],
+      ["gitCheckoutBranch", { branch: "feature" }],
+      ["gitRebaseContinue", {}],
+      ["gitRebaseAbort", {}],
+      ["gitMergeAbort", {}],
+    ];
+
+    it.each(MUTATIONS)("%s errors instead of falling back to the CTO's lane", async (toolName, args) => {
+      const gitService = {
+        commit: vi.fn(), push: vi.fn(), pull: vi.fn(),
+        undoLastHeadChange: vi.fn(), redoLastHeadChange: vi.fn(),
+        stashPush: vi.fn(), stashPop: vi.fn(), listStashes: vi.fn().mockResolvedValue([]),
+        checkoutBranch: vi.fn(), rebaseContinue: vi.fn(), rebaseAbort: vi.fn(), mergeAbort: vi.fn(),
+      };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools[toolName] as any).execute(args);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("needs an explicit laneId");
+      // Nothing may have touched git — especially not on the default lane.
+      for (const [name, call] of Object.entries(gitService)) {
+        if (name === "listStashes") continue; // read-only lookup inside gitStashPop
+        expect(call, `${name} must not run without an explicit lane`).not.toHaveBeenCalled();
+      }
+    });
+
+    it("still runs the mutation when the lane is named", async () => {
+      const gitService = { commit: vi.fn().mockResolvedValue({ operationId: "commit-1" }) };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.gitCommit as any).execute({ laneId: "lane-9", message: "real work" });
+
+      expect(gitService.commit).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-9", message: "real work" }),
+      );
+      expect(result).toMatchObject({ success: true });
+    });
+
+    it("keeps defaulting the lane for read-only git inspection", async () => {
+      const gitService = { getSyncStatus: vi.fn().mockResolvedValue({ branch: "main" }) };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.gitStatus as any).execute({});
+
+      // Reading the primary lane is normal supervision, so this default stays.
+      expect(gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+  });
+
+  // These four were wired to `undefined`, so they were advertised in the prompt
+  // manifest and registered on every transport but could only ever answer
+  // "not available" — the same defect the live-registration work exists to fix.
+  describe("supervision tools reach their real implementations", () => {
+    it("steerChat forwards the instruction as the steer text", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.steerChat as any).execute({ sessionId: "chat-7", instruction: "focus on the failing shard" });
+
+      expect(deps.steerChat).toHaveBeenCalledWith({ sessionId: "chat-7", instruction: "focus on the failing shard" });
+      expect(result).toMatchObject({ success: true });
+      expect(result.error).toBeUndefined();
+    });
+
+    it("cancelSteer requires the steerId the underlying API needs", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.cancelSteer as any).execute({ sessionId: "chat-7", steerId: "steer-1" });
+
+      expect(deps.cancelSteer).toHaveBeenCalledWith({ sessionId: "chat-7", steerId: "steer-1" });
+      expect(result).toMatchObject({ success: true, sessionId: "chat-7" });
+    });
+
+    it("approveToolUse maps toolUseId onto the service's itemId", async () => {
+      const deps = buildDeps();
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.approveToolUse as any).execute({
+        sessionId: "chat-7", toolUseId: "item-3", decision: "accept",
+      });
+
+      expect(deps.approveToolUse).toHaveBeenCalledWith({
+        sessionId: "chat-7", toolUseId: "item-3", decision: "accept",
+      });
+      expect(result).toMatchObject({ success: true });
+    });
+
+    it("no longer exposes handoffChat", () => {
+      // Handoff targeted "a different agent identity" — a subsystem that was
+      // removed; AgentChatIdentityKey is now just "cto". Advertising it was
+      // advertising a capability that could not exist.
+      const tools = createCtoOperatorTools(buildDeps());
+
+      expect(Object.keys(tools)).not.toContain("handoffChat");
+      expect(Object.keys(tools)).toContain("spawnChat");
+    });
+  });
+
+  it("createTerminal passes explicit pty dimensions instead of relying on the clamp", async () => {
+    const ptyService = { create: vi.fn().mockResolvedValue({ sessionId: "pty-1" }) };
+    const deps = buildDeps({ ptyService: ptyService as any });
+    const tools = createCtoOperatorTools(deps);
+
+    await (tools.createTerminal as any).execute({ laneId: "lane-2" });
+
+    // PtyCreateArgs requires these; omitting them was silently clamped inside
+    // the pty service, which was invisible until these bodies started executing.
+    expect(ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-2", cols: 100, rows: 30, title: "CTO terminal",
+    }));
+  });
+
+  it("rejects a missing lane at the schema layer, not just at execute()", () => {
+    const tools = createCtoOperatorTools(buildDeps());
+
+    // The model reads the schema as the contract. Enforcement that lives only
+    // in execute() lets it call, fail, and burn a turn.
+    for (const name of ["gitCommit", "gitPush", "gitPull", "gitUndoLastHeadChange", "gitMergeAbort"]) {
+      const parsed = (tools[name] as any).inputSchema.safeParse({ message: "x", branch: "y" });
+      expect(parsed.success, `${name} must require laneId`).toBe(false);
+    }
+
+    // Read-only inspection still accepts an omitted lane.
+    expect((tools.gitStatus as any).inputSchema.safeParse({}).success).toBe(true);
   });
 
   // ── Chat tools ──────────────────────────────────────────────────

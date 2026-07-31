@@ -574,9 +574,20 @@ vi.mock("../ai/tools/linearTools", () => ({
   createLinearTools: vi.fn(() => []),
 }));
 
-vi.mock("../ai/tools/ctoOperatorTools", () => ({
-  createCtoOperatorTools: vi.fn(() => []),
-}));
+vi.mock("../ai/tools/ctoOperatorTools", async () => {
+  const { z } = await import("zod");
+  // Returns one real ExecutableTool so tests can assert the CTO tool surface is
+  // actually registered on a live session, not just enumerated for the prompt.
+  return {
+    createCtoOperatorTools: vi.fn(() => ({
+      spawnChat: {
+        description: "Create a native ADE work chat session.",
+        inputSchema: z.object({ laneId: z.string().optional() }),
+        execute: async () => ({ success: true }),
+      },
+    })),
+  };
+});
 
 vi.mock("../ai/tools/systemPrompt", () => ({
   buildCodingAgentSystemPrompt: vi.fn(() => "system prompt"),
@@ -3606,6 +3617,55 @@ describe("createAgentChatService", () => {
       // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
       // chats, or it would silently re-block the user's MCP servers we just enabled.
       expect(opts?.strictMcpConfig).toBeUndefined();
+    });
+
+    // The CTO's operator tools used to exist only in the prompt manifest and the
+    // tool-name preview — the bodies were never registered on a live session, so
+    // the CTO was told it had tools it could not call.
+    it("registers the CTO operator tools on a live Claude CTO session", async () => {
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5" });
+      await service.sendMessage({ sessionId: session.id, text: "status?" });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+      const server = opts?.mcpServers?.["ade-cto"];
+      expect(server?.type).toBe("sdk");
+      const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
+      expect(toolNames).toContain("spawnChat");
+
+      // Built from the LIVE session, not the `preview:<lane>` pseudo-session the
+      // prompt manifest uses — that distinction is the whole bug this fixes.
+      const { createCtoOperatorTools } = await import("../ai/tools/ctoOperatorTools");
+      expect(vi.mocked(createCtoOperatorTools)).toHaveBeenCalledWith(
+        expect.objectContaining({ currentSessionId: session.id, defaultLaneId: "lane-1" }),
+      );
+
+      // The CTO is a daily-driver chat: it must NOT get the orchestration lead's
+      // managed-only MCP lockdown, which would strip the user's own servers.
+      expect(opts?.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
+    });
+
+    it("does not register CTO tools on an ordinary chat", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.sendMessage({ sessionId: created.id, text: "hello" });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+      expect(opts?.mcpServers?.["ade-cto"]).toBeUndefined();
     });
 
     it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {

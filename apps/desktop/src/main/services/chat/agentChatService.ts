@@ -2570,10 +2570,8 @@ type ManagedChatSession = {
       responseText?: string | null;
     }) => void;
   }>;
-  orchestrationHttpMcpServer: {
-    config: { type?: string; name?: string; url?: string; headers?: unknown };
-    close: () => Promise<void>;
-  } | null;
+  /** Live HTTP MCP leases, at most one per tool set. */
+  httpMcpServers: Partial<Record<"orchestration" | "cto", HttpMcpLease>>;
   activeBashControllers: Set<AbortController>;
   eventSequence: number;
   lastActivityTimestamp: number;
@@ -6019,6 +6017,14 @@ function collectOrchestrationFields(
 
 const ORCHESTRATION_CLAUDE_SERVER_NAME = "ade-orchestration";
 const ORCHESTRATION_CODEX_TOOL_NAMESPACE = "ade_orchestration";
+const CTO_MCP_SERVER_NAME = "ade-cto";
+const CTO_CODEX_TOOL_NAMESPACE = "ade_cto";
+
+/** A started HTTP MCP server bound to one session and one tool set. */
+type HttpMcpLease = {
+  config: { type?: string; name?: string; url?: string; headers?: unknown };
+  close: () => Promise<void>;
+};
 
 function stripJsonSchemaMeta(schema: unknown): unknown {
   if (!schema || typeof schema !== "object" || Array.isArray(schema)) return schema;
@@ -8271,11 +8277,38 @@ export function createAgentChatService(args: {
     }
 
     if (identityKey === "cto") {
-      const ctoTools = createCtoOperatorTools({
+      const ctoTools = createCtoOperatorTools(buildCtoOperatorToolDeps({
+        sessionId,
+        laneId,
+        modelId: null,
+        reasoningEffort: null,
+      }));
+      for (const toolName of Object.keys(ctoTools)) {
+        toolNames.add(toolName);
+      }
+    }
+
+    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
+  };
+
+  /**
+   * The CTO operator tool dependency set. Shared by `previewSessionToolNames`
+   * (which only reads the keys, to generate the prompt manifest) and by the
+   * runtime tool map below (which actually executes them) so the advertised
+   * surface and the callable surface cannot drift apart.
+   */
+  const buildCtoOperatorToolDeps = (args: {
+    sessionId: string;
+    laneId: string;
+    modelId: string | null;
+    reasoningEffort: string | null;
+  }): Parameters<typeof createCtoOperatorTools>[0] => {
+    const { sessionId, laneId, modelId, reasoningEffort } = args;
+    return {
         currentSessionId: sessionId,
         defaultLaneId: laneId,
-        defaultModelId: null,
-        defaultReasoningEffort: null,
+        defaultModelId: modelId,
+        defaultReasoningEffort: reasoningEffort,
         resolveExecutionLane: resolveCtoExecutionLane,
         laneService,
         prService: prService ?? null,
@@ -8286,11 +8319,14 @@ export function createAgentChatService(args: {
         gitService: getGitService?.() ?? null,
         conflictService: conflictService ?? null,
         computerUseArtifactBrokerService: computerUseArtifactBrokerRef ?? null,
-        steerChat: undefined,
-        cancelSteer: undefined,
-        handoffChat: undefined,
-        listSubagents: undefined,
-        approveToolUse: undefined,
+        // These were `undefined`, so the CTO was advertised four tools that
+        // could only ever answer "not available" — the same defect this whole
+        // change set exists to remove.
+        steerChat: ({ sessionId, instruction }) => steer({ sessionId, text: instruction }),
+        cancelSteer: ({ sessionId, steerId }) => cancelSteer({ sessionId, steerId }),
+        listSubagents: ({ sessionId }) => listSubagents({ sessionId }),
+        approveToolUse: ({ sessionId, toolUseId, decision }) =>
+          approveToolUse({ sessionId, itemId: toolUseId, decision }),
         issueTracker: linearIssueTracker ?? null,
         ctoStateService: ctoStateService ?? null,
         ctoMemoryService: ctoMemoryService ?? null,
@@ -8313,16 +8349,32 @@ export function createAgentChatService(args: {
             reuseExisting,
             permissionMode: "full-auto",
           }),
-        previewSessionToolNames,
-      } as Parameters<typeof createCtoOperatorTools>[0] & {
-        previewSessionToolNames: typeof previewSessionToolNames;
-      });
-      for (const toolName of Object.keys(ctoTools)) {
-        toolNames.add(toolName);
-      }
-    }
+    // The cast covers one remaining structural gap: `CtoOperatorToolDeps`
+    // restates `ptyService.create` with optional cols/rows/title while the real
+    // `PtyCreateArgs` requires them (the pty service clamps to 80x24). Harmless
+    // while these tool bodies were unreachable; now that they execute, it is
+    // worth reconciling — tracked as a follow-up rather than widened blind here.
+    } as Parameters<typeof createCtoOperatorTools>[0];
+  };
 
-    return Array.from(toolNames).sort((a, b) => a.localeCompare(b));
+  /**
+   * The CTO's operator tools for a LIVE session.
+   *
+   * Until this existed, `createCtoOperatorTools` was only ever reached by the
+   * prompt manifest and the tool-name preview — the bodies never executed, so
+   * the CTO was told it had tools it could not actually call. Returns null for
+   * every non-CTO session.
+   */
+  const createCtoRuntimeToolMap = (
+    managed: ManagedChatSession,
+  ): OrchestrationToolMap | null => {
+    if (managed.session.identityKey !== "cto") return null;
+    return createCtoOperatorTools(buildCtoOperatorToolDeps({
+      sessionId: managed.session.id,
+      laneId: managed.session.laneId,
+      modelId: managed.session.modelId ?? null,
+      reasoningEffort: managed.session.reasoningEffort ?? null,
+    }));
   };
 
   const deriveSessionCapabilities = (managed: ManagedChatSession | null): AgentChatSessionCapabilities => {
@@ -10782,16 +10834,12 @@ export function createAgentChatService(args: {
         // Non-fatal — provider may be offline
       }
     }
-    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
-    const opencodeOrchestrationMcp = orchestrationMcp?.config.url
-      ? {
-          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
-            type: "remote" as const,
-            url: orchestrationMcp.config.url,
-            enabled: true,
-            timeout: 10_000,
-          },
-        }
+    const opencodeMcpLeases = await ensureHttpMcpLeases(managed);
+    const opencodeOrchestrationMcp = opencodeMcpLeases.length
+      ? Object.fromEntries(opencodeMcpLeases.map((lease) => [
+          lease.serverName,
+          { type: "remote" as const, url: lease.url, enabled: true, timeout: 10_000 },
+        ]))
       : undefined;
     let handle: OpenCodeSessionHandle;
     try {
@@ -10809,7 +10857,7 @@ export function createAgentChatService(args: {
         logger,
       });
     } catch (error) {
-      closeOrchestrationHttpMcpServer(managed);
+      closeHttpMcpServers(managed);
       throw error;
     }
     adoptRuntimeSessionTitle(managed, handle.initialTitle, "opencode_session_create");
@@ -15415,14 +15463,37 @@ export function createAgentChatService(args: {
     return shape && typeof shape === "object" && !Array.isArray(shape) ? shape : {};
   };
 
-  const ensureOrchestrationHttpMcpServer = async (
+  /**
+   * The runtime tool sets ADE can register on a chat session. Each HTTP MCP
+   * lease carries exactly one of them, so they get distinct server names,
+   * distinct Codex namespaces, and distinct lease slots.
+   */
+  const HTTP_MCP_TOOL_SETS = {
+    orchestration: {
+      serverName: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      codexNamespace: ORCHESTRATION_CODEX_TOOL_NAMESPACE,
+      buildTools: (managed: ManagedChatSession) => createOrchestrationRuntimeToolMap(managed),
+    },
+    cto: {
+      serverName: CTO_MCP_SERVER_NAME,
+      codexNamespace: CTO_CODEX_TOOL_NAMESPACE,
+      buildTools: (managed: ManagedChatSession) => createCtoRuntimeToolMap(managed),
+    },
+  } as const;
+
+  type HttpMcpToolSet = keyof typeof HTTP_MCP_TOOL_SETS;
+  const HTTP_MCP_TOOL_SET_KEYS = Object.keys(HTTP_MCP_TOOL_SETS) as HttpMcpToolSet[];
+
+  const ensureHttpMcpServer = async (
     managed: ManagedChatSession,
-  ): Promise<ManagedChatSession["orchestrationHttpMcpServer"]> => {
-    if (managed.orchestrationHttpMcpServer) return managed.orchestrationHttpMcpServer;
-    const tools = createOrchestrationRuntimeToolMap(managed);
+    toolSet: HttpMcpToolSet,
+  ): Promise<HttpMcpLease | null> => {
+    const existing = managed.httpMcpServers[toolSet];
+    if (existing) return existing;
+    const tools = HTTP_MCP_TOOL_SETS[toolSet].buildTools(managed);
     if (!tools) return null;
     const server = createDroidSdkMcpServer({
-      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      name: HTTP_MCP_TOOL_SETS[toolSet].serverName,
       version: appVersion,
       tools: Object.entries(tools).map(([name, toolDefinition]) =>
         createDroidSdkTool(
@@ -15442,23 +15513,54 @@ export function createAgentChatService(args: {
       ),
     });
     const config = await server.start();
-    managed.orchestrationHttpMcpServer = {
-      config,
-      close: () => server.close(),
-    };
-    return managed.orchestrationHttpMcpServer;
+    const lease: HttpMcpLease = { config, close: () => server.close() };
+    managed.httpMcpServers[toolSet] = lease;
+    return lease;
   };
 
-  const closeOrchestrationHttpMcpServer = (managed: ManagedChatSession): void => {
-    const lease = managed.orchestrationHttpMcpServer;
-    managed.orchestrationHttpMcpServer = null;
-    if (!lease) return;
-    lease.close().catch((error) => {
-      logger.warn("agent_chat.orchestration_mcp_close_failed", {
-        sessionId: managed.session.id,
-        error: error instanceof Error ? error.message : String(error),
+  const ensureOrchestrationHttpMcpServer = (
+    managed: ManagedChatSession,
+  ): Promise<HttpMcpLease | null> => ensureHttpMcpServer(managed, "orchestration");
+
+  const ensureCtoHttpMcpServer = (
+    managed: ManagedChatSession,
+  ): Promise<HttpMcpLease | null> => ensureHttpMcpServer(managed, "cto");
+
+  /**
+   * Resolves every tool set that has a live HTTP lease, in table order. The
+   * per-SDK config shapes differ (record-of-http, record-of-remote, array), so
+   * each transport does its own one-line shaping — but lease resolution and the
+   * "is anything present" test live here once.
+   */
+  const ensureHttpMcpLeases = async (
+    managed: ManagedChatSession,
+  ): Promise<Array<{ serverName: string; url: string; config: HttpMcpLease["config"] }>> => {
+    const leases = await Promise.all(
+      HTTP_MCP_TOOL_SET_KEYS.map(async (toolSet) => ({
+        toolSet,
+        lease: await ensureHttpMcpServer(managed, toolSet),
+      })),
+    );
+    return leases.flatMap(({ toolSet, lease }) =>
+      lease?.config.url
+        ? [{ serverName: HTTP_MCP_TOOL_SETS[toolSet].serverName, url: lease.config.url, config: lease.config }]
+        : []);
+  };
+
+  /** Drops every HTTP MCP lease held by a session. All teardown paths use this. */
+  const closeHttpMcpServers = (managed: ManagedChatSession): void => {
+    for (const toolSet of HTTP_MCP_TOOL_SET_KEYS) {
+      const lease = managed.httpMcpServers[toolSet];
+      if (!lease) continue;
+      managed.httpMcpServers[toolSet] = undefined;
+      lease.close().catch((error) => {
+        logger.warn("agent_chat.orchestration_mcp_close_failed", {
+          sessionId: managed.session.id,
+          toolSet,
+          error: error instanceof Error ? error.message : String(error),
+        });
       });
-    });
+    }
   };
 
   const codexDynamicToolKey = (namespace: string | null | undefined, name: string): string =>
@@ -15466,34 +15568,48 @@ export function createAgentChatService(args: {
 
   const buildCodexDynamicToolSpecs = (
     tools: OrchestrationToolMap,
+    namespace: string,
   ): CodexDynamicToolSpec[] =>
     Object.entries(tools).map(([name, toolDefinition]) => ({
-      namespace: ORCHESTRATION_CODEX_TOOL_NAMESPACE,
+      namespace,
       name,
       description: toolDefinition.description,
       inputSchema: jsonSchemaForExecutableTool(toolDefinition),
       deferLoading: false,
     }));
 
+  /**
+   * Rebuilds the whole dynamic-tool map for a Codex runtime.
+   *
+   * Both tool sets must be registered here rather than in separate refreshers:
+   * this clears the map first, so a second refresher would clobber the first.
+   * They live under distinct namespaces so their names cannot collide.
+   */
   const refreshCodexDynamicTools = (
     managed: ManagedChatSession,
     runtime: CodexRuntime,
   ): CodexDynamicToolSpec[] => {
     runtime.dynamicTools.clear();
     runtime.dynamicToolSpecs = [];
-    const tools = createOrchestrationRuntimeToolMap(managed);
-    if (!tools) return [];
-    for (const [name, toolDefinition] of Object.entries(tools)) {
-      runtime.dynamicTools.set(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, name), toolDefinition);
+    const specs: CodexDynamicToolSpec[] = [];
+    for (const toolSet of HTTP_MCP_TOOL_SET_KEYS) {
+      const { codexNamespace: namespace, buildTools } = HTTP_MCP_TOOL_SETS[toolSet];
+      const tools = buildTools(managed);
+      if (!tools) continue;
+      for (const [name, toolDefinition] of Object.entries(tools)) {
+        runtime.dynamicTools.set(codexDynamicToolKey(namespace, name), toolDefinition);
+      }
+      specs.push(...buildCodexDynamicToolSpecs(tools, namespace));
     }
-    runtime.dynamicToolSpecs = buildCodexDynamicToolSpecs(tools);
+    runtime.dynamicToolSpecs = specs;
     return runtime.dynamicToolSpecs;
   };
 
-  const buildClaudeOrchestrationMcpServer = (
+  const buildClaudeSdkMcpServer = (
     managed: ManagedChatSession,
+    toolSet: HttpMcpToolSet,
   ): ReturnType<typeof createSdkMcpServer> | null => {
-    const tools = createOrchestrationRuntimeToolMap(managed);
+    const tools = HTTP_MCP_TOOL_SETS[toolSet].buildTools(managed);
     if (!tools) return null;
     const sdkTools = Object.entries(tools).map(([name, toolDefinition]) =>
       createClaudeSdkTool(
@@ -15530,7 +15646,7 @@ export function createAgentChatService(args: {
       ),
     );
     return createSdkMcpServer({
-      name: ORCHESTRATION_CLAUDE_SERVER_NAME,
+      name: HTTP_MCP_TOOL_SETS[toolSet].serverName,
       version: appVersion,
       tools: sdkTools,
       alwaysLoad: true,
@@ -15552,7 +15668,7 @@ export function createAgentChatService(args: {
   ): void => {
     flushBufferedReasoning(managed);
     flushBufferedText(managed);
-    closeOrchestrationHttpMcpServer(managed);
+    closeHttpMcpServers(managed);
 
     const reasonAllowsPreservation =
       openCodeReason === "idle_ttl"
@@ -16103,7 +16219,7 @@ export function createAgentChatService(args: {
         ...(entry.turnId ? { turnId: entry.turnId } : {}),
       })) ?? [],
       localPendingInputs: new Map(),
-      orchestrationHttpMcpServer: null,
+      httpMcpServers: {},
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -22022,9 +22138,17 @@ export function createAgentChatService(args: {
     if (runtime.dynamicTools.size === 0) {
       refreshCodexDynamicTools(managed, runtime);
     }
+    // Namespace-less or mis-namespaced calls fall back by name across every
+    // registered tool set rather than failing the turn.
     const toolDefinition =
       runtime.dynamicTools.get(codexDynamicToolKey(namespace, toolName))
-      ?? runtime.dynamicTools.get(codexDynamicToolKey(ORCHESTRATION_CODEX_TOOL_NAMESPACE, toolName));
+      ?? HTTP_MCP_TOOL_SET_KEYS.reduce<ExecutableTool | undefined>(
+        (found, toolSet) =>
+          found ?? runtime.dynamicTools.get(
+            codexDynamicToolKey(HTTP_MCP_TOOL_SETS[toolSet].codexNamespace, toolName),
+          ),
+        undefined,
+      );
     if (!toolDefinition) {
       runtime.sendResponse(id, {
         success: false,
@@ -26941,7 +27065,14 @@ export function createAgentChatService(args: {
         ...ORCHESTRATION_LEAD_DENIED_CLAUDE_TOOLS,
       ]));
     }
-    const orchestrationMcpServer = buildClaudeOrchestrationMcpServer(managed);
+    // The CTO tool server is injected without the `allowManagedMcpServersOnly`
+    // isolation the orchestration lead uses — the CTO is a daily driver chat and
+    // must keep the user's own MCP servers.
+    const ctoMcpServer = buildClaudeSdkMcpServer(managed, "cto");
+    if (ctoMcpServer) {
+      opts.mcpServers = { ...(opts.mcpServers ?? {}), [CTO_MCP_SERVER_NAME]: ctoMcpServer };
+    }
+    const orchestrationMcpServer = buildClaudeSdkMcpServer(managed, "orchestration");
     if (orchestrationMcpServer) {
       opts.mcpServers = {
         ...(opts.mcpServers ?? {}),
@@ -26951,11 +27082,20 @@ export function createAgentChatService(args: {
       const hasOrchestrationMcpServer = existingAllowedMcpServers.some(
         (server) => server.serverName === ORCHESTRATION_CLAUDE_SERVER_NAME,
       );
+      // If a session ever carried both tool sets, `allowManagedMcpServersOnly`
+      // below would block `ade-cto` even though it is in `opts.mcpServers` — a
+      // silent capability loss. Unreachable today (a CTO session has no
+      // orchestration run), but the invariant is implicit, so allow it too.
+      const managedServerNames = [
+        ...(hasOrchestrationMcpServer ? [] : [{ serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }]),
+        ...(ctoMcpServer
+          && !existingAllowedMcpServers.some((server) => server.serverName === CTO_MCP_SERVER_NAME)
+          ? [{ serverName: CTO_MCP_SERVER_NAME }]
+          : []),
+      ];
       opts.managedSettings = {
         ...(opts.managedSettings ?? {}),
-        allowedMcpServers: hasOrchestrationMcpServer
-          ? existingAllowedMcpServers
-          : [...existingAllowedMcpServers, { serverName: ORCHESTRATION_CLAUDE_SERVER_NAME }],
+        allowedMcpServers: [...existingAllowedMcpServers, ...managedServerNames],
         allowManagedMcpServersOnly: true,
         strictPluginOnlyCustomization: ["mcp"],
       };
@@ -28207,7 +28347,7 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
-      orchestrationHttpMcpServer: null,
+      httpMcpServers: {},
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -28877,7 +29017,7 @@ export function createAgentChatService(args: {
       bufferedText: null,
       recentConversationEntries: [],
       localPendingInputs: new Map(),
-      orchestrationHttpMcpServer: null,
+      httpMcpServers: {},
       activeBashControllers: new Set(),
       eventSequence: 0,
       lastActivityTimestamp: Date.now(),
@@ -32866,14 +33006,12 @@ export function createAgentChatService(args: {
       );
     }
 
-    const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
-    const cursorOrchestrationMcpServers = orchestrationMcp?.config.url
-      ? {
-          [ORCHESTRATION_CLAUDE_SERVER_NAME]: {
-            type: "http" as const,
-            url: orchestrationMcp.config.url,
-          },
-        }
+    const cursorMcpLeases = await ensureHttpMcpLeases(managed);
+    const cursorOrchestrationMcpServers = cursorMcpLeases.length
+      ? Object.fromEntries(cursorMcpLeases.map((lease) => [
+          lease.serverName,
+          { type: "http" as const, url: lease.url },
+        ]))
       : undefined;
 
     const throwIfCursorSetupInterrupted = (): void => {
@@ -32947,7 +33085,7 @@ export function createAgentChatService(args: {
           reportProviderRuntimeFailure("cursor", errorMessage);
         }
       }
-      closeOrchestrationHttpMcpServer(managed);
+      closeHttpMcpServers(managed);
       throw error;
     }
     const pooled = acquired.pooled;
@@ -34134,9 +34272,9 @@ export function createAgentChatService(args: {
     try {
       const auth = await detectAuth();
       throwIfDroidSetupInterrupted();
-      const orchestrationMcp = await ensureOrchestrationHttpMcpServer(managed);
-      const droidOrchestrationMcpServers = orchestrationMcp?.config.url
-        ? [orchestrationMcp.config]
+      const droidMcpLeases = await ensureHttpMcpLeases(managed);
+      const droidOrchestrationMcpServers = droidMcpLeases.length
+        ? droidMcpLeases.map((lease) => lease.config)
         : undefined;
       const persisted = readPersistedState(managed.session.id);
       const acquired = await acquireDroidSdkConnection({
@@ -34191,7 +34329,7 @@ export function createAgentChatService(args: {
         releaseDroidSdkConnection(poolKey, poolGeneration);
       }
       if (managed.runtime?.kind !== "droid") {
-        closeOrchestrationHttpMcpServer(managed);
+        closeHttpMcpServers(managed);
       }
       droidRuntimeSetupInterruptRequested.delete(managed);
       throw err;

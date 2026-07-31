@@ -563,7 +563,7 @@ Agent tools are split by domain:
 |------|--------|
 | `ai/tools/universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read/search tools, web tools, todos, and ask-user. |
 | `ai/tools/workflowTools.ts` | Workflow interaction tools. |
-| `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. |
+| `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. Registered on the live session via `createCtoRuntimeToolMap` through the per-provider transports (`ade-cto` SDK MCP server for Claude, the `ade_cto` dynamic-tool namespace for Codex, a dedicated HTTP MCP lease for Cursor/Droid/OpenCode). Git mutations require an explicit `laneId` because the CTO session is pinned to the primary lane. |
 | `ai/tools/linearTools.ts` | Linear integration tool surface. |
 | `ai/tools/webFetch.ts` / `webSearch.ts` | Outbound web access. |
 | `ai/tools/readFileRange.ts` / `globSearch.ts` / `grepSearch.ts` | Read-only file tools shared across all roles. |
@@ -1038,9 +1038,11 @@ whole picture": it is filtered out of every roster, so it never appears in those
 rows. `useCtoAttention` reads it separately through the read-only
 `window.ade.cto.getAttention()` probe into `appStore.ctoAttention`, `TabNav`
 draws the dot on `/cto`, and `useAppWideSessionAttention` folds that one flag
-into its badge count so it remains the single writer of `setDockBadgeCount`. The
-probe must stay side-effect-free — creating the CTO session to draw a badge would
-materialize a primary lane. See
+into its badge count so it remains the single writer of `setDockBadgeCount`. iOS
+reaches the same `agentChatService.getCtoAttention()` implementation through the
+optional `cto.getAttention` sync command and badges its CTO tab. The probe must
+stay side-effect-free on every transport — creating the CTO session to draw a
+badge would materialize a primary lane. See
 [features/cto/README.md](./features/cto/README.md#hidden-from-rosters-but-never-silent).
 
 ### 8.3 ADE CLI auth + API-key storage

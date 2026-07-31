@@ -43,6 +43,20 @@ then hands them to the provider adapter:
   and ADE supplies a permission/hook bridge through `cursorSdkPool.ts`
   and `cursorSdkPolicy.ts`. ADE workflow actions are available through
   the `ade` CLI.
+- **CTO sessions:** `createCtoRuntimeToolMap` (gated on
+  `identityKey === "cto"`) registers `ctoOperatorTools.ts` on the live
+  session through the same per-provider transports the orchestration set
+  uses. Both sets are described by one `HTTP_MCP_TOOL_SETS` table (server
+  name, Codex namespace, tool factory), and the CTO entry resolves to an
+  `ade-cto` SDK MCP server for Claude (injected without
+  `allowManagedMcpServersOnly`, so the user's own MCP servers survive), the
+  `ade_cto` dynamic-tool namespace inside `refreshCodexDynamicTools` for
+  Codex, and a dedicated HTTP MCP lease (`ensureHttpMcpServer(managed,
+  "cto")`, cached in `managed.httpMcpServers`) for Cursor, Droid, and
+  OpenCode. `buildCtoOperatorToolDeps` is shared with
+  `previewSessionToolNames`, so the prompt manifest and the callable tools
+  come from one definition. See
+  [chat/tool-system.md](../chat/tool-system.md#cto-operator-tools).
 - **Orchestration sessions:** `interactionMode` selects
   `orchestrator-lead`, `orchestrator-worker`, or
   `orchestrator-validator`. The lead receives a read-mostly base plus

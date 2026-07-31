@@ -207,6 +207,7 @@ function createMockAgentChatService() {
       summary: null,
     }),
     getChatTranscript: vi.fn().mockResolvedValue([]),
+    getCtoAttention: vi.fn().mockResolvedValue({ awaitingInput: true, since: "2026-01-01T00:00:00.000Z" }),
     createSession: vi.fn().mockResolvedValue({
       id: "chat-1",
       laneId: "lane-1",
@@ -2521,6 +2522,25 @@ describe("createSyncRemoteCommandService", () => {
 
     it("cto.getMemory is exposed and viewer-allowed", () => {
       expect(service.getSupportedActions()).toContain("cto.getMemory");
+    });
+
+    it("cto.getAttention relays the CTO's waiting state to the phone", async () => {
+      const result = await service.execute(makePayload("cto.getAttention", {}));
+
+      // The phone cannot derive this from its chat roster — the CTO chat is
+      // excluded from every session list — so this is its only source.
+      expect(result).toEqual({ awaitingInput: true, since: "2026-01-01T00:00:00.000Z" });
+      expect(service.getSupportedActions()).toContain("cto.getAttention");
+    });
+
+    it("cto.getAttention never creates a CTO session or a primary lane", async () => {
+      agentChatService.ensureIdentitySession.mockClear();
+
+      await service.execute(makePayload("cto.getAttention", {}));
+
+      // Drawing a phone badge must not materialize a lane and a chat session.
+      expect(agentChatService.ensureIdentitySession).not.toHaveBeenCalled();
+      expect(agentChatService.createSession).not.toHaveBeenCalled();
     });
 
     it("cto exposes Linear quick view, issue picker, search, and comments through mobile sync", async () => {

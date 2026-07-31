@@ -279,8 +279,20 @@ struct ContentView: View {
     CtoRootScreen(isTabActive: selectedTab == .cto)
       .tag(RootTab.cto)
       .tabItem {
+        // The accessibility label belongs on the Label inside .tabItem: SwiftUI
+        // lifts .tabItem/.badge out of the content view, but an
+        // .accessibilityLabel applied outside would stay on the content and
+        // never reach the tab-bar button VoiceOver actually focuses.
         Label("CTO", systemImage: "brain")
+          .accessibilityLabel(
+            syncService.ctoAttention.awaitingInput ? "CTO, waiting on you" : "CTO"
+          )
       }
+      // The CTO chat is excluded from every session roster, so it cannot borrow
+      // the Work badge above — a question from the CTO would otherwise surface
+      // nowhere on the phone. A string badge renders as a dot-sized marker and
+      // hides itself when nil.
+      .badge(syncService.ctoAttention.awaitingInput ? "!" : nil)
   }
 }
 
