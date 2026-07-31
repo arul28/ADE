@@ -1380,13 +1380,16 @@ describe("SessionCard where line", () => {
     );
 
     const badge = screen.getByLabelText("Pull request #959, Open");
-    // Fixed width at the end of the "where" slot: the lane name is the elastic
-    // part, because a truncated PR number says nothing.
+    // Fixed width at the right edge of the title line, directly beneath the
+    // status: the title is elastic because a truncated PR number says nothing.
     expect(badge.className).toContain("shrink-0");
-    const whereSlot = badge.parentElement!;
+    const titleSlot = badge.parentElement!;
     const laneIdentity = container.querySelector("[data-session-lane-identity]")!;
-    expect(whereSlot.contains(laneIdentity)).toBe(true);
-    expect(laneIdentity.compareDocumentPosition(badge)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    const title = screen.getByText("Build the plan panel");
+    expect(titleSlot.contains(title)).toBe(true);
+    expect(title.compareDocumentPosition(badge)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(titleSlot.contains(laneIdentity)).toBe(false);
+    expect(laneIdentity.parentElement?.nextElementSibling).toBe(titleSlot);
 
     fireEvent.click(badge);
     expect(navigateMock).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-1");

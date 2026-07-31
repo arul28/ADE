@@ -670,11 +670,13 @@ Renderer surfaces:
   read.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
   full-bleed three-line Work row. Line one adapts machine, pin, singleton lane,
-  spawn lineage, drifted branch, singleton PR, diff, and last-activity identity
-  around `SessionStatusSlot`; line two is the title; line three keeps the
-  sanitized preview, Claude TTL, failure exit code, and provider mark. Grouped
-  lane headers own repeated machine/PR identity, while a lane with exactly one
-  session has no redundant header and promotes the lane identity onto the card.
+  spawn lineage, drifted branch, diff, and last-activity identity around
+  `SessionStatusSlot`; line two is the elastic title with a singleton lane's
+  fixed-width PR badge at the right edge, directly beneath the status; line
+  three keeps the sanitized preview, Claude TTL, failure exit code, and
+  provider mark. Grouped lane headers own repeated machine/PR identity, while a
+  lane with exactly one session has no redundant header and promotes the lane
+  identity and PR navigation onto the card.
   After one second `SessionHoverCard` carries the lower-frequency metadata
   removed from the row (including clickable PR and parent-thread facts). The
   title still warm-highlights when background AI naming lands, and
