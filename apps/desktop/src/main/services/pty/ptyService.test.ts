@@ -54,6 +54,7 @@ const mocks = vi.hoisted(() => {
         mtimeMs: stat?.mtimeMs ?? 0,
         mode: stat?.mode ?? 0o040755,
         isDirectory: () => stat?.isDirectory ?? true,
+        isFile: () => !(stat?.isDirectory ?? true),
       };
     }),
     readdirSync: vi.fn((p: string) => dirEntries.get(p) ?? []),
@@ -1308,10 +1309,14 @@ describe("ptyService", () => {
 
     it("injects the validated bundled plugin into tracked Claude CLI launches", async () => {
       const pluginRoot = "/Applications/ADE.app/Contents/Resources/agent-skills";
+      const repositoryPluginRoot = "/tmp/lane/apps/desktop/resources/agent-skills";
+      mocks.fileStats.set(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
+      mocks.fileStats.set(path.join(repositoryPluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
       const { service, loadPty } = createHarness({
         getAdeCliAgentEnv: (env) => ({
           ...env,
-          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+          ADE_AGENT_SKILLS_DIRS: [repositoryPluginRoot, pluginRoot].join(path.delimiter),
+          ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
         }),
       });
 
@@ -1335,14 +1340,19 @@ describe("ptyService", () => {
       expect(ptyLib.spawn.mock.calls.at(-1)?.[1]).toEqual(expect.arrayContaining([
         "--plugin-dir=/tmp/custom-plugin",
       ]));
+      expect(ptyLib.spawn.mock.calls.at(-1)?.[1]).not.toEqual(expect.arrayContaining([
+        repositoryPluginRoot,
+      ]));
     });
 
     it("injects the bundled Claude plugin into env-prefixed shell fallback commands", async () => {
       const pluginRoot = "/Applications/ADE Preview.app/Contents/Resources/agent-skills";
+      mocks.fileStats.set(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
       const { service, mockPty, loadPty } = createHarness({
         getAdeCliAgentEnv: (env) => ({
           ...env,
           ADE_AGENT_SKILLS_DIRS: pluginRoot,
+          ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
         }),
       });
       const spawn = vi.fn((command: string) => {
@@ -1369,11 +1379,13 @@ describe("ptyService", () => {
 
     it("does not duplicate the bundled Claude plugin in env-prefixed startup commands", async () => {
       const pluginRoot = "/Applications/ADE Preview.app/Contents/Resources/agent-skills";
+      mocks.fileStats.set(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
       const startupCommand = `ADE_RUN_ID=run-1 claude --plugin-dir "${pluginRoot}" --plugin-dir=/tmp/custom-plugin`;
       const { service, mockPty } = createHarness({
         getAdeCliAgentEnv: (env) => ({
           ...env,
           ADE_AGENT_SKILLS_DIRS: pluginRoot,
+          ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
         }),
       });
 
@@ -2547,11 +2559,13 @@ describe("ptyService", () => {
 
     it("backfills a targetless Claude resume command before launching the resumed PTY", async () => {
       const pluginRoot = "/Applications/ADE.app/Contents/Resources/agent-skills";
+      mocks.fileStats.set(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
       (mocks.extractResumeCommandFromOutput as any).mockReturnValueOnce("claude --resume claude-session-123");
       const { service, sessionService, mockPty } = createHarness({
         getAdeCliAgentEnv: (env) => ({
           ...env,
           ADE_AGENT_SKILLS_DIRS: pluginRoot,
+          ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
         }),
       });
       sessionService.create({

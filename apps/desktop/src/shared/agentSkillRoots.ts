@@ -1,4 +1,5 @@
 export const ADE_AGENT_SKILLS_DIRS_ENV = "ADE_AGENT_SKILLS_DIRS";
+export const ADE_BUNDLED_AGENT_SKILLS_DIR_ENV = "ADE_BUNDLED_AGENT_SKILLS_DIR";
 
 function processRef(): NodeJS.Process | null {
   return typeof process !== "undefined" ? process : null;

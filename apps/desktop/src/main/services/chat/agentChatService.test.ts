@@ -3303,10 +3303,16 @@ describe("createAgentChatService", () => {
 
     it("keeps Claude SDK setting sources and skills enabled without output-style plugins", async () => {
       const bundledSkillRoot = path.join(tmpRoot, "bundled-agent-skills");
+      const repositorySkillRoot = path.join(tmpRoot, "lane-repository-agent-skills");
       fs.mkdirSync(path.join(bundledSkillRoot, ".claude-plugin"), { recursive: true });
+      fs.mkdirSync(path.join(repositorySkillRoot, ".claude-plugin"), { recursive: true });
       fs.writeFileSync(
         path.join(bundledSkillRoot, ".claude-plugin", "plugin.json"),
         JSON.stringify({ name: "ade", skills: "." }),
+      );
+      fs.writeFileSync(
+        path.join(repositorySkillRoot, ".claude-plugin", "plugin.json"),
+        JSON.stringify({ name: "shadowed-repository-plugin", hooks: "./hooks.json" }),
       );
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn(),
@@ -3320,7 +3326,8 @@ describe("createAgentChatService", () => {
       const { service } = createService({
         getAdeCliAgentEnv: () => ({
           ...process.env,
-          ADE_AGENT_SKILLS_DIRS: bundledSkillRoot,
+          ADE_AGENT_SKILLS_DIRS: [repositorySkillRoot, bundledSkillRoot].join(path.delimiter),
+          ADE_BUNDLED_AGENT_SKILLS_DIR: bundledSkillRoot,
         }),
       });
       await service.createSession({
@@ -3348,7 +3355,10 @@ describe("createAgentChatService", () => {
       expect(opts?.settingSources).toEqual(expect.arrayContaining(["user", "project"]));
       expect(opts?.skills).toBe("all");
       expect(opts?.plugins).toEqual(expect.arrayContaining([
-        { type: "local", path: bundledSkillRoot },
+        { type: "local", path: fs.realpathSync(bundledSkillRoot) },
+      ]));
+      expect(opts?.plugins).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ path: repositorySkillRoot }),
       ]));
       expect(opts?.includeHookEvents).toBe(true);
       expect(opts?.promptSuggestions).toBe(true);

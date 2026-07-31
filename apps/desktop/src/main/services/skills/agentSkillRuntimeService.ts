@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
+  ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
   splitAdeAgentSkillRoots,
 } from "../../../shared/agentSkillRoots";
 
@@ -26,9 +27,27 @@ export function existingAgentSkillRoots(env: NodeJS.ProcessEnv): string[] {
 }
 
 export function claudeAgentSkillPluginRoots(env: NodeJS.ProcessEnv): string[] {
-  return existingAgentSkillRoots(env).filter((root) =>
-    fs.existsSync(path.join(root, ".claude-plugin", "plugin.json"))
-  );
+  const trustedRoot = env[ADE_BUNDLED_AGENT_SKILLS_DIR_ENV]?.trim();
+  if (!trustedRoot) return [];
+
+  try {
+    const canonicalTrustedRoot = fs.realpathSync(trustedRoot);
+    if (!fs.statSync(canonicalTrustedRoot).isDirectory()) return [];
+    if (!fs.statSync(path.join(canonicalTrustedRoot, ".claude-plugin", "plugin.json")).isFile()) {
+      return [];
+    }
+
+    const isCatalogRoot = existingAgentSkillRoots(env).some((root) => {
+      try {
+        return fs.realpathSync(root) === canonicalTrustedRoot;
+      } catch {
+        return false;
+      }
+    });
+    return isCatalogRoot ? [canonicalTrustedRoot] : [];
+  } catch {
+    return [];
+  }
 }
 
 export function codexSkillsListParams(cwd: string, extraUserRoots: readonly string[]) {

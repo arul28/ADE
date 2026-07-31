@@ -25,18 +25,51 @@ function temporaryRoot(): string {
 }
 
 describe("agentSkillRuntimeService", () => {
-  it("keeps only existing session roots and identifies valid Claude plugin roots", () => {
+  it("keeps only existing session roots and loads only the trusted Claude plugin root", () => {
     const pluginRoot = temporaryRoot();
+    const repositoryRoot = temporaryRoot();
     const standaloneRoot = temporaryRoot();
     fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
     fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "{}");
+    fs.mkdirSync(path.join(repositoryRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(repositoryRoot, ".claude-plugin", "plugin.json"), "{}");
     const missingRoot = path.join(pluginRoot, "missing");
     const env = {
-      ADE_AGENT_SKILLS_DIRS: [pluginRoot, standaloneRoot, missingRoot].join(path.delimiter),
+      ADE_AGENT_SKILLS_DIRS: [repositoryRoot, pluginRoot, standaloneRoot, missingRoot].join(path.delimiter),
+      ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
     };
 
-    expect(existingAgentSkillRoots(env)).toEqual([pluginRoot, standaloneRoot]);
-    expect(claudeAgentSkillPluginRoots(env)).toEqual([pluginRoot]);
+    expect(existingAgentSkillRoots(env)).toEqual([repositoryRoot, pluginRoot, standaloneRoot]);
+    expect(claudeAgentSkillPluginRoots(env)).toEqual([fs.realpathSync(pluginRoot)]);
+  });
+
+  it("fails closed when only an untrusted repository plugin manifest is present", () => {
+    const repositoryRoot = temporaryRoot();
+    fs.mkdirSync(path.join(repositoryRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(repositoryRoot, ".claude-plugin", "plugin.json"), "{}");
+
+    expect(claudeAgentSkillPluginRoots({
+      ADE_AGENT_SKILLS_DIRS: repositoryRoot,
+    })).toEqual([]);
+  });
+
+  it("canonicalizes trusted roots and rejects symlink escapes from the catalog", () => {
+    const pluginRoot = temporaryRoot();
+    const catalogParent = temporaryRoot();
+    const pluginAlias = path.join(catalogParent, "bundle-alias");
+    fs.mkdirSync(path.join(pluginRoot, ".claude-plugin"), { recursive: true });
+    fs.writeFileSync(path.join(pluginRoot, ".claude-plugin", "plugin.json"), "{}");
+    fs.symlinkSync(pluginRoot, pluginAlias, "dir");
+
+    expect(claudeAgentSkillPluginRoots({
+      ADE_AGENT_SKILLS_DIRS: pluginAlias,
+      ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
+    })).toEqual([fs.realpathSync(pluginRoot)]);
+
+    expect(claudeAgentSkillPluginRoots({
+      ADE_AGENT_SKILLS_DIRS: catalogParent,
+      ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
+    })).toEqual([]);
   });
 
   it("builds cwd-scoped Codex discovery params without persisting roots", () => {
