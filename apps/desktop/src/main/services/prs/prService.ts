@@ -108,12 +108,16 @@ import type {
   RerunPrChecksArgs,
   AiReviewSummaryArgs,
   AiReviewSummary,
+  AddGitHubPrStackPullRequestsArgs,
+  CreateGitHubPrStackArgs,
   GitHubPrListItem,
   GitHubPrStack,
   GitHubPrStackMembership,
   GitHubPrSnapshot,
   GitHubWebhookIngestArgs,
   GitHubWebhookIngestResult,
+  ListGitHubPrStacksArgs,
+  UnstackGitHubPrStackArgs,
   PrDetail,
   PrFile,
   PrGithubCoords,
@@ -6782,6 +6786,16 @@ export function createPrService({
         error: userMsg
       };
     };
+    const githubStackNumber = githubStackStore.knownStackNumberForPr(
+      repo,
+      Number(row.github_pr_number),
+    );
+    if (githubStackNumber) {
+      return finishFailure(
+        "github_stack_requires_github_merge",
+        `PR #${row.github_pr_number} is in GitHub Stack #${githubStackNumber}. Review and merge the stack on GitHub.`,
+      );
+    }
 
     const formatMergeError = (rawMsg: string): string => {
       if (rawMsg.includes("Resource not accessible by personal access token")) {
@@ -7058,6 +7072,15 @@ export function createPrService({
     // Root base branch is derived from the root lane PR.
     const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
     if (!rootRow) throw new Error("Root lane has no PR linked.");
+    const githubStackNumber = githubStackStore.knownStackNumberForPr(
+      { owner: rootRow.repo_owner, name: rootRow.repo_name },
+      Number(rootRow.github_pr_number),
+    );
+    if (githubStackNumber) {
+      throw new Error(
+        `This lane stack is GitHub Stack #${githubStackNumber}. Review and merge it on GitHub.`,
+      );
+    }
     const baseTarget = rootRow.base_branch;
 
     const results: LandResult[] = [];
@@ -7471,6 +7494,15 @@ export function createPrService({
 
     const rootRow = getActiveRowForCurrentLaneBranch(chain[0]!.laneId);
     if (!rootRow) throw new Error("Root lane has no PR linked.");
+    const githubStackNumber = githubStackStore.knownStackNumberForPr(
+      { owner: rootRow.repo_owner, name: rootRow.repo_name },
+      Number(rootRow.github_pr_number),
+    );
+    if (githubStackNumber) {
+      throw new Error(
+        `This lane stack is GitHub Stack #${githubStackNumber}. Review and merge it on GitHub.`,
+      );
+    }
     const baseTarget = rootRow.base_branch;
 
     // Use an indexed array so results stay in chain order regardless of
@@ -8699,6 +8731,19 @@ export function createPrService({
     onSnapshotChanged: invalidateGithubSnapshotCache,
     onReconciled: () => emitPrsUpdated(),
   });
+  const resolveGithubStackRepo = async (
+    requestedRepo?: GitHubRepoRef | null,
+  ): Promise<GitHubRepoRef> => {
+    if (requestedRepo?.owner.trim() && requestedRepo.name.trim()) {
+      return {
+        owner: requestedRepo.owner.trim(),
+        name: requestedRepo.name.trim(),
+      };
+    }
+    const status = await requireGithubSnapshotAuth();
+    if (!status.repo) throw new Error("No GitHub repository is configured for this project.");
+    return status.repo;
+  };
 
   const gitHubItemFromProjection = (
     row: GitHubPrProjectionRow,
@@ -10716,8 +10761,36 @@ export function createPrService({
       return await getGithubSnapshot(options);
     },
 
-    listGithubStacks(repo?: GitHubRepoRef | null): GitHubPrStack[] {
+    async listGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
+      const repo = await resolveGithubStackRepo(args.repo);
       return githubStackStore.list(repo);
+    },
+
+    async createGithubStack(args: CreateGitHubPrStackArgs): Promise<GitHubPrStack> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.create(repo, args.pullRequests);
+      emitPrsUpdated();
+      return stack;
+    },
+
+    async addGithubStackPullRequests(
+      args: AddGitHubPrStackPullRequestsArgs,
+    ): Promise<GitHubPrStack> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.addPullRequests(
+        repo,
+        args.stackNumber,
+        args.pullRequests,
+      );
+      emitPrsUpdated();
+      return stack;
+    },
+
+    async unstackGithubStack(args: UnstackGitHubPrStackArgs): Promise<GitHubPrStack | null> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stack = await githubStackStore.unstack(repo, args.stackNumber);
+      emitPrsUpdated();
+      return stack;
     },
 
     async reconcileGithubStack(repo: GitHubRepoRef, stackNumber: number): Promise<GitHubPrStack> {
@@ -10726,6 +10799,13 @@ export function createPrService({
 
     async reconcileGithubStacks(repo: GitHubRepoRef): Promise<GitHubPrStack[]> {
       return await githubStackStore.reconcileRepository(repo);
+    },
+
+    async syncGithubStacks(args: ListGitHubPrStacksArgs = {}): Promise<GitHubPrStack[]> {
+      const repo = await resolveGithubStackRepo(args.repo);
+      const stacks = await githubStackStore.reconcileRepository(repo);
+      emitPrsUpdated();
+      return stacks;
     },
 
     async ingestGithubWebhook(args: GitHubWebhookIngestArgs): Promise<GitHubWebhookIngestResult> {

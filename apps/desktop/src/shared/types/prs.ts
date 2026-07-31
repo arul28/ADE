@@ -228,6 +228,28 @@ export type GitHubPrStack = {
   entries: GitHubPrStackEntry[];
 };
 
+export type CreateGitHubPrStackArgs = {
+  repo?: GitHubRepoRef | null;
+  /** Pull request numbers ordered from the stack base to the top. */
+  pullRequests: number[];
+};
+
+export type ListGitHubPrStacksArgs = {
+  repo?: GitHubRepoRef | null;
+};
+
+export type AddGitHubPrStackPullRequestsArgs = {
+  repo?: GitHubRepoRef | null;
+  stackNumber: number;
+  /** Pull request numbers to append, ordered from the current top upward. */
+  pullRequests: number[];
+};
+
+export type UnstackGitHubPrStackArgs = {
+  repo?: GitHubRepoRef | null;
+  stackNumber: number;
+};
+
 export type GitHubPrListItem = {
   id: string;
   scope: "repo" | "external";

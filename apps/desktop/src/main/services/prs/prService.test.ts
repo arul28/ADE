@@ -2345,6 +2345,93 @@ describe("prService.ingestGithubWebhook", () => {
     );
   });
 
+  it("creates a GitHub stack from pull requests ordered bottom to top", async () => {
+    const db = makeMockDb();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {
+          id: 5019,
+          number: 19,
+          node_id: "STACK_node19",
+          base: { ref: "main" },
+          open: true,
+          created_at: "2026-07-30T13:00:00Z",
+          pull_requests: [
+            {
+              number: 964,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "ade/github-stacked-prs-core", sha: "sha-core" },
+            },
+            {
+              number: 965,
+              state: "open",
+              draft: false,
+              merged_at: null,
+              head: { ref: "ade/github-stacked-prs-cli", sha: "sha-cli" },
+            },
+          ],
+        },
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const stack = await service.createGithubStack({
+      repo: REPO,
+      pullRequests: [964, 965],
+    });
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "POST",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks`,
+      body: { pull_requests: [964, 965] },
+    });
+    expect(stack).toEqual(expect.objectContaining({
+      number: 19,
+      entries: [
+        expect.objectContaining({ githubPrNumber: 964, position: 1 }),
+        expect.objectContaining({ githubPrNumber: 965, position: 2 }),
+      ],
+    }));
+  });
+
+  it("rejects fractional pull request numbers before calling GitHub", async () => {
+    const githubService = makeGithubService();
+    const { service } = buildService({ githubService });
+
+    await expect(service.createGithubStack({
+      repo: REPO,
+      pullRequests: [964, 965.5],
+    })).rejects.toThrow("2 to 100 distinct pull request numbers");
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("removes a dissolved GitHub stack after unstack returns no content", async () => {
+    const db = makeMockDb();
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async () => ({
+        data: {},
+        response: new Response(null, { status: 204 }),
+      })),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.unstackGithubStack({
+      repo: REPO,
+      stackNumber: 19,
+    })).resolves.toBeNull();
+
+    expect(githubService.apiRequest).toHaveBeenCalledWith({
+      method: "POST",
+      path: `/repos/${REPO.owner}/${REPO.name}/stacks/19/unstack`,
+    });
+    expect(db.run).toHaveBeenCalledWith(
+      expect.stringContaining("delete from github_pr_stacks"),
+      ["proj-1", REPO.owner, REPO.name, 19],
+    );
+  });
+
   it("emits a PR update when an unmapped pull request changes its projection", async () => {
     const db = makeMockDb();
     const { service } = buildService({ db, laneService: makeLaneService([]) });
@@ -4413,6 +4500,29 @@ describe("prService.delete", () => {
 describe("prService.land", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("directs GitHub stack merges to GitHub before starting a merge request", async () => {
+    const row = makePrRow({ id: "pr-stacked", github_pr_number: 91 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const getPullRequestRow = db.get.getMockImplementation();
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      if (String(sql).includes("from github_pr_stack_entries")) {
+        return { github_stack_number: 19 };
+      }
+      return getPullRequestRow?.(sql, params) ?? null;
+    });
+    const githubService = makeGithubService();
+    const { service } = buildService({ db, githubService });
+
+    const result = await service.land({ prId: "pr-stacked", method: "squash" });
+
+    expect(result).toEqual(expect.objectContaining({
+      success: false,
+      error: "PR #91 is in GitHub Stack #19. Review and merge the stack on GitHub.",
+    }));
+    expect(githubService.apiRequest).not.toHaveBeenCalled();
   });
 
   it("does not send a merge request for draft PRs", async () => {

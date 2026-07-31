@@ -62,6 +62,7 @@ import type {
   AgentChatRecoverTurnArgs,
   AgentChatResolveUnprocessedMessageArgs,
   AgentChatUpdateSessionArgs,
+  AddGitHubPrStackPullRequestsArgs,
   AddPrCommentArgs,
   AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
@@ -81,6 +82,7 @@ import type {
   CreateLaneFromUnstagedArgs,
   CreatePrFromLaneArgs,
   CreateIntegrationLaneForProposalArgs,
+  CreateGitHubPrStackArgs,
   CleanupIntegrationWorkflowArgs,
   DeleteLaneArgs,
   DeletePrArgs,
@@ -129,6 +131,7 @@ import type {
   LaneStateSnapshotSummary,
   ListLanesArgs,
   ListIntegrationWorkflowsArgs,
+  ListGitHubPrStacksArgs,
   ListOperationsArgs,
   ListSessionsArgs,
   LinkPrToLaneArgs,
@@ -159,6 +162,7 @@ import type {
   StartIntegrationResolutionArgs,
   StartQueueAutomationArgs,
   SubmitPrReviewArgs,
+  UnstackGitHubPrStackArgs,
   ExternalSessionImportArgs,
   ExternalSessionImportResult,
   ExternalSessionListArgs,
@@ -2908,6 +2912,77 @@ function requirePrGithubCoords(value: Record<string, unknown>, action: string): 
   return { repoOwner, repoName, githubPrNumber };
 }
 
+function parseGithubStackRepo(
+  value: Record<string, unknown>,
+  action: string,
+): GitHubRepoRef | undefined {
+  const owner = asTrimmedString(value.repoOwner);
+  const name = asTrimmedString(value.repoName);
+  if (!owner && !name) return undefined;
+  if (!owner || !name) throw new Error(`${action} requires both repoOwner and repoName.`);
+  return { owner, name };
+}
+
+function requirePositiveIntegerArray(value: unknown, message: string): number[] {
+  if (!Array.isArray(value)) throw new Error(message);
+  const numbers = value.map((entry) => Number(entry));
+  if (numbers.some((entry) => !Number.isInteger(entry) || entry <= 0)) {
+    throw new Error(message);
+  }
+  return numbers;
+}
+
+function parseListGithubStacksArgs(
+  value: Record<string, unknown>,
+  action: string,
+): ListGitHubPrStacksArgs {
+  const repo = parseGithubStackRepo(value, action);
+  return repo ? { repo } : {};
+}
+
+function parseCreateGithubStackArgs(value: Record<string, unknown>): CreateGitHubPrStackArgs {
+  const repo = parseGithubStackRepo(value, "prs.createGithubStack");
+  return {
+    ...(repo ? { repo } : {}),
+    pullRequests: requirePositiveIntegerArray(
+      value.pullRequests,
+      "prs.createGithubStack requires positive integer pullRequests.",
+    ),
+  };
+}
+
+function parseAddGithubStackPullRequestsArgs(
+  value: Record<string, unknown>,
+): AddGitHubPrStackPullRequestsArgs {
+  const repo = parseGithubStackRepo(value, "prs.addGithubStackPullRequests");
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.addGithubStackPullRequests requires a positive integer stackNumber.");
+  }
+  return {
+    ...(repo ? { repo } : {}),
+    stackNumber,
+    pullRequests: requirePositiveIntegerArray(
+      value.pullRequests,
+      "prs.addGithubStackPullRequests requires positive integer pullRequests.",
+    ),
+  };
+}
+
+function parseUnstackGithubStackArgs(
+  value: Record<string, unknown>,
+): UnstackGitHubPrStackArgs {
+  const repo = parseGithubStackRepo(value, "prs.unstackGithubStack");
+  const stackNumber = asOptionalNumber(value.stackNumber);
+  if (stackNumber == null || !Number.isInteger(stackNumber) || stackNumber <= 0) {
+    throw new Error("prs.unstackGithubStack requires a positive integer stackNumber.");
+  }
+  return {
+    ...(repo ? { repo } : {}),
+    stackNumber,
+  };
+}
+
 function parseCreatePrArgs(value: Record<string, unknown>): CreatePrFromLaneArgs {
   const laneId = asTrimmedString(value.laneId);
   const title = asTrimmedString(value.title);
@@ -5243,6 +5318,10 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
         ? { historyPageLimit: Math.max(1, Math.floor(payload.historyPageLimit)) }
         : {}),
     }));
+  register("prs.listGithubStacks", { viewerAllowed: true, observesAbort: true }, async (payload) =>
+    args.prService.listGithubStacks(parseListGithubStacksArgs(payload, "prs.listGithubStacks")));
+  register("prs.syncGithubStacks", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.syncGithubStacks(parseListGithubStacksArgs(payload, "prs.syncGithubStacks")));
   register("prs.getReviewThreads", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getReviewThreads(requirePrId(payload, "prs.getReviewThreads")));
   register("prs.getActionRuns", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActionRuns(requirePrId(payload, "prs.getActionRuns")));
   register("prs.getActivity", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.getActivity(requirePrId(payload, "prs.getActivity")));
@@ -5280,6 +5359,12 @@ function registerPrAndDeeplinkRemoteCommands({ args, register }: RemoteCommandRe
   register("prs.getMobileGithubDetail", { viewerAllowed: true, observesAbort: true }, async (payload) =>
     args.prService.getMobileGithubDetail(requirePrGithubCoords(payload, "prs.getMobileGithubDetail")));
   register("prs.createFromLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createFromLane(parseCreatePrArgs(payload)));
+  register("prs.createGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.createGithubStack(parseCreateGithubStackArgs(payload)));
+  register("prs.addGithubStackPullRequests", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.addGithubStackPullRequests(parseAddGithubStackPullRequestsArgs(payload)));
+  register("prs.unstackGithubStack", { viewerAllowed: true, queueable: true }, async (payload) =>
+    args.prService.unstackGithubStack(parseUnstackGithubStackArgs(payload)));
   register("prs.createQueue", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.createQueuePrs(parseCreateQueuePrsArgs(payload)));
   register("prs.linkToLane", { viewerAllowed: true, queueable: true }, async (payload) => args.prService.linkToLane(parseLinkPrToLaneArgs(payload)));
   register("prs.preflightCreateLaneFromPrBranch", { viewerAllowed: true, observesAbort: true }, async (payload) => args.prService.preflightCreateLaneFromPrBranch(parseCreateLaneFromPrBranchArgs(payload)));
