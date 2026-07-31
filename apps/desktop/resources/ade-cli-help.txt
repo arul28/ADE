@@ -50,7 +50,7 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -187,7 +187,7 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -332,6 +332,11 @@ _    ____  _____
 
     $ ade lanes list --text                         Show lane stack graph and branch names
     $ ade lanes show <lane> --text                  Inspect one lane status
+    $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
+    $ ade lane drift resolve --lane <lane> --switch-back
+                                                    Restore the worktree to the lane's recorded branch (refuses if dirty)
+    $ ade lane drift resolve --lane <lane> --keep-head
+                                                    Re-point the lane (and its name) at the live HEAD branch
     $ ade lanes create --name <name>                Create a lane from the current project context
     $ ade lanes create --linear-issue-json '{...}'  Create a lane linked to a Linear issue
     $ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
@@ -350,7 +355,10 @@ _    ____  _____
                                                     Child lanes carry the parent's unmerged work
     $ ade lanes import --branch <branch>            Register an existing branch/worktree
     $ ade lanes archive <lane>                      Archive a lane in ADE
-    $ ade lanes unarchive <lane>                    Restore an archived lane
+    $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
+    $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
+                                                    Archive the lane, then remove its ADE-managed local files
+    $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
     $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
@@ -573,6 +581,12 @@ _    ____  _____
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because it owns provider/session state.
 
+  Session scope: when you are an ADE-launched agent (ADE_CHAT_SESSION_ID is set),
+  reads are limited to your OWN chat — "ade chat read <other-session>" is denied
+  by design, because transcripts are not shared across workers. Sending is not
+  restricted: "ade chat send <session>" reaches any session, which is how a
+  subagent reports back to its spawner.
+
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat actions --personal --text            List machine personal-chat actions
@@ -633,7 +647,9 @@ _    ____  _____
     $ ade chat detach-linear-issue <session> [--issue-id ENG-431]
                                                     Detach one issue (or all) from a session
     $ ade chat linear-issues <session> --text       List issues attached to a session
-    $ ade chat interrupt <session>                  Stop an active turn
+    $ ade chat interrupt <session>                  Stop an active turn and clear its queued messages
+    $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
+    $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
     $ ade new chat --mode cli --lane <lane> --prompt "fix"
                                                     Start a tracked provider CLI session
@@ -746,7 +762,7 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -946,7 +962,7 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1062,9 +1078,14 @@ _    ____  _____
     $ ade proof list --text                         List captured artifacts
     $ ade proof capture --caption "Done"            Capture a screenshot artifact
     $ ade proof attach /tmp/proof.png --caption "Done" Attach an existing image/video
+    $ ade proof rm artifact-id                      Delete stored proof and its record
+    $ ade proof broken --text                       List proof whose stored file is unavailable
+    $ ade proof recover artifact-id                 Re-import a broken proof from its surviving source
+    $ ade proof prune                               Preview broken proof records (does not delete)
+    $ ade proof prune --broken                      Delete every broken proof record
     $ ade proof record --seconds 20                 Capture a short video proof
     $ ade proof launch --app "ADE"                  Launch an app for proof capture
-    $ ade proof ingest --input-json '{"artifacts":[]}' Ingest external visual proof artifacts
+    $ ade proof ingest --input-json '{"backendStyle":"external_cli","backendName":"agent-browser","inputs":[{"kind":"screenshot","path":"/tmp/proof.png"}]}' Ingest external visual proof artifacts
 
 ## ade ios-sim --help
 _    ____  _____
@@ -1361,7 +1382,7 @@ _    ____  _____
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -1441,16 +1462,27 @@ _    ____  _____
   the post-install notice. quitAndInstall relaunches the desktop app and only
   succeeds when status is "ready".
 
-    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress)
+    $ ade --socket update status --text             Read AutoUpdateSnapshot (status, version, progress, last failed install)
     $ ade --socket update check --text              Trigger a background update check
     $ ade --socket update install --text            Refresh latest, then quit and install when ready
     $ ade --socket update dismiss --text            Clear the recently-installed banner
     $ ade --socket update actions --text            List callable update actions
 
   Snapshot status values: idle, checking, downloading, ready, installing, error.
-  "installing" appears between quitAndInstall and the desktop relaunch; if the
-  install fails, status falls back to error and the pending-install record is
-  cleared automatically.
+  "installing" appears between quitAndInstall and the desktop relaunch. That
+  window is deliberately long — the OS installer stages the new bundle in
+  process on macOS, so the app is only force-quit after a hard bound of several
+  minutes (about a minute on Windows/Linux, where staging is external). Do NOT
+  read a few slow minutes in "installing" as a hang, and do not kill the desktop
+  app to "unstick" it: that is exactly what makes an install fail to land.
+
+  If quitAndInstall fails before the native handoff, status falls back to error
+  and the pending-install record is cleared. If the app quits but relaunches on
+  the OLD version, the install did not land: the next snapshot carries
+  "lastInstallFailed": { targetVersion, attempt }, which survives the restart.
+  Check that field before re-offering the same update — the first failure keeps
+  the downloaded archive so a retry is just another install, and only a second
+  failure discards the download and forces a fresh one.
 
 ## ade actions --help
 _    ____  _____
@@ -1474,6 +1506,10 @@ _    ____  _____
       $ ade actions run pr.submitReview --args-list-json '["pr-1",{"event":"APPROVE"}]'
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
+    $ ade --role cto actions list --domain attention --text
+                                                    Discover account-wide Attention actions
+    $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
+                                                    Read work across connected machines and projects
     $ ade actions run <domain.action> --input-json '{"key":"value"}'
     $ ade actions run <domain> <action> --input-json '{"key":"value"}'
     $ ade actions status --text                     Runtime action availability

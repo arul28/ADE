@@ -533,10 +533,9 @@ export const SessionCard = React.memo(function SessionCard({
      `orchestrationRole` are projected onto every summary, so they are always
      known locally and always specific.
 
-     Not a click target: the hover detail card carries a proper, labelled
-     parent-thread row (`session-hover-parent-thread`) and that is where the
-     navigation lives. A second affordance on the same lineage, inside a row
-     that is itself a click target, only competed with it. */
+     The chip is also the keyboard path to the parent thread. The hover card
+     repeats that action for pointer users, but a hover-only action would make
+     lineage navigation undiscoverable to keyboard and assistive-tech users. */
   if (session.orchestrationParentSessionId) {
     const lineageLabel =
       session.spawnKind === "subagent"
@@ -547,13 +546,21 @@ export const SessionCard = React.memo(function SessionCard({
           // specific truth, and "Spawned" is the honest floor.
           : orchestrationLabel ?? "Spawned";
     whereParts.push(
-      <span
+      <button
+        type="button"
         key="lineage"
         data-testid="session-spawn-lineage"
+        aria-label="Open parent thread"
+        title="Open parent thread"
         /* One pill, not a loose glyph beside loose text — same chip idiom as the
            machine marker. Neutral, never amber: lineage is identity, and amber
            means "your move" (see `sessionStatusPresentation.ts`). */
         className="inline-flex min-w-0 shrink items-center gap-1 rounded-full border border-white/10 bg-white/[0.05] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          navigateToSpawnedChat(session.orchestrationParentSessionId, null);
+        }}
       >
         <ChatSubagentGlyph
           id={session.id}
@@ -561,7 +568,7 @@ export const SessionCard = React.memo(function SessionCard({
           size={10}
         />
         <span className="truncate">{lineageLabel}</span>
-      </span>,
+      </button>,
     );
   }
   /* A singleton row shows its LANE and nothing else: with no divider above it,

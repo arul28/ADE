@@ -3131,6 +3131,10 @@ describe("ADE CLI", () => {
       expect(help.text).toContain("'chat settle' / 'chat unsettle' were removed");
       expect(help.text).toContain("--session <id>");
     }
+    expect(() => buildCliPlan(["chat", "settle"]))
+      .toThrow(/only the user .* settles a session.*chat note/i);
+    expect(() => buildCliPlan(["chat", "unsettle"]))
+      .toThrow(/only the user .* settles a session.*chat note/i);
   });
 
   it.each([

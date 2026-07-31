@@ -3087,6 +3087,22 @@ describe("laneService updateAppearance color uniqueness", () => {
     expect(child?.color).toBe("#60a5fa");
   });
 
+  it("keeps the primary lane on its reserved color during appearance updates", async () => {
+    const { db, service } = await setup();
+    db.run(
+      "update lanes set lane_type = 'primary', color = ? where id = ?",
+      ["#a78bfa", "lane-parent"],
+    );
+
+    service.updateAppearance({ laneId: "lane-parent", color: "#60a5fa", icon: "star" });
+
+    const primary = db.get<{ color: string | null; icon: string | null }>(
+      "select color, icon from lanes where id = ?",
+      ["lane-parent"],
+    );
+    expect(primary).toEqual({ color: "#a78bfa", icon: "star" });
+  });
+
   it("ignores archived lanes when checking for color conflicts", async () => {
     const { db, service } = await setup();
     db.run(

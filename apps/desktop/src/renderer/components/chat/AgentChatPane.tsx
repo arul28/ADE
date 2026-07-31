@@ -11650,7 +11650,7 @@ export function AgentChatPane({
         sessionsPaneCount={sessionsPaneCount}
         onToggleToolsPane={onToggleToolsPane}
         toolsPaneOpen={toolsPaneOpen}
-        className="space-y-0 p-0"
+        className="h-8 space-y-0 p-0"
         testId="work-chat-session-header"
       />
 
@@ -11786,8 +11786,8 @@ export function AgentChatPane({
   // Settled/snoozed notice pinned above the composer. The header chips say WHAT
   // the state is; this says what sending will do about it, where the eye already
   // is while typing. Renders null for a live chat, so nothing below it moves.
-  const lifecycleBanner = selectedSessionId ? (
-    <ChatLifecycleBanner sessionId={selectedSessionId} />
+  const lifecycleBanner = composerSessionId ? (
+    <ChatLifecycleBanner sessionId={composerSessionId} />
   ) : null;
 
   const composerMachineBinding = activeComposerRuntimeBinding;

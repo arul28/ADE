@@ -117,6 +117,11 @@ export function MenuSubmenu({
   }, [clearTimers, onOpen]);
 
   const closeNow = useCallback(() => {
+    const restoreTriggerFocus = Boolean(
+      panelRef.current
+      && typeof document !== "undefined"
+      && panelRef.current.contains(document.activeElement),
+    );
     clearTimers();
     openRef.current = false;
     setOpen(false);
@@ -124,6 +129,7 @@ export function MenuSubmenu({
     if (hoverBackground && triggerRef.current) {
       triggerRef.current.style.background = "transparent";
     }
+    if (restoreTriggerFocus) triggerRef.current?.focus();
   }, [clearTimers, hoverBackground]);
 
   const scheduleOpen = useCallback(() => {

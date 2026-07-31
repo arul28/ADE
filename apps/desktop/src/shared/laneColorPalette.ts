@@ -46,13 +46,14 @@ export const LANE_CLASSIC_COUNT = LANE_CLASSIC_COLORS.length;
  * offer it, and lanes that already hold it are left alone.
  */
 export const PRIMARY_LANE_COLOR = "#a78bfa";
+const PRIMARY_LANE_COLOR_KEY = PRIMARY_LANE_COLOR.toLowerCase();
 
 /**
  * The pool auto-allocation draws from: every palette entry except the reserved
  * Primary purple.
  */
 export const ALLOCATABLE_LANE_COLORS: readonly LaneColor[] = LANE_COLOR_PALETTE
-  .filter((entry) => entry.hex.toLowerCase() !== PRIMARY_LANE_COLOR);
+  .filter((entry) => entry.hex.toLowerCase() !== PRIMARY_LANE_COLOR_KEY);
 
 // Fallback accents are auto-assigned too (a lane with no stored colour picks one
 // by index), so they come off the allocatable pool rather than the full palette.

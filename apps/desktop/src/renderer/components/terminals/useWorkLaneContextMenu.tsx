@@ -56,6 +56,7 @@ export type LaneMenuActions = {
   onSelectAll: () => void;
   onBatchManage: (laneIds: string[]) => void;
   onStartChatInLane: (laneId: string) => void;
+  onAppearanceChanged: () => Promise<void>;
 };
 
 /**
@@ -77,6 +78,7 @@ export function useLaneMenuActions(args: {
   const selectLane = useAppStore((s) => s.selectLane);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
+  const refreshLanes = useAppStore((s) => s.refreshLanes);
 
   const goToLanesAction = useCallback(
     (laneId: string | null, action: string, extras?: Record<string, string>) => {
@@ -114,7 +116,8 @@ export function useLaneMenuActions(args: {
       goToLanesAction(laneIds[0], "batch", { laneIds: laneIds.join(",") });
     },
     onStartChatInLane: startChatInLane,
-  }), [close, goToLanesAction, onManageLane, startChatInLane]);
+    onAppearanceChanged: () => refreshLanes({ includeStatus: false }),
+  }), [close, goToLanesAction, onManageLane, refreshLanes, startChatInLane]);
 }
 
 export function useWorkLaneContextMenu(options?: {

@@ -1587,6 +1587,7 @@ describe("adeRpcServer", () => {
         { action: "settleSelfSession", args: { sessionId: "chat-1", outcome: "Shipped" } },
         { action: "unsettleSelfSession", args: { sessionId: "chat-1" } },
         { action: "settleSessions", args: { sessionIds: ["chat-1"] } },
+        { action: "unsettleSessions", args: { sessionIds: ["chat-1"] } },
         { action: "setSettleOverride", args: { sessionId: "chat-1", override: "settled" } },
       ]) {
         const denialResult = await callTool(handler, "run_ade_action", settleAttempt);

@@ -838,6 +838,7 @@ describe("CommandPalette", () => {
       expect(
         screen.getByText(/Showing 8 of 12 threads/),
       ).toBeTruthy();
+      expect(screen.getByText(/Showing 8 of 12 threads/).getAttribute("aria-hidden")).toBeNull();
       // Newest first, oldest past the cap dropped.
       expect(screen.getByText("Thread 0")).toBeTruthy();
       expect(screen.queryByText("Thread 8")).toBeNull();
@@ -892,6 +893,24 @@ describe("CommandPalette", () => {
         // The foreign lane resolves through its OWN machine's lane list, not
         // the locally-bound project's.
         expect(screen.getByText("ADE · #t3code/release-notes")).toBeTruthy();
+      });
+
+      it("labels a foreign thread with its bound project rather than the current project", async () => {
+        seedThreads([makeSession()], {
+          machines: {
+            "target-studio": makeForeignMachine({
+              binding: { ...REMOTE_BINDING, displayName: "Remote Tools" },
+            }),
+          },
+        });
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        expect(await screen.findByText("Remote Tools · #t3code/release-notes")).toBeTruthy();
       });
 
       it("matches a thread on its machine name", async () => {

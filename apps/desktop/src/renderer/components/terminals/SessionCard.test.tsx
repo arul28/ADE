@@ -275,7 +275,7 @@ describe("SessionCard lineage", () => {
     expect(screen.getByTestId("session-spawn-lineage").textContent).toContain("Spawned");
   });
 
-  it("never says 'another chat', and never becomes a click target", () => {
+  it("never says 'another chat' and exposes parent navigation to the keyboard", () => {
     const onSelect = vi.fn();
     const dispatched: CustomEvent[] = [];
     const handler = (event: Event) => dispatched.push(event as CustomEvent);
@@ -296,15 +296,15 @@ describe("SessionCard lineage", () => {
 
       const lineage = screen.getByTestId("session-spawn-lineage");
       expect(container.textContent).not.toContain("another chat");
-      expect(lineage.tagName).toBe("SPAN");
-      expect(lineage.getAttribute("role")).toBeNull();
-      expect(lineage.getAttribute("title")).toBeNull();
+      expect(lineage.tagName).toBe("BUTTON");
+      expect(lineage.getAttribute("aria-label")).toBe("Open parent thread");
 
       act(() => {
         lineage.click();
       });
-      // Navigation lives on the hover card's parent-thread row now.
-      expect(dispatched).toHaveLength(0);
+      expect(dispatched).toHaveLength(1);
+      expect(dispatched[0]?.detail).toMatchObject({ sessionId: "parent-9" });
+      expect(onSelect).not.toHaveBeenCalled();
     } finally {
       window.removeEventListener("ade:work:select-session", handler);
     }
@@ -1703,6 +1703,19 @@ describe("SessionCard hover detail card", () => {
     act(() => {
       window.dispatchEvent(new Event("scroll"));
     });
+    expect(screen.queryByTestId("session-hover-card")).toBeNull();
+  });
+
+  it("cancels a pending card when the list scrolls during the open delay", () => {
+    vi.useFakeTimers();
+    const { container } = renderCard();
+
+    fireEvent.mouseEnter(rowWrapper(container));
+    act(() => {
+      window.dispatchEvent(new Event("scroll"));
+      vi.advanceTimersByTime(SESSION_HOVER_CARD_DELAY_MS + 50);
+    });
+
     expect(screen.queryByTestId("session-hover-card")).toBeNull();
   });
 

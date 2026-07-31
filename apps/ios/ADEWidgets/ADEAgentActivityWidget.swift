@@ -172,7 +172,14 @@ struct AgentRunsPresentation {
             return lhs.updatedAt > rhs.updatedAt
         })
         self.prs = sortedPrs
-        let activeCount = max(safeState.activeCount, safeState.runs.count)
+        let visibleInFlightCount = safeState.runs.filter {
+            $0.resolvedPhase == .starting || $0.resolvedPhase == .running
+        }.count
+        // `activeCount` may include runs omitted from the compact roster. Keep
+        // that hidden remainder, but do not let completed/failed roster rows
+        // inflate the live count and headline themselves as still working.
+        let hiddenActiveCount = max(0, safeState.activeCount - safeState.runs.count)
+        let activeCount = hiddenActiveCount + visibleInFlightCount
         self.activeCount = activeCount
         self.waitingCount = safeState.runs.filter { $0.resolvedPhase.needsAttention }.count
             + safeState.prs.filter { $0.resolvedPhase.needsAttention }.count

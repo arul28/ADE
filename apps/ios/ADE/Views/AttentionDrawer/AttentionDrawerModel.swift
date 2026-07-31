@@ -270,10 +270,13 @@ public final class AttentionDrawerModel: ObservableObject {
                     )
                 )
             } else if Self.isAgentLive(agent) {
+                let isBlocked = Self.nonEmpty(agent.phase)?.lowercased() == "blocked"
                 live.append(
                     AttentionItem(
                         id: "live:\(agent.sessionId)",
-                        kind: machineOnline ? .running : .stale,
+                        kind: machineOnline
+                            ? (isBlocked ? .blocked : .running)
+                            : .stale,
                         title: Self.humanAgentTitle(agent),
                         subtitle: Self.nonEmpty(agent.preview)
                             ?? Self.agentPhaseLabel(agent.phase)

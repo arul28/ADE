@@ -68,6 +68,7 @@ export function LaneActionsSubmenu({
   return (
     <MenuSubmenu
       data-testid="session-menu-lane-actions"
+      role="menuitem"
       label="Lane"
       hint={laneName}
       title={`Lane actions for ${laneName}`}

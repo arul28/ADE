@@ -83,6 +83,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
   const disabled = Boolean(options?.disabled);
   const rowId = options?.rowId ?? null;
   const [anchor, setAnchor] = React.useState<FixedAnchor | null>(null);
+  const [pendingOpen, setPendingOpen] = React.useState(false);
   const openTimerRef = React.useRef<number | null>(null);
   const closeTimerRef = React.useRef<number | null>(null);
   // The element measured when the timer FIRES, not when the pointer arrived:
@@ -117,6 +118,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
   }, [rowId]);
 
   const clearTimers = React.useCallback(() => {
+    setPendingOpen(false);
     if (openTimerRef.current != null) {
       window.clearTimeout(openTimerRef.current);
       openTimerRef.current = null;
@@ -155,6 +157,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
       clearTimers();
 
       const open = () => {
+        setPendingOpen(false);
         const target = resolveTriggerElement();
         if (!target) return;
         const rect = target.getBoundingClientRect();
@@ -170,6 +173,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
         open();
         return;
       }
+      setPendingOpen(true);
       openTimerRef.current = window.setTimeout(() => {
         openTimerRef.current = null;
         open();
@@ -202,7 +206,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
   // mid-scroll would make it chase the row. Cancel instead — the pointer has
   // not "rested" on anything while the list is moving.
   React.useEffect(() => {
-    if (!anchor && openTimerRef.current == null) return undefined;
+    if (!anchor && !pendingOpen) return undefined;
     const cancel = () => close();
     window.addEventListener("scroll", cancel, true);
     window.addEventListener("resize", cancel);
@@ -210,7 +214,7 @@ export function useSessionHoverCard(options?: { disabled?: boolean; rowId?: stri
       window.removeEventListener("scroll", cancel, true);
       window.removeEventListener("resize", cancel);
     };
-  }, [anchor, close]);
+  }, [anchor, close, pendingOpen]);
 
   React.useEffect(() => clearTimers, [clearTimers]);
 

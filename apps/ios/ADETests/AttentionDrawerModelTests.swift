@@ -994,6 +994,34 @@ final class AttentionDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.liveItems.first(where: { $0.sessionId == "done-phase" })?.subtitle, "Done")
     }
 
+    func testWorkspaceBlockedPhaseUsesNeutralBlockedPresentation() {
+        let model = AttentionDrawerModel(defaults: defaults)
+        let now = Date()
+        let blocked = AgentSnapshot(
+            sessionId: "blocked-local",
+            provider: "codex",
+            title: "Waiting on dependency",
+            status: "running",
+            awaitingInput: false,
+            lastActivityAt: now,
+            elapsedSeconds: 20,
+            preview: "Blocked",
+            progress: nil,
+            phase: "blocked",
+            toolCalls: 1
+        )
+
+        model.rebuild(from: WorkspaceSnapshot(
+            generatedAt: now,
+            agents: [blocked],
+            prs: [],
+            connection: "connected"
+        ))
+
+        XCTAssertEqual(model.liveItems.first?.kind, .blocked)
+        XCTAssertTrue(model.items.isEmpty)
+    }
+
     func testBlockedItemIsNotFiledOrColouredAsYourMove() {
         // `blocked` used to borrow `awaitingInput`'s amber bell while filing
         // itself under `live` — the row said "act on me" in colour and "just

@@ -342,11 +342,12 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
   // Secondary line: where the thread lives. Project first (it is the coarser
   // scope and the one the user names out loud), then branch, then the
   // current-thread marker.
+  const rowProjectName = entry.binding?.displayName ?? projectName;
   const contextParts: string[] = [];
-  if (projectName) contextParts.push(projectName);
+  if (rowProjectName) contextParts.push(rowProjectName);
   else if (entry.laneName) contextParts.push(entry.laneName);
   if (entry.branch) contextParts.push(`#${entry.branch}`);
-  else if (projectName && entry.laneName) contextParts.push(entry.laneName);
+  else if (rowProjectName && entry.laneName) contextParts.push(entry.laneName);
 
   return (
     <li>
@@ -450,10 +451,7 @@ export function ThreadOverflowNote({
 }) {
   if (total <= shown) return null;
   return (
-    <li
-      aria-hidden
-      className="mx-2 px-3 py-1.5 text-[11px] text-[var(--color-muted-fg)]"
-    >
+    <li className="mx-2 px-3 py-1.5 text-[11px] text-[var(--color-muted-fg)]">
       Showing {shown} of {total} threads — keep typing to narrow.
     </li>
   );

@@ -623,7 +623,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade history list | show | commits | export     Inspect ADE operation timeline and lane commits
     $ ade chat list | create | send | ask | note | interrupt
                                                     Work with ADE agent chats
-    $ ade session show | snooze | wake | clear-woke File a session's lifecycle (snooze until a deadline)
+    $ ade session show | snooze | wake | clear-woke Manage a session's lifecycle (snooze until a deadline)
     $ ade linear attach | comment | set-state | issue | graphql
                                                     Read and write attached Linear issues
     $ ade github app-auth login | status | clear    Authorize the machine ADE GitHub App (device flow)
@@ -6936,6 +6936,11 @@ function buildChatPlan(args: string[]): CliPlan {
   const sub = firstPositional(args) ?? "list";
   if (readFlag(args, ["--personal"])) {
     return buildPersonalChatPlan(sub, args);
+  }
+  if (sub === "settle" || sub === "unsettle") {
+    throw new CliUsageError(
+      "'chat settle' / 'chat unsettle' were removed: only the user (or a merged PR) settles a session — report your outcome with 'chat note'.",
+    );
   }
   if (sub === "actions")
     return {

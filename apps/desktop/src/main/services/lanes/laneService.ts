@@ -5449,10 +5449,15 @@ export function createLaneService({
             .map((entry) => entry.trim())
             .filter(Boolean)
             .slice(0, 24);
-      const normalizedColor = color === undefined ? lane.color : color;
+      // Primary purple is an identity invariant, not a mutable preference.
+      // Normalize here at the write boundary so every caller and every surface
+      // sees the same reserved color.
+      const normalizedColor = lane.lane_type === "primary"
+        ? PRIMARY_LANE_COLOR
+        : color === undefined ? lane.color : color;
       const normalizedIcon = icon === undefined ? parseLaneIcon(lane.icon) : icon;
 
-      if (normalizedColor && normalizedColor !== lane.color) {
+      if (lane.lane_type !== "primary" && normalizedColor && normalizedColor !== lane.color) {
         const conflict = db.get<{ name: string }>(
           `select name from lanes
            where project_id = ?
