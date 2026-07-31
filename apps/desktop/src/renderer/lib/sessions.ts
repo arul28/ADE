@@ -84,6 +84,7 @@ export function buildOptimisticChatSessionSummary(args: {
     | "laneId"
     | "provider"
     | "status"
+    | "currentTurnStartedAt"
     | "createdAt"
     | "lastActivityAt"
     | "idleSinceAt"
@@ -115,6 +116,7 @@ export function buildOptimisticChatSessionSummary(args: {
     headShaEnd: null,
     lastOutputPreview: null,
     lastActivityAt: args.session.lastActivityAt ?? null,
+    currentTurnStartedAt: args.session.currentTurnStartedAt ?? null,
     summary: null,
     runtimeState: isEnded ? "exited" : args.session.status === "active" ? "running" : "idle",
     resumeCommand: null,

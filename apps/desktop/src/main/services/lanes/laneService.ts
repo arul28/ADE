@@ -5601,6 +5601,15 @@ export function createLaneService({
             projectId,
           ]);
           invalidateLaneListCache();
+          const reconciledLane = getLaneRow(args.laneId);
+          if (reconciledLane) {
+            broadcastLifecycleEvent({
+              type: "lane-updated",
+              laneId: args.laneId,
+              laneName: reconciledLane.name,
+              color: reconciledLane.color,
+            });
+          }
           return {
             laneRenameOutcome,
             branchRenameOutcome: "renamed",
@@ -6654,6 +6663,15 @@ export function createLaneService({
         throw error;
       }
       invalidateLaneListCache();
+      const updated = getLaneRow(laneId);
+      if (updated) {
+        broadcastLifecycleEvent({
+          type: "lane-updated",
+          laneId,
+          laneName: updated.name,
+          color: updated.color,
+        });
+      }
     },
 
     invalidateCache(): void {

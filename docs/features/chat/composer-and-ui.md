@@ -542,18 +542,19 @@ that could not work without it.
   deterministically from the prompt (`createDeterministicAutoLaneName`)
   and created **immediately** — naming never sits on the critical path,
   so there is no 10 s suggest race anymore. When AI titles are enabled,
-  `startBackgroundLaneNaming` then asks the main process for a name in the
-  background (the backend has its own timeout and returns the
-  deterministic fallback on failure, so a no-op result is skipped) and,
-  if the suggestion differs, applies it via `lanes.rename` and refreshes
-  the lane store. The renderer retries the background naming pass once
-  (750 ms apart) before keeping the deterministic slug. Branch uniqueness
-  is handled by the lane id suffix added by the lane service. Each launch creates a `DraftLaunchJob` that
+  `startBackgroundLaneNaming` asks the main process for a structured lane
+  title + branch identity in the background. The deterministic fallback stays
+  persisted for failure safety but is masked in lane-label positions by an
+  animated `Naming lane…` state. The renderer retries the background naming
+  pass once (750 ms apart), refreshes the completed identity before unmasking
+  it, and reveals the fallback only when naming fails or produces no change.
+  Branch uniqueness is resolved by the lane service. Each launch creates a `DraftLaunchJob` that
   tracks progress through `creating-lane` / `starting-session` /
   `sending-prompt` / `ready` / `failed` states (auto-create no longer has
   a distinct `naming-lane` phase — it goes straight to `creating-lane`).
   While the background pass runs, affected lanes are flagged in
-  `laneNamingStore` so session cards show "Auto-naming lane underway…".
+  `laneNamingStore` so singleton cards, hover details, and grouped lane headers
+  all show `Naming lane…`.
   The composer is
   cleared optimistically when the job starts so the user can begin
   composing the next prompt immediately; the `DraftLaunchSnapshot`

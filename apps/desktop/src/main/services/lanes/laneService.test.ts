@@ -807,12 +807,21 @@ describe("laneService automatic lane identity", () => {
           throw new Error(`Unexpected git call: ${args.join(" ")}`);
         });
       });
+      const identityUpdateBranchRefs: string[] = [];
       const service = createLaneService({
         db,
         projectRoot: repoRoot,
         projectId: "proj-auto-identity",
         defaultBaseRef: "main",
         worktreesDir: path.join(repoRoot, "worktrees"),
+        onLifecycleEvent: (event) => {
+          if (event.type !== "lane-updated") return;
+          const row = db.get<{ branch_ref: string }>(
+            "select branch_ref from lanes where id = ?",
+            ["lane-child"],
+          );
+          identityUpdateBranchRefs.push(row?.branch_ref ?? "");
+        },
       });
       const mutation = {
         laneId: "lane-child",
@@ -840,6 +849,7 @@ describe("laneService automatic lane identity", () => {
       expect(db.get("select branch_ref from lanes where id = ?", ["lane-child"])).toMatchObject({
         branch_ref: "ade/naming-auto-created-lanes",
       });
+      expect(identityUpdateBranchRefs).toEqual(["ade/naming-auto-created-lanes"]);
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });

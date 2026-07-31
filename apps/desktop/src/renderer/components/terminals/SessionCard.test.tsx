@@ -352,34 +352,38 @@ describe("SessionCard lineage", () => {
 });
 
 describe("SessionCard auto-naming status", () => {
-  it("shows the auto-naming status in place of the preview while the lane is being named", () => {
+  it("masks the fallback lane name while preserving the live preview", () => {
     setLaneNaming("lane-1", true);
     render(
       <SessionCard
         session={makeSession({ lastOutputPreview: "running the build" })}
         lane={lane}
+        showLaneIdentity
         isSelected={false}
         onSelect={vi.fn()}
         onContextMenu={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/Auto-naming lane underway/i)).toBeTruthy();
-    expect(screen.queryByText(/running the build/i)).toBeNull();
+    expect(screen.getByLabelText("Naming lane…")).toBeTruthy();
+    expect(screen.queryByText("Lane 1")).toBeNull();
+    expect(screen.getByText(/running the build/i)).toBeTruthy();
   });
 
-  it("shows the normal preview line when the lane is not being named", () => {
+  it("shows the resolved lane name when naming is not active", () => {
     render(
       <SessionCard
         session={makeSession({ statusNote: "running the build" })}
         lane={lane}
+        showLaneIdentity
         isSelected={false}
         onSelect={vi.fn()}
         onContextMenu={vi.fn()}
       />,
     );
 
-    expect(screen.queryByText(/Auto-naming lane underway/i)).toBeNull();
+    expect(screen.queryByLabelText("Naming lane…")).toBeNull();
+    expect(screen.getByText("Lane 1")).toBeTruthy();
     expect(screen.getByText(/running the build/i)).toBeTruthy();
   });
 });
@@ -914,6 +918,35 @@ describe("SessionCard status vocabulary", () => {
     const status = () => container.querySelector("[data-session-status]")!;
     expect(status().getAttribute("data-session-status")).toBe("Working");
     expect(status().textContent).toContain("14s");
+    act(() => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(status().textContent).toContain("16s");
+  });
+
+  it("keeps a chat working timer anchored to the turn when activity changes", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    const renderCard = (lastActivityAt: string) => (
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          status: "running",
+          runtimeState: "running",
+          currentTurnStartedAt: "2026-07-09T11:59:46.000Z",
+          lastActivityAt,
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />
+    );
+    const { container, rerender } = render(renderCard("2026-07-09T11:59:55.000Z"));
+
+    const status = () => container.querySelector("[data-session-status]")!;
+    expect(status().textContent).toContain("14s");
+    rerender(renderCard("2026-07-09T12:00:00.000Z"));
     act(() => {
       vi.advanceTimersByTime(2_000);
     });

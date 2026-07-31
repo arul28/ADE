@@ -35,6 +35,7 @@ import {
 } from "../shared/ModelPicker/runtimeCatalogCache";
 import {
   AgentChatPane,
+  activeTurnSessionSummaryPatch,
   buildParallelLaunchPrompt,
   cleanupChatActionsAutoOpenStorage,
   cleanupTransientParallelLaunchLanes,
@@ -158,6 +159,25 @@ function buildSession(sessionId: string, overrides: Partial<AgentChatSessionSumm
     nextWakeAt: overrides.nextWakeAt ?? null,
   };
 }
+
+describe("activeTurnSessionSummaryPatch", () => {
+  it("anchors a new turn without resetting the anchor for later activity or steers", () => {
+    const startedAt = "2026-07-31T12:00:00.000Z";
+    expect(activeTurnSessionSummaryPatch(startedAt, true)).toMatchObject({
+      status: "active",
+      lastActivityAt: startedAt,
+      currentTurnStartedAt: startedAt,
+    });
+
+    const activityAt = "2026-07-31T12:00:05.000Z";
+    expect(activeTurnSessionSummaryPatch(activityAt, false)).toEqual({
+      status: "active",
+      idleSinceAt: null,
+      awaitingInput: false,
+      lastActivityAt: activityAt,
+    });
+  });
+});
 
 function buildPrSummary(overrides: Partial<PrSummary> = {}): PrSummary {
   return {

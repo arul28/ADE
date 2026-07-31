@@ -490,13 +490,15 @@ export type LaneDeleteEvent = {
  * renderer can surface a toast without polling. Distinct from
  * {@link LaneDeleteEvent}, which streams per-step delete progress; this fires a
  * single time on successful completion. `lane` carries the full summary for
- * created lanes (the create paths already have it); archive/delete/rename only
- * need enough metadata for notices and renderer list invalidation.
+ * created lanes (the create paths already have it); archive/delete/rename and
+ * identity completion only need enough metadata for notices and renderer list
+ * invalidation.
  */
 export type LaneLifecycleEvent = {
   type:
     | "lane-created"
     | "lane-renamed"
+    | "lane-updated"
     | "lane-archived"
     | "lane-unarchived"
     | "lane-reclaimed"

@@ -10,6 +10,7 @@ import { eventMatchesBinding } from "../../lib/keybindings";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
+import { setLaneNaming } from "../../state/laneNamingStore";
 import { SessionListPane } from "./SessionListPane";
 import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { EMPTY_WORK_SESSION_FILTERS } from "./workSessionFilters";
@@ -1557,6 +1558,7 @@ describe("SessionListPane", () => {
 describe("SessionListPane lane ordering, pins, chips and drag", () => {
   afterEach(() => {
     cleanup();
+    setLaneNaming("lane-active", false);
     Reflect.deleteProperty(window, "ade");
   });
 
@@ -1615,6 +1617,19 @@ describe("SessionListPane lane ordering, pins, chips and drag", () => {
       ...props,
     });
   }
+
+  it("masks a grouped lane fallback consistently until naming finishes", () => {
+    setLaneNaming("lane-active", true);
+    const { container } = renderTwoActiveLanes();
+    const header = container.querySelector('[data-section-id="lane-active"]') as HTMLElement;
+
+    expect(within(header).getByRole("button", { name: /Naming lane…/i })).toBeTruthy();
+    expect(within(header).queryByText("Active lane")).toBeNull();
+    expect(header.querySelector('[title="Naming lane… · known-lane"]')).toBeTruthy();
+
+    act(() => setLaneNaming("lane-active", false));
+    expect(within(header).getByText("Active lane")).toBeTruthy();
+  });
 
   /**
    * jsdom returns an all-zero rect for every element, which would make the

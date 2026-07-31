@@ -188,6 +188,8 @@ export type TerminalSessionSummary = {
    * Used to detect sessions that are old *and untouched*, vs. old-but-active.
    */
   lastActivityAt?: string | null;
+  /** Start of the current chat turn. Unlike lastActivityAt, output does not move it. */
+  currentTurnStartedAt?: string | null;
   summary: string | null;
   runtimeState: TerminalRuntimeState;
   pendingInputItemId?: string | null;

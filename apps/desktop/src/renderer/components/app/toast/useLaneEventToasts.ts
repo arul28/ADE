@@ -28,7 +28,7 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
           });
           return;
         }
-        if (event.type === "lane-renamed") return;
+        if (event.type === "lane-renamed" || event.type === "lane-updated") return;
         showToast({
           id: `lane-${event.type}-${event.laneId}`,
           title: event.laneName,

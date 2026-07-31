@@ -57,6 +57,7 @@ export function fallbackUnprojectedChatSession(
   return {
     ...session,
     runtimeState: session.pendingInputItemId ? "waiting-input" : "idle",
+    currentTurnStartedAt: null,
     chatIdleSinceAt: session.chatIdleSinceAt ?? null,
   };
 }
@@ -72,6 +73,7 @@ export function projectChatOntoSession(
 ): TerminalSessionSummary {
   const base: TerminalSessionSummary = {
     ...session,
+    currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     nextWakeAt: chat.nextWakeAt,
     chatActivityMode: chat.interactionMode === "plan" ? "planning" : null,
     activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,

@@ -1478,6 +1478,8 @@ export type AgentChatSession = {
   protocolCapabilities?: string[];
   runtimeMode?: AgentChatRuntimeMode;
   status: AgentChatSessionStatus;
+  /** Start of the currently active provider turn; live-only and cleared when idle. */
+  currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
   archivedAt?: string | null;
   threadId?: string;
@@ -1530,6 +1532,8 @@ export type AgentChatSessionSummary = {
   codexTokenUsage?: CodexThreadTokenUsage | null;
   protocolCapabilities?: string[];
   status: AgentChatSessionStatus;
+  /** Start of the currently active provider turn; null when no turn is running. */
+  currentTurnStartedAt?: string | null;
   idleSinceAt?: string | null;
   startedAt: string;
   endedAt: string | null;

@@ -577,10 +577,15 @@ Controls and summaries project this runtime state rather than owning it:
   auto-created lanes start at `creating-lane` because they are named
   deterministically up front (`createDeterministicAutoLaneName`) and
   created without waiting on the model. When AI titles are enabled the
-  real name is generated in the background after creation and applied via
-  `lanes.rename` (`startBackgroundLaneNaming`), surfaced through the
-  per-lane `laneNamingStore` as an "Auto-naming…" status on session
-  cards rather than a blocking launch-job phase. Jobs live in the **root**
+  structured title + branch identity is generated in the background after
+  creation. The deterministic fallback remains persisted but is masked by
+  `Naming lane…` in lane-label positions until the completed identity is
+  refreshed; failures reveal the fallback. This is surfaced through the
+  per-lane `laneNamingStore` rather than a blocking launch-job phase.
+  Active turns also carry `currentTurnStartedAt`: local optimistic starts and
+  authoritative `status: started` events establish it once, while streamed
+  activity and steers update `lastActivityAt` without resetting the turn clock.
+  Jobs live in the **root**
   `appStore.draftLaunchJobsByScope` (read via `useRootAppStore` /
   `rootAppStoreApi.getState()`, not the per-project store), scoped by
   project root, lane, surface profile, and Work draft kind. The root
@@ -865,7 +870,8 @@ session primitives:
    requested, configured, and fallback title models) and renames every
    child to `<aiBase>-<model-family>` in place; one child's rename failure
    does not abort the rest, and the children are flagged in
-   `laneNamingStore` while the pass runs. If no model produces a usable
+   `laneNamingStore` so their lane labels are masked while the pass runs.
+   If no model produces a usable
    name the deterministic base is kept; the generic empty-prompt fallback
    is `parallel-task`.
 3. For each child lane it creates an `AgentChatSession`, sends the same

@@ -12413,6 +12413,9 @@ export function createAgentChatService(args: {
   };
 
   const setSessionActive = (managed: ManagedChatSession): void => {
+    if (managed.session.status !== "active") {
+      managed.session.currentTurnStartedAt = nowIso();
+    }
     managed.session.status = "active";
     managed.session.idleSinceAt = null;
   };
@@ -12422,6 +12425,7 @@ export function createAgentChatService(args: {
     options?: { idleSinceAt?: string | null },
   ): void => {
     managed.session.status = "idle";
+    managed.session.currentTurnStartedAt = null;
     if (options && "idleSinceAt" in options) {
       managed.session.idleSinceAt = options.idleSinceAt ?? null;
     }
@@ -12464,6 +12468,7 @@ export function createAgentChatService(args: {
 
   const setSessionEnded = (managed: ManagedChatSession): void => {
     managed.session.status = "ended";
+    managed.session.currentTurnStartedAt = null;
     managed.session.idleSinceAt = null;
   };
 
@@ -34183,7 +34188,7 @@ export function createAgentChatService(args: {
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       if (msg === "Droid session interrupted." || msg === "Droid session closed during setup.") {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -34244,7 +34249,7 @@ export function createAgentChatService(args: {
         managed.pendingReconstructionContext = null;
       }
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -34260,7 +34265,7 @@ export function createAgentChatService(args: {
 
       await ensureDroidSessionState(managed, runtime);
       if (runtime.interrupted) {
-        managed.session.status = "idle";
+        setSessionIdle(managed);
         emitChatEvent(managed, { type: "status", turnStatus: "interrupted", turnId });
         for (const ev of mapStopReasonToTerminalEvents({
           stopReason: "cancelled",
@@ -37368,6 +37373,9 @@ export function createAgentChatService(args: {
         ? { importedFrom: liveSession?.importedFrom ?? persisted?.importedFrom }
         : {}),
       status: liveSession?.status ?? (row.status === "running" ? "idle" : "ended"),
+      currentTurnStartedAt: liveSession?.status === "active"
+        ? liveSession.currentTurnStartedAt ?? null
+        : null,
       idleSinceAt: (liveSession?.status ?? (row.status === "running" ? "idle" : "ended")) === "idle"
         ? liveSession?.idleSinceAt ?? persisted?.idleSinceAt ?? null
         : null,

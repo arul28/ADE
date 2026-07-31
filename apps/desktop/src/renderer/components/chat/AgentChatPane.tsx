@@ -1215,6 +1215,19 @@ export function resolveUnchangedHistoryTurnActive(
   );
 }
 
+export function activeTurnSessionSummaryPatch(
+  timestamp: string,
+  startsNewTurn: boolean,
+): Partial<AgentChatSessionSummary> {
+  return {
+    status: "active",
+    idleSinceAt: null,
+    awaitingInput: false,
+    lastActivityAt: timestamp,
+    ...(startsNewTurn ? { currentTurnStartedAt: timestamp } : {}),
+  };
+}
+
 type AgentChatSessionViewCache = {
   events: AgentChatEventEnvelope[];
   turnActive: boolean;
@@ -7376,12 +7389,13 @@ export function AgentChatPane({
         if (isRemoteProject && envelope.event.type === "status") {
           remoteDeltaArmedSessionsRef.current.add(envelope.sessionId);
         }
-        patchSessionSummary(envelope.sessionId, {
-          status: "active",
-          idleSinceAt: null,
-          awaitingInput: false,
-          lastActivityAt: envelope.timestamp,
-        });
+        patchSessionSummary(
+          envelope.sessionId,
+          activeTurnSessionSummaryPatch(
+            envelope.timestamp,
+            envelope.event.type === "status",
+          ),
+        );
       }
 
       // User messages and lifecycle edges must flush immediately so the
@@ -8721,6 +8735,13 @@ export function AgentChatPane({
             await refreshLanesStore().catch(() => undefined);
           }
         }
+        // The backend applies both the lane title and branch for single-lane
+        // auto naming. Refresh before unmasking the fallback so every renderer
+        // consumer (card hover, Lanes, and both Git Actions panes) sees the
+        // completed identity atomically.
+        if (args.backendAppliesLaneTitle && canRefreshPinnedProject(args.pin)) {
+          await refreshLanesStore().catch(() => undefined);
+        }
       } catch (error) {
         console.warn("background lane naming failed; keeping deterministic name", error);
       } finally {
@@ -8850,11 +8871,6 @@ export function AgentChatPane({
         }
         throw abortError;
       }
-      if (canRefreshPinnedProject(pin)) {
-        await refreshLanesStore().catch((refreshError: unknown) => {
-          console.warn("draft launch lane refresh failed", refreshError);
-        });
-      }
       if (titleSettings?.enabled !== false) {
         startBackgroundLaneNaming({
           laneId: createdLane.id,
@@ -8864,6 +8880,11 @@ export function AgentChatPane({
           temporaryBranch: createdLane.branchRef,
           attachments: snapshot.attachments,
           pin,
+        });
+      }
+      if (canRefreshPinnedProject(pin)) {
+        await refreshLanesStore().catch((refreshError: unknown) => {
+          console.warn("draft launch lane refresh failed", refreshError);
         });
       }
       return {
@@ -10149,13 +10170,12 @@ export function AgentChatPane({
         setContextAttachments([]);
       }
 
-      touchSession(sessionId);
-      patchSessionSummary(sessionId, {
-        status: "active",
-        idleSinceAt: null,
-        awaitingInput: false,
-        lastActivityAt: new Date().toISOString(),
-      });
+      const submittedAt = new Date().toISOString();
+      touchSession(sessionId, submittedAt);
+      patchSessionSummary(
+        sessionId,
+        activeTurnSessionSummaryPatch(submittedAt, !turnActive),
+      );
 
       const steerMessage = async (): Promise<AgentChatSteerResult> => {
         return await window.ade.agentChat.steer({

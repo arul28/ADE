@@ -928,6 +928,7 @@ function coerceChatSessions(value: unknown): AgentChatSessionSummary[] {
       title: trimString(entry.title),
       goal: trimString(entry.goal),
       status: status as AgentChatSessionSummary["status"],
+      currentTurnStartedAt: trimString(entry.currentTurnStartedAt),
       startedAt,
       endedAt: trimString(entry.endedAt),
       lastActivityAt,

@@ -80,10 +80,9 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
 
 /**
  * Live elapsed copy for the states where "how long" is the question the row
- * raises: `Working` (how long since it last said anything) and `Stale` (same
- * measurement, past the silence threshold). One reference field — the last
- * output, falling back to session start — so the two readings are continuous:
- * a working row's ticker simply crosses the stale threshold and keeps counting.
+ * raises. Active chat turns count from their immutable turn-start timestamp;
+ * provider activity must not reset them. CLI and stale states retain the
+ * last-output clock because they do not have a provider turn boundary.
  */
 function useElapsedLabel(sinceIso: string | null | undefined, enabled: boolean): string {
   const sinceMs = React.useMemo(() => {
@@ -169,10 +168,6 @@ export function SessionStatusSlot({
     if (!actionsEnabled) setSnoozeMenuOpen(false);
   }, [actionsEnabled]);
 
-  const elapsed = useElapsedLabel(
-    session.lastActivityAt ?? session.startedAt,
-    Boolean(presentation?.showsElapsed),
-  );
   const waiting = presentation?.glyph === "waiting";
   const future = useFutureLabel(session.nextWakeAt, waiting);
   const exactWakeTitle = React.useMemo(() => {
@@ -183,6 +178,10 @@ export function SessionStatusSlot({
       : undefined;
   }, [session.nextWakeAt, waiting]);
   const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
+  const elapsedSince = canonicalPhase === "running" && isChatToolType(session.toolType)
+    ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
+    : session.lastActivityAt ?? session.startedAt;
+  const elapsed = useElapsedLabel(elapsedSince, Boolean(presentation?.showsElapsed));
   const isActivelyRunning = canonicalPhase === "starting"
     || canonicalPhase === "running"
     || canonicalPhase === "stale";

@@ -63,6 +63,7 @@ import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
+import { LaneNamingLabel } from "./LaneNamingLabel";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -384,7 +385,6 @@ export const SessionCard = React.memo(function SessionCard({
     return () => window.clearTimeout(timer);
   }, [canonicalPhase]);
 
-  // True while this lane's AI auto-name is being generated in the background.
   const isAutoNaming = useLaneNaming(lane?.id ?? null);
   // Brief warm highlight when the displayed title actually changes (e.g. the
   // deterministic/seed name is replaced by the AI name). Skipped on first mount.
@@ -522,7 +522,9 @@ export const SessionCard = React.memo(function SessionCard({
         >
           <LaneIcon size={12} weight="regular" />
         </span>
-        <span className={cn("truncate", laneAccent ? "" : "text-fg/80")}>{lane.name}</span>
+        <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/80")}>
+          <LaneNamingLabel laneName={lane.name} naming={isAutoNaming} />
+        </span>
       </span>,
     );
   }
@@ -637,7 +639,10 @@ export const SessionCard = React.memo(function SessionCard({
     icon: <LaneIcon size={13} style={laneAccent ? { color: laneAccent } : undefined} />,
     value: (
       <span style={laneAccent ? { color: laneAccent } : undefined}>
-        {lane?.name ?? session.laneName}
+        <LaneNamingLabel
+          laneName={lane?.name ?? session.laneName}
+          naming={isAutoNaming}
+        />
       </span>
     ),
   });
@@ -946,11 +951,7 @@ export const SessionCard = React.memo(function SessionCard({
 
           {/* Line 3 — what it is doing, then the quiet meta. */}
           <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[12px] text-muted-fg/65">
-            {isAutoNaming ? (
-              <span className="min-w-0 flex-1 truncate italic text-muted-fg/45">
-                Auto-naming lane underway…
-              </span>
-            ) : previewLine ? (
+            {previewLine ? (
               <span
                 key={`${previewLine.source}:${previewLine.text}`}
                 /* Italic, deliberately: the title above is the thing you scan

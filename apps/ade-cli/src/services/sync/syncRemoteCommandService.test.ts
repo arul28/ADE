@@ -1801,6 +1801,7 @@ describe("createSyncRemoteCommandService", () => {
     const getSessionSummary = vi.fn().mockResolvedValue({
       sessionId: "session-1",
       status: "active",
+      currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
       awaitingInput: true,
       pendingInputItemId: "provider-question-1",
       orchestrationRunId: "run-1",
@@ -1830,6 +1831,7 @@ describe("createSyncRemoteCommandService", () => {
       chatIdleSinceAt: null,
       pendingInputItemId: "provider-question-1",
       attentionSource: "provider_structured",
+      currentTurnStartedAt: "2026-07-31T12:00:00.000Z",
       orchestrationRunId: "run-1",
       orchestrationRole: "worker",
       orchestrationTag: "impl",

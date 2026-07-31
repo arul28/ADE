@@ -1221,6 +1221,7 @@ async function summarizeChatSessionForRemote(
     ...(session.capabilityMode ? { capabilityMode: session.capabilityMode } : {}),
     completion: session.completion ?? null,
     status: session.status,
+    currentTurnStartedAt: session.currentTurnStartedAt ?? null,
     idleSinceAt: session.idleSinceAt ?? null,
     startedAt: session.createdAt,
     endedAt: null,
@@ -1646,6 +1647,7 @@ function projectChatOntoSession(
 ) {
   const base = {
     ...session,
+    currentTurnStartedAt: chat.currentTurnStartedAt ?? null,
     ...(chat.orchestrationRunId
       ? {
           orchestrationRunId: chat.orchestrationRunId,
