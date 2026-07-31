@@ -411,7 +411,7 @@ export function WebClientRoot({
         sessionManager.replaceEnvironments(visible);
       },
       async forgetEnvironment(targetId) {
-        await sessionManager.forgetEnvironment(targetId);
+        await adapter.forgetEnvironment(targetId);
         await refreshVisibleEnvironments();
       },
     };

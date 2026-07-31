@@ -33,6 +33,7 @@ const mocks = vi.hoisted(() => {
     getSelectedChatsTargetId: vi.fn(() => null),
     openProject: vi.fn(),
     activateChats: vi.fn(),
+    forgetEnvironment: vi.fn(),
     subscribeActiveAdapter: vi.fn(() => () => undefined),
   };
   return {

@@ -108,6 +108,7 @@ export type FederatedWebAdapter = {
   getSelectedChatsTargetId(): string | null;
   openProject(targetId: string, projectId: string): Promise<RemoteBinding>;
   activateChats(targetId: string): Promise<void>;
+  forgetEnvironment(targetId: string): Promise<void>;
   restore(): Promise<"project" | "chats" | null>;
   subscribeActiveAdapter(listener: () => void): () => void;
   dispose(): void;
@@ -394,6 +395,35 @@ export function createFederatedWebAdapter({
     },
   };
 
+  const forgetEnvironment = async (targetId: string): Promise<void> => {
+    await manager.forgetEnvironment(targetId);
+    const removesActiveBinding =
+      activeBinding?.targetId === targetId
+      || workspace.openBindings.some(
+        (entry) => entry.key === workspace.activeBindingKey && entry.targetId === targetId,
+      );
+    const removesActiveChats =
+      workspace.activeSurface === "chats"
+      && workspace.selectedChatsTargetId === targetId;
+    workspace = {
+      ...workspace,
+      openBindings: workspace.openBindings.filter((entry) => entry.targetId !== targetId),
+      activeBindingKey: removesActiveBinding ? null : workspace.activeBindingKey,
+      activeSurface: removesActiveBinding || removesActiveChats ? "hub" : workspace.activeSurface,
+      selectedHubTargetId:
+        workspace.selectedHubTargetId === targetId ? null : workspace.selectedHubTargetId,
+      selectedChatsTargetId:
+        workspace.selectedChatsTargetId === targetId ? null : workspace.selectedChatsTargetId,
+    };
+    if (removesActiveBinding) {
+      activeBinding = null;
+      for (const listener of bindingListeners) listener(null);
+      for (const listener of projectListeners) listener(null);
+    }
+    disposeClosedProjectAdapters(workspace.openBindings);
+    persist();
+  };
+
   const specialRemoteRuntime = {
     ...fallbackAdapter.ade.remoteRuntime,
     async listTargets() {
@@ -429,15 +459,7 @@ export function createFederatedWebAdapter({
       return { disconnected: true };
     },
     async removeTarget(targetId: string) {
-      await manager.forgetEnvironment(targetId);
-      workspace = {
-        ...workspace,
-        openBindings: workspace.openBindings.filter((entry) => entry.targetId !== targetId),
-        activeBindingKey: activeBinding?.targetId === targetId ? null : workspace.activeBindingKey,
-      };
-      if (activeBinding?.targetId === targetId) activeBinding = null;
-      disposeClosedProjectAdapters(workspace.openBindings);
-      persist();
+      await forgetEnvironment(targetId);
       return { removed: true };
     },
   };
@@ -590,6 +612,7 @@ export function createFederatedWebAdapter({
       for (const listener of bindingListeners) listener(null);
       for (const listener of projectListeners) listener(null);
     },
+    forgetEnvironment,
     async restore() {
       if (workspace.activeSurface === "chats" && workspace.selectedChatsTargetId) {
         try {

@@ -362,4 +362,47 @@ describe("createFederatedWebAdapter", () => {
     expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
     expect(fixture.targetB.adapter.dispose).toHaveBeenCalledOnce();
   });
+
+  it("forgets machine bindings and persists the Hub as the active surface", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "forgotten-machine",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    federated.setSelectedHubTargetId("machine-a");
+    const bindingListener = vi.fn();
+    federated.ade.app.onProjectBindingChanged!(bindingListener);
+
+    await federated.forgetEnvironment("machine-a");
+
+    expect(fixture.manager.forgetEnvironment).toHaveBeenCalledWith("machine-a");
+    expect(federated.getOpenBindings()).toEqual([]);
+    expect(federated.getActiveBinding()).toBeNull();
+    expect(federated.getSelectedHubTargetId()).toBeNull();
+    expect(bindingListener).toHaveBeenLastCalledWith(null);
+    expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
+
+    const persisted = JSON.parse(
+      localStorage.getItem("ade-web:workspace:v1:forgotten-machine") ?? "null",
+    );
+    expect(persisted).toMatchObject({
+      openBindings: [],
+      activeBindingKey: null,
+      activeSurface: "hub",
+      selectedHubTargetId: null,
+    });
+
+    federated.dispose();
+    const restored = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "forgotten-machine",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await expect(restored.restore()).resolves.toBeNull();
+    expect(restored.getOpenBindings()).toEqual([]);
+  });
 });
