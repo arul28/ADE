@@ -2450,6 +2450,27 @@ describe("AgentChatComposer", () => {
       expect(chip(container)?.getAttribute("aria-label")).toBe("Running on Arul's Mac Studio");
     });
 
+    it("truncates a long remote machine label while retaining its full accessible name", () => {
+      const machineName = "Arul's always-on Mac Studio in the office rack";
+      const { container } = renderComposer({
+        sessionId: "session-1",
+        composerMachineBinding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: machineName,
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+
+      const element = chip(container)!;
+      expect(element.getAttribute("aria-label")).toBe(`Running on ${machineName}`);
+      expect(element.querySelector("span")?.className).toContain("max-w-24");
+      expect(element.querySelector("span")?.className).toContain("truncate");
+    });
+
     it("names this Mac when a running chat has no remote binding", () => {
       // A null binding is not "unknown" — it is local. The composer is one row
       // with nothing to contrast against, so unlike the sidebar it states the

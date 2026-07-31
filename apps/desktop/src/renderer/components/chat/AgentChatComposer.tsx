@@ -564,7 +564,7 @@ function ComposerMachineChip({ machineName }: { machineName: string }) {
             other controls are already bordered and a third box would read as a
             fourth button. */}
         <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
-        {machineName}
+        <span className="max-w-24 truncate">{machineName}</span>
       </span>
     </SmartTooltip>
   );
