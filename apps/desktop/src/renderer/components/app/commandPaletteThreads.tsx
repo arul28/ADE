@@ -147,11 +147,19 @@ export function buildThreadIndex(
    * the scorer matches on `machineNameLower` — no way to find it by typing that
    * machine's name either.
    */
-  activeMachine: { machineId: string; machineName: string } | null = null,
+  activeMachine: {
+    machineId: string;
+    machineName: string;
+    /** Live target status from the remote-runtime connection snapshot. */
+    online: boolean;
+  } | null = null,
 ): ThreadIndexEntry[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  // A remote-bound tab can render before the Work union retains that machine's
+  // lane slice. Keep a retained slice's state, otherwise use the target's live
+  // connection snapshot; only unbound (local) tabs are presumed online.
   const activeMachineOnline = activeMachine
-    ? (foreignMachines[activeMachine.machineId]?.online ?? true)
+    ? (foreignMachines[activeMachine.machineId]?.online ?? activeMachine.online)
     : true;
   const seen = new Set<string>();
   const entries: ThreadIndexEntry[] = [];
@@ -273,7 +281,11 @@ export function useThreadIndex(
   sessions: readonly TerminalSessionSummary[],
   lanes: readonly LaneSummary[],
   foreignMachines: Readonly<Record<string, CrossMachineMachineLanes>>,
-  activeMachine: { machineId: string; machineName: string } | null = null,
+  activeMachine: {
+    machineId: string;
+    machineName: string;
+    online: boolean;
+  } | null = null,
 ): ThreadIndexEntry[] {
   return useMemo(
     () => buildThreadIndex(sessions, lanes, foreignMachines, activeMachine),

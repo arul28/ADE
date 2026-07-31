@@ -1094,6 +1094,60 @@ describe("CommandPalette", () => {
         expect(row.dataset.dimmed).toBe("true");
         expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
+
+      it("uses the bound target connection when its retained Work slice is absent", async () => {
+        const boundKey = "remote:target-studio:project-a";
+        seedStore({
+          projectBinding: {
+            kind: "remote",
+            key: boundKey,
+            targetId: "target-studio",
+            runtimeName: "Arul's Mac Studio",
+            projectId: "project-a",
+            rootPath: PROJECT_ROOT,
+            displayName: "Repo A",
+          },
+          lanes: [makeLane()],
+          sessionsCacheByProject: {
+            [boundKey]: [makeSession({ id: "session-1", title: "Audit rebase settings" })],
+          },
+          workViewByProject: { [boundKey]: { activeItemId: null } },
+          // The work-union refresh is still in flight, so it has not retained
+          // a lane slice for the bound target yet.
+          crossMachineLanesByMachineId: {},
+        });
+        globalThis.window.ade.remoteRuntime = {
+          getConnectionSnapshot: vi.fn(async () => ({
+            connectedCount: 0,
+            updatedAt: Date.now(),
+            connections: [{
+              target: { id: "target-studio", name: "Arul's Mac Studio" },
+              state: "error",
+              projects: [],
+              lastError: "Connection lost",
+              lastAttemptedAt: Date.now(),
+              connectedAt: null,
+              arch: null,
+              version: null,
+            }],
+          })),
+          onConnectionSnapshotChanged: vi.fn(() => () => {}),
+        } as any;
+
+        render(
+          <MemoryRouter>
+            <CommandPalette open onOpenChange={vi.fn()} />
+          </MemoryRouter>,
+        );
+
+        const row = await waitFor(() => {
+          const found = document.querySelector<HTMLElement>('[data-thread-id="session-1"]');
+          expect(found?.dataset.machineOnline).toBe("false");
+          return found!;
+        });
+        expect(row.dataset.dimmed).toBe("true");
+        expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
+      });
     });
   });
 });

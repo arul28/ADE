@@ -316,12 +316,6 @@ export function CommandPalette({
    */
   const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
   const boundRuntimeName = projectBinding?.kind === "remote" ? projectBinding.runtimeName : null;
-  const activeMachine = useMemo(
-    () => (boundTargetId && boundRuntimeName
-      ? { machineId: boundTargetId, machineName: boundRuntimeName }
-      : null),
-    [boundTargetId, boundRuntimeName],
-  );
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
   const [actionOutcome, setActionOutcome] =
@@ -355,6 +349,22 @@ export function CommandPalette({
       );
     },
     [],
+  );
+  const activeMachine = useMemo(
+    () => {
+      if (!boundTargetId || !boundRuntimeName) return null;
+      const connection = remoteSnapshot?.connections.find(
+        (candidate) => candidate.target.id === boundTargetId,
+      );
+      return {
+        machineId: boundTargetId,
+        machineName: boundRuntimeName,
+        // A remote-bound tab has no local fallback: before its Work slice
+        // arrives, the target connection is the only honest liveness source.
+        online: connection?.state === "connected",
+      };
+    },
+    [boundRuntimeName, boundTargetId, remoteSnapshot],
   );
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
