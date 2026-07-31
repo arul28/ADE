@@ -1117,20 +1117,29 @@ describe("AgentChatComposer", () => {
     expect(screen.getByRole("button", { name: "Issue context" })).toBeTruthy();
   });
 
-  it("collapses into a real menu once a second control is available", () => {
+  it("moves focus through the overflow menu and returns it after keyboard selection", async () => {
+    const onToggleAppControl = vi.fn();
     renderComposer({
       turnActive: false,
       draft: "",
-      showParallelChatToggle: true,
-      onParallelChatModeChange: vi.fn(),
+      showAppControlToggle: true,
+      onToggleAppControl,
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "More composer controls" }));
-    expect(screen.getByRole("menuitemcheckbox", { name: /Issue context/ })).toBeTruthy();
-    expect(screen.getByRole("menuitemcheckbox", { name: /Parallel models/i })).toBeTruthy();
+    const trigger = screen.getByRole("button", { name: "More composer controls" });
+    fireEvent.click(trigger);
+    const issue = screen.getByRole("menuitemcheckbox", { name: /Issue context/ });
+    const appControl = screen.getByRole("menuitemcheckbox", { name: /App Control/i });
+    expect((issue as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(appControl));
+    fireEvent.keyDown(appControl, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(appControl);
+    fireEvent.keyDown(appControl, { key: "Enter" });
+    expect(onToggleAppControl).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it("pairs background launch with Send as one split control", () => {
+  it("focuses and keyboard-navigates the portalled Send options", async () => {
     // Two adjacent circular buttons both carrying an arrow read as one control
     // duplicated, so background launch is a row on Send's caret instead.
     renderComposer({
@@ -1145,7 +1154,34 @@ describe("AgentChatComposer", () => {
     const caret = within(splitControl as HTMLElement).getByRole("button", { name: "Send options" });
 
     fireEvent.click(caret);
-    expect(screen.getByRole("menuitem", { name: /Launch in background/ })).toBeTruthy();
+    const sendRow = screen.getByRole("menuitem", { name: /^Send/ });
+    const backgroundRow = screen.getByRole("menuitem", { name: /Launch in background/ });
+    await waitFor(() => expect(document.activeElement).toBe(sendRow));
+    fireEvent.keyDown(sendRow, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(backgroundRow);
+    fireEvent.keyDown(backgroundRow, { key: "Escape" });
+    await waitFor(() => expect(document.activeElement).toBe(caret));
+    expect(screen.queryByRole("menu", { name: "Send options" })).toBeNull();
+  });
+
+  it("skips disabled Send options during arrow navigation", async () => {
+    renderComposer({
+      turnActive: false,
+      draft: "Launch this.",
+      onSubmitInBackground: vi.fn(),
+      backgroundLaunchBusy: true,
+    });
+
+    const caret = screen.getByRole("button", { name: "Send options" });
+    caret.focus();
+    fireEvent.click(caret);
+    const sendRow = screen.getByRole("menuitem", { name: /^Send/ });
+    const disabledBackground = screen.getByRole("menuitem", { name: /Launching/ });
+    expect((sendRow as HTMLButtonElement).disabled).toBe(true);
+    expect((disabledBackground as HTMLButtonElement).disabled).toBe(true);
+    await waitFor(() => expect(document.activeElement).toBe(caret));
+    fireEvent.keyDown(screen.getByRole("menu", { name: "Send options" }), { key: "ArrowDown" });
+    expect(document.activeElement).toBe(caret);
   });
 
   it("no longer owns a standalone fast-mode toolbar control", () => {

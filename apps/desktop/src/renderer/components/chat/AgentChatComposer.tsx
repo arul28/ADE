@@ -532,6 +532,42 @@ const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
 
 const COMPOSER_COMPACT_MENU_WIDTH = 240;
 
+function enabledMenuItems(menu: HTMLElement): HTMLButtonElement[] {
+  return Array.from(
+    menu.querySelectorAll<HTMLButtonElement>(
+      '[role="menuitem"]:not(:disabled), [role="menuitemcheckbox"]:not(:disabled), [role="menuitemradio"]:not(:disabled)',
+    ),
+  );
+}
+
+function handlePortalMenuKeyDown(
+  event: React.KeyboardEvent<HTMLElement>,
+  onEscape: () => void,
+) {
+  const items = enabledMenuItems(event.currentTarget);
+  if (event.key === "Escape") {
+    event.preventDefault();
+    onEscape();
+    return;
+  }
+  if (items.length === 0) return;
+  const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+  let nextIndex: number | null = null;
+  if (event.key === "ArrowDown") nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+  if (event.key === "ArrowUp") nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+  if (event.key === "Home") nextIndex = 0;
+  if (event.key === "End") nextIndex = items.length - 1;
+  if (nextIndex != null) {
+    event.preventDefault();
+    items[nextIndex]?.focus();
+    return;
+  }
+  if ((event.key === "Enter" || event.key === " ") && document.activeElement instanceof HTMLButtonElement) {
+    event.preventDefault();
+    document.activeElement.click();
+  }
+}
+
 /**
  * Idle-state Send, as one split control rather than two buttons.
  *
@@ -569,6 +605,13 @@ function ComposerIdleSendButton({
   onSendInBackground: () => void;
 }) {
   const { caretRef, menuOpen, setMenuOpen } = useComposerSplitMenu("[data-idle-send-menu]");
+  useEffect(() => {
+    if (!menuOpen) return;
+    const first = document.querySelector<HTMLElement>("[data-idle-send-menu]")
+      ?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')
+      ?? null;
+    (first ?? caretRef.current)?.focus();
+  }, [menuOpen]);
 
   const rows = [
     {
@@ -644,6 +687,10 @@ function ComposerIdleSendButton({
               data-idle-send-menu
               role="menu"
               aria-label="Send options"
+              onKeyDown={(event) => handlePortalMenuKeyDown(event, () => {
+                setMenuOpen(false);
+                requestAnimationFrame(() => caretRef.current?.focus());
+              })}
               className="fixed z-[100] overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
@@ -656,6 +703,7 @@ function ComposerIdleSendButton({
                   onClick={() => {
                     setMenuOpen(false);
                     row.onSelect();
+                    requestAnimationFrame(() => caretRef.current?.focus());
                   }}
                   className={cn(
                     "flex w-full items-start gap-2 px-2.5 py-2 text-left transition-colors",
@@ -727,6 +775,14 @@ function ComposerOverflowMenu({
   // at the prompt box edge and simply cannot be read. Every other composer
   // popover portals to the body for this reason; this one now does too.
   const { caretRef, menuOpen: open, setMenuOpen: setOpen } = useComposerSplitMenu("[data-composer-overflow-menu]");
+  useEffect(() => {
+    if (!open) return;
+    const menu = document.querySelector<HTMLElement>("[data-composer-overflow-menu]");
+    const preferred = menu?.querySelector<HTMLButtonElement>(
+      '[role="menuitemcheckbox"][aria-checked="true"]:not(:disabled)',
+    );
+    (preferred ?? (menu ? enabledMenuItems(menu)[0] : null))?.focus();
+  }, [open]);
 
   if (items.length === 0) return null;
 
@@ -803,6 +859,10 @@ function ComposerOverflowMenu({
               data-composer-overflow-menu
               role="menu"
               aria-label="More composer controls"
+              onKeyDown={(event) => handlePortalMenuKeyDown(event, () => {
+                setOpen(false);
+                requestAnimationFrame(() => caretRef.current?.focus());
+              })}
               className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
               style={composerSplitMenuPosition(caretRef.current)}
             >
@@ -816,6 +876,7 @@ function ComposerOverflowMenu({
                     onClick={() => {
                       setOpen(false);
                       item.onSelect();
+                      requestAnimationFrame(() => caretRef.current?.focus());
                     }}
                     className={cn(
                       "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[length:calc(var(--chat-font-size)*11/14)] transition-colors",

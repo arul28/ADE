@@ -5516,11 +5516,20 @@ describe("AgentChatPane submit recovery", () => {
       name: /current machine unavailable; fallback Mac Studio/i,
     });
     fireEvent.click(unavailableTrigger);
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
+    const studioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
+    await waitFor(() => expect(document.activeElement).toBe(studioOption));
+    fireEvent.keyDown(studioOption, { key: "Enter" });
     expect(onDraftMachineChange).toHaveBeenCalledWith(null);
+    await waitFor(() => expect(document.activeElement).toBe(unavailableTrigger));
 
-    fireEvent.click(await screen.findByRole("button", { name: /currently Mac Studio/i }));
-    fireEvent.click(await screen.findByRole("menuitemradio", { name: /This Mac/ }));
+    const selectedTrigger = await screen.findByRole("button", { name: /currently Mac Studio/i });
+    fireEvent.click(selectedTrigger);
+    const selectedStudioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
+    const thisMacOption = await screen.findByRole("menuitemradio", { name: /This Mac/ });
+    await waitFor(() => expect(document.activeElement).toBe(selectedStudioOption));
+    fireEvent.keyDown(selectedStudioOption, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(thisMacOption);
+    fireEvent.keyDown(thisMacOption, { key: "Enter" });
     fireEvent.click(await screen.findByRole("button", { name: "Select lane" }));
     fireEvent.click(await screen.findByText("Auto-create lane"));
 

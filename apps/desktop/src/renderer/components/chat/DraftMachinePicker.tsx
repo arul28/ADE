@@ -41,6 +41,7 @@ export function DraftMachinePicker({
 }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const menuRef = useRef<HTMLDivElement | null>(null);
   const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -84,6 +85,47 @@ export function DraftMachinePicker({
       window.removeEventListener("keydown", handleKey);
     };
   }, [open]);
+
+  useEffect(() => {
+    if (!open || !menuRef.current) return;
+    const preferred = menuRef.current.querySelector<HTMLButtonElement>(
+      '[role="menuitemradio"][aria-checked="true"]:not(:disabled)',
+    );
+    const first = menuRef.current.querySelector<HTMLButtonElement>(
+      '[role="menuitemradio"]:not(:disabled)',
+    );
+    (preferred ?? first)?.focus();
+  }, [open]);
+
+  const handleMenuKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const items = Array.from(
+      event.currentTarget.querySelectorAll<HTMLButtonElement>(
+        '[role="menuitemradio"]:not(:disabled)',
+      ),
+    );
+    if (event.key === "Escape") {
+      event.preventDefault();
+      setOpen(false);
+      requestAnimationFrame(() => triggerRef.current?.focus());
+      return;
+    }
+    if (items.length === 0) return;
+    const currentIndex = items.indexOf(document.activeElement as HTMLButtonElement);
+    let nextIndex: number | null = null;
+    if (event.key === "ArrowDown") nextIndex = currentIndex < 0 ? 0 : (currentIndex + 1) % items.length;
+    if (event.key === "ArrowUp") nextIndex = currentIndex < 0 ? items.length - 1 : (currentIndex - 1 + items.length) % items.length;
+    if (event.key === "Home") nextIndex = 0;
+    if (event.key === "End") nextIndex = items.length - 1;
+    if (nextIndex != null) {
+      event.preventDefault();
+      items[nextIndex]?.focus();
+      return;
+    }
+    if ((event.key === "Enter" || event.key === " ") && document.activeElement instanceof HTMLButtonElement) {
+      event.preventDefault();
+      document.activeElement.click();
+    }
+  }, []);
 
   if (machines.length < 2) return null;
 
@@ -136,9 +178,11 @@ export function DraftMachinePicker({
             (() => {
               return (
                 <div
+                  ref={menuRef}
                   data-draft-machine-menu
                   role="menu"
                   aria-label="Choose a machine"
+                  onKeyDown={handleMenuKeyDown}
                   className="fixed z-[100] flex flex-col overflow-hidden rounded-xl border border-white/[0.08] bg-[#13111A]/95 p-1 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-md"
                   style={{
                     width: placement?.width ?? MENU_WIDTH,
@@ -160,7 +204,7 @@ export function DraftMachinePicker({
                         onClick={() => {
                           setOpen(false);
                           if (!active) onChange(machine.id);
-                          triggerRef.current?.focus();
+                          requestAnimationFrame(() => triggerRef.current?.focus());
                         }}
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",
