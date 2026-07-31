@@ -10,6 +10,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  AUTO_CREATE_LANE_OPTION_ID,
   LaneCombobox,
   computeLanePopoverPlacement,
   laneMatchesSearch,
@@ -157,6 +158,37 @@ describe("LaneCombobox machine chrome", () => {
       expect(document.activeElement).toBe(popover);
     });
     expect(document.activeElement).not.toBe(screen.getByPlaceholderText("Search lanes..."));
+  });
+
+  it("keeps aria-selected on the value while keyboard highlight moves", () => {
+    render(<LaneCombobox lanes={lanes} value="lane-auth" onChange={vi.fn()} />);
+    const popover = openList();
+    const selected = screen.getByRole("option", { name: /auth-refresh/ });
+    const other = screen.getByRole("option", { name: /render-perf/ });
+
+    fireEvent.keyDown(popover, { key: "ArrowDown" });
+
+    expect(selected.getAttribute("aria-selected")).toBe("true");
+    expect(other.getAttribute("aria-selected")).toBe("false");
+  });
+
+  it("reports a selected auto-create option independently of highlight", () => {
+    render(
+      <LaneCombobox
+        lanes={[
+          { id: AUTO_CREATE_LANE_OPTION_ID, name: "Auto-create lane", color: null },
+          ...lanes,
+        ]}
+        value={AUTO_CREATE_LANE_OPTION_ID}
+        onChange={vi.fn()}
+      />,
+    );
+    const popover = openList();
+    const autoCreate = screen.getByRole("option", { name: "Auto-create lane" });
+
+    fireEvent.keyDown(popover, { key: "ArrowDown" });
+
+    expect(autoCreate.getAttribute("aria-selected")).toBe("true");
   });
 
   it("promotes machines to section headers once there is more than one", () => {

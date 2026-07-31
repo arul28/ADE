@@ -42,6 +42,7 @@ export function DraftMachinePicker({
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const menuRef = useRef<HTMLDivElement | null>(null);
+  const restoreFocusOnCloseRef = useRef(false);
   const [placement, setPlacement] = useState<LanePopoverPlacement | null>(null);
   const updatePosition = useCallback(() => {
     if (!triggerRef.current) return;
@@ -54,6 +55,10 @@ export function DraftMachinePicker({
   }, []);
 
   useLayoutEffect(() => {
+    if (!open && restoreFocusOnCloseRef.current) {
+      restoreFocusOnCloseRef.current = false;
+      triggerRef.current?.focus();
+    }
     if (!open) return;
     updatePosition();
     window.addEventListener("scroll", updatePosition, true);
@@ -63,6 +68,11 @@ export function DraftMachinePicker({
       window.removeEventListener("resize", updatePosition);
     };
   }, [open, updatePosition]);
+
+  const closeAndRestoreFocus = useCallback(() => {
+    restoreFocusOnCloseRef.current = true;
+    setOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!open) return;
@@ -74,8 +84,7 @@ export function DraftMachinePicker({
     };
     const handleKey = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
+        closeAndRestoreFocus();
       }
     };
     window.addEventListener("mousedown", handleDown);
@@ -84,7 +93,7 @@ export function DraftMachinePicker({
       window.removeEventListener("mousedown", handleDown);
       window.removeEventListener("keydown", handleKey);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, open]);
 
   useEffect(() => {
     if (!open || !menuRef.current) return;
@@ -105,8 +114,8 @@ export function DraftMachinePicker({
     );
     if (event.key === "Escape") {
       event.preventDefault();
-      setOpen(false);
-      requestAnimationFrame(() => triggerRef.current?.focus());
+      event.stopPropagation();
+      closeAndRestoreFocus();
       return;
     }
     if (items.length === 0) return;
@@ -125,7 +134,7 @@ export function DraftMachinePicker({
       event.preventDefault();
       document.activeElement.click();
     }
-  }, []);
+  }, [closeAndRestoreFocus]);
 
   if (machines.length < 2) return null;
 
@@ -202,9 +211,8 @@ export function DraftMachinePicker({
                         role="menuitemradio"
                         aria-checked={active}
                         onClick={() => {
-                          setOpen(false);
+                          closeAndRestoreFocus();
                           if (!active) onChange(machine.id);
-                          requestAnimationFrame(() => triggerRef.current?.focus());
                         }}
                         className={cn(
                           "flex items-center gap-2 rounded-md px-2 py-1.5 text-left font-sans text-[11px] transition-colors",

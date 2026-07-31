@@ -592,7 +592,7 @@ export function LaneCombobox({
                           id={`ade-lane-option-${entry.index}`}
                           type="button"
                           role="option"
-                          aria-selected={isHighlighted}
+                          aria-selected={isSelected}
                           className="ade-lane-popover-item ade-lane-popover-item-featured"
                           data-selected={isSelected ? "true" : undefined}
                           data-highlighted={isHighlighted ? "true" : undefined}
@@ -613,7 +613,7 @@ export function LaneCombobox({
                         id={`ade-lane-option-${entry.index}`}
                         type="button"
                         role="option"
-                        aria-selected={isHighlighted}
+                        aria-selected={isSelected}
                         className="ade-lane-popover-item"
                         data-selected={isSelected ? "true" : undefined}
                         data-highlighted={isHighlighted ? "true" : undefined}
