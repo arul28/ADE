@@ -106,6 +106,25 @@ function row(container: HTMLElement): HTMLElement {
 }
 
 describe("SessionCard orchestration identity", () => {
+  it("shows grid membership immediately left of the status", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession()}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+        gridBadge="active"
+      />,
+    );
+
+    const indicator = screen.getByLabelText("In the active grid");
+    const status = container.querySelector("[data-session-status-slot]");
+    expect(indicator).toBeTruthy();
+    expect(status).toBeTruthy();
+    expect(indicator.nextElementSibling).toBe(status);
+  });
+
   it("names the row with its orchestration role for assistive tech", () => {
     const { container } = render(
       <SessionCard
