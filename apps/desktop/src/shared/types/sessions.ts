@@ -240,6 +240,10 @@ export type TerminalSessionSummary = {
   chatIdleSinceAt?: string | null;
   /** Earliest armed, unpaused scheduled wake for chat-backed sessions. */
   nextWakeAt?: string | null;
+  /** Current ADE-chat mode, projected for desktop Work-row presentation only. */
+  chatActivityMode?: "planning" | null;
+  /** Authoritative provider-reported background tasks still running after the foreground turn. */
+  activeBackgroundTaskCount?: number;
   /** First tag mirrored from the backing Claude SDK session pointer. */
   claudeTag?: string | null;
   /** Owner session id for attached terminals, historically a parent chat id and now also a tracked CLI session id. */

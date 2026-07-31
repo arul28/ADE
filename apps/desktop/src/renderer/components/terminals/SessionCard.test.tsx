@@ -936,6 +936,77 @@ describe("SessionCard status vocabulary", () => {
     expect(screen.queryByText("Needs you")).toBeNull();
   });
 
+  it("shows Planning for an active ADE chat without adding schedule copy", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          runtimeState: "running",
+          chatActivityMode: "planning",
+          nextWakeAt: "2026-07-09T12:12:00.000Z",
+          lastActivityAt: "2026-07-09T11:59:30.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]")!;
+    expect(status.getAttribute("data-session-status")).toBe("Planning");
+    expect(status.getAttribute("data-session-tone")).toBe("violet");
+    expect(status.textContent).toContain("30s");
+    expect(status.textContent).not.toContain("12m");
+  });
+
+  it("shows Working when the foreground turn is idle but background work remains", () => {
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "claude-chat",
+          runtimeState: "idle",
+          activeBackgroundTaskCount: 1,
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]")!;
+    expect(status.getAttribute("data-session-status")).toBe("Working");
+    expect(status.getAttribute("data-session-tone")).toBe("blue");
+    expect(status.textContent).toBe("Working");
+  });
+
+  it("shows a compact Waiting countdown only after the foreground turn is idle", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-09T12:00:00.000Z"));
+    const { container } = render(
+      <SessionCard
+        session={makeSession({
+          toolType: "codex-chat",
+          runtimeState: "idle",
+          nextWakeAt: "2026-07-09T12:12:00.000Z",
+        })}
+        lane={lane}
+        isSelected={false}
+        onSelect={vi.fn()}
+        onContextMenu={vi.fn()}
+      />,
+    );
+
+    const status = container.querySelector("[data-session-status]")!;
+    expect(status.getAttribute("data-session-status")).toBe("Waiting");
+    expect(status.getAttribute("data-session-tone")).toBe("neutral");
+    expect(status.textContent).toBe("Waiting12m");
+    expect(screen.getByRole("status").getAttribute("aria-label")).toContain("Next run");
+  });
+
   it("pulses once when an existing card transitions into Needs you", () => {
     vi.useFakeTimers();
     const baseProps = {

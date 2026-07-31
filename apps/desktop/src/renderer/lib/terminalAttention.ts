@@ -139,6 +139,9 @@ type SessionCanonicalUiInput = {
   settleOverride?: SessionSettleOverride | null;
   attentionRequestedAt?: string | null;
   lastTurnFailedAt?: string | null;
+  nextWakeAt?: string | null;
+  chatActivityMode?: TerminalSessionSummary["chatActivityMode"];
+  activeBackgroundTaskCount?: number;
   nowMs?: number;
 };
 
@@ -161,6 +164,9 @@ export function canonicalInputFromSummary(session: TerminalSessionSummary): Sess
     settleOverride: session.settleOverride,
     attentionRequestedAt: session.attentionRequestedAt,
     lastTurnFailedAt: session.lastTurnFailedAt,
+    nextWakeAt: session.nextWakeAt,
+    chatActivityMode: session.chatActivityMode,
+    activeBackgroundTaskCount: session.activeBackgroundTaskCount,
   };
 }
 
@@ -213,7 +219,13 @@ export function sessionStatusDisplay(
   session: SessionCanonicalUiInput,
   overlay: SessionStatusOverlay = {},
 ): SessionStatusPresentation | null {
-  return sessionStatusPresentation(sessionCanonicalUiState(session).phase, overlay);
+  const phase = sessionCanonicalUiState(session).phase;
+  return sessionStatusPresentation(phase, overlay, {
+    chatActivityMode: session.chatActivityMode,
+    activeBackgroundTaskCount: session.activeBackgroundTaskCount,
+    nextWakeAt: session.nextWakeAt,
+    nowMs: session.nowMs,
+  });
 }
 
 /** Yellow Work tab border — agent chats blocked on approval/question/`ade chat ask` only. */

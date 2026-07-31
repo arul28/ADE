@@ -37253,6 +37253,9 @@ export function createAgentChatService(args: {
     const claudeTag = provider === "claude"
       ? getClaudeSessionPointerForChat(row.id)?.tags[0] ?? null
       : undefined;
+    const activeBackgroundTaskCount = liveManaged?.runtime?.kind === "claude"
+      ? liveManaged.runtime.liveBackgroundTaskIds.size
+      : 0;
     let nextWakeAt: string | null = null;
     let scheduledWorkPaused = false;
     let scheduledWork: AgentChatScheduledWorkItem[] = [];
@@ -37360,6 +37363,7 @@ export function createAgentChatService(args: {
       summary: row.summary ?? null,
       ...(provider === "claude" ? { claudeTag } : {}),
       nextWakeAt,
+      activeBackgroundTaskCount,
       scheduledWorkPaused,
       scheduledWork,
       ...(sessionHasPendingInput ? { awaitingInput: true } : {}),

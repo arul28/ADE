@@ -4,6 +4,7 @@ import {
   sanitizeTerminalInlineText,
   sessionNeedsChatTabHighlight,
   sessionStatusBucket,
+  sessionStatusDisplay,
   sessionStatusDot,
 } from "./terminalAttention";
 
@@ -248,6 +249,104 @@ describe("terminalAttention", () => {
       expect(dot.spinning).toBe(false);
       expect(dot.cls).toContain("emerald");
       expect(dot.label).toBe("Done");
+    });
+  });
+
+  describe("sessionStatusDisplay", () => {
+    it("shows Planning only while an ADE chat has an active plan-mode turn", () => {
+      const active = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "running",
+        toolType: "codex-chat",
+        lastOutputPreview: "Inspecting the repository",
+        chatActivityMode: "planning",
+      });
+      const idle = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "idle",
+        toolType: "codex-chat",
+        lastOutputPreview: "Plan ready",
+        chatActivityMode: "planning",
+      });
+
+      expect(active).toMatchObject({
+        label: "Planning",
+        tone: "violet",
+        glyph: "planning",
+        showsElapsed: true,
+      });
+      expect(idle?.label).toBe("Done");
+      expect(idle?.tone).toBe("emerald");
+    });
+
+    it("keeps an idle chat Working while authoritative background tasks remain", () => {
+      const presentation = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "idle",
+        toolType: "claude-chat",
+        lastOutputPreview: "Foreground turn complete",
+        activeBackgroundTaskCount: 2,
+        nextWakeAt: "2026-08-01T12:00:00.000Z",
+        nowMs: Date.parse("2026-08-01T10:00:00.000Z"),
+      });
+
+      expect(presentation).toMatchObject({
+        label: "Working",
+        tone: "blue",
+        glyph: "working",
+      });
+      expect(presentation?.showsElapsed).toBe(false);
+    });
+
+    it("shows Waiting only for an idle chat with a valid future wake", () => {
+      const base = {
+        status: "running" as const,
+        runtimeState: "idle" as const,
+        toolType: "codex-chat" as const,
+        lastOutputPreview: "Current turn complete",
+        nowMs: Date.parse("2026-08-01T10:00:00.000Z"),
+      };
+      const future = sessionStatusDisplay({
+        ...base,
+        nextWakeAt: "2026-08-01T12:00:00.000Z",
+      });
+      const elapsed = sessionStatusDisplay({
+        ...base,
+        nextWakeAt: "2026-08-01T09:00:00.000Z",
+      });
+
+      expect(future).toMatchObject({
+        label: "Waiting",
+        tone: "neutral",
+        glyph: "waiting",
+      });
+      expect(elapsed?.label).toBe("Done");
+      expect(elapsed?.tone).toBe("emerald");
+    });
+
+    it("preserves attention and stale states over informational chat modes", () => {
+      const needsYou = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "waiting-input",
+        toolType: "codex-chat",
+        pendingInputItemId: "approval-1",
+        lastOutputPreview: "Approve?",
+        chatActivityMode: "planning",
+      });
+      const stale = sessionStatusDisplay({
+        status: "running",
+        runtimeState: "running",
+        toolType: "claude-chat",
+        lastOutputPreview: "Still running",
+        lastActivityAt: "2026-08-01T06:00:00.000Z",
+        activeBackgroundTaskCount: 1,
+        nowMs: Date.parse("2026-08-01T10:00:00.000Z"),
+      });
+
+      expect(needsYou?.label).toBe("Needs you");
+      expect(needsYou?.tone).toBe("amber");
+      expect(stale?.label).toBe("Stale");
+      expect(stale?.tone).toBe("neutral");
     });
   });
 });

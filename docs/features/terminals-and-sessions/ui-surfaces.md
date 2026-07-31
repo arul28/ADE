@@ -271,12 +271,19 @@ The full card is one full-bleed row with three lines:
 
 `SessionStatusSlot` is the card's only permanent status vocabulary. It resolves
 words, glyphs, tone, prominence, and elapsed-time behavior through
-`shared/sessionStatusPresentation.ts`. Working and stale tick once per second
-from last activity. On row hover or keyboard focus the status swaps, without
-reflow, for `SessionSnoozeControl` and the context-appropriate Settle or
-Un-settle action. An open snooze menu pins the action slot visible. A row whose
-snooze ended early shows the shared Woke presentation until it is opened, at
-which point `TerminalsPage` clears the marker — opening is the acknowledgement.
+`shared/sessionStatusPresentation.ts`. An active ADE chat in its authoritative
+plan interaction mode reads **Planning** in violet; other active turns retain
+**Working**. Once the foreground turn is idle, provider-reported background
+tasks keep the row at **Working**, while an armed `nextWakeAt` reads neutral
+**Waiting** with a compact countdown. These contextual labels do not change the
+canonical lifecycle, filing bucket, filters, or attention count, and CLI output
+is never scraped to infer plan mode. Working/Planning elapsed time ticks from
+last activity; Waiting refreshes on a quiet 30-second cadence. On row hover or
+keyboard focus the status swaps, without reflow, for `SessionSnoozeControl` and
+the context-appropriate Settle or Un-settle action. An open snooze menu pins the
+action slot visible. A row whose snooze ended early shows the shared Woke
+presentation until it is opened, at which point `TerminalsPage` clears the
+marker — opening is the acknowledgement.
 
 After one second of uninterrupted hover, `SessionHoverCard` opens over the
 content area to the right of the sidebar. It uses icon-led fact rows rather

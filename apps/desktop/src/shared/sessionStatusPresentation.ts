@@ -41,7 +41,7 @@ import type { CanonicalSessionPhase } from "./sessionCanonicalState";
  * identity mark inside a neutral chip, not a status label, and it never renders
  * in the status slot this module owns. The two cannot collide.
  */
-export type SessionStatusTone = "blue" | "amber" | "emerald" | "red" | "neutral";
+export type SessionStatusTone = "blue" | "violet" | "amber" | "emerald" | "red" | "neutral";
 
 /**
  * Glyph identity, not an icon import. Each consumer maps these to its own icon
@@ -50,6 +50,8 @@ export type SessionStatusTone = "blue" | "amber" | "emerald" | "red" | "neutral"
  */
 export type SessionStatusGlyph =
   | "working"
+  | "planning"
+  | "waiting"
   | "needs-you"
   | "done"
   | "stale"
@@ -125,9 +127,17 @@ export type SessionStatusOverlay = {
   snoozeWakeLabel?: string | null;
 };
 
+export type SessionStatusActivityContext = {
+  chatActivityMode?: "planning" | null;
+  activeBackgroundTaskCount?: number;
+  nextWakeAt?: string | null;
+  nowMs?: number;
+};
+
 export function sessionStatusPresentation(
   phase: CanonicalSessionPhase,
   overlay: SessionStatusOverlay = {},
+  activity: SessionStatusActivityContext = {},
 ): SessionStatusPresentation | null {
   // A raised hand outranks both overlays — same precedence as the filing rule,
   // so where the row is filed and what it says can never disagree.
@@ -149,6 +159,42 @@ export function sessionStatusPresentation(
     return { label: "Woke", tone: "amber", glyph: "woke", showsElapsed: false, prominent: true };
   }
 
+  if (phase === "running" && activity.chatActivityMode === "planning") {
+    return {
+      label: "Planning",
+      tone: "violet",
+      glyph: "planning",
+      showsElapsed: true,
+      prominent: false,
+    };
+  }
+
+  if (
+    (phase === "ready" || phase === "idle")
+    && (activity.activeBackgroundTaskCount ?? 0) > 0
+  ) {
+    return {
+      label: "Working",
+      tone: "blue",
+      glyph: "working",
+      showsElapsed: false,
+      prominent: false,
+    };
+  }
+
+  if ((phase === "ready" || phase === "idle") && activity.nextWakeAt) {
+    const wakeAt = Date.parse(activity.nextWakeAt);
+    if (Number.isFinite(wakeAt) && wakeAt > (activity.nowMs ?? Date.now())) {
+      return {
+        label: "Waiting",
+        tone: "neutral",
+        glyph: "waiting",
+        showsElapsed: false,
+        prominent: false,
+      };
+    }
+  }
+
   return PHASE_PRESENTATION[phase];
 }
 
@@ -159,6 +205,7 @@ export function sessionStatusPresentation(
  */
 export const SESSION_TONE_TEXT_CLASS: Record<SessionStatusTone, string> = {
   blue: "text-sky-400",
+  violet: "text-violet-300",
   amber: "text-amber-300",
   emerald: "text-emerald-300",
   red: "text-red-300",
@@ -173,6 +220,7 @@ export const SESSION_TONE_TEXT_CLASS: Record<SessionStatusTone, string> = {
  */
 export const SESSION_TONE_DOT_CLASS: Record<SessionStatusTone, string> = {
   blue: "bg-sky-400",
+  violet: "bg-violet-400",
   amber: "bg-amber-300",
   emerald: "bg-emerald-400",
   red: "bg-red-400",
@@ -194,4 +242,16 @@ export function formatWorkingDuration(elapsedMs: number): string {
   const totalHours = Math.floor(totalMinutes / 60);
   if (totalHours < 24) return `${totalHours}h`;
   return `${Math.floor(totalHours / 24)}d`;
+}
+
+export function formatFutureDuration(timestampMs: number, nowMs: number): string {
+  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return "";
+  const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));
+  if (totalMinutes < 60) return `${totalMinutes}m`;
+  const totalHours = Math.floor(totalMinutes / 60);
+  const minutes = totalMinutes % 60;
+  if (totalHours < 24) return minutes ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
+  const days = Math.floor(totalHours / 24);
+  const hours = totalHours % 24;
+  return hours ? `${days}d ${hours}h` : `${days}d`;
 }

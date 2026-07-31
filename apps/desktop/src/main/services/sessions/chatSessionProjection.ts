@@ -73,6 +73,8 @@ export function projectChatOntoSession(
   const base: TerminalSessionSummary = {
     ...session,
     nextWakeAt: chat.nextWakeAt,
+    chatActivityMode: chat.interactionMode === "plan" ? "planning" : null,
+    activeBackgroundTaskCount: chat.activeBackgroundTaskCount ?? 0,
     ...(chat.claudeTag !== undefined ? { claudeTag: chat.claudeTag } : {}),
     ...(chat.orchestrationRunId
       ? {
