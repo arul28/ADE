@@ -54,7 +54,10 @@ function createInMemoryAdeDb(): { db: AdeDb; raw: Database } {
       github_url text not null,
       title text,
       state text not null,
-      updated_at text not null
+      updated_at text not null,
+      -- Set when the PR outlived its lane; such rows are history and must not be
+      -- picked up as the lane's current PR.
+      detached_at text
     );
   `);
   raw.run(`

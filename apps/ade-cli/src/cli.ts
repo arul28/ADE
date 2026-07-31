@@ -17569,6 +17569,23 @@ function formatLaneDetail(value: unknown): string {
   ]);
 }
 
+/**
+ * Lane cell for a PR row.
+ *
+ * PR rows are soft-detached rather than deleted when their lane is removed or moves to
+ * another branch, and their `lane_id` intentionally keeps pointing at the gone lane. So
+ * printing `laneId` alone would present dead history as a live mapping. Detached rows
+ * render as `was <lane>` instead.
+ */
+function prLaneCell(pr: JsonObject): unknown {
+  const detached = isRecord(pr.detached) ? pr.detached : null;
+  if (detached) {
+    const name = asString(detached.laneName) ?? asString(pr.laneName);
+    return `was ${name ?? "deleted lane"}`;
+  }
+  return pr.laneId ?? pr.laneName;
+}
+
 function formatPrList(value: unknown): string {
   const prs = firstArray(value, ["prs", "pullRequests", "items", "results"]);
   return renderTable(
@@ -17576,7 +17593,7 @@ function formatPrList(value: unknown): string {
     prs.map((pr) => [
       pr.githubPrNumber ?? pr.number ?? pr.prNumber ?? pr.id,
       pr.state ?? pr.status,
-      pr.laneId ?? pr.laneName,
+      prLaneCell(pr),
       pr.headBranch ?? pr.headRefName ?? pr.branchRef ?? pr.branch,
       pr.title,
     ]),

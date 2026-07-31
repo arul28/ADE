@@ -427,6 +427,20 @@ struct PrDetailView: View {
     canRunPrActions && PrMergeChecklist.showsBypassToggle(status: snapshot?.status, capabilities: capabilities)
   }
 
+  /// How this PR shipped, and the lane it outlived. Prefers the GitHub list item (which
+  /// the host fills for repo PRs) and falls back to the mapped row.
+  private var shippedFacts: PrShippedFacts {
+    PrShippedFacts(
+      mergedByLogin: (githubItem?.mergedBy ?? pr?.mergedBy)?.login,
+      mergeMethod: githubItem?.mergeMethod ?? pr?.mergeMethod,
+      mergedAt: githubItem?.mergedAt ?? pr?.mergedAt,
+      createdAt: githubItem?.createdAt ?? pr?.createdAt,
+      commitCount: githubItem?.commitCount ?? pr?.commitCount,
+      changedFiles: githubItem?.changedFiles ?? pr?.changedFiles,
+      detached: githubItem?.detached ?? pr?.detached
+    )
+  }
+
   /// Builds the inline merge-rail model for the unified Overview thread.
   private var overviewMergeRailModel: PrOverviewMergeRailModel {
     let state = snapshot?.status?.state ?? currentPr.state
@@ -457,6 +471,7 @@ struct PrDetailView: View {
       canReopen: canRunPrActions && shouldShowReopenAction,
       isBusy: isDetailBusy,
       mergeMethod: mergeMethod,
+      shipped: phase == .merged ? shippedFacts : nil,
       onMerge: { presentMergeMethodPicker() },
       onChangeMethod: { mergeMethodSheetPresented = true },
       onClose: { closeCurrentPr() },

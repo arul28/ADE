@@ -2992,10 +2992,33 @@ final class DatabaseService {
         head_sha text
       )
     """)
+    // `pull_requests` replicates through cr-sqlite, and a column the phone does not know
+    // about surfaces as a changeset-apply error here rather than failing on desktop —
+    // which nacks the whole batch and freezes sync for this device until an app update
+    // ships. Every column desktop can write MUST be mirrored below, whether or not any
+    // Swift view reads it. All nullable with no unique index: `crsql_as_crr` rejects
+    // non-PK unique indices.
     try ensureColumn(tableName: "pull_requests", columnName: "last_polled_at", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "head_sha", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "creation_strategy", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "merged_at", definition: "text")
+    // Desktop has written these two since the merge-conflict/behind-base work, but they
+    // were never mirrored here — an unrelated pre-existing gap, fixed while we are in
+    // this block for the same reason.
+    try ensureColumn(tableName: "pull_requests", columnName: "merge_conflicts", definition: "integer")
+    try ensureColumn(tableName: "pull_requests", columnName: "behind_base_by", definition: "integer")
+    // Soft detach: a merged PR keeps its row after its lane is deleted, so the phone's
+    // merged list can show `was: <lane>` instead of an anonymous GitHub row.
+    try ensureColumn(tableName: "pull_requests", columnName: "detached_at", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "detached_lane_name", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "detached_lane_color", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "detached_provenance", definition: "text")
+    // How the PR shipped.
+    try ensureColumn(tableName: "pull_requests", columnName: "merged_by_login", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "merged_by_avatar_url", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "merge_method", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "commit_count", definition: "integer")
+    try ensureColumn(tableName: "pull_requests", columnName: "changed_files", definition: "integer")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,

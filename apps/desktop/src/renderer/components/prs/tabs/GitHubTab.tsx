@@ -33,6 +33,13 @@ import { GitHubStackBadge } from "../shared/GitHubStackBadge";
 import { GitHubStackInspector } from "../shared/GitHubStackInspector";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
 import { isTerminalPrState } from "../../../lib/prState";
+import {
+  buildPrListRows,
+  formatPrListGroupDiff,
+  prListHeaderIndices,
+  type PrListGroupHeader as PrListGroupHeaderModel,
+  type PrListRow,
+} from "../shared/prListGrouping";
 
 const VIRTUALIZE_AT = 50;
 const LINKED_HYDRATION_LIMIT = 8;
@@ -509,6 +516,21 @@ function useLaneColorById(laneId: string | null | undefined): string | null {
     if (!laneId) return null;
     return s.lanes.find((l) => l.id === laneId)?.color ?? null;
   });
+}
+
+/**
+ * Whether the "unmapped" badge would actually lead somewhere. Selecting the row offers
+ * one of two actions depending on whether a lane already tracks the head branch — map
+ * to it, or create one — so the presence of a usable local branch is the real gate.
+ * Fork PRs have no local branch to work with, and a terminal PR cannot be mapped at all.
+ *
+ * Drives the amber-vs-neutral choice, so the warning colour is only ever spent on rows
+ * the user can do something about.
+ */
+function isPrRowMappable(item: GitHubPrListItem): boolean {
+  if (item.linkedPrId || item.scope !== "repo") return false;
+  if (item.state !== "open" && item.state !== "draft") return false;
+  return Boolean(branchNameFromRef(item.headBranch));
 }
 
 function branchNameFromRef(ref: string | null | undefined): string {
@@ -1065,6 +1087,13 @@ export function GitHubTab({
     [displayedItems, filter, matchesSearch],
   );
   const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
+
+  // Period headers only in the terminal buckets. `filteredItems` stays a pure item
+  // array so selection, hydration and sorting keep operating on rows alone.
+  const listRows = React.useMemo(
+    () => buildPrListRows(filteredItems, { grouped: filter === "merged" || filter === "closed" }),
+    [filteredItems, filter],
+  );
 
   const filterCounts = React.useMemo(() => {
     const listedCounts = countGitHubItemsByState(displayedItems);
@@ -1761,21 +1790,25 @@ export function GitHubTab({
               ) : filteredItems.length > VIRTUALIZE_AT ? (
                 <GitHubTabVirtualList
                   parentRef={listRef}
-                  items={filteredItems}
+                  rows={listRows}
                   selectedItemId={selectedItemId}
                   prsByIdMap={prsByIdMap}
                   onSelect={handleSelectItem}
                   onHydrationItemsChange={handleHydrationItemsChange}
                 />
               ) : (
-                filteredItems.map((item) => (
-                  <GitHubTabPrRow
-                    key={item.id}
-                    item={item}
-                    selected={item.id === selectedItemId}
-                    linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
-                    onSelect={handleSelectItem}
-                  />
+                listRows.map((row) => (
+                  row.kind === "header" ? (
+                    <PrListGroupHeaderRow key={`header-${row.id}`} header={row} />
+                  ) : (
+                    <GitHubTabPrRow
+                      key={row.item.id}
+                      item={row.item}
+                      selected={row.item.id === selectedItemId}
+                      linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
+                      onSelect={handleSelectItem}
+                    />
+                  )
                 ))
               )}
               {canLoadOlderHistory ? (
@@ -1944,6 +1977,129 @@ function PrBucketTransitionBanner({
   );
 }
 
+/**
+ * The lane column of a PR row.
+ *
+ * Three states, deliberately distinct:
+ * - **mapped** — the lane chip, in the lane's colour.
+ * - **detached** — `was: <lane>` plus the activity frozen when the lane was deleted.
+ *   This is history, so it is dim and carries no call to action.
+ * - **no lane** — nothing at all in terminal buckets (absence already reads as "no
+ *   lane"), and a neutral chip in Open. It only turns amber when there is genuinely
+ *   something to do, so amber keeps meaning "act on this".
+ */
+function PrRowLaneChip({
+  item,
+  linkedLaneColor,
+  mappable,
+}: {
+  item: GitHubPrListItem;
+  linkedLaneColor: string | null;
+  mappable: boolean;
+}) {
+  if (item.linkedLaneName || item.linkedLaneId) {
+    return (
+      <span
+        style={{
+          ...inlineBadge(COLORS.textSecondary),
+          fontSize: 10,
+          padding: "2px 7px",
+          borderRadius: 5,
+          display: "inline-flex",
+          alignItems: "center",
+          gap: 4,
+          ...(linkedLaneColor ? { color: linkedLaneColor } : {}),
+        }}
+      >
+        {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={6} /> : null}
+        {item.linkedLaneName ?? item.linkedLaneId}
+      </span>
+    );
+  }
+
+  if (item.detached) return <PrRowGhostLaneChip detached={item.detached} />;
+
+  // Terminal PRs have no mapping story worth telling — the lane is gone and mapping one
+  // now would do nothing. Showing a badge here is what made Merged a wall of warnings.
+  if (isTerminalPrState(item.state)) return null;
+
+  const actionable = mappable;
+  return (
+    <span
+      title={actionable ? "Not mapped to a lane — you can map or create one" : "Not mapped to an ADE lane"}
+      style={{
+        ...inlineBadge(actionable ? COLORS.warning : COLORS.textMuted),
+        fontSize: 10,
+        padding: "2px 7px",
+        borderRadius: 5,
+        fontWeight: 600,
+        fontFamily: SANS_FONT,
+      }}
+    >
+      unmapped
+    </span>
+  );
+}
+
+/**
+ * `arul · squash → main` — how a terminal PR shipped, folded onto the meta line in
+ * place of the branch row. Every part is optional: PRs merged before ADE recorded
+ * merge metadata simply show less, rather than showing placeholders.
+ */
+function PrRowMergeFacts({ item }: { item: GitHubPrListItem }) {
+  const parts = [
+    item.mergedBy?.login ?? null,
+    item.mergeMethod,
+    item.baseBranch ? `→ ${item.baseBranch}` : null,
+  ].filter(Boolean) as string[];
+  if (parts.length === 0) return null;
+  return (
+    <span style={{ fontFamily: SANS_FONT, fontSize: 10, color: COLORS.textDim, whiteSpace: "nowrap" }}>
+      {parts.join(" · ")}
+    </span>
+  );
+}
+
+function PrRowDiffStat({ additions, deletions }: { additions: number | null; deletions: number | null }) {
+  if (additions == null && deletions == null) return null;
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
+      <span style={{ color: COLORS.success }}>+{additions ?? 0}</span>
+      <span style={{ color: COLORS.danger }}>-{deletions ?? 0}</span>
+    </span>
+  );
+}
+
+/** `was: <lane> · 3 chats · 2 proof` — what ADE knows that GitHub cannot show. */
+function PrRowGhostLaneChip({ detached }: { detached: NonNullable<GitHubPrListItem["detached"]> }) {
+  const counts = [
+    detached.chats > 0 ? `${detached.chats} chat${detached.chats === 1 ? "" : "s"}` : null,
+    detached.artifacts > 0 ? `${detached.artifacts} proof` : null,
+  ].filter(Boolean) as string[];
+  const name = detached.laneName?.trim();
+  const detachedAgo = formatTimeAgoCompact(detached.at);
+  if (!name && counts.length === 0) return null;
+  return (
+    <span
+      title={`Built in lane "${name ?? "unknown"}", deleted ${detachedAgo ? `${detachedAgo} ago` : "earlier"}`}
+      style={{
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 4,
+        padding: "2px 7px",
+        fontSize: 10,
+        fontFamily: SANS_FONT,
+        color: COLORS.textDim,
+        borderRadius: 5,
+      }}
+    >
+      {detached.laneColor ? <LaneAccentDot lane={{ color: detached.laneColor }} size={6} /> : null}
+      {name ? <span>was: {name}</span> : null}
+      {counts.length > 0 ? <span style={{ opacity: 0.85 }}>· {counts.join(" · ")}</span> : null}
+    </span>
+  );
+}
+
 /* ---- PR row (shared between list and virtualizer) ---- */
 function GitHubTabPrRow({
   item,
@@ -1957,14 +2113,21 @@ function GitHubTabPrRow({
   onSelect: (item: GitHubPrListItem) => void;
 }) {
   const sc = stateColor(item.state);
-  const ci = ciDotColor(linkedPr);
+  // A merged PR is a record, not a queue item: CI outcome, "review required" and the
+  // state badge are all answered by the fact that it merged. Dropping them is what lets
+  // the row collapse to two lines and stops the list reading as a wall of signals.
+  const terminal = isTerminalPrState(item.state);
+  const ci = terminal ? null : ciDotColor(linkedPr);
   const ciRunning = linkedPr?.checksStatus === "pending";
-  const review = reviewIndicator(linkedPr);
-  const ago = formatTimeAgoCompact(item.createdAt);
+  const review = terminal ? null : reviewIndicator(linkedPr);
+  // Open rows are about how long something has been waiting; merged rows are about
+  // when it shipped.
+  const ago = formatTimeAgoCompact(terminal ? (item.mergedAt ?? item.updatedAt) : item.createdAt);
   const labels = item.labels ?? [];
   const visibleLabels = labels.slice(0, 4);
   const overflowCount = labels.length - 4;
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
+  const mappable = isPrRowMappable(item);
   return (
     <button
       type="button"
@@ -2103,8 +2266,8 @@ function GitHubTabPrRow({
           ) : null}
         </div>
       ) : null}
-      {/* Row 2: branch info */}
-      {item.baseBranch && item.headBranch ? (
+      {/* Row 2: branch info. Merged rows fold the base into the meta line below. */}
+      {!terminal && item.baseBranch && item.headBranch ? (
         <div style={{ display: "flex", alignItems: "center", gap: 4, paddingLeft: 30, fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
           <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.headBranch}</span>
           <span style={{ color: COLORS.textMuted }}>→</span>
@@ -2113,49 +2276,41 @@ function GitHubTabPrRow({
       ) : null}
       {/* Row 3: inline stats */}
       <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, paddingLeft: 30 }}>
-        {item.state !== "open" && item.state !== "draft" ? (
+        {/* The state badge is redundant on a merged row — the bucket, the glyph colour
+            and the merge facts all already say it. Closed keeps it: "closed" is a
+            genuinely different outcome from "merged" and worth calling out. */}
+        {item.state === "closed" ? (
           <span style={stateBadgeStyle(item)}>{item.state}</span>
         ) : null}
+        {terminal ? <PrRowMergeFacts item={item} /> : null}
         <AdeKindBadge kind={item.adeKind} />
         {item.scope === "external" ? (
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim }}>
             {item.repoOwner}/{item.repoName}
           </span>
         ) : null}
-        {item.linkedLaneName || item.linkedLaneId ? (
-          <span
-            style={{
-              ...inlineBadge(COLORS.textSecondary),
-              fontSize: 10,
-              padding: "2px 7px",
-              borderRadius: 5,
-              display: "inline-flex",
-              alignItems: "center",
-              gap: 4,
-              ...(rowLinkedLaneColor ? { color: rowLinkedLaneColor } : {}),
-            }}
-          >
-            {rowLinkedLaneColor ? <LaneAccentDot lane={{ color: rowLinkedLaneColor }} size={6} /> : null}
-            {item.linkedLaneName ?? item.linkedLaneId}
-          </span>
-        ) : (
-          <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 7px", fontSize: 10, fontWeight: 600, fontFamily: SANS_FONT, color: "#FBBF24", background: "rgba(245,158,11,0.10)", border: "1px solid rgba(245,158,11,0.18)", borderRadius: 5 }}>
-            unmapped
-          </span>
-        )}
+        <PrRowLaneChip item={item} linkedLaneColor={rowLinkedLaneColor} mappable={mappable} />
         {review ? (
           <span style={{ display: "inline-flex", alignItems: "center", padding: "2px 6px", fontSize: 10, fontWeight: 500, fontFamily: SANS_FONT, color: review.color, background: `${review.color}10`, borderRadius: 4 }}>
             {review.label}
           </span>
         ) : null}
-        {linkedPr ? (
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 10, fontFamily: MONO_FONT }}>
-            <span style={{ color: COLORS.success }}>+{linkedPr.additions}</span>
-            <span style={{ color: COLORS.danger }}>-{linkedPr.deletions}</span>
-          </span>
-        ) : null}
+        {/* Prefer the live linked row, but fall back to the values carried on the list
+            item so a detached PR keeps its diff stats after its lane is gone. */}
+        <PrRowDiffStat
+          additions={linkedPr?.additions ?? item.additions ?? null}
+          deletions={linkedPr?.deletions ?? item.deletions ?? null}
+        />
+        {/* The one honest amber left in the merged list: the remote branch still
+            exists. Selecting the row surfaces the real Delete branch action. */}
         {item.cleanupState === "required" ? (
-          <span style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5 }}>cleanup</span>
+          <span
+            title="The remote branch still exists — open this PR to delete it"
+            style={{ ...inlineBadge(COLORS.warning), fontSize: 10, padding: "2px 7px", borderRadius: 5, display: "inline-flex", alignItems: "center", gap: 4 }}
+          >
+            <GitBranch size={10} weight="bold" />
+            branch
+          </span>
         ) : null}
         <span
           role="link"
@@ -2177,33 +2332,65 @@ function GitHubTabPrRow({
 /* ---- Virtual list for GitHub PR sidebar (activated above VIRTUALIZE_AT) ---- */
 function GitHubTabVirtualList({
   parentRef,
-  items,
+  rows,
   selectedItemId,
   prsByIdMap,
   onSelect,
   onHydrationItemsChange,
 }: {
   parentRef: React.RefObject<HTMLDivElement | null>;
-  items: GitHubPrListItem[];
+  rows: PrListRow[];
   selectedItemId: string | null;
   prsByIdMap: Map<string, PrSummary>;
   onSelect: (item: GitHubPrListItem) => void;
   onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
 }) {
+  const headerIndices = React.useMemo(() => prListHeaderIndices(rows), [rows]);
+  // The header governing the current scroll position. Kept in a ref as well as state
+  // so `rangeExtractor` (called during measurement) can read it without re-subscribing.
+  const activeHeaderRef = React.useRef<number | null>(headerIndices[0] ?? null);
+  const [activeHeaderIndex, setActiveHeaderIndex] = React.useState<number | null>(
+    headerIndices[0] ?? null,
+  );
+
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: rows.length,
     getScrollElement: () => parentRef.current,
-    estimateSize: () => 108,
+    // Headers are much shorter than rows; a bad estimate here makes the scrollbar jump.
+    estimateSize: (index) => (rows[index]?.kind === "header" ? 30 : 108),
     overscan: 6,
+    rangeExtractor: React.useCallback(
+      (range: { startIndex: number; endIndex: number; overscan: number; count: number }) => {
+        // Pin the header for the topmost visible row so the period stays legible while
+        // scrolling deep into history.
+        const pinned = headerIndices.filter((index) => index <= range.startIndex).pop() ?? null;
+        activeHeaderRef.current = pinned;
+        const start = Math.max(0, range.startIndex - range.overscan);
+        const end = Math.min(range.count - 1, range.endIndex + range.overscan);
+        const indices = new Set<number>();
+        if (pinned != null) indices.add(pinned);
+        for (let index = start; index <= end; index += 1) indices.add(index);
+        return [...indices].sort((a, b) => a - b);
+      },
+      [headerIndices],
+    ),
   });
+
   const virtualItems = virtualizer.getVirtualItems();
+
   React.useEffect(() => {
+    if (activeHeaderRef.current !== activeHeaderIndex) setActiveHeaderIndex(activeHeaderRef.current);
+  }, [activeHeaderIndex, virtualItems]);
+
+  React.useEffect(() => {
+    // Only PR rows may be hydrated — a header has nothing to fetch.
     onHydrationItemsChange(
       virtualItems
-        .map((virtualRow) => items[virtualRow.index])
-        .filter((item): item is GitHubPrListItem => Boolean(item)),
+        .map((virtualRow) => rows[virtualRow.index])
+        .filter((row): row is Extract<PrListRow, { kind: "item" }> => row?.kind === "item")
+        .map((row) => row.item),
     );
-  }, [items, onHydrationItemsChange, virtualItems]);
+  }, [rows, onHydrationItemsChange, virtualItems]);
 
   return (
     <div
@@ -2211,29 +2398,68 @@ function GitHubTabVirtualList({
       style={{ height: virtualizer.getTotalSize(), position: "relative" }}
     >
       {virtualItems.map((virtualRow) => {
-        const item = items[virtualRow.index]!;
+        const row = rows[virtualRow.index]!;
+        const pinned = row.kind === "header" && virtualRow.index === activeHeaderIndex;
         return (
           <div
-            key={item.id}
+            key={row.kind === "header" ? `header-${row.id}` : row.item.id}
             data-index={virtualRow.index}
             ref={virtualizer.measureElement}
             style={{
-              position: "absolute",
+              position: pinned ? "sticky" : "absolute",
               top: 0,
               left: 0,
               width: "100%",
-              transform: `translateY(${virtualRow.start}px)`,
+              zIndex: pinned ? 2 : undefined,
+              ...(pinned ? {} : { transform: `translateY(${virtualRow.start}px)` }),
             }}
           >
-            <GitHubTabPrRow
-              item={item}
-              selected={item.id === selectedItemId}
-              linkedPr={item.linkedPrId ? prsByIdMap.get(item.linkedPrId) ?? null : null}
-              onSelect={onSelect}
-            />
+            {row.kind === "header" ? (
+              <PrListGroupHeaderRow header={row} />
+            ) : (
+              <GitHubTabPrRow
+                item={row.item}
+                selected={row.item.id === selectedItemId}
+                linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
+                onSelect={onSelect}
+              />
+            )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Period header for the merged/closed log. Announced as a heading so screen readers get
+ * the same structure sighted users do, instead of an undifferentiated pile of buttons.
+ */
+function PrListGroupHeaderRow({ header }: { header: PrListGroupHeaderModel }) {
+  const diff = formatPrListGroupDiff(header.additions, header.deletions);
+  return (
+    <div
+      role="heading"
+      aria-level={3}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 8,
+        padding: "6px 14px",
+        background: COLORS.prSurface,
+        borderBottom: "1px solid rgba(255,255,255,0.05)",
+        fontFamily: SANS_FONT,
+        fontSize: 10,
+        fontWeight: 600,
+        letterSpacing: "0.4px",
+        textTransform: "uppercase",
+        color: COLORS.textMuted,
+      }}
+    >
+      <span>{header.label}</span>
+      <span style={{ fontFamily: MONO_FONT, fontSize: 10, fontWeight: 500, opacity: 0.75, textTransform: "none", letterSpacing: 0 }}>
+        {header.count} {header.outcome}{diff ? ` · ${diff}` : ""}
+      </span>
     </div>
   );
 }

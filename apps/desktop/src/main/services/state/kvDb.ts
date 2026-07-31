@@ -2397,6 +2397,28 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   safeAddColumn(db, "alter table pull_requests add column merge_conflicts integer");
   safeAddColumn(db, "alter table pull_requests add column behind_base_by integer");
   safeAddColumn(db, "alter table pull_requests add column merged_at text");
+  // Soft detach: a merged PR whose lane was deleted keeps its row so ADE does not
+  // forget the work was ours. `lane_id` deliberately stays pointing at the dead
+  // lane — CRR strips FK constraints at retrofit, so the dangling id is harmless
+  // and doubles as a stable provenance key. `detached_at` is the "is detached"
+  // flag; making `lane_id` nullable instead would require rebuilding a
+  // PHONE_CRITICAL_CRR_TABLES member, which cr-sqlite cannot do via ALTER.
+  safeAddColumn(db, "alter table pull_requests add column detached_at text");
+  safeAddColumn(db, "alter table pull_requests add column detached_lane_name text");
+  safeAddColumn(db, "alter table pull_requests add column detached_lane_color text");
+  // JSON { chats, artifacts, checkpoints } counted at detach time. These cannot be
+  // recomputed later: the lane's sessions, proof artifacts and checkpoints are all
+  // hard-deleted with the lane, and there is no commits table.
+  safeAddColumn(db, "alter table pull_requests add column detached_provenance text");
+  // Merge outcome. GitHub knows these but ADE never persisted them, so a merged PR
+  // could not describe how it shipped. Captured at land() and on the poller's
+  // transition to merged; null for PRs merged before this shipped.
+  safeAddColumn(db, "alter table pull_requests add column merged_by_login text");
+  safeAddColumn(db, "alter table pull_requests add column merged_by_avatar_url text");
+  safeAddColumn(db, "alter table pull_requests add column merge_method text");
+  // Denormalized so the merged view survives the snapshot purge on detach.
+  safeAddColumn(db, "alter table pull_requests add column commit_count integer");
+  safeAddColumn(db, "alter table pull_requests add column changed_files integer");
 
   db.run("drop table if exists github_pr_cache");
 

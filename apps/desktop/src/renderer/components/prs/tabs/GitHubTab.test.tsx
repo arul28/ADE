@@ -1209,6 +1209,105 @@ describe("GitHubTab", () => {
     expect(screen.getAllByText("unmapped").length).toBeGreaterThan(0);
   });
 
+  it("does not mark unlinked PRs as unmapped in the merged bucket", async () => {
+    const user = userEvent.setup();
+    const snapshotWithMergedUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-merged-unlinked",
+          githubPrNumber: 201,
+          title: "Merged after lane deleted",
+          state: "merged",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-12T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithMergedUnlinked);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /merged/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Merged after lane deleted")).not.toBeNull();
+    });
+    // Mapping is a live-work concept: on a merged PR the lane is gone and mapping one
+    // would do nothing, so the badge must not appear.
+    expect(screen.queryByText("unmapped")).toBeNull();
+  });
+
+  it("shows frozen lane provenance on a detached merged PR", async () => {
+    const user = userEvent.setup();
+    const snapshotWithDetached: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-detached",
+          githubPrNumber: 202,
+          title: "Shipped from a deleted lane",
+          state: "merged",
+          linkedPrId: null,
+          linkedLaneId: null,
+          linkedLaneName: null,
+          adeKind: null,
+          createdAt: "2026-03-11T12:00:00.000Z",
+          detached: {
+            at: "2026-03-12T09:00:00.000Z",
+            laneName: "auto-naming",
+            laneColor: "#4ADE80",
+            chats: 3,
+            artifacts: 2,
+            checkpoints: 5,
+          },
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithDetached);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /merged/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Shipped from a deleted lane")).not.toBeNull();
+    });
+    expect(screen.getByText("was: auto-naming")).not.toBeNull();
+    expect(screen.getByText("· 3 chats · 2 proof")).not.toBeNull();
+    expect(screen.queryByText("unmapped")).toBeNull();
+  });
+
+  it("shows merge facts instead of CI and review signals on a merged row", async () => {
+    const user = userEvent.setup();
+    const snapshotWithMerged: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [
+        ...snapshot.repoPullRequests,
+        makeGitHubPr({
+          id: "repo-merged-facts",
+          githubPrNumber: 203,
+          title: "Merged with facts",
+          state: "merged",
+          baseBranch: "main",
+          mergedAt: "2026-03-12T10:00:00.000Z",
+          mergedBy: { login: "arul", avatarUrl: null },
+          mergeMethod: "squash",
+          createdAt: "2026-03-10T12:00:00.000Z",
+        }),
+      ],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithMerged);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /merged/i }));
+    await waitFor(() => {
+      expect(screen.getByText("Merged with facts")).not.toBeNull();
+    });
+    expect(screen.getByText("arul · squash · → main")).not.toBeNull();
+  });
+
   it("renders the full PR detail pane (with create/map affordance) for a selected unmapped PR", async () => {
     const user = userEvent.setup();
     const snapshotWithUnlinked: GitHubPrSnapshot = {

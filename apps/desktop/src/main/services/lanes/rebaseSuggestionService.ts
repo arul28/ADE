@@ -106,6 +106,9 @@ export function createRebaseSuggestionService(args: {
         select lane_id
         from pull_requests
         where project_id = ?
+          -- Detached rows keep a dangling lane_id, so they would otherwise mark a
+          -- lane as PR-backed long after its PR stopped belonging to it.
+          and detached_at is null
       `,
       [projectId]
     );

@@ -127,9 +127,13 @@ struct PrRowCard: View {
     if data.commentCount > 0 { parts.append("\(data.commentCount) comments") }
     if data.isUnmapped {
       parts.append("Not mapped to an ADE lane")
+    } else if let provenance = data.provenanceLabel {
+      parts.append(provenance)
     } else if let lane = data.laneLabel {
       parts.append("Lane \(lane)")
     }
+    if let facts = data.mergeFacts { parts.append("Merged \(facts)") }
+    if data.needsBranchCleanup { parts.append("Remote branch still exists") }
     if !data.timeAgo.isEmpty { parts.append("Updated \(data.timeAgo)") }
     return parts.joined(separator: ", ")
   }
@@ -155,16 +159,24 @@ struct PrRowCard: View {
           .lineLimit(1)
       }
       if data.isUnmapped {
+        // Neutral, not amber: an unmapped PR is a fact, not a problem. Amber is
+        // reserved for the branch-cleanup chip, which is genuinely actionable.
         Text("Unmapped")
           .font(.caption2.weight(.semibold))
-          .foregroundStyle(PrsGlass.draftTop)
+          .foregroundStyle(PrsGlass.textMuted)
           .padding(.horizontal, 7)
           .padding(.vertical, 2)
           .background(
             Capsule(style: .continuous)
-              .fill(PrsGlass.draftTop.opacity(0.12))
+              .fill(PrsGlass.textMuted.opacity(0.12))
           )
           .fixedSize(horizontal: true, vertical: false)
+      } else if let provenance = data.provenanceLabel {
+        // The lane is gone, but what happened in it is not.
+        Label(provenance, systemImage: "clock.arrow.circlepath")
+          .font(.caption2)
+          .foregroundStyle(PrsGlass.textMuted)
+          .lineLimit(1)
       } else if let laneLabel = data.laneLabel, !laneLabel.isEmpty {
         Label(laneLabel, systemImage: "rectangle.stack")
           .font(.caption2.weight(.medium))
@@ -180,7 +192,18 @@ struct PrRowCard: View {
   @ViewBuilder
   private var branchAndSignalsRow: some View {
     HStack(spacing: 10) {
-      if let head = data.headBranch, let base = data.baseBranch {
+      if data.isTerminal {
+        // A merged PR is a record: how it shipped replaces the branch pair, and CI /
+        // review outcomes are all answered by the fact that it merged.
+        if let facts = data.mergeFacts {
+          Text(facts)
+            .font(.caption2)
+            .foregroundStyle(PrsGlass.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .layoutPriority(1)
+        }
+      } else if let head = data.headBranch, let base = data.baseBranch {
         Text("\(head) → \(base)")
           .font(.caption2.monospaced())
           .foregroundStyle(PrsGlass.textSecondary)
@@ -192,13 +215,20 @@ struct PrRowCard: View {
       Spacer(minLength: 0)
 
       HStack(spacing: 9) {
-        if let ci = data.ciIndicator {
+        if data.needsBranchCleanup {
+          Label("branch", systemImage: "arrow.triangle.branch")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(PrsGlass.draftTop)
+            .accessibilityLabel("Remote branch still exists")
+        }
+
+        if !data.isTerminal, let ci = data.ciIndicator {
           Image(systemName: ci.symbol)
             .foregroundStyle(ci.color)
             .accessibilityLabel(ci.title)
         }
 
-        if let review = data.reviewIndicator {
+        if !data.isTerminal, let review = data.reviewIndicator {
           Image(systemName: reviewSymbol)
             .foregroundStyle(review.color)
             .accessibilityLabel(review.label)
@@ -318,9 +348,40 @@ extension PrRowCard {
     let stackGroupName: String?
     let stackGroupCount: Int?
     let githubStack: GitHubPrStackMembership?
+    /// True for merged/closed rows, which render as a record rather than a queue item.
+    var isTerminal: Bool = false
+    /// Lane provenance frozen when the lane was deleted.
+    var detached: PrDetachedLane? = nil
+    var mergedAt: String? = nil
+    var mergedByLogin: String? = nil
+    var mergeMethod: String? = nil
+    var needsBranchCleanup: Bool = false
 
     var timeAgo: String {
-      prRelativeTime(updatedAt)
+      // Open rows are about how long something has waited; merged rows about when it
+      // shipped.
+      prRelativeTime(isTerminal ? (mergedAt ?? updatedAt) : updatedAt)
+    }
+
+    /// `arul · squash · → main` — how a terminal PR shipped. Each part is optional so
+    /// PRs merged before the host recorded this simply show less.
+    var mergeFacts: String? {
+      guard isTerminal else { return nil }
+      var parts: [String] = []
+      if let login = mergedByLogin, !login.isEmpty { parts.append(login) }
+      if let method = mergeMethod, !method.isEmpty { parts.append(method) }
+      if let base = baseBranch, !base.isEmpty { parts.append("→ \(base)") }
+      return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    /// `was: auto-naming · 3 chats · 2 proof`
+    var provenanceLabel: String? {
+      guard let detached else { return nil }
+      var parts: [String] = []
+      if let name = detached.laneName, !name.isEmpty { parts.append("was: \(name)") }
+      if detached.chats > 0 { parts.append("\(detached.chats) chat\(detached.chats == 1 ? "" : "s")") }
+      if detached.artifacts > 0 { parts.append("\(detached.artifacts) proof") }
+      return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     struct CIIndicator {
@@ -390,7 +451,12 @@ extension PrRowCard {
     }
 
     init(item: GitHubPrListItem, linkedPr: PullRequestListItem?) {
-      let unmapped = item.scope != "external"
+      // Mapping is a live-work concept. On a merged or closed PR the lane is usually
+      // gone and mapping one would do nothing, so the badge is suppressed there —
+      // otherwise the merged list reads as a wall of warnings.
+      let terminal = item.state == "merged" || item.state == "closed"
+      let unmapped = !terminal
+        && item.scope != "external"
         && item.linkedPrId == nil
         && item.linkedLaneId == nil
         && item.adeKind == nil
@@ -422,6 +488,13 @@ extension PrRowCard {
       self.stackGroupName = nil
       self.stackGroupCount = nil
       self.githubStack = item.stack ?? linkedPr?.stack
+      self.isTerminal = terminal
+      self.detached = item.detached ?? linkedPr?.detached
+      self.mergedAt = item.mergedAt ?? linkedPr?.mergedAt
+      self.mergedByLogin = (item.mergedBy ?? linkedPr?.mergedBy)?.login
+      self.mergeMethod = item.mergeMethod ?? linkedPr?.mergeMethod
+      // The only actionable thing left on a merged PR: its remote branch still exists.
+      self.needsBranchCleanup = terminal && item.cleanupState == "required"
     }
 
     private static func warnMessage(

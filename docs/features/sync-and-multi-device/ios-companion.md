@@ -711,6 +711,17 @@ Bootstrap flow on first launch:
 6. Replace the legacy disposable iOS cache DB if it is detected at
    the old path.
 
+**Every column desktop can write must exist here.** Replicated tables are
+column-additive on the desktop side (`safeAddColumn` in `kvDb.ts`), and a
+changeset naming a column the phone does not know about fails to apply *on the
+phone* — which nacks the whole batch and freezes sync for that device until an
+app update ships. `Database.swift` therefore mirrors each replicated column with
+an `ensureColumn` call, nullable and without a unique index (`crsql_as_crr`
+rejects non-PK unique indices), whether or not any Swift view reads it. The
+`pull_requests` block is the worked example: it mirrors the detach and merge
+metadata columns alongside `merge_conflicts` / `behind_base_by`, which desktop
+had been writing since the merge-conflict work without a phone-side counterpart.
+
 Reads are plain SQL queries — instant, offline-capable, and drive the
 SwiftUI views directly. Writes happen to the same local DB first;
 `crsql_changes` trigger rows flow out through `SyncService.exportChangesSince`
@@ -1916,11 +1927,34 @@ the view coalesces bursts for 300 ms and reads the newest projected snapshot
 once with row revalidation disabled, so freshness requires neither a timer nor
 one request per PR. Manual refresh runs PR and lane refreshes concurrently.
 
+Merged and closed rows carry the desktop's merged-bucket treatment, kept in
+parity by `PrHelpers.swift`. `GitHubPrListItem` and the replicated
+`pull_requests` row both surface `detached` (`PrDetachedLane`: frozen lane name,
+colour, and chat / artifact / checkpoint counts), `mergedBy` (`PrMergedBy`),
+`mergeMethod`, `commitCount`, and `changedFiles` — all optional with defaults,
+because they are absent both on PRs merged before the host recorded them and
+against older desktop hosts, and a non-optional field would throw for the whole
+snapshot decode. See
+[Detached PR rows](../pull-requests/README.md#detached-pr-rows) for what a
+detached row means and what may reclaim it.
+
+`prListPeriodGroups` interleaves the same day/week period headers the desktop
+list uses (`Today` / `Yesterday` / `This week` / `Last week` / an explicit week
+range / month), each with a row count and a summed `+1.2k −380`. Rows file under
+`mergedAt → updatedAt → createdAt`, grouping preserves the caller's sort, and
+Open stays ungrouped. `prMondayAnchoredCalendar` forces `firstWeekday = 2`:
+`Calendar.current` is locale-dependent and Sunday-first under `en_US`, which
+would otherwise put the same PR in "This week" on the phone and "Last week" on
+desktop.
+
 `PrRowCard` keeps scroll-time rendering deliberately compact: a fixed state
 symbol, two-line title with age, one identity line with a non-wrapping
 `Unmapped` capsule or lane label, then a branch line whose trailing checks /
 reviews / comments remain horizontal. It does not fetch author avatars from
-the network. Filtering, sorting, counts, and mapped-row reconciliation are
+the network. In the terminal buckets it drops the queue signals — the identity
+line becomes the dim `was: <lane>` ghost chip when the PR is detached, or
+nothing at all when the PR simply never had a lane, and the branch line is
+replaced by `<merger> · <method> · → <base>`. Filtering, sorting, counts, and mapped-row reconciliation are
 recomputed only when their inputs change rather than during each SwiftUI
 `body` pass. `PrRowCardSkeleton` mirrors that three-line geometry so loading
 does not jump into the final layout.
@@ -1933,6 +1967,11 @@ struct), with the timeline builder + commit-group folding in
 `PrDetailHeaderComponents.swift`, the embedded GitHub HTML normalizer in
 `PrGitHubDescriptionParser.swift`, and the remaining thread cards in
 `PrDetailOverviewTab.swift` / `PrHelpers.swift`.
+
+`PrDetailOverviewTab` builds `PrShippedFacts` for a merged PR — the same three
+optional lines as the desktop merge rail's shipped summary (`by arul · squash ·
+3 Jan`, `12 commits · 9 files · open 2d 4h`, `was: auto-naming · 3 chats ·
+2 proof`), each omitted when its inputs are missing.
 
 The detail screen is a single-column adaptation of the desktop
 Timeline+Rails PR view. Its Overview is emitted as sibling `List` rows

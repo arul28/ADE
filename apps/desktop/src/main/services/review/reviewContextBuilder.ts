@@ -262,6 +262,8 @@ export function createReviewContextBuilder({
         where project_id = ?
           and lane_id = ?
           and state in ('open', 'draft')
+          -- Detached rows are history, not this lane's current PR.
+          and detached_at is null
         order by updated_at desc
         limit 1
       `,

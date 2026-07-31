@@ -4,7 +4,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import type { AdeDb } from "../state/kvDb";
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
-import { deletePullRequestRowsByIds, deletePullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
+import { detachPullRequestRowsByIds, detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { detectConflictKind } from "../git/gitConflictState";
@@ -2397,6 +2397,7 @@ export function createLaneService({
               where pr.project_id = l.project_id
                 and pr.lane_id = l.id
                 and pr.state in ('open', 'draft')
+                and pr.detached_at is null
             )
         `,
         [projectId, normalizedDefaultBaseRef],
@@ -2419,6 +2420,7 @@ export function createLaneService({
             where pr.project_id = lanes.project_id
               and pr.lane_id = lanes.id
               and pr.state in ('open', 'draft')
+              and pr.detached_at is null
           )
       `,
       [normalizedDefaultBaseRef, projectId, normalizedDefaultBaseRef],
@@ -3144,7 +3146,20 @@ export function createLaneService({
     db.run("update integration_proposals set integration_lane_id = null where integration_lane_id = ? and project_id = ?", [laneId, projectId]);
     db.run("update integration_proposals set preferred_integration_lane_id = null where preferred_integration_lane_id = ? and project_id = ?", [laneId, projectId]);
 
-    deletePullRequestRowsForLane(db, projectId, laneId);
+    // Soft-detach rather than delete: the PR outlives the lane, and deleting the row is
+    // what made every merged PR show up as `unmapped` once its lane was cleaned up.
+    // Runs before the session/artifact/checkpoint deletes below, because it counts them.
+    const detachedLane = db.get<{ name: string | null; color: string | null }>(
+      "select name, color from lanes where id = ? and project_id = ?",
+      [laneId, projectId],
+    );
+    detachPullRequestRowsForLane(db, {
+      projectId,
+      laneId,
+      laneName: detachedLane?.name ?? null,
+      laneColor: detachedLane?.color ?? null,
+      detachedAt: new Date().toISOString(),
+    });
     db.run("delete from pr_auto_link_ignores where lane_id = ? and project_id = ?", [laneId, projectId]);
 
     db.run("delete from review_run_publications where run_id in (select id from review_runs where lane_id = ? and project_id = ?)", [laneId, projectId]);
@@ -4476,12 +4491,11 @@ export function createLaneService({
           `,
           [targetBranchRef, baseRef, parentLaneId, row.id, projectId],
         );
-        // Drop any PR rows still associated with this lane whose head_branch
-        // no longer matches the lane's current branch — those references are
-        // stale after a branch switch and must not bleed into PR lookups.
-        // pull_requests.lane_id is NOT NULL, so we DELETE (mirrors the explicit
-        // child-row cleanup used by the lane-delete path; CRR conversion can
-        // strip FK cascades).
+        // PR rows whose head_branch no longer matches the lane's current branch are
+        // stale references and must not bleed into PR lookups. Detach rather than
+        // delete: the PR still happened on this lane, and erasing it is what made
+        // merged PRs render as `unmapped`. detached_at takes them out of live lookups
+        // while keeping the history.
         const stalePrRows = db.all<{ id: string }>(
           `
             select id from pull_requests
@@ -4492,8 +4506,14 @@ export function createLaneService({
           [row.id, projectId, targetBranchRef],
         );
         if (stalePrRows.length > 0) {
-          const stalePrIds = stalePrRows.map((r) => r.id);
-          deletePullRequestRowsByIds(db, projectId, stalePrIds);
+          detachPullRequestRowsByIds(db, {
+            projectId,
+            laneId: row.id,
+            laneName: row.name ?? null,
+            laneColor: row.color ?? null,
+            detachedAt: new Date().toISOString(),
+            prIds: stalePrRows.map((r) => r.id),
+          });
         }
         db.run("commit");
       } catch (err) {
@@ -4667,7 +4687,9 @@ export function createLaneService({
         );
         // Same rationale as switchBranch: PR rows whose head branch no longer
         // matches the lane are stale references and must not bleed into PR
-        // lookups now that the lane tracks a different branch.
+        // lookups now that the lane tracks a different branch. Detached, not deleted,
+        // so the merged view keeps the record. `row` is the pre-update snapshot, so
+        // `row.name` is the name these PRs were actually built under.
         const stalePrRows = db.all<{ id: string }>(
           `
             select id from pull_requests
@@ -4678,7 +4700,14 @@ export function createLaneService({
           [row.id, projectId, targetBranchRef],
         );
         if (stalePrRows.length > 0) {
-          deletePullRequestRowsByIds(db, projectId, stalePrRows.map((entry) => entry.id));
+          detachPullRequestRowsByIds(db, {
+            projectId,
+            laneId: row.id,
+            laneName: row.name ?? null,
+            laneColor: row.color ?? null,
+            detachedAt: new Date().toISOString(),
+            prIds: stalePrRows.map((entry) => entry.id),
+          });
         }
         db.run("commit");
       } catch (err) {
@@ -5517,7 +5546,7 @@ export function createLaneService({
         if (remoteTemp.exitCode !== 2) return skipBranch("remote_state_unavailable");
       }
       const pr = db.get<{ id: string }>(
-        "select id from pull_requests where project_id = ? and lane_id = ? limit 1",
+        "select id from pull_requests where project_id = ? and lane_id = ? and detached_at is null limit 1",
         [projectId, args.laneId],
       );
       if (pr) return skipBranch("pull_request_exists");
