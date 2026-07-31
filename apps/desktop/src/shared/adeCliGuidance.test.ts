@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { adeBundledAgentSkills, buildAdeBootstrapGuidance, buildAdeCliAgentGuidance } from "./adeCliGuidance";
 
@@ -35,6 +37,8 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("tracked provider CLIs");
     expect(bootstrap).toContain('ade chat note "running e2e shard 2/4"');
     expect(bootstrap).toContain('ade chat ask "<the exact question>"');
+    expect(bootstrap).toContain("a note alone can leave an idle row looking Done");
+    expect(bootstrap).toContain("The next accepted user message clears the prior hand-raise");
     // Settlement is user- and PR-merge-driven only: the bootstrap must tell the
     // agent it CANNOT settle, and must never hand it a settle command again.
     expect(bootstrap).toContain("You cannot settle or unsettle a session");
@@ -57,5 +61,23 @@ describe("ADE bootstrap guidance", () => {
     // The per-domain operating rules now live in their skills, not always-on.
     expect(bootstrap).not.toContain("### Minimum operating rules");
     expect(bootstrap).not.toContain("--socket");
+  });
+
+  it("keeps the bundled control-plane skill aligned with the bootstrap lifecycle contract", () => {
+    const bootstrap = buildAdeBootstrapGuidance(roots);
+    const skill = fs.readFileSync(fileURLToPath(new URL(
+      "../../resources/agent-skills/ade-cli-control-plane/SKILL.md",
+      import.meta.url,
+    )), "utf8");
+
+    for (const invariant of [
+      "ade chat note",
+      "ade chat ask",
+      "next accepted user message clears the prior hand-raise",
+      "You cannot settle or unsettle a session",
+    ]) {
+      expect(bootstrap.toLowerCase()).toContain(invariant.toLowerCase());
+      expect(skill.toLowerCase()).toContain(invariant.toLowerCase());
+    }
   });
 });

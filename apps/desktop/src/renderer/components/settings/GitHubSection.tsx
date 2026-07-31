@@ -32,14 +32,16 @@ const GH_AUTH_REFRESH_WITH_GIST_COMMAND = "gh auth refresh -h github.com -s repo
 const GITHUB_CLASSIC_TOKEN_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow";
 const GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL = "https://github.com/settings/tokens/new?description=ADE%20desktop%20PR%20workflows&scopes=repo,workflow,gist";
 const GITHUB_CLASSIC_TOKENS_URL = "https://github.com/settings/tokens";
-const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&workflows=write";
+const GITHUB_FINE_GRAINED_TOKEN_NEW_URL = "https://github.com/settings/personal-access-tokens/new?name=ADE&description=ADE%20desktop%20PR%20workflows&contents=write&pull_requests=write&metadata=read&actions=write&checks=write&statuses=read&workflows=write";
 const GITHUB_FINE_GRAINED_TOKENS_URL = "https://github.com/settings/personal-access-tokens";
 
-const REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS = [
+const REQUIRED_GITHUB_REPOSITORY_PERMISSIONS = [
   "Contents: Read and write",
   "Pull requests: Read and write",
   "Metadata: Read",
   "Actions: Read and write",
+  "Checks: Read and write",
+  "Commit statuses: Read",
   "Workflows: Write",
 ] as const;
 
@@ -386,12 +388,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                   <span>{credentialPresentation.repoAccessLabel}</span>
                 </div>
                 <div style={{ ...infoBoxStyle, marginTop: 4 }}>
-                  GitHub App user tokens do not use classic OAuth scopes. Their capabilities come from the ADE for GitHub installation, and the repository check above verifies metadata access only—not write permissions. ADE prefers environment, personal access token, and GitHub CLI credentials for GitHub operations, and uses this App authorization only as a fallback.
+                  The ADE GitHub App is intentionally read-only and is used only for webhook-backed, real-time pull request updates. GitHub operations use an explicit environment token first, then GitHub CLI, and finally a stored PAT.
                 </div>
               </div>
             ) : permissionMode === "fine-grained" ? (
               <div style={{ display: "grid", gap: 6 }}>
-                {REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS.map((permission) => (
+                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((permission) => (
                   <div key={permission} style={{ ...scopeRowStyle(false), color: COLORS.textSecondary }}>
                     <ShieldCheck size={14} weight="fill" />
                     <span>{permission}</span>
@@ -564,7 +566,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                 </button>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
-                {REQUIRED_GITHUB_FINE_GRAINED_PERMISSIONS.map((perm) => (
+                {REQUIRED_GITHUB_REPOSITORY_PERMISSIONS.map((perm) => (
                   <span key={perm} style={{
                     display: "inline-block",
                     fontSize: 10,

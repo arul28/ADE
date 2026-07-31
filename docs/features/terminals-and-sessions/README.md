@@ -1271,7 +1271,9 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    turn streams, retains `settledAt`, and returns to Settled when it rests.
    `ade chat ask` clears settle, persists the blocking question and its
    `agent_explicit` provenance, marks a live tracked CLI as waiting-input, and
-   publishes a time-sensitive push; the next user turn clears it. Provider
+   publishes a time-sensitive push; the next accepted user message clears it,
+   including an active-turn steer. Agent-to-agent and orchestration steers do
+   not dismiss the user's pending question. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
    only the status line.

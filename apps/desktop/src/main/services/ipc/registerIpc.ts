@@ -7161,7 +7161,7 @@ export function registerIpc({
 
   ipcMain.handle(IPC.agentChatSteer, async (_event, arg: AgentChatSteerArgs): Promise<AgentChatSteerResult> => {
     const ctx = ensureAgentChatContext();
-    return await ctx.agentChatService.steer(arg);
+    return await ctx.agentChatService.steerUserMessage(arg);
   });
 
   ipcMain.handle(IPC.agentChatCancelSteer, async (_event, arg: unknown): Promise<void> => {

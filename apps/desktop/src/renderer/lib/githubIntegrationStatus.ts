@@ -224,6 +224,13 @@ export function githubRepoIssueCopy(
   };
 }
 
+export function isGithubRateLimitMessage(message: string | null | undefined): boolean {
+  const normalized = message?.trim().toLowerCase() ?? "";
+  return normalized.includes("rate limit")
+    || normalized.includes("abuse detection")
+    || normalized.includes("temporarily blocked from content creation");
+}
+
 /**
  * Copy for the gh CLI/token banner — three sub-states, each with a stable
  * fingerprint so a change between them resurfaces a previously-dismissed banner.

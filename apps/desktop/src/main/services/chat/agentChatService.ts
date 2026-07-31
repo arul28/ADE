@@ -34937,8 +34937,7 @@ export function createAgentChatService(args: {
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
-      clearUserTurnMarkers();
-      return steer({
+      return steerUserMessage({
         sessionId: args.sessionId,
         text: args.text,
         displayText: args.displayText,
@@ -35156,7 +35155,6 @@ export function createAgentChatService(args: {
     if (hasLivePendingInput(managed) && !metadata?.scheduledWake && !options?.allowPendingInput) {
       throw new Error(PENDING_INPUT_SEND_BLOCKED_MESSAGE);
     }
-
     // OpenCode runtime steer
     if (managed.runtime?.kind === "opencode") {
       const runtime = managed.runtime;
@@ -35527,6 +35525,19 @@ export function createAgentChatService(args: {
 
   const steer = async (args: AgentChatSteerArgs): Promise<AgentChatSteerResult> =>
     await steerWithOptions(args);
+
+  const steerUserMessage = async (
+    args: AgentChatSteerArgs,
+  ): Promise<AgentChatSteerResult> => {
+    const routableMessage = args.text.trim().length > 0
+      || (args.attachments?.length ?? 0) > 0
+      || (args.contextAttachments?.length ?? 0) > 0;
+    const result = await steerWithOptions(args);
+    if (routableMessage && result.reason !== "queue_full" && !args.metadata?.scheduledWake) {
+      sessionService.clearTurnStartMarkers(args.sessionId);
+    }
+    return result;
+  };
 
   const normalizeMessageSessionKind = (
     kind: AgentChatMessageSessionArgs["kind"],
@@ -42552,6 +42563,7 @@ export function createAgentChatService(args: {
     clearCodexGoal,
     runSessionTurn,
     steer,
+    steerUserMessage,
     cancelSteer,
     editSteer,
     dispatchSteer,

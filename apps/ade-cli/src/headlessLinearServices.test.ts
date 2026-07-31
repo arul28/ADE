@@ -669,7 +669,7 @@ describe("headlessLinearServices", () => {
     }
   });
 
-  it("keeps a stored machine PAT ahead of GitHub App authorization for async REST calls", async () => {
+  it("keeps the read-only GitHub App out of operational REST credential selection", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousFetch = globalThis.fetch;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-"));
@@ -739,6 +739,7 @@ describe("headlessLinearServices", () => {
       "github.com:\n  oauth_token: gho_cli_token\n",
     );
     const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.token.v1", "ghp_stored_token");
     machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
       accessToken: "ghu_app_user_token",
       tokenType: "bearer",

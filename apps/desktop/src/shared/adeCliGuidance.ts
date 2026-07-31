@@ -25,8 +25,9 @@ export const adeBundledAgentSkills = [
  */
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
-  '- Working: `ade chat note "running e2e shard 2/4"`; keep it current.',
-  '- Blocked on user input without a structured ask: `ade chat ask "<the exact question>"`.',
+  '- Working: `ade chat note "running e2e shard 2/4"`; state the concrete work and next dependency, never just "Working" or "Blocked".',
+  '- Blocked on user input: first `ade chat note "<what is blocked and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
+  "- The next accepted user message clears the prior hand-raise. If it does not resolve the blocker, update the note and call `ade chat ask` again before ending the turn.",
   '- Done: say so in your final message and leave a durable one-line result via `ade chat note "<delivered result>"`.',
   "- You cannot settle or unsettle a session; `ade chat settle` / `ade session settle` no longer exist. Filing a row as done is the user's call, or the automatic result of its PR merging.",
   "- Waiting on something you expect to take a while? `ade session snooze <id> --for <duration>` quiets the row without claiming the work is done, and a hand-raise wakes it early.",

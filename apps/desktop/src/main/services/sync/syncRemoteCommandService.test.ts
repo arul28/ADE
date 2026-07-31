@@ -229,6 +229,7 @@ function createMockAgentChatService() {
     interrupt: vi.fn().mockResolvedValue(undefined),
     restoreCancelledQueue: vi.fn().mockResolvedValue({ restored: false, restoredCount: 0 }),
     steer: vi.fn().mockResolvedValue(undefined),
+    steerUserMessage: vi.fn().mockResolvedValue(undefined),
     cancelSteer: vi.fn().mockResolvedValue(undefined),
     editSteer: vi.fn().mockResolvedValue(undefined),
     approveToolUse: vi.fn().mockResolvedValue(undefined),
@@ -1683,12 +1684,12 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow("chat.interrupt requires sessionId.");
     });
 
-    it("chat.steer routes to agentChatService.steer", async () => {
+    it("chat.steer routes human input to agentChatService.steerUserMessage", async () => {
       const result = await service.execute(makePayload("chat.steer", {
         sessionId: "sess-1",
         text: "change direction",
       }));
-      expect(agentChatService.steer).toHaveBeenCalledWith({
+      expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
         sessionId: "sess-1",
         text: "change direction",
       });
@@ -1696,7 +1697,7 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     it("chat.steer returns the backend queued result for mobile clients", async () => {
-      agentChatService.steer.mockResolvedValueOnce({ steerId: "steer-1", queued: true });
+      agentChatService.steerUserMessage.mockResolvedValueOnce({ steerId: "steer-1", queued: true });
       const result = await service.execute(makePayload("chat.steer", {
         sessionId: "sess-1",
         text: "change direction",
@@ -1889,7 +1890,7 @@ describe("createSyncRemoteCommandService", () => {
             { path: "notes.txt", type: "file" },
           ],
         }));
-        expect(agentChatService.steer).toHaveBeenCalledWith({
+        expect(agentChatService.steerUserMessage).toHaveBeenCalledWith({
           sessionId: "sess-1",
           text: "redirect",
           attachments: [
@@ -1900,13 +1901,13 @@ describe("createSyncRemoteCommandService", () => {
       });
 
       it("omits attachments when array has no valid entries", async () => {
-        agentChatService.steer.mockClear();
+        agentChatService.steerUserMessage.mockClear();
         await service.execute(makePayload("chat.steer", {
           sessionId: "sess-1",
           text: "redirect",
           attachments: [{ path: "", type: "image" }, { type: "file" }],
         }));
-        const sent = agentChatService.steer.mock.calls[0][0] as Record<string, unknown>;
+        const sent = agentChatService.steerUserMessage.mock.calls[0][0] as Record<string, unknown>;
         expect(sent, "no valid attachments → key omitted").not.toHaveProperty("attachments");
         expect(sent).toEqual({ sessionId: "sess-1", text: "redirect" });
       });

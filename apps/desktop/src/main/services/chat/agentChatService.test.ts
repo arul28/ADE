@@ -25091,7 +25091,7 @@ describe("createAgentChatService", () => {
 
     it("tracks accepted Codex follow-ups until the app-server proves they were processed", async () => {
       const events: AgentChatEventEnvelope[] = [];
-      const { service } = createService({
+      const { service, sessionService } = createService({
         onEvent: (event: AgentChatEventEnvelope) => events.push(event),
       });
       const session = await service.createSession({
@@ -25101,13 +25101,43 @@ describe("createAgentChatService", () => {
       });
       await service.sendMessage({ sessionId: session.id, text: "Start." }, { awaitDispatch: true });
 
-      const first = await service.steer({ sessionId: session.id, text: "First follow-up." });
+      sessionService.clearTurnStartMarkers.mockClear();
+      const first = await service.steerUserMessage({
+        sessionId: session.id,
+        text: "First follow-up.",
+      });
+      expect(sessionService.clearTurnStartMarkers).toHaveBeenCalledWith(session.id);
       expect(events.some((event) =>
         event.event.type === "user_message"
         && event.event.steerId === first.steerId
         && event.event.deliveryState === "accepted"
         && event.event.processed === false
       )).toBe(true);
+
+      sessionService.clearTurnStartMarkers.mockClear();
+      mockState.codexResponseOverrides.set("turn/steer", {
+        error: { code: -32603, message: "provider rejected steer" },
+      });
+      await expect(service.sendMessage({
+        sessionId: session.id,
+        text: "Rejected follow-up.",
+      }, {
+        routeActiveToSteer: true,
+      })).rejects.toThrow("provider rejected steer");
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+      mockState.codexResponseOverrides.delete("turn/steer");
+
+      await service.steerUserMessage({
+        sessionId: session.id,
+        text: "   ",
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
+
+      await service.steer({
+        sessionId: session.id,
+        text: "Agent-originated follow-up.",
+      });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
 
       mockState.emitCodexPayload({
         method: "item/started",
@@ -25129,7 +25159,9 @@ describe("createAgentChatService", () => {
         )).toBe(true);
       });
 
+      sessionService.clearTurnStartMarkers.mockClear();
       const second = await service.steer({ sessionId: session.id, text: "Second follow-up." });
+      expect(sessionService.clearTurnStartMarkers).not.toHaveBeenCalled();
       mockState.emitCodexPayload({
         method: "turn/aborted",
         params: { turnId: "turn-1" },

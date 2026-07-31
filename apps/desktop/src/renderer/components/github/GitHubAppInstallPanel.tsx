@@ -13,6 +13,7 @@ import {
   deriveGithubRepoConnectionState,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
+  isGithubRateLimitMessage,
   isGithubRealtimeHealthy,
   isGithubRepoAccessPending,
 } from "../../lib/githubIntegrationStatus";
@@ -481,6 +482,12 @@ function repoView(
         return {
           pill: { tone: "pending", color: COLORS.textMuted, label: "Checking…" },
           subtext: "Checking whether ADE for GitHub is installed on this repo…",
+        };
+      }
+      if (isGithubRateLimitMessage(error)) {
+        return {
+          pill: { tone: "warn", color: COLORS.warning, label: "Rate limited" },
+          subtext: "GitHub temporarily paused automatic App checks. ADE is still authorized; wait for the cooldown, then recheck. Re-authorizing is not needed.",
         };
       }
       return {

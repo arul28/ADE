@@ -5,6 +5,7 @@ import {
   describeGithubAuthFailure,
   describeGithubCliBanner,
   githubCredentialPresentation,
+  isGithubRateLimitMessage,
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
 
@@ -217,5 +218,14 @@ describe("githubCredentialPresentation", () => {
       permissionHeading: "AUTHENTICATION CHECK",
       hasInspectableScopes: false,
     });
+  });
+});
+
+describe("isGithubRateLimitMessage", () => {
+  it("recognizes primary and secondary GitHub throttling without treating ordinary errors as limits", () => {
+    expect(isGithubRateLimitMessage("API rate limit exceeded for user ID 123.")).toBe(true);
+    expect(isGithubRateLimitMessage("You have exceeded a secondary rate limit.")).toBe(true);
+    expect(isGithubRateLimitMessage("Bad credentials")).toBe(false);
+    expect(isGithubRateLimitMessage(null)).toBe(false);
   });
 });

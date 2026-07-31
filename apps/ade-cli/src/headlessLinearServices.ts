@@ -56,6 +56,10 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import {
+  selectGithubOperationCredential,
+  selectGithubOperationCredentialAsync,
+} from "../../desktop/src/shared/githubOperationCredential";
+import {
   linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
   refreshLinearOAuthAccessToken,
@@ -571,32 +575,32 @@ export function createHeadlessGitHubService(
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
-    const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-    if (env) {
-      return {
-        token: env,
-        source: "environment",
-        patTokenStored: false,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    const patToken = readStoredPatToken();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    const gh = ghAuthToken();
-    return {
-      ...gh,
-      source: gh.token ? "gh" : "none",
+    let ghFallback: HeadlessGitHubTokenLookup = {
+      token: null,
+      source: "none",
       patTokenStored: false,
+      ghCliPath: null,
+      ghAuthError: null,
     };
+    return selectGithubOperationCredential<HeadlessGitHubTokenLookup>({
+      environment: () => {
+        const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+        return token
+          ? { token, source: "environment", patTokenStored: false, ghCliPath: null, ghAuthError: null }
+          : null;
+      },
+      gh: () => {
+        const gh = ghAuthToken();
+        ghFallback = { ...gh, source: "none", patTokenStored: false };
+        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+      },
+      pat: () => {
+        const token = readStoredPatToken();
+        return token
+          ? { token, source: "pat", patTokenStored: true, ghCliPath: null, ghAuthError: null }
+          : null;
+      },
+    }) ?? ghFallback;
   };
 
   const readStoredPatTokenAsync = async (): Promise<string | null> => {
@@ -612,51 +616,32 @@ export function createHeadlessGitHubService(
   };
 
   const readTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
-    const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-    if (env) {
-      return {
-        token: env,
-        source: "environment",
-        patTokenStored: false,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    const patToken = await readStoredPatTokenAsync();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    const gh = await ghAuthTokenAsync();
-    if (gh.token) {
-      return {
-        ...gh,
-        source: "gh",
-        patTokenStored: false,
-      };
-    }
-    const appToken = appUserAuth.getAuthStatus().tokenStored
-      ? await appUserAuth.getValidTokenForRelay().catch(() => null)
-      : null;
-    if (appToken) {
-      return {
-        token: appToken,
-        source: "app",
-        patTokenStored: false,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
-    return {
-      ...gh,
+    let ghFallback: HeadlessGitHubTokenLookup = {
+      token: null,
       source: "none",
       patTokenStored: false,
+      ghCliPath: null,
+      ghAuthError: null,
     };
+    return await selectGithubOperationCredentialAsync<HeadlessGitHubTokenLookup>({
+      environment: () => {
+        const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+        return token
+          ? { token, source: "environment", patTokenStored: false, ghCliPath: null, ghAuthError: null }
+          : null;
+      },
+      gh: async () => {
+        const gh = await ghAuthTokenAsync();
+        ghFallback = { ...gh, source: "none", patTokenStored: false };
+        return gh.token ? { ...gh, source: "gh", patTokenStored: false } : null;
+      },
+      pat: async () => {
+        const token = await readStoredPatTokenAsync();
+        return token
+          ? { token, source: "pat", patTokenStored: true, ghCliPath: null, ghAuthError: null }
+          : null;
+      },
+    }) ?? ghFallback;
   };
 
   const getToken = (): string => readToken().token ?? "";
