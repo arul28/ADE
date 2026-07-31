@@ -143,6 +143,7 @@ function MetaRow({
 
 function authLabel(status: GitHubStatus | null): string {
   if (!status) return "—";
+  if (status.authSource === "app") return "ADE GitHub App";
   if (status.authSource === "gh") return "GitHub CLI";
   if (status.authSource === "environment") return "Environment variable";
   if (status.authSource === "pat") {

@@ -764,6 +764,40 @@ describe("githubService.getStatus", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
+  it("uses GitHub App authorization before a stored PAT for async REST calls", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_stale_stored_token");
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { login: "alice" }))
+      .mockResolvedValueOnce(jsonResponse(200, { id: 1, full_name: "acme/ade" }));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "app",
+      connected: true,
+      patTokenStored: false,
+      repoAccessOk: true,
+      userLogin: "alice",
+    });
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    for (const [, init] of mockFetch.mock.calls as Array<[string, RequestInit]>) {
+      expect((init.headers as Record<string, string>).authorization)
+        .toBe("Bearer ghu_app_user_token");
+    }
+  });
+
   it("reports an exhausted GitHub API quota as rate limited instead of missing permissions", async () => {
     stubOriginRemote();
     process.env.GITHUB_TOKEN = "ghp_classic";

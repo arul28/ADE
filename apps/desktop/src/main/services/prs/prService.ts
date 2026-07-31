@@ -8395,6 +8395,12 @@ export function createPrService({
     if (githubStatus.tokenDecryptionFailed) {
       return "GitHub token could not be decrypted. Reconnect GitHub in Settings to sync pull requests.";
     }
+    if (githubStatus.authFailure?.kind === "rate_limited") {
+      const retry = githubStatus.authFailure.retryAt
+        ? ` Try again after ${githubStatus.authFailure.retryAt}.`
+        : " Try again after GitHub resets the API limit.";
+      return `GitHub API rate limit reached.${retry}`;
+    }
     if (githubStatus.repo && githubStatus.repoAccessError) {
       return `GitHub auth cannot access ${githubStatus.repo.owner}/${githubStatus.repo.name}: ${githubStatus.repoAccessError}. Update it in Settings to sync pull requests.`;
     }

@@ -863,9 +863,10 @@ first fetch instead of returning an empty passive cache.
   destination's durable handoff-id + capsule-fingerprint record, not an offline
   command queue. See [the handoff contract](./cross-machine-session-handoff.md).
 - **`prs.createFromLane` requires GitHub auth on the brain.** Headless
-  brains resolve auth the same way the desktop does: a stored PAT,
-  then env tokens (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),
-  then the `gh` CLI resolved from known absolute install locations
+  brains resolve async GitHub operations the same way the desktop does:
+  an explicit env token (`ADE_GITHUB_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`),
+  then the authorized ADE GitHub App user token, then a stored PAT, then the
+  `gh` CLI resolved from known absolute install locations
   (launchd's minimal PATH does not include Homebrew), then reading
   `gh`'s `hosts.yml` oauth token directly (both host-level and nested
   `users:<login>:` token layouts). Only when none of those yield a

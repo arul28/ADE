@@ -59,6 +59,8 @@ function tokenTypeDetectionLabel(type: TokenType): string {
 
 function authSourceLabel(status: GitHubStatus | null): string {
   switch (status?.authSource) {
+    case "app":
+      return "ADE GitHub App";
     case "gh":
       return "GitHub CLI";
     case "pat":

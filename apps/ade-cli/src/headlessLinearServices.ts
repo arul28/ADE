@@ -46,6 +46,7 @@ import {
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
+import { classifyGitHubAuthFailure } from "../../desktop/src/main/services/github/githubRateLimit";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../desktop/src/main/services/cto/linearAppClient";
@@ -570,22 +571,22 @@ export function createHeadlessGitHubService(
   };
 
   const readToken = (): HeadlessGitHubTokenLookup => {
-    const patToken = readStoredPatToken();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
     const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
     if (env) {
       return {
         token: env,
         source: "environment",
         patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const patToken = readStoredPatToken();
+    if (patToken) {
+      return {
+        token: patToken,
+        source: "pat",
+        patTokenStored: true,
         ghCliPath: null,
         ghAuthError: null,
       };
@@ -611,22 +612,34 @@ export function createHeadlessGitHubService(
   };
 
   const readTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
-    const patToken = await readStoredPatTokenAsync();
-    if (patToken) {
-      return {
-        token: patToken,
-        source: "pat",
-        patTokenStored: true,
-        ghCliPath: null,
-        ghAuthError: null,
-      };
-    }
     const env = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
     if (env) {
       return {
         token: env,
         source: "environment",
         patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const appToken = appUserAuth.getAuthStatus().tokenStored
+      ? await appUserAuth.getValidTokenForRelay().catch(() => null)
+      : null;
+    if (appToken) {
+      return {
+        token: appToken,
+        source: "app",
+        patTokenStored: false,
+        ghCliPath: null,
+        ghAuthError: null,
+      };
+    }
+    const patToken = await readStoredPatTokenAsync();
+    if (patToken) {
+      return {
+        token: patToken,
+        source: "pat",
+        patTokenStored: true,
         ghCliPath: null,
         ghAuthError: null,
       };
@@ -661,12 +674,16 @@ export function createHeadlessGitHubService(
   const computeConnected = (args: {
     tokenStored: boolean;
     userLogin: string | null;
+    authSource: HeadlessGitHubStatus["authSource"];
     tokenType: HeadlessGitHubStatus["tokenType"];
     scopes: string[];
     repo: { owner: string; name: string } | null;
     repoAccessOk: boolean | null;
   }): boolean => {
     if (!args.tokenStored || !args.userLogin) return false;
+    if (args.authSource === "app") {
+      return args.repo ? args.repoAccessOk === true : true;
+    }
     if (args.tokenType === "fine-grained") {
       return args.repo ? args.repoAccessOk === true : true;
     }
@@ -1068,6 +1085,7 @@ export function createHeadlessGitHubService(
             connected: computeConnected({
               tokenStored: true,
               userLogin: validated.userLogin,
+              authSource: tokenLookup.source,
               tokenType: validated.tokenType,
               scopes: validated.scopes,
               repo,
@@ -1075,8 +1093,12 @@ export function createHeadlessGitHubService(
             }),
           };
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const failure = classifyGitHubAuthFailure({ message });
           logger.warn("github.token_validation_failed", {
-            error: error instanceof Error ? error.message : String(error),
+            error: message,
+            kind: failure.authFailure.kind,
+            retryAt: failure.authFailure.retryAt,
           });
           return {
             tokenStored: true,
@@ -1092,6 +1114,8 @@ export function createHeadlessGitHubService(
             ghCliPath: tokenLookup.ghCliPath,
             ghAuthError: tokenLookup.ghAuthError,
             checkedAt: new Date(now).toISOString(),
+            authFailure: failure.authFailure,
+            rateLimit: failure.rateLimit,
             repoAccessOk: null,
             repoAccessError: null,
             connected: false,

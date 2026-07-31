@@ -18,6 +18,9 @@ number as the remote identity.
 - ADE may create, extend, unstack, rebase, adopt, and locally repair stacks.
 - Existing integration PR workflows remain independent from stacked PRs.
 - Users do not need to install `gh-stack`; ADE uses GitHub's API directly.
+- Authorizing the ADE GitHub App is sufficient for desktop and headless CLI
+  stack operations. An explicit environment token remains available as an
+  automation override; a separate PAT or `gh` login is not required.
 
 ## Canonical model
 
