@@ -1,0 +1,33 @@
+---
+title: "v1.2.46"
+description: "Release notes for ADE v1.2.46 - July 30, 2026"
+---
+
+v1.2.46 replaces ADE's legacy Queue PR workflow with first-class GitHub stacked pull requests. Stacks now stay visible and actionable across PRs, Work, lanes, the CLI, `ade code`, and iOS, while GitHub remains the source of truth for stack structure and merging.
+
+---
+
+## GitHub stacks are first-class
+
+- **Native GitHub stack state.** ADE reads, creates, extends, refreshes, and unlinks GitHub stacks using GitHub's public-preview APIs.
+- **One clear stack inspector.** The PRs tab shows the full stack, each layer's position and readiness, the ultimate base branch, and direct links to GitHub.
+- **Reliable live updates.** Webhook delivery, retryable reconciliation, repository refresh, and restart recovery keep stack membership current through rebases, merges, and unstacking.
+- **GitHub owns landing.** ADE no longer maintains a separate Queue PR landing model or duplicates GitHub's stack merge behavior.
+
+## Stack context follows the work
+
+- **Work and lanes show the right PR layer.** Chat cards, session rows, lane badges, PR panes, and inline PR creation carry native stack membership and position.
+- **The stack rail is easy to scan.** Compact stack marks and progress language show where an agent is working without crowding existing PR status.
+- **Desktop, hosted web, TUI, and iOS agree.** Shared projections and sync contracts keep stack identity and readiness consistent across clients.
+
+## Agents can plan and execute stacked work
+
+- **First-class CLI commands.** `ade prs stack` supports inspection and stack operations through both headless and desktop-connected paths.
+- **Bundled guidance matches the product.** ADE's PR workflow skill teaches agents when to propose a stack, how to split work into reviewable layers, and how to ask whether the user prefers one lane per PR or delegated execution.
+- **Focused progress stays visible.** Each PR remains independently reviewable and testable while ADE presents the overall stack as one coordinated body of work.
+
+## Work and update reliability
+
+- **Sessions settle more predictably.** Sidebar lifecycle state and subagent completions stay attached to the active parent workflow.
+- **Lane names are easier to recognize.** Automatic lane identity uses clearer task-derived names.
+- **Updates are safer and quieter.** Automatic update preferences are explicit, tracked Codex prompts deliver reliably, and stale remote-connection notices are gone.

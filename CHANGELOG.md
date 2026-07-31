@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.46] - 2026-07-30
+
+### GitHub stacked pull requests
+
+- Replace the legacy Queue PR workflow with native GitHub stacked pull requests and GitHub-owned stack merging.
+- Add durable stack reconciliation across REST reads, webhooks, retries, refreshes, restarts, rebases, merges, and unstacking.
+- Show stack position, readiness, base branch, and full-stack context in the PRs tab with direct GitHub links.
+- Carry stack membership through Work chats, session rows, lanes, PR badges, the hosted web client, `ade code`, and iOS.
+- Add first-class `ade prs stack` commands through both headless and desktop-connected CLI paths.
+- Update the bundled PR workflow skill so agents can propose reviewable stacks and ask whether to use one lane per PR or delegated execution.
+- Remove legacy Queue PR services, routes, actions, storage, UI, tests, CLI commands, and documentation.
+
+### Work and reliability
+
+- Keep subagent completions attached to the active parent turn and refine session lifecycle rendering in the Work sidebar.
+- Generate clearer task-derived lane names and keep plan-mode header icons stable.
+- Add explicit automatic update preferences, fix tracked Codex initial prompt delivery, and remove stale remote-connection notices.
+
 ## [1.2.45] - 2026-07-30
 
 ### Sessions and attention
@@ -1240,7 +1258,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.45...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.46...HEAD
+[1.2.46]: https://github.com/arul28/ADE/compare/v1.2.45...v1.2.46
 [1.2.45]: https://github.com/arul28/ADE/compare/v1.2.44...v1.2.45
 [1.2.44]: https://github.com/arul28/ADE/compare/v1.2.43...v1.2.44
 [1.2.43]: https://github.com/arul28/ADE/compare/v1.2.42...v1.2.43
