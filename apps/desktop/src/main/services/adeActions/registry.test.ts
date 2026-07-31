@@ -805,6 +805,90 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
     expect(messageSession).toHaveBeenCalledTimes(1);
   });
 
+  it("routes running PR AI action input through human steer semantics and keeps idle input on send", async () => {
+    vi.useFakeTimers();
+    let sessionStatus: "running" | "idle" = "running";
+    const sessionId = "pr-ai-action-session-1";
+    const sendMessage = vi.fn().mockResolvedValue(undefined);
+    const steerUserMessage = vi.fn().mockResolvedValue({ steerId: "steer-1", queued: true });
+    const interrupt = vi.fn().mockResolvedValue(undefined);
+    const finalizeResolverSession = vi.fn().mockResolvedValue(undefined);
+
+    try {
+      const services = getAdeActionDomainServices({
+        prService: {},
+        eventBuffer: { push: vi.fn() },
+        logger: { warn: vi.fn(), debug: vi.fn() },
+        agentChatService: {
+          createSession: vi.fn().mockResolvedValue({ id: sessionId }),
+          sendMessage,
+          steerUserMessage,
+          interrupt,
+        },
+        conflictService: {
+          prepareResolverSession: vi.fn().mockResolvedValue({
+            runId: "resolver-run-1",
+            status: "ready",
+            cwdLaneId: "lane-target",
+            integrationLaneId: null,
+            promptFilePath: path.resolve("package.json"),
+            contextGaps: [],
+          }),
+          attachResolverSession: vi.fn().mockResolvedValue(undefined),
+          finalizeResolverSession,
+        },
+        sessionService: {
+          get: vi.fn(() => ({
+            id: sessionId,
+            status: sessionStatus,
+            exitCode: null,
+          })),
+        },
+      } as never);
+      const pr = services.pr as {
+        aiResolutionStart: (args: unknown) => Promise<{ sessionId: string; status: string }>;
+        aiResolutionInput: (args: unknown) => Promise<void>;
+        aiResolutionStop: (args: unknown) => Promise<void>;
+      };
+
+      await expect(pr.aiResolutionStart({
+        context: {
+          sourceTab: "normal",
+          sourceLaneId: "lane-source",
+          targetLaneId: "lane-target",
+        },
+        model: "openai/gpt-5.4",
+      })).resolves.toMatchObject({ sessionId, status: "started" });
+      sendMessage.mockClear();
+
+      await pr.aiResolutionInput({
+        sessionId,
+        text: "Keep the user's attention lifecycle.",
+      });
+      expect(steerUserMessage).toHaveBeenCalledWith({
+        sessionId,
+        text: "Keep the user's attention lifecycle.",
+      });
+      expect(sendMessage).not.toHaveBeenCalled();
+
+      sessionStatus = "idle";
+      await pr.aiResolutionInput({
+        sessionId,
+        text: "Start the next resolver turn.",
+      });
+      expect(sendMessage).toHaveBeenCalledWith({
+        sessionId,
+        text: "Start the next resolver turn.",
+      });
+
+      await pr.aiResolutionStop({ sessionId });
+      expect(interrupt).toHaveBeenCalledWith({ sessionId });
+      expect(finalizeResolverSession).toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("resolves chat fileSearch lanes from getSessionSummary and caches the result", async () => {
     const sessionId = "file-search-summary-session";
     const getSessionSummary = vi.fn(async (id: string) => ({ sessionId: id, laneId: "lane-fast" }));

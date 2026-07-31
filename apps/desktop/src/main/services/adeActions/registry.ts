@@ -3364,7 +3364,7 @@ function getPrAiRuntimeBridge(runtime: AdeRuntime): PrAiRuntimeBridge {
       const agentChatService = requireService(runtime.agentChatService, "Agent chat service not available.");
       const sessionDetail = runtime.sessionService.get(sessionId);
       if (sessionDetail?.status === "running") {
-        await agentChatService.steer({ sessionId, text });
+        await agentChatService.steerUserMessage({ sessionId, text });
         return;
       }
       await agentChatService.sendMessage({ sessionId, text });
