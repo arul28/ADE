@@ -1065,7 +1065,9 @@ describe("CommandPalette", () => {
             [boundKey]: [makeSession({ id: "session-1", title: "Audit rebase settings" })],
           },
           workViewByProject: { [boundKey]: { activeItemId: null } },
-          crossMachineLanesByMachineId: {},
+          crossMachineLanesByMachineId: {
+            "target-studio": makeForeignMachine({ online: false, sessions: [] }),
+          },
         });
 
         render(
@@ -1088,6 +1090,8 @@ describe("CommandPalette", () => {
         // Found by machine, and marked as elsewhere — the tab points at the
         // Studio but the app is running on this Mac.
         expect(row.dataset.machineId).toBe("target-studio");
+        expect(row.dataset.machineOnline).toBe("false");
+        expect(row.dataset.dimmed).toBe("true");
         expect(row.querySelector("[data-machine-marker-mode]")).toBeTruthy();
       });
     });

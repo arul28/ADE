@@ -150,6 +150,9 @@ export function buildThreadIndex(
   activeMachine: { machineId: string; machineName: string } | null = null,
 ): ThreadIndexEntry[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
+  const activeMachineOnline = activeMachine
+    ? (foreignMachines[activeMachine.machineId]?.online ?? true)
+    : true;
   const seen = new Set<string>();
   const entries: ThreadIndexEntry[] = [];
 
@@ -161,7 +164,7 @@ export function buildThreadIndex(
         lane: laneById.get(session.laneId) ?? null,
         machineId: activeMachine?.machineId ?? THIS_MACHINE_ID,
         machineName: activeMachine?.machineName ?? THIS_MACHINE_NAME,
-        machineOnline: true,
+        machineOnline: activeMachineOnline,
         binding: null,
       }),
     );
