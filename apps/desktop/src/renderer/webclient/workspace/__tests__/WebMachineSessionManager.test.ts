@@ -203,6 +203,53 @@ describe("WebMachineSessionManager", () => {
     )).toHaveLength(1);
   });
 
+  it("never automatically parks the target protected by the federated workspace", async () => {
+    let clock = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+    const clients = Array.from(
+      { length: WEB_MACHINE_SESSION_LIMIT + 1 },
+      () => new FakeSyncClient(),
+    );
+    let nextClient = 1;
+    const manager = new WebMachineSessionManager(
+      clients[0].asClient(),
+      accountClient,
+      () => clients[nextClient++].asClient(),
+    );
+    manager.replaceEnvironments(clients.map((_, index) => environment(index + 1)));
+    for (let index = 1; index <= WEB_MACHINE_SESSION_LIMIT; index += 1) {
+      await manager.connectEnvironment(`machine-${index}`);
+    }
+    manager.setProtectedTargetId("machine-1");
+
+    await manager.connectEnvironment(`machine-${WEB_MACHINE_SESSION_LIMIT + 1}`);
+
+    expect(manager.getSession("machine-1")?.state).toBe("live");
+    expect(manager.getSession("machine-2")?.state).toBe("parked");
+  });
+
+  it("reconnects a protected target after it was explicitly parked", async () => {
+    const clients = Array.from(
+      { length: WEB_MACHINE_SESSION_LIMIT },
+      () => new FakeSyncClient(),
+    );
+    let nextClient = 1;
+    const manager = new WebMachineSessionManager(
+      clients[0].asClient(),
+      accountClient,
+      () => clients[nextClient++].asClient(),
+    );
+    manager.replaceEnvironments(clients.map((_, index) => environment(index + 1)));
+    await manager.connectEnvironment("machine-1");
+    manager.setProtectedTargetId("machine-1");
+    await manager.park("machine-1");
+
+    await manager.connectEnvironment("machine-1");
+
+    expect(manager.getSession("machine-1")?.state).toBe("live");
+    expect(clients[0].connect).toHaveBeenCalledTimes(2);
+  });
+
   it("switches projects inside one machine without disturbing other sessions", async () => {
     const primary = new FakeSyncClient();
     const secondary = new FakeSyncClient();

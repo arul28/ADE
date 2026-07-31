@@ -3,7 +3,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { DeeplinkTarget } from "../../../../shared/deeplinks";
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
@@ -13,6 +13,7 @@ import type {
   WebClientEnvironmentPruneResult,
   WebClientEnvironmentRecord,
 } from "../../sync";
+import { useWebWorkspace } from "../../workspace/WebWorkspaceContext";
 import { WebClientRoot } from "../WebClientRoot";
 import {
   LONG_PRESS_MS,
@@ -51,7 +52,17 @@ vi.mock("../../adapter/federated", () => ({
 }));
 
 vi.mock("../../../components/app/App", () => ({
-  App: () => <div data-testid="app-root">{window.location.pathname}</div>,
+  App: () => {
+    const workspace = useWebWorkspace();
+    return (
+      <>
+        <div data-testid="app-root">{window.location.pathname}</div>
+        <button type="button" onClick={() => void workspace.signOut()}>
+          Test sign out
+        </button>
+      </>
+    );
+  },
 }));
 
 vi.mock("../../../components/app/RendererErrorBoundary", () => ({
@@ -278,6 +289,28 @@ describe("WebClientRoot workspace bootstrap", () => {
     );
 
     expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+  });
+
+  it("detaches the old account adapter and restores the signed-out workspace", async () => {
+    const signOut = vi.fn(async () => signedOutAccount);
+    render(
+      <WebClientRoot
+        client={syncClient()}
+        accountClient={accountClient(signedInAccount, { signOut })}
+      />,
+    );
+    await screen.findByTestId("app-root");
+    expect(createFederatedAdapter.mock.calls[0]?.[0]).toMatchObject({
+      accountKey: "account-current",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Test sign out" }));
+
+    await waitFor(() => expect(createFederatedAdapter).toHaveBeenCalledTimes(2));
+    expect(federated.dispose).toHaveBeenCalledOnce();
+    expect(createFederatedAdapter.mock.calls[1]?.[0]).toMatchObject({
+      accountKey: "signed-out",
+    });
   });
 });
 

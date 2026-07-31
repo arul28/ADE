@@ -246,6 +246,7 @@ export function createFederatedWebAdapter({
       activeSurface: "project",
     };
     activeBinding = binding;
+    manager.setProtectedTargetId(binding.targetId);
     persist();
   };
 
@@ -357,6 +358,7 @@ export function createFederatedWebAdapter({
             : null,
       };
       if (workspace.activeBindingKey == null) activeBinding = null;
+      manager.setProtectedTargetId(activeBinding?.targetId ?? null);
       disposeClosedProjectAdapters(remoteBindings);
       persist();
       return { openProjectBindings: remoteBindings };
@@ -419,6 +421,9 @@ export function createFederatedWebAdapter({
       activeBinding = null;
       for (const listener of bindingListeners) listener(null);
       for (const listener of projectListeners) listener(null);
+    }
+    if (removesActiveBinding || removesActiveChats) {
+      manager.setProtectedTargetId(null);
     }
     disposeClosedProjectAdapters(workspace.openBindings);
     persist();
@@ -544,6 +549,12 @@ export function createFederatedWebAdapter({
     },
   });
 
+  manager.setProtectedTargetId(activeBinding?.targetId ?? null);
+  const invalidationDispose = manager.subscribeEnvironmentInvalidation(
+    async ({ targetId }) => {
+      await forgetEnvironment(targetId);
+    },
+  );
   managerDispose = manager.subscribe((snapshot) => {
     for (const [key, entry] of adaptersByBinding) {
       if (manager.getClient(entry.targetId) === entry.client) continue;
@@ -607,6 +618,7 @@ export function createFederatedWebAdapter({
         activeBindingKey: null,
         activeSurface: "chats",
       };
+      manager.setProtectedTargetId(targetId);
       persist();
       activeBinding = null;
       for (const listener of bindingListeners) listener(null);
@@ -622,6 +634,7 @@ export function createFederatedWebAdapter({
           return "chats";
         } catch {
           workspace = { ...workspace, activeSurface: "hub", selectedChatsTargetId: null };
+          manager.setProtectedTargetId(activeBinding?.targetId ?? null);
           persist();
           return null;
         }
@@ -634,6 +647,7 @@ export function createFederatedWebAdapter({
         return "project";
       } catch {
         activeBinding = null;
+        manager.setProtectedTargetId(null);
         workspace = { ...workspace, activeBindingKey: null, activeSurface: "hub" };
         persist();
         return null;
@@ -644,7 +658,9 @@ export function createFederatedWebAdapter({
       return () => activeAdapterListeners.delete(listener);
     },
     dispose() {
+      invalidationDispose();
       managerDispose();
+      manager.setProtectedTargetId(null);
       for (const adapter of adapters) adapter.dispose();
       projectListeners.clear();
       bindingListeners.clear();

@@ -98,6 +98,12 @@ function accountEnvironmentOwner(snapshot: BrowserAccountSnapshot): string | nul
   return browserAccountIsSignedIn(snapshot.state) ? snapshot.userId : null;
 }
 
+function accountWorkspaceKey(snapshot: BrowserAccountSnapshot): string {
+  return browserAccountIsSignedIn(snapshot.state) && snapshot.userId?.trim()
+    ? snapshot.userId.trim()
+    : "signed-out";
+}
+
 function environmentsVisibleToOwner(
   environments: WebClientEnvironmentRecord[],
   ownerUserId: string | null,
@@ -160,6 +166,9 @@ export function WebClientRoot({
   const [federatedAdapter, setFederatedAdapter] = useState<FederatedWebAdapter | null>(null);
   const [activeAdapterGeneration, setActiveAdapterGeneration] = useState(0);
   const federatedAdapterRef = useRef<FederatedWebAdapter | null>(null);
+  const federatedAccountKeyRef = useRef<string | null>(null);
+  const federatedAdapterDisposeRef = useRef<() => void>(() => {});
+  const federatedAdapterGenerationRef = useRef(0);
   const accountRef = useRef(account);
   const pendingTargetRef = useRef<DeeplinkTarget | null>(null);
   const workspaceSnapshotRef = useRef(workspaceSnapshot);
@@ -193,6 +202,48 @@ export function WebClientRoot({
   }, [sessionManager]);
 
   useEffect(() => sessionManager.subscribe(setWorkspaceSnapshot), [sessionManager]);
+
+  const installFederatedAdapter = useCallback(async (
+    snapshot: BrowserAccountSnapshot,
+  ): Promise<{
+    adapter: FederatedWebAdapter;
+    restored: "project" | "chats" | null;
+  }> => {
+    const accountKey = accountWorkspaceKey(snapshot);
+    const existing = federatedAdapterRef.current;
+    if (existing && federatedAccountKeyRef.current === accountKey) {
+      return { adapter: existing, restored: null };
+    }
+
+    const generation = ++federatedAdapterGenerationRef.current;
+    federatedAdapterDisposeRef.current();
+    federatedAdapterDisposeRef.current = () => {};
+    federatedAdapterRef.current?.dispose();
+    federatedAdapterRef.current = null;
+    federatedAccountKeyRef.current = null;
+    setFederatedAdapter(null);
+
+    const adapter = await loadFederatedAdapter(
+      sessionManager,
+      accountClient,
+      accountKey,
+      client,
+    );
+    if (federatedAdapterGenerationRef.current !== generation) {
+      adapter.dispose();
+      throw new Error("The browser account changed while restoring its workspace.");
+    }
+
+    federatedAdapterRef.current = adapter;
+    federatedAccountKeyRef.current = accountKey;
+    federatedAdapterDisposeRef.current = adapter.subscribeActiveAdapter(() => {
+      setActiveAdapterGeneration((current) => current + 1);
+    });
+    setFederatedAdapter(adapter);
+    window.ade = adapter.ade;
+    const restored = await adapter.restore();
+    return { adapter, restored };
+  }, [accountClient, client, sessionManager]);
 
   const relayAccess = useMemo(
     () => relayAccessFromAccount(account, () => accountClient.getAccessToken()),
@@ -228,6 +279,7 @@ export function WebClientRoot({
           setAccount(result.snapshot);
           const visible = await applyAccountPrivacy(result.snapshot);
           sessionManager.replaceEnvironments(visible);
+          await installFederatedAdapter(result.snapshot);
           break;
         }
       } catch {
@@ -245,7 +297,13 @@ export function WebClientRoot({
       disposed = true;
       window.clearInterval(interval);
     };
-  }, [accountClient, applyAccountPrivacy, relayAccess, sessionManager]);
+  }, [
+    accountClient,
+    applyAccountPrivacy,
+    installFederatedAdapter,
+    relayAccess,
+    sessionManager,
+  ]);
 
   const activeTargetId = workspaceSnapshot.activeTargetId;
   const activeLifecycleClient = activeTargetId
@@ -258,8 +316,6 @@ export function WebClientRoot({
 
   useEffect(() => {
     let disposed = false;
-    let mountedAdapter: FederatedWebAdapter | null = null;
-    let activeAdapterDispose = () => {};
 
     void (async () => {
       if (window.location.pathname === "/pair") {
@@ -286,25 +342,7 @@ export function WebClientRoot({
         relayAccessFromAccount(snapshot, () => accountClient.getAccessToken()),
       );
 
-      const adapter = await loadFederatedAdapter(
-        sessionManager,
-        accountClient,
-        snapshot.userId?.trim() || "signed-out",
-        client,
-      );
-      if (disposed) {
-        adapter.dispose();
-        return;
-      }
-      federatedAdapterRef.current = adapter;
-      mountedAdapter = adapter;
-      activeAdapterDispose = adapter.subscribeActiveAdapter(() => {
-        setActiveAdapterGeneration((generation) => generation + 1);
-      });
-      setFederatedAdapter(adapter);
-      window.ade = adapter.ade;
-
-      const restored = await adapter.restore();
+      const { restored } = await installFederatedAdapter(snapshot);
       if (disposed) return;
       const restoredTarget = readStashedTarget();
       const initialPath = restored
@@ -331,14 +369,20 @@ export function WebClientRoot({
 
     return () => {
       disposed = true;
-      activeAdapterDispose();
-      mountedAdapter?.dispose();
-      if (federatedAdapterRef.current === mountedAdapter) {
-        federatedAdapterRef.current = null;
-      }
+      federatedAdapterGenerationRef.current += 1;
+      federatedAdapterDisposeRef.current();
+      federatedAdapterDisposeRef.current = () => {};
+      federatedAdapterRef.current?.dispose();
+      federatedAdapterRef.current = null;
+      federatedAccountKeyRef.current = null;
       sessionManager.dispose();
     };
-  }, [accountClient, applyAccountPrivacy, client, sessionManager]);
+  }, [
+    accountClient,
+    applyAccountPrivacy,
+    installFederatedAdapter,
+    sessionManager,
+  ]);
 
   const signIn = useCallback(() => {
     void accountClient.startSignIn().catch((error) => {
@@ -374,6 +418,7 @@ export function WebClientRoot({
         }
         const visible = await applyAccountPrivacy(snapshot);
         sessionManager.replaceEnvironments(visible);
+        await installFederatedAdapter(snapshot);
       },
       async retryDirectory() {
         setDirectoryLoading(true);
@@ -382,6 +427,7 @@ export function WebClientRoot({
           setAccount(snapshot);
           const visible = await applyAccountPrivacy(snapshot);
           sessionManager.replaceEnvironments(visible);
+          await installFederatedAdapter(snapshot);
         } finally {
           setDirectoryLoading(false);
         }
@@ -422,6 +468,7 @@ export function WebClientRoot({
     connectingMachineKey,
     directoryLoading,
     federatedAdapter,
+    installFederatedAdapter,
     refreshVisibleEnvironments,
     sessionManager,
     signIn,

@@ -90,6 +90,10 @@ function managerFixture() {
     activeProjectId: `project-${targetId}`,
   }));
   const listeners = new Set<(snapshot: { sessions: typeof sessions }) => void>();
+  const invalidationListeners = new Set<(event: {
+    targetId: string;
+    reason: "auth_failed";
+  }) => void | Promise<void>>();
   const manager = {
     subscribe: vi.fn((listener: (snapshot: { sessions: typeof sessions }) => void) => {
       listeners.add(listener);
@@ -118,6 +122,14 @@ function managerFixture() {
     }),
     park: vi.fn(async () => undefined),
     forgetEnvironment: vi.fn(async () => undefined),
+    setProtectedTargetId: vi.fn(),
+    subscribeEnvironmentInvalidation: vi.fn((listener: (event: {
+      targetId: string;
+      reason: "auth_failed";
+    }) => void | Promise<void>) => {
+      invalidationListeners.add(listener);
+      return () => invalidationListeners.delete(listener);
+    }),
     listEnvironments: vi.fn(() => []),
   } as unknown as WebMachineSessionManager;
   return {
@@ -129,6 +141,12 @@ function managerFixture() {
     sessions,
     emitSnapshot() {
       for (const listener of listeners) listener({ sessions });
+    },
+    async emitInvalidation(targetId: string) {
+      await Promise.all([...invalidationListeners].map((listener) => listener({
+        targetId,
+        reason: "auth_failed",
+      })));
     },
   };
 }
@@ -404,5 +422,38 @@ describe("createFederatedWebAdapter", () => {
     });
     await expect(restored.restore()).resolves.toBeNull();
     expect(restored.getOpenBindings()).toEqual([]);
+  });
+
+  it("routes authentication invalidation through federated binding cleanup", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "auth-invalidated-machine",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+
+    await fixture.emitInvalidation("machine-a");
+
+    expect(fixture.manager.forgetEnvironment).toHaveBeenCalledWith("machine-a");
+    expect(federated.getOpenBindings()).toEqual([]);
+    expect(federated.getActiveBinding()).toBeNull();
+    expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("protects the federated project target from automatic session parking", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "protected-active-project",
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    await federated.openProject("machine-a", "project-machine-a");
+    federated.activateHub();
+
+    expect(fixture.manager.setProtectedTargetId).toHaveBeenLastCalledWith("machine-a");
   });
 });

@@ -40,6 +40,11 @@ export type WebMachineWorkspaceSnapshot = {
   updatedAt: number;
 };
 
+export type WebMachineEnvironmentInvalidation = {
+  targetId: string;
+  reason: "auth_failed";
+};
+
 type SessionRecord = {
   targetId: string;
   environment: WebClientEnvironmentRecord;
@@ -115,7 +120,11 @@ export class WebMachineSessionManager {
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly environments = new Map<string, WebClientEnvironmentRecord>();
   private readonly listeners = new Set<(snapshot: WebMachineWorkspaceSnapshot) => void>();
+  private readonly invalidationListeners = new Set<(
+    invalidation: WebMachineEnvironmentInvalidation,
+  ) => void | Promise<void>>();
   private activeTargetId: string | null = null;
+  private protectedTargetId: string | null = null;
   private relayAccess: WebRelayAccess = { kind: "signed_out" };
   private updatedAt = Date.now();
   private readonly allClients = new Set<AdeSyncClient>();
@@ -180,10 +189,21 @@ export class WebMachineSessionManager {
     return this.activeTargetId;
   }
 
+  setProtectedTargetId(targetId: string | null): void {
+    this.protectedTargetId = targetId;
+  }
+
   subscribe(listener: (snapshot: WebMachineWorkspaceSnapshot) => void): () => void {
     this.listeners.add(listener);
     listener(this.getSnapshot());
     return () => this.listeners.delete(listener);
+  }
+
+  subscribeEnvironmentInvalidation(
+    listener: (invalidation: WebMachineEnvironmentInvalidation) => void | Promise<void>,
+  ): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
   }
 
   getSnapshot(): WebMachineWorkspaceSnapshot {
@@ -409,6 +429,7 @@ export class WebMachineSessionManager {
     this.availableClients.length = 0;
     this.allClients.clear();
     this.listeners.clear();
+    this.invalidationListeners.clear();
   }
 
   private createSession(
@@ -445,7 +466,10 @@ export class WebMachineSessionManager {
           && !this.authCleanupInFlight.has(session.targetId)
         ) {
           this.authCleanupInFlight.add(session.targetId);
-          void this.forgetEnvironment(session.targetId)
+          void this.invalidateEnvironment({
+            targetId: session.targetId,
+            reason: "auth_failed",
+          })
             .catch(() => undefined)
             .finally(() => this.authCleanupInFlight.delete(session.targetId));
         }
@@ -477,6 +501,7 @@ export class WebMachineSessionManager {
     const candidate = liveSessions
       .filter((session) => (
         session.targetId !== this.activeTargetId
+        && session.targetId !== this.protectedTargetId
         && session.targetId !== nextTargetId
         && !this.environmentConnects.has(session.targetId)
       ))
@@ -497,6 +522,18 @@ export class WebMachineSessionManager {
     } finally {
       release();
     }
+  }
+
+  private async invalidateEnvironment(
+    invalidation: WebMachineEnvironmentInvalidation,
+  ): Promise<void> {
+    if (this.invalidationListeners.size === 0) {
+      await this.forgetEnvironment(invalidation.targetId);
+      return;
+    }
+    await Promise.all(
+      [...this.invalidationListeners].map((listener) => listener(invalidation)),
+    );
   }
 
   private snapshotSession(session: SessionRecord): WebMachineSessionSnapshot {
