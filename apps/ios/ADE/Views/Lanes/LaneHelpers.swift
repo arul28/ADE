@@ -335,6 +335,7 @@ struct LanePrTag: Equatable {
   var state: String
   var headBranch: String
   var updatedAt: String
+  var stack: GitHubPrStackMembership? = nil
 }
 
 /// Common ordering signal shared by both PR sources so a single comparator ranks
@@ -436,7 +437,8 @@ private func lanePrTag(from pr: PullRequestListItem) -> LanePrTag {
     title: pr.title,
     state: pr.state,
     headBranch: pr.headBranch,
-    updatedAt: pr.updatedAt
+    updatedAt: pr.updatedAt,
+    stack: pr.stack
   )
 }
 
@@ -449,7 +451,8 @@ private func lanePrTag(from pr: GitHubPrListItem, laneId: String) -> LanePrTag {
     title: pr.title,
     state: pr.isDraft ? "draft" : pr.state,
     headBranch: pr.headBranch ?? "",
-    updatedAt: pr.updatedAt
+    updatedAt: pr.updatedAt,
+    stack: pr.stack
   )
 }
 
@@ -500,7 +503,10 @@ func selectLaneTabPrTag(
   guard let mappedPr else {
     return githubPr.map { lanePrTag(from: $0, laneId: lane.id) }
   }
-  let mappedTag = lanePrTag(from: mappedPr)
+  var mappedTag = lanePrTag(from: mappedPr)
+  if let githubPr, githubPrMatchesAdePr(mappedPr, githubPr) {
+    mappedTag.stack = githubPr.stack ?? mappedTag.stack
+  }
   if let terminalGithubPr = selectTerminalGithubUpdate(for: mappedPr, githubPrs: githubPrs) {
     var tag = lanePrTag(from: terminalGithubPr, laneId: lane.id)
     tag.prId = tag.prId ?? mappedTag.prId

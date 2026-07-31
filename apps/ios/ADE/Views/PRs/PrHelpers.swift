@@ -343,6 +343,7 @@ func prReconcileGitHubPullRequests(
       item.adeKind = mapped.adeKind
       item.workflowDisplayState = mapped.workflowDisplayState
       item.cleanupState = mapped.cleanupState
+      item.stack = item.stack ?? mapped.stack
       // Let the newest projection own state in either direction. This keeps a
       // terminal replicated row visible behind an older open-only response,
       // while also allowing a freshly reopened local row to override a stale
@@ -398,13 +399,47 @@ func prReconcileGitHubPullRequests(
       cleanupState: mapped.cleanupState,
       labels: [],
       isBot: false,
-      commentCount: 0
+      commentCount: 0,
+      stack: mapped.stack
     )
     indexByIdentity[key] = result.count
     result.append(item)
   }
 
   return result
+}
+
+struct GitHubStackPositionBadge: View {
+  let stack: GitHubPrStackMembership
+  var compact = false
+
+  var body: some View {
+    HStack(spacing: 4) {
+      Image(systemName: "square.stack.3d.up.fill")
+        .font(.system(size: compact ? 9 : 10, weight: .semibold))
+      Text(compact ? "\(stack.position)/\(stack.size)" : "Stack \(stack.position)/\(stack.size)")
+        .font(.caption2.monospaced().weight(.semibold))
+        .lineLimit(1)
+    }
+    .foregroundStyle(ADEColor.tintPRs)
+    .padding(.horizontal, compact ? 0 : 7)
+    .padding(.vertical, compact ? 0 : 3)
+    .background {
+      if !compact {
+        Capsule(style: .continuous)
+          .fill(ADEColor.tintPRs.opacity(0.12))
+      }
+    }
+    .overlay {
+      if !compact {
+        Capsule(style: .continuous)
+          .stroke(ADEColor.tintPRs.opacity(0.28), lineWidth: 0.6)
+      }
+    }
+    .accessibilityLabel(
+      "GitHub Stack \(stack.position) of \(stack.size), base \(stack.baseBranch)"
+    )
+  }
 }
 
 // MARK: - GitHub PR list filter/sort/count (free functions)

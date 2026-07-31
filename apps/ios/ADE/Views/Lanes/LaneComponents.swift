@@ -469,6 +469,9 @@ struct LanePrTagChip: View {
       Text(formatLanePrBadgeLabel(tag))
         .font(.caption2.monospaced().weight(.bold))
         .lineLimit(1)
+      if let stack = tag.stack {
+        GitHubStackPositionBadge(stack: stack, compact: true)
+      }
     }
     .foregroundStyle(tint)
     .padding(.horizontal, 7)
@@ -478,7 +481,11 @@ struct LanePrTagChip: View {
       RoundedRectangle(cornerRadius: 7, style: .continuous)
         .stroke(tint.opacity(0.28), lineWidth: 0.6)
     )
-    .accessibilityLabel(formatLanePrBadgeLabel(tag))
+    .accessibilityLabel(
+      tag.stack.map {
+        "\(formatLanePrBadgeLabel(tag)), GitHub Stack \($0.position) of \($0.size)"
+      } ?? formatLanePrBadgeLabel(tag)
+    )
   }
 }
 

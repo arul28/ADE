@@ -1076,7 +1076,8 @@ func workChatLanePrTag(from pr: PullRequestListItem) -> LanePrTag {
     title: pr.title,
     state: pr.state,
     headBranch: pr.headBranch,
-    updatedAt: pr.updatedAt
+    updatedAt: pr.updatedAt,
+    stack: pr.stack
   )
 }
 
@@ -1089,7 +1090,8 @@ func workChatLanePrTag(from pr: PrSummary) -> LanePrTag {
     title: pr.title,
     state: pr.state,
     headBranch: pr.headBranch,
-    updatedAt: pr.updatedAt
+    updatedAt: pr.updatedAt,
+    stack: pr.stack
   )
 }
 

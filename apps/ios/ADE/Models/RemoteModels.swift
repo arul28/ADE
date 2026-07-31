@@ -3825,6 +3825,36 @@ extension TerminalSessionSummary {
   }
 }
 
+struct GitHubPrStackMembership: Codable, Equatable {
+  var id: String
+  var number: Int
+  var size: Int
+  var position: Int
+  var baseBranch: String
+}
+
+struct GitHubPrStackEntry: Codable, Identifiable, Equatable {
+  var id: Int { githubPrNumber }
+  var githubPrNumber: Int
+  var position: Int
+  var state: String
+  var isDraft: Bool
+  var mergedAt: String?
+  var headBranch: String
+  var headSha: String
+}
+
+struct GitHubPrStack: Codable, Identifiable, Equatable {
+  var id: String
+  var number: Int
+  var baseBranch: String
+  var open: Bool
+  var entries: [GitHubPrStackEntry]
+  var createdAt: String
+  var syncedAt: String
+  var lastError: String?
+}
+
 struct PrSummary: Codable, Identifiable, Equatable {
   var id: String
   var laneId: String
@@ -3849,6 +3879,8 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var mergedAt: String? = nil
   /// "pr_target" or "lane_base". Optional because legacy hosts / non-lane PRs omit it.
   var creationStrategy: String? = nil
+  /// Native GitHub stack membership. Nil against hosts before stacked PR support.
+  var stack: GitHubPrStackMembership? = nil
 }
 
 struct PullRequestListItem: Codable, Identifiable, Equatable {
@@ -3879,6 +3911,7 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var linkedGroupCount: Int
   var workflowDisplayState: String?
   var cleanupState: String?
+  var stack: GitHubPrStackMembership? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
@@ -4215,6 +4248,7 @@ struct GitHubPrListItem: Codable, Identifiable, Equatable {
   var labels: [PrLabel]
   var isBot: Bool
   var commentCount: Int
+  var stack: GitHubPrStackMembership? = nil
 }
 
 struct GitHubPrSnapshot: Codable, Equatable {
@@ -4224,6 +4258,7 @@ struct GitHubPrSnapshot: Codable, Equatable {
   var externalPullRequests: [GitHubPrListItem]
   var syncedAt: String
   var history: GitHubPrSnapshotHistory? = nil
+  var stacks: [GitHubPrStack]? = nil
 }
 
 struct GitHubPrSnapshotHistory: Codable, Equatable {

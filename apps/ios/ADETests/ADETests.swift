@@ -10177,7 +10177,14 @@ final class ADETests: XCTestCase {
             lastSyncedAt: "2026-03-17T00:10:00.000Z",
             createdAt: "2026-03-17T00:10:00.000Z",
             updatedAt: "2026-03-17T00:10:00.000Z",
-            mergedAt: "2026-03-17T00:11:00.000Z"
+            mergedAt: "2026-03-17T00:11:00.000Z",
+            stack: GitHubPrStackMembership(
+              id: "stack-81",
+              number: 81,
+              size: 3,
+              position: 2,
+              baseBranch: "main"
+            )
           ),
         ],
         snapshots: [
@@ -10218,6 +10225,8 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(prs.first?.id, "pr-1")
     XCTAssertEqual(prs.first?.title, "Fix mobile hydration")
     XCTAssertEqual(prs.first?.mergedAt, "2026-03-17T00:11:00.000Z")
+    XCTAssertEqual(prs.first?.stack?.position, 2)
+    XCTAssertEqual(database.fetchPullRequestListItems().first?.stack?.number, 81)
     XCTAssertEqual(database.fetchPullRequestSnapshot(prId: "pr-1")?.status?.isMergeable, true)
 
     var legacySummary = try XCTUnwrap(prs.first)
@@ -12147,7 +12156,15 @@ final class ADETests: XCTestCase {
         cleanupState: nil
       )
     }
-    func githubPr(number: Int, state: String, headBranch: String, linkedLaneId: String?, linkedPrId: String?, headRepoOwner: String? = nil) -> GitHubPrListItem {
+    func githubPr(
+      number: Int,
+      state: String,
+      headBranch: String,
+      linkedLaneId: String?,
+      linkedPrId: String?,
+      headRepoOwner: String? = nil,
+      stack: GitHubPrStackMembership? = nil
+    ) -> GitHubPrListItem {
       GitHubPrListItem(
         id: "gh-\(number)",
         scope: "repo",
@@ -12174,7 +12191,8 @@ final class ADETests: XCTestCase {
         cleanupState: nil,
         labels: [],
         isBot: false,
-        commentCount: 0
+        commentCount: 0,
+        stack: stack
       )
     }
 
@@ -12194,6 +12212,33 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(githubOnly?.source, .github)
     XCTAssertEqual(githubOnly?.githubPrNumber, 777)
     XCTAssertNil(githubOnly?.prId)
+
+    let nativeStack = GitHubPrStackMembership(
+      id: "stack-966",
+      number: 966,
+      size: 4,
+      position: 3,
+      baseBranch: "main"
+    )
+    let stacked = selectLaneTabPrTag(
+      lane: lane,
+      pullRequests: [adePr(id: "pr-open", number: 561, state: "open")],
+      githubPrs: [
+        githubPr(
+          number: 561,
+          state: "open",
+          headBranch: "ade/mobile-audit-34b23435",
+          linkedLaneId: "lane-audit",
+          linkedPrId: "pr-open",
+          stack: nativeStack
+        ),
+      ]
+    )
+    XCTAssertEqual(stacked?.stack, nativeStack)
+    XCTAssertEqual(
+      workChatPrBadgeModel(tag: stacked, pr: nil)?.stack,
+      nativeStack
+    )
 
     // ADE row still says "open" but GitHub reports the same PR merged → adopt the
     // terminal GitHub state while preserving the ADE prId for in-app navigation.

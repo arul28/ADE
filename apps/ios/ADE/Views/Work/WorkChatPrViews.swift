@@ -7,6 +7,7 @@ struct WorkChatPrBadgeModel: Equatable {
   let checksStatus: String?
   let reviewStatus: String?
   let updatedAt: String
+  let stack: GitHubPrStackMembership?
 }
 
 func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: PrSummary? = nil) -> WorkChatPrBadgeModel? {
@@ -17,7 +18,8 @@ func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: Pr
     state: tag.state,
     checksStatus: pr?.checksStatus ?? summary?.checksStatus,
     reviewStatus: pr?.reviewStatus ?? summary?.reviewStatus,
-    updatedAt: tag.updatedAt
+    updatedAt: tag.updatedAt,
+    stack: tag.stack ?? pr?.stack ?? summary?.stack
   )
 }
 
@@ -50,6 +52,9 @@ struct WorkChatPrActivePopup: View {
     if let reviewStatus = badge.reviewStatus, !reviewStatus.isEmpty, reviewStatus != "none" {
       parts.append("review \(reviewStatus.replacingOccurrences(of: "_", with: " "))")
     }
+    if let stack = badge.stack {
+      parts.append("GitHub Stack \(stack.position) of \(stack.size)")
+    }
     return parts.joined(separator: ", ") + ". Tap for details."
   }
 
@@ -65,6 +70,9 @@ struct WorkChatPrActivePopup: View {
       Text(badge.label)
         .font(.caption.weight(.semibold))
         .lineLimit(1)
+      if let stack = badge.stack {
+        GitHubStackPositionBadge(stack: stack, compact: true)
+      }
       if let ciSymbol {
         Image(systemName: ciSymbol)
           .font(.system(size: 10, weight: .bold))
@@ -175,6 +183,19 @@ struct WorkChatPrDetailsSheet: View {
         baseBranch: branches.base,
         tint: branchTint
       )
+
+      if let stack = tag.stack ?? pr?.stack ?? summary?.stack {
+        HStack(spacing: 9) {
+          GitHubStackPositionBadge(stack: stack)
+          Text("GitHub manages review, rebase, and merge for this stack.")
+            .font(.caption)
+            .foregroundStyle(ADEColor.textSecondary)
+            .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADEColor.tintPRs.opacity(0.08), in: RoundedRectangle(cornerRadius: 12))
+      }
 
       HStack(spacing: 10) {
         WorkChatPrChangesMetricCard(additions: additions, deletions: deletions)
