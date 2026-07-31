@@ -2,8 +2,15 @@
 
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentChatFileRef, OpenProjectBinding } from "../../../shared/types";
+import type {
+  AgentChatFileRef,
+  AppControlContextItem,
+  BuiltInBrowserContextItem,
+  IosElementContextItem,
+  OpenProjectBinding,
+} from "../../../shared/types";
 import {
+  collectDraftVisualAttachmentPaths,
   copyDraftImageAttachmentsToMachine,
   partitionDraftMachineAttachments,
   shouldTransferDraftAttachments,
@@ -79,6 +86,28 @@ describe("draft attachment transfer", () => {
       imageAttachments: [{ path: "/tmp/clipboard.png", type: "image" }],
       removedAttachmentCount: 2,
     });
+  });
+
+  it("classifies hydrated visual-context images from persisted attachment metadata", () => {
+    const paths = collectDraftVisualAttachmentPaths({
+      linkedAttachmentPaths: new Set(["/tmp/live-context.png"]),
+      iosContextItems: [{
+        metadata: { attachmentPath: "/tmp/ios-restored.png" },
+      } as IosElementContextItem],
+      appControlContextItems: [{
+        metadata: { attachmentPath: "/tmp/app-control-restored.png" },
+      } as AppControlContextItem],
+      builtInBrowserContextItems: [{
+        metadata: { attachmentPath: "/tmp/browser-restored.png" },
+      } as BuiltInBrowserContextItem],
+    });
+
+    expect([...paths]).toEqual([
+      "/tmp/live-context.png",
+      "/tmp/ios-restored.png",
+      "/tmp/app-control-restored.png",
+      "/tmp/browser-restored.png",
+    ]);
   });
 
   it("transfers only for machine changes inside the same composer scope", () => {
@@ -158,6 +187,61 @@ describe("draft attachment transfer", () => {
     await waitFor(() => expect(result.current.blockedReason).toBeNull());
     expect(result.current.pending).toBe(false);
     expect(setAttachments).not.toHaveBeenCalledWith([]);
+  });
+
+  it("blocks restored source images when their source machine is disconnected", async () => {
+    const imageAttachment: AgentChatFileRef = {
+      path: `${remoteBinding.rootPath}/.ade/attachments/clipboard.png`,
+      type: "image",
+    };
+    const attachmentOwnerBindingRef = { current: null as OpenProjectBinding | null };
+    const setAttachments = vi.fn();
+
+    const { result, rerender } = renderHook(
+      ({ machine }) => useDraftAttachmentTransfer({
+        enabled: true,
+        machine,
+        scopeKey: "project-a:draft",
+        scopeReady: true,
+        attachments: [imageAttachment],
+        setAttachments,
+        attachmentOwnerBindingRef,
+        getLinkedVisualAttachmentPaths: () => new Set(),
+        visualContextCount: 0,
+        clearVisualContext: vi.fn(),
+        setError: vi.fn(),
+      }),
+      {
+        initialProps: {
+          machine: {
+            id: remoteBinding.targetId,
+            name: remoteBinding.runtimeName,
+            binding: null as OpenProjectBinding | null,
+          },
+        },
+      },
+    );
+
+    rerender({
+      machine: { id: "this-mac", name: "This Mac", binding: localBinding },
+    });
+
+    await waitFor(() => expect(result.current.blockedReason).toContain("source machine is disconnected"));
+    expect(setAttachments).toHaveBeenCalledWith([imageAttachment]);
+    expect(window.ade.agentChat.getImageDataUrl).not.toHaveBeenCalled();
+    expect(attachmentOwnerBindingRef.current).toBeNull();
+
+    rerender({
+      machine: {
+        id: remoteBinding.targetId,
+        name: remoteBinding.runtimeName,
+        binding: remoteBinding,
+      },
+    });
+
+    await waitFor(() => expect(result.current.blockedReason).toBeNull());
+    expect(attachmentOwnerBindingRef.current).toBe(remoteBinding);
+    expect(window.ade.agentChat.saveTempAttachment).not.toHaveBeenCalled();
   });
 
   it("waits for the incoming project machine before owning its restored images", () => {

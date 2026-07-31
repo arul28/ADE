@@ -9,9 +9,17 @@ import {
 import type {
   AgentChatFileRef,
   AgentChatLocalFileRef,
+  AppControlContextItem,
+  BuiltInBrowserContextItem,
+  IosElementContextItem,
   OpenProjectBinding,
 } from "../../../shared/types";
-import { stripDataUrlPrefix } from "../../lib/visualContextFormatting";
+import {
+  getAppControlContextAttachmentPath,
+  getBuiltInBrowserContextAttachmentPath,
+  getIosContextAttachmentPath,
+  stripDataUrlPrefix,
+} from "../../lib/visualContextFormatting";
 
 export type LocalImageAttachment = AgentChatLocalFileRef & { type: "image" };
 
@@ -20,6 +28,28 @@ export type DraftAttachmentMachineScope = {
   bindingKey: string | null;
   scopeKey: string;
 };
+
+export function collectDraftVisualAttachmentPaths(args: {
+  linkedAttachmentPaths: ReadonlySet<string>;
+  iosContextItems: IosElementContextItem[];
+  appControlContextItems: AppControlContextItem[];
+  builtInBrowserContextItems: BuiltInBrowserContextItem[];
+}): Set<string> {
+  const paths = new Set(args.linkedAttachmentPaths);
+  for (const item of args.iosContextItems) {
+    const path = getIosContextAttachmentPath(item);
+    if (path) paths.add(path);
+  }
+  for (const item of args.appControlContextItems) {
+    const path = getAppControlContextAttachmentPath(item);
+    if (path) paths.add(path);
+  }
+  for (const item of args.builtInBrowserContextItems) {
+    const path = getBuiltInBrowserContextAttachmentPath(item);
+    if (path) paths.add(path);
+  }
+  return paths;
+}
 
 export function shouldTransferDraftAttachments(
   previous: DraftAttachmentMachineScope | null,
@@ -109,6 +139,7 @@ export function useDraftAttachmentTransfer(args: {
     setError,
   } = args;
   const previousMachineRef = useRef<(typeof machine & { scopeKey: string }) | null>(null);
+  const attachmentOwnerMachineIdRef = useRef<string | null>(null);
   const transferSequenceRef = useRef(0);
   const [pending, setPending] = useState(false);
   const [blockedReason, setBlockedReason] = useState<string | null>(null);
@@ -123,6 +154,7 @@ export function useDraftAttachmentTransfer(args: {
   useEffect(() => {
     if (!enabled) {
       previousMachineRef.current = null;
+      attachmentOwnerMachineIdRef.current = null;
       transferSequenceRef.current += 1;
       setPending(false);
       setBlockedReason(null);
@@ -136,10 +168,12 @@ export function useDraftAttachmentTransfer(args: {
       setBlockedReason(null);
       if (!scopeReady) {
         previousMachineRef.current = null;
+        attachmentOwnerMachineIdRef.current = null;
         attachmentOwnerBindingRef.current = null;
         return;
       }
       previousMachineRef.current = currentMachine;
+      attachmentOwnerMachineIdRef.current = currentMachine.id;
       attachmentOwnerBindingRef.current = currentMachine.binding;
       return;
     }
@@ -176,15 +210,35 @@ export function useDraftAttachmentTransfer(args: {
     }
 
     if (imageAttachments.length === 0) {
+      attachmentOwnerMachineIdRef.current = currentMachine.id;
       attachmentOwnerBindingRef.current = currentMachine.binding;
       return;
     }
-    const sourceBinding = attachmentOwnerBindingRef.current ?? previousMachine.binding;
-    if (!sourceBinding || !currentMachine.binding) {
+    const ownerMachineId = attachmentOwnerMachineIdRef.current ?? previousMachine.id;
+    const sourceBinding = attachmentOwnerBindingRef.current
+      ?? (ownerMachineId === previousMachine.id ? previousMachine.binding : null);
+    if (!currentMachine.binding) {
       setPending(false);
       return;
     }
+    if (!sourceBinding) {
+      setPending(false);
+      if (ownerMachineId === currentMachine.id) {
+        attachmentOwnerMachineIdRef.current = currentMachine.id;
+        attachmentOwnerBindingRef.current = currentMachine.binding;
+        return;
+      }
+      const message =
+        `Couldn't move ${imageAttachments.length === 1 ? "the image" : `${imageAttachments.length} images`} `
+        + `to ${currentMachine.name} because the source machine is disconnected. Reconnect or switch back `
+        + `to the source machine, or remove ${imageAttachments.length === 1 ? "it" : "them"} before sending.`;
+      setBlockedReason(message);
+      setError(message);
+      return;
+    }
     if (sourceBinding.key === currentMachine.binding.key) {
+      attachmentOwnerMachineIdRef.current = currentMachine.id;
+      attachmentOwnerBindingRef.current = currentMachine.binding;
       setPending(false);
       return;
     }
@@ -203,6 +257,7 @@ export function useDraftAttachmentTransfer(args: {
       setAttachments((currentAttachments) => currentAttachments.map(
         (attachment) => transferredPaths.get(attachment.path) ?? attachment,
       ));
+      attachmentOwnerMachineIdRef.current = currentMachine.id;
       attachmentOwnerBindingRef.current = currentMachine.binding;
       setPending(false);
     }).catch((transferError: unknown) => {

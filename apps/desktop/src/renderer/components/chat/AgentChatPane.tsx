@@ -227,7 +227,10 @@ import {
   type RoutedDraftLane,
 } from "./useDraftMachineRouting";
 import { DraftMachinePicker } from "./DraftMachinePicker";
-import { useDraftAttachmentTransfer } from "./draftAttachmentTransfer";
+import {
+  collectDraftVisualAttachmentPaths,
+  useDraftAttachmentTransfer,
+} from "./draftAttachmentTransfer";
 import {
   buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
@@ -10837,11 +10840,19 @@ export function AgentChatPane({
     selectedDraftMachineId,
     selectedDraftMachine?.name,
   ]);
-  const getLinkedDraftVisualAttachmentPaths = useCallback(() => new Set([
-    ...linkedIosAttachmentPathsRef.current,
-    ...linkedAppControlAttachmentPathsRef.current,
-    ...linkedBuiltInBrowserAttachmentPathsRef.current,
-  ]), []);
+  const getLinkedDraftVisualAttachmentPaths = useCallback(
+    () => collectDraftVisualAttachmentPaths({
+      linkedAttachmentPaths: new Set([
+        ...linkedIosAttachmentPathsRef.current,
+        ...linkedAppControlAttachmentPathsRef.current,
+        ...linkedBuiltInBrowserAttachmentPathsRef.current,
+      ]),
+      iosContextItems: iosElementContextItems,
+      appControlContextItems,
+      builtInBrowserContextItems,
+    }),
+    [appControlContextItems, builtInBrowserContextItems, iosElementContextItems],
+  );
   const clearDraftVisualContext = useCallback(() => {
     setIosElementContextItems([]);
     setAppControlContextItems([]);
