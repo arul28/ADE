@@ -6946,6 +6946,63 @@ describe("createAgentChatService", () => {
       expect(textInput).toContain("Inspect the repo and fix the lane launch bug.");
     });
 
+    it("keeps ADE skill roots and commands out of personal Codex sessions", async () => {
+      const bundledSkillRoot = path.join(tmpRoot, "codex-agent-skills");
+      fs.mkdirSync(bundledSkillRoot, { recursive: true });
+      mockState.codexResponseOverrides.set("skills/list", (payload) => {
+        const params = payload.params as { cwds?: unknown } | undefined;
+        const cwd = Array.isArray(params?.cwds) ? params.cwds[0] : undefined;
+        return {
+          data: [{
+            cwd,
+            skills: [
+              { name: "ade-proof-artifacts", description: "Capture ADE proof." },
+              { name: "personal-helper", description: "Help with personal tasks." },
+            ],
+          }],
+        };
+      });
+
+      const { service } = createService({
+        getAdeCliAgentEnv: () => ({
+          ...process.env,
+          ADE_AGENT_SKILLS_DIRS: bundledSkillRoot,
+        }),
+      });
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+        surface: "personal",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Help me organize my week.",
+      });
+
+      await vi.waitFor(() => {
+        expect(service.getSlashCommands({ sessionId: session.id }))
+          .toEqual(expect.arrayContaining([
+            expect.objectContaining({ name: "/personal-helper" }),
+          ]));
+      });
+
+      expect(mockState.codexRequestPayloads.some((payload) =>
+        payload.method === "skills/extraRoots/set"
+      )).toBe(false);
+      const skillsListPayload = mockState.codexRequestPayloads.find(
+        (payload) => payload.method === "skills/list",
+      );
+      expect(skillsListPayload?.params).toEqual({
+        cwds: [expect.any(String)],
+        forceReload: true,
+      });
+      expect(JSON.stringify(skillsListPayload?.params)).not.toContain(bundledSkillRoot);
+      expect(service.getSlashCommands({ sessionId: session.id })
+        .some((command) => /^\/ade(?:-|$)/i.test(command.name))).toBe(false);
+    });
+
     it("adds dynamic orchestration tools to Codex orchestrator threads", async () => {
       const { orchestrationService, created } = await createLoadedOrchestrationRun("S-lead");
       try {

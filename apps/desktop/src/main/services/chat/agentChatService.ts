@@ -1597,6 +1597,10 @@ function isVisibleCodexSlashCommand(command: { name: string }): boolean {
   return slashCommandKey(command.name) !== "/mcp";
 }
 
+function isAdeBundledSkillSlashCommand(command: { name: string }): boolean {
+  return /^\/ade(?:-|$)/i.test(command.name.trim());
+}
+
 type PendingOpenCodeApproval = {
   category: "bash" | "write";
   permissionId: string;
@@ -26149,7 +26153,7 @@ export function createAgentChatService(args: {
 
     const runtime: CodexRuntime = {
       kind: "codex",
-      agentSkillRoots: existingAgentSkillRoots(spawnEnv),
+      agentSkillRoots: isPersonalSession(managed.session) ? [] : existingAgentSkillRoots(spawnEnv),
       serverVersion: null,
       process: proc,
       reader,
@@ -26475,9 +26479,12 @@ export function createAgentChatService(args: {
       "skills/list",
       codexSkillsListParams(managed.laneWorktreePath, extraUserRoots),
     ).then((response) => {
-      runtime.slashCommands = agentSkillSlashCommands(
+      const commands = agentSkillSlashCommands(
         codexSkillsForCwd(response, managed.laneWorktreePath),
       );
+      runtime.slashCommands = isPersonalSession(managed.session)
+        ? commands.filter((command) => !isAdeBundledSkillSlashCommand(command))
+        : commands;
     }).catch(() => { /* skills/list not supported — prompt/CLI fallback remains available */ });
   };
 
@@ -40247,13 +40254,20 @@ export function createAgentChatService(args: {
       const rt = managed?.runtime?.kind === "codex" ? managed.runtime : null;
       const dynamicCommands: AgentChatSlashCommand[] = (rt?.slashCommands ?? [])
         .filter(isVisibleCodexSlashCommand)
+        .filter((command) =>
+          !managed
+          || !isPersonalSession(managed.session)
+          || !isAdeBundledSkillSlashCommand(command)
+        )
         .map((cmd: { name: string; description: string; argumentHint?: string }) => ({
           name: cmd.name,
           description: cmd.description,
           argumentHint: cmd.argumentHint,
           source: "sdk" as const,
         }));
-      const promptCommands = filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
+      const promptCommands = managed && isPersonalSession(managed.session)
+        ? []
+        : filesystemBackedCommands().filter(isVisibleCodexSlashCommand);
       return mergeSlashCommands([promptCommands, CODEX_BUILT_IN_SLASH_COMMANDS, dynamicCommands]);
     }
 
