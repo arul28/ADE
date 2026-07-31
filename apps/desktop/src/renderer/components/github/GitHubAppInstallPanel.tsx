@@ -487,7 +487,7 @@ function repoView(
       if (isGithubRateLimitMessage(error)) {
         return {
           pill: { tone: "warn", color: COLORS.warning, label: "Rate limited" },
-          subtext: "GitHub temporarily paused automatic App checks. ADE is still authorized; wait for the cooldown, then recheck. Re-authorizing is not needed.",
+          subtext: "GitHub temporarily paused automatic App checks. Wait for the cooldown, then recheck.",
         };
       }
       return {

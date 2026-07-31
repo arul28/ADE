@@ -675,8 +675,10 @@ describe("headlessLinearServices", () => {
     const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
     const previousGitHubToken = process.env.GITHUB_TOKEN;
     const previousGhToken = process.env.GH_TOKEN;
+    const previousGhConfigDir = process.env.GH_CONFIG_DIR;
     const previousFetch = globalThis.fetch;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-"));
+    process.env.GH_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-gh-config-"));
     delete process.env.ADE_GITHUB_TOKEN;
     delete process.env.GITHUB_TOKEN;
     delete process.env.GH_TOKEN;
@@ -736,6 +738,8 @@ describe("headlessLinearServices", () => {
       else process.env.GITHUB_TOKEN = previousGitHubToken;
       if (previousGhToken == null) delete process.env.GH_TOKEN;
       else process.env.GH_TOKEN = previousGhToken;
+      if (previousGhConfigDir == null) delete process.env.GH_CONFIG_DIR;
+      else process.env.GH_CONFIG_DIR = previousGhConfigDir;
     }
   });
 

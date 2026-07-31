@@ -2329,11 +2329,12 @@ describe("adeRpcServer", () => {
       }),
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
-    expect(createCall?.env).not.toHaveProperty(ADE_BUNDLED_AGENT_SKILLS_DIR_ENV);
-    expect(createCall?.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\"", "-c", "service_tier=\"default\""]));
-    expect(createCall?.args).not.toContain(expect.stringContaining("fix failing tests"));
-    expect(createCall?.initialInput).toContain("fix failing tests");
-    expect(createCall?.initialInputDelayMs).toBe(750);
+    expect(createCall).toBeDefined();
+    expect(createCall!.env).not.toHaveProperty(ADE_BUNDLED_AGENT_SKILLS_DIR_ENV);
+    expect(createCall!.args).toEqual(expect.arrayContaining(["--model", "gpt-5.5", "-c", "model_reasoning_effort=\"xhigh\"", "-c", "service_tier=\"default\""]));
+    expect(createCall!.args).not.toContain(expect.stringContaining("fix failing tests"));
+    expect(createCall!.initialInput).toContain("fix failing tests");
+    expect(createCall!.initialInputDelayMs).toBe(750);
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
     expect(fixture.runtime.sessionService.updateMeta).toHaveBeenCalledWith(expect.objectContaining({
       sessionId: "session-1",
