@@ -2,7 +2,7 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
+import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
@@ -229,6 +229,16 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
   needsAttentionCount: 0,
   indicator: "none",
   byLaneId: {}
+};
+
+/**
+ * The CTO chat is hidden from every session roster, so it never contributes to
+ * `terminalAttention`. This is its own signal so a hidden thread cannot ask a
+ * question silently.
+ */
+const EMPTY_CTO_ATTENTION: CtoAttentionState = {
+  awaitingInput: false,
+  since: null
 };
 
 const WORK_VIEW_STORAGE_KEY = "ade.workViewState.v1";
@@ -1087,6 +1097,7 @@ export type AppState = {
   laneInspectorTabs: Record<string, LaneInspectorTab>;
   keybindings: KeybindingsSnapshot | null;
   terminalAttention: TerminalAttentionSnapshot;
+  ctoAttention: CtoAttentionState;
   smartTooltipsEnabled: boolean;
   onboardingEnabled: boolean;
   didYouKnowEnabled: boolean;
@@ -1227,6 +1238,7 @@ export type AppState = {
       | ((prev: TerminalPreferences) => TerminalPreferences)
   ) => void;
   setTerminalAttention: (snapshot: TerminalAttentionSnapshot) => void;
+  setCtoAttention: (snapshot: CtoAttentionState) => void;
   setSmartTooltipsEnabled: (enabled: boolean) => void;
   setOnboardingEnabled: (enabled: boolean) => void;
   setDidYouKnowEnabled: (enabled: boolean) => void;
@@ -1484,6 +1496,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   laneInspectorTabs: {},
   keybindings: null,
   terminalAttention: EMPTY_TERMINAL_ATTENTION,
+  ctoAttention: EMPTY_CTO_ATTENTION,
   smartTooltipsEnabled: initialUserPreferences.smartTooltipsEnabled,
   onboardingEnabled: initialUserPreferences.onboardingEnabled,
   didYouKnowEnabled: initialUserPreferences.didYouKnowEnabled,
@@ -1575,6 +1588,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           ? {
               laneInspectorTabs: {},
               terminalAttention: EMPTY_TERMINAL_ATTENTION,
+              ctoAttention: EMPTY_CTO_ATTENTION,
             }
           : {}),
         // Lane data is replaced on a project change, and additionally restored
@@ -1926,6 +1940,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       return { terminalPreferences: updated };
     }),
   setTerminalAttention: (terminalAttention) => set({ terminalAttention }),
+  setCtoAttention: (ctoAttention) => set({ ctoAttention }),
   setSmartTooltipsEnabled: (enabled) =>
     set((prev) => {
       persistUserPreferencesFrom({ ...prev, smartTooltipsEnabled: enabled });
@@ -2346,6 +2361,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneInspectorTabs: {},
           keybindings: null,
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
+          ctoAttention: EMPTY_CTO_ATTENTION,
           dismissedMissingAiBannerRoots: pickDismissMapForRoots(prev.dismissedMissingAiBannerRoots, [project.rootPath]),
           dismissedGithubBannerRoots: pickDismissMapForRoots(prev.dismissedGithubBannerRoots, [project.rootPath]),
         };
@@ -2444,6 +2460,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             laneInspectorTabs: {},
             keybindings: null,
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
+            ctoAttention: EMPTY_CTO_ATTENTION,
           }
         : {}),
       ...(outgoingProjectKey
@@ -2491,6 +2508,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
             laneInspectorTabs: {},
             keybindings: null,
             terminalAttention: EMPTY_TERMINAL_ATTENTION,
+            ctoAttention: EMPTY_CTO_ATTENTION,
           });
       invalidateAiDiscoveryCache(rootPath);
       invalidateProjectConfigCache(rootPath);
@@ -2676,6 +2694,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           laneInspectorTabs: {},
           keybindings: null,
           terminalAttention: EMPTY_TERMINAL_ATTENTION,
+          ctoAttention: EMPTY_CTO_ATTENTION,
           laneCacheByProject,
         };
       });
@@ -2739,6 +2758,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         laneInspectorTabs: {},
         keybindings: null,
         terminalAttention: EMPTY_TERMINAL_ATTENTION,
+        ctoAttention: EMPTY_CTO_ATTENTION,
         openProjectTabRoots: [],
         openRemoteProjectTabs: [],
         // No active project: drop every dismiss entry so reopening the same project later starts with a clean slate.

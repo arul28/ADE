@@ -478,6 +478,20 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
 5. Guarded permission defaults: Claude defaults to `"default"` (ask
    before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
    is only applied when explicitly requested.
+6. Work the CTO launches never lands on the CTO's own lane.
+   `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
+   creates a dedicated lane; it has no fallback to the CTO session's
+   lane, because that lane is the project's primary lane. The capability
+   manifest carries the matching rule so the model asks for the right
+   thing in the first place. See
+   [CTO](../cto/README.md#where-cto-launched-work-runs).
+7. Creating the CTO thread seeds one real, visible opening user turn
+   (`seedCtoIntroTurn`) so a first-run thread is not blank. It fires only
+   on creation, once per project, and is recorded in CTO onboarding
+   state.
+8. Because the thread is hidden from every session roster, its
+   "needs you" state is read through the dedicated read-only
+   `getCtoAttention` probe rather than the shared attention summary.
 
 `AgentChatIdentityKey` is now just `"cto"` — the `"cto"` thread is the
 only identity session. The former `"agent:<id>"` worker sessions were

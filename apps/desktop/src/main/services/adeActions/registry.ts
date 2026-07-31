@@ -86,6 +86,7 @@ import type {
   ProxyStatus,
   AiFeatureKey,
   AiSettingsStatus,
+  CtoAttentionState,
   CtoRunProjectScanResult,
   CtoLinearQuickView,
   LinearConnectionStatus,
@@ -692,6 +693,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   cto_state: [
     "completeOnboardingStep",
     "dismissOnboarding",
+    "getAttention",
     "getIdentity",
     "getOnboardingState",
     "getSessionLogs",
@@ -1772,6 +1774,14 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
       const detection = await runtime.onboardingService?.detectDefaults().catch(() => null) ?? null;
       return { detection };
     },
+    /**
+     * Read-only attention probe for the hidden CTO thread. Delegates to the
+     * chat service so this transport cannot derive "needs you" differently from
+     * the plain-IPC one.
+     */
+    getAttention: async (): Promise<CtoAttentionState> =>
+      (await runtime.agentChatService?.getCtoAttention())
+      ?? { awaitingInput: false, since: null },
   };
 }
 
