@@ -1718,7 +1718,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
     $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat note "running e2e shard 2/4"         Update this session's Work sidebar status line
+    $ ade chat note "testing desktop auth fallback" Update the Work status line (max 6 words)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a

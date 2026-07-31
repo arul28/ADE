@@ -106,7 +106,11 @@ function seedDatabase(): void {
       set settled_at = ?, status_note = ?
       where id = ?
     `,
-  ).run("2026-01-02T00:01:00Z", "Index complete", "chat-run");
+  ).run(
+    "2026-01-02T00:01:00Z",
+    "Indexing complete and waiting for final review now",
+    "chat-run",
+  );
   db.prepare(
     `
       update terminal_sessions
@@ -249,7 +253,7 @@ describe("buildRosterSnapshot", () => {
 
     expect(byId.get("chat-run")).toMatchObject({
       settledAt: "2026-01-02T00:01:00Z",
-      statusNote: "Index complete",
+      statusNote: "Indexing complete and waiting for final…",
       exitCode: null,
     });
     expect(byId.get("chat-await")).toMatchObject({

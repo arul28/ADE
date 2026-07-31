@@ -1364,11 +1364,34 @@ describe("sessionService resume metadata", () => {
     });
 
     service.setStatusNote("session-markers", `  ${"n".repeat(210)}  `);
-    expect(service.get("session-markers")?.statusNote).toBe("n".repeat(200));
+    expect(service.get("session-markers")?.statusNote).toBe(`${"n".repeat(71)}…`);
+    expect(db.get<{ statusNote: string }>(
+      "select status_note as statusNote from terminal_sessions where id = ?",
+      ["session-markers"],
+    )?.statusNote).toBe(`${"n".repeat(71)}…`);
+    service.setStatusNote(
+      "session-markers",
+      "  CI is green and waiting for Codex review now  ",
+    );
+    expect(service.get("session-markers")?.statusNote)
+      .toBe("CI is green and waiting for…");
+    expect(db.get<{ statusNote: string }>(
+      "select status_note as statusNote from terminal_sessions where id = ?",
+      ["session-markers"],
+    )?.statusNote).toBe("CI is green and waiting for…");
+    service.setStatusNote("session-markers", "界".repeat(100));
+    expect(service.get("session-markers")?.statusNote).toBe(`${"界".repeat(71)}…`);
     service.setStatusNote("session-markers", "   ");
     expect(service.get("session-markers")?.statusNote).toBeNull();
 
-    service.settleSession("session-markers", { settledAt: "2026-03-17T01:00:00.000Z" });
+    service.settleSession("session-markers", {
+      settledAt: "2026-03-17T01:00:00.000Z",
+      outcome: "Completed fixes and waiting for release review now",
+    });
+    expect(db.get<{ statusNote: string }>(
+      "select status_note as statusNote from terminal_sessions where id = ?",
+      ["session-markers"],
+    )?.statusNote).toBe("Completed fixes and waiting for release…");
     service.requestAttention("session-markers", `  ${"a".repeat(510)}  `);
     expect(service.get("session-markers")).toEqual(expect.objectContaining({
       settledAt: null,

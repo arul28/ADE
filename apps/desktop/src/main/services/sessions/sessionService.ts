@@ -17,6 +17,7 @@ import type {
   ListSessionsArgs,
   UpdateSessionMetaArgs,
 } from "../../../shared/types";
+import { normalizeSessionStatusNote } from "../../../shared/sessionStatusNote";
 import {
   isTrackedAgentCliToolType,
   parseSessionSettleOverride,
@@ -545,7 +546,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       resumeCommand: deriveResumeMetadataCommand(resumeMetadata, row.resumeCommand, toolType),
       archivedAt: row.archivedAt ?? null,
       settledAt: normalizeIsoTimestamp(row.settledAt),
-      statusNote: normalizeOptionalText(row.statusNote, 200),
+      statusNote: normalizeSessionStatusNote(row.statusNote),
       attentionRequestedAt: normalizeIsoTimestamp(row.attentionRequestedAt),
       attentionMessage: normalizeOptionalText(row.attentionMessage, 500),
       attentionSource: normalizeAttentionSource(row.attentionSource),
@@ -698,7 +699,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       [
         normalizeIsoTimestamp(options.settledAt) ?? new Date().toISOString(),
         options.source ?? "user",
-        ...(hasOutcome ? [normalizeOptionalText(options.outcome, 200)] : []),
+        ...(hasOutcome ? [normalizeSessionStatusNote(options.outcome)] : []),
         ...newlySettled,
       ],
     );
@@ -1410,7 +1411,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       opts: { outcome?: string | null; settledAt?: string; source?: SessionSettleSource } = {},
     ): boolean {
       const settledAt = normalizeIsoTimestamp(opts.settledAt) ?? new Date().toISOString();
-      const outcome = normalizeOptionalText(opts.outcome, 200);
+      const outcome = normalizeSessionStatusNote(opts.outcome);
       return mutateSessionMeta(sessionId, (id) => {
         // An explicit settle also drops a stale keep-active pin — otherwise the
         // override would silently veto the settle the user just asked for.
@@ -1674,7 +1675,7 @@ export function createSessionService({ db }: { db: AdeDb }) {
       return mutateSessionMeta(sessionId, (id) => {
         db.run(
           "update terminal_sessions set status_note = ? where id = ?",
-          [normalizeOptionalText(note, 200), id],
+          [normalizeSessionStatusNote(note), id],
         );
       });
     },

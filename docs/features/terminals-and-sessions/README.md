@@ -1276,7 +1276,9 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    not dismiss the user's pending question. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
-   only the status line.
+   only the status line. Status notes are normalized to at most six words at
+   the session-service boundary so the sidebar remains glanceable; blocking
+   detail belongs in the separate `ade chat ask` question.
 
    Beyond the binary settle there is a tri-state **settle override**
    (`terminal_sessions.settle_override`). `"settled"` behaves like a declared

@@ -198,8 +198,9 @@ export type TerminalSessionSummary = {
    * attention_requested_at / attention_message / last_turn_failed_at). All
    * optional for migration tolerance; nullable-ISO semantics match
    * lastActivityAt. settledAt presence = the settled tier (activity clears it
-   * at the write site). statusNote is the agent-authored ~60-char status line
-   * (outcome line once settled). attentionRequestedAt/-Message carry an
+   * at the write site). statusNote is the agent-authored glanceable status line,
+   * normalized to at most six words (and used as the outcome once settled).
+   * attentionRequestedAt/-Message carry an
    * `ade chat ask` escalation for chat sessions. lastTurnFailedAt marks a chat
    * turn that died on a runtime/API error (cleared on next turn start).
    */

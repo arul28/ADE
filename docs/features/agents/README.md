@@ -66,7 +66,8 @@ next-run values before ending the turn.
 Regular chat and tracked CLI agents can also narrate their lifecycle directly
 into the Work list:
 
-- `ade chat note "running e2e shard 2/4"` updates the row's quiet status line;
+- `ade chat note "testing desktop auth fallback"` updates the row's quiet
+  status line, normalized to at most six words;
   an empty note clears it.
 - `ade chat ask "Which account should I use?"` creates a loud, persisted
   `Needs you` state, clears settle, and sends a time-sensitive push. The next

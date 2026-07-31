@@ -54,7 +54,7 @@ describe("buildCursorSdkSystemPrompt", () => {
 
   it("always emits the shared session status protocol", () => {
     const out = buildCursorSdkSystemPrompt({ runtime: "local" });
-    expect(out.text).toContain('ade chat note "running e2e shard 2/4"');
+    expect(out.text).toContain('ade chat note "testing desktop auth fallback"');
     expect(out.text).toContain('ade chat ask "<the exact question>"');
     // Settlement is user- and PR-merge-driven only; the prompt must never hand
     // a Cursor agent a settle command again.

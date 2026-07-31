@@ -25,7 +25,7 @@ export const adeBundledAgentSkills = [
  */
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
-  '- Working: `ade chat note "running e2e shard 2/4"`; state the concrete work and next dependency, never just "Working" or "Blocked".',
+  '- Working: `ade chat note "testing desktop auth fallback"`; use 3–6 words and be concrete. Long notes truncate; no sentences or vague "Working" / "Blocked".',
   '- Blocked on user input: first `ade chat note "<what is blocked and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
   "- The next accepted user message clears the prior hand-raise. If it does not resolve the blocker, update the note and call `ade chat ask` again before ending the turn.",
   '- Done: say so in your final message and leave a durable one-line result via `ade chat note "<delivered result>"`.',

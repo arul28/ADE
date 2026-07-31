@@ -191,8 +191,9 @@ row. If you are blocked, `ade chat ask "<question>"` raises the row's hand.
 Treat the status line and hand-raise as separate signals:
 
 - **`ade chat note` explains the current state.** Write one concrete,
-  present-tense sentence containing the work or result and the next dependency.
-  Good: `CI is green; waiting for Codex review on commit 8f21a4c.`
+  present-tense summary of **3–6 words**. ADE truncates longer notes after the
+  sixth word, so put the decisive state first and never write a full sentence.
+  Good: `CI green; awaiting Codex review`
   Bad: `Working`, `Still looking`, `Blocked`, or `Done`.
 - **`ade chat ask` means work cannot continue without a user answer.** Ask the
   exact question that unlocks the next action. Include the meaningful choices
@@ -215,12 +216,12 @@ Treat the status line and hand-raise as separate signals:
 
 | Situation | Required action | Example |
 |---|---|---|
-| Actively working | `note` when the phase materially changes | `Reproduced the branch-refresh bug; updating the shared lane projection.` |
-| Waiting on external work | `note`, then poll or snooze | `PR #977 CI is running on 8 shards; next poll is scheduled in 12 minutes.` |
-| Blocked on user input | `note`, then `ask` | Note: `Two migration strategies preserve existing data; implementation is paused.` Ask: `Use the reversible in-place migration, or create a new store and copy records?` |
-| Recoverable error | `note`, investigate, continue | `Desktop shard 7 timed out without a failed assertion; rerunning that shard.` |
-| Unrecoverable error needing user action | `note`, then `ask` | Note: `GitHub rejected the push because no writable credential is available.` Ask: `Authenticate gh, or should I use the stored PAT?` |
-| Delivered | final response plus `note` | `PR #977 merged; automatic lane naming and live branch refresh are shipped.` |
+| Actively working | `note` when the phase materially changes | `Fixing live branch refresh` |
+| Waiting on external work | `note`, then poll or snooze | `PR #977 CI running` |
+| Blocked on user input | `note`, then `ask` | Note: `Waiting for migration choice` Ask: `Use the reversible in-place migration, or create a new store and copy records?` |
+| Recoverable error | `note`, investigate, continue | `Rerunning timed-out desktop shard` |
+| Unrecoverable error needing user action | `note`, then `ask` | Note: `Writable GitHub credential missing` Ask: `Authenticate gh, or should I use the stored PAT?` |
+| Delivered | final response plus `note` | `PR #977 merged; fixes shipped` |
 
 Before ending any non-delivered turn, ask: **Can useful work continue without
 the user?** If yes, continue or snooze—do not hand-raise. If no, ensure both a
