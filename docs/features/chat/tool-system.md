@@ -12,7 +12,7 @@ worker to respawn.
 | `apps/desktop/src/main/services/ai/tools/executableTool.ts` | Thin wrapper around Zod + a handler function. Produces the common tool interface the Claude/Codex/OpenCode adapters consume. |
 | `apps/desktop/src/main/services/ai/tools/universalTools.ts` | Read, write, bash, todo, web fetch/search, ask-user. Available to every agent. |
 | `apps/desktop/src/main/services/ai/tools/workflowTools.ts` | `createLane`, `createPrFromLane`, `captureScreenshot`, `reportCompletion`, and the four PR issue-resolution tools. |
-| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. |
+| `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` | CTO-only: `spawnChat`, lanes/PRs/git/tests, Linear reads and lightweight updates, and the `saveMemory` / `searchMemory` / `readMemory` memory tools. Git reads default their lane (`resolveReadLaneId`); git mutations require an explicit one (`requireMutationLaneId`). |
 | `apps/desktop/src/main/services/ai/tools/linearTools.ts` | Linear-only tools for CTO when Linear is connected. |
 | `apps/desktop/src/main/services/ai/tools/systemPrompt.ts` | `buildCodingAgentSystemPrompt` -- renders the top-of-context system prompt; adapts wording based on which tool names are present. |
 | `apps/desktop/src/main/services/ai/toolExposurePolicy.ts` | Filters tools by context (e.g., frontend-repo discovery tools). |
@@ -123,7 +123,7 @@ uses to act on ADE itself:
 
 | Tool family | Purpose |
 |---|---|
-| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, and initial prompt. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its own lane is the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
+| `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, and initial prompt. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
 | `interruptChat`, `handoffChat` | Mid-session control over other chat sessions. |
 | `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
@@ -131,10 +131,50 @@ uses to act on ADE itself:
 | Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
 | `listLinearIssues`, `getLinearIssue` | Issue reads. |
 | `listTestSuites`, `runTestSuite`, `stopTestSuite`, `listTestRuns` | Test orchestration. |
+| `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState` | Git reads. `laneId` is optional and defaults to the CTO session's lane. |
+| `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, `gitMergeAbort` | Git mutations. `laneId` is **required** — see [Lane defaulting is read-only](#lane-defaulting-is-read-only). |
 
 The system prompt's capability manifest is driven by which tool names
 are actually present; `systemPrompt.ts` inspects `toolNames` and
 renders only the sections the agent can act on.
+
+### Registration on a live session
+
+The CTO tool set is a second consumer of the same per-provider tool
+transports the orchestration tool set uses, gated on `identityKey === "cto"`
+via `createCtoRuntimeToolMap(managed)` in `agentChatService.ts`:
+
+- **Claude** — `buildClaudeCtoMcpServer` produces an SDK MCP server named
+  `ade-cto` merged into `opts.mcpServers`. It is deliberately injected
+  *without* the orchestration lead's `allowManagedMcpServersOnly` lockdown,
+  because the CTO is a daily-driver chat that must keep the user's own MCP
+  servers.
+- **Codex** — `refreshCodexDynamicTools` registers them as dynamic tools
+  under the `ade_cto` namespace next to orchestration's `ade_orchestration`.
+  Both sets must register in that one function: it clears the runtime's
+  dynamic-tool map before rebuilding, so a second refresher would clobber the
+  first. Dispatch falls back by bare name across both namespaces when a call
+  arrives un-namespaced.
+- **Cursor, Droid, OpenCode** — a second HTTP MCP lease
+  (`ensureCtoHttpMcpServer`, cached on `managed.ctoHttpMcpServer`) advertised
+  under the `ade-cto` server name. It is a separate lease from
+  `orchestrationHttpMcpServer` because each lease carries exactly one tool
+  set; `closeOrchestrationHttpMcpServer` closes both.
+
+`buildCtoOperatorToolDeps` builds the dependency set for both the runtime map
+and `previewSessionToolNames` (which enumerates the same names for the prompt),
+so the advertised surface and the callable surface cannot drift.
+
+### Lane defaulting is read-only
+
+The CTO session is pinned to the project's **primary lane**, so `defaultLaneId`
+means "the primary worktree". `ctoOperatorTools.ts` therefore splits lane
+resolution in two: `resolveReadLaneId` keeps the default (inspecting primary is
+normal supervision), while `requireMutationLaneId` has no default and throws
+when `laneId` is missing. The mutating tools' zod schemas mark `laneId` required
+so the model sees the requirement up front, and `gitGuard` / `conflictGuard`
+convert the throw into a recoverable `{ success: false, error }` that names
+`listLanes` rather than failing the turn.
 
 ## Standalone-chat restrictions
 

@@ -474,16 +474,21 @@ CTO sessions (`identityKey: "cto"`) are routed differently:
    (`CtoPersonalityPreset`). See `ctoStateService.ts`.
 4. Extra tooling: CTO sessions receive `ctoOperatorTools` (including the
    `saveMemory` / `searchMemory` / `readMemory` memory tools) and Linear
-   tools when connected.
+   tools when connected. `createCtoRuntimeToolMap` registers them on the
+   live session through each provider's tool transport — an `ade-cto` SDK
+   MCP server (Claude), the `ade_cto` dynamic-tool namespace (Codex), or a
+   dedicated HTTP MCP lease (Cursor / Droid / OpenCode). See
+   [tool-system](tool-system.md#registration-on-a-live-session).
 5. Guarded permission defaults: Claude defaults to `"default"` (ask
    before dangerous ops); OpenCode defaults to `"edit"`. `full-auto`
    is only applied when explicitly requested.
-6. Work the CTO launches never lands on the CTO's own lane.
+6. Work the CTO launches never lands on the primary lane.
    `resolveCtoExecutionLane` honors an explicit `laneId` and otherwise
    creates a dedicated lane; it has no fallback to the CTO session's
    lane, because that lane is the project's primary lane. The capability
    manifest carries the matching rule so the model asks for the right
-   thing in the first place. See
+   thing in the first place. Mutating git tools follow the same rule
+   through `requireMutationLaneId`, which refuses to default at all. See
    [CTO](../cto/README.md#where-cto-launched-work-runs).
 7. Creating the CTO thread seeds one real, visible opening user turn
    (`seedCtoIntroTurn`) so a first-run thread is not blank. It fires only

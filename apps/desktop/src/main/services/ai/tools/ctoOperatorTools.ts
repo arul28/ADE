@@ -1380,7 +1380,32 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   // Git Operations
   // ---------------------------------------------------------------------------
 
-  const resolveLaneId = (laneId?: string): string => laneId?.trim() || deps.defaultLaneId;
+  /**
+   * Lane for a *read*. Defaulting to the CTO's own session lane is fine here:
+   * inspecting the primary lane is normal supervision.
+   */
+  const resolveReadLaneId = (laneId?: string): string => laneId?.trim() || deps.defaultLaneId;
+
+  /**
+   * Lane for a *mutation*. Deliberately has no default.
+   *
+   * `deps.defaultLaneId` is the CTO session's lane, and the CTO session is
+   * pinned to the project's primary lane — so defaulting here would turn an
+   * omitted `laneId` into "commit/push/reset the primary worktree", which is
+   * exactly what lanes exist to prevent. The capability manifest tells the CTO
+   * to name a lane for real work; this enforces it in code instead of trusting
+   * the model to have read the prompt. `gitGuard`/`conflictGuard` turn the
+   * throw into a `{ success: false, error }` the CTO can recover from by
+   * retrying with an explicit lane.
+   */
+  const requireMutationLaneId = (laneId: string | undefined, operation: string): string => {
+    const trimmed = laneId?.trim();
+    if (trimmed) return trimmed;
+    throw new Error(
+      `${operation} needs an explicit laneId. It is a mutating git operation and there is no safe default — `
+      + "the CTO's own lane is the project's primary lane. Call listLanes and pass the lane you mean.",
+    );
+  };
 
   const gitGuard = async <T>(fn: () => Promise<T>): Promise<{ success: true } & T | { success: false; error: string }> => {
     if (!deps.gitService) return { success: false, error: "Git service is not available." };
@@ -1394,53 +1419,53 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.gitStatus = tool({
     description: "Get the git sync status for a lane (branch, ahead/behind, dirty state).",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getSyncStatus({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getSyncStatus({ laneId: resolveReadLaneId(laneId) })),
   });
 
   tools.gitCommit = tool({
-    description: "Create a git commit in a lane. By default stages all changes (stageAll: true). Use gitStatus first to see what will be committed.",
-    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
-    execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: resolveLaneId(laneId), message, stageAll })),
+    description: "Create a git commit in a named lane. By default stages all changes (stageAll: true). Use gitStatus first to see what will be committed. Never commits to the CTO's own lane by default — laneId is required.",
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to commit in. Required — there is no default."), message: z.string().min(1).describe("Commit message."), stageAll: z.boolean().optional().default(true).describe("Stage all changes before committing.") }),
+    execute: ({ laneId, message, stageAll }) => gitGuard(() => deps.gitService!.commit({ laneId: requireMutationLaneId(laneId, "gitCommit"), message, stageAll })),
   });
 
   tools.gitPush = tool({
-    description: "Push commits to the remote for a lane.",
-    inputSchema: z.object({ laneId: z.string().optional(), force: z.boolean().optional().default(false) }),
-    execute: ({ laneId, force }) => gitGuard(() => deps.gitService!.push({ laneId: resolveLaneId(laneId), force })),
+    description: "Push commits to the remote for a named lane. laneId is required — there is no default.",
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to push. Required — there is no default."), force: z.boolean().optional().default(false) }),
+    execute: ({ laneId, force }) => gitGuard(() => deps.gitService!.push({ laneId: requireMutationLaneId(laneId, "gitPush"), force })),
   });
 
   tools.gitPull = tool({
     description: "Pull from the remote for a lane. Defaults to fast-forward only; use rebase or merge when that is the intended history shape.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
+      laneId: z.string().min(1).describe("Lane to pull into. Required — there is no default."),
       mode: z.enum(["ff-only", "rebase", "merge"]).optional().default("ff-only"),
     }),
-    execute: ({ laneId, mode }) => gitGuard(() => deps.gitService!.pull({ laneId: resolveLaneId(laneId), mode })),
+    execute: ({ laneId, mode }) => gitGuard(() => deps.gitService!.pull({ laneId: requireMutationLaneId(laneId, "gitPull"), mode })),
   });
 
   tools.gitUndoLastHeadChange = tool({
-    description: "Undo the latest successful head-changing git operation recorded by ADE for a lane. This resets the lane with git reset --hard.",
+    description: "Undo the latest successful head-changing git operation recorded by ADE for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.undoLastHeadChange({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.undoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitUndo") })),
   });
 
   tools.gitRedoLastHeadChange = tool({
-    description: "Redo the latest successful ADE git undo for a lane. This resets the lane with git reset --hard.",
+    description: "Redo the latest successful ADE git undo for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.redoLastHeadChange({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.redoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitRedo") })),
   });
 
   tools.gitFetch = tool({
     description: "Fetch remote refs for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.fetch({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.fetch({ laneId: resolveReadLaneId(laneId) })),
   });
 
   tools.gitListRecentCommits = tool({
     description: "List recent commits in a lane.",
     inputSchema: z.object({ laneId: z.string().optional(), limit: z.number().int().positive().max(100).optional().default(20) }),
     execute: ({ laneId, limit }) => gitGuard(async () => {
-      const commits = await deps.gitService!.listRecentCommits({ laneId: resolveLaneId(laneId), limit });
+      const commits = await deps.gitService!.listRecentCommits({ laneId: resolveReadLaneId(laneId), limit });
       return { count: commits.length, commits };
     }),
   });
@@ -1449,7 +1474,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description: "List git branches for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(async () => {
-      const branches = await deps.gitService!.listBranches({ laneId: resolveLaneId(laneId) });
+      const branches = await deps.gitService!.listBranches({ laneId: resolveReadLaneId(laneId) });
       return { count: branches.length, branches };
     }),
   });
@@ -1457,7 +1482,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.gitCheckoutBranch = tool({
     description: "Switch to or create a git branch in a lane.",
     inputSchema: z.object({
-      laneId: z.string().optional(),
+      laneId: z.string().min(1).describe("Lane to switch branches in. Required — there is no default."),
       branch: z.string().min(1),
       create: z.boolean().optional().default(false),
       startPoint: z.string().optional(),
@@ -1465,7 +1490,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       acknowledgeActiveWork: z.boolean().optional().default(false),
     }),
     execute: ({ laneId, branch, create, startPoint, baseRef, acknowledgeActiveWork }) => gitGuard(() => deps.gitService!.checkoutBranch({
-      laneId: resolveLaneId(laneId),
+      laneId: requireMutationLaneId(laneId, "gitCheckoutBranch"),
       branchName: branch,
       mode: create ? "create" : "existing",
       startPoint,
@@ -1476,15 +1501,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.gitStashPush = tool({
     description: "Stash working changes for a lane branch.",
-    inputSchema: z.object({ laneId: z.string().optional(), message: z.string().optional() }),
-    execute: ({ laneId, message }) => gitGuard(() => deps.gitService!.stashPush({ laneId: resolveLaneId(laneId), ...(message?.trim() ? { message: message.trim() } : {}) })),
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to stash in. Required — there is no default."), message: z.string().optional() }),
+    execute: ({ laneId, message }) => gitGuard(() => deps.gitService!.stashPush({ laneId: requireMutationLaneId(laneId, "gitStashPush"), ...(message?.trim() ? { message: message.trim() } : {}) })),
   });
 
   tools.gitStashPop = tool({
     description: "Pop a stash saved for a lane branch. Defaults to the latest branch-matching stash; call gitStashList to inspect refs.",
-    inputSchema: z.object({ laneId: z.string().optional(), stashRef: z.string().optional() }),
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to pop the stash in. Required — there is no default."), stashRef: z.string().optional() }),
     execute: ({ laneId, stashRef }) => gitGuard(async () => {
-      const resolvedLaneId = resolveLaneId(laneId);
+      const resolvedLaneId = requireMutationLaneId(laneId, "gitStashPop");
       const trimmedRef = stashRef?.trim();
       const stashes = await deps.gitService!.listStashes({ laneId: resolvedLaneId });
       const selectedStash = trimmedRef
@@ -1507,7 +1532,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     description: "List stashes saved for a lane branch.",
     inputSchema: z.object({ laneId: z.string().optional() }),
     execute: ({ laneId }) => gitGuard(async () => {
-      const stashes = await deps.gitService!.listStashes({ laneId: resolveLaneId(laneId) });
+      const stashes = await deps.gitService!.listStashes({ laneId: resolveReadLaneId(laneId) });
       return { count: stashes.length, stashes };
     }),
   });
@@ -1515,25 +1540,25 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.gitGetConflictState = tool({
     description: "Check if a lane has merge or rebase conflicts in progress.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getConflictState({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.getConflictState({ laneId: resolveReadLaneId(laneId) })),
   });
 
   tools.gitRebaseContinue = tool({
     description: "Continue a rebase after resolving conflicts.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseContinue({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseContinue({ laneId: requireMutationLaneId(laneId, "gitRebaseContinue") })),
   });
 
   tools.gitRebaseAbort = tool({
     description: "Abort an in-progress rebase.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseAbort({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseAbort({ laneId: requireMutationLaneId(laneId, "gitRebaseAbort") })),
   });
 
   tools.gitMergeAbort = tool({
     description: "Abort an in-progress merge.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.mergeAbort({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.mergeAbort({ laneId: requireMutationLaneId(laneId, "gitMergeAbort") })),
   });
 
   // ---------------------------------------------------------------------------
@@ -1552,7 +1577,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   tools.getConflictStatus = tool({
     description: "Check merge conflict status for a lane.",
     inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => conflictGuard(() => deps.conflictService!.getLaneStatus({ laneId: resolveLaneId(laneId) })),
+    execute: ({ laneId }) => conflictGuard(() => deps.conflictService!.getLaneStatus({ laneId: resolveReadLaneId(laneId) })),
   });
 
   tools.getConflictRiskMatrix = tool({

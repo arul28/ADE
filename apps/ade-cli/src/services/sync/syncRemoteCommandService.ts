@@ -4779,6 +4779,13 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     const recentLimit = asOptionalNumber(payload.recentLimit);
     return ctoStateService.getSnapshot(recentLimit ?? 20);
   });
+  register("cto.getAttention", { viewerAllowed: true }, async () => {
+    const agentChatService = requireService(args.agentChatService, "Agent chat service not available.");
+    // Strictly read-only: `getCtoAttention` never calls ensureIdentitySession,
+    // so a phone drawing a badge cannot materialize a primary lane and a CTO
+    // chat session as a side effect. Returns CtoAttentionState verbatim.
+    return agentChatService.getCtoAttention();
+  });
   register("cto.getMemory", { viewerAllowed: true }, async () => {
     const ctoMemoryService = requireService(args.ctoMemoryService, "CTO memory service not available.");
     // Returns the exact CtoMemorySnapshot shape the iOS client decodes:

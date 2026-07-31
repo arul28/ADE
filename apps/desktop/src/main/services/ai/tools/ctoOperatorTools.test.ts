@@ -182,6 +182,70 @@ describe("createCtoOperatorTools", () => {
     expect(gitService.stashPop).not.toHaveBeenCalled();
   });
 
+  // The CTO session is pinned to the project's primary lane, so `defaultLaneId`
+  // IS primary. A mutating git call with the lane omitted used to mean "write to
+  // the primary worktree" — the thing lanes exist to prevent.
+  describe("mutating git tools refuse to default the lane", () => {
+    const MUTATIONS: Array<[string, Record<string, unknown>]> = [
+      ["gitCommit", { message: "wip" }],
+      ["gitPush", {}],
+      ["gitPull", {}],
+      ["gitUndoLastHeadChange", {}],
+      ["gitRedoLastHeadChange", {}],
+      ["gitStashPush", {}],
+      ["gitStashPop", {}],
+      ["gitCheckoutBranch", { branch: "feature" }],
+      ["gitRebaseContinue", {}],
+      ["gitRebaseAbort", {}],
+      ["gitMergeAbort", {}],
+    ];
+
+    it.each(MUTATIONS)("%s errors instead of falling back to the CTO's lane", async (toolName, args) => {
+      const gitService = {
+        commit: vi.fn(), push: vi.fn(), pull: vi.fn(),
+        undoLastHeadChange: vi.fn(), redoLastHeadChange: vi.fn(),
+        stashPush: vi.fn(), stashPop: vi.fn(), listStashes: vi.fn().mockResolvedValue([]),
+        checkoutBranch: vi.fn(), rebaseContinue: vi.fn(), rebaseAbort: vi.fn(), mergeAbort: vi.fn(),
+      };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools[toolName] as any).execute(args);
+
+      expect(result.success).toBe(false);
+      expect(result.error).toContain("needs an explicit laneId");
+      // Nothing may have touched git — especially not on the default lane.
+      for (const [name, call] of Object.entries(gitService)) {
+        if (name === "listStashes") continue; // read-only lookup inside gitStashPop
+        expect(call, `${name} must not run without an explicit lane`).not.toHaveBeenCalled();
+      }
+    });
+
+    it("still runs the mutation when the lane is named", async () => {
+      const gitService = { commit: vi.fn().mockResolvedValue({ operationId: "commit-1" }) };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      const result = await (tools.gitCommit as any).execute({ laneId: "lane-9", message: "real work" });
+
+      expect(gitService.commit).toHaveBeenCalledWith(
+        expect.objectContaining({ laneId: "lane-9", message: "real work" }),
+      );
+      expect(result).toMatchObject({ success: true });
+    });
+
+    it("keeps defaulting the lane for read-only git inspection", async () => {
+      const gitService = { getSyncStatus: vi.fn().mockResolvedValue({ branch: "main" }) };
+      const deps = buildDeps({ gitService: gitService as any });
+      const tools = createCtoOperatorTools(deps);
+
+      await (tools.gitStatus as any).execute({});
+
+      // Reading the primary lane is normal supervision, so this default stays.
+      expect(gitService.getSyncStatus).toHaveBeenCalledWith({ laneId: "lane-1" });
+    });
+  });
+
   // ── Chat tools ──────────────────────────────────────────────────
 
   describe("chat tools", () => {

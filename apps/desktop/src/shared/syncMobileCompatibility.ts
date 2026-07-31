@@ -10,6 +10,11 @@ export const MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS = [
   "cto.completeLinearMobileOAuth",
   "cto.setLinearToken",
   "cto.clearLinearToken",
+  // Whether the CTO thread is blocked on the user. The CTO chat is hidden from
+  // every session roster, so the phone cannot derive this from its chat list —
+  // it must ask. Optional so a phone on a newer build simply never lights the
+  // dot against an older brain.
+  "cto.getAttention",
   // Session lifecycle. The phone gates its settle/snooze affordances on these
   // appearing in hello_ok.features.commandRouting.actions, so they must be
   // advertised — but they stay OPTIONAL: shipped builds predating the feature

@@ -205,7 +205,12 @@ must not put a host in `limited`. The four Linear connection commands
 `cto.setLinearToken`, `cto.clearLinearToken`) that let the phone connect,
 reconnect, and disconnect Linear are optional: a brain that predates them simply
 doesn't advertise them, and the iOS Linear pane hides those affordances locally
-instead of erroring. The session-lifecycle commands
+instead of erroring. `cto.getAttention` — the read-only probe behind the phone's
+CTO tab badge, needed because the CTO chat is excluded from every session roster
+and cannot be derived from the chat list — is optional on the same logic: the
+phone feature-detects it and otherwise leaves the badge dark, and requiring it
+would flip every already-shipped brain into `limited` mode. The
+session-lifecycle commands
 (`session.settleSessions`, `session.unsettleSessions`,
 `session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`,
 `session.clearWokeMarker`) are optional for the same reason: the phone

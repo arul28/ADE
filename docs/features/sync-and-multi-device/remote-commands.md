@@ -141,6 +141,11 @@ the phone leaves Linear connect/reconnect/disconnect hidden (falling back to the
 API-key path or an "update ADE on your Mac" hint) rather than treating their
 absence as a broken connection. Their omission never flips a host to `limited`.
 
+`cto.getAttention` is optional for the same reason. The phone checks
+`supportsRemoteAction("cto.getAttention")` before probing, so against an older
+brain it simply never lights the CTO badge; putting it in the required set would
+flip every already-shipped brain into `limited` mode over a dot.
+
 The session-lifecycle commands sit in the same optional list:
 `session.settleSessions`, `session.unsettleSessions`,
 `session.setSettleOverride`, `session.snoozeSession`, `session.wakeSession`, and
@@ -489,6 +494,17 @@ a boolean.
   chat session and read/patch its identity.
 - `getMemory` — return the CTO's memory snapshot (durable `MEMORY.md`,
   rolling thread state, and today's daily log) for the phone's Memory card.
+- `getAttention` — whether the CTO thread is blocked on the user, for the
+  badge on the phone's CTO tab. It delegates to the canonical
+  `agentChatService.getCtoAttention()` (the same implementation behind
+  `IPC.ctoGetAttention` and the `cto_state.getAttention` action), so no
+  surface derives "needs you" differently. `viewerAllowed` and strictly
+  read-only: `getCtoAttention` never calls `ensureIdentitySession`, so
+  drawing a badge cannot materialize a primary lane and a CTO chat session
+  as a side effect. The phone needs its own command here because the CTO
+  chat is excluded from every session roster and cannot be derived from the
+  chat list. It is an **optional** mobile capability (see the compatibility
+  note above).
 - `getLinearConnectionStatus`, `getLinearQuickView`,
   `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
   — the Linear read surface. The former worker-management commands

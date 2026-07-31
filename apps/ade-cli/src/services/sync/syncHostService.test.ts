@@ -4814,6 +4814,7 @@ describe("CTO-gated Linear sync commands", () => {
         "cto.completeLinearMobileOAuth",
         "cto.setLinearToken",
         "cto.clearLinearToken",
+        "cto.getAttention",
         "session.settleSessions",
         "session.unsettleSessions",
         "session.setSettleOverride",

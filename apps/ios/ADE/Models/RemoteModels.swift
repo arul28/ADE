@@ -1203,6 +1203,19 @@ struct CtoSnapshot: Codable, Hashable {
   var recentSessions: [CtoRecentSession]?
 }
 
+/// Returned by the `cto.getAttention` sync command: whether the CTO thread is
+/// blocked on the user.
+///
+/// The phone cannot derive this from its chat roster — the CTO chat is
+/// deliberately excluded from every session list — so it has to ask. `since` is
+/// optional because the host sends JSON `null` when nothing is waiting.
+struct CtoAttention: Codable, Hashable {
+  var awaitingInput: Bool
+  var since: String?
+
+  static let idle = CtoAttention(awaitingInput: false, since: nil)
+}
+
 /// Returned by the `cto.getMemory` sync command: the durable facts the CTO
 /// keeps (`MEMORY.md`), the rolling `thread-state.md`, and today's daily log.
 /// Every field is tolerant of a missing/null value so a partial host response

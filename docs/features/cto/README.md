@@ -10,7 +10,7 @@ The whole surface is built around one contract: the CTO is a daily chat you can 
 
 - `ctoStateService.ts` — identity (name, personality, work style, model preferences), session logs, onboarding state, and the system-prompt preview. Owns the immutable doctrine, personality overlays, continuity model, memory-system guidance, environment knowledge, and capability manifest constants. `buildReconstructionContext()` assembles the memory-enriched context injected on session start, compaction, and model switch; `previewSystemPrompt()` returns the same layered prompt the settings UI renders verbatim.
 - `ctoMemoryService.ts` — the smart-memory file store under `.ade/cto/`. Reads/writes `MEMORY.md` and `thread-state.md` (atomic writes), appends per-turn lines to `daily/<YYYY-MM-DD>.md`, exposes `searchMemory(query)` (bounded, file-based, most-recent-first), `getSnapshot()`, and `buildMemoryContextSections()` (the capped copies used for injection). No new database or vector dependency.
-- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool manifest injected into the prompt. It is generated directly from `createCtoOperatorTools()` so registered tools and prompt documentation stay aligned; its operating rules are what keep CTO-launched work off the CTO's own lane. Also owns `CTO_INTRO_PROMPT` and `CTO_INTRO_ONBOARDING_STEP` — the opening turn and the once-only marker described in [The opening turn](#the-opening-turn).
+- `ctoPromptContent.ts` — `buildCtoCapabilityManifest()`, the operator-tool manifest injected into the prompt. It is generated directly from `createCtoOperatorTools()` so registered tools and prompt documentation stay aligned; its operating rules are what keep CTO-launched work off the primary lane. Also owns `CTO_INTRO_PROMPT` and `CTO_INTRO_ONBOARDING_STEP` — the opening turn and the once-only marker described in [The opening turn](#the-opening-turn).
 - `linearClient.ts` — Linear GraphQL client (shared by desktop and the headless ADE CLI). Reads: `fetchIssueById`, `listProjects`, `searchIssues`, `getQuickView`, `fetchIssueComments`, `listLabels`, `listUsers`. Writes: `updateIssueState`, `updateIssueAssignee`, `createComment`, `addIssueLabel` / `removeIssueLabel`.
 - `linearIssueTracker.ts` / `issueTracker.ts` — issue cache, change detection, and the `getQuickView` / `searchIssues` / `fetchIssueComments` read shims plus the `updateIssueState` / `updateIssueAssignee` / `createComment` / `addLabel` write surface renderer surfaces call through.
 - `linearGraphQLInput.ts` — GraphQL input builders shared by the client and tracker.
@@ -36,9 +36,9 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 
 - `apps/desktop/src/shared/ctoPersonalityPresets.ts` — `CTO_PERSONALITY_PRESETS` (`strategic`, `professional`, `hands_on`, `casual`, `minimal`, `custom`) with label, description, and `systemOverlay`.
 - `apps/desktop/src/shared/types/chat.ts` — `AgentChatIdentityKey`, now just the literal `"cto"`. The old `agent:<id>` worker identity keys are gone.
-- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface registered for the CTO session, including the memory tools `saveMemory`, `searchMemory`, and `readMemory` and the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools).
-- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind (`listIdentitySessions` / `ensureIdentitySession`), the memory flush hooks, the reconstruction-context injection, `seedCtoIntroTurn` (the opening turn), `resolveCtoExecutionLane` (where CTO-launched work runs), and the canonical `getCtoAttention` probe (all detailed below).
-- `apps/desktop/src/shared/types/cto.ts` — `CtoAttentionState` (`{ awaitingInput, since }`), the shape both attention transports return.
+- `apps/desktop/src/main/services/ai/tools/ctoOperatorTools.ts` — the operator tool surface. `createCtoOperatorTools()` is the single factory behind both the prompt manifest and the tools a running CTO session can actually call (see [Operator tools on a live session](#operator-tools-on-a-live-session)). It includes the memory tools `saveMemory`, `searchMemory`, and `readMemory`, the session-lifecycle tools described in [Session lifecycle tools](#session-lifecycle-tools), and the git tools whose mutating half refuses to default a lane (`resolveReadLaneId` vs `requireMutationLaneId`).
+- `apps/desktop/src/main/services/chat/agentChatService.ts` — owns the CTO session lifecycle: single-session reuse/rebind (`listIdentitySessions` / `ensureIdentitySession`), the memory flush hooks, the reconstruction-context injection, `seedCtoIntroTurn` (the opening turn), `resolveCtoExecutionLane` (where CTO-launched work runs), `buildCtoOperatorToolDeps` / `createCtoRuntimeToolMap` plus the per-provider transports that register them, and the canonical `getCtoAttention` probe (all detailed below).
+- `apps/desktop/src/shared/types/cto.ts` — `CtoAttentionState` (`{ awaitingInput, since }`), the shape every attention transport returns.
 
 ### Attention surfaces (renderer)
 
@@ -54,8 +54,10 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `CtoSetup.swift` — the first-run card (name, personality preset, work-style rows) shown when onboarding is incomplete.
 - `CtoSettingsScreen.swift` — sections: Identity (including personality/work style via `CtoIdentityEditor`), Model (live model/reasoning/Fast selection), Integrations (read-only Linear connection status), Memory (durable facts + thread summary via `cto.getMemory`), and Advanced (re-run setup).
 - `CtoIdentityEditor.swift` / `CtoReloadHelpers.swift` — the identity edit sheet and reload plumbing.
+- `apps/ios/ADE/Models/RemoteModels.swift` — `CtoAttention` (`awaitingInput` + optional `since`, plus an `idle` constant), the Codable mirror of `CtoAttentionState`.
+- `apps/ios/ADE/Services/SyncService.swift` — `fetchCtoAttention()` (the `cto.getAttention` call), the `@Published ctoAttention`, and `refreshCtoAttentionIfNeeded()`.
 
-The CTO tab icon is the SF Symbol `brain` (`apps/ios/ADE/App/ContentView.swift`), matching the desktop Phosphor Brain glyph.
+The CTO tab icon is the SF Symbol `brain` (`apps/ios/ADE/App/ContentView.swift`), matching the desktop Phosphor Brain glyph; the same tab carries the attention badge described in [Hidden from rosters, but never silent](#hidden-from-rosters-but-never-silent).
 
 ## Domain model
 
@@ -117,10 +119,11 @@ The CTO thread is pinned to the project's **primary lane** (it needs a lane for 
 
 Hiding the row removes it from `terminalAttention`, which is what the Work dot and the dock badge summarize. A hidden thread that asks a question would otherwise surface nowhere, so attention gets its own path:
 
-- `agentChatService.getCtoAttention()` is the single implementation. Both transports — `IPC.ctoGetAttention` (plain IPC) and the `cto_state.getAttention` action (daemon-routed) — delegate to it, so a remote runtime and a local one cannot derive "needs you" differently. It returns `CtoAttentionState`, just `{ awaitingInput, since }`; `since` is the tooltip timestamp and is `null` while idle.
+- `agentChatService.getCtoAttention()` is the single implementation. All three transports — `IPC.ctoGetAttention` (plain IPC), the `cto_state.getAttention` action (daemon-routed), and the `cto.getAttention` sync command (mobile) — delegate to it, so a remote runtime, a local one, and a phone cannot derive "needs you" differently. It returns `CtoAttentionState`, just `{ awaitingInput, since }`; `since` is the tooltip timestamp and is `null` while idle.
 - It is **read-only**. It resolves the thread through the same `listIdentitySessions` helper `ensureIdentitySession` uses, but never calls `ensureIdentitySession` itself: rendering a badge must not materialize a primary lane and a chat session as a side effect. The predicate is `awaitingInput || pendingInputItemId || attentionRequestedAt` (the last being an explicit `ade chat ask` hand-raise) rather than `canonicalStatusBucket`, whose awaiting-input bucket folds in `idle` and `ready` and would light the dot whenever the CTO is merely sitting there. A probe failure logs and returns idle.
 - `useCtoAttention` (mounted once in `AppShell`) keeps `appStore.ctoAttention` fresh from chat events, focus, and a 15 s visible-tab interval; `TabNav` renders the dot on `/cto`. It filters chat events through `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity scan per delta, debounces to 1.5 s (0 on focus), and clears to idle on project switch so the previous project's state cannot linger.
 - `useAppWideSessionAttention` adds the CTO to the dock badge count so a question reaches a minimized window. It stays the single writer of `setDockBadgeCount`.
+- **iOS** takes the same path. `SyncService.fetchCtoAttention()` calls `cto.getAttention` and publishes `ctoAttention`; `ContentView` badges the CTO tab (a string badge, so it renders as a dot-sized marker and disappears when idle) with a matching accessibility label. The refresh rides the same "something changed" pulse that rebuilds the session roster — the CTO is not *in* that roster, so it needs its own read — and is debounced to 5 s with `force` for an explicit refresh. It is gated on `supportsRemoteAction("cto.getAttention")`: an older brain never lights the dot, and a value left over from a newer host is cleared. A failed probe keeps the last known value rather than clearing, because falsely dropping a pending question is worse than a slightly stale dot.
 
 ### The opening turn
 
@@ -128,12 +131,54 @@ A brand-new CTO thread used to open on a blank screen. `ensureIdentitySession` n
 
 It is deliberately not a hidden or canned message: ADE has no hidden-turn mechanism, and a fabricated assistant message would feed back into the model's context on every later turn. The `intro` marker lives in `onboardingState.completedSteps` — not a user-facing setup step, but kept in that list so it is persisted and so `ctoResetOnboarding` clears it with the rest — so it survives restarts and fires once; it is written only *after* the send succeeds, so an unauthenticated first run retries instead of burning the one shot. The send is fire-and-forget with `awaitDispatch` so a dispatch failure is logged rather than escaping as an unhandled rejection.
 
+### Operator tools on a live session
+
+The CTO's operator tools are registered on the running session, not merely
+advertised in its prompt. `createCtoRuntimeToolMap(managed)` in
+`agentChatService.ts` builds the executable map and returns `null` for anything
+whose `identityKey` is not `"cto"`, so no other chat can reach these tools.
+
+`buildCtoOperatorToolDeps` builds the dependency set for both the runtime map
+and `previewSessionToolNames`, which enumerates the same tool names for the
+prompt. Sharing the deps is the point: the surface the CTO is told it has and
+the surface it can actually call come from one definition and cannot drift
+apart. (`buildCtoCapabilityManifest` renders its inventory from the same
+`createCtoOperatorTools()` factory, with stub deps, for the same reason.)
+
+Registration then goes through whichever transport the session's provider
+speaks:
+
+| Provider | Transport |
+| --- | --- |
+| Claude | `buildClaudeCtoMcpServer` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. Unlike the orchestration lead's server it is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
+| Codex | `refreshCodexDynamicTools` registers them as dynamic tools under the `ade_cto` namespace, alongside the orchestration set under `ade_orchestration`. Dispatch falls back by bare name across both namespaces when a call arrives un-namespaced. |
+| Cursor / Droid / OpenCode | An HTTP MCP lease cached on `managed.ctoHttpMcpServer`, provisioned by `ensureCtoHttpMcpServer` and advertised to the runtime under the `ade-cto` server name. |
+
+Two invariants keep this from breaking quietly:
+
+- **One refresher per Codex runtime.** `refreshCodexDynamicTools` clears the
+  dynamic-tool map before rebuilding it, so both tool sets must register inside
+  that one function. A second refresher would clobber the first.
+- **One tool set per HTTP MCP lease.** That is why `ctoHttpMcpServer` is a
+  separate field from `orchestrationHttpMcpServer` rather than a shared server
+  carrying both. `closeOrchestrationHttpMcpServer` closes both leases, so every
+  teardown path drops the CTO one too.
+
 ### Where CTO-launched work runs
 
-The CTO must not launch implementation work on its own lane — that lane is the primary lane, so agents would write straight to the primary worktree. Two things enforce this:
+The CTO session is pinned to the project's **primary lane**, so a tool that
+silently defaults its lane would act on the primary worktree. Nothing the CTO
+does may land there by omission.
 
-- **The prompt.** `buildCtoCapabilityManifest`'s operating rules tell the CTO to leave `laneId` off for new work and reserve its own lane for read-only inspection. This is the live lever — the operator tool bodies are not registered on a running session, so the prompt is what actually steers where work lands — and `ctoState.test.ts` pins it.
-- **The code.** `resolveCtoExecutionLane` creates a dedicated lane when no `laneId` is requested, honoring the `freshLaneName` / `freshLaneDescription` contract that `CtoOperatorToolDeps` always declared. It never falls back to the CTO's lane; if lane creation fails the error surfaces (`spawnChat` reports it) rather than quietly re-targeting primary.
+For spawned work:
+
+- **The prompt.** `buildCtoCapabilityManifest`'s operating rules tell the CTO to leave `laneId` off for new work and reserve the lane its session is pinned to for read-only inspection. `ctoState.test.ts` pins the wording.
+- **The code.** `resolveCtoExecutionLane` creates a dedicated lane when no `laneId` is requested, honoring the `freshLaneName` / `freshLaneDescription` contract that `CtoOperatorToolDeps` always declared. It never falls back to the CTO session's lane; if lane creation fails the error surfaces (`spawnChat` reports it) rather than quietly re-targeting primary.
+
+For git tools the rule is split by whether the call mutates:
+
+- **Reads default.** `resolveReadLaneId` falls back to `deps.defaultLaneId` — inspecting the primary lane is normal supervision. `gitStatus`, `gitFetch`, `gitListRecentCommits`, `gitListBranches`, `gitStashList`, `gitGetConflictState`, and `getConflictStatus` take this path.
+- **Mutations require an explicit lane.** `requireMutationLaneId` has no default and throws when `laneId` is missing; the zod schemas mark it required (`z.string().min(1)`) so the model sees the requirement before it calls. It covers `gitCommit`, `gitPush`, `gitPull`, `gitUndoLastHeadChange`, `gitRedoLastHeadChange`, `gitCheckoutBranch`, `gitStashPush`, `gitStashPop`, `gitRebaseContinue`, `gitRebaseAbort`, and `gitMergeAbort`. `gitGuard` / `conflictGuard` turn the throw into a `{ success: false, error }` naming `listLanes`, so the CTO recovers by retrying with a lane instead of failing the turn.
 
 ### Session lifecycle tools
 
@@ -190,6 +235,7 @@ Registered by `registerCtoRemoteCommands` in `apps/ade-cli/src/services/sync/syn
 
 - `cto.ensureSession`, `cto.getState`, `cto.updateIdentity`.
 - `cto.getMemory` — returns the `CtoMemorySnapshot` (durable memory + thread state + today's daily log) the iOS Memory card decodes.
+- `cto.getAttention` — the mobile transport for the attention probe. `viewerAllowed`, strictly read-only (it delegates to `agentChatService.getCtoAttention()`, which never calls `ensureIdentitySession`, so a phone drawing a badge cannot materialize a primary lane and a chat session as a side effect), and advertised as an **optional** mobile capability so an older brain omitting it never flips a phone into `limited` mode.
 - `cto.getLinearConnectionStatus`, `cto.getLinearQuickView`, `cto.getLinearIssuePickerData`, `cto.searchLinearIssues`, `cto.getLinearIssueComments` — the Linear read surface.
 - `cto.startLinearMobileOAuth`, `cto.completeLinearMobileOAuth`, `cto.setLinearToken`, `cto.clearLinearToken` — the Linear **connection-management** surface the iOS Linear pane uses to connect (worker-bounce OAuth or API key), reconnect, and disconnect. All four are `viewerAllowed` and advertised as **optional** mobile capabilities (`MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS` in `syncMobileCompatibility.ts`), so older brains omit them and the phone gates the affordances locally. See [Linear integration](../linear-integration/README.md#connecting-and-managing-from-mobile).
 
@@ -206,6 +252,8 @@ First run is one card. The user picks a personality preset, optionally adjusts t
 - **Injected memory is authoritative.** The prompt tells the CTO never to claim memory it does not have injected — changes to injection caps or ordering in `ctoMemoryService`/`ctoStateService` directly change what the CTO "knows."
 - **Capability knowledge has two live sources.** `ctoPromptContent.buildCtoCapabilityManifest()` is generated from `createCtoOperatorTools()`. For service actions outside that curated tool set, the CTO prompt directs the model to the installed runtime's `ade actions list --text` catalog and bundled `ade-*` skills instead of a stale hard-coded inventory.
 - **One CTO session.** Do not create a second CTO session on a foreign lane; `ensureIdentitySession` rebinds the existing one. Session-creation paths that bypass it would fork the thread.
+- **Never add a defaulting lane to a mutating tool.** The CTO session's lane *is* the primary lane. A convenience default on a new write tool means "act on the primary worktree" — follow `requireMutationLaneId`, not `resolveReadLaneId`.
+- **Codex tool sets share one refresher.** Adding a third dynamic tool set means extending `refreshCodexDynamicTools`, not writing a second refresher: it clears the runtime's dynamic-tool map first, so a parallel refresher silently deletes the other set's tools.
 
 ## Cross-links
 

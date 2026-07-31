@@ -1640,6 +1640,7 @@ export type SyncRemoteCommandAction =
   | "cto.ensureSession"
   | "cto.getState"
   | "cto.getMemory"
+  | "cto.getAttention"
   | "cto.getLinearConnectionStatus"
   | "cto.startLinearMobileOAuth"
   | "cto.completeLinearMobileOAuth"
