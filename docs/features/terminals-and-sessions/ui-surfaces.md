@@ -123,8 +123,12 @@ Lane groups with two or more sessions render an accent-coloured lane name,
 optional machine/PR markers, then indent the cards beside a lane-tinted rail.
 A lane with exactly one session suppresses the redundant divider and rail; the
 full-width card carries lane identity and PR state instead, and its context
-menu inherits the lane actions. The singleton/header transition participates
-in the same layout animation as lane reordering.
+menu inherits the lane actions. For a foreign singleton, that card also carries
+the same amber machine glyph the omitted header would have shown. The marker is
+present exactly when the lane is not on the physical Mac, not when it differs
+from the project tab's binding; a grouped header owns the glyph so its child
+cards do not repeat it. The singleton/header transition participates in the
+same layout animation as lane reordering.
 
 Filing comes from `sessionFilingBucket`, which combines canonical lifecycle
 with the snooze visibility overlay in one shared answer. Snooze still yields to
@@ -200,7 +204,9 @@ every read and mutation pinned to that machine. An offline machine's lane group
 is dimmed and folds shut like a quiet one; expanding it is allowed, but every
 card in it is disabled and reads "<machine> is offline". The other disabled
 foreign row is one whose reachable machine has not resolved a project binding
-yet.
+yet. A one-session reachable foreign lane is allowed to use the same headerless
+shape as a local singleton; an offline machine remains grouped so its folded,
+dimmed state has a header to live on.
 
 In-flight chat handoffs are rendered as temporary placeholder cards in
 the same sidebar. `TerminalsPage` pulls matching `HandoffLaunchJob`
@@ -246,14 +252,15 @@ a parent even when search, lane filtering, or a collapsed group hides its row.
 The full card is one full-bleed row with three lines:
 
 1. **Where + status** — an adaptive identity slot on the left and
-   `SessionStatusSlot` on the right. The identity slot can carry the owning
-   machine, a pin, the lane identity for a singleton lane, spawned-chat
-   lineage, a branch only when it differs from the lane's declared branch, and
-   the lane PR for a singleton. When none of those apply, session delta or
-   last-activity time is the floor, so the line never renders empty. A grouped
-   lane owns machine identity and PR state in its header; child rows do not
-   repeat them. Lane identity always uses the lane accent and `LaneIcon`;
-   branch identity is always muted and uses `BranchIcon`.
+   `SessionStatusSlot` on the right. The identity slot can carry a pin, the lane
+   identity for a singleton lane, spawned-chat lineage, a branch only when it
+   differs from the lane's declared branch, and the lane PR for a singleton.
+   A foreign singleton gets one fixed-width amber machine glyph in the right
+   status cluster; the card's hover details name the machine. When none of those
+   apply, session delta or last-activity time is the floor, so the line never
+   renders empty. A grouped lane owns machine identity and PR state in its
+   header; child rows do not repeat them. Lane identity always uses the lane
+   accent and `LaneIcon`; branch identity is always muted and uses `BranchIcon`.
 2. **Title + singleton PR** — `primarySessionLabel()` is the prominent,
    elastic element. When the card stands in for a one-session lane, the shared
    `LanePrBadge` sits at the right edge directly beneath the lifecycle status,

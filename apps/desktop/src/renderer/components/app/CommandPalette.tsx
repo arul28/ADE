@@ -305,6 +305,23 @@ export function CommandPalette({
   // mount, and the palette is mounted for the whole session. Whatever the Work
   // tab's sync has populated is what we search.
   const foreignMachines = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  /**
+   * Which machine owns the tab's own sessions and lanes. Remote-bound tabs make
+   * that another Mac, and without saying so those threads look local: unmarked
+   * in the results, and unfindable by their machine's name.
+   *
+   * Memoized on the two primitives rather than on `projectBinding`, which is a
+   * fresh object across store writes and would rebuild the whole lowercased
+   * thread index on every one.
+   */
+  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+  const boundRuntimeName = projectBinding?.kind === "remote" ? projectBinding.runtimeName : null;
+  const activeMachine = useMemo(
+    () => (boundTargetId && boundRuntimeName
+      ? { machineId: boundTargetId, machineName: boundRuntimeName }
+      : null),
+    [boundTargetId, boundRuntimeName],
+  );
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
   const [actionOutcome, setActionOutcome] =
@@ -835,7 +852,7 @@ export function CommandPalette({
   // Built once per session/lane list, not per keystroke — the palette can be
   // opened against hundreds of sessions and the lowercasing is the expensive
   // half of the match.
-  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines);
+  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines, activeMachine);
   const threadMatches = useMemo(
     () =>
       open && mode === "default" ? rankThreads(threadIndex, trimmedQuery) : [],

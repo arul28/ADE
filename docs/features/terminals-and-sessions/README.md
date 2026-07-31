@@ -562,12 +562,13 @@ Renderer surfaces:
   leaving the session list. The list is a **cross-machine union**
   (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
   in flight on every connected machine appear regardless of which machine the
-  project tab is bound to. A lane that is not on This Mac carries a monochrome
-  `Desktop` marker on its header (`LaneMachineMarker.tsx`) — the lane accent owns
-  the color channel — that promotes from a bare glyph to the machine's name when a
-  glyph alone would be ambiguous (the machine is offline, two or more foreign
-  machines are on screen, or the branch also
-  exists elsewhere). Foreign lanes are listed only when they
+  project tab is bound to. A lane not on the **physical Mac** running ADE carries
+  one amber `DesktopTower` marker — always a glyph in the sidebar, with the
+  machine name on hover. The tab's binding only decides where a row renders; it
+  never changes whether the work is marked as elsewhere. This makes an unmarked
+  row mean "here" even in a remote-bound tab. A one-session foreign lane has no
+  divider, so its card carries the same glyph; cards beneath a real lane header
+  suppress the repeated marker. Foreign lanes are listed only when they
   have sessions, after the same search and lane filter the local list applies, so
   the union stays "work in flight" rather than an inventory of every lane
   everywhere; the empty state accounts for them, so "No sessions" cannot claim an
@@ -612,12 +613,12 @@ Renderer surfaces:
   that serves lane badges, and a filtered empty state identifies and clears the
   active chips.
 - `apps/desktop/src/renderer/components/terminals/LaneMachineMarker.tsx` — the
-  adaptive machine marker on a foreign lane header, rendered only for lanes that
-  are not on the machine you are sitting at, so the common single-machine case
-  pays nothing. Monochrome by design: a tint here would read as a second lane
-  color. It has a dimmed form with its own tooltip and `<machine>, offline`
-  accessible name, and on an unreachable machine's row it is the only thing that
-  says why the group has gone quiet.
+  amber tower marker on a lane header, rendered only for lanes that are not on
+  the physical Mac you are sitting at, so the common single-machine case pays
+  nothing. It is always a glyph in the sidebar; the tooltip supplies the machine
+  name. It has a dimmed form with its own `<machine>, offline` accessible name,
+  and on an unreachable machine's row it is the only thing that says why the
+  group has gone quiet.
 - `apps/desktop/src/renderer/components/terminals/ForeignLaneContextMenu.tsx` —
   the right-click menu for a lane owned by another machine. Its `online` prop is
   read live from the store rather than captured at right-click time, so a machine
@@ -632,6 +633,9 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
+  Its marker resolver separately distinguishes `isActiveBinding` (where a lane
+  renders) from `isThisMachine` (whether it is marked): a remote-bound tab still
+  marks all lanes that are elsewhere, even when it has no foreign union rows.
   It also owns presence: `applyReachability` decides, from the connection
   snapshot alone, which machines are live, which are dimmed, and which are
   forgotten. A drop is believed only once a reconnect attempt has completed and
@@ -673,14 +677,15 @@ Renderer surfaces:
   landing after a project-tab switch cannot suppress the new scope's first lane
   read.
 - `apps/desktop/src/renderer/components/terminals/SessionCard.tsx` —
-  full-bleed three-line Work row. Line one adapts machine, pin, singleton lane,
-  spawn lineage, drifted branch, diff, and last-activity identity around
+  full-bleed three-line Work row. Line one adapts pin, singleton lane, spawn
+  lineage, drifted branch, diff, and last-activity identity around
   `SessionStatusSlot`; line two is the elastic title with a singleton lane's
   fixed-width PR badge at the right edge, directly beneath the status; line
   three keeps the sanitized preview, Claude TTL, failure exit code, and
-  provider mark. Grouped lane headers own repeated machine/PR identity, while a
-  lane with exactly one session has no redundant header and promotes the lane
-  identity and PR navigation onto the card.
+  provider mark. A foreign singleton adds the fixed-width amber machine glyph to
+  the line-one status cluster; grouped lane headers own repeated machine/PR
+  identity. A lane with exactly one session has no redundant header and promotes
+  the lane identity and PR navigation onto the card.
   After one second `SessionHoverCard` carries the lower-frequency metadata
   removed from the row (including clickable PR and parent-thread facts). The
   Lane labels on singleton rows and hover details show the shared animated

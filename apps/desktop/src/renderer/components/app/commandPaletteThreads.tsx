@@ -21,6 +21,7 @@ import type {
 } from "../../../shared/types";
 import type { CrossMachineMachineLanes } from "../../state/appStore";
 import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
+import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { LaneMachineMarker } from "../terminals/LaneMachineMarker";
 import {
   SESSION_TONE_DOT_CLASS,
@@ -56,12 +57,12 @@ export type ThreadIndexEntry = {
   /** Lane branch ref, when the lane is known. Shown with a leading `#`. */
   branch: string | null;
   /**
-   * Cross-machine identity. Null for threads on the machine this tab is bound
-   * to; set for every foreign row, which is marked and (when the machine is
-   * unreachable) receded rather than hidden.
+   * Cross-machine identity. Every thread is attributed to its owner; this Mac
+   * stays unmarked while foreign rows are marked and (when unreachable)
+   * receded rather than hidden.
    */
-  machineId: string | null;
-  machineName: string | null;
+  machineId: string;
+  machineName: string;
   machineOnline: boolean;
   /** Routing target for a foreign thread — the machine's project binding. */
   binding: OpenProjectBinding | null;
@@ -97,8 +98,8 @@ function recencyRank(session: TerminalSessionSummary): number {
 function makeEntry(args: {
   session: TerminalSessionSummary;
   lane: LaneSummary | null;
-  machineId: string | null;
-  machineName: string | null;
+  machineId: string;
+  machineName: string;
   machineOnline: boolean;
   binding: OpenProjectBinding | null;
 }): ThreadIndexEntry {
@@ -115,7 +116,7 @@ function makeEntry(args: {
     titleLower: (args.session.title ?? "").toLowerCase(),
     laneNameLower: laneName.toLowerCase(),
     branchLower: (branch ?? "").toLowerCase(),
-    machineNameLower: (args.machineName ?? "").toLowerCase(),
+    machineNameLower: args.machineName.toLowerCase(),
     recencyMs: recencyRank(args.session),
   };
 }
@@ -136,6 +137,17 @@ export function buildThreadIndex(
   sessions: readonly TerminalSessionSummary[],
   lanes: readonly LaneSummary[],
   foreignMachines: Readonly<Record<string, CrossMachineMachineLanes>> = {},
+  /**
+   * The machine that owns `sessions` and `lanes` — the tab's binding, which is
+   * NOT necessarily this Mac. Omit for a locally-bound tab.
+   *
+   * These entries used to be hardcoded to a null machine on the assumption that
+   * the bound machine is the one you're sitting at. Bind the tab to another Mac
+   * and every thread on it went unattributed: no marker on the row, and — since
+   * the scorer matches on `machineNameLower` — no way to find it by typing that
+   * machine's name either.
+   */
+  activeMachine: { machineId: string; machineName: string } | null = null,
 ): ThreadIndexEntry[] {
   const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
   const seen = new Set<string>();
@@ -147,8 +159,8 @@ export function buildThreadIndex(
       makeEntry({
         session,
         lane: laneById.get(session.laneId) ?? null,
-        machineId: null,
-        machineName: null,
+        machineId: activeMachine?.machineId ?? THIS_MACHINE_ID,
+        machineName: activeMachine?.machineName ?? THIS_MACHINE_NAME,
         machineOnline: true,
         binding: null,
       }),
@@ -258,10 +270,11 @@ export function useThreadIndex(
   sessions: readonly TerminalSessionSummary[],
   lanes: readonly LaneSummary[],
   foreignMachines: Readonly<Record<string, CrossMachineMachineLanes>>,
+  activeMachine: { machineId: string; machineName: string } | null = null,
 ): ThreadIndexEntry[] {
   return useMemo(
-    () => buildThreadIndex(sessions, lanes, foreignMachines),
-    [sessions, lanes, foreignMachines],
+    () => buildThreadIndex(sessions, lanes, foreignMachines, activeMachine),
+    [sessions, lanes, foreignMachines, activeMachine],
   );
 }
 
@@ -318,13 +331,20 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
   const time = relativeTimeCompact(
     session.lastActivityAt ?? session.settledAt ?? session.startedAt,
   );
-  // Foreign rows carry the same marker the sidebar puts on a foreign lane. Its
-  // amber tower is IDENTITY, not status — it lives in the context line and
-  // never in the status slot above, so it cannot be read as an attention call.
-  // `mode: "name"` because the palette has no lane header to disambiguate a
-  // bare glyph against.
+  // Rows that are not on this Mac carry the same marker the sidebar puts on a
+  // foreign lane. Its amber tower is IDENTITY, not status — it lives in the
+  // context line and never in the status slot above, so it cannot be read as an
+  // attention call.
+  //
+  // `mode: "name"` is a deliberate exception to the sidebar's glyph-only rule:
+  // there, a badge is read against neighbouring rows under a lane header that
+  // groups them. A palette result has neither, so a bare glyph would raise the
+  // question it exists to answer.
+  //
+  // Gated on the MACHINE, not on whether the entry knows its name: every entry
+  // knows that now, including the ones on this Mac, which must stay unmarked.
   const machineMarker: CrossMachineLaneMarker | null =
-    entry.machineId && entry.machineName
+    entry.machineId !== THIS_MACHINE_ID
       ? {
           machineId: entry.machineId,
           machineName: entry.machineName,
@@ -365,7 +385,7 @@ export const ThreadResultRow = React.memo(function ThreadResultRow({
         )}
         onMouseEnter={() => onHover(index)}
         onClick={() => onActivate(entry)}
-        data-machine-id={entry.machineId ?? undefined}
+        data-machine-id={entry.machineId}
         data-machine-online={
           machineMarker ? (entry.machineOnline ? "true" : "false") : undefined
         }

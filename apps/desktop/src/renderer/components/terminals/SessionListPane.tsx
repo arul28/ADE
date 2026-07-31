@@ -21,7 +21,6 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
-import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
@@ -570,6 +569,11 @@ function StickyGroupHeader({
       onLayoutAnimationComplete={() => setSliding(false)}
       className={cn("relative", dimmed && "opacity-55")}
       data-dimmed={dimmed ? "true" : undefined}
+      /* Addresses the GROUP, headerless or not. `data-section-id` lives on the
+         header row, so a singleton — which draws no header — could not be found
+         at all: fine when only local lanes could be headerless, wrong now that
+         foreign ones can be shelved in that shape too. */
+      data-group-id={sectionId}
     >
       {dropIndicatorEdge ? (
         <div
@@ -952,9 +956,6 @@ export const SessionListPane = React.memo(function SessionListPane({
   );
   const prsByLaneId = useLanePrsByLaneId();
   const deleteProgressByLaneId = useAppStore((state) => state.laneDeleteProgressByLaneId);
-  // Names the machine this tab's own lanes live on — this Mac, unless the tab is
-  // bound to a remote runtime. Only read for the Primary machine badge.
-  const projectBinding = useAppStore((state) => state.projectBinding);
   const keybindings = useAppStore((state) => state.keybindings);
   const commandPaletteBinding = useMemo(
     () => getEffectiveBinding(keybindings, "commandPalette.open", "Mod+K"),
@@ -1289,9 +1290,9 @@ export const SessionListPane = React.memo(function SessionListPane({
   // chip filters the local list applies. Lanes elsewhere with nothing running
   // stay out of the sidebar — the union is about work in flight, not an inventory.
   //
-  // Resolved before the lane ordering below because the Primary machine badge
-  // counts VISIBLE primaries, foreign ones included, and a lane whose every chat
-  // has been filtered out renders nothing and so must not count.
+  // This is the RENDER list. Anything deciding a lane's SHAPE rather than its
+  // visibility must read `foreignRows` instead, so the column does not reshape
+  // as the user types (see `headerlessLaneIds`).
   const visibleForeignRows = useMemo(() => {
     if (foreignRows.length === 0) return EMPTY_FOREIGN_ROWS;
     const query = q.trim().toLowerCase();
@@ -1411,39 +1412,13 @@ export const SessionListPane = React.memo(function SessionListPane({
 
   const renderedLaneIds = useMemo(() => orderedLanes.map((lane) => lane.id), [orderedLanes]);
 
-  /**
-   * The Primary machine badge, or null.
-   *
-   * Every ADE machine has a Primary, so with two machines connected the sidebar
-   * shows two lanes called "Primary" in the same purple and neither says which
-   * machine it is. Foreign ones already answer that through `LaneMachineMarker`;
-   * the LOCAL one has no marker at all, because "not here" is the only thing the
-   * marker normally means.
-   *
-   * So this follows `LaneMachineMarker`'s own adaptive rule rather than inventing
-   * a parallel mechanism: promote the machine name only when the row would
-   * otherwise be ambiguous. One Primary on screen — the overwhelmingly common
-   * case — is unambiguous and pays nothing.
-   *
-   * "This machine" is the machine the tab is BOUND to, which is not necessarily
-   * this Mac: a remote-bound tab's local list is that runtime's lanes.
-   */
-  const primaryLaneMachineMarker = useMemo((): CrossMachineLaneMarker | null => {
-    const localPrimaries = orderedLanes.filter((lane) => lane.laneType === "primary").length;
-    if (localPrimaries === 0) return null;
-    const foreignPrimaries = visibleForeignRows
-      .filter((row) => row.lane.laneType === "primary").length;
-    if (localPrimaries + foreignPrimaries < 2) return null;
-    const remote = projectBinding?.kind === "remote" ? projectBinding : null;
-    return {
-      machineId: remote?.targetId ?? THIS_MACHINE_ID,
-      machineName: remote?.runtimeName ?? THIS_MACHINE_NAME,
-      online: true,
-      mode: "name",
-      title: remote?.runtimeName ?? THIS_MACHINE_NAME,
-      sameBranchElsewhere: false,
-    };
-  }, [orderedLanes, projectBinding, visibleForeignRows]);
+  /* Two Primaries on screen used to need a parallel badge mechanism here: every
+     ADE machine has a Primary, so two of them are two lanes with the same name
+     in the same purple, and the LOCAL one had no marker to tell them apart.
+     Under the physical-machine rule that mechanism is redundant. Exactly one
+     Primary can ever be unbadged — the one on the Mac you are sitting at — so
+     presence versus absence separates the pair on its own, and a run of foreign
+     Primaries separates on hover like every other foreign lane. */
 
   /**
    * Which bottom shelf a fully-quiet lane files into, or null to stay in place.
@@ -1509,30 +1484,64 @@ export const SessionListPane = React.memo(function SessionListPane({
    *      the card's drag gesture is already claimed by the work-grid DnD.
    *   4. A pending handoff placeholder counts as a second row, so a lane does
    *      not lose its header for the second it takes the real session to land.
-   * A pinned lane also keeps its header — the pin glyph lives there. So does a
-   * Primary that is currently showing a machine badge: the badge hangs off the
-   * header, and dropping the header would drop the one thing distinguishing two
-   * identically-named, identically-coloured Primaries.
+   * A pinned lane also keeps its header — the pin glyph lives there — and so
+   * does a lane on an unreachable machine, whose folded-shut group treatment has
+   * nowhere else to live. The machine badge itself does NOT force a header: a
+   * headerless lane carries it on the card instead (see
+   * `RenderCardOptions.machineMarker`), so nothing is lost.
+   *
+   * This covers BOTH sides of the cross-machine union. Local lanes are keyed by
+   * lane id and foreign ones by `machineId:laneId`, which is how every other
+   * per-lane map in this pane is keyed, so callers look up with the same id they
+   * already hold. Foreign lanes were previously excluded outright, which is why
+   * a one-chat lane kept its divider on whichever machine the tab was not bound
+   * to — and why the sidebar visibly reshaped when you switched machines.
    */
   const headerlessLaneIds = useMemo(() => {
     const ids = new Set<string>();
+    // A singleton has no header to grab, and its card's drag gesture is already
+    // claimed by the work-grid DnD.
     if (workLaneSortMode === "manual") return ids;
-    for (const lane of orderedLanes) {
-      if (workPinnedLaneIdSet.has(lane.id)) continue;
-      if (lane.laneType === "primary" && primaryLaneMachineMarker) continue;
-      if ((unfilteredHandoffCountByLaneId.get(lane.id) ?? 0) > 0) continue;
-      const roster = unfilteredSessionsByLane.get(lane.id) ?? [];
+    const isHeaderlessRoster = (roster: readonly TerminalSessionSummary[]): boolean => {
       const rosterIds = new Set(roster.map((session) => session.id));
       const topLevel = roster.filter((session) => {
         const parentId = session.chatSessionId;
         return !(parentId && parentId !== session.id && rosterIds.has(parentId));
       });
-      if (topLevel.length === 1) ids.add(lane.id);
+      return topLevel.length === 1;
+    };
+    for (const lane of orderedLanes) {
+      if (workPinnedLaneIdSet.has(lane.id)) continue;
+      if ((unfilteredHandoffCountByLaneId.get(lane.id) ?? 0) > 0) continue;
+      if (isHeaderlessRoster(unfilteredSessionsByLane.get(lane.id) ?? [])) ids.add(lane.id);
+    }
+    // `foreignRows`, NOT `visibleForeignRows`: the latter is already search- and
+    // chip-filtered, so reading it here would let a three-chat lane collapse to
+    // the headerless form the moment a query narrowed it to one — the column
+    // reshaping under the cursor, which is precisely what rule 1 forbids.
+    for (const row of foreignRows) {
+      const compositeLaneId = `${row.machineId}:${row.lane.id}`;
+      // An unreachable machine's lane keeps its header, singleton or not. The
+      // header is the only thing that can carry the dimmed, folded-shut group
+      // treatment an offline machine is supposed to get — a headerless lane has
+      // no toggle and is always open — and "that machine is gone" is precisely
+      // when its work should stop occupying a prime row. Same shape of exemption
+      // as a pinned lane: an explicit reason to keep the header wins.
+      if (!row.online) continue;
+      // Both pin keys, for the same reason `foreignLaneShelving` checks both:
+      // this pane addresses a foreign lane by its composite id while the pin
+      // store only ever writes bare lane ids.
+      if (workPinnedLaneIdSet.has(compositeLaneId) || workPinnedLaneIdSet.has(row.lane.id)) continue;
+      // Handoff jobs are local-runtime records, so a foreign group never has one
+      // — asserted by reading the same map rather than assumed, so this stays
+      // correct if foreign handoffs ever land.
+      if ((unfilteredHandoffCountByLaneId.get(compositeLaneId) ?? 0) > 0) continue;
+      if (isHeaderlessRoster(row.sessions)) ids.add(compositeLaneId);
     }
     return ids;
   }, [
     orderedLanes,
-    primaryLaneMachineMarker,
+    foreignRows,
     unfilteredHandoffCountByLaneId,
     unfilteredSessionsByLane,
     workLaneSortMode,
@@ -1743,6 +1752,15 @@ export const SessionListPane = React.memo(function SessionListPane({
      * only place the machine is named at all.
      */
     suppressMachineChip?: boolean;
+    /**
+     * The marker for a headerless lane, whose card stands in for the divider.
+     *
+     * Handed down rather than re-derived on the card. The card used to infer its
+     * machine from `runtimePin`, which is only ever set for foreign rows — so a
+     * singleton lane on the tab's own machine could never show one even when
+     * that machine was somewhere else entirely. One resolver, one answer.
+     */
+    machineMarker?: CrossMachineLaneMarker | null;
   };
   const renderCardCore = (session: TerminalSessionSummary, options?: RenderCardOptions) => {
     const isFirst = !sessionItemAnchorEmitted;
@@ -1805,6 +1823,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         lanePr={options?.lanePr}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         runtimePin={foreignRow?.binding}
+        machineMarker={options?.machineMarker ?? null}
         suppressMachineChip={options?.suppressMachineChip}
         deltaEnabled={!foreignRow}
         githubStack={isChatToolType(session.toolType) ? sessionPr?.stack ?? null : null}
@@ -2182,22 +2201,14 @@ export const SessionListPane = React.memo(function SessionListPane({
     const prBadge = primaryPr ? (
       <LanePrBadge pr={primaryPr} onOpen={() => navigate(lanePrDeepLinkPath(primaryPr))} />
     ) : null;
-    // Never populated for a lane on this machine — the marker exists only to
-    // say "this work isn't here". The one exception is a Primary competing with
-    // another machine's Primary, where naming THIS machine is the only thing
-    // that disambiguates the pair (see `primaryLaneMachineMarker`).
-    const resolvedMachineMarker = markersByLaneId.get(lane.id)
-      ?? (lane.laneType === "primary" ? primaryLaneMachineMarker : null);
-    const machineMarker = resolvedMachineMarker
-      ? {
-          ...resolvedMachineMarker,
-          mode: lane.laneType === "primary" ? "name" as const : "glyph" as const,
-        }
-      : null;
-    // Both marker sources count: the cross-machine marker and the local-Primary
-    // badge say the same thing to the reader, so either one makes the rows'
-    // own machine chips a repetition. A headerless lane keeps its chip — there
-    // is no header above it doing the naming.
+    // Never populated for a lane on the Mac you're sitting at — the marker says
+    // exactly one thing, "this work isn't here", and no lane type is exempt.
+    // Note this list is the ACTIVE BINDING's lanes, which is not necessarily
+    // this machine: bind the tab to another Mac and every lane here is marked.
+    const machineMarker = markersByLaneId.get(lane.id) ?? null;
+    // A header that names the machine makes every row beneath it a repetition.
+    // A headerless lane has no such header, so its lone card carries the marker
+    // itself — handed down explicitly below rather than suppressed here.
     const suppressMachineChip = Boolean(machineMarker) && !headerless;
     // A lane already filed into a quiet shelf renders its rows flat: the shelf
     // states the tier once, for everything under it.
@@ -2243,11 +2254,13 @@ export const SessionListPane = React.memo(function SessionListPane({
           // which tier it is in.
           //
           // The lone card inherits everything the divider would have carried:
-          // the lane identity, the PR badge, and — via the session context menu
-          // — the lane menu, which would otherwise have no right-click target.
+          // the lane identity, the machine marker, the PR badge, and — via the
+          // session context menu — the lane menu, which would otherwise have no
+          // right-click target.
           ? renderCards(list, {
               showLaneIdentity: true,
               lanePr: primaryPr,
+              machineMarker,
               laneActions: {
                 laneId: lane.id,
                 laneName: lane.name,
@@ -2278,23 +2291,17 @@ export const SessionListPane = React.memo(function SessionListPane({
    */
   const renderForeignLaneGroup = (entry: ForeignLaneEntry) => {
     const { row, compositeLaneId, quiet, shelf } = entry;
-    const marker = markersByLaneId.get(compositeLaneId) ?? null;
-    // Primary is the only lane whose machine NAME is promoted permanently.
-    // Every machine owns a Primary, so an icon alone leaves otherwise identical
-    // headers ambiguous. Other lane headers keep the adaptive glyph/name marker
-    // chosen by the cross-machine union.
-    const headerMarker: CrossMachineLaneMarker | null = row.lane.laneType === "primary"
-      ? {
-          machineId: row.machineId,
-          machineName: row.machineName,
-          online: row.online,
-          mode: "name",
-          title: row.machineName,
-          sameBranchElsewhere: marker?.sameBranchElsewhere ?? false,
-        }
-      : marker
-        ? { ...marker, mode: "glyph" }
-        : null;
+    // One resolver, one answer — including for Primary, which used to get its
+    // name spelled out here on the theory that two identically-named Primaries
+    // are otherwise indistinguishable. Under the physical-machine rule they are
+    // not: at most one Primary on screen is unbadged, and it is the one on the
+    // Mac you're sitting at.
+    const headerMarker = markersByLaneId.get(compositeLaneId) ?? null;
+    // A one-chat foreign lane collapses into its card exactly like a local one.
+    // This used to be unreachable for foreign lanes at all, which is why half
+    // the sidebar drew dividers the other half didn't — and why which half
+    // flipped when you switched the tab's machine.
+    const headerless = headerlessLaneIds.has(compositeLaneId);
     // An offline machine's group folds shut like a quiet one: retained and
     // inspectable, not presented as live work. Note this is NOT the shelving
     // test (see `foreignLaneShelving`) — an offline machine's last-reported
@@ -2310,10 +2317,26 @@ export const SessionListPane = React.memo(function SessionListPane({
     // that exists only elsewhere simply has none; when the local runtime does
     // know the lane's PR, it is the same lane and the same badge.
     const primaryPr = selectPrimaryLanePr(row.lane, prsByLaneId.get(row.lane.id) ?? []);
-    // A foreign group always has a header, so its sessions never repeat machine
-    // identity. Primary spells the name out on the rail; other lanes retain the
-    // compact header marker when the cross-machine resolver says one is useful.
+    // A group WITH a header names the machine there, so its rows never repeat
+    // it. A headerless group has no such header, so its lone card takes the
+    // marker instead — the same trade `renderLaneGroup` makes.
     const cardOptions: RenderCardOptions = { foreignRow: row, suppressMachineChip: true };
+    // The lane menu would otherwise have no right-click target once the divider
+    // is gone. Same rescue `renderLaneGroup` performs for a local singleton,
+    // routed through the foreign menu so its actions stay binding-aware.
+    const singletonLaneActions = row.binding
+      ? {
+          laneId: row.lane.id,
+          laneName: row.lane.name,
+          open: ({ x, y }: { x: number; y: number }) => triggerForeignLaneContextMenu(
+            row.lane,
+            row.binding!,
+            row.machineName,
+            row.machineId,
+            { preventDefault: () => {}, clientX: x, clientY: y },
+          ),
+        }
+      : null;
     return (
       <StickyGroupHeader
         key={compositeLaneId}
@@ -2328,6 +2351,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         variant="lane"
         count={row.sessions.length}
         collapsed={collapsed}
+        headerless={headerless}
         accentColor={row.lane.color ?? null}
         prBadge={primaryPr ? (
           <LanePrBadge pr={primaryPr} onOpen={() => navigate(lanePrDeepLinkPath(primaryPr))} />
@@ -2354,7 +2378,19 @@ export const SessionListPane = React.memo(function SessionListPane({
           )
           : undefined}
       >
-        {shelf
+        {headerless
+          // A singleton skips the snoozed/settled tails entirely, and ignores
+          // shelf flattening — both are ways of labelling a GROUP, and there is
+          // no group here, just one card that carries its own status. Identical
+          // to `renderLaneGroup`'s headerless branch, deliberately.
+          ? renderCards(row.sessions, {
+              foreignRow: row,
+              showLaneIdentity: true,
+              lanePr: primaryPr,
+              machineMarker: headerMarker,
+              ...(singletonLaneActions ? { laneActions: singletonLaneActions } : {}),
+            })
+          : shelf
           // Inside a shelf, and therefore flat — the same rule as
           // `renderLaneSessionLists`'s `flat` branch: the shelf header already
           // states the tier for everything under it, so a further per-lane
@@ -2540,7 +2576,10 @@ export const SessionListPane = React.memo(function SessionListPane({
                 ))}
                 {snoozedShelfForeignRows.map((entry) => shelfRow(
                   entry.compositeLaneId,
-                  isShelfRowExpanded(entry.compositeLaneId),
+                  isShelfRowExpanded(
+                    entry.compositeLaneId,
+                    headerlessLaneIds.has(entry.compositeLaneId),
+                  ),
                   renderForeignLaneGroup(entry),
                 ))}
               </div>
@@ -2564,7 +2603,10 @@ export const SessionListPane = React.memo(function SessionListPane({
                 ))}
                 {settledShelfForeignRows.map((entry) => shelfRow(
                   entry.compositeLaneId,
-                  isShelfRowExpanded(entry.compositeLaneId),
+                  isShelfRowExpanded(
+                    entry.compositeLaneId,
+                    headerlessLaneIds.has(entry.compositeLaneId),
+                  ),
                   renderForeignLaneGroup(entry),
                 ))}
               </div>

@@ -177,26 +177,46 @@ export type CrossMachineUnion = {
 };
 
 /**
- * The adaptive machine marker.
+ * The machine marker.
  *
- * Default is a bare monochrome glyph, and only for work that is not here — the
- * indicator appears exactly when it carries information. The name is promoted
- * into the row when a glyph alone would be ambiguous: the machine is offline,
- * two or more distinct foreign machines are on screen at once, or this lane's
- * branch also exists on another machine.
+ * ONE rule, and it is the whole vocabulary of this indicator: a marker exists
+ * for a lane if and only if that lane is not on the physical Mac this app is
+ * running on. Absence therefore means "this work is here" — which only reads as
+ * information because the rule has no exceptions. It is deliberately blind to
+ * the project tab's binding: the tab can point anywhere, and a badge that moved
+ * with it would be answering a question nobody asked.
  *
- * The lane accent already owns the color channel, so the marker is monochrome —
- * a tinted marker would read as a second, competing lane color.
+ * The form is always a bare glyph; the name is on hover. An earlier version
+ * promoted the name inline when a glyph alone looked ambiguous (offline, two
+ * foreign machines, same branch elsewhere), which meant a row's shape changed
+ * for reasons the reader could not see. A single resting form that never moves
+ * beat a cleverer one that did. `mode` survives as a field because the command
+ * palette renders the name — it has no lane header to disambiguate a glyph
+ * against — and that exception is worth being explicit about rather than
+ * implicit in a second component.
+ *
+ * The glyph is amber, in an amber pill. Amber is machine identity everywhere in
+ * ADE (top bar, connections panel, attention center, session hover card), and
+ * `SessionCard` states the rule directly: amber appears exactly once per row, on
+ * the machine tower, because that glyph is identity and never status.
  */
 export type CrossMachineLaneMarker = {
   machineId: string;
   machineName: string;
   /** False while the owning machine is unreachable; the row reads as dimmed. */
   online: boolean;
+  /**
+   * Always `"glyph"` from `resolveCrossMachineLaneMarkers`. Surfaces with no
+   * lane header of their own (the command palette) override it to `"name"`.
+   */
   mode: "glyph" | "name";
   /** Always the machine name — the glyph form still exposes it on hover. */
   title: string;
-  /** True when the same branch exists as a lane on another machine. */
+  /**
+   * True when the same branch exists as a lane on another machine. No longer
+   * changes the marker's form; the push-divergence guard reasons about the same
+   * condition and this is the cheapest place to surface it.
+   */
   sameBranchElsewhere: boolean;
 };
 
@@ -396,9 +416,14 @@ export function orderCrossMachineRows(
 }
 
 /**
- * Resolves the adaptive marker for every foreign lane row. Local rows get no
- * entry at all — "work isn't here" is the only thing the marker communicates,
- * so on a single-machine setup this map is empty and the header is untouched.
+ * Resolves the marker for every lane that is not on this physical Mac. Rows on
+ * this machine get no entry at all — "work isn't here" is the only thing the
+ * marker communicates, so on a single-machine setup this map is empty and the
+ * header is untouched.
+ *
+ * Note what this does NOT consult: `isActiveBinding`. A lane on the machine the
+ * project tab happens to point at is still foreign work if you are sitting at a
+ * different Mac, and it gets a marker like any other.
  *
  * Offline machines are included, and their branches still count toward
  * "same branch elsewhere": a branch you cannot see right now is exactly the one
@@ -410,12 +435,9 @@ export function resolveCrossMachineLaneMarkers(
   const foreign = rows.filter((row) => !row.isThisMachine);
   if (foreign.length === 0) return EMPTY_MARKERS;
 
-  const distinctForeignMachineIds = new Set(foreign.map((row) => row.machineId));
-  const manyForeignMachines = distinctForeignMachineIds.size >= 2;
-
-  // Same-branch-elsewhere: a branch held as a lane on two or more machines. This
-  // is the same condition the push-divergence guard reasons about, so the
-  // sidebar names the machine rather than leaving the user to guess which one.
+  // Same-branch-elsewhere: a branch held as a lane on two or more machines. The
+  // push-divergence guard reasons about the same condition; carrying it on the
+  // marker means a consumer that wants to warn does not have to recompute it.
   const machinesByBranch = new Map<string, Set<string>>();
   for (const row of rows) {
     const branch = normalizeBranchRef(row.lane.branchRef);
@@ -429,8 +451,6 @@ export function resolveCrossMachineLaneMarkers(
   for (const row of foreign) {
     const branch = normalizeBranchRef(row.lane.branchRef);
     const sameBranchElsewhere = (machinesByBranch.get(branch)?.size ?? 0) >= 2;
-    const mode: CrossMachineLaneMarker["mode"] =
-      !row.online || manyForeignMachines || sameBranchElsewhere ? "name" : "glyph";
     // Active-binding lanes render through the primary lane list, whose key is
     // the bare lane id. Other machines render through composite union rows.
     const markerKey = row.isActiveBinding
@@ -440,7 +460,10 @@ export function resolveCrossMachineLaneMarkers(
       machineId: row.machineId,
       machineName: row.machineName,
       online: row.online,
-      mode,
+      // Always the resting form. Offline is expressed by `online: false`, which
+      // dims the glyph and the whole row — a shape change on top of that would
+      // be a second signal for one fact.
+      mode: "glyph",
       title: row.machineName,
       sameBranchElsewhere,
     });
@@ -1532,12 +1555,29 @@ export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
     [localLanes, machines, projectBinding],
   );
   return useMemo(() => {
+    // Two different questions, and conflating them is what hid every badge when
+    // the tab was bound to another Mac:
+    //
+    //   - `isActiveBinding` decides where a row RENDERS. The tab's machine owns
+    //     the primary lane list; everything else renders as a union row.
+    //   - `isThisMachine` decides whether a row is BADGED. That is about the
+    //     physical Mac in front of you and nothing else.
+    //
+    // This used to bail on `foreignRows.length === 0` and drop the marker map
+    // with it. Bind the tab to the Studio while sitting at the MacBook and every
+    // lane is active-binding, so `foreignRows` is empty — yet every one of those
+    // lanes is somewhere else and had just earned a marker. The markers were
+    // computed correctly and then thrown away one line later.
     const foreignRows = orderCrossMachineRows(
       rows.filter((row) => !row.isActiveBinding),
     );
     // Single-machine setups take this branch forever: no marker map is built and
     // the lane header renders exactly as it did before this feature existed.
-    if (foreignRows.length === 0) return EMPTY_CROSS_MACHINE_UNION;
+    if (!rows.some((row) => !row.isThisMachine)) {
+      return foreignRows.length === 0
+        ? EMPTY_CROSS_MACHINE_UNION
+        : { foreignRows, markersByLaneId: EMPTY_MARKERS };
+    }
     return {
       foreignRows,
       markersByLaneId: resolveCrossMachineLaneMarkers(rows),
