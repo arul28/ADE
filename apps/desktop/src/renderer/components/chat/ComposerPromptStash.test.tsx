@@ -47,6 +47,7 @@ function installBridge(overrides?: {
   delete?: ReturnType<typeof vi.fn>;
   getImageDataUrl?: ReturnType<typeof vi.fn>;
   saveTempAttachment?: ReturnType<typeof vi.fn>;
+  getWindowSession?: ReturnType<typeof vi.fn>;
 }) {
   const promptStashes = {
     list: overrides?.list ?? vi.fn().mockResolvedValue([]),
@@ -61,6 +62,14 @@ function installBridge(overrides?: {
       }),
       saveTempAttachment: overrides?.saveTempAttachment ?? vi.fn().mockResolvedValue({
         path: "/project/.ade/attachments/stashed-design.png",
+      }),
+    },
+    app: {
+      getWindowSession: overrides?.getWindowSession ?? vi.fn().mockResolvedValue({
+        windowId: 1,
+        project: null,
+        binding: null,
+        openProjectTabs: [],
       }),
     },
   };
@@ -80,6 +89,80 @@ afterEach(() => {
 });
 
 describe("ComposerPromptStash", () => {
+  it("ignores a prompt-stash refresh that lost its local project binding", async () => {
+    const staleBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/stale-project",
+      rootPath: "/stale-project",
+      displayName: "Stale project",
+    };
+    const currentBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/current-project",
+      rootPath: "/current-project",
+      displayName: "Current project",
+    };
+    const list = vi.fn().mockRejectedValue(new Error(
+      "Error invoking remote method 'ade.localRuntime.callAction': Error: Local runtime project is not available for this window.",
+    ));
+    const getWindowSession = vi.fn().mockResolvedValue({
+      windowId: 1,
+      project: { rootPath: currentBinding.rootPath, displayName: currentBinding.displayName },
+      binding: currentBinding,
+      openProjectTabs: [{ rootPath: currentBinding.rootPath, displayName: currentBinding.displayName }],
+    });
+    installBridge({ list, getWindowSession });
+
+    render(
+      <ComposerPromptStash
+        draft=""
+        composerMachineBinding={staleBinding}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    await waitFor(() => expect(getWindowSession).toHaveBeenCalled());
+    expect(list).toHaveBeenCalledWith(staleBinding);
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("shows a prompt-stash error when the local project binding is still current", async () => {
+    const currentBinding: OpenProjectBinding = {
+      kind: "local",
+      key: "local:/current-project",
+      rootPath: "/current-project",
+      displayName: "Current project",
+    };
+    const error = new Error(
+      "Error invoking remote method 'ade.localRuntime.callAction': Error: Local runtime project is not available for this window.",
+    );
+    installBridge({
+      list: vi.fn().mockRejectedValue(error),
+      getWindowSession: vi.fn().mockResolvedValue({
+        windowId: 1,
+        project: { rootPath: currentBinding.rootPath, displayName: currentBinding.displayName },
+        binding: currentBinding,
+        openProjectTabs: [{ rootPath: currentBinding.rootPath, displayName: currentBinding.displayName }],
+      }),
+    });
+
+    render(
+      <ComposerPromptStash
+        draft=""
+        composerMachineBinding={currentBinding}
+        active
+        buttonVisible
+        shortcutLabel="⌘+S"
+        onDraftChange={vi.fn()}
+      />,
+    );
+
+    expect((await screen.findByRole("alert")).textContent).toContain(error.message);
+  });
+
   it("stays out of the toolbar when the composer and stash list are both empty", async () => {
     const bridge = installBridge();
     render(

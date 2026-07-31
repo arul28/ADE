@@ -31,6 +31,8 @@ const STASH_SNIPPET_MAX_CHARS = 110;
 const STASH_MENU_MAX_WIDTH = 380;
 const STASH_MENU_VIEWPORT_MARGIN = 16;
 const STASH_MENU_GAP = 10;
+const LOCAL_RUNTIME_PROJECT_UNAVAILABLE_MESSAGE =
+  "Local runtime project is not available for this window.";
 
 export type ComposerPromptStashHandle = {
   activate: () => void;
@@ -108,6 +110,45 @@ function stashAttachmentCount(entry: PromptStashEntry): number {
 
 function stashAttachmentsUnavailable(entry: PromptStashEntry): boolean {
   return entry.attachmentsAvailable === false && stashAttachmentCount(entry) > 0;
+}
+
+function normalizedProjectRoot(rootPath: string): string {
+  return rootPath.trim().replace(/[\\/]+$/, "");
+}
+
+function hasLocalProjectRoot(
+  session: Awaited<ReturnType<typeof window.ade.app.getWindowSession>>,
+  rootPath: string,
+): boolean {
+  const expectedRoot = normalizedProjectRoot(rootPath);
+  const sessionRoots = [
+    session.binding?.kind === "local" ? session.binding.rootPath : null,
+    session.project?.rootPath,
+    ...session.openProjectTabs.map((project) => project.rootPath),
+  ];
+  return sessionRoots.some(
+    (candidate) => candidate != null && normalizedProjectRoot(candidate) === expectedRoot,
+  );
+}
+
+async function isStaleLocalPromptStashRequest(
+  error: unknown,
+  binding: OpenProjectBinding | null,
+): Promise<boolean> {
+  if (
+    binding?.kind !== "local" ||
+    !(error instanceof Error) ||
+    !error.message.includes(LOCAL_RUNTIME_PROJECT_UNAVAILABLE_MESSAGE)
+  ) {
+    return false;
+  }
+  try {
+    const session = await window.ade.app.getWindowSession();
+    return !hasLocalProjectRoot(session, binding.rootPath);
+  } catch {
+    // Preserve the original runtime error when the window session cannot be read.
+    return false;
+  }
 }
 
 function StashImageThumbnail({
@@ -253,6 +294,10 @@ export const ComposerPromptStash = forwardRef<ComposerPromptStashHandle, Compose
       ));
       setError(null);
     } catch (refreshError) {
+      if (sequence !== refreshSequenceRef.current) return;
+      if (await isStaleLocalPromptStashRequest(refreshError, capturedBinding)) {
+        return;
+      }
       if (sequence !== refreshSequenceRef.current) return;
       setError(refreshError instanceof Error ? refreshError.message : "Could not load stashed prompts.");
     }
