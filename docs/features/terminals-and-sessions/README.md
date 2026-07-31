@@ -296,9 +296,10 @@ Shared types and IPC:
   list.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
-  It maps shared presentation glyph ids to Phosphor icons, ticks Working/Stale
-  elapsed time, and replaces the status label with snooze plus binding-aware
-  settle/un-settle controls while the row is hovered or keyboard-focused.
+  It maps shared presentation glyph ids to Phosphor icons, ticks active
+  Working/Planning elapsed time and idle scheduled-work countdowns, and
+  replaces the status label with snooze plus binding-aware settle/un-settle
+  controls while the row is hovered or keyboard-focused.
 - `apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx` —
   one-second hover-intent detail pane positioned to the right of the full-bleed
   source row. Direct row-to-row movement after a card opens hands off

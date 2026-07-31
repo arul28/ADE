@@ -1543,6 +1543,8 @@ export type AgentChatSessionSummary = {
   pendingInputItemId?: string | null;
   /** Earliest armed, unpaused schedule for this chat. */
   nextWakeAt: string | null;
+  /** Authoritative provider-reported background tasks still running after the foreground turn. */
+  activeBackgroundTaskCount?: number;
   /** True when this chat's durable schedules are paused. */
   scheduledWorkPaused?: boolean;
   /** KV-backed durable schedules. This is the management source of truth. */

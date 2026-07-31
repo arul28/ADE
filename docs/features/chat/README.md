@@ -325,9 +325,15 @@ Controls and summaries project this runtime state rather than owning it:
   connected host's descriptors, so an older host stays read-only for whichever
   controls it does not support. Create is owner-only; Pause/Resume and Cancel
   remain viewer-allowed recovery controls.
-- Session summaries expose the earliest unpaused `nextWakeAt`; Work rows show
-  it as a compact alarm countdown. The optional `scheduledWork` management
-  snapshot lets desktop merge KV truth over stale transcript projections.
+- Session summaries expose the earliest unpaused `nextWakeAt` plus the
+  authoritative count of live provider background tasks. After the foreground
+  turn becomes idle, Work rows show **Working** while background tasks remain,
+  then **Waiting** with a compact alarm countdown while a future wake is armed;
+  only a chat with neither reads **Done**. Active ADE chats use the current
+  `interactionMode` to distinguish violet **Planning** from ordinary
+  **Working**; legacy permission flags and CLI terminal text are not treated as
+  plan-mode truth. The optional `scheduledWork` management snapshot lets desktop
+  merge KV truth over stale transcript projections.
 - Every unattended turn starts with a `Woke on schedule` divider. Desktop
   tracks the last viewed time per session in renderer `localStorage` and
   offers a dismissible while-you-were-away strip with jump links to those

@@ -7,11 +7,13 @@ import {
   Circle,
   CircleDashed,
   Clock,
+  NotePencil,
   Moon,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import {
   SESSION_TONE_TEXT_CLASS,
+  formatFutureDuration,
   formatWorkingDuration,
   type SessionStatusGlyph,
   type SessionStatusPresentation,
@@ -54,6 +56,10 @@ function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
   switch (glyph) {
     case "working":
       return <CircleDashed size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "planning":
+      return <NotePencil size={13} weight="bold" aria-hidden className="shrink-0" />;
+    case "waiting":
+      return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
     case "done":
       return <CheckCircle size={13} weight="bold" aria-hidden className="shrink-0" />;
     // Filled, not outlined: "your move" is the one state allowed to shout.
@@ -95,6 +101,24 @@ function useElapsedLabel(sinceIso: string | null | undefined, enabled: boolean):
 
   if (!enabled || sinceMs == null) return "";
   return formatWorkingDuration(nowMs - sinceMs);
+}
+
+function useFutureLabel(atIso: string | null | undefined, enabled: boolean): string {
+  const atMs = React.useMemo(() => {
+    const parsed = atIso ? Date.parse(atIso) : Number.NaN;
+    return Number.isFinite(parsed) ? parsed : null;
+  }, [atIso]);
+  const [nowMs, setNowMs] = React.useState(() => Date.now());
+
+  React.useEffect(() => {
+    if (!enabled || atMs == null) return undefined;
+    setNowMs(Date.now());
+    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(intervalId);
+  }, [atMs, enabled]);
+
+  if (!enabled || atMs == null) return "";
+  return formatFutureDuration(atMs, nowMs);
 }
 
 /**
@@ -149,6 +173,15 @@ export function SessionStatusSlot({
     session.lastActivityAt ?? session.startedAt,
     Boolean(presentation?.showsElapsed),
   );
+  const waiting = presentation?.glyph === "waiting";
+  const future = useFutureLabel(session.nextWakeAt, waiting);
+  const exactWakeTitle = React.useMemo(() => {
+    if (!waiting || !session.nextWakeAt) return undefined;
+    const wakeAt = Date.parse(session.nextWakeAt);
+    return Number.isFinite(wakeAt)
+      ? `Next run ${new Date(wakeAt).toLocaleString()}`
+      : undefined;
+  }, [session.nextWakeAt, waiting]);
   const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
   const isActivelyRunning = canonicalPhase === "starting"
     || canonicalPhase === "running"
@@ -197,10 +230,15 @@ export function SessionStatusSlot({
             {/* role="status" sits on the LABEL alone. Putting it on a wrapper
                 that also contains the ticking duration makes screen readers
                 announce the row once per second. */}
-            <span role="status">{presentation.label}</span>
+            <span role="status" aria-label={exactWakeTitle}>{presentation.label}</span>
             {elapsed ? (
               <span aria-hidden className="tabular-nums">
                 {elapsed}
+              </span>
+            ) : null}
+            {future ? (
+              <span aria-hidden className="tabular-nums">
+                {future}
               </span>
             ) : null}
           </span>

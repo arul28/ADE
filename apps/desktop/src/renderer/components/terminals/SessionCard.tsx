@@ -62,6 +62,7 @@ import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavig
 import { isSessionSnoozed, sessionWokeMarker, snoozeWakeLabel } from "../../lib/sessionSnooze";
 import { SessionStatusSlot } from "./SessionStatusSlot";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { formatFutureDuration } from "../../../shared/sessionStatusPresentation";
 
 /* ──────────────────────────────────────────────────────────────────────────
    The Work-sidebar session card.
@@ -252,18 +253,6 @@ function LinkifiedPreviewLine({
       </span>
     );
   });
-}
-
-function compactFutureDuration(timestampMs: number, nowMs: number): string | null {
-  if (!Number.isFinite(timestampMs) || timestampMs <= nowMs) return null;
-  const totalMinutes = Math.max(1, Math.ceil((timestampMs - nowMs) / 60_000));
-  if (totalMinutes < 60) return `${totalMinutes}m`;
-  const totalHours = Math.floor(totalMinutes / 60);
-  const minutes = totalMinutes % 60;
-  if (totalHours < 24) return minutes ? `${totalHours}h ${minutes}m` : `${totalHours}h`;
-  const days = Math.floor(totalHours / 24);
-  const hours = totalHours % 24;
-  return hours ? `${days}d ${hours}h` : `${days}d`;
 }
 
 /**
@@ -774,13 +763,13 @@ export const SessionCard = React.memo(function SessionCard({
     });
   }
   if (session.nextWakeAt) {
-    const wakeIn = compactFutureDuration(Date.parse(session.nextWakeAt), Date.now());
+    const wakeIn = formatFutureDuration(Date.parse(session.nextWakeAt), Date.now());
     // Neutral, never amber: a scheduled wake is the agent's move, not yours.
     if (wakeIn) {
       hoverRows.push({
         id: "next-wake",
         icon: <Alarm size={13} className="text-muted-fg/60" />,
-        value: `Wakes in ${wakeIn}`,
+        value: `Wakes in ${wakeIn} · ${new Date(session.nextWakeAt).toLocaleString()}`,
       });
     }
   }
