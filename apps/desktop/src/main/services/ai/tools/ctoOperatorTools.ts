@@ -98,11 +98,10 @@ export interface CtoOperatorToolDeps {
     applyProposal: (args: any) => Promise<any>;
     undoProposal: (args: any) => Promise<any>;
   } | null;
-  steerChat?: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
-  cancelSteer?: (args: { sessionId: string }) => Promise<void>;
-  handoffChat?: (args: { sessionId: string; targetIdentityKey?: string; reason?: string }) => Promise<any>;
-  listSubagents?: (args: { sessionId: string }) => Promise<any[]>;
-  approveToolUse?: (args: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) => Promise<void>;
+  steerChat: (args: { sessionId: string; instruction: string }) => Promise<{ steerId: string; queued: boolean }>;
+  cancelSteer: (args: { sessionId: string; steerId: string }) => Promise<void>;
+  listSubagents: (args: { sessionId: string }) => Promise<any[]>;
+  approveToolUse: (args: { sessionId: string; toolUseId: string; decision: "accept" | "accept_for_session" | "decline" | "cancel" }) => Promise<void>;
   computerUseArtifactBrokerService?: {
     listArtifacts: (args?: any) => any[];
     updateArtifactReview: (args: any) => any;
@@ -135,10 +134,6 @@ export interface CtoOperatorToolDeps {
     sessionId: string;
     title?: string | null;
   }) => Promise<AgentChatSession>;
-  previewSessionToolNames: (args: {
-    laneId: string;
-    sessionProfile?: AgentChatCreateArgs["sessionProfile"];
-  }) => string[];
   sendChatMessage: (args: AgentChatSendArgs) => Promise<void>;
   interruptChat: (args: AgentChatInterruptArgs) => Promise<void>;
   ensureCtoSession: (args: {
@@ -1227,9 +1222,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
     execute: async ({ laneId, title, startupCommand }) => {
       if (!deps.ptyService) return { success: false, error: "Terminal service is not available." };
       try {
+        // cols/rows/title are required by the real PtyCreateArgs. They used to
+        // be omitted and silently clamped inside the pty service — invisible
+        // while these tool bodies were unreachable, live now that they execute.
         const result = await deps.ptyService.create({
           laneId,
-          ...(title?.trim() ? { title: title.trim() } : {}),
+          title: title?.trim() || "CTO terminal",
+          cols: 100,
+          rows: 30,
           ...(startupCommand?.trim() ? { startupCommand: startupCommand.trim() } : {}),
           toolType: "shell",
           tracked: true,
@@ -1445,14 +1445,14 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
 
   tools.gitUndoLastHeadChange = tool({
     description: "Undo the latest successful head-changing git operation recorded by ADE for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.undoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitUndo") })),
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to undo in. Required — there is no default.") }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.undoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitUndoLastHeadChange") })),
   });
 
   tools.gitRedoLastHeadChange = tool({
     description: "Redo the latest successful ADE git undo for a named lane. This resets the lane with git reset --hard, so laneId is required — there is no default.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
-    execute: ({ laneId }) => gitGuard(() => deps.gitService!.redoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitRedo") })),
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to redo in. Required — there is no default.") }),
+    execute: ({ laneId }) => gitGuard(() => deps.gitService!.redoLastHeadChange({ laneId: requireMutationLaneId(laneId, "gitRedoLastHeadChange") })),
   });
 
   tools.gitFetch = tool({
@@ -1544,20 +1544,20 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.gitRebaseContinue = tool({
-    description: "Continue a rebase after resolving conflicts.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
+    description: "Continue a rebase after resolving conflicts in a named lane. laneId is required — there is no default.",
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to continue the rebase in. Required — there is no default.") }),
     execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseContinue({ laneId: requireMutationLaneId(laneId, "gitRebaseContinue") })),
   });
 
   tools.gitRebaseAbort = tool({
-    description: "Abort an in-progress rebase.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
+    description: "Abort an in-progress rebase in a named lane. laneId is required — there is no default.",
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the rebase in. Required — there is no default.") }),
     execute: ({ laneId }) => gitGuard(() => deps.gitService!.rebaseAbort({ laneId: requireMutationLaneId(laneId, "gitRebaseAbort") })),
   });
 
   tools.gitMergeAbort = tool({
-    description: "Abort an in-progress merge.",
-    inputSchema: z.object({ laneId: z.string().optional() }),
+    description: "Abort an in-progress merge in a named lane. laneId is required — there is no default.",
+    inputSchema: z.object({ laneId: z.string().min(1).describe("Lane to abort the merge in. Required — there is no default.") }),
     execute: ({ laneId }) => gitGuard(() => deps.gitService!.mergeAbort({ laneId: requireMutationLaneId(laneId, "gitMergeAbort") })),
   });
 
@@ -1639,7 +1639,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       instruction: z.string().min(1),
     }),
     execute: async ({ sessionId, instruction }) => {
-      if (!deps.steerChat) return { success: false, error: "Chat steering is not available." };
       try {
         await deps.steerChat({ sessionId, instruction });
         return { success: true, sessionId };
@@ -1650,32 +1649,15 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
   });
 
   tools.cancelSteer = tool({
-    description: "Cancel a pending steer instruction on a chat session.",
+    description: "Cancel a pending steer instruction on a chat session. Pass the steerId returned by steerChat.",
     inputSchema: z.object({
       sessionId: z.string().min(1),
+      steerId: z.string().min(1).describe("The steerId returned by steerChat."),
     }),
-    execute: async ({ sessionId }) => {
-      if (!deps.cancelSteer) return { success: false, error: "Chat steering is not available." };
+    execute: async ({ sessionId, steerId }) => {
       try {
-        await deps.cancelSteer({ sessionId });
+        await deps.cancelSteer({ sessionId, steerId });
         return { success: true, sessionId };
-      } catch (error) {
-        return { success: false, error: getErrorMessage(error) };
-      }
-    },
-  });
-
-  tools.handoffChat = tool({
-    description: "Hand off a chat session to a different agent identity.",
-    inputSchema: z.object({
-      sessionId: z.string().min(1),
-      targetIdentityKey: z.string().optional(),
-      reason: z.string().optional(),
-    }),
-    execute: async ({ sessionId, targetIdentityKey, reason }) => {
-      if (!deps.handoffChat) return { success: false, error: "Chat handoff is not available." };
-      try {
-        return { success: true, ...(await deps.handoffChat({ sessionId, targetIdentityKey, reason })) };
       } catch (error) {
         return { success: false, error: getErrorMessage(error) };
       }
@@ -1688,7 +1670,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       sessionId: z.string().min(1),
     }),
     execute: async ({ sessionId }) => {
-      if (!deps.listSubagents) return { success: false, error: "Sub-agent listing is not available." };
       try {
         const subagents = await deps.listSubagents({ sessionId });
         return { success: true, count: subagents.length, subagents };
@@ -1706,7 +1687,6 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
       decision: z.enum(["accept", "accept_for_session", "decline", "cancel"]),
     }),
     execute: async ({ sessionId, toolUseId, decision }) => {
-      if (!deps.approveToolUse) return { success: false, error: "Tool use approval is not available." };
       try {
         await deps.approveToolUse({ sessionId, toolUseId, decision });
         return { success: true, sessionId, toolUseId, decision };

@@ -2934,11 +2934,15 @@ async function runCtoOperatorBridgeTool(
     getChatTranscript: agentChatService.getChatTranscript,
     createChat: agentChatService.createSession,
     updateChatSession: agentChatService.updateSession,
-    previewSessionToolNames: agentChatService.previewSessionToolNames,
     sendChatMessage: agentChatService.sendMessage,
     interruptChat: async (args) => {
       await agentChatService.interrupt(args);
     },
+    steerChat: ({ sessionId, instruction }) => agentChatService.steer({ sessionId, text: instruction }),
+    cancelSteer: ({ sessionId, steerId }) => agentChatService.cancelSteer({ sessionId, steerId }),
+    listSubagents: ({ sessionId }) => agentChatService.listSubagents({ sessionId }),
+    approveToolUse: ({ sessionId, toolUseId, decision }) =>
+      agentChatService.approveToolUse({ sessionId, itemId: toolUseId, decision }),
     ensureCtoSession: async ({ laneId, modelId, reasoningEffort, reuseExisting }) =>
       agentChatService.ensureIdentitySession({
         identityKey: "cto",

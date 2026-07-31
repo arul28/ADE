@@ -207,6 +207,25 @@ type HeadlessLinearServices = {
       reason?: "queue_full";
     }>;
     interrupt: (args: { sessionId: string }) => Promise<void>;
+    /**
+     * Mirrors the desktop chat service so the CTO operator tools
+     * (`cancelSteer`) and the `chat.cancelSteer` sync command resolve
+     * headlessly instead of throwing "not a function".
+     */
+    cancelSteer: (args: {
+      sessionId: string;
+      steerId: string;
+      requireQueued?: boolean;
+    }) => Promise<void>;
+    /** Headless runs spawn no sub-agents; kept so `chat.listSubagents` answers. */
+    listSubagents: (args: { sessionId: string }) => Promise<never[]>;
+    /** Headless runs never raise approval requests; kept so callers get a real error. */
+    approveToolUse: (args: {
+      sessionId: string;
+      itemId: string;
+      decision: "accept" | "accept_for_session" | "decline" | "cancel";
+      responseText?: string | null;
+    }) => Promise<void>;
     resumeSession: (args: {
       sessionId: string;
     }) => Promise<HeadlessAgentChatSession>;
@@ -2089,6 +2108,36 @@ function createHeadlessAgentChatService(
     },
     async interrupt(args: { sessionId: string }) {
       touchSession(args.sessionId);
+    },
+    async cancelSteer(args: {
+      sessionId: string;
+      steerId: string;
+      requireQueued?: boolean;
+    }) {
+      // `steerMessage` appends immediately and reports `queued: false`, so a
+      // headless steer is never sitting in a queue to pull back. This mirrors
+      // the desktop service's "no live runtime" branch exactly: reject only
+      // when the caller demanded the steer still be queued.
+      if (args.requireQueued) throw new Error("This message is no longer queued.");
+      touchSession(args.sessionId);
+    },
+    async listSubagents(_args: { sessionId: string }) {
+      // No turn loop, so no sub-agents are ever tracked. Empty is the truthful
+      // answer, not a placeholder.
+      return [] as never[];
+    },
+    async approveToolUse(args: {
+      sessionId: string;
+      itemId: string;
+      decision: "accept" | "accept_for_session" | "decline" | "cancel";
+      responseText?: string | null;
+    }) {
+      // Headless sessions never emit approval requests, so any itemId a caller
+      // passes is unresolvable. Throw rather than silently succeed — a caller
+      // that believes it approved a tool use would be wrong.
+      throw new Error(
+        `No pending approval found for item '${args.itemId}' (headless chat runtime raises no approvals).`,
+      );
     },
     async resumeSession(args: { sessionId: string }) {
       return ensureSession({

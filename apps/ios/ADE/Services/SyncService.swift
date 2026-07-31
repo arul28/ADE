@@ -12593,6 +12593,10 @@ final class SyncService: ObservableObject {
 
   private func saveRemoteCommandDescriptors(_ descriptors: [SyncRemoteCommandDescriptor]) {
     remoteCommandDescriptors = descriptors
+    // `refreshCtoAttentionIfNeeded` no-ops until it knows the host supports the
+    // command, so the first probe after a (re)connect has to happen here —
+    // forced past the debounce, since a reconnect can land inside its window.
+    refreshCtoAttentionIfNeeded(force: true)
     if descriptors.isEmpty {
       UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
     } else if let data = try? encoder.encode(descriptors) {
@@ -18885,6 +18889,13 @@ extension SyncService {
       runningChatCount: runningChatCount,
       idleCount: idleCount
     )
+    // Before the roster early-return, not after: the CTO is excluded from
+    // `allAgents` by design, so a turn where ONLY the CTO changed leaves the
+    // signature identical. Hanging the probe below the guard would mean the
+    // badge only ever updated when some unrelated session happened to change —
+    // and, once lit, never cleared. Its own debounce bounds the traffic.
+    refreshCtoAttentionIfNeeded()
+
     guard nextSignature != activeSessionsSnapshotSignature else { return }
     activeSessionsSnapshotSignature = nextSignature
 
@@ -18892,10 +18903,6 @@ extension SyncService {
     awaitingInputSessionsCount = awaitingInputCount
     runningChatSessionCount = runningChatCount
     idleSessionsCount = idleCount
-
-    // The CTO is not in `allAgents` by design, so its dot has to be asked for
-    // separately off the same change pulse.
-    refreshCtoAttentionIfNeeded()
 
     scheduleWorkspaceSnapshotWrite()
   }
@@ -18924,7 +18931,11 @@ extension SyncService {
         let next = try await self.fetchCtoAttention()
         self.ctoAttention = next
       } catch {
-        // Keep the last known state.
+        // Keep the last known state on a TRANSPORT failure — dropping a pending
+        // question is worse than a stale dot. Note this does not cover a
+        // host-side probe failure: `getCtoAttention` swallows those into
+        // `idle`, so the badge would clear. Distinguishing them needs an
+        // explicit "unknown" in CtoAttentionState across all three transports.
       }
     }
   }

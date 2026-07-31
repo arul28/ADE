@@ -124,8 +124,8 @@ uses to act on ADE itself:
 | Tool family | Purpose |
 |---|---|
 | `spawnChat` | Spawn a new chat session with an explicit model, reasoning effort, and initial prompt. Lane resolution goes through `resolveExecutionLane`: an explicit `laneId` wins, and omitting it creates a **fresh** lane (`freshLaneName` / `freshLaneDescription`) rather than reusing the caller's. For the CTO that is load-bearing — its session is pinned to the project's primary lane, so a fallback would run spawned agents against the primary worktree. |
-| `interruptChat`, `handoffChat` | Mid-session control over other chat sessions. |
-| `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. |
+| `interruptChat`, `steerChat`, `cancelSteer`, `listSubagents`, `approveToolUse` | Mid-session control over other chat sessions: interrupt a turn, inject a steer instruction, cancel a pending steer by its `steerId`, enumerate spawned sub-agents, and answer a pending permission prompt. Each is a **required** dep on `CtoOperatorToolDeps` and maps onto the corresponding `agentChatService` method (`approveToolUse` translates the tool's `toolUseId` to the service's `itemId`), so none of them can be advertised without an implementation behind it. |
+| `createTerminal`, `runCommand` | Create untracked shells or run fire-and-forget commands. `createTerminal` passes explicit `cols: 100`, `rows: 30`, and a title, rather than relying on the pty service's default clamp. |
 | `listLanes`, `createLane`, `renameLane`, `archiveLane`, `inspectLane` | Lane management. |
 | `saveMemory`, `searchMemory`, `readMemory` | Durable CTO memory: save facts, search prior context, review what it knows. |
 | Linear tools (when connected) | Read and lightly update issues: list/inspect, comment, state, assignee, label. |
@@ -142,24 +142,42 @@ renders only the sections the agent can act on.
 
 The CTO tool set is a second consumer of the same per-provider tool
 transports the orchestration tool set uses, gated on `identityKey === "cto"`
-via `createCtoRuntimeToolMap(managed)` in `agentChatService.ts`:
+via `createCtoRuntimeToolMap(managed)` in `agentChatService.ts`.
 
-- **Claude** — `buildClaudeCtoMcpServer` produces an SDK MCP server named
-  `ade-cto` merged into `opts.mcpServers`. It is deliberately injected
-  *without* the orchestration lead's `allowManagedMcpServersOnly` lockdown,
-  because the CTO is a daily-driver chat that must keep the user's own MCP
-  servers.
-- **Codex** — `refreshCodexDynamicTools` registers them as dynamic tools
-  under the `ade_cto` namespace next to orchestration's `ade_orchestration`.
-  Both sets must register in that one function: it clears the runtime's
-  dynamic-tool map before rebuilding, so a second refresher would clobber the
-  first. Dispatch falls back by bare name across both namespaces when a call
-  arrives un-namespaced.
-- **Cursor, Droid, OpenCode** — a second HTTP MCP lease
-  (`ensureCtoHttpMcpServer`, cached on `managed.ctoHttpMcpServer`) advertised
-  under the `ade-cto` server name. It is a separate lease from
-  `orchestrationHttpMcpServer` because each lease carries exactly one tool
-  set; `closeOrchestrationHttpMcpServer` closes both.
+A single descriptor table, `HTTP_MCP_TOOL_SETS`, names the tool sets ADE can
+register on a session. Each entry carries a `serverName`, a `codexNamespace`,
+and a `buildTools(managed)` factory, so every transport below reads its
+identifiers from one place instead of restating them:
+
+| Tool set | `serverName` | `codexNamespace` | `buildTools` |
+| --- | --- | --- | --- |
+| `orchestration` | `ade-orchestration` | `ade_orchestration` | `createOrchestrationRuntimeToolMap` |
+| `cto` | `ade-cto` | `ade_cto` | `createCtoRuntimeToolMap` |
+
+- **Claude** — `buildClaudeSdkMcpServer(managed, "cto")` produces an SDK MCP
+  server named `ade-cto`, merged into `opts.mcpServers`. It is deliberately
+  injected *without* the orchestration lead's `allowManagedMcpServersOnly`
+  lockdown, because the CTO is a daily-driver chat that must keep the user's
+  own MCP servers. (When a session ever carries both sets, the orchestration
+  path adds `ade-cto` to `allowedMcpServers` too, so the lockdown cannot
+  silently drop it.)
+- **Codex** — `refreshCodexDynamicTools` walks the whole table and registers
+  each set as dynamic tools under its own namespace (`ade_cto` next to
+  `ade_orchestration`). Both sets must register in that one function: it clears
+  the runtime's dynamic-tool map before rebuilding, so a second refresher would
+  clobber the first. Dispatch falls back by bare name across both namespaces
+  when a call arrives un-namespaced.
+- **Cursor, Droid, OpenCode** — HTTP MCP leases. `ensureHttpMcpServer(managed,
+  toolSet)` starts one server per tool set and caches it in
+  `managed.httpMcpServers`, a `Partial<Record<HttpMcpToolSet, HttpMcpLease>>`
+  keyed by the same table. Each lease carries exactly one tool set, so the CTO
+  and orchestration servers stay distinct rather than merging into one.
+  Transports call `ensureHttpMcpLeases(managed)`, which resolves every live
+  lease in table order and returns `{ serverName, url, config }` for each — the
+  per-SDK config shapes differ (record-of-http, record-of-remote, array), so
+  each call site does its own one-line shaping over that list.
+  `closeHttpMcpServers(managed)` drops every lease, and all teardown paths use
+  it.
 
 `buildCtoOperatorToolDeps` builds the dependency set for both the runtime map
 and `previewSessionToolNames` (which enumerates the same names for the prompt),

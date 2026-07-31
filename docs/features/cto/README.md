@@ -55,7 +55,7 @@ The Linear services above are shared plumbing, not CTO-owned workflow machinery.
 - `CtoSettingsScreen.swift` — sections: Identity (including personality/work style via `CtoIdentityEditor`), Model (live model/reasoning/Fast selection), Integrations (read-only Linear connection status), Memory (durable facts + thread summary via `cto.getMemory`), and Advanced (re-run setup).
 - `CtoIdentityEditor.swift` / `CtoReloadHelpers.swift` — the identity edit sheet and reload plumbing.
 - `apps/ios/ADE/Models/RemoteModels.swift` — `CtoAttention` (`awaitingInput` + optional `since`, plus an `idle` constant), the Codable mirror of `CtoAttentionState`.
-- `apps/ios/ADE/Services/SyncService.swift` — `fetchCtoAttention()` (the `cto.getAttention` call), the `@Published ctoAttention`, and `refreshCtoAttentionIfNeeded()`.
+- `apps/ios/ADE/Services/SyncService.swift` — `fetchCtoAttention()` (the `cto.getAttention` call), the `@Published ctoAttention`, and `refreshCtoAttentionIfNeeded()`, called from `refreshActiveSessionsAndSnapshot()` above its roster-signature early return and from `saveRemoteCommandDescriptors` with `force: true`.
 
 The CTO tab icon is the SF Symbol `brain` (`apps/ios/ADE/App/ContentView.swift`), matching the desktop Phosphor Brain glyph; the same tab carries the attention badge described in [Hidden from rosters, but never silent](#hidden-from-rosters-but-never-silent).
 
@@ -123,7 +123,7 @@ Hiding the row removes it from `terminalAttention`, which is what the Work dot a
 - It is **read-only**. It resolves the thread through the same `listIdentitySessions` helper `ensureIdentitySession` uses, but never calls `ensureIdentitySession` itself: rendering a badge must not materialize a primary lane and a chat session as a side effect. The predicate is `awaitingInput || pendingInputItemId || attentionRequestedAt` (the last being an explicit `ade chat ask` hand-raise) rather than `canonicalStatusBucket`, whose awaiting-input bucket folds in `idle` and `ready` and would light the dot whenever the CTO is merely sitting there. A probe failure logs and returns idle.
 - `useCtoAttention` (mounted once in `AppShell`) keeps `appStore.ctoAttention` fresh from chat events, focus, and a 15 s visible-tab interval; `TabNav` renders the dot on `/cto`. It filters chat events through `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity scan per delta, debounces to 1.5 s (0 on focus), and clears to idle on project switch so the previous project's state cannot linger.
 - `useAppWideSessionAttention` adds the CTO to the dock badge count so a question reaches a minimized window. It stays the single writer of `setDockBadgeCount`.
-- **iOS** takes the same path. `SyncService.fetchCtoAttention()` calls `cto.getAttention` and publishes `ctoAttention`; `ContentView` badges the CTO tab (a string badge, so it renders as a dot-sized marker and disappears when idle) with a matching accessibility label. The refresh rides the same "something changed" pulse that rebuilds the session roster — the CTO is not *in* that roster, so it needs its own read — and is debounced to 5 s with `force` for an explicit refresh. It is gated on `supportsRemoteAction("cto.getAttention")`: an older brain never lights the dot, and a value left over from a newer host is cleared. A failed probe keeps the last known value rather than clearing, because falsely dropping a pending question is worse than a slightly stale dot.
+- **iOS** takes the same path. `SyncService.fetchCtoAttention()` calls `cto.getAttention` and publishes `ctoAttention`; `ContentView` badges the CTO tab (a string badge, so it renders as a dot-sized marker and disappears when idle) with a matching accessibility label. `refreshCtoAttentionIfNeeded()` rides the same "something changed" pulse that rebuilds the session roster — the CTO is not *in* that roster, so it needs its own read. It is called from `refreshActiveSessionsAndSnapshot()` **above** the roster-signature early return, not below it: since the CTO is excluded from `allAgents`, a turn where only the CTO changed leaves the signature identical, so a probe hanging below the guard would fire only when some unrelated session happened to change — and, once lit, would never clear. It is also called with `force: true` from `saveRemoteCommandDescriptors`, because the probe no-ops until it knows the host advertises the command, so the first read after a (re)connect has to happen when the descriptors land and must skip the debounce a reconnect could land inside. Otherwise it is debounced to 5 s. It is gated on `supportsRemoteAction("cto.getAttention")`: an older brain never lights the dot, and a value left over from a newer host is cleared. A failed probe keeps the last known value rather than clearing, because falsely dropping a pending question is worse than a slightly stale dot.
 
 ### The opening turn
 
@@ -145,24 +145,37 @@ the surface it can actually call come from one definition and cannot drift
 apart. (`buildCtoCapabilityManifest` renders its inventory from the same
 `createCtoOperatorTools()` factory, with stub deps, for the same reason.)
 
+Every chat-control dep — `steerChat`, `cancelSteer`, `listSubagents`,
+`approveToolUse` — is **required** on `CtoOperatorToolDeps` and wired to the
+matching `agentChatService` method (`steer`, `cancelSteer`, `listSubagents`,
+`approveToolUse`, the last translating the tool's `toolUseId` into the
+service's `itemId`). Making them required is the guard: an optional dep left
+unset advertises a tool whose only possible answer is "not available", which is
+worse than not offering it. `cancelSteer` takes the `steerId` that `steerChat`
+returned, so cancelling is unambiguous when several steers are pending. There
+is no `handoffChat`: it targeted "a different agent identity" and
+`AgentChatIdentityKey` is just `"cto"`.
+
 Registration then goes through whichever transport the session's provider
-speaks:
+speaks. All three read their identifiers from one descriptor table,
+`HTTP_MCP_TOOL_SETS`, whose `cto` entry names the `ade-cto` server, the
+`ade_cto` Codex namespace, and `createCtoRuntimeToolMap` as its factory:
 
 | Provider | Transport |
 | --- | --- |
-| Claude | `buildClaudeCtoMcpServer` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. Unlike the orchestration lead's server it is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
-| Codex | `refreshCodexDynamicTools` registers them as dynamic tools under the `ade_cto` namespace, alongside the orchestration set under `ade_orchestration`. Dispatch falls back by bare name across both namespaces when a call arrives un-namespaced. |
-| Cursor / Droid / OpenCode | An HTTP MCP lease cached on `managed.ctoHttpMcpServer`, provisioned by `ensureCtoHttpMcpServer` and advertised to the runtime under the `ade-cto` server name. |
+| Claude | `buildClaudeSdkMcpServer(managed, "cto")` returns an SDK MCP server named `ade-cto`, merged into `opts.mcpServers`. Unlike the orchestration lead's server it is injected **without** `allowManagedMcpServersOnly` — the CTO is a daily-driver chat and must keep the user's own MCP servers. |
+| Codex | `refreshCodexDynamicTools` walks the table and registers each set as dynamic tools under its own namespace — `ade_cto` alongside orchestration's `ade_orchestration`. Dispatch falls back by bare name across both namespaces when a call arrives un-namespaced. |
+| Cursor / Droid / OpenCode | An HTTP MCP lease from `ensureHttpMcpServer(managed, "cto")`, cached in `managed.httpMcpServers.cto` and advertised under the `ade-cto` server name. Transports resolve every live lease at once via `ensureHttpMcpLeases(managed)`. |
 
 Two invariants keep this from breaking quietly:
 
 - **One refresher per Codex runtime.** `refreshCodexDynamicTools` clears the
   dynamic-tool map before rebuilding it, so both tool sets must register inside
   that one function. A second refresher would clobber the first.
-- **One tool set per HTTP MCP lease.** That is why `ctoHttpMcpServer` is a
-  separate field from `orchestrationHttpMcpServer` rather than a shared server
-  carrying both. `closeOrchestrationHttpMcpServer` closes both leases, so every
-  teardown path drops the CTO one too.
+- **One tool set per HTTP MCP lease.** `managed.httpMcpServers` is a map keyed
+  by tool set rather than a single shared server carrying both, and
+  `ensureHttpMcpServer` starts one server per key. `closeHttpMcpServers(managed)`
+  drops every lease in the map, so every teardown path releases the CTO one too.
 
 ### Where CTO-launched work runs
 
