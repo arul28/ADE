@@ -3,8 +3,18 @@ import SwiftUI
 struct SettingsPairingSection: View {
   let snapshot: SettingsPairingSnapshot
   @Binding var presentedSheet: SettingsPairSheetRoute?
-  @State private var showsAddMachine = false
+  @State private var showsAddMachine: Bool
   @ObservedObject private var accountService = AccountService.shared
+
+  init(
+    snapshot: SettingsPairingSnapshot,
+    presentedSheet: Binding<SettingsPairSheetRoute?>,
+    initiallyExpanded: Bool = false
+  ) {
+    self.snapshot = snapshot
+    self._presentedSheet = presentedSheet
+    self._showsAddMachine = State(initialValue: initiallyExpanded)
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {

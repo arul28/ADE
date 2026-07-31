@@ -48,7 +48,8 @@ struct ConnectionSettingsView: View {
 
               SettingsPairingSection(
                 snapshot: presentationModel.pairingSnapshot,
-                presentedSheet: $presentedSheet
+                presentedSheet: $presentedSheet,
+                initiallyExpanded: true
               )
             }
             .padding(.horizontal, 16)
@@ -996,21 +997,18 @@ struct SettingsMachinesSection: View {
     let tappable = !entry.isCurrent && connectingId == nil
 
     VStack(alignment: .leading, spacing: 0) {
-      Button {
-        connect(entry)
-      } label: {
-        MachineRowView(
-          deviceSymbol: deviceSymbol(entry),
-          title: entry.name,
-          routeHint: entry.routeHint,
-          online: entry.online,
-          isAuthenticatedCurrent: entry.isCurrent,
-          statusPill: entry.isCurrent ? .connected : nil,
-          affordance: rowAffordance(entry, isConnecting: isConnecting),
-          surface: .row
-        )
+      Group {
+        if tappable {
+          Button {
+            connect(entry)
+          } label: {
+            machineRowLabel(entry, isConnecting: isConnecting)
+          }
+          .buttonStyle(ADEScaleButtonStyle())
+        } else {
+          machineRowLabel(entry, isConnecting: isConnecting)
+        }
       }
-      .buttonStyle(ADEScaleButtonStyle())
       .accessibilityLabel("\(entry.name), \(entry.routeHint)")
       .accessibilityHint(tappable ? "Connect." : "")
       .contextMenu {
@@ -1051,6 +1049,19 @@ struct SettingsMachinesSection: View {
           .padding(.top, 6)
       }
     }
+  }
+
+  private func machineRowLabel(_ entry: Entry, isConnecting: Bool) -> some View {
+    MachineRowView(
+      deviceSymbol: deviceSymbol(entry),
+      title: entry.name,
+      routeHint: entry.routeHint,
+      online: entry.online,
+      isAuthenticatedCurrent: entry.isCurrent,
+      statusPill: entry.isCurrent ? .connected : nil,
+      affordance: rowAffordance(entry, isConnecting: isConnecting),
+      surface: .row
+    )
   }
 
   private func accountMachine(from entry: Entry) -> AccountMachine? {

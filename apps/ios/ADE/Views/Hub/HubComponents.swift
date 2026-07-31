@@ -164,7 +164,7 @@ struct HubConnectionPill: View {
         }
       }
       .padding(.horizontal, 11)
-      .padding(.vertical, transportLabel == nil ? 8 : 5)
+      .padding(.vertical, 8)
       .background(ADEColor.cardBackground.opacity(0.62), in: Capsule())
       .overlay(Capsule().stroke(ADEColor.border.opacity(0.8), lineWidth: 1))
     }
