@@ -5403,6 +5403,7 @@ describe("AgentChatPane submit recovery", () => {
   });
 
   it("auto-creates on This Mac from a remote-bound tab without rebinding the project", async () => {
+    seedRuntimeModelCatalog();
     const { create } = installAdeMocks({ sessions: [] });
     const onSessionCreated = vi.fn();
     const localBinding = {
