@@ -7,8 +7,8 @@ type ShellNavTabProps = {
   active: boolean;
   label?: string;
   onActivate?: () => void;
-  onClose: () => void;
-  closeTitle: string;
+  onClose?: () => void;
+  closeTitle?: string;
   closeDisabled?: boolean;
   children: ReactNode;
   className?: string;
@@ -48,7 +48,7 @@ export function ShellNavTab({
       }}
     >
       {children}
-      <button
+      {onClose ? <button
         type="button"
         className={cn(
           "ade-shell-control ml-auto inline-flex h-4 w-4 shrink-0 items-center justify-center text-current",
@@ -68,7 +68,7 @@ export function ShellNavTab({
         title={closeTitle}
       >
         <X size={12} weight="regular" />
-      </button>
+      </button> : null}
     </div>
   );
 }

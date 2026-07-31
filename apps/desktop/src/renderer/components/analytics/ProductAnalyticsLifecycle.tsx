@@ -9,6 +9,7 @@ type ProductAnalyticsLifecycleArgs = {
 
 const KEY_ANALYTICS_SCREENS = new Set([
   "project",
+  "hub",
   "lanes",
   "work",
   "prs",

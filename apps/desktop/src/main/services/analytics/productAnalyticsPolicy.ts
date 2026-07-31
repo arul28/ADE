@@ -135,7 +135,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
 const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   screen: new Set([
-    "project", "lanes", "files", "work", "graph", "prs", "review", "history", "automations",
+    "project", "hub", "lanes", "files", "work", "graph", "prs", "review", "history", "automations",
     "cto", "settings", "chats", "onboarding", "other", "terminal_control", "drawer_lanes", "drawer_chats",
     "details", "details_model_picker", "details_help", "details_status", "details_list", "details_details",
     "details_context_usage", "details_diff", "details_chat_info", "details_external_session_browser",

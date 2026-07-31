@@ -166,6 +166,7 @@ export type RemoteRuntimeConnectionState =
   | "idle"
   | "connecting"
   | "connected"
+  | "parked"
   | "error";
 
 export type RemoteRuntimeRouteKind = "lan" | "tailnet" | "relay" | "ssh";

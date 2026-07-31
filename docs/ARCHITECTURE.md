@@ -298,8 +298,8 @@ connections start with ADE account sign-in and adopt a machine from the
 account directory; the resulting credential is DPoP-bound. Endpoint ranking is
 still LAN → Tailscale → Relay, but a production HTTPS page cannot dial insecure
 `ws://` LAN/tailnet endpoints, so Relay is normally the only browser-eligible
-route. The
-client keeps no local ADE DB and installs a sync-backed subset of `window.ade`.
+route. The client keeps no local ADE DB and installs a sync-backed subset of
+`window.ade`.
 Its static HTML paints the loading shell before React, while account bootstrap,
 directory loading, and transactional IndexedDB privacy cleanup do not serialize
 ordinary first paint. Vite preserves lazy feature boundaries, and the build
@@ -308,10 +308,27 @@ guarded heavy renderer chunk. Fingerprinted assets are immutable; the HTML
 entry remains uncached. Connected visible tabs enforce separate transport-open
 and authenticated-hello deadlines plus an inbound-traffic watchdog, then map
 Relay application close codes into stable retry/offline UI.
-Its project routes use remote
-commands plus file/chat/terminal sub-protocols; `/chats` is also reachable from
-the project picker and uses runtime-scoped `personalChats.*` commands without
-selecting a project. Account Attention is a separate direct push-relay read:
+
+The permanent `/hub` route merges account-directory machines with
+browser-saved environments, exposes account-scoped rename/removal separately
+from browser-local trust deletion, and opens machine project catalogs without
+repeating a picker flow for every project. `WebMachineSessionManager` bounds the
+browser to four live `AdeSyncClient` objects; a fifth connection parks the
+least-recently-used non-active machine, retains its catalog/tab metadata, and
+reuses the released client slot when that machine resumes. A federated
+`window.ade` adapter persists Hub/project/Chats state per account and pins
+project calls to the exact machine + project binding. The shared top bar keeps
+Hub permanent and groups same-origin checkouts into one repository tab with a
+compact machine selector inside it. Hosted mode mounts only the active project
+surface so an inactive subscription cannot dispatch through another machine's
+adapter.
+
+Project routes use remote commands plus file/chat/terminal sub-protocols;
+machine-scoped `/chats` uses runtime-scoped `personalChats.*` commands without
+selecting a project. The chat adapter implements the shared
+`agentChat.promptStashes` contract with an always-array list fallback and
+required create/delete mutations, so malformed or unsupported host results do
+not reach composer code as `null`. Account Attention is a separate direct push-relay read:
 the global header/full-center snapshot does not follow the selected sync
 machine or project. Signed-out compatibility environments can instead ask only
 their explicitly paired host for a real machine snapshot; older hosts surface
@@ -887,10 +904,10 @@ Design tokens have been intentionally trimmed. The CTO design tokens at `apps/de
 - `SplitPane` / resizable panels — structured 2/3-pane views.
 - Work view's grid mode is `PaneTilingLayout` seeded by `buildWorkSessionTilingTree(sessionIds)` (in `renderer/components/terminals/workSessionTiling.ts`); every session becomes a `FloatingPane` leaf with `grid-tile` chrome.
 - Project tab hosting: `App.tsx`'s `ProjectTabHost` mounts one persistent `ProjectSurface` per open project tab inside a single window, keyed by the runtime binding (`local:<root>` or the remote binding key) so a local and remote view of the same path cannot share renderer state accidentally. Each `ProjectSurface` owns its own zustand store instance (`createProjectAppStore(project, projectBinding)`), pre-hydrated with the project binding plus a copy of root-store user preferences (theme, terminal preferences, chat font, sound, density, etc.). User-preference setters point at the **root** store, so changes flow to one place and are then mirrored into every project store on the next `rootPrefs` change. A LRU sorts mounted surfaces and caps the warm-mounted set at `WARM_PROJECT_SURFACE_LIMIT = 8`; surfaces beyond that limit are dropped from the React tree (their store entry is GC'd) but the persisted lane/chat caches in the root store keep their data live so a re-mount is cheap.
-- Global personal-chat routing: `/chats` sits outside the project route set. From a selected project it renders against that surface's retained runtime binding; from the welcome/project picker it renders under a real machine-level **Chats** top tab whose existence is tracked in session-only `personalChatsTabOpen` app state and whose active-ness is derived from the route, while the normal project-only tabs remain disabled. That tab is a plain clickable tab (activating it navigates to `/chats`) and persists across project open/switch/close. The Chats sidebar entry itself stays enabled in both states.
+- Global personal-chat routing: `/chats` sits outside the project route set. On desktop, a selected project renders it against that surface's retained runtime binding; from the welcome surface it renders under a real machine-level **Chats** top tab whose existence is tracked in session-only `personalChatsTabOpen` app state. In hosted web, the Hub chooses the machine explicitly and the federated adapter persists that Chats target per account. The Chats tab's active state is derived from the route, and project-only tabs remain disabled while it is active.
 - Per-surface routing: each surface remembers its own route (`/work`, `/lanes`, `/files`, `/prs`, `/cto`, `/automations`, `/settings`, …) under `ade:project-route:<bindingKey>` in `localStorage`. `ProjectTabHost` swaps which surface is `active` based on the foreground project tab, stashing the outgoing route and replaying the incoming surface's last route via `navigate(..., { replace: true })`. Inactive surfaces stay in the tree (`aria-hidden`, `inert`, absolutely positioned at `z-index: -1`, opacity 0, pointer-events none) so chats / terminals / live polling don't tear down on tab swap. The host also marks parked project, Work, and Lanes surfaces with `data-ade-animation-state="paused"`; the global renderer stylesheet pauses descendant CSS animations (including pseudo-elements) until the surface becomes active again, avoiding hidden compositor work without discarding UI state.
 - Work-surface reveal: `ProjectRouteContent` keeps the `/work` route mounted lazily inside each project surface. When the surface itself becomes active **and** the route is a work route, it dispatches the `WORK_SURFACE_REVEALED_EVENT` window event so terminal tiles can clear their texture atlas, force-fit, and refocus.
-- Page-level active gating: lazy feature pages (`LanesPage`, `FilesTab`, `WorkspaceGraphPage`, `PRsPage`, `ReviewPage`, `HistoryPage`, `AutomationsPage`, `AutomationsTemplatesPage`, `CtoPage`, `SettingsPage`) accept an `active?: boolean` prop and gate every `useEffect` that fires IPC polling, event subscriptions, or initial data fetches behind it. Inactive surfaces in background project tabs render their last state but don't poll — the project's runtime is still alive, so the freshness is restored on the next refresh when the user returns.
+- Page-level active gating: lazy feature pages (`LanesPage`, `FilesTab`, `WorkspaceGraphPage`, `PRsPage`, `ReviewPage`, `HistoryPage`, `AutomationsPage`, `AutomationsTemplatesPage`, `CtoPage`, `SettingsPage`) accept an `active?: boolean` prop and gate every `useEffect` that fires IPC polling, event subscriptions, or initial data fetches behind it. Desktop inactive surfaces render their last state but do not poll. Hosted web is stricter: only the active project surface mounts, because an inactive renderer subscription must never outlive the federated machine/project adapter it was created against.
 - The desktop TopBar project tab strip resolves a per-project favicon via `window.ade.project.resolveIcon(rootPath)` and caches the result in a module-local `Map`. Tabs without an icon (or a missing project root) fall back to the `Folder` Phosphor glyph; the same component drives the loading-pulse animation when a tab is being switched into or closed.
 - Layout state persists to SQLite (`layout`, `tilingTree`, `graphState` domains via the `kv` table).
 

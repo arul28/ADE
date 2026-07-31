@@ -735,6 +735,8 @@ declare global {
           project: ProjectInfo | null;
           binding: OpenProjectBinding | null;
           openProjectTabs: ProjectInfo[];
+          /** Hosted web persists remote machine/project tabs in this browser. */
+          openProjectBindings?: OpenProjectBinding[];
         }>;
         getWelcomeVideoState: () => Promise<AppWelcomeVideoState>;
         markWelcomeVideoSeen: (
@@ -745,6 +747,10 @@ declare global {
         setWindowProjectTabs: (
           rootPaths: string[],
         ) => Promise<{ openProjectTabs: ProjectInfo[] }>;
+        /** Hosted-web-only retained binding persistence; absent on native desktop. */
+        setWindowProjectBindings?: (
+          bindings: OpenProjectBinding[],
+        ) => Promise<{ openProjectBindings: OpenProjectBinding[] }>;
         newWindow: () => Promise<{ windowId: number | null }>;
         openProjectInNewWindow: (
           rootPath: string,

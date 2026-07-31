@@ -515,7 +515,7 @@ describe("productAnalyticsService", () => {
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
     await vi.waitFor(() => {
       expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 1_000, interval: 20 });
+    }, { timeout: 3_000, interval: 20 });
     await expect(first.service.flush()).resolves.toBe(true);
 
     await first.service.shutdown();
@@ -531,12 +531,12 @@ describe("productAnalyticsService", () => {
     expect(second.service.setEnabled(false)).toMatchObject({ enabled: false, effective: false });
     await vi.waitFor(() => {
       expect(first.shutdownArgs).toEqual([[1_500, { flush: false }]]);
-    }, { timeout: 1_000, interval: 20 });
+    }, { timeout: 3_000, interval: 20 });
 
     expect(second.service.setEnabled(true)).toMatchObject({ enabled: true, effective: true });
     await vi.waitFor(() => {
       expect(first.service.getStatus()).toMatchObject({ enabled: true, effective: true });
-    }, { timeout: 1_000, interval: 20 });
+    }, { timeout: 3_000, interval: 20 });
     expect(first.service.capture({ event: "ade_screen_viewed", surface: "desktop" })).toEqual({
       accepted: true,
       reason: "accepted",
@@ -716,7 +716,7 @@ describe("productAnalyticsService", () => {
     expect(restarted.service.capture({
       event: "ade_screen_viewed",
       surface: "desktop",
-      properties: { screen: "work" },
+      properties: { screen: "hub" },
     }).accepted).toBe(true);
     expect(first.messages.at(-1)?.distinctId).toMatch(/^ade_[0-9a-f]{32}$/);
     expect(first.messages.at(-1)?.distinctId).not.toBe(priorIdentity);

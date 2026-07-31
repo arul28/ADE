@@ -492,6 +492,98 @@ describe("TopBar", () => {
     expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
   });
 
+  it("keeps a permanent Hub tab and routes new-project actions there in hosted web mode", () => {
+    globalThis.window.__adeWebClient = true;
+    const onNavigate = vi.fn();
+
+    const { rerender } = render(<TopBar hubRouteActive={true} onNavigate={onNavigate} />);
+
+    fireEvent.click(screen.getByTitle("Open a project from the Hub"));
+    rerender(<TopBar hubRouteActive={false} onNavigate={onNavigate} />);
+    fireEvent.click(screen.getByRole("button", { name: "Hub" }));
+
+    expect(onNavigate).toHaveBeenNthCalledWith(1, "/hub");
+    expect(onNavigate).toHaveBeenNthCalledWith(2, "/hub");
+    expect(screen.queryByTitle("Close hub")).toBeNull();
+  });
+
+  it("reselects the current remote adapter when leaving the Hub", async () => {
+    globalThis.window.__adeWebClient = true;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:target-1:project-a",
+      targetId: "target-1",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/srv/ade/remote-app",
+      displayName: "Remote App",
+    };
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any)
+      .mockResolvedValue(makeRemoteConnectionSnapshot("target-1"));
+    useAppStore.setState({
+      project: {
+        rootPath: binding.rootPath,
+        displayName: binding.displayName,
+        baseRef: "main",
+      } as any,
+      projectBinding: binding,
+      openRemoteProjectTabs: [binding],
+    } as any);
+
+    render(<TopBar hubRouteActive={true} />);
+    fireEvent.click(
+      await screen.findByTitle("Mac Studio: /srv/ade/remote-app (Connected)"),
+    );
+
+    expect(useAppStore.getState().switchRemoteProject).toHaveBeenCalledWith(
+      "target-1",
+      "project-a",
+    );
+  });
+
+  it("restores hosted project bindings before persisting the tab list", async () => {
+    globalThis.window.__adeWebClient = true;
+    const binding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade",
+      displayName: "ADE",
+    };
+    let resolveSession!: (session: {
+      windowId: number | null;
+      project: null;
+      binding: null;
+      openProjectTabs: [];
+      openProjectBindings: [typeof binding];
+    }) => void;
+    globalThis.window.ade.app.getWindowSession = vi.fn(() => new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    const persistBindings = vi.fn(async () => ({ openProjectBindings: [binding] }));
+    globalThis.window.ade.app.setWindowProjectBindings = persistBindings;
+
+    render(<TopBar hubRouteActive={true} />);
+
+    expect(persistBindings).not.toHaveBeenCalled();
+    await act(async () => {
+      resolveSession({
+        windowId: null,
+        project: null,
+        binding: null,
+        openProjectTabs: [],
+        openProjectBindings: [binding],
+      });
+    });
+
+    await waitFor(() => {
+      expect(useAppStore.getState().openRemoteProjectTabs).toEqual([binding]);
+      expect(persistBindings).toHaveBeenCalledWith([binding]);
+    });
+  });
+
   it("shows a closable Chats pseudo-tab when chats are open without a project", () => {
     const { onNavigate } = renderChatsTopBar({
       personalChatsRouteActive: true,

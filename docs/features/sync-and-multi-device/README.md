@@ -127,8 +127,11 @@ has not started" in the gap).
   directory and Relay, then reconnects with a per-device secret + WebCrypto
   DPoP. It keeps **no** local SQLite replica: it treats changeset batches as
   invalidation signals and reads through remote commands, file requests, and
-  chat/terminal streams. Saved pre-release local pairings remain a reconnect
-  compatibility path. See `../web-client/README.md`.
+  chat/terminal streams. Its workspace Hub may retain catalogs and open project
+  bindings for many machines, but a four-client pool bounds live WebSockets;
+  least-recently-used non-active machines become Parked and reconnect on
+  demand. Saved pre-release local pairings remain a reconnect compatibility
+  path. See `../web-client/README.md`.
 - **Cluster state** — a singleton `sync_cluster_state` row with
   the legacy columns `brain_device_id` and `brain_epoch` tracks which
   device currently owns execution within a cluster.
@@ -328,6 +331,16 @@ Runtime support files outside `services/sync/`:
   correlation id across the initial request and its one auth-refresh retry, so
   a user-visible failure can be joined to the Worker's structured lifecycle
   record without logging an account token or response body.
+- `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts`
+  and `WebWorkspaceHub.tsx` — hosted-browser directory/session projection. The
+  Hub merges account rows with browser-saved environments, while the manager
+  serializes admission into a four-client pool, reports
+  Live/Reconnecting/Parked/Offline, retains parked catalogs, and reconnects a
+  parked machine when its project or Chats surface is selected.
+- `apps/desktop/src/renderer/webclient/adapter/federated.ts` — maps the shared
+  renderer's remote-runtime and project APIs onto that pool. Workspace state is
+  persisted per account; each project-scoped adapter is keyed by machine +
+  project so delayed bound operations cannot cross a runtime switch.
 - `apps/ade-cli/src/services/account/accountMachinePublisherService.ts` — the
   single machine-brain publisher for the account directory. It derives the
   stable machine key from the cloud-relay store, publishes only currently
@@ -1335,6 +1348,15 @@ phone flow:
    If the switch fails, the previous host is restored so the listener
    is never left unowned.
 
+The hosted browser uses the same machine catalog and project-switch protocol
+behind a different shell. Its permanent Hub chooses a machine, while the top
+bar persists logical repository tabs. Same-origin checkouts on different
+machines share one repository tab and expose machine choice inside that tab.
+Changing tabs reconnects a Parked machine if necessary, switches the runtime to
+the bound project, and installs the adapter keyed to that exact binding. Only
+the active hosted project surface mounts; inactive tabs retain navigation and
+binding metadata rather than live renderer subscriptions.
+
 The project hub can also manage machine projects without first binding
 to a project DB. `project_browse_request`,
 `project_default_parent_dir_request`, `project_open_request`,
@@ -1435,8 +1457,8 @@ is not supported.
 The account directory is discovery, not durable liveness authority. The
 runtime publishes every 30 seconds into a 90-second directory presence lease;
 the `online` bit expires when those heartbeats stop, but a previously validated
-secure Relay endpoint is still worth an authenticated dial. Machine pickers
-therefore distinguish "no current heartbeat" from "no usable endpoint" and
+secure Relay endpoint is still worth an authenticated dial. Machine-selection
+surfaces therefore distinguish "no current heartbeat" from "no usable endpoint" and
 keep a row connectable while at least one directory-verified secure route
 remains. The authenticated hello is the final availability and identity check.
 
@@ -1459,6 +1481,13 @@ Relay authorization but does not delete the secret needed for LAN/Tailscale
 reconnect. Forgetting the machine is the explicit trust-deletion boundary.
 Signing into a different account cannot use the previous account's directory
 or Relay lease.
+
+Hosted web exposes both trust scopes without conflating them. Removing a
+machine from the ADE account deletes the owner-scoped directory row. Forgetting
+it on this browser deletes only the local environment, paired secret, and DPoP
+material; an account machine can appear again from the directory and be
+adopted later. Account rename updates `customName` and leaves browser trust
+unchanged.
 
 Relay has two related but distinct leases. The machine's control tunnel may
 survive a transient refresh failure only until its last known account-token
@@ -2023,6 +2052,8 @@ feature is merged or because a deliberately isolated-port host is running.
 | Sync service owned by `ade serve` runtime | Implemented |
 | Desktop in-process sync host | Disabled by default (`ADE_ENABLE_DESKTOP_SYNC_HOST=1` for diagnostics) |
 | Multi-project runtime + `project_switch` handshake | Implemented |
+| Hosted web workspace Hub + four-client LRU machine pool | Implemented |
+| Hosted web repository tabs with per-binding machine selection | Implemented |
 | `SyncRemoteCommandDescriptor.scope` (`runtime` / `project`) gating | Implemented |
 | cr-sqlite extension loading (desktop/runtime) | Implemented |
 | Pure-SQL CRR emulation (iOS) | Implemented |

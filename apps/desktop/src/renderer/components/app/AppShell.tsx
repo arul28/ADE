@@ -97,11 +97,12 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/hub", "/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
 const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
+  "/hub",
   "/attention",
   "/lanes",
   "/files",
@@ -346,6 +347,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     location.pathname === "/attention" || location.pathname.startsWith("/attention/");
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
+  const isWebHubRoute = isWebClientMode() && location.pathname === "/hub";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
   const productAnalyticsScreen = productAnalyticsScreenForPathname(location.pathname);
@@ -1147,7 +1149,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     !showWelcome &&
     location.pathname === "/work" &&
     onboardingStatusLoading;
-  const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
+  const hideSidebar = isOnboardingRoute || isWebHubRoute || shouldHoldProjectRouteForOnboarding;
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({
         status: "running",
@@ -1181,6 +1183,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
           accountRouteActive={isAccountRoute}
+          hubRouteActive={isWebHubRoute}
           onNavigate={(path, opts) => navigate(path, opts)}
         />
       </div>

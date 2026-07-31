@@ -221,14 +221,15 @@ describe("AppShell AI provider status", () => {
   it("maps the project picker to the sampled project analytics screen", () => {
     expect(productAnalyticsScreenForPathname("/project")).toBe("project");
     expect(productAnalyticsScreenForPathname("/project/recent")).toBe("project");
+    expect(productAnalyticsScreenForPathname("/hub")).toBe("hub");
   });
 
   it("captures a normalized route without query strings or route identifiers", async () => {
     window.__adeWebClient = true;
     render(
-      <MemoryRouter initialEntries={["/work/session-sensitive?token=secret#private"]}>
+      <MemoryRouter initialEntries={["/hub?machine=private#secret"]}>
         <AppShell>
-          <div>Work content</div>
+          <div>Hub content</div>
         </AppShell>
       </MemoryRouter>,
     );
@@ -239,11 +240,11 @@ describe("AppShell AI provider status", () => {
     expect(analyticsCaptureMock).toHaveBeenCalledWith({
       event: "ade_screen_viewed",
       properties: {
-        screen: "work",
+        screen: "hub",
         route_kind: "web",
         source: "renderer_route",
       },
-      dedupeKey: "web_screen:work",
+      dedupeKey: "web_screen:hub",
       minimumIntervalMs: 2_000,
     });
     expect(analyticsCaptureMock).toHaveBeenCalledWith({
