@@ -1536,7 +1536,11 @@ export const SessionListPane = React.memo(function SessionListPane({
       // — asserted by reading the same map rather than assumed, so this stays
       // correct if foreign handoffs ever land.
       if ((unfilteredHandoffCountByLaneId.get(compositeLaneId) ?? 0) > 0) continue;
-      if (isHeaderlessRoster(row.sessions)) ids.add(compositeLaneId);
+      // Foreign cards still render flat: unlike the local path, this renderer
+      // does not yet fold a parent chat and its spawned shells into one nested
+      // unit. Keep the header until it does, so singleton-only lane identity,
+      // marker, and context actions never leak onto each child card.
+      if (row.sessions.length === 1) ids.add(compositeLaneId);
     }
     return ids;
   }, [

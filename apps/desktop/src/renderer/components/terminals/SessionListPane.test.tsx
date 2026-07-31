@@ -1397,6 +1397,39 @@ describe("SessionListPane", () => {
       expect(screen.getByRole("menuitem", { name: "Open in Lanes" })).toBeTruthy();
     });
 
+    it("keeps a foreign parent and child roster under its lane header", () => {
+      const parent = makeSession({
+        id: "foreign-chat-parent",
+        laneId: "lane-elsewhere",
+        laneName: "Elsewhere Lane",
+        title: "Foreign parent chat",
+      });
+      const child = makeSession({
+        id: "foreign-child-shell",
+        laneId: "lane-elsewhere",
+        laneName: "Elsewhere Lane",
+        title: "Foreign child shell",
+        toolType: "shell",
+        ptyId: "foreign-child-pty",
+        chatSessionId: parent.id,
+      });
+      seedForeignMachine({ sessions: [parent, child] });
+
+      const { container } = renderPane();
+
+      // Foreign cards do not yet share the local parent/child nesting renderer,
+      // so this two-card roster must retain its group header rather than using
+      // singleton card decorations for both rows.
+      const header = container.querySelector('[data-section-id="target-studio:lane-elsewhere"]');
+      expect(header).toBeTruthy();
+      expect(header?.querySelector("[data-machine-marker-mode]")).toBeTruthy();
+      expect(screen.getByText("Foreign parent chat")).toBeTruthy();
+      expect(screen.getByText("Foreign child shell")).toBeTruthy();
+      expect(cardPropsFor(parent.id)?.suppressMachineChip).toBe(true);
+      expect(cardPropsFor(child.id)?.suppressMachineChip).toBe(true);
+      expect(cardPropsFor(child.id)?.laneActions).toBeUndefined();
+    });
+
     it("reaches a headerless foreign lane's menu through its card", () => {
       seedForeignMachine();
       const onContextMenu = vi.fn();
