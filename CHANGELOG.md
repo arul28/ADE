@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.49] - 2026-08-01
+
+### Activity across ADE
+
+- Rebuild Activity as an all-sessions inbox with priority tiers, filters, detail views, durable acknowledgements, per-machine muting, and consistent desktop, hosted-web, and ADE Code behavior.
+- Add iOS background refresh, retry-safe acknowledgement delivery, richer activity rows, hub status, and a multi-session Lock Screen widget.
+- Rework the native notch and menu-bar helper with event toasts, counts, hover cards, burst limits, deduplication, and safer presentation behavior.
+
+### Cross-machine Work
+
+- Treat remote CLI sessions as first-class Work sessions across routing, retention, project switching, deep links, stop actions, and error reporting.
+- Add per-launch ownership markers so Codex processes cannot be adopted by the wrong machine, while preserving the owning runtime and project for foreign sessions.
+
+### GitHub reliability
+
+- Fail over between healthy GitHub credentials, attribute errors to the credential that handled each request, and recover cleanly from invalid or rate-limited paths.
+- Reduce GitHub polling with conditional requests and cooldown-aware refresh behavior without leaving PR state stale.
+
 ## [1.2.48] - 2026-08-01
 
 ### Questions and settings
@@ -1300,7 +1318,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.48...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.49]: https://github.com/arul28/ADE/compare/v1.2.48...v1.2.49
 [1.2.48]: https://github.com/arul28/ADE/compare/v1.2.47...v1.2.48
 [1.2.47]: https://github.com/arul28/ADE/compare/v1.2.46...v1.2.47
 [1.2.46]: https://github.com/arul28/ADE/compare/v1.2.45...v1.2.46

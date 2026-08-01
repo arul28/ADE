@@ -1,0 +1,24 @@
+---
+title: "v1.2.49"
+description: "Release notes for ADE v1.2.49 - August 1, 2026"
+---
+
+v1.2.49 rebuilds Activity around an all-sessions inbox across desktop, web, ADE Code, iOS, widgets, and the MacBook notch, makes cross-machine CLI sessions first-class in Work, and keeps GitHub operations moving through rate limits and credential failures.
+
+---
+
+## Activity works across every ADE surface
+
+- **The inbox now covers every session.** Activity groups live sessions and events by urgency, adds filters and detail views, supports per-machine muting and durable acknowledgements, and keeps desktop, hosted web, and ADE Code aligned.
+- **iPhone and widgets stay current.** Background refresh, retry-safe acknowledgements, richer activity rows, hub status, and a multi-session Lock Screen widget carry the same state and actions onto iOS.
+- **The notch becomes a compact activity surface.** Event toasts, counts, hover cards, menu-bar fallback, presentation limits, and deduplication make the native helper useful without letting bursts take over the screen.
+
+## Cross-machine Work is safer
+
+- **Remote CLI sessions behave like local work.** Machine-scoped retention, routing, project switching, deep links, stop actions, and error reporting now resolve against the full cross-machine session set.
+- **Ownership survives provider handoff.** Per-launch ownership markers prevent another machine from adopting the wrong Codex process, while foreign sessions keep their owning runtime and project context.
+
+## GitHub failures recover cleanly
+
+- **Credentials fail over instead of stalling.** GitHub operations prefer healthy user credentials, switch away from exhausted or invalid paths, and attribute failures to the credential that actually handled the request.
+- **Polling respects rate limits.** Conditional requests, cooldown-aware refreshes, and bounded fallback behavior reduce unnecessary GitHub traffic while preserving current PR state.
