@@ -74,6 +74,9 @@ type ParsedAttentionItem = Record<string, unknown> & {
   id: string;
   revision: number;
   fingerprint: string;
+  contentFingerprint: string;
+  alertFingerprint: string;
+  activityTier?: "signal" | "ambient" | "idle";
   kind: "agent" | "pull_request";
   eventKind: string;
   phase: string;
@@ -96,6 +99,8 @@ const MAX_BODY_BYTES = 256 * 1024;
 const MAX_ATTENTION_ITEMS = 64;
 const MAX_ATTENTION_TOMBSTONES = 64;
 const MAX_ATTENTION_DEVICES = 32;
+const MAX_ATTENTION_MACHINE_PREFERENCES = 64;
+const MAX_ACCOUNT_ATTENTION_ITEMS = 2_000;
 const ATTENTION_DEVICE_LEASE_MS = 30 * 24 * 60 * 60 * 1_000;
 const MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH = 64;
 const MAX_ID_LENGTH = 256;
@@ -110,6 +115,9 @@ const TOMBSTONE_RETENTION_MS = 24 * 60 * 60 * 1_000;
 const MAX_OWNERSHIP_EPOCH_FUTURE_MS = 5 * 60 * 1_000;
 const LIVE_ACTIVITY_START_CLAIM_TTL_MS = 30_000;
 const NOTIFICATION_DELIVERY_CLAIM_TTL_MS = 60_000;
+const MAX_ALERT_AGE_MS = 15 * 60_000;
+const ATTENTION_DELIVERY_RECEIPT_RETENTION_MS = 7 * 24 * 60 * 60 * 1_000;
+const ATTENTION_ALERT_LOG_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 const EVENT_KINDS = new Set([
   "agent_running",
@@ -478,14 +486,16 @@ function attentionItemUpsertStatement(
   userId: string,
   machineKey: string,
   item: ParsedAttentionItem,
+  rosterEpoch: number,
 ): D1PreparedStatement {
   return env.DB.prepare(`
     insert into attention_items(
       user_id, item_id, machine_key, source_revision, account_revision,
-      fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+      fingerprint, content_fingerprint, alert_fingerprint, activity_tier,
+      roster_epoch, event_kind, phase, payload_json, seen_at, dismissed_at,
       expires_at, updated_at
     )
-    select ?, ?, ?, ?, revision, ?, ?, ?, ?, null, null, ?, ?
+    select ?, ?, ?, ?, revision, ?, ?, ?, ?, ?, ?, ?, ?, null, null, ?, ?
     from attention_revisions
     where user_id = ?
       and not exists (
@@ -500,15 +510,23 @@ function attentionItemUpsertStatement(
       source_revision = excluded.source_revision,
       account_revision = excluded.account_revision,
       fingerprint = excluded.fingerprint,
+      content_fingerprint = excluded.content_fingerprint,
+      alert_fingerprint = excluded.alert_fingerprint,
+      activity_tier = excluded.activity_tier,
+      roster_epoch = excluded.roster_epoch,
       event_kind = excluded.event_kind,
       phase = excluded.phase,
       payload_json = excluded.payload_json,
       seen_at = case
-        when attention_items.fingerprint = excluded.fingerprint then attention_items.seen_at
+        when coalesce(attention_items.alert_fingerprint, attention_items.fingerprint)
+          = excluded.alert_fingerprint
+          then attention_items.seen_at
         else null
       end,
       dismissed_at = case
-        when attention_items.fingerprint = excluded.fingerprint then attention_items.dismissed_at
+        when coalesce(attention_items.alert_fingerprint, attention_items.fingerprint)
+          = excluded.alert_fingerprint
+          then attention_items.dismissed_at
         else null
       end,
       expires_at = excluded.expires_at,
@@ -519,7 +537,11 @@ function attentionItemUpsertStatement(
     item.id,
     machineKey,
     item.revision,
-    item.fingerprint,
+    item.contentFingerprint,
+    item.contentFingerprint,
+    item.alertFingerprint,
+    item.activityTier ?? null,
+    rosterEpoch,
     item.eventKind,
     item.phase,
     JSON.stringify(item),
@@ -600,13 +622,20 @@ async function commitAttentionMachineChanges(
     items: ParsedAttentionItem[];
     tombstones: IncomingAttentionTombstone[];
     sealCapacityTombstones: boolean;
+    rosterEpoch?: number;
     now: string;
   },
 ): Promise<number> {
   const statements: D1PreparedStatement[] = [];
   for (const item of args.items) {
     statements.push(
-      attentionItemUpsertStatement(env, args.userId, args.machineKey, item),
+      attentionItemUpsertStatement(
+        env,
+        args.userId,
+        args.machineKey,
+        item,
+        args.rosterEpoch ?? 0,
+      ),
       attentionItemTombstoneDeleteStatement(env, args.userId, item),
     );
   }
@@ -636,12 +665,107 @@ async function commitAttentionMachineChanges(
   return commitAttentionRevision(env, args.userId, statements, args.now);
 }
 
-function mergedDevicePreferences(
+async function commitActivityReconcileFinal(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    rosterEpoch: number;
+    now: string;
+  },
+): Promise<number> {
+  return commitAttentionRevision(env, args.userId, [
+    env.DB.prepare(`
+      insert into attention_tombstones(
+        user_id, item_id, source_revision, account_revision, revivable, deleted_at
+      )
+      select user_id, item_id, source_revision,
+        (select revision from attention_revisions where user_id = ?), 0, ?
+      from attention_items
+      where user_id = ? and machine_key = ? and roster_epoch < ?
+      on conflict(user_id, item_id) do update set
+        source_revision = excluded.source_revision,
+        account_revision = excluded.account_revision,
+        revivable = 0,
+        deleted_at = excluded.deleted_at
+      where excluded.source_revision >= attention_tombstones.source_revision
+    `).bind(
+      args.userId,
+      args.now,
+      args.userId,
+      args.machineKey,
+      args.rosterEpoch,
+    ),
+    env.DB.prepare(`
+      delete from attention_items
+      where user_id = ? and machine_key = ? and roster_epoch < ?
+    `).bind(args.userId, args.machineKey, args.rosterEpoch),
+  ], args.now);
+}
+
+async function enforceActivityAccountItemCap(
+  env: AttentionRelayEnv,
+  userId: string,
+  now: string,
+): Promise<{ itemsTruncated: boolean; revision: number | null }> {
+  const countRow = await env.DB.prepare(`
+    select count(*) as count
+    from attention_items
+    where user_id = ?
+  `).bind(userId).first<{ count: number }>();
+  const overflow = Math.max(
+    0,
+    Number(countRow?.count ?? 0) - MAX_ACCOUNT_ATTENTION_ITEMS,
+  );
+  if (overflow === 0) return { itemsTruncated: false, revision: null };
+
+  const idleCountRow = await env.DB.prepare(`
+    select count(*) as count
+    from attention_items
+    where user_id = ? and activity_tier = 'idle'
+  `).bind(userId).first<{ count: number }>();
+  const rowsToRemove = Math.min(overflow, Number(idleCountRow?.count ?? 0));
+  if (rowsToRemove === 0) return { itemsTruncated: true, revision: null };
+
+  const revision = await commitAttentionRevision(env, userId, [
+    env.DB.prepare(`
+      insert into attention_tombstones(
+        user_id, item_id, source_revision, account_revision, revivable, deleted_at
+      )
+      select user_id, item_id, source_revision,
+        (select revision from attention_revisions where user_id = ?), 0, ?
+      from attention_items
+      where user_id = ? and activity_tier = 'idle'
+      order by updated_at asc
+      limit ?
+      on conflict(user_id, item_id) do update set
+        source_revision = excluded.source_revision,
+        account_revision = excluded.account_revision,
+        revivable = 0,
+        deleted_at = excluded.deleted_at
+      where excluded.source_revision >= attention_tombstones.source_revision
+    `).bind(userId, now, userId, rowsToRemove),
+    env.DB.prepare(`
+      delete from attention_items
+      where user_id = ? and item_id in (
+        select item_id
+        from attention_items
+        where user_id = ? and activity_tier = 'idle'
+        order by updated_at asc
+        limit ?
+      )
+    `).bind(userId, userId, rowsToRemove),
+  ], now);
+  return { itemsTruncated: true, revision };
+}
+
+function resolveActivityDevicePreferences(
   device: AttentionDeviceRow,
-  accountPreferences: Record<string, unknown>,
-  devicePreferences: Record<string, unknown>,
+  preferences: Record<string, unknown>,
 ): Record<string, unknown> {
   const registered = readPreferences(device.preferences_json);
+  const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
+  const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
   const accountOverride = isRecord(devicePreferences[device.device_id])
     ? devicePreferences[device.device_id] as Record<string, unknown>
     : {};
@@ -651,6 +775,28 @@ function mergedDevicePreferences(
   // Only the explicit account `devices[deviceId]` scope may override account
   // settings for one device.
   return { ...registered, ...accountPreferences, ...accountOverride };
+}
+
+function resolveActivityDeliveryPreferences(
+  device: AttentionDeviceRow,
+  item: ParsedAttentionItem,
+  preferences: Record<string, unknown>,
+): Record<string, unknown> {
+  const registered = readPreferences(device.preferences_json);
+  const account = isRecord(preferences.account) ? preferences.account : {};
+  const projects = isRecord(preferences.projects) ? preferences.projects : {};
+  const project = isRecord(projects[item.project.projectId])
+    ? projects[item.project.projectId] as Record<string, unknown>
+    : {};
+  const machines = isRecord(preferences.machines) ? preferences.machines : {};
+  const machine = isRecord(machines[item.machine.machineKey])
+    ? machines[item.machine.machineKey] as Record<string, unknown>
+    : {};
+  const devices = isRecord(preferences.devices) ? preferences.devices : {};
+  const explicitDevice = isRecord(devices[device.device_id])
+    ? devices[device.device_id] as Record<string, unknown>
+    : {};
+  return { ...registered, ...account, ...project, ...machine, ...explicitDevice };
 }
 
 function resolvedMutedSessionIds(
@@ -843,9 +989,6 @@ async function deliverAttentionNotifications(
 
   const preferences = readPreferences(preferencesRow?.payload_json);
   const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
-  const eventPolicies = isRecord(accountPreferences.eventPolicies)
-    ? accountPreferences.eventPolicies
-    : {};
   const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
   const nowMs = Date.now();
   const desktopVisibleItemIds = await recentDesktopAttentionItemIds(env, userId, nowMs);
@@ -859,15 +1002,13 @@ async function deliverAttentionNotifications(
   let notificationAttempts = 0;
 
   for (const item of items) {
-    const policy = typeof eventPolicies[item.eventKind] === "string"
-      ? eventPolicies[item.eventKind]
-      : DEFAULT_NOTIFY_EVENTS.has(item.eventKind)
-        ? "notify"
-        : "ambient";
-    if (policy !== "notify") continue;
+    if (item.activityTier && item.activityTier !== "signal") continue;
+    if (nowMs - Date.parse(item.updatedAt) > MAX_ALERT_AGE_MS) continue;
     const current = await env.DB
       .prepare(`
-        select source_revision, fingerprint, seen_at, dismissed_at
+        select source_revision, fingerprint,
+          coalesce(alert_fingerprint, fingerprint) as alert_fingerprint,
+          seen_at, dismissed_at
         from attention_items
         where user_id = ? and item_id = ?
         limit 1
@@ -876,6 +1017,7 @@ async function deliverAttentionNotifications(
       .first<{
         source_revision: number;
         fingerprint: string;
+        alert_fingerprint: string;
         seen_at: string | null;
         dismissed_at: string | null;
       }>();
@@ -886,7 +1028,8 @@ async function deliverAttentionNotifications(
     if (
       !current
       || Number(current.source_revision) !== item.revision
-      || current.fingerprint !== item.fingerprint
+      || current.fingerprint !== item.contentFingerprint
+      || current.alert_fingerprint !== item.alertFingerprint
       || current.seen_at
       || current.dismissed_at
     ) {
@@ -909,11 +1052,20 @@ async function deliverAttentionNotifications(
     for (const device of devicesResult.results) {
       if (notificationAttempts >= MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH) return;
       if (!device.apns_token) continue;
-      const override = mergedDevicePreferences(
+      const override = resolveActivityDeliveryPreferences(
         device,
-        accountPreferences,
-        devicePreferences,
+        item,
+        preferences,
       );
+      const eventPolicies = isRecord(override.eventPolicies)
+        ? override.eventPolicies
+        : {};
+      const policy = typeof eventPolicies[item.eventKind] === "string"
+        ? eventPolicies[item.eventKind]
+        : DEFAULT_NOTIFY_EVENTS.has(item.eventKind)
+          ? "notify"
+          : "ambient";
+      if (policy !== "notify") continue;
       const notificationsEnabled = preferenceBoolean(
         override,
         {},
@@ -930,13 +1082,27 @@ async function deliverAttentionNotifications(
       ) {
         continue;
       }
-      const receiptState = `alert:${item.fingerprint.slice(0, 48)}`;
+      const receiptState = `alert:${item.alertFingerprint.slice(0, 48)}`;
       const existing = await env.DB.prepare(`
-        select 1 as found
-        from attention_delivery_receipts
-        where user_id = ? and item_id = ? and device_id = ? and state = ?
+        select 1 as found from (
+          select 1
+          from attention_delivery_receipts
+          where user_id = ? and item_id = ? and device_id = ? and state = ?
+          union all
+          select 1
+          from attention_alert_log
+          where user_id = ? and alert_fingerprint = ? and device_id = ?
+        )
         limit 1
-      `).bind(userId, item.id, device.device_id, receiptState).first<{ found: number }>();
+      `).bind(
+        userId,
+        item.id,
+        device.device_id,
+        receiptState,
+        userId,
+        item.alertFingerprint,
+        device.device_id,
+      ).first<{ found: number }>();
       if (existing?.found) continue;
       const deliveryClaim = await claimAttentionNotificationDelivery(env, {
         userId,
@@ -1002,6 +1168,17 @@ async function deliverAttentionNotifications(
             item.id,
             device.device_id,
             receiptState,
+            new Date(nowMs).toISOString(),
+          ),
+          env.DB.prepare(`
+            insert into attention_alert_log(
+              user_id, alert_fingerprint, device_id, delivered_at
+            ) values (?, ?, ?, ?)
+            on conflict(user_id, alert_fingerprint, device_id) do nothing
+          `).bind(
+            userId,
+            item.alertFingerprint,
+            device.device_id,
             new Date(nowMs).toISOString(),
           ),
           env.DB.prepare(`
@@ -1311,7 +1488,6 @@ async function deliverAccountLiveActivity(
     ]);
   const preferences = readPreferences(preferencesRow?.payload_json);
   const accountPreferences = isRecord(preferences.account) ? preferences.account : {};
-  const devicePreferences = isRecord(preferences.devices) ? preferences.devices : {};
   const nowSeconds = Math.floor(Date.now() / 1_000);
 
   for (const device of devicesResult.results) {
@@ -1319,11 +1495,7 @@ async function deliverAccountLiveActivity(
     // Account-wide ActivityKit delivery fails closed unless the current
     // registered device row is still owned by this exact account epoch.
     if (!Number.isSafeInteger(ownershipEpoch) || ownershipEpoch <= 0) continue;
-    const override = mergedDevicePreferences(
-      device,
-      accountPreferences,
-      devicePreferences,
-    );
+    const override = resolveActivityDevicePreferences(device, preferences);
     const state = await env.DB.prepare(`
       select started, fingerprint
       from attention_activity_state
@@ -1676,6 +1848,13 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   const id = requiredString(value.id);
   const revision = Number(value.revision);
   const fingerprint = requiredString(value.fingerprint);
+  const contentFingerprint = value.contentFingerprint == null
+    ? fingerprint
+    : requiredString(value.contentFingerprint);
+  const alertFingerprint = value.alertFingerprint == null
+    ? fingerprint
+    : requiredString(value.alertFingerprint);
+  const activityTier = value.activityTier == null ? undefined : value.activityTier;
   const kind = value.kind;
   const eventKind = requiredString(value.eventKind, 64);
   const phase = requiredString(value.phase, 64);
@@ -1690,6 +1869,14 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     || !Number.isSafeInteger(revision)
     || revision < 0
     || !fingerprint
+    || !contentFingerprint
+    || !alertFingerprint
+    || (
+      activityTier !== undefined
+      && activityTier !== "signal"
+      && activityTier !== "ambient"
+      && activityTier !== "idle"
+    )
     || (kind !== "agent" && kind !== "pull_request")
     || !eventKind
     || !EVENT_KINDS.has(eventKind)
@@ -1886,7 +2073,10 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     contractVersion: 1,
     id,
     revision,
-    fingerprint,
+    fingerprint: contentFingerprint,
+    contentFingerprint,
+    alertFingerprint,
+    ...(activityTier ? { activityTier } : {}),
     kind,
     eventKind,
     phase,
@@ -1904,7 +2094,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     actions: actions as Array<Record<string, unknown>>,
     updatedAt,
     occurredAt,
-    expiresAt,
+    expiresAt: activityTier === "idle" ? null : expiresAt,
     seenAt: null,
     dismissedAt: null,
     machine: {
@@ -2308,6 +2498,127 @@ async function linkMachineToAccount(
   ]);
 }
 
+async function refreshActivityMachinePresence(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    machineName: string;
+    now: string;
+  },
+): Promise<void> {
+  await env.DB.prepare(`
+    insert into attention_machine_links(
+      machine_key, user_id, machine_name, last_seen_at, linked_at,
+      legacy_devices_imported_at
+    ) values (?, ?, ?, ?, ?, null)
+    on conflict(machine_key) do update set
+      user_id = excluded.user_id,
+      machine_name = excluded.machine_name,
+      last_seen_at = excluded.last_seen_at
+  `).bind(
+    args.machineKey,
+    args.userId,
+    args.machineName,
+    args.now,
+    args.now,
+  ).run();
+}
+
+async function activityItemsForMachine(
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+  now: string,
+): Promise<ParsedAttentionItem[]> {
+  const rows = await env.DB.prepare(`
+    select payload_json
+    from attention_items
+    where user_id = ? and machine_key = ?
+      and seen_at is null and dismissed_at is null
+      and (expires_at is null or expires_at > ?)
+    order by updated_at desc
+    limit ?
+  `).bind(
+    userId,
+    machineKey,
+    now,
+    MAX_ACCOUNT_ATTENTION_ITEMS,
+  ).all<{ payload_json: string }>();
+  return rows.results.flatMap((row) => {
+    try {
+      return [JSON.parse(row.payload_json) as ParsedAttentionItem];
+    } catch {
+      return [];
+    }
+  });
+}
+
+type ActivityPublishAcknowledgment = {
+  itemId: string;
+  seenAt: string | null;
+  dismissedAt: string | null;
+  sourceRevision: number;
+};
+
+async function activityPublishAcknowledgments(
+  env: AttentionRelayEnv,
+  args: {
+    userId: string;
+    machineKey: string;
+    requestItems: ParsedAttentionItem[];
+  },
+): Promise<ActivityPublishAcknowledgment[]> {
+  type AckRow = {
+    item_id: string;
+    seen_at: string | null;
+    dismissed_at: string | null;
+    source_revision: number;
+    account_revision: number;
+  };
+  const requestRows = args.requestItems.length > 0
+    ? await env.DB.prepare(`
+        select item_id, seen_at, dismissed_at, source_revision, account_revision
+        from attention_items
+        where user_id = ? and machine_key = ?
+          and item_id in (${args.requestItems.map(() => "?").join(", ")})
+      `).bind(
+        args.userId,
+        args.machineKey,
+        ...args.requestItems.map((item) => item.id),
+      ).all<AckRow>()
+    : { results: [] as AckRow[] };
+  const recentRows = await env.DB.prepare(`
+    select item_id, seen_at, dismissed_at, source_revision, account_revision
+    from attention_items
+    where user_id = ? and machine_key = ?
+      and (seen_at is not null or dismissed_at is not null)
+    order by account_revision desc
+    limit 64
+  `).bind(args.userId, args.machineKey).all<AckRow>();
+  const requestById = new Map(requestRows.results.map((row) => [row.item_id, row]));
+  const acknowledgments = args.requestItems.map((item) => {
+    const row = requestById.get(item.id);
+    return {
+      itemId: item.id,
+      seenAt: row?.seen_at ?? null,
+      dismissedAt: row?.dismissed_at ?? null,
+      sourceRevision: Number(row?.source_revision ?? item.revision),
+    };
+  });
+  const includedIds = new Set(acknowledgments.map((ack) => ack.itemId));
+  for (const row of recentRows.results) {
+    if (includedIds.has(row.item_id)) continue;
+    acknowledgments.push({
+      itemId: row.item_id,
+      seenAt: row.seen_at,
+      dismissedAt: row.dismissed_at,
+      sourceRevision: Number(row.source_revision),
+    });
+  }
+  return acknowledgments;
+}
+
 export async function handleAttentionMachinePublish(
   request: Request,
   env: AttentionRelayEnv,
@@ -2327,11 +2638,39 @@ export async function handleAttentionMachinePublish(
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid payload" }, { status: 400 });
   const machineName = boundedText(payload.machineName, 120) ?? "ADE machine";
+  const mode = payload.mode === "delta"
+    || payload.mode === "reconcile"
+    || payload.mode === "presence"
+    ? payload.mode
+    : null;
+  if (payload.mode != null && !mode) {
+    return json({ ok: false, error: "invalid publish mode" }, { status: 400 });
+  }
   const fullSnapshot = payload.fullSnapshot === true;
+  const rosterEpoch = mode ? Number(payload.rosterEpoch) : 0;
+  if (mode && (!Number.isSafeInteger(rosterEpoch) || rosterEpoch <= 0)) {
+    return json({ ok: false, error: "invalid roster epoch" }, { status: 400 });
+  }
+  if (mode === "reconcile") {
+    if (
+      payload.page != null
+      && (!Number.isSafeInteger(Number(payload.page)) || Number(payload.page) < 0)
+    ) {
+      return json({ ok: false, error: "invalid reconcile page" }, { status: 400 });
+    }
+    if (payload.final != null && typeof payload.final !== "boolean") {
+      return json({ ok: false, error: "invalid reconcile final flag" }, { status: 400 });
+    }
+  } else if (mode && (payload.page != null || payload.final != null)) {
+    return json({ ok: false, error: "page and final require reconcile mode" }, { status: 400 });
+  }
   const rawItems = Array.isArray(payload.items) ? payload.items : [];
   const rawTombstones = Array.isArray(payload.tombstones) ? payload.tombstones : [];
   if (rawItems.length > MAX_ATTENTION_ITEMS || rawTombstones.length > MAX_ATTENTION_TOMBSTONES) {
     return json({ ok: false, error: "too many changes" }, { status: 400 });
+  }
+  if (mode === "presence" && (rawItems.length > 0 || rawTombstones.length > 0)) {
+    return json({ ok: false, error: "presence cannot write items" }, { status: 400 });
   }
   const items = rawItems.map((entry) => parseAttentionItem(entry, machineKey));
   if (items.some((entry) => entry === null)) {
@@ -2369,7 +2708,7 @@ export async function handleAttentionMachinePublish(
     source_revision: number;
     fingerprint: string;
   }> = [];
-  if (fullSnapshot) {
+  if (!mode && fullSnapshot) {
     const existing = await env.DB.prepare(`
       select item_id, source_revision, fingerprint
       from attention_items
@@ -2391,6 +2730,42 @@ export async function handleAttentionMachinePublish(
   }
   const tombstones = [...tombstonesById.values()];
   const firstItem = items.find((entry): entry is ParsedAttentionItem => entry !== null);
+  const now = new Date().toISOString();
+  if (mode === "presence") {
+    await refreshActivityMachinePresence(env, {
+      userId: account.userId,
+      machineKey,
+      machineName,
+      now,
+    });
+    const storedItems = await activityItemsForMachine(
+      env,
+      account.userId,
+      machineKey,
+      now,
+    );
+    await deliverAttentionNotifications(env, account.userId, storedItems);
+    const [current, acks] = await Promise.all([
+      env.DB
+        .prepare("select revision from attention_revisions where user_id = ? limit 1")
+        .bind(account.userId)
+        .first<{ revision: number }>(),
+      activityPublishAcknowledgments(env, {
+        userId: account.userId,
+        machineKey,
+        requestItems: [],
+      }),
+    ]);
+    return json({
+      ok: true,
+      protocol: 2,
+      revision: Number(current?.revision ?? 0),
+      acks,
+      upserted: 0,
+      removed: 0,
+      unchanged: true,
+    });
+  }
   await linkMachineToAccount(
     env,
     account.userId,
@@ -2398,7 +2773,8 @@ export async function handleAttentionMachinePublish(
     firstItem?.machine.name ?? machineName,
   );
   if (
-    fullSnapshot
+    !mode
+    && fullSnapshot
     && attentionFullSnapshotUnchanged(
       existingMachineItems,
       items as ParsedAttentionItem[],
@@ -2414,40 +2790,67 @@ export async function handleAttentionMachinePublish(
       items as ParsedAttentionItem[],
     );
     await deliverAccountLiveActivity(env, account.userId);
-    const current = await env.DB
-      .prepare("select revision from attention_revisions where user_id = ? limit 1")
-      .bind(account.userId)
-      .first<{ revision: number }>();
+    const [current, acks] = await Promise.all([
+      env.DB
+        .prepare("select revision from attention_revisions where user_id = ? limit 1")
+        .bind(account.userId)
+        .first<{ revision: number }>(),
+      activityPublishAcknowledgments(env, {
+        userId: account.userId,
+        machineKey,
+        requestItems: items as ParsedAttentionItem[],
+      }),
+    ]);
     return json({
       ok: true,
+      protocol: 2,
       revision: Number(current?.revision ?? 0),
+      acks,
       upserted: 0,
       removed: 0,
       unchanged: true,
     });
   }
-  const now = new Date().toISOString();
-  const accountRevision = await commitAttentionMachineChanges(env, {
+  let accountRevision = await commitAttentionMachineChanges(env, {
     userId: account.userId,
     machineKey,
     items: items as ParsedAttentionItem[],
     tombstones,
     sealCapacityTombstones:
-      fullSnapshot && rawItems.length < MAX_ATTENTION_ITEMS,
+      !mode && fullSnapshot && rawItems.length < MAX_ATTENTION_ITEMS,
+    rosterEpoch,
     now,
   });
+  if (mode === "reconcile" && payload.final === true) {
+    accountRevision = await commitActivityReconcileFinal(env, {
+      userId: account.userId,
+      machineKey,
+      rosterEpoch,
+      now,
+    });
+  }
+  const cap = await enforceActivityAccountItemCap(env, account.userId, now);
+  if (cap.revision !== null) accountRevision = cap.revision;
   await deliverAttentionNotifications(
     env,
     account.userId,
     items as ParsedAttentionItem[],
   );
   await deliverAccountLiveActivity(env, account.userId);
+  const acks = await activityPublishAcknowledgments(env, {
+    userId: account.userId,
+    machineKey,
+    requestItems: items as ParsedAttentionItem[],
+  });
 
   return json({
     ok: true,
+    protocol: 2,
     revision: accountRevision,
+    acks,
     upserted: items.length,
     removed: tombstones.length,
+    ...(cap.itemsTruncated ? { itemsTruncated: true } : {}),
   });
 }
 
@@ -2577,6 +2980,12 @@ async function handleAcknowledgment(
   if (!isRecord(payload) || !Array.isArray(payload.itemIds) || payload.itemIds.length > 64) {
     return json({ ok: false, error: "invalid acknowledgment" }, { status: 400 });
   }
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "expectedAccountOwnerId")
+    && payload.expectedAccountOwnerId !== userId
+  ) {
+    return json({ ok: false, error: "account owner changed" }, { status: 409 });
+  }
   const itemIds = payload.itemIds.map((value) => requiredString(value));
   if (itemIds.some((value) => value === null)) {
     return json({ ok: false, error: "invalid item id" }, { status: 400 });
@@ -2585,6 +2994,31 @@ async function handleAcknowledgment(
   const dismissedAt = optionalIsoDate(payload.dismissedAt);
   if (!seenAt || dismissedAt === undefined) {
     return json({ ok: false, error: "invalid timestamp" }, { status: 400 });
+  }
+  const hasSourceRevisions = Object.prototype.hasOwnProperty.call(
+    payload,
+    "sourceRevisions",
+  );
+  if (hasSourceRevisions && !isRecord(payload.sourceRevisions)) {
+    return json({ ok: false, error: "invalid source revisions" }, { status: 400 });
+  }
+  const sourceRevisions = hasSourceRevisions
+    ? payload.sourceRevisions as Record<string, unknown>
+    : {};
+  if (
+    hasSourceRevisions
+    && (
+      Object.keys(sourceRevisions).length > 64
+      || Object.keys(sourceRevisions).some((itemId) => !(itemIds as string[]).includes(itemId))
+      || (itemIds as string[]).some((itemId) => {
+        const revision = sourceRevisions[itemId];
+        return typeof revision !== "number"
+          || !Number.isSafeInteger(revision)
+          || revision < 0;
+      })
+    )
+  ) {
+    return json({ ok: false, error: "invalid source revisions" }, { status: 400 });
   }
   if (itemIds.length === 0) {
     const current = await env.DB
@@ -2595,6 +3029,8 @@ async function handleAcknowledgment(
       ok: true,
       revision: Number(current?.revision ?? 0),
       itemIds,
+      applied: [],
+      stale: [],
     });
   }
   const statements = (itemIds as string[]).map((itemId) =>
@@ -2615,6 +3051,8 @@ async function handleAcknowledgment(
           where user_id = ?
         )
       where user_id = ? and item_id = ?
+        ${hasSourceRevisions ? "and source_revision <= ?" : ""}
+      returning item_id
     `).bind(
       seenAt,
       seenAt,
@@ -2624,11 +3062,30 @@ async function handleAcknowledgment(
       userId,
       userId,
       itemId,
+      ...(hasSourceRevisions ? [Number(sourceRevisions[itemId])] : []),
     ),
   );
-  const revision = await commitAttentionRevision(env, userId, statements);
+  const [revisionResult, ...mutationResults] = await env.DB.batch<{
+    revision?: number;
+    item_id?: string;
+  }>([
+    attentionRevisionBumpStatement(env, userId, new Date().toISOString()),
+    ...statements,
+  ]);
+  if (!revisionResult?.success || mutationResults.some((result) => !result.success)) {
+    throw new Error("attention acknowledgment transaction failed");
+  }
+  const revision = Number(revisionResult.results[0]?.revision);
+  if (!Number.isSafeInteger(revision) || revision < 1) {
+    throw new Error("attention acknowledgment transaction did not return a revision");
+  }
+  const applied = (itemIds as string[]).filter(
+    (_itemId, index) => mutationResults[index]?.results.length === 1,
+  );
+  const appliedIds = new Set(applied);
+  const stale = (itemIds as string[]).filter((itemId) => !appliedIds.has(itemId));
   await deliverAccountLiveActivity(env, userId);
-  return json({ ok: true, revision, itemIds });
+  return json({ ok: true, revision, itemIds, applied, stale });
 }
 
 async function handlePresence(
@@ -2707,10 +3164,18 @@ async function handlePreferences(
   }
   if (!isRecord(payload)) return json({ ok: false, error: "invalid preferences" }, { status: 400 });
   const preservesDevices = !Object.prototype.hasOwnProperty.call(payload, "devices");
+  const preservesMachines = !Object.prototype.hasOwnProperty.call(payload, "machines");
+  const preservesProjects = !Object.prototype.hasOwnProperty.call(payload, "projects");
   const result = await mutateAttentionPreferences(env, userId, (current) => ({
     ...payload,
     ...(preservesDevices && isRecord(current.devices)
       ? { devices: current.devices }
+      : {}),
+    ...(preservesMachines && isRecord(current.machines)
+      ? { machines: current.machines }
+      : {}),
+    ...(preservesProjects && isRecord(current.projects)
+      ? { projects: current.projects }
       : {}),
   }));
   if ("response" in result) return result.response;
@@ -2745,6 +3210,20 @@ async function mutateAttentionPreferences(
       }
     }
     const preferences = mutate(current);
+    if (
+      preferences.machines != null
+      && (
+        !isRecord(preferences.machines)
+        || Object.keys(preferences.machines).length > MAX_ATTENTION_MACHINE_PREFERENCES
+      )
+    ) {
+      return {
+        response: json(
+          { ok: false, error: "invalid machine preferences" },
+          { status: 400 },
+        ),
+      };
+    }
     const serialized = JSON.stringify(preferences);
     if (serialized.length > 32_000) {
       return {
@@ -2807,6 +3286,47 @@ async function handleDevicePreferences(
         ...devices,
         [deviceId]: {
           ...device,
+          ...payload,
+        },
+      },
+    };
+  });
+  if ("response" in result) return result.response;
+  await deliverAccountLiveActivity(env, userId);
+  return json({
+    ok: true,
+    preferences: result.preferences,
+    updatedAt: result.updatedAt,
+  });
+}
+
+async function handleActivityMachinePreferences(
+  request: Request,
+  env: AttentionRelayEnv,
+  userId: string,
+  machineKey: string,
+): Promise<Response> {
+  if (!requiredString(machineKey, 128)) {
+    return json({ ok: false, error: "invalid machine key" }, { status: 400 });
+  }
+  let payload: unknown;
+  try {
+    payload = await request.json();
+  } catch {
+    return json({ ok: false, error: "invalid json" }, { status: 400 });
+  }
+  if (!isRecord(payload)) {
+    return json({ ok: false, error: "invalid machine preferences" }, { status: 400 });
+  }
+  const result = await mutateAttentionPreferences(env, userId, (current) => {
+    const machines = isRecord(current.machines) ? current.machines : {};
+    const machine = isRecord(machines[machineKey]) ? machines[machineKey] : {};
+    return {
+      ...current,
+      machines: {
+        ...machines,
+        [machineKey]: {
+          ...machine,
           ...payload,
         },
       },
@@ -3287,6 +3807,19 @@ async function handleAuthorizedAttentionAccountRequest(
     );
   }
   if (
+    route.length === 3
+    && route[0] === "preferences"
+    && route[1] === "machines"
+    && request.method === "PATCH"
+  ) {
+    return await handleActivityMachinePreferences(
+      request,
+      env,
+      userId,
+      decodeURIComponent(route[2] ?? ""),
+    );
+  }
+  if (
     route.length === 2
     && route[0] === "devices"
     && (request.method === "PUT" || request.method === "DELETE")
@@ -3336,6 +3869,12 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
   const now = new Date();
   const tombstoneCutoff = new Date(now.getTime() - TOMBSTONE_RETENTION_MS).toISOString();
   const presenceCutoff = new Date(now.getTime() - 10 * 60 * 1_000).toISOString();
+  const receiptCutoff = new Date(
+    now.getTime() - ATTENTION_DELIVERY_RECEIPT_RETENTION_MS,
+  ).toISOString();
+  const alertLogCutoff = new Date(
+    now.getTime() - ATTENTION_ALERT_LOG_RETENTION_MS,
+  ).toISOString();
   const expiredDevices = await env.DB.prepare(`
     select user_id, device_id
     from attention_devices
@@ -3348,17 +3887,12 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
     env.DB.batch([
       env.DB.prepare(`
         delete from attention_delivery_receipts
-        where not exists (
-          select 1
-          from attention_items
-          where attention_items.user_id = attention_delivery_receipts.user_id
-            and attention_items.item_id = attention_delivery_receipts.item_id
-            and (
-              attention_items.expires_at is null
-              or attention_items.expires_at > ?
-            )
-        )
-      `).bind(now.toISOString()),
+        where delivered_at <= ?
+      `).bind(receiptCutoff),
+      env.DB.prepare(`
+        delete from attention_alert_log
+        where delivered_at <= ?
+      `).bind(alertLogCutoff),
       env.DB.prepare("delete from attention_items where expires_at is not null and expires_at <= ?")
         .bind(now.toISOString()),
     ]),
@@ -3374,11 +3908,13 @@ export async function pruneAttentionState(env: AttentionRelayEnv): Promise<void>
 /** Pure contract helpers exposed only so relay tests can cover trust boundaries. */
 export const attentionTestInternals = Object.freeze({
   activityPullRequest,
+  activityPublishAcknowledgments,
   activityRun,
   attentionAlertRoutingPayload,
   attentionFullSnapshotUnchanged,
   attentionTombstoneBlocksItem,
   commitAttentionMachineChanges,
+  commitActivityReconcileFinal,
   deepLinkForItem,
   deliverAccountLiveActivity,
   deliverAttentionNotifications,
@@ -3391,6 +3927,9 @@ export const attentionTestInternals = Object.freeze({
   normalizedSnapshotCursor,
   parseAttentionItem,
   privacyPreservingActivityContentState,
+  refreshActivityMachinePresence,
+  resolveActivityDeliveryPreferences,
   sealCapacityTombstones,
   upsertAttentionTombstone,
+  MAX_ALERT_AGE_MS,
 });
