@@ -20,7 +20,7 @@ export const CTO_INTRO_PROMPT = [
 
 export function buildCtoCapabilityManifest(): string {
   return [
-    "# ADE Operator Tools",
+    "# ADE operator tools",
     "",
     "Use the registered ADE operator tool schemas as the authoritative capability reference. Their schemas are always loaded for CTO sessions, so their descriptions are not duplicated here.",
     "",

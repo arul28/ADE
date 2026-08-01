@@ -276,7 +276,7 @@ describe("ctoStateService", () => {
     expect(preview.sections[4]?.content).toContain("ade actions run <domain.action>");
     expect(preview.sections[4]?.content).toContain("bundled `ade-*` skills");
     // Capabilities section: schema authority plus cross-tool operating rules
-    expect(preview.sections[5]?.content).toContain("ADE Operator Tools");
+    expect(preview.sections[5]?.content).toContain("ADE operator tools");
     expect(preview.sections[5]?.content).toContain("registered ADE operator tool schemas");
     expect(preview.sections[5]?.content).not.toContain("listLanes —");
     expect(preview.sections[5]?.content).toContain("UI navigation is suggestion-only.");
