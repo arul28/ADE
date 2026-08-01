@@ -1,4 +1,6 @@
 import { GitBranch, Warning } from "@phosphor-icons/react";
+import * as Dialog from "@radix-ui/react-dialog";
+import { useEffect, useRef } from "react";
 import type {
   CreateLaneFromPrBranchArgs,
   CreateLaneFromPrBranchPreflight,
@@ -178,6 +180,10 @@ export function CreateLaneFromPrBranchDialog({
   onCancel: () => void;
   onConfirm: () => void;
 }) {
+  const returnFocusRef = useRef<HTMLElement | null>(
+    document.activeElement instanceof HTMLElement ? document.activeElement : null,
+  );
+  const cancelRef = useRef<HTMLButtonElement | null>(null);
   const blockingConflict = preflightBlockingConflict(preflight);
   const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy;
   const sourceBranch = preflightRemoteBranch(preflight, item);
@@ -190,38 +196,48 @@ export function CreateLaneFromPrBranchDialog({
     ["Base branch", preflightBaseBranch(preflight, item)],
   ] as const;
 
+  useEffect(() => {
+    if (busy) cancelRef.current?.focus();
+  }, [busy]);
+
   return (
-    <div
-      role="presentation"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.52)",
-        backdropFilter: "blur(10px)",
-        padding: 20,
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-lane-from-pr-title"
-        style={{
+    <Dialog.Root open onOpenChange={(open) => { if (!open && !busy) onCancel(); }}>
+      <Dialog.Portal>
+        <Dialog.Overlay
+          style={{
+            position: "fixed",
+            inset: 0,
+            zIndex: 100,
+            background: "rgba(0,0,0,0.52)",
+            backdropFilter: "blur(10px)",
+          }}
+        />
+        <Dialog.Content
+          aria-describedby={undefined}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            returnFocusRef.current?.focus();
+          }}
+          onEscapeKeyDown={(event) => { if (busy) event.preventDefault(); }}
+          style={{
+          position: "fixed",
+          left: "50%",
+          top: "50%",
+          transform: "translate(-50%, -50%)",
+          zIndex: 101,
           width: "min(560px, 100%)",
+          maxWidth: "calc(100vw - 40px)",
           borderRadius: 12,
           border: `1px solid ${COLORS.border}`,
           background: COLORS.cardBgSolid,
           boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
           overflow: "hidden",
         }}
-      >
+        >
         <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div id="create-lane-from-pr-title" style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>
+          <Dialog.Title style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>
             Create lane from PR branch
-          </div>
+          </Dialog.Title>
         </div>
         <div style={{ padding: 20, display: "grid", gap: 14 }}>
           {loading ? (
@@ -264,9 +280,22 @@ export function CreateLaneFromPrBranchDialog({
           ) : null}
         </div>
         <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={onCancel} disabled={busy} style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}>
-            Cancel
-          </button>
+          <Dialog.Close asChild>
+            <button
+              ref={cancelRef}
+              type="button"
+              aria-disabled={busy}
+              onClick={(event) => {
+                if (busy) {
+                  event.preventDefault();
+                  event.stopPropagation();
+                }
+              }}
+              style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}
+            >
+              Cancel
+            </button>
+          </Dialog.Close>
           <button
             type="button"
             onClick={onConfirm}
@@ -276,7 +305,8 @@ export function CreateLaneFromPrBranchDialog({
             <GitBranch size={14} /> {busy ? "Creating..." : "Create lane"}
           </button>
         </div>
-      </div>
-    </div>
+        </Dialog.Content>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }

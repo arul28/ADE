@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   deriveGithubSnapshotLaneLink,
   deriveGithubSnapshotMergeFacts,
+  normalizeCount,
   type PullRequestRowMetadata,
 } from "./prRowMetadata";
 
@@ -20,6 +21,14 @@ function makePrRowMetadata(
 }
 
 describe("PR row metadata mappers", () => {
+  it("accepts only non-negative integer count values", () => {
+    expect(normalizeCount(0)).toBe(0);
+    expect(normalizeCount(12)).toBe(12);
+    expect(normalizeCount("")).toBeNull();
+    expect(normalizeCount(false)).toBeNull();
+    expect(normalizeCount(1.5)).toBeNull();
+  });
+
   it("separates a live lane mapping from frozen detached-lane provenance", () => {
     const laneById = new Map([[LANE_ID, { name: "my-feature" }]]);
 

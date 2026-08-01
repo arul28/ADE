@@ -6,7 +6,8 @@ description: >-
   iterations plus one force-finalize iteration that bypasses review and fixes
   only CI. Pure loop — it does not replace the baseline /quality or /test runs;
   run those first. It does revalidate quality after any ship-loop mutation so
-  the final result is bound to the exact commit merged. Full phase logic lives
+  the final result is bound to the exact reviewed PR head and content tree.
+  Full phase logic lives
   in docs/playbooks/ship-lane.md.
 ---
 
@@ -36,16 +37,18 @@ runtime-neutral entrypoint and the ADE-specific deltas below. If re-invoked by a
 scheduled wake, read the state file first; if `status == running`, skip Phase 0
 and go to Phase 1.
 
-The playbook's Phase 0 is **commit → push → open PR** only. Test generation and
-the local-CI gate are NOT part of ship — that's `/test` (and optionally
-`/finalize`) before you reach this skill.
+The playbook's Phase 0 is **checkpoint → commit-bound quality revalidation →
+push → open PR**. Baseline test generation and the local-CI gate are NOT part
+of ship — that's `/test` (and optionally `/finalize`) before you reach this
+skill.
 
-## Precondition: `/quality` must be empty and bound to the merge commit
+## Precondition: `/quality` must be empty and bound to the final tree
 
 Before Phase 0, require a completed `/quality` result with an empty gate. Before
-Phase 3c, also require `qualityValidatedSha` in the ship state to equal both
-`git rev-parse HEAD` and the PR's current `headRefOid`. The result is valid only
-for that exact commit; green CI on a later commit does not preserve it.
+Phase 3c, run the playbook's single canonical **Validate the current quality
+binding** procedure. It binds the reviewed head, content tree, and base so
+GitHub's squash/merge/rebase result has the reviewed tree. Green CI on a later
+head or base does not preserve this binding.
 
 A non-empty gate **blocks the merge** — every row in it is a finding that was
 verified as real and left unfixed, and by `/quality`'s contract the only two
@@ -56,8 +59,9 @@ change this branch was not asked to make. Both need the author.
   stop with `blocked`. Do not merge and mention them afterwards.
 - If `/quality` was never run on this lane, or its final gate result is not
   available in the lane handoff, stop with `blocked`; unknown is not empty.
-- Any rebase, conflict resolution, Phase 3b edit, or force-finalize edit clears
-  `qualityValidatedSha`. Run the playbook's single canonical **Commit-bound
+- Any base movement, rebase, conflict resolution, Phase 3b edit, or
+  force-finalize edit clears all three quality binding fields. Run the
+  playbook's single canonical **Commit-bound
   quality revalidation** procedure before pushing that mutation.
 - Never enter Phase 3c with a missing or mismatched binding. Revalidate first;
   do not merge and disclose stale quality evidence afterwards.
@@ -65,6 +69,10 @@ change this branch was not asked to make. Both need the author.
   `--match-head-commit "$QUALITY_VALIDATED_SHA"`. Persistent auto-merge is not
   allowed because a later push can replace the validated head while it remains
   armed.
+- GitHub creates a new commit for squash/merge/rebase. The validation claim is
+  deliberately about its exact content tree, not its not-yet-created commit
+  OID. After merge, run the playbook's canonical **Confirm the validated merge
+  result** procedure; a mismatch is never `done-clean`.
 
 Severity is irrelevant here: a Medium in the gate blocks exactly as hard as a
 Blocker, because presence in the gate means it needed a human, not that it was
@@ -127,11 +135,11 @@ terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
 If branch protection requires an absent check, Phase 3c will surface that as a
 merge-policy block.
 
-**Rebase only on real conflicts.** `behindMain` alone does NOT trigger a rebase.
-Only rebase/merge `main` when there is an actual conflict (`mergeStateStatus`
-shows the PR is dirty/conflicting). If the branch is merely behind but cleanly
-mergeable, skip the rebase and let the merge handle it — needless rebases burn
-iterations and CI.
+**Rebase only on real conflicts or a stale quality base.** `behindMain` alone
+does not normally trigger a rebase. The one safety exception is base movement
+after quality validation: the final tree is no longer the reviewed head tree,
+so rebase and rerun the canonical quality procedure even when GitHub reports a
+clean merge. Otherwise, skip needless rebases.
 
 **Bot pings by iteration.** Never ping GitHub Copilot and never treat Copilot as
 an expected review signal; quota exhaustion otherwise leaves the loop waiting
@@ -145,10 +153,11 @@ rule — defer to it for exact bodies.
 `gh pr merge --squash --match-head-commit "$QUALITY_VALIDATED_SHA"` will show
 BLOCKED. Retry with
 `gh pr merge --admin --squash --match-head-commit "$QUALITY_VALIDATED_SHA"`;
-the ruleset's
-non-linear-history rule can still reject `--admin`, in which case fall back to a
-local merge + admin-bypass push (per AGENTS.md). Do NOT pass `--delete-branch`
-(it fails from a worktree); delete the head ref server-side via
+the ruleset's non-linear-history rule can still reject `--admin`. Do not fall
+back to a locally-created commit: it would not be the reviewed and CI-tested PR
+merge result. Exit blocked if both direct `gh` paths fail. After a successful
+merge, run **Confirm the validated merge result**. Do NOT
+pass `--delete-branch` (it fails from a worktree); delete the head ref server-side via
 `gh api -X DELETE "repos/{owner}/{repo}/git/refs/heads/<branch>"`.
 
 **Fix discipline (every fix agent must follow):** (1) Fix CI and review together
@@ -195,14 +204,16 @@ self-resume signal. Either:
 ## The loop (summary — full detail in the playbook)
 
 - **Phase 0 (first run):** safety rails (clean tree, GitHub origin, refuse
-  `main`) → commit → push → open PR (`ade`, gh fallback) → write state →
+  `main`) → checkpoint → canonical commit-bound quality revalidation → push →
+  open PR (`ade`, gh fallback) → verify the provisional binding → write state →
   schedule first wake.
 - **Phase 1 — Poll:** wait for CI terminal and every bot that actually started to
   become terminal. After one 12-minute grace window, classify bots with zero
   evidence as inactive/terminal-neutral. Return a structured summary (merged /
   conflicting / ciFailed / newComments). Don't fix on a partial signal.
-- **Phase 2 — Decide:** merged → `done-clean`. Real conflict → Phase 3a rebase
-  (rebate). CI or bots running → reschedule. Both terminal, no work → 3c merge.
+- **Phase 2 — Decide:** merged → run **Confirm the validated merge result** and
+  only then set `done-clean`. Real conflict → Phase 3a rebase (rebate). CI or
+  bots running → reschedule. Both terminal, no work → 3c merge.
   Both terminal, work exists, `iter < 5` → 3b fix. `iter >= 5`, not merged → 3d
   force-finalize.
 - **Phase 3a Rebase / 3b Fix / 3c Merge / 3d Force-finalize** — per the playbook.

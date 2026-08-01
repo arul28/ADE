@@ -17,15 +17,15 @@ Day-to-day work follows a five-stage loop, each stage an agent-folder skill unde
 `/context` → work → `/quality` → `/test` → `/ship`
 
 - **/context** — session primer: detects the lane's area and loads only the matching docs + perf skill (never a broad dump).
-- **/quality** — dual-track review (correctness/security + maintainability/code-judo); auto-fixes the safe findings, gates Blockers. The loop's bug-finding and cleanup engine.
-- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards; turns each `/quality` gate finding into a named regression test.
-- **/ship** — pure autonomous PR→merge loop (poll → fix → rebase → merge). Does NOT run quality/test — run those first. Wraps `docs/playbooks/ship-lane.md`.
+- **/quality** — dual-track review (correctness/security + maintainability/code-judo); fixes every verified finding at every severity. It gates only a product decision the agent cannot make or a behavior change the branch was not authorized to make.
+- **/test** — test steward: prune/consolidate/add + docs/mobile/CLI/TUI parity + CI-mirrored shards; records a named regression test or exact alternate verification for every accepted correctness finding.
+- **/ship** — autonomous PR→merge loop (poll → fix → rebase → merge). Run baseline `/quality` and `/test` first; after any ship-loop mutation, ship reruns commit-bound `/quality` revalidation before pushing or merging. Wraps `docs/playbooks/ship-lane.md`.
 
 Utilities (run when relevant, not part of the core loop): **/audit** (targeted bug hunt), **/finalize** (optional pre-push local-CI gate), **/optimize** (perf profiling), **/release** (cut a release).
 
 ## Playbooks
 
-- `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge; `/quality` and `/test` run *before* it, not inside it). Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
+- `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge). Baseline `/quality` and `/test` run before it; mutation-specific commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
 
 ## Working norms
 

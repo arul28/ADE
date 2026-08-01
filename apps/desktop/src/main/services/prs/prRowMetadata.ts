@@ -24,9 +24,9 @@ export type PullRequestRowMetadata = {
 
 /** Normalize a persisted non-negative count, returning null for absent or invalid data. */
 export function normalizeCount(value: unknown): number | null {
-  if (value == null) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0
+    ? value
+    : null;
 }
 
 /** Narrow persisted merge-method data to the supported public union. */

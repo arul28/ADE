@@ -106,6 +106,8 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
   "iteration": 2,
   "lastPushSha": "abc123...",
   "qualityValidatedSha": "abc123...",
+  "qualityValidatedTree": "def456...",
+  "qualityValidatedBaseSha": "789abc...",
   "addressedCommentIds": [987654, 987655],
   "status": "running",
   "startedAt": "2026-04-23T14:30:00Z",
@@ -124,7 +126,13 @@ This is the single canonical procedure for every ship-loop mutation. Phase 0,
 post-rebase, Phase 3b, and force-finalize supply only their commit message, diff
 base, narrow test targets, and push command; they do not restate this algorithm.
 
-1. Clear `qualityValidatedSha` before editing.
+1. Clear `qualityValidatedSha`, `qualityValidatedTree`, and
+   `qualityValidatedBaseSha` before editing. Fetch the intended base, set
+   `QUALITY_VALIDATED_BASE_SHA` to that fetched commit, and require it to be an
+   ancestor of the candidate head. If it is not, preserve the work, route
+   through Phase 3a, and restart this procedure after the rebase; do not bind a
+   behind-base tree. This works before PR creation; Phase 0 uses `main` as the
+   intended base.
 2. Run both `/quality` tracks on the final combined diff, fix every accepted
    finding, and repeat both tracks until the same pass is clean.
 3. Build the validation scope from the union of committed, unstaged, staged,
@@ -153,12 +161,37 @@ base, narrow test targets, and push command; they do not restate this algorithm.
    QUALITY_VALIDATED_SHA=$(git rev-parse HEAD)
    ```
 
-5. Push with the phase-appropriate command, then verify the PR's `headRefOid`
-   equals `QUALITY_VALIDATED_SHA` before writing it to ship state. Any later edit
-   or head mismatch clears the binding and restarts this procedure.
+5. Push with the phase-appropriate command and verify the remote branch head
+   equals `QUALITY_VALIDATED_SHA`. If a PR already exists, also require its
+   `headRefOid` and `baseRefOid` to equal `QUALITY_VALIDATED_SHA` and
+   `QUALITY_VALIDATED_BASE_SHA`. Before the PR exists, retain the fetched
+   intended base as a provisional binding; Phase 0.5 performs the PR-field
+   verification immediately after creation. In both modes, require the base to
+   be an ancestor of the head and `HEAD^{tree}` to still equal
+   `QUALITY_VALIDATED_TREE` before writing all three values to ship state. Any
+   later edit, head mismatch, or base movement clears the binding and restarts
+   this procedure.
 
-The exact-SHA merge check in Phase 3c is the second half of this contract; a
-green CI result never substitutes for it.
+The exact head/base/tree checks in Phase 3c are the second half of this
+contract; a green CI result never substitutes for them. GitHub creates the
+final squash/merge/rebase commit, so this procedure binds the reviewed content
+tree rather than claiming to know or validate that future commit OID.
+
+### Validate the current quality binding
+
+This is the only pre-merge binding check. Read the three values from ship state,
+then require the local head SHA/tree and the PR head/base SHAs to match them,
+require the base to be an ancestor of HEAD, and require the quality gate to be
+explicitly empty. Any mismatch clears the binding and routes back through the
+canonical revalidation procedure (via Phase 3a first when the base moved).
+
+### Confirm the validated merge result
+
+This is the only clean-merge confirmation. Require the PR's final `headRefOid`
+to equal `qualityValidatedSha`, resolve `mergeCommit.oid`, read that commit's
+tree through the GitHub API, and require it to equal `qualityValidatedTree`.
+Only then may state become `done-clean`. A head mismatch is
+`merged-unvalidated-head`; a tree mismatch is `merged-unvalidated-tree`.
 
 ---
 
@@ -184,7 +217,7 @@ Ship is a **pure merge loop** — it does not replace the baseline `/quality`,
 (`/context → work → /quality → /test → /ship`) that the author runs *before*
 reaching ship. Ship assumes the lane is already reviewed, tested, and
 (optionally) finalized; its only quality work is revalidation after a ship-loop
-mutation so the result stays bound to the exact commit being merged.
+mutation so the result stays bound to the exact reviewed head and content tree.
 
 Preconditions here:
 
@@ -197,7 +230,8 @@ Preconditions here:
   `exitReason: "quality-gate-nonempty"` or `"quality-result-missing"` rather
   than assuming unknown means clean. Ship does not replace either baseline
   skill run.
-- The quality result must be bound to the exact commit that will merge by the
+- The quality result must be bound to the exact PR head, base, and content tree
+  that will merge by the
   canonical Commit-bound quality revalidation procedure above. Do not infer a
   binding from a green gate summary that predates the commit.
 
@@ -210,15 +244,21 @@ git add -A
 git diff --cached --quiet || git commit -m "ship: prepare lane for review"
 ```
 
-Run the canonical Commit-bound quality revalidation procedure with the initial
-checkpoint as `QUALITY_DIFF_BASE`, the commit message below, and
-`git push -u origin "$CURRENT_BRANCH"` as the push command:
+Fetch `origin/main`, bind the intended base, and set `QUALITY_DIFF_BASE` to the
+feature merge-base before running the canonical Commit-bound quality
+revalidation procedure. This includes every committed feature file rather than
+only edits made after the checkpoint:
 
 ```bash
+git fetch origin main
+QUALITY_VALIDATED_BASE_SHA=$(git rev-parse origin/main)
+QUALITY_DIFF_BASE=$(git merge-base HEAD "$QUALITY_VALIDATED_BASE_SHA")
 QUALITY_COMMIT_MESSAGE="ship: apply initial quality revalidation"
+# Push command for canonical step 5:
+git push -u origin "$CURRENT_BRANCH"
 ```
 
-If anything changes after the clean pass, discard both captured values and
+If anything changes after the clean pass, discard all three binding values and
 revalidate again.
 
 **PR creation: prefer the ADE CLI.** Opening the PR via `ade` registers it in ADE's PR tracking (lane ↔ PR link, check/comment inventory, review-thread state). `gh pr create` is the fallback, not the default. Falling back too eagerly defeats the purpose — do it only after you've genuinely confirmed the ADE path is broken.
@@ -261,8 +301,9 @@ only when the diff touches more than 250 files.
 
 ### 0.5 Write initial state
 
-After PR creation, verify its `headRefOid` equals `QUALITY_VALIDATED_SHA`. If it
-does not, leave `qualityValidatedSha` null and revalidate the actual PR head.
+After PR creation, verify its `headRefOid` and `baseRefOid` match the quality
+binding. If either differs, clear all quality binding fields and revalidate the
+actual PR head and base.
 
 ```json
 {
@@ -271,6 +312,8 @@ does not, leave `qualityValidatedSha` null and revalidate the actual PR head.
   "iteration": 0,
   "lastPushSha": "<current HEAD sha>",
   "qualityValidatedSha": "<same full current HEAD sha after clean revalidation>",
+  "qualityValidatedTree": "<HEAD tree sha after clean revalidation>",
+  "qualityValidatedBaseSha": "<PR base sha recorded after push>",
   "addressedCommentIds": [],
   "status": "running",
   "startedAt": "<ISO 8601 now>",
@@ -389,8 +432,7 @@ Pure logic on the poll summary:
 
 | Condition | Action |
 | --- | --- |
-| `merged == true` AND `pollHeadSha == qualityValidatedSha` | Exit `done-clean`; clear state file. |
-| `merged == true` AND the SHAs differ | Exit `blocked` with `merged-unvalidated-head`; never report stale quality as clean. |
+| `merged == true` | Run **Confirm the validated merge result**; exit `done-clean` only when it succeeds. |
 | `behindMain == true` | Go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
 | `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
@@ -554,11 +596,10 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 
 Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
 
-Before resolving merge style, re-read the lane's final `/quality` result. The
-gate must still be explicitly empty, and `qualityValidatedSha` must equal both
-`git rev-parse HEAD` and the PR's current `headRefOid`. A missing or mismatched
-binding means a later commit invalidated the result: return to quality
-revalidation before merging. If the gate is non-empty or unavailable, exit
+Before resolving merge style, run the canonical **Validate the current quality
+binding** procedure. A missing or mismatched binding means a later head or base
+invalidated the result: rebase when needed, then return to quality revalidation
+before merging. If the gate is non-empty or unavailable, exit
 `blocked` with `quality-gate-nonempty` or `quality-result-missing`; never merge
 and disclose deferred findings afterwards.
 
@@ -590,7 +631,11 @@ If the user is not a repo admin, do NOT use `--admin`. Exit `blocked` with
 `exitReason: "merge-policy-blocked-no-authorized-path"` and post a PR comment
 explaining what reviewer or admin action is needed. Do not arm persistent
 auto-merge: a later push can replace the validated head while auto-merge remains
-enabled, which violates the exact-commit quality contract.
+enabled, which violates the exact head/base/tree quality contract.
+
+If the admin path is rejected too, exit with the same blocked reason. Do not
+create and push a local fallback commit: that commit would bypass the reviewed
+PR merge result and its CI evidence.
 
 ### 3c.4 Branch deletion
 
@@ -604,11 +649,9 @@ Or simply skip deletion and rely on the repo's "Automatically delete head branch
 
 ### 3c.5 Confirm + finalize
 
-```bash
-gh pr view "$PR_NUMBER" --json state,mergedAt,mergeCommit
-```
-
-If `state == MERGED`, exit `done-clean`, clear `.ade/shipLane/<branch>.json`, and print the summary. Do NOT schedule another wake-up.
+Run the canonical **Confirm the validated merge result** procedure. Only when it
+succeeds may the loop clear `.ade/shipLane/<branch>.json` and print the summary.
+Do NOT schedule another wake-up.
 
 ---
 
@@ -667,6 +710,8 @@ Post the Phase 4 bot ping (a force-finalize push is a re-push → `@codex review
   "forceFinalize": true,
   "lastPushSha": "<new HEAD sha>",
   "qualityValidatedSha": "<same new HEAD sha after clean revalidation>",
+  "qualityValidatedTree": "<same new HEAD tree after clean revalidation>",
+  "qualityValidatedBaseSha": "<same current PR base sha after clean revalidation>",
   "addressedCommentIds": [<prev>, <every still-open new-comment id>],
   "lastPolledAt": "<ISO 8601 now>",
   "status": "running"
@@ -679,8 +724,7 @@ Schedule the next wake at the normal post-push cadence (270s if CI hasn't starte
 
 When the next wake polls:
 
-- `merged == true` and the merged head matches `qualityValidatedSha` → `done-clean`, exit.
-- `merged == true` and the SHAs differ → `blocked` with `merged-unvalidated-head`.
+- `merged == true` → run **Confirm the validated merge result**; exit `done-clean` only when it succeeds.
 - `behindMain == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
 - CI terminal AND green → route **immediately** through Phase 3c. Do NOT wait on review bots; review is intentionally bypassed in this phase.
 - CI terminal AND any required check still failing → exit `blocked`, `exitReason: "force-finalize-ci-failed"`, post a PR comment listing the failing job names + links. Do not start a seventh iteration.
@@ -726,6 +770,8 @@ These are separate comments (not a single body) so each bot handler parses its o
   "iteration": <prev + 1, after any rebase/conflict rebate>,
   "lastPushSha": "<new HEAD sha>",
   "qualityValidatedSha": "<new HEAD sha only after clean quality revalidation; otherwise null>",
+  "qualityValidatedTree": "<new HEAD tree only after clean quality revalidation; otherwise null>",
+  "qualityValidatedBaseSha": "<current PR base only after clean quality revalidation; otherwise null>",
   "addressedCommentIds": [<prev list>, <new ids handled this iteration>],
   "lastPolledAt": "<ISO 8601 now>",
   "status": "running"
@@ -734,8 +780,7 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
-- `merged == true` with `pollHeadSha == qualityValidatedSha` → set `status: done-clean`, exit.
-- `merged == true` with a mismatched SHA → set `status: blocked`, `exitReason: "merged-unvalidated-head"`, exit.
+- `merged == true` → run **Confirm the validated merge result**; set `done-clean` only when it succeeds.
 - `iteration >= 5` AND `forceFinalize` unset/false AND not merged → run Phase 3d (force-finalize) on the next wake's fix turn. Do not exit; the cap is not a stop sign, it's a "land it now" trigger that switches the loop into review-ignoring CI-only mode.
 - `forceFinalize == true` AND CI green AND not merged → route immediately through Phase 3c. Only if Phase 3c has no authorized direct/admin path do you set `status: done-max` and leave a handoff comment.
 - `forceFinalize == true` AND CI still red after the iteration-6 push → set `status: blocked`, `exitReason: "force-finalize-ci-failed"`, exit. Do not run a seventh iteration.

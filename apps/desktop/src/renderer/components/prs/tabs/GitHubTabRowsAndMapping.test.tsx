@@ -5,6 +5,7 @@ import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
+  CreateLaneFromPrBranchResult,
   CreateLaneFromPrBranchPreflightResult,
   GitHubPrSnapshot,
 } from "../../../../shared/types";
@@ -464,7 +465,8 @@ describe("GitHubTab rows and mapping", () => {
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockResolvedValue(snapshotWithUnlinked);
     renderTab();
 
-    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    const trigger = await screen.findByRole("button", { name: /create lane from pr branch/i });
+    await user.click(trigger);
 
     expect(window.ade.prs.preflightCreateLaneFromPrBranch).toHaveBeenCalledWith({
       repoOwner: "ade-dev",
@@ -472,10 +474,62 @@ describe("GitHubTab rows and mapping", () => {
       githubPrNumber: 200,
     });
     const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
+    const cancel = within(dialog).getByRole("button", { name: /cancel/i });
+    const confirm = within(dialog).getByRole("button", { name: /create lane/i });
+    expect(document.activeElement).toBe(cancel);
+    await user.tab({ shift: true });
+    expect(document.activeElement).toBe(confirm);
+    await user.tab();
+    expect(document.activeElement).toBe(cancel);
     expect(within(dialog).getByText(/#200 Unlinked PR/)).toBeTruthy();
     expect(within(dialog).getAllByText("origin/feature/open").length).toBeGreaterThan(0);
     expect(within(dialog).getAllByText("Unlinked PR").length).toBeGreaterThan(0);
     expect(within(dialog).getAllByText("main").length).toBeGreaterThan(0);
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: /create lane from pr branch/i })).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("keeps focus in the dialog while creation is busy and restores an action after failure", async () => {
+    const user = userEvent.setup();
+    const createResult = createDeferred<CreateLaneFromPrBranchResult>();
+    const snapshotWithUnlinked: GitHubPrSnapshot = {
+      ...snapshot,
+      repoPullRequests: [makeGitHubPr({
+        id: "repo-unlinked",
+        githubPrNumber: 200,
+        title: "Unlinked PR",
+        linkedPrId: null,
+        linkedLaneId: null,
+        linkedLaneName: null,
+        adeKind: null,
+      })],
+    };
+    (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>)
+      .mockResolvedValue(snapshotWithUnlinked);
+    (window.ade.prs.createLaneFromPrBranch as ReturnType<typeof vi.fn>)
+      .mockReturnValueOnce(createResult.promise);
+    renderTab();
+
+    await user.click(await screen.findByRole("button", { name: /create lane from pr branch/i }));
+    const dialog = await screen.findByRole("dialog", { name: /create lane from pr branch/i });
+    await user.click(within(dialog).getByRole("button", { name: /^create lane$/i }));
+
+    await user.keyboard("{Escape}");
+    expect(screen.getByRole("dialog", { name: /create lane from pr branch/i })).toBe(dialog);
+    await user.tab();
+    expect(dialog.contains(document.activeElement)).toBe(true);
+
+    await act(async () => {
+      createResult.reject(new Error("creation failed"));
+      await Promise.resolve();
+    });
+    expect(await within(dialog).findByText("creation failed")).toBeTruthy();
+    await user.tab();
+    const activeControl = document.activeElement;
+    expect(dialog.contains(activeControl)).toBe(true);
+    expect(activeControl).toBeInstanceOf(HTMLButtonElement);
+    expect((activeControl as HTMLButtonElement).disabled).toBe(false);
   });
 
   it("ignores stale create-lane preflight results from a previous PR", async () => {
