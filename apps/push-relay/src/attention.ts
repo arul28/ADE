@@ -1134,6 +1134,9 @@ async function deliverAttentionNotifications(
                 ...(body ? { body } : {}),
               },
               ...(soundsEnabled ? { sound: "default" } : {}),
+              // Wakes the app for a background snapshot refresh alongside the
+              // visible alert; foreground polling remains the guaranteed path.
+              "content-available": 1,
               "thread-id": item.id,
               "interruption-level": item.eventKind === "agent_needs_you"
                 ? "time-sensitive"
