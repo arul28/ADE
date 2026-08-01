@@ -1146,6 +1146,7 @@ export function WorkViewArea({
 }: {
   pageActive?: boolean;
   lanes: LaneSummary[];
+  /** Open-session cross-machine union; active and grid lookups must use it. */
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;

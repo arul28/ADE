@@ -828,6 +828,103 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }));
   });
 
+  it("retains foreign union members while the cross-machine map is temporarily empty", async () => {
+    const foreign = makeSession("foreign-grid", "foreign-lane");
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const workState = {
+      openItemIds: [foreign.id],
+      activeItemId: foreign.id,
+      selectedItemId: foreign.id,
+      gridSets: [{ id: "grid-1", layoutId: "layout-grid-1", sessionIds: ["local-grid", foreign.id] }],
+      activeGridSetId: null,
+      draftKind: "chat" as const,
+      orchestratorEnabled: false,
+      draftLaneId: null,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedSectionIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+      workSidebarOpen: false,
+      workSidebarTab: "git" as const,
+      workSidebarWidthPct: 36,
+      laneSessionOrder: {},
+      pinnedSessionIds: [],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          binding: foreignBinding,
+          lanes: [{ id: "foreign-lane" }],
+          sessions: [foreign],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.get(foreign.id)).toBe(foreign));
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {},
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreign.id)).toBe(foreign);
+    expect(result.current.visibleSessions).toContainEqual(foreign);
+    expect(result.current.gridSets[0]?.sessionIds).toEqual(["local-grid", foreign.id]);
+    expect(result.current.resolveSessionRuntimePin(foreign)).toBe(foreignBinding);
+  });
+
+  it("removes a foreign union member when its present machine slice no longer reports it", async () => {
+    const foreign = makeSession("foreign-removed", "foreign-lane");
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: "foreign-lane" }],
+          sessions: [foreign],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.has(foreign.id)).toBe(true));
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: "foreign-lane" }],
+          sessions: [],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.has(foreign.id)).toBe(false);
+    expect(result.current.visibleSessions).not.toContainEqual(foreign);
+    expect(result.current.runningSessions).not.toContainEqual(foreign);
+  });
+
   it("launchPtySession carries its project pin into stopRuntime", async () => {
     const pin = {
       kind: "local",
@@ -1515,6 +1612,49 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.openItemIds).toContain("session-1");
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
+  });
+
+  it("opens a foreign URL session from the union without selecting its lane locally", async () => {
+    const foreign = makeSession("session-foreign", "lane-foreign");
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams(`sessionId=${foreign.id}`),
+      vi.fn(),
+    ]);
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: foreign.laneId }],
+          sessions: [foreign],
+        },
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => expect(focusSessionSpy).toHaveBeenCalledWith(foreign.id));
+    expect(selectLaneSpy).not.toHaveBeenCalledWith(foreign.laneId);
+    expect(workState.openItemIds).toContain(foreign.id);
+    expect(result.current.selectedSession).toBe(foreign);
   });
 
   it("falls back to URL lane/status filters when the requested sessionId is stale", async () => {

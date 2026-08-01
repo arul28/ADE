@@ -119,6 +119,7 @@ const workMocks = vi.hoisted(() => {
     filtered: [],
     sessionsGroupedByLane: [],
     loading: false,
+    canPruneSessionIndex: () => true,
     gridLayoutId: "work-grid",
     gridSets: [],
     setGridSets: vi.fn(),
@@ -189,6 +190,7 @@ const workMocks = vi.hoisted(() => {
 const sidebarProps = vi.hoisted(() => ({
   latest: null as null | {
     laneId: string | null;
+    activeSession: TerminalSessionSummary | null;
     contextTarget: unknown;
     contextDisabledReason: string | null;
   },
@@ -288,8 +290,16 @@ vi.mock("./useWorkSessions", async () => {
   return {
     useWorkSessions: () => {
       const machineRouter = useWorkMachineRouter();
+      const sessionsById = workMocks.currentWork.sessionsById
+        ?? new Map<string, TerminalSessionSummary>([
+          ...workMocks.currentWork.sessions.map((session: TerminalSessionSummary) => [session.id, session] as const),
+          ...Object.values(workMocks.crossMachineLanesByMachineId)
+            .flatMap((machine) => machine.sessions)
+            .map((session) => [session.id, session] as const),
+        ]);
       return {
         ...workMocks.currentWork,
+        sessionsById,
         machineRouter,
         resolveSessionRuntimePin: machineRouter.pinForSession,
       };
@@ -358,6 +368,7 @@ vi.mock("./SessionListPane", () => ({
 vi.mock("./WorkSidebar", () => ({
   WorkSidebar: (props: {
     laneId: string | null;
+    activeSession: TerminalSessionSummary | null;
     contextTarget: unknown;
     contextDisabledReason: string | null;
   }) => {
@@ -881,6 +892,52 @@ describe("TerminalsPage chat session activation", () => {
     expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("chat-spawned-child");
   });
 
+  it("opens a bindingless foreign select-session target from the union without selecting a local lane", async () => {
+    const binding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const foreign = workMocks.makeTerminalSession("chat-foreign-child", "lane-foreign", "codex-chat");
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+        sessions: [foreign],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [],
+      sessionsById: new Map([[foreign.id, foreign]]),
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("work-view-area");
+    window.dispatchEvent(new CustomEvent("ade:work:select-session", {
+      detail: { sessionId: foreign.id },
+    }));
+
+    expect(workMocks.fns.selectLane).not.toHaveBeenCalled();
+    expect(workMocks.fns.focusSession).toHaveBeenCalledWith(foreign.id);
+    expect(workMocks.fns.openSessionTab).toHaveBeenCalledWith(foreign.id);
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith(foreign.id);
+  });
+
   it("writes a foreign select-session event into the destination project state", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
@@ -1110,6 +1167,161 @@ describe("TerminalsPage chat session activation", () => {
       toolType: "codex",
     });
     expect(sidebarProps.latest?.contextDisabledReason).toBeNull();
+  });
+
+  it("resolves a foreign active session from the union and disables sidebar context insertion", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const foreignSession = workMocks.makeTerminalSession("term-studio", "lane-studio", "codex");
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-studio" }],
+        sessions: [foreignSession],
+        online: true,
+      },
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [],
+      sessionsById: new Map([[foreignSession.id, foreignSession]]),
+      visibleSessions: [foreignSession],
+      activeItemId: foreignSession.id,
+      workSidebarOpen: true,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+
+    expect(await screen.findByTestId("work-sidebar")).toBeTruthy();
+    expect(sidebarProps.latest?.activeSession).toBe(foreignSession);
+    expect(sidebarProps.latest).toEqual(expect.objectContaining({
+      contextTarget: null,
+      contextDisabledReason: "Tool context insertion is not available for sessions on another machine.",
+    }));
+  });
+
+  it("keeps a foreign grid member through an active-machine-only refresh", async () => {
+    const localSession = workMocks.makeTerminalSession("term-local", "lane-primary", "codex");
+    const foreignSession = workMocks.makeTerminalSession("term-foreign", "lane-foreign", "codex");
+    const gridSets = [{
+      id: "grid-1",
+      layoutId: "layout-grid-1",
+      sessionIds: [localSession.id, foreignSession.id],
+    }];
+    const setGridSets = vi.fn();
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [localSession],
+      sessionsById: new Map([
+        [localSession.id, localSession],
+        [foreignSession.id, foreignSession],
+      ]),
+      gridSets,
+      setGridSets,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const rendered = render(<TerminalsPage />);
+    await waitFor(() => expect(setGridSets).toHaveBeenCalled());
+
+    setGridSets.mockClear();
+    const refreshedLocal = { ...localSession, lastOutputPreview: "refreshed" };
+    workMocks.currentWork = {
+      ...workMocks.currentWork,
+      sessions: [refreshedLocal],
+      sessionsById: new Map([
+        [refreshedLocal.id, refreshedLocal],
+        [foreignSession.id, foreignSession],
+      ]),
+    };
+    rendered.rerender(<TerminalsPage />);
+
+    await waitFor(() => expect(setGridSets).toHaveBeenCalledTimes(1));
+    const update = setGridSets.mock.calls[0]?.[0];
+    expect(typeof update).toBe("function");
+    expect(update(gridSets)).toBe(gridSets);
+  });
+
+  it("prunes a foreign grid member missing from its present machine slice", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const localSession = workMocks.makeTerminalSession("term-local", "lane-primary", "codex");
+    const foreignSession = workMocks.makeTerminalSession("term-foreign", "lane-foreign", "codex");
+    const gridSets = [{
+      id: "grid-1",
+      layoutId: "layout-grid-1",
+      sessionIds: [localSession.id, foreignSession.id],
+    }];
+    const setGridSets = vi.fn();
+    const foreignMachine = {
+      machineId: "target-studio",
+      machineName: "Mac Studio",
+      targetId: "target-studio",
+      projectId: "project-a",
+      binding: studioBinding,
+      lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+      sessions: [foreignSession],
+      online: true,
+    };
+    workMocks.crossMachineLanesByMachineId = { "target-studio": foreignMachine };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [localSession],
+      sessionsById: new Map([
+        [localSession.id, localSession],
+        [foreignSession.id, foreignSession],
+      ]),
+      gridSets,
+      setGridSets,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const rendered = render(<TerminalsPage />);
+    await waitFor(() => expect(setGridSets).toHaveBeenCalled());
+
+    setGridSets.mockClear();
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": { ...foreignMachine, sessions: [] },
+    };
+    workMocks.currentWork = {
+      ...workMocks.currentWork,
+      sessionsById: new Map([[localSession.id, localSession]]),
+    };
+    rendered.rerender(<TerminalsPage />);
+
+    await waitFor(() => expect(setGridSets).toHaveBeenCalledTimes(1));
+    const update = setGridSets.mock.calls[0]?.[0];
+    expect(typeof update).toBe("function");
+    expect(update(gridSets)).toEqual([]);
   });
 
   it("bulk deletes selected running chat sessions from the session list", async () => {

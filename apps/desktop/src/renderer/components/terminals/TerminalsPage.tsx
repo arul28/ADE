@@ -200,6 +200,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const selectableSessions = useMemo(
+    // Bulk-selection RPCs are deliberately active-binding-only. Foreign rows
+    // keep their per-row pinned actions until the bulk contract can carry pins.
     () => [
       ...work.runningFiltered,
       ...work.awaitingInputFiltered,
@@ -448,8 +450,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // Callers (spawn cards, subagents pane) often don't know the target's
         // lane. Resolve it from the loaded session list so cross-lane jumps
         // land on the right lane instead of focusing an off-lane session.
-        const laneId = detail.laneId ?? work.sessions.find((s) => s.id === sessionId)?.laneId ?? null;
-        if (laneId) work.selectLane(laneId);
+        const session = work.sessionsById.get(sessionId) ?? null;
+        const laneId = detail.laneId ?? session?.laneId ?? null;
+        if (laneId && (!session || !resolveSessionRuntimePin(session))) work.selectLane(laneId);
         work.focusSession(sessionId);
         work.openSessionTab(sessionId);
         work.setSelectedSessionId(sessionId);
@@ -932,8 +935,12 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   );
 
   const activeWorkSession = useMemo(
-    () => (work.activeItemId ? work.sessions.find((session) => session.id === work.activeItemId) ?? null : null),
-    [work.activeItemId, work.sessions],
+    () => (work.activeItemId ? work.sessionsById.get(work.activeItemId) ?? null : null),
+    [work.activeItemId, work.sessionsById],
+  );
+  const activeWorkSessionRuntimePin = useMemo(
+    () => (activeWorkSession ? resolveSessionRuntimePin(activeWorkSession) : null),
+    [activeWorkSession, resolveSessionRuntimePin],
   );
 
   const activeLaneId = useMemo(() => {
@@ -963,6 +970,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           }
         : null;
     }
+    // WorkSidebar's composer events and terminal.write call do not carry a
+    // runtime pin. Fail closed instead of inserting into the active machine.
+    if (activeWorkSessionRuntimePin) return null;
     if (activeWorkSession.laneId !== activeLaneId) return null;
     if (isChatToolType(activeWorkSession.toolType)) {
       return { kind: "chat", sessionId: activeWorkSession.id };
@@ -980,7 +990,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
     }
     return null;
-  }, [activeLaneId, activeWorkSession, draftContextTargetId, work.draftKind]);
+  }, [activeLaneId, activeWorkSession, activeWorkSessionRuntimePin, draftContextTargetId, work.draftKind]);
 
   let contextDisabledReason: string | null;
   if (!activeWorkSession && contextTarget) {
@@ -988,6 +998,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = null;
   } else if (!activeWorkSession) {
     contextDisabledReason = "Select a lane before inserting tool context.";
+  } else if (activeWorkSessionRuntimePin) {
+    contextDisabledReason = "Tool context insertion is not available for sessions on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
   } else if (activeWorkSession.toolType === "shell") {
@@ -1112,8 +1124,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // exist (closed/deleted) and dissolve any set that falls below two tiles.
   const setGridSets = work.setGridSets;
   useEffect(() => {
-    if (work.loading || work.sessions.length === 0) return;
-    const liveIds = new Set(work.sessions.map((s) => s.id));
+    if (work.loading || !work.canPruneSessionIndex()) return;
+    const liveIds = new Set(work.sessionsById.keys());
     setGridSets((prev) => {
       let changed = false;
       const next = prev
@@ -1126,7 +1138,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (next.length !== prev.length) changed = true;
       return changed ? next : prev;
     });
-  }, [work.sessions, work.loading, setGridSets]);
+  }, [work.canPruneSessionIndex, work.loading, work.sessionsById, setGridSets]);
   const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
     work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
@@ -1240,7 +1252,6 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleCreateGridFromSingle,
       handleRemoveSessionFromGrid,
       resolveSessionRuntimePin,
-      work.sessions,
       work.visibleSessions,
       work.activeItemId,
       work.draftKind,
@@ -1363,6 +1374,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // Stable automation anchor for the whole sessions pane.
         children: (
           <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
+          {/* Active-binding inventory only: this pane reads and filters foreign
+              rows from its own cross-machine union subscription. */}
           <SessionListPane
             lanes={sortedLanes}
             runningFiltered={work.runningFiltered}

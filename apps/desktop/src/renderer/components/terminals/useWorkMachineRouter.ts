@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useRef } from "react";
 import type { OpenProjectBinding } from "../../../shared/types";
 import {
   buildChatMachineRoutingState,
@@ -7,7 +7,7 @@ import {
   type ChatMachineRouter,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
-import { useAppStore, useRootAppStore } from "../../state/appStore";
+import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
 import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
@@ -51,7 +51,12 @@ export function useWorkMachineRouter(): WorkMachineRouter {
   const lanes = useAppStore((s) => s.lanes);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const retainedSessionBindingsRef = useRef<{
+    projectStateKey: string | null;
+    bindingsBySessionId: Map<string, OpenProjectBinding> | null;
+  }>({ projectStateKey: null, bindingsBySessionId: null });
 
   return useMemo(() => {
     const machines = Object.values(crossMachineLanesByMachineId ?? {});
@@ -83,6 +88,19 @@ export function useWorkMachineRouter(): WorkMachineRouter {
           sessionBindingsById.set(sessionId, machine.binding);
         }
       }
+    }
+    if (machines.length > 0) {
+      retainedSessionBindingsRef.current = {
+        projectStateKey,
+        bindingsBySessionId: sessionBindingsById,
+      };
+    } else if (retainedSessionBindingsRef.current.projectStateKey === projectStateKey) {
+      // Scope replacement briefly clears every slice. Preserve session
+      // ownership for this same project just like remembered launch pins do;
+      // otherwise a restored foreign tab can fall through to the local runtime.
+      sessionBindingsById = retainedSessionBindingsRef.current.bindingsBySessionId;
+    } else {
+      retainedSessionBindingsRef.current = { projectStateKey, bindingsBySessionId: null };
     }
     const router = createChatMachineRouter(buildChatMachineRoutingState({
       activeBinding: projectBinding ?? null,
@@ -127,5 +145,5 @@ export function useWorkMachineRouter(): WorkMachineRouter {
         forgetWorkPtyLaunchPin(session);
       },
     };
-  }, [crossMachineLanesByMachineId, lanes, openProjectTabRoots, openRemoteProjectTabs, projectBinding]);
+  }, [crossMachineLanesByMachineId, lanes, openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectStateKey]);
 }
