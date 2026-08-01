@@ -581,32 +581,61 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [sessions]);
   const retainedCrossMachineSessionsRef = useRef<{
     projectStateKey: string | null;
-    sessionsById: Map<string, TerminalSessionSummary>;
-  }>({ projectStateKey: null, sessionsById: new Map() });
+    sessionsByMachineId: Map<string, Map<string, TerminalSessionSummary>>;
+    /** Machines still waiting for an authoritative slice after a wholesale scope refill. */
+    pendingMachineIds: Set<string> | null;
+  }>({ projectStateKey: null, sessionsByMachineId: new Map(), pendingMachineIds: null });
   const crossMachineSessionsById = useMemo(() => {
-    const retained = retainedCrossMachineSessionsRef.current;
+    let retained = retainedCrossMachineSessionsRef.current;
     if (retained.projectStateKey !== projectStateKey) {
-      retainedCrossMachineSessionsRef.current = {
+      retained = {
         projectStateKey,
-        sessionsById: new Map(),
+        sessionsByMachineId: new Map(),
+        pendingMachineIds: null,
       };
+      retainedCrossMachineSessionsRef.current = retained;
     }
 
     const machines = Object.values(crossMachineLanesByMachineId);
     if (machines.length === 0) {
       // Scope reload clears the replace-on-refresh machine map before its next
-      // slices arrive. Retain the last union for this SAME project so open tabs
-      // and grids do not evict foreign sessions during that transient gap.
-      return retainedCrossMachineSessionsRef.current.sessionsById;
+      // slices arrive. Mark every previously listed machine pending so the first
+      // slice to return cannot evict the other machines' tabs or grid members.
+      // Project changes reset the ref above, preserving the same-project rule.
+      if (retained.sessionsByMachineId.size > 0 && retained.pendingMachineIds == null) {
+        retained.pendingMachineIds = new Set(retained.sessionsByMachineId.keys());
+      }
+    } else {
+      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
+
+      if (retained.pendingMachineIds == null) {
+        // Outside a wholesale refill, the store's machine list is authoritative:
+        // dropCrossMachineLanes removes a machine from this record deliberately.
+        for (const machineId of retained.sessionsByMachineId.keys()) {
+          if (!presentMachineIds.has(machineId)) retained.sessionsByMachineId.delete(machineId);
+        }
+      }
+
+      for (const machine of machines) {
+        const sessionsForMachine = new Map<string, TerminalSessionSummary>();
+        for (const session of machine.sessions) {
+          if (!sessionsForMachine.has(session.id)) sessionsForMachine.set(session.id, session);
+        }
+        // A present slice is authoritative for this machine alone. An empty slice
+        // therefore removes its old members without touching still-pending peers.
+        retained.sessionsByMachineId.set(machine.machineId, sessionsForMachine);
+        retained.pendingMachineIds?.delete(machine.machineId);
+      }
+
+      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
     }
 
     const map = new Map<string, TerminalSessionSummary>();
-    for (const machine of machines) {
-      for (const session of machine.sessions) {
+    for (const sessionsForMachine of retained.sessionsByMachineId.values()) {
+      for (const session of sessionsForMachine.values()) {
         if (!map.has(session.id)) map.set(session.id, session);
       }
     }
-    retainedCrossMachineSessionsRef.current = { projectStateKey, sessionsById: map };
     return map;
   }, [crossMachineLanesByMachineId, projectStateKey]);
   const sessionsById = useMemo(() => {

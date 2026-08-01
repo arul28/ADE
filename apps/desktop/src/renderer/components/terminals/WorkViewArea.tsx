@@ -329,9 +329,11 @@ function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null):
 
 function WorkCliContinuationComposer({
   session,
+  runtimePin,
   onContinue,
 }: {
   session: TerminalSessionSummary;
+  runtimePin: OpenProjectBinding | null;
   onContinue?: (
     session: TerminalSessionSummary,
     text: string,
@@ -394,7 +396,12 @@ function WorkCliContinuationComposer({
     )) return () => {
       cancelled = true;
     };
-    const request = recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+    // Native provider history is machine-local and externalSessions has no
+    // pinned surface. A foreign session keeps its durable stored launch instead
+    // of consulting unrelated history on the active machine.
+    const request = runtimePin
+      ? null
+      : recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
     if (!request) return () => {
       cancelled = true;
     };
@@ -407,7 +414,7 @@ function WorkCliContinuationComposer({
     return () => {
       cancelled = true;
     };
-  }, [importedProvider, importedTargetId, provider, recoveryIdentity]);
+  }, [importedProvider, importedTargetId, provider, recoveryIdentity, runtimePin]);
 
   useEffect(() => {
     let cancelled = false;
@@ -415,7 +422,10 @@ function WorkCliContinuationComposer({
     if (!provider) return () => {
       cancelled = true;
     };
-    void window.ade.agentChat.slashCommands({ laneId: session.laneId, provider })
+    const args = { laneId: session.laneId, provider };
+    void (runtimePin
+      ? window.ade.agentChat.slashCommands(args, runtimePin)
+      : window.ade.agentChat.slashCommands(args))
       .then((commands) => {
         if (!cancelled) {
           setSlashCommands(commands.filter((command) => command.source !== "local"));
@@ -427,7 +437,7 @@ function WorkCliContinuationComposer({
     return () => {
       cancelled = true;
     };
-  }, [provider, session.laneId]);
+  }, [provider, runtimePin, session.laneId]);
 
   const updateDraft = useCallback((next: string, element: HTMLTextAreaElement | null) => {
     setDraft(next);
@@ -594,6 +604,7 @@ function WorkCliContinuationComposer({
 function ClosedCliSessionSurface({
   session,
   lanes,
+  runtimePin,
   layoutVariant,
   onInfoClick,
   onContextMenu,
@@ -607,6 +618,7 @@ function ClosedCliSessionSurface({
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
+  runtimePin: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
@@ -650,7 +662,10 @@ function ClosedCliSessionSurface({
     let cancelled = false;
     setPreview(null);
     setError(null);
-    void window.ade.terminal.preview({ terminalId: session.id, maxBytes: 160_000 })
+    const args = { terminalId: session.id, maxBytes: 160_000 };
+    void (runtimePin
+      ? window.ade.terminal.preview(args, runtimePin)
+      : window.ade.terminal.preview(args))
       .then((result) => {
         if (!cancelled) setPreview(result);
       })
@@ -660,7 +675,7 @@ function ClosedCliSessionSurface({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.endedAt, session.status]);
+  }, [runtimePin, session.id, session.endedAt, session.status]);
 
   const snapshotRows = preview?.snapshot?.visibleRows ?? [];
   const useSnapshotPreview = snapshotRows.length > 0 && (
@@ -718,7 +733,13 @@ function ClosedCliSessionSurface({
             {transcriptText}
           </pre>
         )}
-        {showComposer ? <WorkCliContinuationComposer session={session} onContinue={onContinue} /> : null}
+        {showComposer ? (
+          <WorkCliContinuationComposer
+            session={session}
+            runtimePin={runtimePin}
+            onContinue={onContinue}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -774,11 +795,14 @@ function CliSessionSurface({
 }) {
   // Persist the pane per CLI session so reopening the surface restores it, the
   // same way the ADE chat pane keys its companion UI state.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId, {
+  // PR data lives on the owning machine, but the prs preload surface is
+  // unpinned. Foreign CLI sessions therefore expose neither auto-pop nor pane.
+  const prLaneId = runtimePin ? null : session.laneId;
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(prLaneId, {
     persistKey: session.id,
   });
   const supportsSplit = layoutVariant !== "grid-tile";
-  const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
+  const prFloating = prPaneOpen && Boolean(prLaneId) && supportsSplit;
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
@@ -794,7 +818,7 @@ function CliSessionSurface({
           sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+          onTogglePrPane={prLaneId ? () => setPrPaneOpen((v) => !v) : undefined}
           prPaneOpen={prPaneOpen}
         />
       ) : null}
@@ -810,7 +834,7 @@ function CliSessionSurface({
           className="h-full w-full"
         />
         <AnimatePresence initial={false}>
-          {prFloating && session.laneId ? (
+          {prFloating && prLaneId ? (
             <motion.div
               key="cli-pr-floating-pane"
               className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
@@ -821,7 +845,7 @@ function CliSessionSurface({
             >
               <div className={CLI_FLOATING_PANE_CARD_CLASS}>
                 <ChatPrPane
-                  laneId={session.laneId}
+                  laneId={prLaneId}
                   branchName={null}
                   delta={prPaneDelta}
                   onClose={() => setPrPaneOpen(false)}
@@ -972,6 +996,7 @@ function SessionSurface({
       <ClosedCliSessionSurface
         session={session}
         lanes={lanes}
+        runtimePin={runtimePin}
         layoutVariant={layoutVariant}
         onInfoClick={onInfoClick}
         onContextMenu={onContextMenu}

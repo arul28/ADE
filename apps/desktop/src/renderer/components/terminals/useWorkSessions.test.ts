@@ -828,9 +828,19 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }));
   });
 
-  it("retains foreign union members while the cross-machine map is temporarily empty", async () => {
-    const foreign = makeSession("foreign-grid", "foreign-lane");
-    const foreignBinding = {
+  it("retains each pending machine through an asynchronous two-machine scope refill", async () => {
+    const foreignA = makeSession("foreign-a", "lane-a");
+    const foreignB = makeSession("foreign-b", "lane-b");
+    const bindingA = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    } as const;
+    const bindingB = {
       kind: "remote",
       key: "remote:target-b:project-b",
       targetId: "target-b",
@@ -840,10 +850,10 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       displayName: "Repo B",
     } as const;
     const workState = {
-      openItemIds: [foreign.id],
-      activeItemId: foreign.id,
-      selectedItemId: foreign.id,
-      gridSets: [{ id: "grid-1", layoutId: "layout-grid-1", sessionIds: ["local-grid", foreign.id] }],
+      openItemIds: [foreignA.id, foreignB.id],
+      activeItemId: foreignB.id,
+      selectedItemId: foreignB.id,
+      gridSets: [{ id: "grid-1", layoutId: "layout-grid-1", sessionIds: [foreignA.id, foreignB.id] }],
       activeGridSetId: null,
       draftKind: "chat" as const,
       orchestratorEnabled: false,
@@ -865,29 +875,100 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       ...fakeAppStoreState,
       workViewByProject: { "/fake/project": workState },
       crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
         "target-b": {
           machineId: "target-b",
           machineName: "Machine B",
-          binding: foreignBinding,
-          lanes: [{ id: "foreign-lane" }],
-          sessions: [foreign],
+          binding: bindingB,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignB],
         },
       },
     };
 
     const { result, rerender } = renderHook(() => useWorkSessions());
-    await waitFor(() => expect(result.current.sessionsById.get(foreign.id)).toBe(foreign));
+    await waitFor(() => expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB));
 
+    // applyCrossMachineLaneScope clears the replacement map before reads settle.
     fakeAppStoreState = {
       ...fakeAppStoreState,
       crossMachineLanesByMachineId: {},
     };
     rerender();
 
-    expect(result.current.sessionsById.get(foreign.id)).toBe(foreign);
-    expect(result.current.visibleSessions).toContainEqual(foreign);
-    expect(result.current.gridSets[0]?.sessionIds).toEqual(["local-grid", foreign.id]);
-    expect(result.current.resolveSessionRuntimePin(foreign)).toBe(foreignBinding);
+    expect(result.current.sessionsById.get(foreignA.id)).toBe(foreignA);
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+
+    // Machine A resolves first. Its slice is authoritative for A only; B remains
+    // visible and its grid membership stays valid while B's read is still pending.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [{ ...foreignA, lastOutputPreview: "fresh-a" }],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreignA.id)?.lastOutputPreview).toBe("fresh-a");
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+    expect(result.current.visibleSessions).toContainEqual(foreignB);
+    expect(result.current.gridSets[0]?.sessionIds).toEqual([foreignA.id, foreignB.id]);
+  });
+
+  it("prunes a machine removed from the authoritative scope list without waiting for its slice", async () => {
+    const foreignA = makeSession("scope-a", "lane-a");
+    const foreignB = makeSession("scope-b", "lane-b");
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignB],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.has(foreignB.id)).toBe(true));
+
+    // dropCrossMachineLanes removes B from the non-empty machine record. That is
+    // an authoritative scope-list change, not an absent/pending session slice.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.has(foreignA.id)).toBe(true);
+    expect(result.current.sessionsById.has(foreignB.id)).toBe(false);
+    expect(result.current.visibleSessions).not.toContainEqual(foreignB);
   });
 
   it("removes a foreign union member when its present machine slice no longer reports it", async () => {
