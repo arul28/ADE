@@ -266,7 +266,6 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
-import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
@@ -276,31 +275,6 @@ type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 
 type AdePackageChannel = "alpha" | "beta";
-
-function normalizeAdeReleaseRepository(value: unknown): string | null {
-  const normalized = typeof value === "string"
-    ? value.trim().replace(/^\/+|\/+$/g, "")
-    : "";
-  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : null;
-}
-
-function readBundledAdeReleaseRepository(): string {
-  try {
-    const packageJsonPath = path.join(app.getAppPath(), "package.json");
-    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
-      adeReleaseRepository?: unknown;
-    };
-    const bundledRepository = normalizeAdeReleaseRepository(packageJson.adeReleaseRepository);
-    if (bundledRepository) return bundledRepository;
-  } catch {
-    // Older packages use the upstream repository default.
-  }
-  if (!app.isPackaged) {
-    return normalizeAdeReleaseRepository(process.env.ADE_RELEASE_REPOSITORY)
-      ?? DEFAULT_RELEASE_REPOSITORY;
-  }
-  return DEFAULT_RELEASE_REPOSITORY;
-}
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -342,7 +316,6 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
-const packagedReleaseRepository = readBundledAdeReleaseRepository();
 
 function configureDesktopUserDataPath(): void {
   const appDataPath = (() => {
@@ -2267,7 +2240,6 @@ app.whenReady().then(async () => {
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
     productAnalyticsService,
-    releaseRepository: packagedReleaseRepository,
     forceQuit: () => {
       for (const win of BrowserWindow.getAllWindows()) {
         try {
@@ -7094,7 +7066,6 @@ app.whenReady().then(async () => {
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,
-    releaseRepository: packagedReleaseRepository,
     builtInBrowserService,
     productAnalyticsService,
     publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
