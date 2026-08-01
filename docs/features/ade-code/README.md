@@ -103,9 +103,9 @@ Point Cursor’s browser inspector at the served page for layout debugging. The 
 
 `forceEmbedded` and `requireSocket` are mutually exclusive — `connectToAde` rejects the combination.
 
-### Account-wide Attention
+### Account-wide Activity
 
-`/attention` is a machine-global right-pane utility, not a view of the selected
+`/activity` is a machine-global right-pane utility, not a view of the selected
 lane or project. A signed-in TUI asks `attention.call/getSnapshot` for the
 consolidated account stream. The runtime's account coordinator can read the
 relay independently of the current project, while each item retains its owning
@@ -251,7 +251,7 @@ Right pane (open contextual content):
 | `/session settle [session-id] [outcome]` | Mark a session settled, declaring the settle at the override tier. |
 | `/session unsettle [session-id]` | Clear a session's declared settle plus any `settled` pin. |
 | `/session keep-active [session-id]` | Write the `active` settle-override pin, holding the row in the active list even if something later declares a settle on it (e.g. the PR-merge policy). Note that nothing *derives* a settle: a clean CLI exit leaves the row `ended`, never `settled`. |
-| `/attention` | Open account-wide Attention in the right pane. Signed-out or degraded mode is labeled as connected-machine-only; `Enter` opens the exact destination and `R` refreshes. |
+| `/activity` | Open account-wide Activity in the right pane. `/attention` remains a compatibility alias. Signed-out or degraded mode is labeled as connected-machine-only; `Enter` opens the exact destination and `R` refreshes. |
 | `/tag <tag\|clear>` | Tag the active Claude chat (Claude only). |
 | `/output-style [style]` | List or select the active Claude output style (Claude only). |
 | `/plugin [reload\|native args]` | List, reload, or manage Claude plugins (Claude only). |

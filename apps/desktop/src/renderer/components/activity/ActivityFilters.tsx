@@ -218,5 +218,3 @@ export function ActivityFilters({
     </div>
   );
 }
-
-export default ActivityFilters;

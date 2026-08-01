@@ -23,10 +23,12 @@ import {
 import { useAccountStatus } from "../../lib/account";
 import { activitySections, summarizeActivity } from "./activityPriority";
 import {
+  activityNotchSupported,
   activityNotchSettingsFromPreferences,
   persistActivityNotchSettings,
   readActivityNotchEnabled,
   readActivityNotchPresentation,
+  resolveActivityNotchPresentation,
 } from "./activityNotchLocalSettings";
 
 export { activityNotchSettingsFromPreferences } from "./activityNotchLocalSettings";
@@ -45,8 +47,10 @@ const MAX_VISIBLE_PRESENCE_ITEMS = 64;
  * ship the top-priority slice and let `counts` carry the honest totals.
  */
 export const MAX_NOTCH_PROJECTION_ITEMS = 48;
+export const MAX_NOTCH_SNAPSHOT_BYTES = 160 * 1024;
 const MAX_NOTCH_PREVIEW_LENGTH = 160;
-const MAX_TOAST_SUBTITLE_LENGTH = 120;
+const MAX_TOAST_TITLE_LENGTH = 256;
+const MAX_TOAST_SUBTITLE_LENGTH = 512;
 /** One toast per item per 10 minutes, however many times it flaps. */
 export const TOAST_ITEM_COOLDOWN_MS = 600_000;
 /** And at most one toast every 5s across the whole account. */
@@ -217,6 +221,7 @@ function projectActivityNotchItem(item: AttentionItem): AttentionItem {
   const { recentActivity: _recentActivity, ...rest } = item;
   return {
     ...rest,
+    detail: null,
     preview: item.preview.length > MAX_NOTCH_PREVIEW_LENGTH
       ? `${item.preview.slice(0, MAX_NOTCH_PREVIEW_LENGTH - 1)}…`
       : item.preview,
@@ -244,7 +249,8 @@ export function materializeActivityNotchSnapshot(): AttentionSnapshot {
   const projected = ordered
     .slice(0, MAX_NOTCH_PROJECTION_ITEMS)
     .map(projectActivityNotchItem);
-  return {
+  const projectedItemCount = projected.length;
+  const snapshot: AttentionSnapshot = {
     contractVersion: ATTENTION_CONTRACT_VERSION,
     scope: state.snapshotScope ?? (activityAccountOwnerId ? "account" : "machine"),
     availability: state.availability ?? {
@@ -258,11 +264,31 @@ export function materializeActivityNotchSnapshot(): AttentionSnapshot {
     streamId: state.streamId,
     revision: state.revision,
     generatedAt: state.generatedAt ?? new Date().toISOString(),
-    items: projected,
+    items: [...projected],
     itemsTruncated: projected.length < ordered.length,
     counts: activityNotchCounts(allItems),
     tombstones: [],
   };
+  const encoder = new TextEncoder();
+  const bytesBeforeBudget = encoder.encode(JSON.stringify(snapshot)).byteLength;
+  let bytesAfterBudget = bytesBeforeBudget;
+  while (snapshot.items.length > 0 && bytesAfterBudget > MAX_NOTCH_SNAPSHOT_BYTES) {
+    snapshot.items.pop();
+    snapshot.itemsTruncated = true;
+    bytesAfterBudget = encoder.encode(JSON.stringify(snapshot)).byteLength;
+  }
+  if (snapshot.items.length < projectedItemCount) {
+    console.warn(`activity.notch_snapshot_truncated ${JSON.stringify({
+      reason: "byte_budget",
+      budgetBytes: MAX_NOTCH_SNAPSHOT_BYTES,
+      bytesBeforeBudget,
+      bytesAfterBudget,
+      projectedItems: projectedItemCount,
+      publishedItems: snapshot.items.length,
+      totalItems: ordered.length,
+    })}`);
+  }
+  return snapshot;
 }
 
 export function activityNotchSnapshotSignature(
@@ -379,14 +405,16 @@ export function activityToastForTransition(
   if (!best) return null;
 
   const treatment = TOAST_TREATMENT_BY_EVENT[best.eventKind] ?? "info";
+  const unclampedTitle = input.hideDetails ? PRIVACY_TOAST_TITLE[best.kind] : best.title;
+  const unclampedSubtitle = input.hideDetails
+    ? best.privacyPreview
+    : sanitizeAttentionPreview(best.preview, MAX_TOAST_SUBTITLE_LENGTH);
   return {
     itemId: best.id,
     eventKind: best.eventKind,
     treatment,
-    title: input.hideDetails ? PRIVACY_TOAST_TITLE[best.kind] : best.title,
-    subtitle: input.hideDetails
-      ? best.privacyPreview
-      : sanitizeAttentionPreview(best.preview, MAX_TOAST_SUBTITLE_LENGTH),
+    title: unclampedTitle.slice(0, MAX_TOAST_TITLE_LENGTH),
+    subtitle: unclampedSubtitle.slice(0, MAX_TOAST_SUBTITLE_LENGTH),
     tone: null,
     durationMs: null,
   };
@@ -409,7 +437,9 @@ function resetActivityToastState(): void {
  */
 function emitActivityNotchToast(snapshot: AttentionSnapshot): void {
   const items = Object.values(activityStore.getState().itemsById);
-  const presentation = readActivityNotchPresentation();
+  const presentation = resolveActivityNotchPresentation(
+    activityStore.getState().preferences,
+  );
   const toast = activityToastForTransition({
     items,
     previousPhases: notchToastPhases,
@@ -437,11 +467,15 @@ function emitActivityNotchToast(snapshot: AttentionSnapshot): void {
     if (now - at >= TOAST_ITEM_COOLDOWN_MS) notchToastCooldownByItem.delete(id);
   }
   if (!toast?.itemId) return;
-  notchLastToastAt = now;
-  notchToastCooldownByItem.set(toast.itemId, now);
-  void Promise.resolve(
-    window.ade?.attentionNotch?.publishToast?.(toast),
-  ).catch(() => {});
+  const notchApi = window.ade?.attentionNotch;
+  if (typeof notchApi?.publishToast !== "function") return;
+  void Promise.resolve(notchApi.publishToast(toast))
+    .then(() => {
+      const publishedAt = Date.now();
+      notchLastToastAt = publishedAt;
+      notchToastCooldownByItem.set(toast.itemId!, publishedAt);
+    })
+    .catch(() => {});
 }
 
 async function refreshActivityNotchSettings(
@@ -481,7 +515,11 @@ async function refreshActivityNotchSettings(
       if (!notchApi) return;
       await enqueueActivityNotchSettingsUpdate(
         scope,
-        activityNotchSettingsFromPreferences(preferences),
+        activityNotchSettingsFromPreferences(
+          preferences,
+          readActivityNotchEnabled(),
+          resolveActivityNotchPresentation(preferences),
+        ),
       );
     })
     .then(() => {
@@ -503,22 +541,24 @@ async function refreshActivityNotchSettings(
 
 async function prepareActivityNotchForAccount(
   scope: ActivityAccountScope,
-): Promise<boolean> {
+): Promise<string | null> {
   const notchApi = typeof window !== "undefined" ? window.ade?.attentionNotch : null;
-  if (!notchApi || !isCurrentAccountScope(scope)) return false;
+  if (!notchApi || !isCurrentAccountScope(scope)) return null;
   try {
     // Never let the previous account's privacy/animation/sound choices govern
     // a new stream. Clear the old snapshot only after native presentation is
     // private and quiet, then hydrate the new account's preferences.
     await enqueueActivityNotchSettingsUpdate(scope, failClosedActivityNotchSettings());
-    if (!isCurrentAccountScope(scope)) return false;
-    await publishActivityNotchSnapshot();
+    if (!isCurrentAccountScope(scope)) return null;
+    const snapshot = materializeActivityNotchSnapshot();
+    await publishActivityNotchSnapshot(snapshot);
+    const publishedSignature = activityNotchSnapshotSignature(snapshot);
+    if (!isCurrentAccountScope(scope)) return null;
+    if (scope.ownerId) await refreshActivityNotchSettings(scope, true);
+    return isCurrentAccountScope(scope) ? publishedSignature : null;
   } catch {
-    return false;
+    return null;
   }
-  if (!isCurrentAccountScope(scope)) return false;
-  if (scope.ownerId) await refreshActivityNotchSettings(scope, true);
-  return isCurrentAccountScope(scope);
 }
 
 function fallbackDeviceIdentity(): { deviceId: string; deviceName: string } {
@@ -637,8 +677,31 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
       ownerId: accountUserId,
     };
     let lastNotchSignature = "";
+    let notchPrepared = false;
+    let prepareNotchPromise: Promise<void> | null = null;
+    let notchPublishInFlight = false;
+    let notchPublishQueued = false;
     let active = true;
     let unsubscribe = () => {};
+    const prepareNotch = () => {
+      if (
+        notchPrepared
+        || prepareNotchPromise
+        || !active
+        || !isCurrentAccountScope(accountScope)
+      ) return;
+      const pending = prepareActivityNotchForAccount(accountScope)
+        .then((publishedSignature) => {
+          if (!active || !publishedSignature || !isCurrentAccountScope(accountScope)) return;
+          notchPrepared = true;
+          lastNotchSignature = publishedSignature;
+          publishNotchIfChanged();
+        })
+        .finally(() => {
+          if (prepareNotchPromise === pending) prepareNotchPromise = null;
+        });
+      prepareNotchPromise = pending;
+    };
     const publishNotchIfChanged = () => {
       const snapshot = materializeActivityNotchSnapshot();
       // Toasts ride this same pass, and deliberately before the signature
@@ -647,14 +710,36 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
       emitActivityNotchToast(snapshot);
       const nextSignature = activityNotchSnapshotSignature(snapshot);
       if (nextSignature === lastNotchSignature) return;
-      lastNotchSignature = nextSignature;
-      void publishActivityNotchSnapshot(snapshot).catch(() => {});
+      if (!notchPrepared) {
+        prepareNotch();
+        return;
+      }
+      if (notchPublishInFlight) {
+        notchPublishQueued = true;
+        return;
+      }
+      notchPublishInFlight = true;
+      void publishActivityNotchSnapshot(snapshot)
+        .then(() => {
+          if (active && isCurrentAccountScope(accountScope)) {
+            lastNotchSignature = nextSignature;
+          }
+        })
+        .catch(() => {
+          // Keep the prior signature: the next store update retries this state.
+        })
+        .finally(() => {
+          notchPublishInFlight = false;
+          if (notchPublishQueued && active) {
+            notchPublishQueued = false;
+            publishNotchIfChanged();
+          }
+        });
     };
-    void prepareActivityNotchForAccount(accountScope).then((prepared) => {
-      if (!active || !prepared || !isCurrentAccountScope(accountScope)) return;
+    if (activityNotchSupported()) {
       unsubscribe = activityStore.subscribe(publishNotchIfChanged);
       publishNotchIfChanged();
-    });
+    }
     const removeNotchAcknowledgeListener =
       window.ade?.attentionNotch?.onAcknowledgeRequested((request) => {
         void acknowledgeActivityItem(request.itemId, request.mode)

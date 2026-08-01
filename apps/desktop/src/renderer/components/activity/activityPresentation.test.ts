@@ -10,7 +10,6 @@ import { sessionStatusPresentation } from "../../../shared/sessionStatusPresenta
 import {
   activityPhaseIsSessionDerived,
   activityPhasePresentation,
-  activityViewEmptyCopy,
   activityItemPresentation,
   SESSION_DERIVED_ACTIVITY_PHASES,
   type AttentionTone,
@@ -194,11 +193,5 @@ describe("Activity phase presentation", () => {
     expect(attentionPhasePriority("blocked")).toBeGreaterThan(
       attentionPhasePriority("needs_you"),
     );
-  });
-
-  it("uses the row's own word for finished work in empty-state copy", () => {
-    const recent = activityViewEmptyCopy("recent");
-    expect(recent.body).toContain("Done");
-    expect(recent.body).not.toMatch(/completed/i);
   });
 });

@@ -288,12 +288,16 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
 
 function parseAttentionPreferences(value: unknown): AttentionPreferences {
   const candidate = record(value);
+  const account = record(candidate?.account);
+  const normalizedAccount = account && account.dockBadgeScope === undefined
+    ? { ...account, dockBadgeScope: "local" }
+    : account;
   const devices = record(candidate?.devices);
-  const machines = record(candidate?.machines);
+  const machines = candidate?.machines === undefined ? {} : record(candidate.machines);
   const projects = record(candidate?.projects);
   if (
     !candidate
-    || !isPreferenceScope(candidate.account)
+    || !isPreferenceScope(normalizedAccount)
     || !devices
     || !Object.values(devices).every((scope) => isPreferenceScope(scope, true))
     || !machines
@@ -307,7 +311,11 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
       "Activity preferences were incompatible. Update ADE and retry.",
     );
   }
-  return candidate as AttentionPreferences;
+  return {
+    ...candidate,
+    account: normalizedAccount,
+    machines,
+  } as AttentionPreferences;
 }
 
 function relayBaseUrl(): string {
@@ -533,7 +541,11 @@ export function createAttentionNamespace(
       if (!owner || owner !== accountOwnerId.trim()) {
         throw new Error("The ADE account changed before Activity settings could be saved.");
       }
-      const { devices: _deviceOverrides, ...accountPreferences } = preferences;
+      const {
+        devices: _deviceOverrides,
+        machines: _machineOverrides,
+        ...accountPreferences
+      } = preferences;
       await request(
         "preference update",
         "PUT",
@@ -544,9 +556,9 @@ export function createAttentionNamespace(
 
     /**
      * Per-machine notification mute. It has its own relay route rather than
-     * riding the preferences PUT because that PUT strips `devices` and replaces
-     * the whole document — a partial machine scope written that way would race
-     * every other tab editing the same preferences.
+     * riding the preferences PUT because that PUT strips `devices` and
+     * `machines` before replacing the account document — a partial machine
+     * scope written that way would race every other tab editing preferences.
      */
     async putMachinePreferences(
       accountOwnerId: string,

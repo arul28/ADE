@@ -13,6 +13,7 @@ import {
   type AttentionNotchSettings,
   type AttentionSnapshot,
 } from "../../../shared/types";
+import { parseAttentionNotchSnapshot } from "../../../main/services/attention/attentionNotchRouter";
 import {
   activityStore,
   resetActivityStoreForTests,
@@ -26,6 +27,7 @@ import {
   refreshActivitySnapshot,
   useActivitySync,
   MAX_NOTCH_PROJECTION_ITEMS,
+  MAX_NOTCH_SNAPSHOT_BYTES,
   TOAST_ITEM_COOLDOWN_MS,
   TOAST_MIN_INTERVAL_MS,
 } from "./useActivitySync";
@@ -97,6 +99,39 @@ function liveItem(): AttentionItem {
     seenAt: null,
     dismissedAt: null,
     expiresAt: null,
+  };
+}
+
+function readySnapshot(
+  items: AttentionItem[],
+  revision = 1,
+): AttentionSnapshot {
+  return {
+    contractVersion: ATTENTION_CONTRACT_VERSION,
+    scope: "account",
+    availability: {
+      state: "ready",
+      title: "Account Activity",
+      message: "Live across your ADE account.",
+      recovery: null,
+    },
+    streamId: "account:test",
+    revision,
+    generatedAt: `2026-07-28T14:00:0${revision}.000Z`,
+    items,
+    tombstones: [],
+  };
+}
+
+function signedInStatus(userId: string) {
+  return {
+    signedIn: true as const,
+    userId,
+    email: null,
+    name: null,
+    expiresAt: null,
+    provider: null,
+    imageUrl: null,
   };
 }
 
@@ -844,6 +879,211 @@ describe("useActivitySync", () => {
 
     expect(getSnapshot).toHaveBeenCalledTimes(hiddenRefreshBaseline + 1);
   });
+
+  it("uses account automatic-reveal settings for both helper settings and toasts", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
+    const accountStatus = signedInStatus("user-account-reveal");
+    publishAccountStatus(accountStatus);
+    const initial = { ...liveItem(), activityTier: "signal" as const };
+    const preferences = {
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      account: {
+        ...DEFAULT_ATTENTION_PREFERENCES.account,
+        hideDetails: false,
+        notchAutomaticReveal: false,
+      },
+    };
+    const updateSettings = vi.fn(async () => undefined);
+    const publishToast = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async () => readySnapshot([initial])),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => preferences),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(async () => undefined),
+          publishToast,
+          updateSettings,
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+        account: {
+          ...(originalAde?.account ?? {}),
+          status: vi.fn(async () => accountStatus),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(
+      activityStore.getState().preferences?.account.notchAutomaticReveal,
+    ).toBe(false));
+    await waitFor(() => expect(updateSettings).toHaveBeenCalledWith(
+      expect.objectContaining({ automaticRevealEnabled: false }),
+    ));
+    await waitFor(() => expect(activityStore.getState().itemsById[initial.id]).toBeTruthy());
+
+    act(() => {
+      activityStore.getState().applySnapshot(readySnapshot([{
+        ...initial,
+        revision: initial.revision + 1,
+        fingerprint: "account-fingerprint:needs-you",
+        eventKind: "agent_needs_you",
+        phase: "needs_you",
+      }], 2));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(publishToast).not.toHaveBeenCalled();
+  });
+
+  it("clamps toast copy and consumes cooldown only after a successful publish", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
+    const accountStatus = signedInStatus("user-toast-publish");
+    publishAccountStatus(accountStatus);
+    const items = ["first", "second", "third"].map((suffix, index) => ({
+      ...liveItem(),
+      id: `toast-${suffix}`,
+      revision: index + 1,
+      fingerprint: `toast-${suffix}:running`,
+      activityTier: "signal" as const,
+      destination: { kind: "session" as const, sessionId: `session-${suffix}` },
+    }));
+    const publishToast = vi.fn()
+      .mockRejectedValueOnce(new Error("native helper unavailable"))
+      .mockResolvedValue(undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async () => readySnapshot(items)),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(async () => ({
+            ...DEFAULT_ATTENTION_PREFERENCES,
+            account: {
+              ...DEFAULT_ATTENTION_PREFERENCES.account,
+              hideDetails: false,
+              notchAutomaticReveal: true,
+            },
+          })),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot: vi.fn(async () => undefined),
+          publishToast,
+          updateSettings: vi.fn(async () => undefined),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+        account: {
+          ...(originalAde?.account ?? {}),
+          status: vi.fn(async () => accountStatus),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(activityStore.getState().itemsById[items[0]!.id]).toBeTruthy());
+    await waitFor(() => expect(activityStore.getState().preferences?.account.hideDetails)
+      .toBe(false));
+
+    const transition = (index: number, revision: number) => {
+      const next = items.map((item, itemIndex) => itemIndex === index
+        ? {
+            ...item,
+            revision: item.revision + 10,
+            fingerprint: `${item.id}:needs-you`,
+            eventKind: "agent_needs_you" as const,
+            phase: "needs_you" as const,
+            title: index === 0 ? "T".repeat(400) : item.title,
+            preview: index === 0 ? "S".repeat(700) : item.preview,
+          }
+        : item);
+      activityStore.getState().applySnapshot(readySnapshot(next, revision));
+      items.splice(0, items.length, ...next);
+    };
+
+    act(() => transition(0, 2));
+    await waitFor(() => expect(publishToast).toHaveBeenCalledTimes(1));
+    expect(publishToast.mock.calls[0]?.[0]).toMatchObject({
+      itemId: "toast-first",
+      title: "T".repeat(256),
+    });
+    expect(publishToast.mock.calls[0]?.[0]?.subtitle).toHaveLength(512);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => transition(1, 3));
+    await waitFor(() => expect(publishToast).toHaveBeenCalledTimes(2));
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    act(() => transition(2, 4));
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(publishToast).toHaveBeenCalledTimes(2);
+  });
+
+  it("retries lazy notch preparation on the next store change", async () => {
+    const publishSnapshot = vi.fn()
+      .mockRejectedValueOnce(new Error("first helper write failed"))
+      .mockResolvedValue(undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(() => new Promise<AttentionSnapshot>(() => {})),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot,
+          updateSettings: vi.fn(async () => undefined),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => {
+      activityStore.setState({
+        revision: 1,
+        generatedAt: "2026-07-28T14:00:01.000Z",
+        itemsById: { [runningItem.id]: runningItem },
+      });
+    });
+
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalledTimes(2));
+    expect(publishSnapshot.mock.calls[1]?.[0]).toMatchObject({
+      items: [expect.objectContaining({ id: runningItem.id })],
+    });
+  });
 });
 
 describe("Activity renderer-to-notch bridge", () => {
@@ -868,7 +1108,7 @@ describe("Activity renderer-to-notch bridge", () => {
       revision: 8,
       generatedAt: "2026-07-28T12:00:02.000Z",
       // `recentActivity` is dropped from the projection; `runningItem` has none.
-      items: [runningItem],
+      items: [{ ...runningItem, detail: null }],
       itemsTruncated: false,
       counts: {
         needsYou: 0,
@@ -1016,6 +1256,55 @@ describe("Activity renderer-to-notch bridge", () => {
       machinesOnline: 1,
       machinesTotal: 1,
     });
+  });
+
+  it("drops detail and tail rows until an oversized projection clears the byte budget", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const itemsById: Record<string, AttentionItem> = {};
+    for (let index = 0; index < MAX_NOTCH_PROJECTION_ITEMS; index += 1) {
+      const needsYou = index < 4;
+      const id = `${needsYou ? "needs" : "working"}-${String(index).padStart(2, "0")}`;
+      itemsById[id] = {
+        ...runningItem,
+        id,
+        revision: index + 1,
+        fingerprint: `${id}:1`,
+        eventKind: needsYou ? "agent_needs_you" : "agent_running",
+        phase: needsYou ? "needs_you" : "running",
+        activityTier: needsYou ? "signal" : "ambient",
+        title: "t".repeat(1_024),
+        privacyPreview: "p".repeat(1_024),
+        detail: "d".repeat(8_192),
+        model: "m".repeat(512),
+        laneName: "l".repeat(512),
+        project: {
+          ...runningItem.project,
+          rootPath: `/${"r".repeat(4_095)}`,
+        },
+      };
+    }
+    activityStore.setState({ itemsById });
+
+    const snapshot = materializeActivityNotchSnapshot();
+
+    expect(snapshot.items.length).toBeLessThan(MAX_NOTCH_PROJECTION_ITEMS);
+    expect(snapshot.itemsTruncated).toBe(true);
+    expect(snapshot.items.slice(0, 4).every((item) => item.phase === "needs_you"))
+      .toBe(true);
+    expect(snapshot.items.filter((item) => item.phase === "needs_you").map((item) => item.id).sort())
+      .toEqual([
+      "needs-00",
+      "needs-01",
+      "needs-02",
+      "needs-03",
+      ]);
+    expect(snapshot.items.every((item) => item.detail === null)).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength)
+      .toBeLessThanOrEqual(MAX_NOTCH_SNAPSHOT_BYTES);
+    expect(parseAttentionNotchSnapshot(snapshot)).not.toBeNull();
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(
+      /^activity\.notch_snapshot_truncated \{"reason":"byte_budget"/,
+    ));
   });
 
   it("republishes when only the counts changed", () => {

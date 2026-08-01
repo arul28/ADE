@@ -136,6 +136,24 @@ describe("ActivityPane", () => {
     expect(within(inbox).getByText("Task approval")).toBeTruthy();
   });
 
+  it("reveals long session lists one bounded page at a time", () => {
+    const itemsById = Object.fromEntries(Array.from({ length: 61 }, (_unused, index) => {
+      const id = `running-${String(index).padStart(2, "0")}`;
+      return [id, item(id, {
+        eventKind: "agent_running",
+        phase: "running",
+        title: `Running ${index}`,
+      })];
+    }));
+    activityStore.setState({ itemsById });
+    render(<ActivityPane open onClose={() => {}} />);
+
+    const sessions = screen.getByRole("region", { name: "Sessions" });
+    expect(sessions.querySelectorAll("[data-activity-row]")).toHaveLength(60);
+    fireEvent.click(within(sessions).getByRole("button", { name: "Show 1 more" }));
+    expect(sessions.querySelectorAll("[data-activity-row]")).toHaveLength(61);
+  });
+
   it("never offers the placeholder copy the old center apologised with", () => {
     activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={() => {}} />);

@@ -8,8 +8,6 @@ import {
   acknowledgeActivityItem,
   activityStore,
   resetActivityStoreForTests,
-  selectActivityCounts,
-  selectActivityItems,
   selectActivityUnseenCount,
 } from "./activityStore";
 
@@ -206,38 +204,7 @@ describe("activityStore", () => {
     });
   });
 
-  it("filters global items by view and project scope", () => {
-    activityStore.setState({
-      itemsById: {
-        live: item("live", "running"),
-        inbox: item("inbox", "needs_you"),
-        recent: item("recent", "completed", {
-          seenAt: "2026-07-28T14:02:00.000Z",
-          updatedAt: "2026-07-28T14:02:00.000Z",
-        }),
-        other: item("other", "running", {
-          project: { projectId: "other-project", name: "Other" },
-        }),
-      },
-      scope: { kind: "project", projectId: "ade", label: "ADE" },
-      view: "live",
-    });
-
-    expect(selectActivityItems(activityStore.getState()).map((entry) => entry.id)).toEqual([
-      "inbox",
-      "live",
-    ]);
-
-    activityStore.getState().setView("recent");
-    expect(
-      selectActivityItems(
-        activityStore.getState(),
-        Date.parse("2026-07-28T15:00:00.000Z"),
-      ).map((entry) => entry.id),
-    ).toEqual(["recent"]);
-  });
-
-  it("tracks scoped counts separately from the global unseen badge", () => {
+  it("tracks the global unseen badge across machines", () => {
     activityStore.setState({
       itemsById: {
         needs: item("needs", "needs_you"),
@@ -253,14 +220,12 @@ describe("activityStore", () => {
           },
         }),
       },
-      scope: { kind: "machine", machineKey: "studio", label: "Studio Mac" },
     });
 
-    expect(selectActivityCounts(activityStore.getState()).inbox).toBe(1);
     expect(selectActivityUnseenCount(activityStore.getState())).toBe(2);
   });
 
-  it("excludes expired work from views, counts, and the global badge", () => {
+  it("excludes expired work from the global badge", () => {
     activityStore.setState({
       itemsById: {
         expired: item("expired", "needs_you", {
@@ -270,16 +235,6 @@ describe("activityStore", () => {
           expiresAt: "2099-01-01T00:00:00.000Z",
         }),
       },
-      view: "live",
-    });
-    const now = Date.parse("2026-07-28T14:00:00.000Z");
-
-    expect(selectActivityItems(activityStore.getState(), now).map((entry) => entry.id)).toEqual([
-      "current",
-    ]);
-    expect(selectActivityCounts(activityStore.getState(), now)).toMatchObject({
-      live: 1,
-      inbox: 0,
     });
     expect(selectActivityUnseenCount(activityStore.getState())).toBe(0);
   });

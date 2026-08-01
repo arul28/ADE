@@ -518,6 +518,15 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Privacy",
   },
   {
+    id: "activity.dock-badge",
+    label: "Dock badge counts",
+    keywords: ["dock", "badge", "count", "this mac", "all machines", "account"],
+    tab: "activity",
+    anchor: "activity-dock-badge",
+    scope: "machine",
+    group: "Account",
+  },
+  {
     id: "activity.machines",
     label: "Notify me about",
     keywords: ["machine", "mute", "silence", "mac", "device", "per-machine"],

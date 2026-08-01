@@ -131,6 +131,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
+    expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
   });
 
   it("returns nothing for a blank query rather than every setting", () => {

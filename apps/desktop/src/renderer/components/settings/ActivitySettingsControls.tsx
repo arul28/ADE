@@ -18,6 +18,7 @@ import {
   type AttentionPreferences,
 } from "../../../shared/types";
 import {
+  activityNotchSupported,
   activityNotchSettingsFromPreferences,
   activityPreferencesWithNotchPresentation,
   normalizeActivityPreferences,
@@ -30,7 +31,6 @@ import {
 } from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 import { useActivityStore } from "../../state/activityStore";
-import { isWebHiddenCapability } from "../../webclient/adapter";
 import { SettingsCard, SettingsGroup, SettingsSelect, SettingsToggle } from "./primitives";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 
@@ -63,6 +63,14 @@ const ESCALATION_OPTIONS = [
   { value: "300", label: "After 5 minutes" },
 ];
 
+const DOCK_BADGE_SCOPE_OPTIONS: {
+  value: AttentionPreferences["account"]["dockBadgeScope"];
+  label: string;
+}[] = [
+  { value: "local", label: "This Mac" },
+  { value: "account", label: "All machines" },
+];
+
 const NOTCH_REVEAL_HELP: Record<AttentionNotchRevealMode, string> = {
   minimal: "Keep a tiny status visible; hover or click for a short peek.",
   hover: "Stay hidden until the pointer reaches the top-edge hot zone.",
@@ -74,15 +82,6 @@ export type ActivityMachineOption = {
   name: string;
   online: boolean;
 };
-
-/**
- * Whether this window can talk to a notch at all. The web client has no native
- * helper, so its notch rows would be switches wired to nothing.
- */
-export function activityNotchSupported(): boolean {
-  if (isWebHiddenCapability("attentionNotch")) return false;
-  return typeof window !== "undefined" && window.ade?.attentionNotch != null;
-}
 
 export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
 
@@ -469,6 +468,26 @@ export function ActivitySettingsControls({
         <section>
           <h3>Account</h3>
           <PopoverRow
+            icon={DesktopTower}
+            label="Dock badge counts"
+            description="Choose whether the dock badge counts this Mac or your whole account."
+            disabled={busy}
+            control={
+              <select
+                aria-label="Dock badge counts"
+                value={account.dockBadgeScope}
+                disabled={busy}
+                onChange={(event) => updateAccount({
+                  dockBadgeScope: event.target.value as AttentionPreferences["account"]["dockBadgeScope"],
+                })}
+              >
+                {DOCK_BADGE_SCOPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
+            }
+          />
+          <PopoverRow
             icon={Confetti}
             label="Celebrations"
             description="A brief flourish when meaningful work lands."
@@ -702,6 +721,26 @@ export function ActivitySettingsControls({
       </SettingsGroup>
 
       <SettingsGroup
+        title="Account"
+        description="Choose how Activity rolls up work from your signed-in machines."
+      >
+        <SettingsCard
+          anchor="activity-dock-badge"
+          title="Dock badge counts"
+          description="Count work waiting on this Mac, or across every machine on your account."
+          control={
+            <SettingsSelect
+              ariaLabel="Dock badge counts"
+              value={account.dockBadgeScope}
+              options={DOCK_BADGE_SCOPE_OPTIONS}
+              disabled={busy}
+              onChange={(dockBadgeScope) => updateAccount({ dockBadgeScope })}
+            />
+          }
+        />
+      </SettingsGroup>
+
+      <SettingsGroup
         title="Machines"
         description="Activity always shows every machine. Muting one stops it notifying you."
       >
@@ -763,5 +802,3 @@ export function ActivitySettingsControls({
     </>
   );
 }
-
-export default ActivitySettingsControls;

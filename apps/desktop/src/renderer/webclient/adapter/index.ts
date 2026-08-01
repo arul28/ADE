@@ -49,9 +49,9 @@ export const WEB_HIDDEN_CAPABILITIES = {
   transcription: false,
   automations: false,
   // The notch is a native macOS helper supervised by the desktop main process.
-  // On web the namespace never registers, so `withFallbackProxy` resolves it to
-  // null; naming it here lets settings hide the controls instead of showing
-  // switches that silently do nothing.
+  // On web the namespace never registers. `withFallbackProxy` fabricates a
+  // callable value for ordinary property reads, so callers must use a real
+  // presence probe (`"attentionNotch" in window.ade`) before doing native work.
   attentionNotch: false,
 } as const;
 

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 import {
   ArrowsClockwise,
   CheckCircle,
@@ -21,9 +21,7 @@ import {
 import { relativeWhen } from "../../lib/format";
 import { cn } from "../ui/cn";
 import { activityItemPresentation } from "./activityPresentation";
-
-const INITIAL_ROW_BUDGET = 60;
-const ROW_BUDGET_STEP = 60;
+import { useProgressiveRows } from "./useProgressiveRows";
 
 /** The catalog names an icon per event; this is the renderer's half of that. */
 const CATALOG_ICON: Record<ActivityIconKey, React.ElementType> = {
@@ -120,10 +118,13 @@ export function ActivityInboxColumn({
   onDismissItem: (item: AttentionItem) => void;
   onClearAll: (items: readonly AttentionItem[]) => void;
 }) {
-  const [budget, setBudget] = useState(INITIAL_ROW_BUDGET);
   const inbox = useMemo(() => activityInboxItems(items), [items]);
-  const shown = inbox.slice(0, budget);
-  const hidden = inbox.length - shown.length;
+  const {
+    visibleRows: shown,
+    hiddenCount,
+    nextCount,
+    showMore,
+  } = useProgressiveRows(inbox);
 
   return (
     <section className="activity-column" aria-label="Inbox">
@@ -170,13 +171,13 @@ export function ActivityInboxColumn({
                 onDismiss={onDismissItem}
               />
             ))}
-            {hidden > 0 ? (
+            {hiddenCount > 0 ? (
               <button
                 type="button"
                 className="activity-more"
-                onClick={() => setBudget((value) => value + ROW_BUDGET_STEP)}
+                onClick={showMore}
               >
-                Show {Math.min(hidden, ROW_BUDGET_STEP)} more
+                Show {nextCount} more
               </button>
             ) : null}
           </>
@@ -185,5 +186,3 @@ export function ActivityInboxColumn({
     </section>
   );
 }
-
-export default ActivityInboxColumn;

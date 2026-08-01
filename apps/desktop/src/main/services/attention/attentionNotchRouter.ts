@@ -29,6 +29,7 @@ const MAX_SNAPSHOT_BYTES = 192 * 1024;
 const MAX_TOAST_TITLE_LENGTH = 256;
 const MAX_TOAST_SUBTITLE_LENGTH = 512;
 const MAX_TOAST_ITEM_ID_LENGTH = 512;
+export const ATTENTION_NOTCH_TOAST_DEDUPE_MS = 5_000;
 const TOAST_TREATMENTS = new Set<string>(ATTENTION_NOTCH_TOAST_TREATMENTS);
 const TONES = new Set<string>(ATTENTION_TONES);
 const ATTENTION_PHASES = new Set([
@@ -60,6 +61,28 @@ const ATTENTION_EVENTS = new Set([
   "pr_opened",
   "pr_closed",
 ]);
+
+/**
+ * Several renderer windows observe the same account store. Keep that useful
+ * redundancy for snapshots, but allow only one native toast for the same event
+ * during a short cross-window arbitration window.
+ */
+export function createAttentionNotchToastDeduper(
+  now: () => number = Date.now,
+  windowMs = ATTENTION_NOTCH_TOAST_DEDUPE_MS,
+): (toast: AttentionNotchToast) => boolean {
+  const forwardedAtByKey = new Map<string, number>();
+  return (toast) => {
+    const at = now();
+    for (const [key, forwardedAt] of forwardedAtByKey) {
+      if (at - forwardedAt >= windowMs) forwardedAtByKey.delete(key);
+    }
+    const key = JSON.stringify([toast.itemId ?? toast.title, toast.eventKind]);
+    if (forwardedAtByKey.has(key)) return false;
+    forwardedAtByKey.set(key, at);
+    return true;
+  };
+}
 
 export type AttentionNotchResolvedOutput =
   | {

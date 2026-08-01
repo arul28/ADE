@@ -147,6 +147,43 @@ describe("AttentionAccountCoordinator", () => {
     vi.useRealTimers();
   });
 
+  it("does not stamp an arbitrary machine when a legacy stream omits its key", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T12:30:00.000Z"));
+    const legacy = snapshot({
+      streamId: "legacy-stream",
+      machines: [{
+        machineKey: "machine-first",
+        name: "First Mac",
+        online: false,
+        lastSeenAt: "2026-07-29T11:00:00.000Z",
+      }],
+      items: [{
+        id: "legacy-item",
+        revision: 1,
+        machine: {
+          machineKey: "machine-first",
+          online: false,
+          lastSeenAt: "2026-07-29T11:00:00.000Z",
+        },
+      } as never],
+    });
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => null,
+      localRuntimeConnectionPool: {
+        callAttention: vi.fn(async () => legacy),
+      } as any,
+    });
+
+    const result = await coordinator.getSnapshot({});
+
+    expect(result.machines).toEqual(legacy.machines);
+    expect(result.items[0]?.machine).toEqual(legacy.items[0]?.machine);
+    expect(result.availability?.hostName).toBe("this Mac");
+    vi.useRealTimers();
+  });
+
   it("fences account acknowledgments with cached revisions and the loaded owner", async () => {
     const acknowledgeAttention = vi.fn(async () => ({
       applied: ["attention-1"],

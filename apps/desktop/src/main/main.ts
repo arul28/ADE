@@ -121,6 +121,7 @@ import {
 import {
   attentionRemoteBindingMatches,
   attentionItemNavigationRequest,
+  createAttentionNotchToastDeduper,
   resolveAttentionNotchOutput,
   type AttentionNotchResolvedOutput,
 } from "./services/attention/attentionNotchRouter";
@@ -6717,6 +6718,7 @@ app.whenReady().then(async () => {
   installApplicationMenu();
 
   let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
+  const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   const attentionRelayClient = createPushRelayClient({
@@ -7056,6 +7058,7 @@ app.whenReady().then(async () => {
       attentionNotchHelper?.publishSnapshot(snapshot);
     },
     publishAttentionNotchToast: (toast) => {
+      if (!shouldForwardAttentionNotchToast(toast)) return;
       attentionNotchHelper?.publishToast(toast);
     },
     updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {

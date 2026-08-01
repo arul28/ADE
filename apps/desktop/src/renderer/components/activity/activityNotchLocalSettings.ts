@@ -19,9 +19,8 @@ const ATTENTION_NOTCH_TICKER_KEY = "ade:attention:notch-ticker";
 const ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT = "ade:attention-notch-settings-changed";
 
 /**
- * How the notch presents itself on *this* Mac. It describes one display's
- * chrome, so it stays beside the enabled flag rather than in account
- * preferences that follow the user to every machine.
+ * How the notch presents itself. Account preferences are authoritative when
+ * loaded; this Mac keeps the same shape in localStorage as its offline cache.
  */
 export type ActivityNotchPresentation = {
   revealMode: AttentionNotchRevealMode;
@@ -37,6 +36,18 @@ export const DEFAULT_ACTIVITY_NOTCH_PRESENTATION: ActivityNotchPresentation = {
   automaticRevealEnabled: true,
   tickerEnabled: true,
 };
+
+/**
+ * A property read is not a capability check on the hosted web adapter: its
+ * fallback proxy fabricates callable namespaces for missing properties. The
+ * `in` probe reaches the real exposed surface (or the proxy target), so web
+ * renderers do not build and stringify native-only snapshots on every update.
+ */
+export function activityNotchSupported(): boolean {
+  return typeof window !== "undefined"
+    && window.ade != null
+    && "attentionNotch" in window.ade;
+}
 
 function readLocalItem(key: string): string | null {
   if (typeof window === "undefined") return null;

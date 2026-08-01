@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+import React, { useMemo } from "react";
 
 import type { AttentionItem } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
@@ -10,15 +10,7 @@ import {
   activitySections,
   type ActivitySection,
 } from "./activityPriority";
-
-/**
- * The rows rendered before the column stops and offers the rest behind a
- * button. Activity is account-wide, so a busy fleet routinely lands hundreds of
- * rows here; painting all of them costs more than anyone reads. Sixty is about
- * two screens, which is as far as anyone scrolls before reaching for a filter.
- */
-const INITIAL_ROW_BUDGET = 60;
-const ROW_BUDGET_STEP = 60;
+import { useProgressiveRows } from "./useProgressiveRows";
 
 type MachineGroup = {
   machineKey: string;
@@ -134,23 +126,21 @@ export function ActivitySessionsColumn({
   loading: boolean;
   onOpenItem: (item: AttentionItem) => void;
 }) {
-  const [budget, setBudget] = useState(INITIAL_ROW_BUDGET);
   const sections = useMemo(() => activitySections(items), [items]);
   const total = sections.reduce((count, section) => count + section.items.length, 0);
-
-  // The budget is spent across sections in priority order, so needs-you rows
-  // can never be the ones hidden behind "Show more".
-  const { budgeted, hidden } = useMemo(() => {
-    let remaining = budget;
-    const budgetedSections: ActivitySection[] = [];
-    for (const section of sections) {
-      if (section.items.length === 0) continue;
-      const take = Math.max(0, Math.min(section.items.length, remaining));
-      remaining -= take;
-      if (take > 0) budgetedSections.push({ ...section, items: section.items.slice(0, take) });
-    }
-    return { budgeted: budgetedSections, hidden: Math.max(0, total - budget) };
-  }, [budget, sections, total]);
+  // Flatten in section priority order before spending the shared row budget,
+  // then rebuild headings for the visible slice. Needs-you rows stay first.
+  const orderedRows = useMemo(
+    () => sections.flatMap((section) => section.items),
+    [sections],
+  );
+  const {
+    visibleRows,
+    hiddenCount,
+    nextCount,
+    showMore,
+  } = useProgressiveRows(orderedRows);
+  const budgeted = useMemo(() => activitySections(visibleRows), [visibleRows]);
 
   return (
     <section className="activity-column" aria-label="Sessions">
@@ -203,13 +193,13 @@ export function ActivitySessionsColumn({
                 />
               </React.Fragment>
             ))}
-            {hidden > 0 ? (
+            {hiddenCount > 0 ? (
               <button
                 type="button"
                 className="activity-more"
-                onClick={() => setBudget((value) => value + ROW_BUDGET_STEP)}
+                onClick={showMore}
               >
-                Show {Math.min(hidden, ROW_BUDGET_STEP)} more
+                Show {nextCount} more
               </button>
             ) : null}
           </>
@@ -218,5 +208,3 @@ export function ActivitySessionsColumn({
     </section>
   );
 }
-
-export default ActivitySessionsColumn;

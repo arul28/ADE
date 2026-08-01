@@ -2,21 +2,12 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 
 import {
-  attentionItemIsLive,
   attentionItemNeedsInbox,
-  sortAttentionItems,
   type AttentionItem,
   type AttentionPreferences,
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../shared/types";
-
-export type ActivityView = "live" | "inbox" | "recent";
-
-export type ActivityScope =
-  | { kind: "all" }
-  | { kind: "machine"; machineKey: string; label: string }
-  | { kind: "project"; projectId: string; label: string; machineKey?: string | null };
 
 export type ActivitySyncStatus = "idle" | "syncing" | "ready" | "error";
 
@@ -35,9 +26,6 @@ export type ActivityStoreState = {
   generatedAt: string | null;
   itemsById: Record<string, AttentionItem>;
   tombstonesById: Record<string, AttentionTombstone>;
-  view: ActivityView;
-  scope: ActivityScope;
-  selectedItemId: string | null;
   headerSurfaceVisible: boolean;
   /**
    * Last account preferences this window loaded. Null means "not loaded yet",
@@ -54,73 +42,16 @@ export type ActivityStoreState = {
   applySnapshot: (snapshot: AttentionSnapshot) => void;
   upsertItem: (item: AttentionItem) => void;
   removeItem: (tombstone: AttentionTombstone) => void;
-  setView: (view: ActivityView) => void;
-  setScope: (scope: ActivityScope) => void;
-  selectItem: (itemId: string | null) => void;
   setHeaderSurfaceVisible: (visible: boolean) => void;
   setSyncStatus: (status: ActivitySyncStatus, error?: string | null) => void;
   markSeen: (itemId: string, seenAt?: string) => void;
   dismiss: (itemId: string, dismissedAt?: string) => void;
 };
 
-const RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
-
-function itemMatchesScope(item: AttentionItem, scope: ActivityScope): boolean {
-  if (scope.kind === "all") return true;
-  if (scope.kind === "machine") return item.machine.machineKey === scope.machineKey;
-  return item.project.projectId === scope.projectId
-    && (!scope.machineKey || item.machine.machineKey === scope.machineKey);
-}
-
 function isExpiredItem(item: AttentionItem, now: number): boolean {
   if (!item.expiresAt) return false;
   const expiresAt = Date.parse(item.expiresAt);
   return Number.isFinite(expiresAt) && expiresAt <= now;
-}
-
-function isRecentItem(item: AttentionItem, now: number): boolean {
-  if (item.dismissedAt || isExpiredItem(item, now) || attentionItemIsLive(item)) return false;
-  const timestamp = Date.parse(item.seenAt ?? item.updatedAt);
-  if (!Number.isFinite(timestamp)) return false;
-  return now - timestamp <= RECENT_WINDOW_MS;
-}
-
-function sortRecentItems(items: readonly AttentionItem[]): AttentionItem[] {
-  return [...items].sort((left, right) => {
-    const timestamp = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
-    if (Number.isFinite(timestamp) && timestamp !== 0) return timestamp;
-    return left.id.localeCompare(right.id);
-  });
-}
-
-export function selectActivityItems(
-  state: Pick<ActivityStoreState, "itemsById" | "scope" | "view">,
-  now = Date.now(),
-): AttentionItem[] {
-  const scoped = Object.values(state.itemsById).filter(
-    (item) => itemMatchesScope(item, state.scope) && !isExpiredItem(item, now),
-  );
-  if (state.view === "live") {
-    return sortAttentionItems(scoped.filter((item) => !item.dismissedAt && attentionItemIsLive(item)));
-  }
-  if (state.view === "inbox") {
-    return sortAttentionItems(scoped.filter(attentionItemNeedsInbox));
-  }
-  return sortRecentItems(scoped.filter((item) => isRecentItem(item, now)));
-}
-
-export function selectActivityCounts(
-  state: Pick<ActivityStoreState, "itemsById" | "scope">,
-  now = Date.now(),
-): Record<ActivityView, number> {
-  const scoped = Object.values(state.itemsById).filter(
-    (item) => itemMatchesScope(item, state.scope) && !isExpiredItem(item, now),
-  );
-  return {
-    live: scoped.filter((item) => !item.dismissedAt && attentionItemIsLive(item)).length,
-    inbox: scoped.filter(attentionItemNeedsInbox).length,
-    recent: scoped.filter((item) => isRecentItem(item, now)).length,
-  };
 }
 
 /**
@@ -167,9 +98,6 @@ function createInitialState(): Pick<
   | "generatedAt"
   | "itemsById"
   | "tombstonesById"
-  | "view"
-  | "scope"
-  | "selectedItemId"
   | "headerSurfaceVisible"
   | "preferences"
   | "syncStatus"
@@ -186,9 +114,6 @@ function createInitialState(): Pick<
     generatedAt: null,
     itemsById: {},
     tombstonesById: {},
-    view: "live",
-    scope: { kind: "all" },
-    selectedItemId: null,
     headerSurfaceVisible: false,
     preferences: null,
     syncStatus: "idle",
@@ -273,9 +198,6 @@ export const activityStore = createStore<ActivityStoreState>((set) => ({
         syncError: null,
         pendingAcknowledgements: streamReset ? {} : state.pendingAcknowledgements,
         acknowledgementErrors: streamReset ? {} : state.acknowledgementErrors,
-        selectedItemId: state.selectedItemId && itemsById[state.selectedItemId]
-          ? state.selectedItemId
-          : null,
       };
     }),
   upsertItem: (item) =>
@@ -299,12 +221,8 @@ export const activityStore = createStore<ActivityStoreState>((set) => ({
       return {
         itemsById,
         tombstonesById: { ...state.tombstonesById, [tombstone.id]: tombstone },
-        selectedItemId: state.selectedItemId === tombstone.id ? null : state.selectedItemId,
       };
     }),
-  setView: (view) => set({ view, selectedItemId: null }),
-  setScope: (scope) => set({ scope, selectedItemId: null }),
-  selectItem: (selectedItemId) => set({ selectedItemId }),
   setHeaderSurfaceVisible: (headerSurfaceVisible) => set({ headerSurfaceVisible }),
   setSyncStatus: (syncStatus, syncError = null) => set({ syncStatus, syncError }),
   markSeen: (itemId, seenAt = new Date().toISOString()) =>
@@ -331,7 +249,6 @@ export const activityStore = createStore<ActivityStoreState>((set) => ({
             dismissedAt,
           },
         },
-        selectedItemId: state.selectedItemId === itemId ? null : state.selectedItemId,
       };
     }),
 }));
@@ -432,7 +349,6 @@ export async function acknowledgeActivityItem(
           ...state.acknowledgementErrors,
           [itemId]: message,
         },
-        selectedItemId: canRollback ? itemId : state.selectedItemId,
       };
     });
     throw error;

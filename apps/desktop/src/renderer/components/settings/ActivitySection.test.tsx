@@ -102,6 +102,22 @@ describe("ActivitySection", () => {
     });
   });
 
+  it("writes the account-synced dock badge scope", async () => {
+    const { putPreferences } = installAdeMock();
+    render(<ActivitySection />);
+    const control = await screen.findByRole("combobox", { name: "Dock badge counts" });
+
+    expect((control as HTMLSelectElement).value).toBe("local");
+    fireEvent.change(control, { target: { value: "account" } });
+
+    await waitFor(() => expect(putPreferences).toHaveBeenCalledWith(
+      "user-1",
+      expect.objectContaining({
+        account: expect.objectContaining({ dockBadgeScope: "account" }),
+      }),
+    ));
+  });
+
   it("syncs notch presentation and keeps this Mac's cache in step", async () => {
     const { putPreferences, updateSettings } = installAdeMock();
     render(<ActivitySection />);

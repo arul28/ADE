@@ -203,28 +203,3 @@ export function activityActionTone(
   if (kind === "open" || kind === "restart") return "secondary";
   return "ghost";
 }
-
-export function activityViewEmptyCopy(view: "live" | "inbox" | "recent"): {
-  title: string;
-  body: string;
-} {
-  if (view === "inbox") {
-    return {
-      title: "You’re all caught up",
-      body: "Approvals, failures, review requests, and finished work you haven’t seen will collect here.",
-    };
-  }
-  if (view === "recent") {
-    return {
-      // "Done" rather than "Completed": the pill on these rows says Done, and
-      // prose that uses a different word for the same state is how a vocabulary
-      // starts to fray.
-      title: "No recent outcomes",
-      body: "Done and resolved work stays here for 24 hours after you review it.",
-    };
-  }
-  return {
-    title: "No live work yet",
-    body: "Active agents and pull requests from every signed-in machine will appear here as they move.",
-  };
-}

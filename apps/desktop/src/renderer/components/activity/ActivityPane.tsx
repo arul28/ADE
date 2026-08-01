@@ -337,5 +337,3 @@ export function ActivityPane({
     document.body,
   );
 }
-
-export default ActivityPane;

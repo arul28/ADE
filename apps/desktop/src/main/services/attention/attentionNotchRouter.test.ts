@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   attentionRemoteBindingMatches,
   attentionItemNavigationRequest,
+  createAttentionNotchToastDeduper,
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
   parseAttentionNotchToast,
@@ -403,6 +404,29 @@ describe("Attention Notch routing", () => {
       title: "Agent needs you",
       durationMs: 60_000,
     })).toBeNull();
+  });
+
+  it("deduplicates the same cross-window toast for five seconds", () => {
+    let now = 1_000;
+    const shouldForward = createAttentionNotchToastDeduper(() => now);
+    const toast = {
+      itemId: "agent-1",
+      eventKind: "agent_needs_you" as const,
+      treatment: "alert" as const,
+      title: "Agent needs you",
+    };
+
+    expect(shouldForward(toast)).toBe(true);
+    expect(shouldForward({ ...toast, title: "A second window's copy" })).toBe(false);
+    expect(shouldForward({ ...toast, eventKind: "agent_failed" })).toBe(true);
+    expect(shouldForward({ ...toast, itemId: "agent-2" })).toBe(true);
+
+    now += 5_000;
+    expect(shouldForward(toast)).toBe(true);
+
+    const titleOnly = { ...toast, itemId: null };
+    expect(shouldForward(titleOnly)).toBe(true);
+    expect(shouldForward({ ...titleOnly })).toBe(false);
   });
 
   it("preserves exact PR ids and detail tabs", () => {

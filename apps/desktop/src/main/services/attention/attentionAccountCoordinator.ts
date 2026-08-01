@@ -126,7 +126,9 @@ export class AttentionAccountCoordinator {
         const keyedHostMachine = hostMachineKey
           ? snapshot.machines?.find((machine) => machine.machineKey === hostMachineKey)
           : null;
-        const hostMachine = keyedHostMachine ?? snapshot.machines?.[0];
+        const hostMachine = hostMachineKey
+          ? keyedHostMachine ?? snapshot.machines?.[0]
+          : null;
         const resolvedHostMachineKey = hostMachine?.machineKey ?? hostMachineKey;
         const stampHostMachine = <T extends { machineKey: string }>(machine: T): T =>
           machine.machineKey === resolvedHostMachineKey

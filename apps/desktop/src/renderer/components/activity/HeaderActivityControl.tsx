@@ -511,5 +511,3 @@ export function HeaderActivityControl({
     </>
   );
 }
-
-export default HeaderActivityControl;

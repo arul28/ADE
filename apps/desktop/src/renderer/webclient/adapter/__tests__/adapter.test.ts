@@ -66,6 +66,7 @@ describe("createAdeWebAdapter", () => {
   it("boots before and after a bound project", async () => {
     const adapter = createAdeWebAdapter(fake.asClient());
 
+    expect("attentionNotch" in adapter.ade).toBe(false);
     await expect(adapter.ade.app.getProject()).resolves.toBeNull();
     await expect(adapter.ade.app.getWindowSession()).resolves.toMatchObject({
       windowId: null,
@@ -341,9 +342,23 @@ describe("createAdeWebAdapter", () => {
       isSessionLeaseCurrent: () => true,
       getAccessToken: vi.fn(async () => "account-token"),
     } as unknown as BrowserAccountClient;
+    const {
+      dockBadgeScope: _legacyDockBadgeScope,
+      ...legacyAccount
+    } = DEFAULT_ATTENTION_PREFERENCES.account;
+    const {
+      machines: _legacyMachines,
+      ...legacyPreferences
+    } = DEFAULT_ATTENTION_PREFERENCES;
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         preferences: DEFAULT_ATTENTION_PREFERENCES,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        preferences: {
+          ...legacyPreferences,
+          account: legacyAccount,
+        },
       }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         preferences: {
@@ -357,9 +372,50 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.attention.getPreferences("account-a"))
       .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
     await expect(adapter.ade.attention.getPreferences("account-a"))
+      .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
+    await expect(adapter.ade.attention.getPreferences("account-a"))
       .rejects.toThrow(
         "Activity preferences were incompatible. Update ADE and retry.",
       );
+    adapter.dispose();
+  });
+
+  it("strips device and machine overrides from account preference saves", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await adapter.ade.attention.putPreferences("account-a", {
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      devices: { browser: { notificationsEnabled: false } },
+      machines: { studio: { notificationsEnabled: false } },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      account: DEFAULT_ATTENTION_PREFERENCES.account,
+      projects: DEFAULT_ATTENTION_PREFERENCES.projects,
+      mutedSessionIds: DEFAULT_ATTENTION_PREFERENCES.mutedSessionIds,
+    });
     adapter.dispose();
   });
 

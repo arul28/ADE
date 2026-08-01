@@ -2611,7 +2611,7 @@ different machine's cached limits.
   reachable host no longer lists as pending. It never drops while the host is
   unreachable or the refresh came back empty, so a transient gap cannot erase
   a genuinely queued message.
-- **`AttentionDrawerModel.clearVisibleItems()` persists dismissals
+- **`ActivityDrawerModel.dismissVisible(in:)` persists dismissals
   scoped to the active id set.** Ids are stored under
   `ade.attention.dismissedItemIDs` and pruned on every rebuild
   against the live active set, so a chat that re-enters

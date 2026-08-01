@@ -234,5 +234,3 @@ export function ActivityCard({
     </button>
   );
 }
-
-export default ActivityCard;

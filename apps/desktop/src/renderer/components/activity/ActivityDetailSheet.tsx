@@ -271,5 +271,3 @@ export function ActivityDetailSheet({
     </>
   );
 }
-
-export default ActivityDetailSheet;

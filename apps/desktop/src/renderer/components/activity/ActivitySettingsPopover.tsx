@@ -198,5 +198,3 @@ export function ActivitySettingsPopover() {
     </div>
   );
 }
-
-export default ActivitySettingsPopover;
