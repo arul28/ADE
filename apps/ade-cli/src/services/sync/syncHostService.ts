@@ -144,7 +144,7 @@ import type { createComputerUseArtifactBrokerService } from "../../../../desktop
 import type { AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { hasNullByte, normalizeRelative, nowIso, resolvePathWithinRoot, safeJsonParse, toOptionalString, uniqueStrings, writeTextAtomic } from "../../../../desktop/src/main/services/shared/utils";
 import type { DeviceRegistryService } from "./deviceRegistryService";
-import { createSyncPairingStore, type SyncPairingRecord } from "./syncPairingStore";
+import { createSyncPairingStore, isValidDpopPublicKey, type SyncPairingRecord } from "./syncPairingStore";
 import {
   createPairFailureTracker,
   type PairFailureSubject,
@@ -7293,7 +7293,12 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               }
 
               const existingPairingRecord = pairingStore.getPairingRecord(accountAuth.deviceId);
-              if (existingPairingRecord && !existingPairingRecord.dpopPublicKey) {
+              // Validity, not truthiness. `evaluatePairedHelloDpop` resolves its
+              // stored key with `.trim() || null`, so a whitespace-only field
+              // would pass a truthy check here and then fall into that
+              // function's TOFU branch — verifying the proof against the key the
+              // CALLER supplied. Both guards have to agree on what a key is.
+              if (existingPairingRecord && !isValidDpopPublicKey(existingPairingRecord.dpopPublicKey ?? "")) {
                 args.logger.warn("sync_host.account_existing_keyless_rejected", {
                   deviceId: accountAuth.deviceId,
                 });
@@ -7328,12 +7333,55 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 return false;
               }
               connectionAttemptReserved = true;
-              if (existingPairingRecord && !existingAccountOwner) {
-                // A manual/PIN/SSH pairing stays local. Same-account Relay may
-                // use it, but account sign-in never converts or rotates it.
+              // A legacy manual (QR/PIN/SSH) record for this same deviceId used
+              // to end the handshake right here: the host kept the local record
+              // and answered hello_ok with no `accountPairing`, so a signed-in
+              // device that no longer held the manual secret could never
+              // reconnect without physically returning to the Mac. It is
+              // adopted instead — the DPoP proof above already established,
+              // against the key pinned on THIS record, that the caller is the
+              // same physical device, and the account attestation was verified
+              // and re-captured under the commit lock. The record gains an
+              // owner and the device gets a usable secret.
+              //
+              // NOT identical to first-time adoption, and the differences are
+              // the point: the pinned key is kept rather than taken from the
+              // hello, `createdAt` survives, and `localTrustOrigin` marks the
+              // record so signing out of this Mac cannot delete a pairing the
+              // user made by hand.
+              const upgradingLegacyPairing = Boolean(existingPairingRecord) && !existingAccountOwner;
+              // A PIN re-pair the device has not acknowledged yet is staged on
+              // this record. Adoption writes through, which would drop that
+              // staged secret and leave the device's `pairing_commit` with
+              // nothing to promote ("the staged pairing expired"). The staging
+              // window exists to make a re-pair survive a lost reply, so it
+              // wins: keep the old no-`accountPairing` behaviour for this one
+              // hello. That is no longer a dead end — every client now falls
+              // back to the secret it already holds, and a device mid-re-pair
+              // has one by definition.
+              if (upgradingLegacyPairing && pairingStore.hasPendingRotation(accountAuth.deviceId)) {
+                args.logger.info("sync_host.account_adoption_deferred_pending_rotation", {
+                  deviceId: accountAuth.deviceId,
+                });
                 authenticatedPairingRecord = existingPairingRecord;
                 return false;
               }
+              // Written through rather than staged. Staging exists to protect a
+              // credential the device is still holding across two more round
+              // trips, and only PIN pairing has that shape: the device
+              // acknowledges with `pairing_commit`, which the host only ever
+              // arms on the `pairing_request` path (`pairingCommitOfferedForDeviceId`).
+              // An account hello has no acknowledgement to arm, and staging
+              // deliberately withholds elevations — `writeNewPairingRecord`
+              // keeps the committed `accountOwnerUserId` until promotion — so a
+              // staged adoption would leave the record local for exactly as
+              // long as the bug it fixes.
+              //
+              // A device holding a working secret is not blocked from taking
+              // this path, so write-through can invalidate one that was in use;
+              // the guard above covers the case where that secret is a staged
+              // re-pair, and otherwise a lost reply costs one more account
+              // hello rather than a walk back to the Mac.
               const paired = pairingStore.pairPeerViaAccount(hello.peer, attestation, {
                 dpopPublicKey: existingPairingRecord
                   ? null
@@ -7350,6 +7398,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
               authenticatedPairingRecord = pairingStore.getPairingRecord(paired.deviceId);
               if (!authenticatedPairingRecord) {
                 return authFail("This machine could not save the new pairing for this device. Try again.");
+              }
+              if (upgradingLegacyPairing) {
+                args.logger.info("sync_host.account_legacy_pairing_upgraded", {
+                  deviceId: accountAuth.deviceId,
+                });
               }
               return false;
             });

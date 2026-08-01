@@ -960,7 +960,18 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `crdt-model.md` for the underlying suppression mechanism.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
   against `syncPinStore`, mints the durable per-device secret, and
-  persists it into the `paired_devices` row (SQLite).
+  persists it into the `paired_devices` row (SQLite). Each
+  `SyncPairingRecord` carries its provenance: `accountOwnerUserId` (null for a
+  QR/Nearby-PIN/SSH pairing made at the Mac) and the sticky `localTrustOrigin`
+  flag set when such a record is later adopted into an account.
+  `pairPeerViaAccount` mints or rotates from a verified same-account
+  attestation and performs that adoption; `isValidDpopPublicKey` is the shared
+  validity test both this store and `syncHostService` use so a blank pinned key
+  can never be mistaken for a real one. `revokeAccountOwnedExcept` is the
+  sign-out / account-switch sweep: it deletes records owned by another account
+  but demotes `localTrustOrigin` records back to `accountOwnerUserId: null`,
+  and writes whenever it deleted **or** demoted. See *Adopting a manual pairing
+  into an account* for the gate.
 - `syncPinStore.ts` — on-disk storage for the user-set 6-digit
   pairing PIN at `~/.ade/secrets/sync-pin.json`, chmodded `0600`. The
   runtime never rotates the PIN; the operator sets or clears it from
@@ -1507,6 +1518,55 @@ a DPoP-bound fresh token; terminal identity/proof failures close the peer,
 while expiry/verifier-unavailable results can retry inside the advertised
 grace. Older peers close exactly when their initial token expires.
 
+### Adopting a manual pairing into an account
+
+A device can hold a pairing record that predates the account: `SyncPairingRecord`
+with `accountOwnerUserId: null` is a QR, Nearby/PIN, or SSH pairing made by hand
+at the Mac. When that same `deviceId` presents an account-authenticated hello,
+the host **adopts** the record instead of leaving it local: it sets the account
+owner, mints a fresh device-bound secret, and returns it in `accountPairing`.
+This is what lets a signed-in device that no longer holds its manual secret
+recover over the network rather than requiring a physical trip back to the Mac.
+
+Adoption is an authorization decision and it is gated on evidence, not on the
+caller's claim:
+
+- The hello must carry a DPoP proof that verifies against the P-256 key already
+  **pinned on that record**. The pinned key is the only evidence that the
+  signing-in device is the same physical device that paired manually, so a
+  record with no valid pinned key is refused outright (`sync_host` logs
+  `sync_host.account_existing_keyless_rejected`). Both the host guard and
+  `syncPairingStore.writeNewPairingRecord` test key *validity* rather than
+  truthiness via `isValidDpopPublicKey`, so a blank or whitespace-only field
+  cannot slip past one guard and land in `evaluatePairedHelloDpop`'s
+  legacy TOFU branch, where the proof would be checked against a
+  caller-supplied key.
+- The Clerk attestation must be verified and re-captured under the commit lock,
+  and a record already owned by a **different** account is still refused.
+- Unlike first-time adoption, the pinned key and `createdAt` are preserved; the
+  hello's offered key is ignored.
+
+Adoption is **deferred** while a PIN re-pair is staged on the record and the
+device has not acknowledged it (`pairingStore.hasPendingRotation`). Adoption
+writes through rather than staging, which would discard the staged secret and
+leave the device's `pairing_commit` with nothing to promote. That hello answers
+`hello_ok` without `accountPairing` and logs
+`sync_host.account_adoption_deferred_pending_rotation`; a device mid-re-pair
+holds a working secret by definition, and every client treats an omitted
+`accountPairing` as "keep the credential you already have".
+
+Adoption grants the account a way to *use* a pairing; it does not rewrite who
+created it. `SyncPairingRecord.localTrustOrigin` records that the underlying
+trust started as the user's own physical act at the Mac, and is sticky once set.
+The sign-out / account-switch sweep (`revokeAccountOwnedExcept`) therefore does
+not delete such a record — it **demotes** it back to `accountOwnerUserId: null`
+so it returns to pure local trust and stays usable on LAN/Tailscale. Demotion,
+not merely skipping the delete, is what keeps it usable: every reconnect path
+rejects a record whose owner no longer matches the signed-in account, so a
+surviving-but-stale owner is the same dead end in a different place. A later
+same-account hello re-adopts the demoted record through the same gate. A
+successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
+
 ## Device discovery
 
 - **Machine-to-machine**: pair or connect from **Connections > Machines** with
@@ -2016,7 +2076,13 @@ feature is merged or because a deliberately isolated-port host is running.
   available for direct LAN/Tailscale reconnect regardless of whether it was
   minted after PIN pairing or sealed same-account adoption. A verified
   same-owner account hello with the pinned DPoP key may rotate the paired secret
-  so a lost credential-delivery response can be retried safely.
+  so a lost credential-delivery response can be retried safely, and may adopt a
+  still-local QR/PIN/SSH record for the same device into the account. That
+  adoption is authorized by the DPoP proof against the key already pinned on
+  that record plus a verified same-account attestation; a record with no valid
+  pinned key, and a record owned by a different account, are both refused. It
+  never converts provenance — `localTrustOrigin` keeps the record out of the
+  sign-out delete sweep, which demotes it back to local trust instead.
   The `machineKey` is an unguessable 32-hex identifier and the tunnel
   upgrades are HMAC-signed with a per-machine secret. Relay availability now
   follows the host's account session: sign-in starts and advertises it, and
@@ -2099,6 +2165,7 @@ feature is merged or because a deliberately isolated-port host is running.
 | Relay tunnel + account-directory publisher gated on the machine sync-host lease | Implemented (`syncHostSingleton` authority registry, `relayTunnelAuthorityGate`, `runServe` publisher gate) |
 | Relay eviction (`4505`) suppression + surfaced outage | Implemented (bounded re-attempts, 10-minute re-arm, `routeHealth.relay.relayControlSuppressed*`, `ade doctor` relay row, desktop `relay-offline` banner) |
 | Sealed account adoption over direct routes (`ade-adopt-v1`, host `pubkey` identity, LAN → tailnet → Relay fallback, negotiated ChaCha20-Poly1305 / AES-256-GCM AEAD) | Implemented (`machineIdentitySigningStore` + `adoptChannelCrypto`; desktop + iOS clients) |
+| Legacy manual-pairing adoption into an account (DPoP-gated) + `localTrustOrigin` demotion on sign-out | Implemented (`syncPairingStore.pairPeerViaAccount` / `revokeAccountOwnedExcept`, `syncHostService` account hello) |
 | Push notifications + Live Activities (APNs relay) | Implemented (see `push-notifications.md`; on-device E2E needs a physical iPhone) |
 | Tailscale integration | Implemented (address candidate + mDNS TXT + per-node `tailscale serve` publication on the live sync port) |
 | Clean, published lane + Work chat handoff between connected desktops | Implemented ([contract](./cross-machine-session-handoff.md)) |

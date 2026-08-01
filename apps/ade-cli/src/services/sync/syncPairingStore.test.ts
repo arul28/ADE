@@ -1,8 +1,15 @@
 import fs from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type { SyncPeerMetadata } from "../../../../desktop/src/shared/types";
+import {
+  verifyClerkAccountAttestation,
+  type VerifiedAccountAttestation,
+} from "../account/accountAttestationVerifier";
 import { createSyncPairingStore, PAIRING_ROTATION_WINDOW_MS } from "./syncPairingStore";
 import { createSyncPinStore } from "./syncPinStore";
 
@@ -393,5 +400,225 @@ describe("staged re-pair privilege direction", () => {
     store.pairPeer(desktopPeer, PIN, { allowDirectPinRuntimeHost: true });
 
     expect(store.getPairingRecord(desktopPeer.deviceId)?.runtimeHostGranted).toBe(true);
+  });
+});
+
+// Account sign-in used to throw on any record it had not created itself, which
+// permanently stranded a device that paired by QR/PIN and later lost its stored
+// secret. Adoption is now allowed, but only for a record carrying the pinned
+// device key that the caller's DPoP proof was checked against.
+describe("account adoption of a legacy manual pairing", () => {
+  const roots: string[] = [];
+  const ISSUER = "https://pairing-store-clerk.test";
+  const OAUTH_CLIENT_ID = "pairing-store-client";
+  const OWNER_USER_ID = "user_adoption_owner";
+  const OTHER_USER_ID = "user_adoption_other";
+  const PIN = "428193";
+  const OTHER_DPOP_PUBLIC_KEY = Buffer.concat([
+    Buffer.from([0x04]),
+    Buffer.alloc(64, 0x02),
+  ]).toString("base64");
+  let jwksServer: Server;
+  let jwksUrl = "";
+  let signingKey: Awaited<ReturnType<typeof generateKeyPair>>["privateKey"];
+
+  beforeAll(async () => {
+    const keyPair = await generateKeyPair("RS256", { extractable: true });
+    signingKey = keyPair.privateKey;
+    const publicJwk = await exportJWK(keyPair.publicKey);
+    const jwks = { keys: [{ ...publicJwk, alg: "RS256", kid: "pairing-store-key", use: "sig" }] };
+    jwksServer = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(JSON.stringify(jwks));
+    });
+    await new Promise<void>((resolve, reject) => {
+      jwksServer.once("error", reject);
+      jwksServer.listen(0, "127.0.0.1", resolve);
+    });
+    jwksUrl = `http://127.0.0.1:${(jwksServer.address() as AddressInfo).port}/jwks`;
+  });
+
+  afterAll(async () => {
+    // A `beforeAll` failure leaves this undefined; without the guard the
+    // teardown throws a second, unrelated error that buries the real one.
+    if (!jwksServer) return;
+    await new Promise<void>((resolve, reject) => {
+      jwksServer.close((error) => error ? reject(error) : resolve());
+    });
+  });
+
+  afterEach(() => {
+    for (const root of roots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  /** The verifier brands its result, so only a real token can produce one. */
+  async function attestationFor(userId: string): Promise<VerifiedAccountAttestation> {
+    const now = Math.floor(Date.now() / 1000);
+    const token = await new SignJWT({})
+      .setProtectedHeader({ alg: "RS256", kid: "pairing-store-key" })
+      .setIssuer(ISSUER)
+      .setSubject(userId)
+      .setAudience(OAUTH_CLIENT_ID)
+      .setIssuedAt(now)
+      .setExpirationTime(now + 600)
+      .sign(signingKey);
+    return verifyClerkAccountAttestation({
+      token,
+      expectedUserId: userId,
+      config: { issuer: ISSUER, jwksUrl, oauthClientId: OAUTH_CLIENT_ID },
+    });
+  }
+
+  function createStore() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-account-adoption-"));
+    roots.push(root);
+    const filePath = path.join(root, "paired.json");
+    const pinStore = createSyncPinStore({ filePath: path.join(root, "pin.json") });
+    pinStore.setPin(PIN);
+    return { filePath, pinStore, store: createSyncPairingStore({ filePath, pinStore }) };
+  }
+
+  const peer = {
+    deviceId: "legacy-manual-store-phone",
+    deviceName: "iPhone",
+    platform: "iOS",
+    deviceType: "phone",
+    siteId: "legacy-manual-store-site",
+    dbVersion: 0,
+  } satisfies SyncPeerMetadata;
+
+  /** Removes the field entirely, which is the true on-disk legacy shape. */
+  function dropAccountOwnerField(filePath: string, deviceId: string): void {
+    const records = JSON.parse(fs.readFileSync(filePath, "utf8")) as Record<
+      string,
+      Record<string, unknown>
+    >;
+    delete records[deviceId]?.accountOwnerUserId;
+    fs.writeFileSync(filePath, `${JSON.stringify(records, null, 2)}\n`);
+  }
+
+  it("adopts a keyed local pairing, keeping its pinned key and creation time", async () => {
+    const { filePath, store } = createStore();
+    const legacy = store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    dropAccountOwnerField(filePath, peer.deviceId);
+    const before = store.getPairingRecord(peer.deviceId);
+    expect(before).not.toHaveProperty("accountOwnerUserId");
+
+    const adopted = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID), {
+      // A hello may advertise a key inline; adoption must ignore it in favour
+      // of the key already pinned on the record.
+      dpopPublicKey: OTHER_DPOP_PUBLIC_KEY,
+    });
+
+    expect(adopted.pendingRotationExpiresAtMs).toBeNull();
+    const after = store.getPairingRecord(peer.deviceId);
+    expect(after?.accountOwnerUserId).toBe(OWNER_USER_ID);
+    expect(after?.dpopPublicKey).toBe(VALID_DPOP_PUBLIC_KEY);
+    expect(after?.createdAt).toBe(before?.createdAt);
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
+    expect(store.verifySecret(peer.deviceId, legacy.secret)).toBeNull();
+  });
+
+  it("refuses to adopt a local pairing that has no pinned device key", async () => {
+    const { filePath, store } = createStore();
+    const legacy = store.pairPeer(peer, PIN);
+    dropAccountOwnerField(filePath, peer.deviceId);
+    const attestation = await attestationFor(OWNER_USER_ID);
+
+    expect(() => store.pairPeerViaAccount(peer, attestation, {
+      dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
+    })).toThrow(/device key/i);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId ?? null).toBeNull();
+    expect(store.verifySecret(peer.deviceId, legacy.secret)).toBe("committed");
+  });
+
+  it("refuses to adopt a pairing owned by a different account", async () => {
+    const { store } = createStore();
+    const owned = store.pairPeerViaAccount(peer, await attestationFor(OTHER_USER_ID), {
+      dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
+    });
+    const attestation = await attestationFor(OWNER_USER_ID);
+
+    expect(() => store.pairPeerViaAccount(peer, attestation, {
+      dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
+    })).toThrow(/different ADE account/i);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(OTHER_USER_ID);
+    expect(store.verifySecret(peer.deviceId, owned.secret)).toBe("committed");
+  });
+
+  it("lets a PIN re-pair declassify an adopted pairing back to local immediately", async () => {
+    const { filePath, store } = createStore();
+    store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    dropAccountOwnerField(filePath, peer.deviceId);
+    store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(OWNER_USER_ID);
+
+    // Declassification is a reduction, so it lands on the committed record even
+    // though the replacement secret only stages.
+    const repaired = store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+
+    expect(store.hasPendingRotation(peer.deviceId)).toBe(true);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
+    expect(store.authenticate(peer.deviceId, repaired.secret)).toBe(true);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
+    expect(store.revokeAccountOwnedExcept(null)).toEqual([]);
+  });
+
+  // Adoption grants the account a way to USE a hand-made pairing; it must not
+  // hand the account power to DESTROY it. Without `localTrustOrigin` the
+  // adopted record joins the set `revokeAccountOwnedExcept` deletes, so one
+  // account hello would silently make a QR/PIN/SSH pairing disappear the next
+  // time the Mac signed out — stranding the device with no recovery except
+  // walking back to the machine, which is the entire failure this change exists
+  // to remove.
+  it("keeps an adopted manual pairing alive when the Mac signs out", async () => {
+    const { filePath, pinStore, store } = createStore();
+    store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    dropAccountOwnerField(filePath, peer.deviceId);
+    const adopted = store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBe(OWNER_USER_ID);
+    expect(store.getPairingRecord(peer.deviceId)?.localTrustOrigin).toBe(true);
+
+    // Sign-out. Surviving is not enough: every reconnect path rejects a record
+    // whose owner no longer matches the signed-in account, so the record has to
+    // come back DEMOTED to pure local trust or it is intact and unusable —
+    // the same dead end, moved.
+    expect(store.revokeAccountOwnedExcept(null)).toEqual([]);
+    expect(store.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
+    expect(store.getPairingRecord(peer.deviceId)?.localTrustOrigin).toBe(true);
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
+
+    // And it must be durable, not just correct in memory.
+    const reopened = createSyncPairingStore({ filePath, pinStore });
+    expect(reopened.getPairingRecord(peer.deviceId)?.accountOwnerUserId).toBeNull();
+
+    // A switch to a different account leaves the now-local record alone.
+    expect(store.revokeAccountOwnedExcept("user_someone_else")).toEqual([]);
+    expect(store.verifySecret(peer.deviceId, adopted.secret)).toBe("committed");
+  });
+
+  it("still revokes an account-first pairing on sign-out", async () => {
+    const { store } = createStore();
+    store.pairPeerViaAccount(peer, await attestationFor(OWNER_USER_ID));
+    expect(store.getPairingRecord(peer.deviceId)?.localTrustOrigin).not.toBe(true);
+    expect(store.revokeAccountOwnedExcept(null)).toEqual([peer.deviceId]);
+    expect(store.getPairingRecord(peer.deviceId)).toBeNull();
+  });
+
+  it("refuses to adopt a local pairing whose pinned key is only whitespace", async () => {
+    const { filePath, store } = createStore();
+    store.pairPeer(peer, PIN, { dpopPublicKey: VALID_DPOP_PUBLIC_KEY });
+    dropAccountOwnerField(filePath, peer.deviceId);
+    // A whitespace field is not a pinned key. Treating it as one would let the
+    // DPoP check fall through to trusting whatever key the caller presented.
+    const records = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    records[peer.deviceId].dpopPublicKey = "   ";
+    fs.writeFileSync(filePath, JSON.stringify(records));
+
+    const attestation = await attestationFor(OWNER_USER_ID);
+    expect(() => store.pairPeerViaAccount(peer, attestation))
+      .toThrow(/without a device key cannot be adopted/);
   });
 });

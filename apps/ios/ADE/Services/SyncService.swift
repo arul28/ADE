@@ -833,6 +833,27 @@ enum SyncConnectionRouteKind: Int, Equatable {
   case relay = 2
 }
 
+/// The machine a user-initiated connect is aimed at, which is NOT the same
+/// thing as the machine we are attached to. Connection copy used to derive
+/// every name from the active profile — the last machine that connected — so
+/// dialling a second machine reported the first one's name in the progress
+/// line, the unreachable line, and the Hub chip all at once. The attempt owns
+/// its own name from the moment it starts, and keeps it after it fails so the
+/// failure can say which machine actually failed.
+struct SyncConnectAttemptTarget: Equatable {
+  let machineName: String
+  let machineIdentity: String?
+}
+
+/// Why the most recent user-initiated attempt failed. Separate from `lastError`
+/// because a failed switch restores the connection it interrupted, and that
+/// restore's `hello_ok` clears `lastError` — which would erase the explanation
+/// for the failure the user just watched. Scoped to one attempt: every new
+/// attempt clears it, so it never needs to carry which machine it was about.
+struct SyncConnectAttemptFailure: Equatable {
+  let message: String
+}
+
 private struct AccountAdoptionRoute: Equatable, Hashable {
   let endpoint: SyncConnectionEndpointAttempt
   let kind: AccountMachineEndpoint.Kind
@@ -2622,7 +2643,11 @@ func syncAccountMachineNavigationIsCurrent(
   activeHostIdentity: String?,
   connectionState: RemoteConnectionState
 ) -> Bool {
-  guard connectionState == .connected,
+  // `.syncing` is attached — it is what every connect path settles into before
+  // it reaches `.connected`. Demanding `.connected` exactly meant a link tapped
+  // mid-hydration decided we were on the wrong machine and re-paired to the
+  // machine we were already talking to, tearing down a healthy connection.
+  guard connectionState == .connected || connectionState == .syncing,
         let targetDeviceId = targetDeviceId?
           .trimmingCharacters(in: .whitespacesAndNewlines),
         !targetDeviceId.isEmpty,
@@ -2632,6 +2657,56 @@ func syncAccountMachineNavigationIsCurrent(
     return false
   }
   return targetDeviceId == activeHostIdentity
+}
+
+/// Whether a landing `hello_ok` means the user must be returned to the Hub.
+///
+/// A project belongs to the machine it lives on, so attaching to a different
+/// machine has to clear it. The subtlety is WHICH identity to compare against:
+/// every switch path calls `saveProfile(target)` before the hello arrives, and
+/// `saveProfile` overwrites `activeProjectHostIdentity` with the target's
+/// identity. Comparing against that field alone compares B to B, never fires,
+/// and leaves the user inside a project the new host has never heard of.
+/// `baselineHostIdentity` is captured before that write and is authoritative
+/// when present.
+func syncHubTransitionIsOwed(
+  baselineHostIdentity: String?,
+  incomingHostIdentity: String?,
+  hasActiveProject: Bool
+) -> Bool {
+  guard hasActiveProject, let incoming = incomingHostIdentity else { return false }
+  return baselineHostIdentity != incoming
+}
+
+/// Which paired secret an account `hello_ok` leaves us holding.
+///
+/// Mirrors the web client's `resolveAccountHelloPairing`
+/// (apps/desktop/src/shared/accountDirectory.ts). A host that OMITS
+/// `accountPairing` is saying "keep the credential you already have" — it does
+/// not reissue one on every hello. iOS used to treat that as fatal, so a phone
+/// whose profile had been cleared (an app reinstall keeps Keychain items but
+/// wipes UserDefaults) could never recover a secret it was still holding, and
+/// the only remedy on offer was walking back to the Mac.
+///
+/// A `accountPairing` that is PRESENT but does not match this device is a
+/// different matter and is still rejected outright — falling back there would
+/// let a partial or mismatched host response silently pass as success.
+func syncResolveAccountHelloPairedSecret(
+  payload: [String: Any],
+  expectedDeviceId: String,
+  storedSecret: String?
+) -> String? {
+  guard let expected = syncNormalizedCommandScopeValue(expectedDeviceId) else { return nil }
+  // Absent key only. An explicit null is a response, not an omission.
+  guard payload.index(forKey: "accountPairing") != nil else {
+    return syncNormalizedCommandScopeValue(storedSecret)
+  }
+  guard let pairing = payload["accountPairing"] as? [String: Any],
+        syncNormalizedCommandScopeValue(pairing["deviceId"] as? String) == expected,
+        let secret = syncNormalizedCommandScopeValue(pairing["secret"] as? String) else {
+    return nil
+  }
+  return secret
 }
 
 /// One decision table shared by the app root and both possible consumers. The
@@ -3185,8 +3260,26 @@ func syncPreferredRecoveryActionName(
 
 @MainActor
 final class SyncService: ObservableObject {
-  @Published private(set) var connectionState: RemoteConnectionState = .disconnected
+  @Published private(set) var connectionState: RemoteConnectionState = .disconnected {
+    didSet {
+      guard connectionState != oldValue else { return }
+      // Reaching an attached state hands naming back to the real host identity.
+      // Clearing here — rather than at each of the several places that flip the
+      // state — is what stops a stale attempt name from outliving the attempt.
+      if isAttached {
+        connectAttemptTarget = nil
+      }
+    }
+  }
   @Published private(set) var hostName: String?
+
+  /// Attached to a machine. `.syncing` counts: it is what every connect path
+  /// settles into before `.connected`, and treating it as "not attached" is
+  /// what made a link tapped mid-hydration re-pair to the machine we were
+  /// already talking to.
+  var isAttached: Bool {
+    connectionState == .connected || connectionState == .syncing
+  }
 
   /// Human-facing name of the connected machine, or a neutral "your Mac"
   /// fallback. Shared by Linear connect/status copy (and available to other
@@ -3224,6 +3317,21 @@ final class SyncService: ObservableObject {
   @Published private(set) var accountConnectStageLabel: String?
   /// A brief success affordance shared by the access gate, Hub, and Settings.
   @Published private(set) var accountConnectSuccessLabel: String?
+  /// Names the machine the in-flight (or most recently failed) user-initiated
+  /// connect is aimed at. Survives the failure on purpose: "Cannot reach X"
+  /// has to name the machine the user actually chose, not whichever one the
+  /// saved profile happens to point at. Cleared on success and on any user
+  /// connection change.
+  @Published private(set) var connectAttemptTarget: SyncConnectAttemptTarget?
+  /// The most recent user-initiated attempt failure, kept even when the
+  /// previous connection is successfully restored afterwards. Cleared when a
+  /// new attempt starts.
+  @Published private(set) var lastConnectAttemptFailure: SyncConnectAttemptFailure?
+  /// Identity of the machine a user-initiated transition is leaving, captured
+  /// before `saveProfile` retargets the active machine. `applyHelloPayload`
+  /// compares against this rather than `activeProjectHostIdentity`, which the
+  /// switch itself has already overwritten. Nil outside a transition.
+  private var pendingHubTransitionBaselineHostIdentity: String?
   private var accountNavigationInFlight: (
     id: UUID,
     machineKey: String,
@@ -3849,20 +3957,50 @@ final class SyncService: ObservableObject {
     projectHubPresented = false
   }
 
-  /// A user-requested machine transition always returns the UI to the Hub
-  /// before the socket changes. The active project remains cached, but no
-  /// in-project screen can keep rendering state owned by the previous machine.
+  /// Resets the transient affordances a fresh user-initiated attempt owns.
+  ///
+  /// This used to also force `projectHubPresented = true`, on the theory that a
+  /// machine transition must not leave in-project screens rendering the old
+  /// machine's state. That rule is right but was applied at the wrong moment:
+  /// merely *tapping* a machine yanked the user out of their project before
+  /// anyone knew whether the new machine would answer, so a failed switch cost
+  /// them their place for nothing. `applyHelloPayload` already enforces the
+  /// same rule at the honest moment — when a hello actually lands from a
+  /// different machine than the active project belongs to.
   func prepareForUserConnectionChange() {
-    projectHubPresented = true
     accountConnectSuccessClearTask?.cancel()
     accountConnectSuccessClearTask = nil
     accountConnectSuccessLabel = nil
     accountConnectStageLabel = nil
     accountPairingPinFallbackHost = nil
+    connectAttemptTarget = nil
+    lastConnectAttemptFailure = nil
+    // Owned here rather than by the callers. Requiring each switch path to
+    // remember a second call is how the Clip-handoff and SSH-bootstrap paths
+    // silently kept the bug this baseline exists to fix: they call this, then
+    // `saveProfile` — which overwrites the identity the Hub decision reads —
+    // and nothing captured what they were leaving.
+    pendingHubTransitionBaselineHostIdentity = syncNormalizedCommandScopeValue(
+      activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId
+    )
+  }
+
+  /// Names the machine a user-initiated attempt is aimed at, for connection
+  /// copy. Purely cosmetic — the Hub baseline is captured by
+  /// `prepareForUserConnectionChange()` so it cannot be forgotten here.
+  private func setConnectAttemptTarget(machineName: String?, machineIdentity: String?) {
+    guard let name = syncNonEmpty(machineName) else { return }
+    connectAttemptTarget = SyncConnectAttemptTarget(
+      machineName: name,
+      machineIdentity: syncNonEmpty(machineIdentity)
+    )
   }
 
   func disconnectForUserConnectionChange() {
     prepareForUserConnectionChange()
+    // An explicit disconnect has no hello to arrive later, so the Hub
+    // transition has to happen here or not at all.
+    projectHubPresented = true
     disconnect()
   }
 
@@ -5504,6 +5642,23 @@ final class SyncService: ObservableObject {
       .first
   }
 
+  /// The paired secret held for a machine identity, found without needing a
+  /// saved profile. The account adoption path is reached precisely when the
+  /// profile lookup came up empty, and "no profile" does not have to mean "no
+  /// credential" — a profile store that was cleared or migrated can leave a
+  /// perfectly good Keychain entry behind. (Note a full reinstall is NOT one of
+  /// those cases: `MobileTrustResetPolicy` keys its one-shot flag off
+  /// UserDefaults, so a reinstall re-fires it and clears the tokens too.)
+  private func storedPairedSecret(forHostIdentity hostIdentity: String) -> String? {
+    guard let identity = syncNonEmpty(hostIdentity) else { return nil }
+    if let profile = loadSavedProfiles().values.first(where: {
+      $0.hostIdentity == identity || $0.lastHostDeviceId == identity
+    }), let token = tokenForProfile(profile) {
+      return token
+    }
+    return keychain.loadToken(hostKey: "machine:\(identity.lowercased())")
+  }
+
   private func tokenForProfile(_ profile: HostConnectionProfile?) -> String? {
     guard let profile else { return nil }
     if let key = profileStorageKey(profile), let token = keychain.loadToken(hostKey: key) {
@@ -5623,8 +5778,17 @@ final class SyncService: ObservableObject {
     )
   }
 
-  func reconnect(toSavedHost host: DiscoveredSyncHost) async {
+  /// Returns whether THIS host was reached. Callers must not infer that from
+  /// `connectionState` any more: a failed attempt now restores the connection
+  /// it interrupted, so an attached state after this returns may well belong to
+  /// the previous machine rather than the one that was asked for.
+  @discardableResult
+  func reconnect(toSavedHost host: DiscoveredSyncHost) async -> Bool {
     prepareForUserConnectionChange()
+    setConnectAttemptTarget(
+      machineName: host.hostName,
+      machineIdentity: host.hostIdentity
+    )
     ProductAnalytics.shared.captureQuickConnect(.pairedMachine)
     let profiles = loadSavedProfiles()
     let candidates = profiles.values.filter { profile in
@@ -5636,15 +5800,43 @@ final class SyncService: ObservableObject {
       }
       return matchesDiscoveredHost(host, profile: profile)
     }
+    // Same hazard as the account paths: `saveProfile` retargets the active
+    // machine before anything has answered, so a saved row that no longer
+    // responds must not take the live connection down with it. Captured above
+    // the credential guard too — that guard used to force `.error` over a
+    // still-open socket, which leaves the app attached to the previous machine
+    // but unable to send it anything (`canSendLiveRequests()` reads this state).
+    let previousProfile = activeHostProfile
+    let wasAttached = isAttached
     guard let profile = candidates.sorted(by: { $0.updatedAt > $1.updatedAt }).first,
           tokenForProfile(profile) != nil else {
       clearConnectTimingMetrics()
-      lastError = "This saved machine no longer has pairing credentials. Pair again from Settings."
-      connectionState = .error
-      return
+      let message = "This saved machine no longer has pairing credentials. Pair again from Settings."
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
+      // Nothing was touched, so a live connection stays live and honest.
+      if !wasAttached {
+        lastError = message
+        connectionState = .error
+      }
+      return false
     }
     saveProfile(profile)
     await reconnectIfPossible(userInitiated: true)
+    // Attached AND attached to the machine that was asked for. Testing the
+    // state alone would report success for a restore of the PREVIOUS machine,
+    // which is exactly what the doc comment above warns callers against.
+    let targetKey = profileStorageKey(profile)
+    let reachedTarget = isAttached && activeHostProfile.flatMap(profileStorageKey) == targetKey
+    if reachedTarget { return true }
+    lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reconnect to \(host.hostName).")
+    if let previousProfile, profileStorageKey(previousProfile) != targetKey {
+      if wasAttached {
+        await restorePreviousConnection(previousProfile)
+      } else if tokenForProfile(previousProfile) != nil {
+        saveProfile(previousProfile)
+      }
+    }
+    return false
   }
 
   /// The saved profile paired to this QR's machine (matched by host identity)
@@ -5671,6 +5863,10 @@ final class SyncService: ObservableObject {
   ) async -> Bool {
     guard var profile = savedProfileForPairingQr(hostIdentity: hostIdentity) else { return false }
     prepareForUserConnectionChange()
+    setConnectAttemptTarget(
+      machineName: profile.hostName,
+      machineIdentity: profile.hostIdentity ?? profile.lastHostDeviceId
+    )
     let directHosts = directCandidates.compactMap { syncEndpointHost($0) }
     let relayHosts = deduplicatedAddresses(relayCandidates.filter(syncIsFullWebSocketRoute))
     profile.savedAddressCandidates = deduplicatedAddresses(profile.savedAddressCandidates + directHosts)
@@ -6396,7 +6592,11 @@ final class SyncService: ObservableObject {
             throw fail(error)
           }
           if ownership.failed(candidateId: candidateId) == .exhausted {
-            group.cancelAll()
+            // Drain, don't just cancel. A candidate that authenticates in the
+            // same tick the group is cancelled still returns `.adopted`, and
+            // dropping that result on the floor leaks an authenticated socket
+            // to the machine we just gave up on.
+            try await drainAndCancel(&group)
             throw fail(AccountAdoptionRoutesExhaustedError(
               machineName: machineName,
               routeLabels: triedRouteLabels,
@@ -6435,6 +6635,10 @@ final class SyncService: ObservableObject {
     authorization: AccountPairingAuthorization
   ) async -> Bool {
     prepareForUserConnectionChange()
+    setConnectAttemptTarget(
+      machineName: machine.displayName,
+      machineIdentity: machine.deviceId
+    )
     defer { accountConnectStageLabel = nil }
     ProductAnalytics.shared.captureQuickConnect(.accountMachine)
     let owner = authorization.ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6450,6 +6654,47 @@ final class SyncService: ObservableObject {
       connectionState = .error
       ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
       return false
+    }
+
+    // Already attached to this exact machine: reconnecting would tear down a
+    // healthy connection to rebuild the same one, and (over Relay) race our own
+    // live tunnel for the same Durable Object. This has to precede the
+    // saved-profile branch below, which would otherwise re-save and redial the
+    // machine we are already talking to.
+    if isAttached,
+       syncNonEmpty(activeHostProfile?.hostIdentity ?? activeHostProfile?.lastHostDeviceId)
+         == expectedHostIdentity {
+      // Returning early skips the saved-profile branch, so run the checks that
+      // branch owns rather than silently dropping them: the profile must still
+      // belong to this account, and freshly-advertised routes are still worth
+      // learning even though we are not redialling.
+      if var existing = activeHostProfile {
+        guard existing.accountOwnerId == nil || existing.accountOwnerId == owner else {
+          lastError = "This saved Mac belongs to a different signed-in account."
+          connectionState = .error
+          ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+          return false
+        }
+        let learnedDirect = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+          guard endpoint.kind != .relay else { return nil }
+          if let host = syncNonEmpty(endpoint.host) { return host }
+          return endpoint.url.flatMap(syncEndpointHost)
+        })
+        let learnedRelays = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
+          guard endpoint.kind == .relay,
+                let url = syncNonEmpty(endpoint.url),
+                syncIsFullWebSocketRoute(url),
+                URL(string: url)?.scheme?.lowercased() == "wss" else { return nil }
+          return url
+        })
+        existing.savedAddressCandidates = deduplicatedAddresses(existing.savedAddressCandidates + learnedDirect)
+        existing.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + learnedRelays)
+        existing.relayAccountOwnerId = owner
+        existing.updatedAt = syncDateFormatter.string(from: Date())
+        saveProfile(existing)
+      }
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.reconnected)
+      return true
     }
 
     let directHosts = deduplicatedAddresses(machine.reachableEndpoints.compactMap { endpoint in
@@ -6481,10 +6726,28 @@ final class SyncService: ObservableObject {
       existing.savedRelayCandidates = deduplicatedAddresses((existing.savedRelayCandidates ?? []) + relayRoutes)
       existing.relayAccountOwnerId = owner
       existing.updatedAt = syncDateFormatter.string(from: Date())
+      // Same hazard as the adoption path below: `saveProfile` makes the target
+      // the active machine before anything has proven it answers, so a failed
+      // reconnect used to leave the user pointed at a machine they are not on
+      // and disconnected from the one they were.
+      let previousProfile = activeHostProfile
+      let wasAttached = isAttached
       saveProfile(existing)
       await reconnectIfPossible(userInitiated: true)
-      let reconnected = connectionState == .connected || connectionState == .syncing
+      let reconnected = isAttached
       ProductAnalytics.shared.captureMachineAdoptionOutcome(reconnected ? .reconnected : .failed)
+      if !reconnected {
+        lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reach \(machine.displayName).")
+        if let previousProfile,
+           syncNonEmpty(previousProfile.hostIdentity ?? previousProfile.lastHostDeviceId)
+             != expectedHostIdentity {
+          if wasAttached {
+            await restorePreviousConnection(previousProfile)
+          } else if tokenForProfile(previousProfile) != nil {
+            saveProfile(previousProfile)
+          }
+        }
+      }
       return reconnected
     }
 
@@ -6533,6 +6796,25 @@ final class SyncService: ObservableObject {
     )
     let preferredDirectPort = classifiedDirectEndpoints.first(where: { $0.kind == .lan })?.attempt.port
       ?? classifiedDirectEndpoints.first(where: { $0.kind == .tailnet })?.attempt.port
+
+    // What to fall back to if this attempt fails.
+    //
+    // A machine that never answers must not cost the user the connection they
+    // already had. The obvious way to get that is to keep the old socket up
+    // during the race — and it does not work: `beginConnectAttempt()` bumps the
+    // attempt generation and `.connecting` makes `canSendLiveRequests()` false,
+    // and the old connection's liveness machinery is keyed to both. Its
+    // heartbeat loop exits permanently, its post-hello restoration abandons
+    // without completing, and a transient socket blip downgrades from
+    // "recover the transport" to a silent teardown with auto-reconnect off.
+    // A half-alive connection is worse than an honestly closed one.
+    //
+    // So the old connection is still surrendered up front, and the recovery is
+    // explicit: on failure we reconnect to it, which rebuilds all of that
+    // machinery through the normal path. The user sees a reconnect rather than
+    // a seamless hold, and stays where they were either way.
+    let previousProfile = activeHostProfile
+    let wasAttached = isAttached
 
     var pairingGeneration: UInt64?
     var relayRouteFailed = false
@@ -6601,13 +6883,15 @@ final class SyncService: ObservableObject {
                 self.syncNonEmpty(brain["deviceId"] as? String) == expectedHostIdentity else {
             throw AccountAdoptionIdentityVerificationError(machineName: machine.displayName)
           }
-          let pairing = payload["accountPairing"] as? [String: Any]
-          guard self.syncNonEmpty(pairing?["deviceId"] as? String) == self.deviceId,
-                let pairedSecret = self.syncNonEmpty(pairing?["secret"] as? String) else {
+          guard let pairedSecret = syncResolveAccountHelloPairedSecret(
+            payload: payload,
+            expectedDeviceId: self.deviceId,
+            storedSecret: self.storedPairedSecret(forHostIdentity: expectedHostIdentity)
+          ) else {
             throw NSError(
               domain: "ADE",
               code: 33,
-              userInfo: [NSLocalizedDescriptionKey: "The Mac did not return saved connection details. Remove this iPhone from the Mac and try again."]
+              userInfo: [NSLocalizedDescriptionKey: "This Mac would not hand back a connection for this iPhone. Open ADE on the Mac, remove this iPhone under Settings → Devices, then connect again."]
             )
           }
 
@@ -6683,13 +6967,49 @@ final class SyncService: ObservableObject {
       accountPairingPinFallbackHost = signingPublicKey == nil && relayRouteFailed
         ? pinFallbackHost(for: machine)
         : nil
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
+      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
+      ProductAnalytics.shared.captureError(.pairing)
       lastError = message
       connectionState = .error
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: message)
-      ProductAnalytics.shared.captureMachineAdoptionOutcome(.failed)
-      ProductAnalytics.shared.captureError(.pairing)
+      // Choosing a machine that turns out to be unreachable must not cost the
+      // user the machine they were already on, and must not silently leave the
+      // app pointed at the machine that just refused. Restoring is only
+      // possible when there was a live connection to restore; retargeting the
+      // saved profile back is owed either way, or every later auto-reconnect
+      // aims at the machine that just proved unreachable.
+      if let previousProfile,
+         syncNonEmpty(previousProfile.hostIdentity ?? previousProfile.lastHostDeviceId)
+           != expectedHostIdentity {
+        if wasAttached {
+          await restorePreviousConnection(previousProfile)
+        } else if tokenForProfile(previousProfile) != nil {
+          saveProfile(previousProfile)
+        }
+      }
       return false
     }
+  }
+
+  /// Reconnects to the machine an attempt interrupted. `lastError` is
+  /// deliberately allowed to be cleared by the restore's own `hello_ok` —
+  /// `lastConnectAttemptFailure` is what keeps the failed attempt explainable
+  /// once we are attached somewhere else again.
+  private func restorePreviousConnection(_ profile: HostConnectionProfile) async {
+    guard tokenForProfile(profile) != nil else { return }
+    saveProfile(profile)
+    // Re-point the attempt at the machine we are actually dialling now.
+    // Leaving it on the machine that just failed would make the connecting copy
+    // name the wrong Mac for the whole restore — precisely the bug this type
+    // was introduced to kill, inverted.
+    setConnectAttemptTarget(
+      machineName: profile.hostName,
+      machineIdentity: profile.hostIdentity ?? profile.lastHostDeviceId
+    )
+    allowAutoReconnect = true
+    setAutoReconnectPausedByUser(false)
+    await reconnectIfPossible(userInitiated: true)
   }
 
   /// Ensures a notification/Attention deeplink is resolved against its owning
@@ -6732,7 +7052,12 @@ final class SyncService: ObservableObject {
       )
     }
     guard let machine else {
-      lastError = "That Mac is not available in your ADE account."
+      // A blocked navigation used to abort with nothing on screen: the tap
+      // simply did not work. Record it the same way a failed connect does so
+      // the reason is available to whatever surface the user is looking at.
+      let message = "That Mac is not available in your ADE account."
+      lastError = message
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
     }
 
@@ -6748,7 +7073,9 @@ final class SyncService: ObservableObject {
       return true
     }
     guard let authorization = AccountService.shared.currentPairingAuthorization else {
-      lastError = "Sign in again to open work from that Mac."
+      let message = "Sign in again to open work from that Mac."
+      lastError = message
+      lastConnectAttemptFailure = SyncConnectAttemptFailure(message: message)
       return false
     }
     return await pairWithAccountMachine(machine, authorization: authorization)
@@ -7393,6 +7720,7 @@ final class SyncService: ObservableObject {
     relayCandidates: [String] = []
   ) async {
     prepareForUserConnectionChange()
+    setConnectAttemptTarget(machineName: hostName, machineIdentity: hostIdentity)
     lastPairingErrorCode = nil
     lastPairingFailure = nil
     relayAuthorizationRequirement = nil
@@ -7681,6 +8009,10 @@ final class SyncService: ObservableObject {
   func disconnect(clearCredentials: Bool = false, suspendAutoReconnect: Bool = true) {
     beginConnectAttempt()
     clearConnectTimingMetrics()
+    // The attempt is over. Leaving its target set would let a later background
+    // reconnect to a DIFFERENT machine be labelled with this one's name.
+    connectAttemptTarget = nil
+    pendingHubTransitionBaselineHostIdentity = nil
     autoReconnectAwaitingLiveDiscovery = false
     if suspendAutoReconnect {
       setAutoReconnectPausedByUser(true)
@@ -12442,6 +12774,11 @@ final class SyncService: ObservableObject {
     if let profile, let data = try? encoder.encode(profile) {
       if syncStableHostIdentityChanged(previous: previousProfile, next: profile) {
         resetTerminalSubscriptionState(clearHistory: true)
+        // Chat is machine-scoped for the same reason terminals are. Only the
+        // account-adoption and PIN paths used to clear it explicitly, so a
+        // saved-profile or QR switch carried the previous machine's chat events
+        // and history into the new machine's session.
+        resetChatEventState(clearHistory: true)
       }
       UserDefaults.standard.set(data, forKey: profileKey)
       if let key = profileStorageKey(profile) {
@@ -15784,13 +16121,22 @@ final class SyncService: ObservableObject {
     let remoteHostSiteId = brain?["siteId"] as? String
     let incomingHostIdentity = syncNormalizedCommandScopeValue(remoteHostIdentity)
       ?? syncNormalizedCommandScopeValue(expectedHostIdentity)
-    if activeProjectId != nil,
-       let incomingHostIdentity,
-       (
-         syncNormalizedCommandScopeValue(activeProjectHostIdentity)
-           ?? syncNormalizedCommandScopeValue(activeHostProfile?.hostIdentity)
-           ?? syncNormalizedCommandScopeValue(activeHostProfile?.lastHostDeviceId)
-       ) != incomingHostIdentity {
+    // A user-initiated transition records the machine it LEFT before
+    // `saveProfile` retargets everything below, so prefer it. Without that
+    // baseline this comparison reads a field the switch itself already
+    // overwrote with the incoming machine's identity — it would compare B to B,
+    // never fire, and strand the user inside the previous machine's project
+    // while attached to a host that has never heard of it.
+    let hubTransitionBaseline = pendingHubTransitionBaselineHostIdentity
+      ?? syncNormalizedCommandScopeValue(activeProjectHostIdentity)
+      ?? syncNormalizedCommandScopeValue(activeHostProfile?.hostIdentity)
+      ?? syncNormalizedCommandScopeValue(activeHostProfile?.lastHostDeviceId)
+    pendingHubTransitionBaselineHostIdentity = nil
+    if syncHubTransitionIsOwed(
+      baselineHostIdentity: hubTransitionBaseline,
+      incomingHostIdentity: incomingHostIdentity,
+      hasActiveProject: activeProjectId != nil
+    ) {
       setActiveProjectId(nil)
       projectHubPresented = true
     }

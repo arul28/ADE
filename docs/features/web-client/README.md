@@ -404,7 +404,11 @@ Machine runtime and sync host:
   browser choice never changes the machine-wide desktop/runtime preference.
 - `apps/ade-cli/src/services/sync/syncPairingStore.ts` - pairing result store:
   per-device secret, optional DPoP public key, and explicit local/account
-  provenance used for owner-scoped revocation.
+  provenance (`accountOwnerUserId` plus the sticky `localTrustOrigin` flag) used
+  for owner-scoped revocation. A same-account hello backed by a DPoP proof
+  against the record's pinned key adopts a still-local pairing into the account;
+  owner-scoped revocation demotes such records back to local trust instead of
+  deleting them.
 - `apps/ade-cli/src/services/sync/syncDpop.ts` - host-side P-256 proof
   validation and replay guard.
 - `apps/ade-cli/src/services/sync/syncCloudRelayStore.ts` - stable cloud-tunnel

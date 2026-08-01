@@ -1334,6 +1334,13 @@ The sync subsystem is **owned by the ADE runtime** (`apps/ade-cli/src/services/s
 - Device-bound direct pairing secrets survive account sign-out and are removed
   only by explicit machine forget or the versioned trust-reset policy; Relay
   authorization always requires a fresh matching account proof.
+- A pairing made by hand at the machine (QR/Nearby-PIN/SSH) can be adopted into
+  an account when the same device presents a DPoP proof against the key already
+  pinned on that record plus a verified same-account attestation; a keyless
+  record or one owned by another account is refused. Adoption records
+  `localTrustOrigin`, so signing out or switching accounts demotes the record
+  back to purely local trust rather than deleting it. Signing in never makes a
+  hand-paired machine destructible.
 - Linear creds, GitHub tokens, provider API keys stay on the host.
 - Commands from non-host devices validated and executed by the host only.
 - The release's versioned trust reset clears only saved connection grants:
