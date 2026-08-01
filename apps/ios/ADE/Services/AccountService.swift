@@ -329,18 +329,60 @@ struct AccountAttentionPendingAck: Codable, Equatable, Sendable {
   let seenAt: Date?
   let dismissedAt: Date?
   let sourceRevision: Int?
+  let queuedAt: Date
+  let attemptCount: Int
 
-  var newestTimestamp: Date {
-    [seenAt, dismissedAt].compactMap { $0 }.max() ?? .distantPast
+  init(
+    itemId: String,
+    seenAt: Date?,
+    dismissedAt: Date?,
+    sourceRevision: Int?,
+    queuedAt: Date = Date(),
+    attemptCount: Int = 0
+  ) {
+    self.itemId = itemId
+    self.seenAt = seenAt
+    self.dismissedAt = dismissedAt
+    self.sourceRevision = sourceRevision
+    self.queuedAt = queuedAt
+    self.attemptCount = max(0, attemptCount)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case itemId, seenAt, dismissedAt, sourceRevision, queuedAt, attemptCount
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    itemId = try container.decode(String.self, forKey: .itemId)
+    seenAt = try container.decodeIfPresent(Date.self, forKey: .seenAt)
+    dismissedAt = try container.decodeIfPresent(Date.self, forKey: .dismissedAt)
+    sourceRevision = try container.decodeIfPresent(Int.self, forKey: .sourceRevision)
+    queuedAt = try container.decodeIfPresent(Date.self, forKey: .queuedAt)
+      ?? [seenAt, dismissedAt].compactMap { $0 }.max()
+      ?? Date()
+    attemptCount = max(
+      0,
+      try container.decodeIfPresent(Int.self, forKey: .attemptCount) ?? 0
+    )
   }
 
   func merging(_ other: AccountAttentionPendingAck) -> AccountAttentionPendingAck {
     precondition(itemId == other.itemId)
+    let mergedQueuedAt = max(queuedAt, other.queuedAt)
+    let mergedAttemptCount: Int
+    if queuedAt == other.queuedAt {
+      mergedAttemptCount = max(attemptCount, other.attemptCount)
+    } else {
+      mergedAttemptCount = mergedQueuedAt == queuedAt ? attemptCount : other.attemptCount
+    }
     return AccountAttentionPendingAck(
       itemId: itemId,
       seenAt: Self.latest(seenAt, other.seenAt),
       dismissedAt: Self.latest(dismissedAt, other.dismissedAt),
-      sourceRevision: Self.latest(sourceRevision, other.sourceRevision)
+      sourceRevision: Self.latest(sourceRevision, other.sourceRevision),
+      queuedAt: mergedQueuedAt,
+      attemptCount: mergedAttemptCount
     )
   }
 
@@ -362,6 +404,10 @@ private struct AccountAttentionPendingAckArchive: Codable {
 /// duplicate item ids so a crash between enqueue and cleanup cannot multiply
 /// relay writes on the next foreground refresh.
 struct AccountAttentionPendingAckStore {
+  static let maximumEntriesPerOwner = 200
+  static let maximumAge: TimeInterval = 24 * 60 * 60
+  static let maximumFailedAttempts = 5
+
   private let defaults: UserDefaults
   private let key: String
 
@@ -376,14 +422,14 @@ struct AccountAttentionPendingAckStore {
   func entries(for ownerId: String) -> [AccountAttentionPendingAck] {
     let ownerId = normalizedOwnerId(ownerId)
     guard !ownerId.isEmpty else { return [] }
-    return Self.deduplicated(load().entriesByOwner[ownerId] ?? [])
+    return Self.bounded(load().entriesByOwner[ownerId] ?? [])
   }
 
   func enqueue(_ entries: [AccountAttentionPendingAck], for ownerId: String) {
     let ownerId = normalizedOwnerId(ownerId)
     guard !ownerId.isEmpty, !entries.isEmpty else { return }
     var archive = load()
-    archive.entriesByOwner[ownerId] = Self.deduplicated(
+    archive.entriesByOwner[ownerId] = Self.bounded(
       (archive.entriesByOwner[ownerId] ?? []) + entries
     )
     save(archive)
@@ -393,7 +439,7 @@ struct AccountAttentionPendingAckStore {
     let ownerId = normalizedOwnerId(ownerId)
     guard !ownerId.isEmpty else { return }
     var archive = load()
-    let normalized = Self.deduplicated(entries)
+    let normalized = Self.bounded(entries)
     if normalized.isEmpty {
       archive.entriesByOwner.removeValue(forKey: ownerId)
     } else {
@@ -414,6 +460,43 @@ struct AccountAttentionPendingAckStore {
     replace([], for: ownerId)
   }
 
+  @discardableResult
+  func pruneExpired(
+    for ownerId: String,
+    now: Date = Date()
+  ) -> [AccountAttentionPendingAck] {
+    let cutoff = now.addingTimeInterval(-Self.maximumAge)
+    let retained = entries(for: ownerId).filter { $0.queuedAt >= cutoff }
+    replace(retained, for: ownerId)
+    return retained
+  }
+
+  @discardableResult
+  func recordFailedAttempt(
+    itemIds: Set<String>,
+    for ownerId: String
+  ) -> Set<String> {
+    guard !itemIds.isEmpty else { return [] }
+    var evicted: Set<String> = []
+    let updated = entries(for: ownerId).compactMap { entry in
+      guard itemIds.contains(entry.itemId) else { return entry }
+      guard entry.attemptCount < Self.maximumFailedAttempts - 1 else {
+        evicted.insert(entry.itemId)
+        return nil
+      }
+      return AccountAttentionPendingAck(
+        itemId: entry.itemId,
+        seenAt: entry.seenAt,
+        dismissedAt: entry.dismissedAt,
+        sourceRevision: entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount + 1
+      )
+    }
+    replace(updated, for: ownerId)
+    return evicted
+  }
+
   static func deduplicated(
     _ entries: [AccountAttentionPendingAck]
   ) -> [AccountAttentionPendingAck] {
@@ -425,16 +508,24 @@ struct AccountAttentionPendingAckStore {
         itemId: itemId,
         seenAt: entry.seenAt,
         dismissedAt: entry.dismissedAt,
-        sourceRevision: entry.sourceRevision
+        sourceRevision: entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount
       )
       byId[itemId] = byId[itemId]?.merging(normalized) ?? normalized
     }
     return byId.values.sorted {
-      if $0.newestTimestamp != $1.newestTimestamp {
-        return $0.newestTimestamp < $1.newestTimestamp
+      if $0.queuedAt != $1.queuedAt {
+        return $0.queuedAt < $1.queuedAt
       }
       return $0.itemId < $1.itemId
     }
+  }
+
+  private static func bounded(
+    _ entries: [AccountAttentionPendingAck]
+  ) -> [AccountAttentionPendingAck] {
+    Array(deduplicated(entries).suffix(maximumEntriesPerOwner))
   }
 
   private func normalizedOwnerId(_ ownerId: String) -> String {
@@ -616,16 +707,78 @@ typealias AccountAttentionPollSleep = @MainActor (UInt64) async throws -> Void
 typealias AccountAttentionPollSignedIn = @MainActor () -> Bool
 typealias AccountAttentionPollRefresh = @MainActor () async -> Void
 
-private struct AccountAttentionAckFlushOutcome {
+struct AccountAttentionAckFlushOutcome {
   var attemptedItemIds: Set<String> = []
   var staleItemIds: Set<String> = []
   var unbackedItemIds: Set<String> = []
   var failureMessage: String?
 }
 
-private struct AccountAttentionAckTiming: Hashable {
+struct AccountAttentionAckTiming: Hashable {
   let seenAt: Date
   let dismissedAt: Date?
+}
+
+/// Drains every ready acknowledgment batch unless Relay reports an ownership
+/// fence. Retryable failures are recorded per entry and do not prevent later
+/// batches from making progress.
+@MainActor
+func flushAccountAttentionAckEntries(
+  _ entries: [AccountAttentionPendingAck],
+  ownerId: String,
+  revisionById: [String: Int],
+  store: AccountAttentionPendingAckStore,
+  acknowledge: @MainActor (
+    _ itemIds: [String],
+    _ timing: AccountAttentionAckTiming,
+    _ sourceRevisions: [String: Int]
+  ) async throws -> AccountAttentionAcknowledgmentResult
+) async -> AccountAttentionAckFlushOutcome {
+  var outcome = AccountAttentionAckFlushOutcome()
+  let grouped = Dictionary(grouping: entries) { entry in
+    AccountAttentionAckTiming(
+      seenAt: entry.seenAt ?? entry.dismissedAt ?? entry.queuedAt,
+      dismissedAt: entry.dismissedAt
+    )
+  }
+  for (timing, groupEntries) in grouped {
+    var startIndex = 0
+    while startIndex < groupEntries.count {
+      let endIndex = min(startIndex + 64, groupEntries.count)
+      let batch = Array(groupEntries[startIndex..<endIndex])
+      let batchIds = batch.map(\.itemId)
+      outcome.attemptedItemIds.formUnion(batchIds)
+      let sourceRevisions = Dictionary(
+        uniqueKeysWithValues: batch.compactMap { entry in
+          revisionById[entry.itemId].map { (entry.itemId, $0) }
+        }
+      )
+      do {
+        let result = try await acknowledge(batchIds, timing, sourceRevisions)
+        store.remove(itemIds: Set(result.applied), for: ownerId)
+        outcome.staleItemIds.formUnion(result.stale)
+        let reportedIds = Set(result.applied).union(result.stale)
+        outcome.staleItemIds.formUnion(Set(batchIds).subtracting(reportedIds))
+      } catch AccountAttentionRelayClient.RelayError.staleOwnership {
+        // A 409 is an account fence, not a retryable network failure. Keep no
+        // queued mutations for the rejected owner.
+        store.clear(for: ownerId)
+        outcome.failureMessage = AccountAttentionRelayClient.RelayError
+          .staleOwnership.localizedDescription
+        return outcome
+      } catch {
+        store.recordFailedAttempt(itemIds: Set(batchIds), for: ownerId)
+        if outcome.failureMessage == nil {
+          outcome.failureMessage = (error as? LocalizedError)?.errorDescription
+            ?? "Couldn't sync this Activity update. It will retry automatically."
+        }
+        // One unreachable or rejected batch must not starve unrelated work.
+        // The per-entry attempt limit above bounds persistent failures.
+      }
+      startIndex = endIndex
+    }
+  }
+  return outcome
 }
 
 /// Small orchestration seam used by the service and unit tests. A stale relay
@@ -883,6 +1036,9 @@ final class AccountService: ObservableObject {
     lastRelayCredential = nil
     accountRegistrationQueue.discardPending()
     accountPreferencesQueue.discardPending()
+    if let previousOwnerId {
+      attentionPendingAckStore.clear(for: previousOwnerId)
+    }
     cancelAttentionRefresh()
     stopAttentionPolling()
     invalidatePairingAuthorization()
@@ -926,14 +1082,18 @@ final class AccountService: ObservableObject {
     attentionPollGeneration &+= 1
     let generation = attentionPollGeneration
     attentionPollTask = Task { @MainActor [weak self] in
-      guard let self else { return }
-      while self.attentionPollingIsSignedIn {
+      while !Task.isCancelled {
+        guard self?.attentionPollingIsSignedIn == true,
+              let pollSleep = self?.attentionPollSleep else {
+          break
+        }
         do {
-          try await self.attentionPollSleep(ActivityPollInterval)
+          try await pollSleep(ActivityPollInterval)
         } catch {
           break
         }
-        guard !Task.isCancelled,
+        guard let self,
+              !Task.isCancelled,
               self.attentionPollGeneration == generation,
               self.attentionPollingIsSignedIn else {
           break
@@ -944,7 +1104,7 @@ final class AccountService: ObservableObject {
           await self.refreshAttentionSnapshot()
         }
       }
-      if self.attentionPollGeneration == generation {
+      if let self, self.attentionPollGeneration == generation {
         self.attentionPollTask = nil
       }
     }
@@ -1447,13 +1607,17 @@ final class AccountService: ObservableObject {
     let revisionById = Dictionary(
       uniqueKeysWithValues: (snapshot?.items ?? []).map { ($0.id, $0.revision) }
     )
-    let stored = attentionPendingAckStore.entries(for: ownerId)
+    // Orphaned item ids are intentionally unsendable without a current
+    // snapshot row. Bound their lifetime here so they cannot persist forever.
+    let stored = attentionPendingAckStore.pruneExpired(for: ownerId)
     let hydrated = stored.map { entry in
       AccountAttentionPendingAck(
         itemId: entry.itemId,
         seenAt: entry.seenAt,
         dismissedAt: entry.dismissedAt,
-        sourceRevision: revisionById[entry.itemId] ?? entry.sourceRevision
+        sourceRevision: revisionById[entry.itemId] ?? entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount
       )
     }
     if hydrated != stored {
@@ -1473,65 +1637,38 @@ final class AccountService: ObservableObject {
     )
     guard !ready.isEmpty else { return outcome }
 
-    let grouped = Dictionary(grouping: ready) { entry in
-      AccountAttentionAckTiming(
-        seenAt: entry.seenAt ?? entry.dismissedAt ?? Date(),
-        dismissedAt: entry.dismissedAt
-      )
-    }
-    for (timing, entries) in grouped {
-      var startIndex = 0
-      while startIndex < entries.count {
-        let endIndex = min(startIndex + 64, entries.count)
-        let batch = Array(entries[startIndex..<endIndex])
-        let batchIds = batch.map(\.itemId)
-        outcome.attemptedItemIds.formUnion(batchIds)
-        let sourceRevisions = Dictionary(
-          uniqueKeysWithValues: batch.compactMap { entry in
-            revisionById[entry.itemId].map { (entry.itemId, $0) }
+    let drained = await flushAccountAttentionAckEntries(
+      ready,
+      ownerId: ownerId,
+      revisionById: revisionById,
+      store: attentionPendingAckStore,
+      acknowledge: { [weak self] batchIds, timing, sourceRevisions in
+        guard let self else {
+          throw AccountAttentionRelayClient.RelayError.transport
+        }
+        return try await self.attentionRelay.acknowledge(
+          baseURL: baseURL,
+          token: initialSession.token,
+          itemIds: batchIds,
+          seenAt: timing.seenAt,
+          dismissedAt: timing.dismissedAt,
+          sourceRevisions: sourceRevisions,
+          expectedAccountOwnerId: ownerId,
+          refreshToken: { [weak self] in
+            guard let self,
+                  self.isPairingCommitAuthorized(initialSession.authorization) else {
+              return nil
+            }
+            return try? await self.freshRelaySession(
+              expectedAuthorization: initialSession.authorization
+            ).token
           }
         )
-        do {
-          let result = try await attentionRelay.acknowledge(
-            baseURL: baseURL,
-            token: initialSession.token,
-            itemIds: batchIds,
-            seenAt: timing.seenAt,
-            dismissedAt: timing.dismissedAt,
-            sourceRevisions: sourceRevisions,
-            expectedAccountOwnerId: ownerId,
-            refreshToken: { [weak self] in
-              guard let self,
-                    self.isPairingCommitAuthorized(initialSession.authorization) else {
-                return nil
-              }
-              return try? await self.freshRelaySession(
-                expectedAuthorization: initialSession.authorization
-              ).token
-            }
-          )
-          attentionPendingAckStore.remove(
-            itemIds: Set(result.applied),
-            for: ownerId
-          )
-          outcome.staleItemIds.formUnion(result.stale)
-          let reportedIds = Set(result.applied).union(result.stale)
-          outcome.staleItemIds.formUnion(Set(batchIds).subtracting(reportedIds))
-        } catch AccountAttentionRelayClient.RelayError.staleOwnership {
-          // A 409 is an account fence, not a retryable network failure. Keep no
-          // queued mutations for the rejected owner.
-          attentionPendingAckStore.clear(for: ownerId)
-          outcome.failureMessage = AccountAttentionRelayClient.RelayError
-            .staleOwnership.localizedDescription
-          return outcome
-        } catch {
-          outcome.failureMessage = (error as? LocalizedError)?.errorDescription
-            ?? "Couldn't sync this Activity update. It will retry automatically."
-          return outcome
-        }
-        startIndex = endIndex
       }
-    }
+    )
+    outcome.attemptedItemIds.formUnion(drained.attemptedItemIds)
+    outcome.staleItemIds.formUnion(drained.staleItemIds)
+    outcome.failureMessage = drained.failureMessage
     return outcome
   }
 

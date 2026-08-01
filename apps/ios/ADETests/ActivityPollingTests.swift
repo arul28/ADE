@@ -70,6 +70,30 @@ final class ActivityPollingTests: XCTestCase {
     XCTAssertFalse(service.isAttentionPolling)
   }
 
+  func testSleepingPollLoopDoesNotRetainAccountService() async {
+    let sleeper = ActivityPollSleepHarness()
+    weak var weakService: AccountService?
+
+    do {
+      let service = AccountService(
+        attentionPollSleep: { nanoseconds in
+          try await sleeper.sleep(nanoseconds: nanoseconds)
+        },
+        attentionPollSignedIn: { true },
+        attentionPollRefresh: {}
+      )
+      weakService = service
+      service.startAttentionPolling()
+      await waitForRequestCount(1, sleeper: sleeper)
+    }
+
+    for _ in 0..<1_000 where weakService != nil {
+      await Task.yield()
+    }
+    XCTAssertNil(weakService)
+    await sleeper.resumeFirst()
+  }
+
   private func waitForRequestCount(
     _ expected: Int,
     sleeper: ActivityPollSleepHarness

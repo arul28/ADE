@@ -496,7 +496,7 @@ struct NotchSurfaceView: View {
                     Text(toast.map(toastStatusLabel(for:)) ?? item?.statusLabel ?? "Needs you")
                         .font(.system(size: ADE.fs2xs, weight: .bold))
                         .foregroundStyle(tone)
-                    Text(toast?.title ?? itemPresentation?.title ?? "ADE needs your attention")
+                    Text(toast?.title ?? itemPresentation?.title ?? "Needs you")
                         .font(.system(size: ADE.fsSm + 1, weight: .semibold))
                         .foregroundStyle(ADE.fg)
                         .lineLimit(1)

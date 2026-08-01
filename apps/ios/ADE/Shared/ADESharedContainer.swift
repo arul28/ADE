@@ -149,6 +149,12 @@ public enum ADESharedContainer {
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             if let seconds = try? container.decode(Double.self) {
+                guard seconds.isFinite, abs(seconds) < 3_200_000_000 else {
+                    throw DecodingError.dataCorruptedError(
+                        in: container,
+                        debugDescription: "Attention timestamp is outside the supported range"
+                    )
+                }
                 return Date(timeIntervalSince1970: seconds)
             }
             let raw = try container.decode(String.self)

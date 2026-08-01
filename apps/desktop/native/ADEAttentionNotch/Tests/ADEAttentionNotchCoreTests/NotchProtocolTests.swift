@@ -1,5 +1,6 @@
 import XCTest
 @testable import ADEAttentionNotchCore
+@testable import ADEAttentionNotch
 
 final class NotchProtocolTests: XCTestCase {
     func testDecodesRawSnapshotAndEnvelope() throws {
@@ -396,6 +397,7 @@ final class NotchProtocolTests: XCTestCase {
         let status = try XCTUnwrap(notchStatusPresentation(availability: nil, itemCount: 0))
         XCTAssertFalse(status.isProblem)
         XCTAssertEqual(status.title, "All clear")
+        XCTAssertEqual(status.message, "Nothing needs you.")
         XCTAssertEqual(status.compactLabel, "All clear")
         XCTAssertEqual(status.tone, .emerald)
 
@@ -628,6 +630,32 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertThrowsError(try NotchInputDecoder.decode(line: #"{"type":"toast"}"#)) { error in
             XCTAssertEqual(error as? NotchProtocolError, .missingPayload("toast"))
         }
+    }
+
+    func testUnknownCommandDecodesToIgnoredWithoutThrowing() throws {
+        XCTAssertEqual(
+            try NotchInputDecoder.decode(
+                line: #"{"type":"future_thing","payload":{"version":2}}"#
+            ),
+            .ignored
+        )
+    }
+
+    @MainActor
+    func testClickOnlyModeDoesNotLatchSuppressedToast() {
+        let model = NotchViewModel()
+        model.handle(.settings(NotchSettings(
+            enabled: true,
+            revealMode: .click,
+            soundsEnabled: false,
+            automaticRevealEnabled: true
+        )))
+
+        model.handle(.toast(toastFixture(durationMs: 3_000)))
+
+        XCTAssertNil(model.activeToast)
+        XCTAssertEqual(model.interaction.presentation, .compact)
+        XCTAssertFalse(model.policy.allowsAutomaticReveal)
     }
 
     func testAutomaticRevealAndTickerDefaultOnAndRoundTrip() throws {

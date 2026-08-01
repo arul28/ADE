@@ -467,7 +467,7 @@ public func notchStatusPresentation(
     guard itemCount == 0 else { return nil }
     return NotchStatusPresentation(
         title: availability?.title.notchNonEmpty ?? "All clear",
-        message: availability?.message.notchNonEmpty ?? "Nothing needs your attention.",
+        message: availability?.message.notchNonEmpty ?? "Nothing needs you.",
         hint: nil,
         compactLabel: "All clear",
         tone: .emerald,
@@ -1005,6 +1005,7 @@ public enum NotchInput: Equatable, Sendable {
     case visibility(Bool)
     case reanchor
     case quit
+    case ignored
 }
 
 private struct CommandEnvelope: Decodable {
@@ -1034,7 +1035,7 @@ public enum NotchInputDecoder {
                 return .visibility(visible)
             case "reanchor": return .reanchor
             case "quit": return .quit
-            default: throw NotchProtocolError.unknownCommand(envelope.type)
+            default: return .ignored
             }
         }
         return .snapshot(try decoder.decode(AttentionSnapshot.self, from: data))
@@ -1043,7 +1044,6 @@ public enum NotchInputDecoder {
 
 public enum NotchProtocolError: Error, Equatable {
     case missingPayload(String)
-    case unknownCommand(String)
 }
 
 public struct NotchOutput: Encodable, Equatable, Sendable {

@@ -295,6 +295,10 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
             self.sessionId = nil
             pendingItemId = nil
             prNumber = number > 0 ? number : nil
+        case .unrecognized:
+            self.sessionId = nil
+            pendingItemId = nil
+            prNumber = nil
         }
     }
 
@@ -326,7 +330,9 @@ public struct ActivityRowPresentation: Identifiable, Hashable, Sendable {
     }
 
     public static func formatDuration(_ seconds: TimeInterval) -> String? {
-        guard seconds.isFinite, seconds >= 0 else { return nil }
+        guard seconds.isFinite, seconds >= 0, abs(seconds) < 3_200_000_000 else {
+            return nil
+        }
         let totalSeconds = Int(seconds)
         if totalSeconds < 60 { return "\(totalSeconds)s" }
         let totalMinutes = totalSeconds / 60

@@ -157,6 +157,8 @@ final class NotchViewModel: ObservableObject {
             requestReanchor()
         case .quit:
             requestQuit()
+        case .ignored:
+            break
         }
     }
 
@@ -346,8 +348,8 @@ final class NotchViewModel: ObservableObject {
         if settings.soundsEnabled {
             NSSound(named: toast.treatment == .celebration ? "Hero" : "Glass")?.play()
         }
-        activeToast = toast
         guard policy.allowsAutomaticReveal else { return }
+        activeToast = toast
         var next = interaction
         if toast.treatment == .celebration {
             next.setCelebration(policy: policy)

@@ -140,6 +140,46 @@ final class ActivityContractDecodingTests: XCTestCase {
         XCTAssertEqual(snapshot.items.map(\.id), ["survivor"])
     }
 
+    func testUnknownDestinationKeepsRowRenderableWithoutADeepLink() throws {
+        let data = Data(#"""
+        {
+          "contractVersion": 1,
+          "revision": 3,
+          "generatedAt": "2026-08-01T12:00:00Z",
+          "items": [{
+            "contractVersion": 1,
+            "id": "future-destination",
+            "revision": 1,
+            "fingerprint": "future-destination:1",
+            "kind": "agent",
+            "eventKind": "agent_running",
+            "phase": "running",
+            "machine": { "machineKey": "machine:one", "name": "Studio", "online": true },
+            "project": { "projectId": "project:one", "name": "ADE" },
+            "title": "Future destination",
+            "preview": "Still render this row",
+            "privacyPreview": "Agent activity",
+            "destination": { "kind": "future_surface", "route": "somewhere-new" },
+            "actions": [],
+            "occurredAt": "2026-08-01T11:59:00Z",
+            "updatedAt": "2026-08-01T12:00:00Z"
+          }]
+        }
+        """#.utf8)
+
+        let snapshot = try XCTUnwrap(ADESharedContainer.decodeAttentionSnapshot(from: data))
+        let item = try XCTUnwrap(snapshot.items.first)
+        let row = ActivityRowPresentation(item: item)
+
+        XCTAssertEqual(item.destination, .unrecognized("future_surface"))
+        XCTAssertNil(item.deepLinkURL)
+        XCTAssertEqual(row.id, "future-destination")
+        XCTAssertEqual(row.title, "Future destination")
+        XCTAssertNil(row.deepLink)
+        XCTAssertNil(row.sessionId)
+        XCTAssertNil(row.prNumber)
+    }
+
     func testActivityTierAndStatusSinceRoundTrip() throws {
         let statusSince = Date(timeIntervalSince1970: 1_754_046_000)
         let snapshot = AccountAttentionSnapshot(
@@ -170,15 +210,31 @@ final class ActivityContractDecodingTests: XCTestCase {
 
     func testTierDefaultsFromPhaseWhenActivityTierIsAbsent() {
         XCTAssertEqual(makeItem(id: "needs-you", phase: .needsYou).tier, .signal)
+        XCTAssertEqual(makeItem(id: "blocked", phase: .blocked).tier, .signal)
         XCTAssertEqual(makeItem(id: "failed", phase: .failed).tier, .signal)
+        XCTAssertEqual(makeItem(id: "checks-failing", phase: .checksFailing).tier, .signal)
+        XCTAssertEqual(makeItem(id: "review-requested", phase: .reviewRequested).tier, .signal)
+        XCTAssertEqual(makeItem(id: "changes-requested", phase: .changesRequested).tier, .signal)
+        XCTAssertEqual(makeItem(id: "merge-ready", phase: .mergeReady).tier, .signal)
         XCTAssertEqual(makeItem(id: "starting", phase: .starting).tier, .ambient)
         XCTAssertEqual(makeItem(id: "running", phase: .running).tier, .ambient)
         XCTAssertEqual(makeItem(id: "completed", phase: .completed).tier, .ambient)
-        XCTAssertEqual(makeItem(id: "blocked", phase: .blocked).tier, .idle)
-        XCTAssertEqual(makeItem(id: "stale", phase: .stale).tier, .idle)
+        XCTAssertEqual(makeItem(id: "stale", phase: .stale).tier, .ambient)
+        XCTAssertEqual(makeItem(id: "open", phase: .open).tier, .ambient)
+        XCTAssertEqual(makeItem(id: "merged", phase: .merged).tier, .ambient)
+        XCTAssertEqual(makeItem(id: "closed", phase: .closed).tier, .ambient)
+        XCTAssertEqual(
+            makeItem(id: "future", phase: .unrecognized("future_phase")).tier,
+            .ambient
+        )
         XCTAssertTrue(makeItem(id: "legacy-signal", phase: .needsYou).needsInbox)
         XCTAssertFalse(
             makeItem(id: "idle-needs-you", phase: .needsYou, activityTier: "idle").needsInbox
+        )
+        XCTAssertEqual(
+            makeItem(id: "unknown-tier", phase: .running, activityTier: "future_tier").tier,
+            .ambient,
+            "only an explicit idle publisher tier may derive idle"
         )
     }
 

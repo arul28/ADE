@@ -301,6 +301,10 @@ final class ActivityDrawerModelTests: XCTestCase {
         XCTAssertEqual(model.source, .machineFallback)
         XCTAssertEqual(model.sessions.map(\.id), ["awaiting:s-awaiting", "live:s-running"])
         XCTAssertEqual(model.inbox.map(\.id), ["ci:pr-1"])
+        let failingPR = model.inbox.first
+        XCTAssertEqual(failingPR?.tier, .signal)
+        XCTAssertEqual(failingPR?.band, .needsYou)
+        XCTAssertTrue(failingPR?.needsInbox == true)
         XCTAssertEqual(model.sessions.first?.phaseLabel, "Needs you")
         XCTAssertEqual(model.sessions.first?.machineName, "This Mac")
         XCTAssertTrue(

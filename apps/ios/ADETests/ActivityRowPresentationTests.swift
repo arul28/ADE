@@ -137,6 +137,31 @@ final class ActivityRowPresentationTests: XCTestCase {
         XCTAssertNil(ActivityRowPresentation.formatDuration(-1))
     }
 
+    func testExtremeElapsedAndLastSeenValuesAreRejectedWithoutIntegerConversion() {
+        let now = Date(timeIntervalSince1970: 1_754_046_000)
+        let extremePast = Date(timeIntervalSince1970: -1e300)
+        let elapsed = ActivityRowPresentation(
+            item: makeItem(phase: .running, occurredAt: extremePast)
+        )
+        let offline = ActivityRowPresentation(
+            item: makeItem(
+                phase: .running,
+                occurredAt: now,
+                machine: AccountAttentionMachine(
+                    machineKey: "corrupt",
+                    name: "Corrupt timestamp",
+                    online: false,
+                    lastSeenAt: extremePast
+                )
+            )
+        )
+
+        XCTAssertNil(ActivityRowPresentation.formatDuration(1e300))
+        XCTAssertNil(ActivityRowPresentation.formatDuration(-1e300))
+        XCTAssertNil(elapsed.elapsedLabel(now: now))
+        XCTAssertNil(offline.lastSeenLabel(now: now))
+    }
+
     // MARK: - Machine presence
 
     func testOfflineMachineCarriesLastSeenCopyAndStopsPulsing() {

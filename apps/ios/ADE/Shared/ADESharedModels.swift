@@ -490,6 +490,7 @@ public enum AccountAttentionDestination: Hashable, Sendable {
         tab: String,
         eventId: String?
     )
+    case unrecognized(String)
 
     public var deepLinkURL: URL? {
         deepLinkURL(accountMachineKey: nil)
@@ -530,6 +531,9 @@ public enum AccountAttentionDestination: Hashable, Sendable {
             ].compactMap { $0 }
             components?.queryItems = queryItems.isEmpty ? nil : queryItems
             return components?.url
+
+        case .unrecognized:
+            return nil
         }
     }
 
@@ -550,21 +554,22 @@ extension AccountAttentionDestination: Codable {
         case prId, repoOwner, repoName, number, tab
     }
 
-    private enum Kind: String, Codable {
+    private enum Kind: String {
         case session
         case pullRequest = "pull_request"
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        switch try container.decode(Kind.self, forKey: .kind) {
-        case .session:
+        let rawKind = try container.decode(String.self, forKey: .kind)
+        switch Kind(rawValue: rawKind) {
+        case .some(.session):
             self = .session(
                 sessionId: try container.decode(String.self, forKey: .sessionId),
                 itemId: try container.decodeIfPresent(String.self, forKey: .itemId),
                 eventId: try container.decodeIfPresent(String.self, forKey: .eventId)
             )
-        case .pullRequest:
+        case .some(.pullRequest):
             self = .pullRequest(
                 prId: try container.decodeIfPresent(String.self, forKey: .prId),
                 repoOwner: try container.decodeIfPresent(String.self, forKey: .repoOwner),
@@ -573,6 +578,8 @@ extension AccountAttentionDestination: Codable {
                 tab: try container.decodeIfPresent(String.self, forKey: .tab) ?? "overview",
                 eventId: try container.decodeIfPresent(String.self, forKey: .eventId)
             )
+        case .none:
+            self = .unrecognized(rawKind)
         }
     }
 
@@ -580,18 +587,20 @@ extension AccountAttentionDestination: Codable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
         case .session(let sessionId, let itemId, let eventId):
-            try container.encode(Kind.session, forKey: .kind)
+            try container.encode(Kind.session.rawValue, forKey: .kind)
             try container.encode(sessionId, forKey: .sessionId)
             try container.encodeIfPresent(itemId, forKey: .itemId)
             try container.encodeIfPresent(eventId, forKey: .eventId)
         case .pullRequest(let prId, let owner, let repo, let number, let tab, let eventId):
-            try container.encode(Kind.pullRequest, forKey: .kind)
+            try container.encode(Kind.pullRequest.rawValue, forKey: .kind)
             try container.encodeIfPresent(prId, forKey: .prId)
             try container.encodeIfPresent(owner, forKey: .repoOwner)
             try container.encodeIfPresent(repo, forKey: .repoName)
             try container.encode(number, forKey: .number)
             try container.encode(tab, forKey: .tab)
             try container.encodeIfPresent(eventId, forKey: .eventId)
+        case .unrecognized(let rawKind):
+            try container.encode(rawKind, forKey: .kind)
         }
     }
 }
@@ -842,18 +851,16 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     }
 
     public var tier: AccountActivityTier {
-        if let activityTier {
-            return AccountActivityTier(rawValue: activityTier) ?? .idle
+        if let activityTier, let publishedTier = AccountActivityTier(rawValue: activityTier) {
+            return publishedTier
         }
         switch phase {
-        case .needsYou, .failed:
+        case .needsYou, .blocked, .failed, .checksFailing, .reviewRequested,
+             .changesRequested, .mergeReady:
             return .signal
-        case .starting, .running, .completed:
-            return .ambient
-        case .blocked, .stale, .checksFailing, .reviewRequested,
-             .changesRequested, .mergeReady, .open, .merged, .closed,
+        case .starting, .running, .completed, .stale, .open, .merged, .closed,
              .unrecognized:
-            return .idle
+            return .ambient
         }
     }
 
