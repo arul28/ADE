@@ -76,6 +76,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -136,6 +138,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -158,6 +162,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -187,6 +193,8 @@ describe("AttentionNotchHelper", () => {
         enabled: true,
         revealMode: "hover",
         expandedPanelEnabled: true,
+        automaticRevealEnabled: true,
+        tickerEnabled: true,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: true,
@@ -258,6 +266,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -288,6 +298,8 @@ describe("AttentionNotchHelper", () => {
       enabled: false,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: false,
       celebrationsEnabled: true,
@@ -323,6 +335,8 @@ describe("AttentionNotchHelper", () => {
         enabled: true,
         revealMode: "hover",
         expandedPanelEnabled: true,
+        automaticRevealEnabled: true,
+        tickerEnabled: true,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: false,
@@ -356,6 +370,8 @@ describe("AttentionNotchHelper", () => {
         enabled: false,
         revealMode: "hover",
         expandedPanelEnabled: true,
+        automaticRevealEnabled: true,
+        tickerEnabled: true,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: false,
@@ -393,6 +409,8 @@ describe("AttentionNotchHelper", () => {
         enabled: true,
         revealMode: "hover",
         expandedPanelEnabled: true,
+        automaticRevealEnabled: true,
+        tickerEnabled: true,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: true,
@@ -402,6 +420,8 @@ describe("AttentionNotchHelper", () => {
         enabled: true,
         revealMode: "hover",
         expandedPanelEnabled: true,
+        automaticRevealEnabled: true,
+        tickerEnabled: true,
         preferredDisplayId: null,
         hideDetails: false,
         celebrationsEnabled: true,
@@ -460,6 +480,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: false,
@@ -479,6 +501,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: false,
       celebrationsEnabled: false,
@@ -488,6 +512,8 @@ describe("AttentionNotchHelper", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: false,
@@ -511,6 +537,204 @@ describe("AttentionNotchHelper", () => {
     expect(JSON.parse(lines[2] ?? "{}").snapshot.revision).toBe(3);
     expect(JSON.parse(lines[3] ?? "{}").settings.hideDetails).toBe(true);
     expect(JSON.parse(lines[4] ?? "{}").visible).toBe(false);
+    helper.dispose();
+  });
+  const enabledSettings = {
+    enabled: true as const,
+    revealMode: "hover" as const,
+    expandedPanelEnabled: true,
+    automaticRevealEnabled: true,
+    tickerEnabled: true,
+    preferredDisplayId: null,
+    hideDetails: true,
+    celebrationsEnabled: false,
+    soundsEnabled: false,
+  };
+
+  const toast = {
+    itemId: "agent-1",
+    eventKind: "agent_needs_you" as const,
+    treatment: "alert" as const,
+    title: "Agent needs you",
+    subtitle: "Approve the command",
+    tone: null,
+    durationMs: null,
+  };
+
+  // The router now writes up to 192KB; if this buffer were still 256KB a
+  // legitimately large frame would be accepted and then silently dropped here.
+  it("parses an output line far larger than the old 256KB buffer", () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const onOutput = vi.fn();
+    const helper = new AttentionNotchHelper({
+      executablePath: "/tmp/notch",
+      logger,
+      onOutput,
+      platform: "darwin",
+    });
+    helper.updateSettings(enabledSettings);
+    child.emit("spawn");
+
+    const line = JSON.stringify({
+      type: "protocol_error",
+      message: "x".repeat(300 * 1024),
+    });
+    expect(Buffer.byteLength(line, "utf8")).toBeGreaterThan(256 * 1024);
+    (child.stdout as PassThrough).write(`${line}\n`);
+
+    expect(logger.warn).not.toHaveBeenCalledWith("attention.notch_helper_output_overflow");
+    expect(onOutput).toHaveBeenCalledTimes(1);
+    expect(onOutput.mock.calls[0]?.[0]?.type).toBe("protocol_error");
+    helper.dispose();
+  });
+
+  it("accepts the two new output types and settings output with or without the new flags", () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const onOutput = vi.fn();
+    const helper = new AttentionNotchHelper({
+      executablePath: "/tmp/notch",
+      logger,
+      onOutput,
+      platform: "darwin",
+    });
+    helper.updateSettings(enabledSettings);
+    child.emit("spawn");
+
+    (child.stdout as PassThrough).write([
+      JSON.stringify({ type: "open_settings" }),
+      JSON.stringify({
+        type: "dismiss_item",
+        itemId: "agent-1",
+        destination: { kind: "session", sessionId: "session-1" },
+      }),
+      // A dismiss without an item is not routable and must be rejected.
+      JSON.stringify({ type: "dismiss_item" }),
+      JSON.stringify({
+        type: "settings",
+        settings: {
+          enabled: true,
+          revealMode: "click",
+          expandedPanelEnabled: false,
+          automaticRevealEnabled: false,
+          tickerEnabled: false,
+          preferredDisplayId: null,
+          hideDetails: true,
+          celebrationsEnabled: true,
+          soundsEnabled: false,
+        },
+      }),
+      // Optional: a helper predating the flags still lands.
+      JSON.stringify({
+        type: "settings",
+        settings: {
+          enabled: true,
+          revealMode: "click",
+          expandedPanelEnabled: false,
+          preferredDisplayId: null,
+          hideDetails: true,
+          celebrationsEnabled: true,
+          soundsEnabled: false,
+        },
+      }),
+      JSON.stringify({
+        type: "settings",
+        settings: {
+          enabled: true,
+          revealMode: "click",
+          expandedPanelEnabled: false,
+          tickerEnabled: "yes",
+          preferredDisplayId: null,
+          hideDetails: true,
+          celebrationsEnabled: true,
+          soundsEnabled: false,
+        },
+      }),
+      "",
+    ].join("\n"));
+
+    expect(onOutput.mock.calls.map((call) => call[0]?.type)).toEqual([
+      "open_settings",
+      "dismiss_item",
+      "settings",
+      "settings",
+    ]);
+    expect(onOutput.mock.calls[1]?.[0]).toMatchObject({ itemId: "agent-1" });
+    helper.dispose();
+  });
+
+  it("writes a toast only when the helper is already running", () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const lines: string[] = [];
+    (child.stdin as PassThrough).setEncoding("utf8");
+    child.stdin.on("data", (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      lines.push(...text.trim().split("\n"));
+    });
+    const helper = new AttentionNotchHelper({
+      executablePath: "/tmp/notch",
+      logger,
+      onOutput: vi.fn(),
+      platform: "darwin",
+    });
+
+    // No child yet: a toast must never be the thing that starts the surface,
+    // and must not be retained for replay.
+    helper.publishToast(toast);
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(lines).toEqual([]);
+
+    helper.updateSettings(enabledSettings);
+    child.emit("spawn");
+    helper.publishToast(toast);
+
+    const parsed = lines.map((line) => JSON.parse(line));
+    expect(parsed.map((entry) => entry.type)).toEqual(["settings", "toast"]);
+    expect(parsed[1]?.toast).toMatchObject({
+      itemId: "agent-1",
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+    });
+    helper.dispose();
+  });
+
+  it("never collapses two queued toasts into one", () => {
+    const child = fakeChild();
+    spawnMock.mockReturnValue(child);
+    const lines: string[] = [];
+    (child.stdin as PassThrough).setEncoding("utf8");
+    child.stdin.on("data", (chunk: Buffer | string) => {
+      const text = typeof chunk === "string" ? chunk : chunk.toString("utf8");
+      lines.push(...text.trim().split("\n"));
+    });
+    const originalWrite = child.stdin.write.bind(child.stdin);
+    let writeCount = 0;
+    vi.spyOn(child.stdin, "write").mockImplementation(((...args: Parameters<typeof child.stdin.write>) => {
+      writeCount += 1;
+      const accepted = originalWrite(...args);
+      return writeCount === 1 ? false : accepted;
+    }) as typeof child.stdin.write);
+
+    const helper = new AttentionNotchHelper({
+      executablePath: "/tmp/notch",
+      logger,
+      onOutput: vi.fn(),
+      platform: "darwin",
+    });
+    helper.updateSettings(enabledSettings);
+    child.emit("spawn");
+
+    helper.publishToast({ ...toast, itemId: "agent-1", title: "First" });
+    helper.publishToast({ ...toast, itemId: "agent-2", title: "Second" });
+    child.stdin.emit("drain");
+
+    const toasts = lines
+      .map((line) => JSON.parse(line))
+      .filter((entry) => entry.type === "toast")
+      .map((entry) => entry.toast.title);
+    expect(toasts).toEqual(["First", "Second"]);
     helper.dispose();
   });
 });

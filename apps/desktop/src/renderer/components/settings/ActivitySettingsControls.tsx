@@ -8,6 +8,8 @@ import {
   SpeakerHigh,
   ArrowsOutSimple,
   CursorClick,
+  Eye,
+  Waveform,
 } from "@phosphor-icons/react";
 
 import {
@@ -118,6 +120,8 @@ export function useActivitySettings() {
     setPreferences((current) => attentionPreferencesWithNotchPresentation(current, {
       revealMode: settings.revealMode,
       expandedPanelEnabled: settings.expandedPanelEnabled,
+      automaticRevealEnabled: settings.automaticRevealEnabled,
+      tickerEnabled: settings.tickerEnabled,
     }));
   }), []);
 
@@ -430,6 +434,35 @@ export function ActivitySettingsControls({
                 />
               }
             />
+            <PopoverRow
+              icon={Eye}
+              label="Automatic reveal"
+              description="Let the notch pop out briefly when something needs you."
+              disabled={!notchEnabled}
+              control={
+                <PopoverSwitch
+                  label="Automatic reveal"
+                  checked={notchPresentation.automaticRevealEnabled}
+                  disabled={!notchEnabled}
+                  onChange={(automaticRevealEnabled) =>
+                    setNotchPresentation({ automaticRevealEnabled })}
+                />
+              }
+            />
+            <PopoverRow
+              icon={Waveform}
+              label="Live ticker"
+              description="Cycle what each agent is doing in the pinned strip."
+              disabled={!notchEnabled}
+              control={
+                <PopoverSwitch
+                  label="Live ticker"
+                  checked={notchPresentation.tickerEnabled}
+                  disabled={!notchEnabled}
+                  onChange={(tickerEnabled) => setNotchPresentation({ tickerEnabled })}
+                />
+              }
+            />
           </section>
         ) : null}
 
@@ -587,6 +620,37 @@ export function ActivitySettingsControls({
               checked={notchPresentation.expandedPanelEnabled}
               disabled={!notchSupported || !notchEnabled}
               onChange={(expandedPanelEnabled) => setNotchPresentation({ expandedPanelEnabled })}
+            />
+          }
+        />
+        <SettingsCard
+          anchor="activity-auto-reveal"
+          title="Automatic reveal"
+          description="Let the notch pop out briefly when something needs you."
+          scope="machine"
+          disabled={!notchSupported || !notchEnabled}
+          control={
+            <SettingsToggle
+              label="Automatic reveal"
+              checked={notchPresentation.automaticRevealEnabled}
+              disabled={!notchSupported || !notchEnabled}
+              onChange={(automaticRevealEnabled) =>
+                setNotchPresentation({ automaticRevealEnabled })}
+            />
+          }
+        />
+        <SettingsCard
+          anchor="activity-ticker"
+          title="Live ticker"
+          description="Cycle what each agent is doing in the pinned strip."
+          scope="machine"
+          disabled={!notchSupported || !notchEnabled}
+          control={
+            <SettingsToggle
+              label="Live ticker"
+              checked={notchPresentation.tickerEnabled}
+              disabled={!notchSupported || !notchEnabled}
+              onChange={(tickerEnabled) => setNotchPresentation({ tickerEnabled })}
             />
           }
         />

@@ -30,6 +30,8 @@ describe("attention notch local settings", () => {
     expect(readAttentionNotchPresentation()).toEqual({
       revealMode: "hover",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
     });
 
     window.localStorage.setItem("ade:attention:notch-reveal-mode", "telepathy");
@@ -38,10 +40,17 @@ describe("attention notch local settings", () => {
 
   it("round-trips every presentation mode independently from full disable", () => {
     for (const revealMode of ["minimal", "hover", "click"] as const) {
-      writeAttentionNotchPresentation({ revealMode, expandedPanelEnabled: false });
+      writeAttentionNotchPresentation({
+        revealMode,
+        expandedPanelEnabled: false,
+        automaticRevealEnabled: false,
+        tickerEnabled: true,
+      });
       expect(readAttentionNotchPresentation()).toEqual({
         revealMode,
         expandedPanelEnabled: false,
+        automaticRevealEnabled: false,
+        tickerEnabled: true,
       });
     }
     writeAttentionNotchEnabled(false);
@@ -63,6 +72,8 @@ describe("attention notch local settings", () => {
       enabled: false,
       revealMode: "minimal",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: true,
@@ -73,6 +84,8 @@ describe("attention notch local settings", () => {
     expect(readAttentionNotchPresentation()).toEqual({
       revealMode: "minimal",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
     });
     expect(observed).toMatchObject({
       enabled: false,
@@ -83,27 +96,43 @@ describe("attention notch local settings", () => {
   });
 
   it("prefers the synced presentation and falls back to this Mac's cache", () => {
-    writeAttentionNotchPresentation({ revealMode: "click", expandedPanelEnabled: false });
+    writeAttentionNotchPresentation({
+      revealMode: "click",
+      expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
+    });
 
     // Nothing synced yet: the local cache is the whole answer, so an offline or
     // signed-out launch opens the notch the way this Mac last had it.
     expect(resolveAttentionNotchPresentation(null)).toEqual({
       revealMode: "click",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
     });
 
     const synced = attentionPreferencesWithNotchPresentation(DEFAULT_ATTENTION_PREFERENCES, {
       revealMode: "minimal",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
     });
     expect(resolveAttentionNotchPresentation(synced)).toEqual({
       revealMode: "minimal",
       expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
     });
   });
 
   it("ignores a synced reveal mode this build has never heard of", () => {
-    writeAttentionNotchPresentation({ revealMode: "minimal", expandedPanelEnabled: true });
+    writeAttentionNotchPresentation({
+      revealMode: "minimal",
+      expandedPanelEnabled: true,
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
+    });
     const preferences = {
       ...DEFAULT_ATTENTION_PREFERENCES,
       account: {

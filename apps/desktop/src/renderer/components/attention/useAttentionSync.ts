@@ -2,7 +2,16 @@ import { useEffect, useMemo, useRef } from "react";
 
 import {
   ATTENTION_CONTRACT_VERSION,
+  activityItemTier,
+  attentionPhasePriority,
+  sanitizeAttentionPreview,
+  type AttentionCounts,
+  type AttentionEventKind,
+  type AttentionItem,
   type AttentionNotchSettings,
+  type AttentionNotchToast,
+  type AttentionNotchToastTreatment,
+  type AttentionPhase,
   type AttentionPresence,
   type AttentionSnapshot,
 } from "../../../shared/types";
@@ -12,6 +21,7 @@ import {
   useAttentionStore,
 } from "../../state/attentionStore";
 import { useAccountStatus } from "../../lib/account";
+import { activitySections, summarizeActivity } from "./activityPriority";
 import {
   attentionNotchSettingsFromPreferences,
   persistAttentionNotchSettings,
@@ -29,6 +39,18 @@ const HIDDEN_PRESENCE_INTERVAL_MS = 120_000;
 const ATTENTION_SNAPSHOT_TIMEOUT_MS = 75_000;
 const NOTCH_SETTINGS_REFRESH_MS = 60_000;
 const MAX_VISIBLE_PRESENCE_ITEMS = 64;
+/**
+ * The notch receives a projection, not the store. The pipe has a byte budget
+ * the router enforces at 192KB, and a 400-row account blows through it — so we
+ * ship the top-priority slice and let `counts` carry the honest totals.
+ */
+export const MAX_NOTCH_PROJECTION_ITEMS = 48;
+const MAX_NOTCH_PREVIEW_LENGTH = 160;
+const MAX_TOAST_SUBTITLE_LENGTH = 120;
+/** One toast per item per 10 minutes, however many times it flaps. */
+export const TOAST_ITEM_COOLDOWN_MS = 600_000;
+/** And at most one toast every 5s across the whole account. */
+export const TOAST_MIN_INTERVAL_MS = 5_000;
 
 type AttentionAccountScope = {
   generation: number;
@@ -103,6 +125,8 @@ function failClosedAttentionNotchSettings(): AttentionNotchSettings {
     // chosen mode here stops a lost account load from re-covering the menu bar.
     revealMode: presentation.revealMode,
     expandedPanelEnabled: presentation.expandedPanelEnabled,
+    automaticRevealEnabled: presentation.automaticRevealEnabled,
+    tickerEnabled: presentation.tickerEnabled,
     preferredDisplayId: null,
     hideDetails: true,
     celebrationsEnabled: false,
@@ -184,8 +208,42 @@ export async function refreshAttentionSnapshot(): Promise<void> {
   return promise;
 }
 
+/**
+ * One projected row: bounded preview, no `recentActivity` (the notch never
+ * renders it and it is the single largest field on a busy agent row). Built
+ * fresh so the store's objects are never mutated.
+ */
+function projectAttentionNotchItem(item: AttentionItem): AttentionItem {
+  const { recentActivity: _recentActivity, ...rest } = item;
+  return {
+    ...rest,
+    preview: item.preview.length > MAX_NOTCH_PREVIEW_LENGTH
+      ? `${item.preview.slice(0, MAX_NOTCH_PREVIEW_LENGTH - 1)}…`
+      : item.preview,
+  };
+}
+
+function attentionNotchCounts(items: readonly AttentionItem[]): AttentionCounts {
+  const summary = summarizeActivity(items);
+  return {
+    needsYou: summary.needsYouCount,
+    working: summary.workingCount,
+    done: summary.doneCount,
+    total: summary.trackedCount,
+    machinesOnline: summary.machinesOnline,
+    machinesTotal: summary.machinesTotal,
+  };
+}
+
 export function materializeAttentionNotchSnapshot(): AttentionSnapshot {
   const state = attentionStore.getState();
+  const allItems = Object.values(state.itemsById);
+  // Activity's own order, flattened: needs-you, then working, then done.
+  // `activitySections` already drops dismissed and expired rows.
+  const ordered = activitySections(allItems).flatMap((section) => section.items);
+  const projected = ordered
+    .slice(0, MAX_NOTCH_PROJECTION_ITEMS)
+    .map(projectAttentionNotchItem);
   return {
     contractVersion: ATTENTION_CONTRACT_VERSION,
     scope: state.snapshotScope ?? (attentionAccountOwnerId ? "account" : "machine"),
@@ -200,7 +258,9 @@ export function materializeAttentionNotchSnapshot(): AttentionSnapshot {
     streamId: state.streamId,
     revision: state.revision,
     generatedAt: state.generatedAt ?? new Date().toISOString(),
-    items: Object.values(state.itemsById),
+    items: projected,
+    itemsTruncated: projected.length < ordered.length,
+    counts: attentionNotchCounts(allItems),
     tombstones: [],
   };
 }
@@ -213,6 +273,9 @@ export function attentionNotchSnapshotSignature(
     snapshot.availability ?? null,
     snapshot.streamId ?? null,
     snapshot.revision,
+    // Counts derive from the full set, so a row falling off the projection can
+    // change them without changing a single published row.
+    snapshot.counts ?? null,
     ...[...snapshot.items]
       .sort((left, right) => left.id.localeCompare(right.id))
       .map((item) => [
@@ -230,10 +293,155 @@ export function attentionNotchSnapshotSignature(
   ]);
 }
 
-async function publishAttentionNotchSnapshot(): Promise<void> {
+async function publishAttentionNotchSnapshot(
+  snapshot = materializeAttentionNotchSnapshot(),
+): Promise<void> {
   const api = typeof window !== "undefined" ? window.ade?.attentionNotch : null;
   if (!api) return;
-  await api.publishSnapshot(materializeAttentionNotchSnapshot());
+  await api.publishSnapshot(snapshot);
+}
+
+/**
+ * Every event kind, mapped. Left exhaustive on purpose: a new kind added to
+ * `AttentionEventKind` must fail the build here rather than silently arrive as
+ * an `info` toast for something that broke.
+ */
+const TOAST_TREATMENT_BY_EVENT: Record<AttentionEventKind, AttentionNotchToastTreatment> = {
+  agent_running: "info",
+  agent_needs_you: "alert",
+  agent_failed: "alert",
+  agent_completed: "info",
+  pr_checks_failing: "alert",
+  pr_review_requested: "info",
+  pr_changes_requested: "alert",
+  pr_merge_ready: "success",
+  pr_merged: "celebration",
+  pr_opened: "info",
+  pr_closed: "info",
+};
+
+const PRIVACY_TOAST_TITLE: Record<AttentionItem["kind"], string> = {
+  agent: "Agent update",
+  pull_request: "Pull request update",
+};
+
+export type AttentionToastDecisionInput = {
+  items: readonly AttentionItem[];
+  /** Phase each item carried the last time this window looked at it. */
+  previousPhases: ReadonlyMap<string, AttentionPhase>;
+  lastToastAtByItem: ReadonlyMap<string, number>;
+  lastToastAt: number;
+  availabilityState: string | null;
+  automaticRevealEnabled: boolean;
+  hideDetails: boolean;
+  now?: number;
+};
+
+/**
+ * The whole "should this interrupt" decision, pure and injectable so cooldown
+ * and rate-limit behaviour can be driven deterministically in tests.
+ *
+ * When several items transition inside one merge exactly one toast is emitted —
+ * the highest-priority one — and the rest are dropped rather than queued: a
+ * queue would still be announcing the last burst when the next one arrives.
+ */
+export function attentionToastForTransition(
+  input: AttentionToastDecisionInput,
+): AttentionNotchToast | null {
+  const now = input.now ?? Date.now();
+  if (!input.automaticRevealEnabled) return null;
+  // Degraded/signed-out snapshots carry last-known rows; announcing one as if
+  // it just happened would be a lie about freshness.
+  if (input.availabilityState !== "ready") return null;
+  if (now - input.lastToastAt < TOAST_MIN_INTERVAL_MS) return null;
+
+  let best: AttentionItem | null = null;
+  for (const item of input.items) {
+    const previous = input.previousPhases.get(item.id);
+    // First sighting is not a transition: a window that just opened would
+    // otherwise toast the entire backlog.
+    if (previous === undefined || previous === item.phase) continue;
+    if (activityItemTier(item) !== "signal") continue;
+    if (item.seenAt != null || item.dismissedAt != null) continue;
+    const lastForItem = input.lastToastAtByItem.get(item.id);
+    if (lastForItem !== undefined && now - lastForItem < TOAST_ITEM_COOLDOWN_MS) continue;
+    if (
+      best === null
+      || attentionPhasePriority(item.phase) < attentionPhasePriority(best.phase)
+      || (
+        attentionPhasePriority(item.phase) === attentionPhasePriority(best.phase)
+        && item.id.localeCompare(best.id) < 0
+      )
+    ) {
+      best = item;
+    }
+  }
+  if (!best) return null;
+
+  const treatment = TOAST_TREATMENT_BY_EVENT[best.eventKind] ?? "info";
+  return {
+    itemId: best.id,
+    eventKind: best.eventKind,
+    treatment,
+    title: input.hideDetails ? PRIVACY_TOAST_TITLE[best.kind] : best.title,
+    subtitle: input.hideDetails
+      ? best.privacyPreview
+      : sanitizeAttentionPreview(best.preview, MAX_TOAST_SUBTITLE_LENGTH),
+    tone: null,
+    durationMs: null,
+  };
+}
+
+const notchToastPhases = new Map<string, AttentionPhase>();
+const notchToastCooldownByItem = new Map<string, number>();
+let notchLastToastAt = 0;
+
+function resetAttentionToastState(): void {
+  notchToastPhases.clear();
+  notchToastCooldownByItem.clear();
+  notchLastToastAt = 0;
+}
+
+/**
+ * Runs on the same store subscription that publishes the snapshot, so a merge
+ * can never publish rows without having considered whether one of them earned
+ * an announcement.
+ */
+function emitAttentionNotchToast(snapshot: AttentionSnapshot): void {
+  const items = Object.values(attentionStore.getState().itemsById);
+  const presentation = readAttentionNotchPresentation();
+  const toast = attentionToastForTransition({
+    items,
+    previousPhases: notchToastPhases,
+    lastToastAtByItem: notchToastCooldownByItem,
+    lastToastAt: notchLastToastAt,
+    availabilityState: snapshot.availability?.state ?? null,
+    automaticRevealEnabled: presentation.automaticRevealEnabled,
+    // The notch takes hide-details' fail-closed default, exactly like
+    // `failClosedAttentionNotchSettings`: it paints over the menu bar of a Mac
+    // whose owner may have walked away.
+    hideDetails: attentionStore.getState().preferences?.account?.hideDetails !== false,
+  });
+  // Record every phase seen, toast or not, so a suppressed transition is not
+  // re-detected as new on the next merge.
+  const liveIds = new Set<string>();
+  for (const item of items) {
+    liveIds.add(item.id);
+    notchToastPhases.set(item.id, item.phase);
+  }
+  for (const id of [...notchToastPhases.keys()]) {
+    if (!liveIds.has(id)) notchToastPhases.delete(id);
+  }
+  const now = Date.now();
+  for (const [id, at] of [...notchToastCooldownByItem]) {
+    if (now - at >= TOAST_ITEM_COOLDOWN_MS) notchToastCooldownByItem.delete(id);
+  }
+  if (!toast?.itemId) return;
+  notchLastToastAt = now;
+  notchToastCooldownByItem.set(toast.itemId, now);
+  void Promise.resolve(
+    window.ade?.attentionNotch?.publishToast?.(toast),
+  ).catch(() => {});
 }
 
 async function refreshAttentionNotchSettings(
@@ -421,6 +629,7 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
       identityPromise = null;
       notchSettingsRefreshPromise = null;
       notchSettingsRefreshed = null;
+      resetAttentionToastState();
       attentionStore.getState().resetStream();
     }
     const accountScope = {
@@ -431,10 +640,15 @@ export function useAttentionSync(routeSurfaceVisible: boolean): void {
     let active = true;
     let unsubscribe = () => {};
     const publishNotchIfChanged = () => {
-      const nextSignature = attentionNotchSnapshotSignature();
+      const snapshot = materializeAttentionNotchSnapshot();
+      // Toasts ride this same pass, and deliberately before the signature
+      // gate: a phase transition is exactly what earns an announcement, and a
+      // republish-suppressed frame must still be able to carry one.
+      emitAttentionNotchToast(snapshot);
+      const nextSignature = attentionNotchSnapshotSignature(snapshot);
       if (nextSignature === lastNotchSignature) return;
       lastNotchSignature = nextSignature;
-      void publishAttentionNotchSnapshot().catch(() => {});
+      void publishAttentionNotchSnapshot(snapshot).catch(() => {});
     };
     void prepareAttentionNotchForAccount(accountScope).then((prepared) => {
       if (!active || !prepared || !isCurrentAccountScope(accountScope)) return;

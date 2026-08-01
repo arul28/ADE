@@ -211,9 +211,37 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
     public let actions: [AttentionAction]
     public let occurredAt: String
     public let updatedAt: String
+    /// Immutable for the life of a phase, so the row's elapsed ticker survives
+    /// the cosmetic republishes that churn `updatedAt` every poll. Absent from
+    /// publishers older than the Activity revamp — fall back to `occurredAt`.
+    public let statusSince: String?
+    /// `"signal" | "ambient" | "idle"`, decoded as a plain string so a tier
+    /// this build has never heard of degrades instead of costing us the item.
+    /// The wire name stays `activityTier`; `tier` is the local shorthand.
+    public let activityTier: String?
     public let seenAt: String?
     public let dismissedAt: String?
     public let expiresAt: String?
+
+    public var tier: String? { activityTier }
+
+    /// Idle rows are disk-only roster history: quiet, never alerting, always
+    /// filed under Done no matter what phase they preserved.
+    public var isIdleTier: Bool { activityTier == "idle" }
+
+    /// Only signal-tier rows may interrupt. Legacy items without a tier fall
+    /// back to the phase test the surface has always used.
+    public var isSignalTier: Bool {
+        guard let activityTier else { return isAttention }
+        return activityTier == "signal"
+    }
+
+    /// What "Working 3s" counts from. `updatedAt` is deliberately not a
+    /// candidate: it churns on every cosmetic republish, so a ticker anchored
+    /// to it would reset itself every poll.
+    public var elapsedAnchor: String {
+        statusSince?.notchNonEmpty ?? occurredAt
+    }
 
     public init(
         contractVersion: Int = 1,
@@ -239,6 +267,8 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         actions: [AttentionAction] = [],
         occurredAt: String,
         updatedAt: String,
+        statusSince: String? = nil,
+        activityTier: String? = nil,
         seenAt: String? = nil,
         dismissedAt: String? = nil,
         expiresAt: String? = nil
@@ -266,6 +296,8 @@ public struct AttentionItem: Codable, Equatable, Sendable, Identifiable {
         self.actions = actions
         self.occurredAt = occurredAt
         self.updatedAt = updatedAt
+        self.statusSince = statusSince
+        self.activityTier = activityTier
         self.seenAt = seenAt
         self.dismissedAt = dismissedAt
         self.expiresAt = expiresAt
@@ -593,6 +625,137 @@ public struct AttentionAvailability: Codable, Equatable, Sendable {
     public var isProblem: Bool { state != .ready }
 }
 
+/// The whole account's shape, sent alongside a bounded projection of its items.
+///
+/// Load-bearing: the host publishes only the top-priority slice (48 rows) to
+/// stay inside the pipe's byte budget, so "5 working · 2 need you · 61 total"
+/// can only be honest if the totals travel separately from the rows.
+public struct AttentionCounts: Codable, Equatable, Sendable {
+    public let needsYou: Int
+    public let working: Int
+    public let done: Int
+    public let total: Int
+    public let machinesOnline: Int
+    public let machinesTotal: Int
+
+    public init(
+        needsYou: Int = 0,
+        working: Int = 0,
+        done: Int = 0,
+        total: Int = 0,
+        machinesOnline: Int = 0,
+        machinesTotal: Int = 0
+    ) {
+        self.needsYou = needsYou
+        self.working = working
+        self.done = done
+        self.total = total
+        self.machinesOnline = machinesOnline
+        self.machinesTotal = machinesTotal
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case needsYou, working, done, total, machinesOnline, machinesTotal
+    }
+
+    /// Totally decoding, like every other advisory block: a host that learns to
+    /// send a seventh count, or forgets one, must not cost us the snapshot.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        func count(_ key: CodingKeys) -> Int {
+            max(0, ((try? container.decodeIfPresent(Int.self, forKey: key)) ?? nil) ?? 0)
+        }
+        needsYou = count(.needsYou)
+        working = count(.working)
+        done = count(.done)
+        total = count(.total)
+        machinesOnline = count(.machinesOnline)
+        machinesTotal = count(.machinesTotal)
+    }
+
+    /// How many rows the account has that this frame did not carry.
+    public func overflow(shownItemCount: Int) -> Int {
+        max(0, total - shownItemCount)
+    }
+}
+
+/// Per-kind delight for an event that just happened, rendered as a transient
+/// rather than a row. `celebration` and `alert` drive the two presentations the
+/// surface already knows how to animate; `success` and `info` ride the alert
+/// machinery with a calmer tone.
+public enum NotchToastTreatment: String, Codable, Equatable, Sendable, CaseIterable {
+    case celebration
+    case success
+    case alert
+    case info
+
+    /// A treatment this build has never heard of reads as ordinary news rather
+    /// than throwing — a decode failure here would be reported to the host as a
+    /// protocol error and latch the helper into "needs an update".
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        self = NotchToastTreatment(rawValue: raw) ?? .info
+    }
+
+    /// Only a merge earns the confetti; everything else uses the alert layout.
+    public var presentation: NotchPresentationState {
+        self == .celebration ? .celebration : .attention
+    }
+
+    public var defaultTone: NotchStatusTone {
+        switch self {
+        case .celebration, .success: return .emerald
+        case .alert: return .amber
+        case .info: return .blue
+        }
+    }
+
+    /// Matches the transient timers the surface already runs.
+    public var defaultDurationMs: Int {
+        self == .celebration ? 1_650 : 5_000
+    }
+}
+
+public struct AttentionToast: Codable, Equatable, Sendable {
+    public let itemId: String?
+    public let eventKind: String
+    public let treatment: NotchToastTreatment
+    public let title: String
+    public let subtitle: String?
+    public let tone: String?
+    public let durationMs: Int?
+
+    public init(
+        itemId: String? = nil,
+        eventKind: String,
+        treatment: NotchToastTreatment,
+        title: String,
+        subtitle: String? = nil,
+        tone: String? = nil,
+        durationMs: Int? = nil
+    ) {
+        self.itemId = itemId
+        self.eventKind = eventKind
+        self.treatment = treatment
+        self.title = title
+        self.subtitle = subtitle
+        self.tone = tone
+        self.durationMs = durationMs
+    }
+
+    /// Host-chosen hue when it sent one, otherwise the treatment's own.
+    public var resolvedTone: NotchStatusTone {
+        tone.flatMap { NotchStatusTone(rawValue: $0) } ?? treatment.defaultTone
+    }
+
+    /// Clamped so a drifted host cannot pin the surface open, or flash it so
+    /// briefly that it reads as a glitch.
+    public var resolvedDurationMs: Int {
+        guard let durationMs else { return treatment.defaultDurationMs }
+        return max(800, min(15_000, durationMs))
+    }
+}
+
 public struct AttentionSnapshot: Codable, Equatable, Sendable {
     public let contractVersion: Int
     /// Revisions are monotonic only within one stream. Account switches and
@@ -602,6 +765,10 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
     public let generatedAt: String
     public let items: [AttentionItem]
     public let availability: AttentionAvailability?
+    /// The account's real totals, independent of how many rows this frame
+    /// carried. Absent from hosts older than the Activity revamp, in which case
+    /// the surface counts what it can see.
+    public let counts: AttentionCounts?
 
     public init(
         contractVersion: Int = 1,
@@ -609,7 +776,8 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
         revision: Int,
         generatedAt: String,
         items: [AttentionItem],
-        availability: AttentionAvailability? = nil
+        availability: AttentionAvailability? = nil,
+        counts: AttentionCounts? = nil
     ) {
         self.contractVersion = contractVersion
         self.streamId = streamId
@@ -617,10 +785,11 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
         self.generatedAt = generatedAt
         self.items = items
         self.availability = availability
+        self.counts = counts
     }
 
     private enum CodingKeys: String, CodingKey {
-        case contractVersion, streamId, revision, generatedAt, items, availability
+        case contractVersion, streamId, revision, generatedAt, items, availability, counts
     }
 
     public init(from decoder: Decoder) throws {
@@ -635,6 +804,28 @@ public struct AttentionSnapshot: Codable, Equatable, Sendable {
         items = try container.decode([AttentionItem].self, forKey: .items)
         // Availability is advisory chrome. Never fail a snapshot over it.
         availability = (try? container.decodeIfPresent(AttentionAvailability.self, forKey: .availability)) ?? nil
+        counts = (try? container.decodeIfPresent(AttentionCounts.self, forKey: .counts)) ?? nil
+    }
+
+    /// The counts the host sent, or an honest tally of the rows on hand when it
+    /// sent none. Never invents an overflow it cannot see.
+    public func resolvedCounts() -> AttentionCounts {
+        if let counts { return counts }
+        let sections = notchActivitySections(items)
+        var online = Set<String>()
+        var machines = Set<String>()
+        for item in items where item.dismissedAt == nil {
+            machines.insert(item.machine.machineKey)
+            if item.machine.online { online.insert(item.machine.machineKey) }
+        }
+        return AttentionCounts(
+            needsYou: sections.needsYou.count,
+            working: sections.working.count,
+            done: sections.done.count,
+            total: sections.total,
+            machinesOnline: online.count,
+            machinesTotal: machines.count
+        )
     }
 }
 
@@ -715,6 +906,11 @@ public struct NotchSettings: Codable, Equatable, Sendable {
     public var hideDetails: Bool
     public var celebrationsEnabled: Bool
     public var soundsEnabled: Bool
+    /// Whether an event may briefly open the surface by itself. The reveal mode
+    /// still wins: "click only" means only when I ask, in every case.
+    public var automaticRevealEnabled: Bool
+    /// Whether the pinned strip cycles what each live agent is doing.
+    public var tickerEnabled: Bool
 
     public init(
         enabled: Bool = false,
@@ -723,7 +919,9 @@ public struct NotchSettings: Codable, Equatable, Sendable {
         preferredDisplayId: UInt32? = nil,
         hideDetails: Bool = true,
         celebrationsEnabled: Bool = true,
-        soundsEnabled: Bool = false
+        soundsEnabled: Bool = false,
+        automaticRevealEnabled: Bool = true,
+        tickerEnabled: Bool = true
     ) {
         self.enabled = enabled
         self.revealMode = revealMode
@@ -732,11 +930,14 @@ public struct NotchSettings: Codable, Equatable, Sendable {
         self.hideDetails = hideDetails
         self.celebrationsEnabled = celebrationsEnabled
         self.soundsEnabled = soundsEnabled
+        self.automaticRevealEnabled = automaticRevealEnabled
+        self.tickerEnabled = tickerEnabled
     }
 
     private enum CodingKeys: String, CodingKey {
         case enabled, revealMode, expandedPanelEnabled, preferredDisplayId
         case hideDetails, celebrationsEnabled, soundsEnabled
+        case automaticRevealEnabled, tickerEnabled
     }
 
     /// Decoding is total. A host that predates the presentation keys keeps the
@@ -758,6 +959,11 @@ public struct NotchSettings: Codable, Equatable, Sendable {
             ?? defaults.celebrationsEnabled
         soundsEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .soundsEnabled)) ?? nil)
             ?? defaults.soundsEnabled
+        automaticRevealEnabled =
+            ((try? container.decodeIfPresent(Bool.self, forKey: .automaticRevealEnabled)) ?? nil)
+            ?? defaults.automaticRevealEnabled
+        tickerEnabled = ((try? container.decodeIfPresent(Bool.self, forKey: .tickerEnabled)) ?? nil)
+            ?? defaults.tickerEnabled
     }
 }
 
@@ -767,6 +973,8 @@ public struct NotchSettings: Codable, Equatable, Sendable {
 public enum NotchSettingsMenuAction: Equatable, Sendable {
     case setRevealMode(NotchRevealMode)
     case toggleExpandedPanel
+    case toggleAutomaticReveal
+    case toggleTicker
     case hide
 }
 
@@ -780,6 +988,10 @@ public func applyingNotchSettingsMenuAction(
         next.revealMode = revealMode
     case .toggleExpandedPanel:
         next.expandedPanelEnabled.toggle()
+    case .toggleAutomaticReveal:
+        next.automaticRevealEnabled.toggle()
+    case .toggleTicker:
+        next.tickerEnabled.toggle()
     case .hide:
         next.enabled = false
     }
@@ -789,6 +1001,7 @@ public func applyingNotchSettingsMenuAction(
 public enum NotchInput: Equatable, Sendable {
     case snapshot(AttentionSnapshot)
     case settings(NotchSettings)
+    case toast(AttentionToast)
     case visibility(Bool)
     case reanchor
     case quit
@@ -798,6 +1011,7 @@ private struct CommandEnvelope: Decodable {
     let type: String
     let snapshot: AttentionSnapshot?
     let settings: NotchSettings?
+    let toast: AttentionToast?
     let visible: Bool?
 }
 
@@ -812,6 +1026,9 @@ public enum NotchInputDecoder {
             case "settings":
                 guard let settings = envelope.settings else { throw NotchProtocolError.missingPayload("settings") }
                 return .settings(settings)
+            case "toast":
+                guard let toast = envelope.toast else { throw NotchProtocolError.missingPayload("toast") }
+                return .toast(toast)
             case "visibility":
                 guard let visible = envelope.visible else { throw NotchProtocolError.missingPayload("visible") }
                 return .visibility(visible)

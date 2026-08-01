@@ -20,6 +20,7 @@ import { IPC } from "../../../shared/ipc";
 import type {
   AttentionItem,
   AttentionNotchSettings,
+  AttentionNotchToast,
   AttentionSnapshot,
 } from "../../../shared/types/attention";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
@@ -105,6 +106,7 @@ import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRunt
 import {
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
+  parseAttentionNotchToast,
 } from "../attention/attentionNotchRouter";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import type {
@@ -1589,6 +1591,7 @@ export function registerIpc({
   builtInBrowserService,
   productAnalyticsService,
   publishAttentionNotchSnapshot,
+  publishAttentionNotchToast,
   updateAttentionNotchSettings,
   getAttentionNotchHealth,
   retryAttentionNotch,
@@ -1616,6 +1619,7 @@ export function registerIpc({
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
+  publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
   getAttentionNotchHealth?: () => import("../../../shared/types").AttentionNotchHealth;
   retryAttentionNotch?: () => import("../../../shared/types").AttentionNotchHealth;
@@ -1858,6 +1862,7 @@ export function registerIpc({
     [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
     [IPC.accountRemoveMachine]: new Set(["machineKey"]),
     [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
+    [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -3207,6 +3212,12 @@ export function registerIpc({
     const snapshot = parseAttentionNotchSnapshot(input);
     if (!snapshot) throw new Error("Invalid Attention Notch snapshot.");
     publishAttentionNotchSnapshot?.(snapshot);
+  });
+
+  ipcMain.handle(IPC.attentionNotchPublishToast, async (_event, input: unknown) => {
+    const toast = parseAttentionNotchToast(input);
+    if (!toast) throw new Error("Invalid Attention Notch toast.");
+    publishAttentionNotchToast?.(toast);
   });
 
   ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {

@@ -139,10 +139,68 @@ export type AttentionItem = {
   expiresAt: string | null;
 };
 
+/**
+ * Attention's tone vocabulary is `sessionStatusPresentation`'s five hues plus
+ * two that only pull requests ever use. The session five keep their meanings
+ * exactly — see the one-hue-one-meaning rule in
+ * `apps/desktop/src/shared/sessionStatusPresentation.ts`:
+ *
+ *   blue     work is happening, nothing is asked of you
+ *   amber    YOUR MOVE — and nothing else, ever
+ *   emerald  finished cleanly, you have not looked yet
+ *   red      it broke
+ *   neutral  true, but not actionable
+ *
+ * `violet` carries "a human review is outstanding" — neither "your move" (it is
+ * usually someone else's) nor an outcome, and without its own hue it would have
+ * to borrow amber, which is precisely the erosion the rule forbids. `cyan` is
+ * currently unused by any phase; it stays in the union and the stylesheets as
+ * the spare for the next PR-side distinction, and must never be handed to a
+ * session state — those five hues are settled.
+ *
+ * It lives here rather than beside the phase table because the native notch
+ * protocol carries it on the wire (`NotchStatusTone` in `AttentionModels.swift`
+ * mirrors this union), so main-process code has to name it too.
+ */
+export type AttentionTone =
+  | "amber"
+  | "red"
+  | "violet"
+  | "blue"
+  | "cyan"
+  | "emerald"
+  | "neutral";
+
+export const ATTENTION_TONES: readonly AttentionTone[] = [
+  "amber",
+  "red",
+  "violet",
+  "blue",
+  "cyan",
+  "emerald",
+  "neutral",
+];
+
 export type AttentionTombstone = {
   id: string;
   revision: number;
   deletedAt: string;
+};
+
+/**
+ * The whole account's shape, sent alongside a bounded projection of its items.
+ *
+ * Load-bearing: the renderer publishes only the top-priority slice to stay
+ * inside the native pipe's byte budget, so "5 working · 2 need you · 61 total"
+ * can only be honest if the totals travel separately from the rows.
+ */
+export type AttentionCounts = {
+  needsYou: number;
+  working: number;
+  done: number;
+  total: number;
+  machinesOnline: number;
+  machinesTotal: number;
 };
 
 export type AttentionSnapshot = {
@@ -177,6 +235,12 @@ export type AttentionSnapshot = {
   machines?: AttentionMachineRef[];
   items: AttentionItem[];
   itemsTruncated?: boolean;
+  /**
+   * Totals over the full item set, so a surface receiving a truncated
+   * projection can still state how much work the account actually has.
+   * Optional: publishers older than this build omit it.
+   */
+  counts?: AttentionCounts;
   tombstones?: AttentionTombstone[];
 };
 
@@ -210,6 +274,8 @@ export type AttentionPreferenceScope = {
    */
   notchRevealMode?: AttentionNotchRevealMode;
   notchExpandedPanel?: boolean;
+  notchAutomaticReveal?: boolean;
+  notchTicker?: boolean;
   quietHours: {
     enabled: boolean;
     startMinute: number;
@@ -256,6 +322,45 @@ export function isAttentionNotchRevealMode(
   );
 }
 
+/**
+ * Per-kind delight for an event that just happened, rendered by the native
+ * surface as a transient rather than a row. `celebration` earns the confetti;
+ * everything else rides the alert layout with a calmer tone.
+ */
+export type AttentionNotchToastTreatment =
+  | "celebration"
+  | "success"
+  | "alert"
+  | "info";
+
+export const ATTENTION_NOTCH_TOAST_TREATMENTS: readonly AttentionNotchToastTreatment[] = [
+  "celebration",
+  "success",
+  "alert",
+  "info",
+];
+
+/**
+ * A one-shot event pushed to the native notch. Unlike every other helper
+ * command this is not state-setting: it is never replayed on restart, because
+ * a toast for something that happened before the crash is a lie.
+ */
+export type AttentionNotchToast = {
+  itemId?: string | null;
+  eventKind: AttentionEventKind;
+  treatment: AttentionNotchToastTreatment;
+  title: string;
+  subtitle?: string | null;
+  /** Host-chosen hue; the native side falls back to the treatment's own. */
+  tone?: AttentionTone | null;
+  /** Natively clamped to 800..15000; out-of-range values are rejected here. */
+  durationMs?: number | null;
+};
+
+/** Matches the native clamp, so the router can reject rather than silently bend. */
+export const ATTENTION_NOTCH_TOAST_MIN_DURATION_MS = 800;
+export const ATTENTION_NOTCH_TOAST_MAX_DURATION_MS = 15_000;
+
 export type AttentionNotchSettings = {
   enabled: boolean;
   revealMode: AttentionNotchRevealMode;
@@ -264,6 +369,10 @@ export type AttentionNotchSettings = {
    * never grow far enough to sit over menu-bar content.
    */
   expandedPanelEnabled: boolean;
+  /** Whether an event may pop the surface out on its own. Defaults true. */
+  automaticRevealEnabled: boolean;
+  /** Whether the pinned strip cycles what each agent is doing. Defaults true. */
+  tickerEnabled: boolean;
   preferredDisplayId?: number | null;
   hideDetails: boolean;
   celebrationsEnabled: boolean;

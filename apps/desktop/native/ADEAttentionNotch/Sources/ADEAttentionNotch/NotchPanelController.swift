@@ -194,12 +194,6 @@ final class NotchPanelController {
             case 53:
                 model.dismissExpanded()
                 return nil
-            case 123:
-                model.navigate(delta: -1)
-                return nil
-            case 124:
-                model.navigate(delta: 1)
-                return nil
             case 36, 76:
                 model.openSelected()
                 return nil

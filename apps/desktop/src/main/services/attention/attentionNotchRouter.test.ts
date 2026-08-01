@@ -5,6 +5,7 @@ import {
   attentionItemNavigationRequest,
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
+  parseAttentionNotchToast,
   resolveAttentionNotchOutput,
 } from "./attentionNotchRouter";
 import type { AttentionItem, AttentionSnapshot } from "../../../shared/types";
@@ -127,10 +128,14 @@ describe("Attention Notch routing", () => {
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
     })).toEqual({
       enabled: true,
       revealMode: "click",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: false,
       preferredDisplayId: 12,
       hideDetails: false,
       celebrationsEnabled: true,
@@ -151,11 +156,34 @@ describe("Attention Notch routing", () => {
       enabled: true,
       revealMode: "hover",
       expandedPanelEnabled: true,
+      // Both new presentation booleans default on, so an older payload keeps
+      // the shipped behaviour rather than silently going quiet.
+      automaticRevealEnabled: true,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: false,
       celebrationsEnabled: true,
       soundsEnabled: false,
     });
+  });
+
+  it("rejects non-boolean automatic reveal or ticker flags", () => {
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+      automaticRevealEnabled: "sometimes",
+    })).toBeNull();
+    expect(parseAttentionNotchSettings({
+      enabled: true,
+      preferredDisplayId: null,
+      hideDetails: false,
+      celebrationsEnabled: true,
+      soundsEnabled: false,
+      tickerEnabled: 1,
+    })).toBeNull();
   });
 
   it("rejects an invented notch reveal mode", () => {
@@ -249,6 +277,132 @@ describe("Attention Notch routing", () => {
       item: current,
       mode: "seen",
     });
+  });
+
+  it("accepts a well-formed counts block and rejects a malformed one", () => {
+    const counts = {
+      needsYou: 2,
+      working: 5,
+      done: 1,
+      total: 61,
+      machinesOnline: 1,
+      machinesTotal: 3,
+    };
+    expect(parseAttentionNotchSnapshot({ ...snapshot(), counts })).not.toBeNull();
+    // Absent stays valid: publishers older than the counts block still land.
+    expect(parseAttentionNotchSnapshot(snapshot())).not.toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...snapshot(),
+      counts: { ...counts, total: -1 },
+    })).toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...snapshot(),
+      counts: { ...counts, working: 1.5 },
+    })).toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...snapshot(),
+      counts: { ...counts, machinesTotal: undefined },
+    })).toBeNull();
+  });
+
+  // The router's write cap has to stay under the helper's read cap, or an
+  // accepted snapshot is silently dropped on the far side of the pipe.
+  it("caps the published projection at 64 items and 192KB", () => {
+    const many = (count: number) => ({
+      ...snapshot(),
+      items: Array.from({ length: count }, (_unused, index) =>
+        item({ id: `agent-${index}`, fingerprint: `agent-${index}:3` })),
+    });
+    expect(parseAttentionNotchSnapshot(many(64))).not.toBeNull();
+    expect(parseAttentionNotchSnapshot(many(65))).toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...snapshot(),
+      items: [item({ detail: "x".repeat(8_000) })],
+      // A single oversized field is enough once the payload clears 192KB.
+      generatedAt: "2026-07-28T12:00:03.000Z",
+      streamId: "s".repeat(400),
+      tombstones: Array.from({ length: 4_000 }, (_unused, index) => ({
+        id: `tombstone-${index}-${"x".repeat(40)}`,
+        revision: 1,
+        deletedAt: "2026-07-28T12:00:03.000Z",
+      })),
+    })).toBeNull();
+  });
+
+  it("validates toasts and rejects anything the native side would have to bend", () => {
+    expect(parseAttentionNotchToast({
+      itemId: "agent-1",
+      eventKind: "pr_merged",
+      treatment: "celebration",
+      title: "Merged #42",
+      subtitle: "acme/ade",
+      tone: "emerald",
+      durationMs: 1_650,
+    })).toEqual({
+      itemId: "agent-1",
+      eventKind: "pr_merged",
+      treatment: "celebration",
+      title: "Merged #42",
+      subtitle: "acme/ade",
+      tone: "emerald",
+      durationMs: 1_650,
+    });
+
+    // itemId is optional: a toast can be about the account, not a row.
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Agent needs you",
+    })).toEqual({
+      itemId: null,
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Agent needs you",
+      subtitle: null,
+      tone: null,
+      durationMs: null,
+    });
+
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_vibed",
+      treatment: "alert",
+      title: "Agent needs you",
+    })).toBeNull();
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "fanfare",
+      title: "Agent needs you",
+    })).toBeNull();
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "x".repeat(257),
+    })).toBeNull();
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "",
+    })).toBeNull();
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Agent needs you",
+      tone: "chartreuse",
+    })).toBeNull();
+    // Out of range is rejected rather than clamped: 800..15000 mirrors the
+    // native clamp, and a host outside it has drifted.
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Agent needs you",
+      durationMs: 200,
+    })).toBeNull();
+    expect(parseAttentionNotchToast({
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Agent needs you",
+      durationMs: 60_000,
+    })).toBeNull();
   });
 
   it("preserves exact PR ids and detail tabs", () => {

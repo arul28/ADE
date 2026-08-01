@@ -4893,6 +4893,9 @@ contextBridge.exposeInMainWorld("ade", {
   attentionNotch: {
     publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
+    publishToast: async (
+      toast: import("../shared/types").AttentionNotchToast,
+    ): Promise<void> => ipcRenderer.invoke(IPC.attentionNotchPublishToast, toast),
     updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
     getHealth: async (): Promise<import("../shared/types").AttentionNotchHealth> =>

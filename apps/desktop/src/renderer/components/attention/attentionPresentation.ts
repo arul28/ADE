@@ -2,6 +2,7 @@ import type {
   AttentionActionKind,
   AttentionItem,
   AttentionPhase,
+  AttentionTone,
 } from "../../../shared/types";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import {
@@ -12,34 +13,12 @@ import {
 } from "../../../shared/sessionStatusPresentation";
 
 /**
- * Attention's tone vocabulary is `sessionStatusPresentation`'s five hues plus
- * two that only pull requests ever use. The session five keep their meanings
- * exactly — see the one-hue-one-meaning rule in
- * `apps/desktop/src/shared/sessionStatusPresentation.ts`:
- *
- *   blue     work is happening, nothing is asked of you
- *   amber    YOUR MOVE — and nothing else, ever
- *   emerald  finished cleanly, you have not looked yet
- *   red      it broke
- *   neutral  true, but not actionable
- *
- * Exactly one phase in this module is amber: `needs_you`.
- *
- * `violet` carries "a human review is outstanding" — neither "your move" (it is
- * usually someone else's) nor an outcome, and without its own hue it would have
- * to borrow amber, which is precisely the erosion the rule forbids. `cyan` is
- * currently unused by any phase; it stays in the union and the stylesheets as
- * the spare for the next PR-side distinction, and must never be handed to a
- * session state — those five hues are settled.
+ * The tone vocabulary itself moved to `shared/types/attention.ts` — the native
+ * notch protocol carries it on the wire, so the main process has to name it
+ * too. Its meanings, and the reason `violet` and `cyan` exist at all, are
+ * documented there. Exactly one phase in this module is amber: `needs_you`.
  */
-export type AttentionTone =
-  | "amber"
-  | "red"
-  | "violet"
-  | "blue"
-  | "cyan"
-  | "emerald"
-  | "neutral";
+export type { AttentionTone };
 
 export type AttentionPhasePresentation = {
   label: string;

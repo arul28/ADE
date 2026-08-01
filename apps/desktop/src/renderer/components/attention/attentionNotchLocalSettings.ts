@@ -12,6 +12,10 @@ import {
 const ATTENTION_NOTCH_ENABLED_KEY = "ade:attention:notch-enabled";
 const ATTENTION_NOTCH_REVEAL_MODE_KEY = "ade:attention:notch-reveal-mode";
 const ATTENTION_NOTCH_EXPANDED_PANEL_KEY = "ade:attention:notch-expanded-panel";
+// New settings get new keys: the three above are frozen wire for anyone who
+// has already made a choice on this Mac.
+const ATTENTION_NOTCH_AUTO_REVEAL_KEY = "ade:attention:notch-auto-reveal";
+const ATTENTION_NOTCH_TICKER_KEY = "ade:attention:notch-ticker";
 const ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT = "ade:attention-notch-settings-changed";
 
 /**
@@ -22,12 +26,16 @@ const ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT = "ade:attention-notch-settings-cha
 export type AttentionNotchPresentation = {
   revealMode: AttentionNotchRevealMode;
   expandedPanelEnabled: boolean;
+  automaticRevealEnabled: boolean;
+  tickerEnabled: boolean;
 };
 
 /** What a Mac that has never been configured gets: today's behaviour. */
 export const DEFAULT_ATTENTION_NOTCH_PRESENTATION: AttentionNotchPresentation = {
   revealMode: DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
   expandedPanelEnabled: true,
+  automaticRevealEnabled: true,
+  tickerEnabled: true,
 };
 
 function readLocalItem(key: string): string | null {
@@ -65,6 +73,8 @@ export function readAttentionNotchPresentation(): AttentionNotchPresentation {
       ? revealMode
       : DEFAULT_ATTENTION_NOTCH_PRESENTATION.revealMode,
     expandedPanelEnabled: readLocalItem(ATTENTION_NOTCH_EXPANDED_PANEL_KEY) !== "false",
+    automaticRevealEnabled: readLocalItem(ATTENTION_NOTCH_AUTO_REVEAL_KEY) !== "false",
+    tickerEnabled: readLocalItem(ATTENTION_NOTCH_TICKER_KEY) !== "false",
   };
 }
 
@@ -76,6 +86,11 @@ export function writeAttentionNotchPresentation(
     ATTENTION_NOTCH_EXPANDED_PANEL_KEY,
     String(presentation.expandedPanelEnabled),
   );
+  writeLocalItem(
+    ATTENTION_NOTCH_AUTO_REVEAL_KEY,
+    String(presentation.automaticRevealEnabled),
+  );
+  writeLocalItem(ATTENTION_NOTCH_TICKER_KEY, String(presentation.tickerEnabled));
 }
 
 /**
@@ -96,6 +111,12 @@ export function resolveAttentionNotchPresentation(
     expandedPanelEnabled: typeof account?.notchExpandedPanel === "boolean"
       ? account.notchExpandedPanel
       : local.expandedPanelEnabled,
+    automaticRevealEnabled: typeof account?.notchAutomaticReveal === "boolean"
+      ? account.notchAutomaticReveal
+      : local.automaticRevealEnabled,
+    tickerEnabled: typeof account?.notchTicker === "boolean"
+      ? account.notchTicker
+      : local.tickerEnabled,
   };
 }
 
@@ -110,6 +131,8 @@ export function attentionPreferencesWithNotchPresentation(
       ...preferences.account,
       notchRevealMode: presentation.revealMode,
       notchExpandedPanel: presentation.expandedPanelEnabled,
+      notchAutomaticReveal: presentation.automaticRevealEnabled,
+      notchTicker: presentation.tickerEnabled,
     },
   };
 }
@@ -121,6 +144,8 @@ export function persistAttentionNotchSettings(
   writeAttentionNotchPresentation({
     revealMode: settings.revealMode,
     expandedPanelEnabled: settings.expandedPanelEnabled,
+    automaticRevealEnabled: settings.automaticRevealEnabled,
+    tickerEnabled: settings.tickerEnabled,
   });
   if (typeof window !== "undefined") {
     window.dispatchEvent(new CustomEvent<AttentionNotchSettings>(
@@ -178,6 +203,8 @@ export function attentionNotchSettingsFromPreferences(
     enabled,
     revealMode: presentation.revealMode,
     expandedPanelEnabled: presentation.expandedPanelEnabled,
+    automaticRevealEnabled: presentation.automaticRevealEnabled,
+    tickerEnabled: presentation.tickerEnabled,
     preferredDisplayId: null,
     hideDetails: normalized.account.hideDetails,
     celebrationsEnabled: normalized.account.celebrationsEnabled,

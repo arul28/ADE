@@ -39,6 +39,7 @@ export const IPC = {
   appOpenPathInEditor: "ade.app.openPathInEditor",
   appLogDebugEvent: "ade.app.logDebugEvent",
   attentionNotchPublishSnapshot: "ade.attentionNotch.publishSnapshot",
+  attentionNotchPublishToast: "ade.attentionNotch.publishToast",
   attentionNotchUpdateSettings: "ade.attentionNotch.updateSettings",
   attentionNotchGetHealth: "ade.attentionNotch.getHealth",
   attentionNotchRetry: "ade.attentionNotch.retry",

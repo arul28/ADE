@@ -24,7 +24,7 @@ final class NotchContextMenuController: NSObject {
     private func menu() -> NSMenu {
         let menu = NSMenu(title: "ADE Notch")
         menu.autoenablesItems = false
-        menu.addItem(item("Open Attention Center", action: #selector(openAttentionCenter)))
+        menu.addItem(item("Open Activity", action: #selector(openActivity)))
         menu.addItem(item("Refresh", action: #selector(refresh)))
         menu.addItem(.separator())
 
@@ -43,6 +43,18 @@ final class NotchContextMenuController: NSObject {
         let expanded = item("Allow expanded panel", action: #selector(toggleExpandedPanel))
         expanded.state = model.settings.expandedPanelEnabled ? .on : .off
         menu.addItem(expanded)
+        let automaticReveal = item("Automatic reveal", action: #selector(toggleAutomaticReveal))
+        automaticReveal.state = model.settings.automaticRevealEnabled ? .on : .off
+        // "Click only" already means nothing but a click opens anything, so the
+        // checkmark would claim a behaviour the mode overrides.
+        automaticReveal.isEnabled = model.settings.revealMode != .click
+        menu.addItem(automaticReveal)
+        let ticker = item("Live ticker", action: #selector(toggleTicker))
+        ticker.state = model.settings.tickerEnabled ? .on : .off
+        // The ticker lives in the pinned strip, which only compact mode keeps
+        // on screen at rest.
+        ticker.isEnabled = model.settings.revealMode == .minimal
+        menu.addItem(ticker)
         menu.addItem(.separator())
         menu.addItem(item("Hide ADE Notch…", action: #selector(confirmHide)))
         return menu
@@ -54,8 +66,8 @@ final class NotchContextMenuController: NSObject {
         return item
     }
 
-    @objc private func openAttentionCenter() {
-        model.openAttentionCenter()
+    @objc private func openActivity() {
+        model.openActivity()
     }
 
     @objc private func refresh() {
@@ -74,11 +86,19 @@ final class NotchContextMenuController: NSObject {
         model.applySettingsMenuAction(.toggleExpandedPanel)
     }
 
+    @objc private func toggleAutomaticReveal() {
+        model.applySettingsMenuAction(.toggleAutomaticReveal)
+    }
+
+    @objc private func toggleTicker() {
+        model.applySettingsMenuAction(.toggleTicker)
+    }
+
     @objc private func confirmHide() {
         let alert = NSAlert()
         alert.alertStyle = .informational
         alert.messageText = "Hide ADE Notch?"
-        alert.informativeText = "This removes the notch and menu-bar activity surface. You can turn it back on anytime in ADE Attention settings."
+        alert.informativeText = "This removes the notch and menu-bar activity surface. You can turn it back on anytime in ADE’s Activity settings."
         alert.addButton(withTitle: "Hide ADE Notch")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }

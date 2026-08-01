@@ -3,36 +3,59 @@ import Combine
 import Foundation
 import ADEAttentionNotchCore
 
+/// Transients are host-driven since the Activity revamp.
+///
+/// The helper used to synthesise its own alerts by diffing item fingerprints,
+/// which fired on every cosmetic republish. The renderer now owns that decision
+/// (`useAttentionSync`'s toast emitter) because only it can see the account's
+/// delivery policy, the per-item 10-minute cooldown, and the global rate limit.
+/// The machinery below is unchanged; the trigger moved.
 @MainActor
 final class NotchViewModel: ObservableObject {
-    private enum DeferredTransient {
-        case attention(itemId: String)
-        case celebration(itemId: String)
-    }
 
     @Published private(set) var items: [AttentionItem] = []
     @Published private(set) var interaction = NotchInteractionState()
     @Published private(set) var pointerInside = false
     @Published private(set) var settings = NotchSettings()
     @Published private(set) var availability: AttentionAvailability?
+    @Published private(set) var counts = AttentionCounts()
+    /// The event currently being shown as a transient, if any. Cleared when the
+    /// transient settles so a later hover cannot resurrect stale news.
+    @Published private(set) var activeToast: AttentionToast?
 
     var emit: (NotchOutput) -> Void = { _ in }
     var requestReanchor: () -> Void = {}
     var requestQuit: () -> Void = {}
 
-    private var peekTask: Task<Void, Never>?
     private var closeTask: Task<Void, Never>?
     private var transientTask: Task<Void, Never>?
-    private var fingerprintsById: [String: String] = [:]
     private var hostVisibilityRequested = true
     private var hoveredItemId: String?
-    private var deferredTransient: DeferredTransient?
+    private var deferredTransient: AttentionToast?
     private var snapshotCursor = AttentionSnapshotCursor()
 
     var selectedItem: AttentionItem? {
         guard items.indices.contains(interaction.selectedIndex) else { return nil }
         return items[interaction.selectedIndex]
     }
+
+    /// The panel's three sections, filed exactly as the desktop popover files
+    /// them. Recomputed from `items` rather than cached: the list is capped at
+    /// the host's 48-row projection, so this is a trivial pass.
+    var sections: NotchActivitySections { notchActivitySections(items) }
+
+    /// Rows the hover strip's avatars are drawn from: the highest-priority
+    /// work, which is what someone glancing at the notch is looking for.
+    var leadingItems: [AttentionItem] { Array(sections.live.prefix(3)) }
+
+    /// What the pinned ticker cycles. Empty means the strip stays still.
+    var tickerItems: [AttentionItem] {
+        guard settings.tickerEnabled, settings.revealMode == .minimal else { return [] }
+        return Array(sections.live.prefix(8))
+    }
+
+    /// Rows the account has that this frame did not carry.
+    var overflowCount: Int { counts.overflow(shownItemCount: items.count) }
 
     /// How far the user lets the surface grow, and what opens it.
     var policy: NotchPresentationPolicy { NotchPresentationPolicy(settings: settings) }
@@ -73,6 +96,49 @@ final class NotchViewModel: ObservableObject {
         notchSecondaryActions(selectedItem?.actions ?? [])
     }
 
+    /// What the transient card shows. A live toast wins; otherwise this is the
+    /// short card a click opens in compact mode, so the layout is never empty.
+    var toastPresentation: AttentionToast? {
+        if let activeToast {
+            guard !settings.hideDetails else {
+                return AttentionToast(
+                    itemId: activeToast.itemId,
+                    eventKind: activeToast.eventKind,
+                    treatment: activeToast.treatment,
+                    title: activeToast.itemId.flatMap { id in
+                        items.first(where: { $0.id == id })?
+                            .presentation(hideDetails: true).title
+                    } ?? "ADE update",
+                    subtitle: activeToast.itemId.flatMap { id in
+                        items.first(where: { $0.id == id })?.privacyPreview
+                    },
+                    tone: activeToast.tone,
+                    durationMs: activeToast.durationMs
+                )
+            }
+            return activeToast
+        }
+        guard let item = selectedItem else {
+            guard let status = statusPresentation else { return nil }
+            return AttentionToast(
+                eventKind: "status",
+                treatment: status.isProblem ? .alert : .info,
+                title: status.title,
+                subtitle: status.message,
+                tone: status.tone.rawValue
+            )
+        }
+        let presentation = item.presentation(hideDetails: settings.hideDetails)
+        return AttentionToast(
+            itemId: item.id,
+            eventKind: item.eventKind,
+            treatment: item.isAttention ? .alert : .info,
+            title: presentation.title,
+            subtitle: presentation.preview,
+            tone: notchStatusTone(for: item.phase).rawValue
+        )
+    }
+
     func handle(_ input: NotchInput) {
         switch input {
         case .snapshot(let snapshot):
@@ -82,6 +148,8 @@ final class NotchViewModel: ObservableObject {
             setVisible(settings.enabled && hostVisibilityRequested)
             applyPresentationPolicy()
             requestReanchor()
+        case .toast(let toast):
+            present(toast)
         case .visibility(let visible):
             hostVisibilityRequested = visible
             setVisible(settings.enabled && visible)
@@ -96,11 +164,14 @@ final class NotchViewModel: ObservableObject {
         let acceptance = snapshotCursor.accept(snapshot)
         guard acceptance != .rejectedStale else { return }
         if case .accepted(resetPresentationState: true) = acceptance {
-            fingerprintsById.removeAll()
+            // An account switch: news from the previous account may not be
+            // waiting to interrupt the new one.
             deferredTransient = nil
+            activeToast = nil
             transientTask?.cancel()
         }
         availability = snapshot.availability
+        counts = snapshot.resolvedCounts()
         let focusedItemId = pointerInside ? hoveredItemId : selectedItem?.id
         var deduplicated: [String: AttentionItem] = [:]
         for item in snapshot.items where item.contractVersion == 1 {
@@ -110,9 +181,6 @@ final class NotchViewModel: ObservableObject {
             deduplicated[item.id] = item
         }
         let sorted = sortedAttentionItems(Array(deduplicated.values))
-        let changed = sorted.filter { fingerprintsById[$0.id] != $0.fingerprint }
-        let initialSnapshot = fingerprintsById.isEmpty
-        fingerprintsById = Dictionary(uniqueKeysWithValues: sorted.map { ($0.id, $0.fingerprint) })
         items = sorted
 
         var next = interaction
@@ -124,45 +192,36 @@ final class NotchViewModel: ObservableObject {
         }
         interaction = next
 
-        guard !sorted.isEmpty else {
-            transientTask?.cancel()
-            deferredTransient = nil
-            hoveredItemId = nil
-            // Draining to zero is not a reason to yank the surface out from
-            // under the pointer or out of a panel the user opened: those states
-            // now render the empty/error copy instead.
-            if interaction.presentation == .attention || interaction.presentation == .celebration {
-                var settled = interaction
-                settled.finishTransient(pointerInside: pointerInside, policy: policy)
-                interaction = settled
-            }
-            return
-        }
-
-        if settings.celebrationsEnabled,
-           let merged = changed.first(where: \.isCelebration),
-           (!initialSnapshot || isRecent(merged.occurredAt, within: 120)) {
-            if pointerInside {
-                deferredTransient = .celebration(itemId: merged.id)
-                return
-            }
-            selectItem(id: merged.id)
-            beginCelebration()
-            return
-        }
-
-        if let attention = changed.first(where: \.isAttention) {
-            if pointerInside {
-                deferredTransient = .attention(itemId: attention.id)
-                return
-            }
-            selectItem(id: attention.id)
-            beginAttention()
+        guard sorted.isEmpty else { return }
+        transientTask?.cancel()
+        deferredTransient = nil
+        activeToast = nil
+        hoveredItemId = nil
+        // Draining to zero is not a reason to yank the surface out from under
+        // the pointer or out of a panel the user opened: those states render
+        // the empty/error copy instead.
+        if interaction.presentation == .attention || interaction.presentation == .celebration {
+            var settled = interaction
+            settled.finishTransient(pointerInside: pointerInside, policy: policy)
+            interaction = settled
         }
     }
 
+    /// Shows one event. Celebrations honour the account's celebrations setting;
+    /// everything else rides the alert layout. A toast that arrives while the
+    /// pointer is on the surface waits rather than yanking the content out from
+    /// under it.
+    func present(_ toast: AttentionToast) {
+        if toast.treatment == .celebration, !settings.celebrationsEnabled { return }
+        if pointerInside {
+            deferredTransient = toast
+            return
+        }
+        if let itemId = toast.itemId { selectItem(id: itemId) }
+        begin(toast)
+    }
+
     func pointerChanged(isInside: Bool) {
-        peekTask?.cancel()
         closeTask?.cancel()
 
         if isInside {
@@ -170,18 +229,8 @@ final class NotchViewModel: ObservableObject {
             pointerInside = true
             hoveredItemId = selectedItem?.id
             var next = interaction
-            let token = next.pointerEntered(hasItems: hasPresentableContent, policy: policy)
+            next.pointerEntered(hasItems: hasPresentableContent, policy: policy)
             interaction = next
-            // Nothing to schedule when the pointer is not allowed to open the
-            // peek: the delayed task would only ever be a no-op.
-            guard policy.allowsHoverReveal else { return }
-            peekTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(145))
-                guard !Task.isCancelled, let self else { return }
-                var delayed = self.interaction
-                delayed.applyPeek(generation: token, pointerInside: self.pointerInside)
-                self.interaction = delayed
-            }
         } else {
             guard pointerInside else { return }
             closeTask = Task { [weak self] in
@@ -198,8 +247,8 @@ final class NotchViewModel: ObservableObject {
     }
 
     func toggleExpanded() {
-        peekTask?.cancel()
         transientTask?.cancel()
+        activeToast = nil
         var next = interaction
         next.explicitToggle(hasItems: hasPresentableContent, policy: policy)
         interaction = next
@@ -212,23 +261,40 @@ final class NotchViewModel: ObservableObject {
         interaction = next
     }
 
-    func navigate(delta: Int) {
-        var next = interaction
-        next.navigate(delta: delta, itemCount: items.count)
-        interaction = next
-        if pointerInside {
-            hoveredItemId = selectedItem?.id
-        }
+    /// Focus a row the pointer is over, so "Open in ADE" and the tooltip agree
+    /// with what the user is looking at. The pager it replaced is gone: the
+    /// panel is a scrolling list now, not one card at a time.
+    func focus(_ item: AttentionItem) {
+        selectItem(id: item.id)
+        if pointerInside { hoveredItemId = item.id }
     }
 
     func openSelected() {
         guard let item = selectedItem else { return }
+        open(item)
+    }
+
+    func open(_ item: AttentionItem) {
         emit(NotchOutput(
             type: "open",
             itemId: item.id,
             destination: item.destination,
             deepLink: item.destination.deepLink
         ))
+    }
+
+    /// Asks the host to file the row away. The helper never mutates the feed
+    /// itself — the next snapshot is what removes the row.
+    func dismiss(_ item: AttentionItem) {
+        emit(NotchOutput(
+            type: "dismiss_item",
+            itemId: item.id,
+            destination: item.destination
+        ))
+    }
+
+    func openSettings() {
+        emit(NotchOutput(type: "open_settings"))
     }
 
     func openFor(_ action: AttentionAction) {
@@ -242,7 +308,9 @@ final class NotchViewModel: ObservableObject {
         ))
     }
 
-    func openAttentionCenter() {
+    /// The wire name stays `open_center`: the host routes on it and the surface
+    /// only renamed what it calls the destination.
+    func openActivity() {
         emit(NotchOutput(type: "open_center"))
     }
 
@@ -260,60 +328,52 @@ final class NotchViewModel: ObservableObject {
     }
 
     private func setVisible(_ visible: Bool) {
-        peekTask?.cancel()
         closeTask?.cancel()
         transientTask?.cancel()
         pointerInside = false
         hoveredItemId = nil
         deferredTransient = nil
+        activeToast = nil
         var next = interaction
         next.setVisible(visible)
         interaction = next
     }
 
-    private func beginAttention() {
+    private func begin(_ toast: AttentionToast) {
         transientTask?.cancel()
         // The cue still fires in compact/manual modes: the user asked the
         // surface to stay small, not to stop telling them something needs them.
         if settings.soundsEnabled {
-            NSSound(named: "Glass")?.play()
+            NSSound(named: toast.treatment == .celebration ? "Hero" : "Glass")?.play()
         }
+        activeToast = toast
         guard policy.allowsAutomaticReveal else { return }
         var next = interaction
-        next.setAttention(policy: policy)
+        if toast.treatment == .celebration {
+            next.setCelebration(policy: policy)
+        } else {
+            next.setAttention(policy: policy)
+        }
         interaction = next
+        let durationMs = toast.resolvedDurationMs
         transientTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(5))
+            try? await Task.sleep(for: .milliseconds(durationMs))
             guard !Task.isCancelled, let self else { return }
             var finished = self.interaction
             finished.finishTransient(pointerInside: self.pointerInside, policy: self.policy)
             self.interaction = finished
-        }
-    }
-
-    private func beginCelebration() {
-        transientTask?.cancel()
-        if settings.soundsEnabled {
-            NSSound(named: "Hero")?.play()
-        }
-        guard policy.allowsAutomaticReveal else { return }
-        var next = interaction
-        next.setCelebration(policy: policy)
-        interaction = next
-        transientTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(1_650))
-            guard !Task.isCancelled, let self else { return }
-            var finished = self.interaction
-            finished.finishTransient(pointerInside: self.pointerInside, policy: self.policy)
-            self.interaction = finished
+            self.activeToast = nil
         }
     }
 
     /// Applies the current settings to whatever is already on screen.
     private func applyPresentationPolicy() {
+        // Turning automatic reveal off mid-toast has to collapse what is on
+        // screen; otherwise the setting looks broken until the next event.
         if !policy.allowsAutomaticReveal {
             transientTask?.cancel()
             deferredTransient = nil
+            activeToast = nil
         }
         var next = interaction
         next.applyPolicy(policy)
@@ -330,20 +390,11 @@ final class NotchViewModel: ObservableObject {
     private func presentDeferredTransientIfNeeded() {
         guard let deferredTransient else { return }
         self.deferredTransient = nil
-        switch deferredTransient {
-        case .attention(let itemId):
-            guard items.contains(where: { $0.id == itemId }) else { return }
-            selectItem(id: itemId)
-            beginAttention()
-        case .celebration(let itemId):
-            guard items.contains(where: { $0.id == itemId }) else { return }
-            selectItem(id: itemId)
-            beginCelebration()
+        // The row it was about may have drained while the pointer sat there.
+        if let itemId = deferredTransient.itemId,
+           !items.contains(where: { $0.id == itemId }) {
+            return
         }
-    }
-
-    private func isRecent(_ value: String, within seconds: TimeInterval) -> Bool {
-        guard let date = parseAttentionDate(value) else { return false }
-        return abs(date.timeIntervalSinceNow) <= seconds
+        present(deferredTransient)
     }
 }

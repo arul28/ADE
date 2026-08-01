@@ -19,8 +19,8 @@ final class NotchStatusItemController {
         panelController.fallbackAnchorFrame = { [weak self] in
             self?.statusItemScreenFrame
         }
-        Publishers.CombineLatest3(model.$items, model.$interaction, model.$settings)
-            .sink { [weak self] _, _, _ in self?.refresh() }
+        Publishers.CombineLatest4(model.$items, model.$interaction, model.$settings, model.$counts)
+            .sink { [weak self] _, _, _, _ in self?.refresh() }
             .store(in: &cancellables)
         refresh()
     }
@@ -43,7 +43,7 @@ final class NotchStatusItemController {
         button.image = statusIcon
         button.imagePosition = .imageOnly
         button.toolTip = statusToolTip
-        button.setAccessibilityLabel("ADE Attention Center, \(statusToolTip)")
+        button.setAccessibilityLabel("ADE Activity, \(statusToolTip)")
     }
 
     private var statusIcon: NSImage {
@@ -56,7 +56,7 @@ final class NotchStatusItemController {
             // an invisible, unclickable gap.
             return NSImage(
                 systemSymbolName: "app.dashed",
-                accessibilityDescription: "ADE Attention Center"
+                accessibilityDescription: "ADE Activity"
             ) ?? NSImage()
         }
 
@@ -79,10 +79,14 @@ final class NotchStatusItemController {
         NSBezierPath(ovalIn: badgeRect).fill()
         image.unlockFocus()
         image.isTemplate = false
-        image.accessibilityDescription = "ADE Attention Center"
+        image.accessibilityDescription = "ADE Activity"
         return image
     }
 
+    /// One hue per section, same table as every other Activity surface: amber
+    /// is "your move" and nothing else, blue is work in progress, emerald is
+    /// finished cleanly. Read from the account's counts rather than one selected
+    /// row, so the badge describes the whole account.
     private var statusBadgeColor: NSColor {
         if let status = model.statusPresentation, status.isProblem {
             switch status.tone {
@@ -91,23 +95,24 @@ final class NotchStatusItemController {
             default: return .systemPurple
             }
         }
-        if model.items.contains(where: \.isAttention) { return .systemOrange }
-        if model.items.contains(where: { $0.phase == "running" || $0.phase == "starting" }) {
-            return .systemBlue
-        }
-        if model.items.isEmpty { return .systemGray }
-        return .systemGreen
+        let counts = model.counts
+        if counts.needsYou > 0 { return .systemOrange }
+        if counts.working > 0 { return .systemBlue }
+        if counts.done > 0 { return .systemGreen }
+        return .systemGray
     }
 
     private var statusToolTip: String {
         if let status = model.statusPresentation, status.isProblem {
             return [status.title, status.hint].compactMap { $0 }.joined(separator: " ")
         }
-        guard let item = model.selectedItem else {
-            return model.statusPresentation?.message ?? "No active attention items"
-        }
-        let presentation = item.presentation(hideDetails: model.settings.hideDetails)
-        return "\(item.statusLabel): \(presentation.title)"
+        let counts = model.counts
+        var parts: [String] = []
+        if counts.needsYou > 0 { parts.append("\(counts.needsYou) need\(counts.needsYou == 1 ? "s" : "") you") }
+        if counts.working > 0 { parts.append("\(counts.working) working") }
+        if counts.done > 0 { parts.append("\(counts.done) done") }
+        guard parts.isEmpty else { return parts.joined(separator: " · ") }
+        return model.statusPresentation?.message ?? "All agents idle"
     }
 
     private var statusItemScreenFrame: NSRect? {

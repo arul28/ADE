@@ -21,9 +21,13 @@ import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import {
   attentionNotchSettingsFromPreferences,
   attentionNotchSnapshotSignature,
+  attentionToastForTransition,
   materializeAttentionNotchSnapshot,
   refreshAttentionSnapshot,
   useAttentionSync,
+  MAX_NOTCH_PROJECTION_ITEMS,
+  TOAST_ITEM_COOLDOWN_MS,
+  TOAST_MIN_INTERVAL_MS,
 } from "./useAttentionSync";
 
 const originalAde = window.ade;
@@ -288,6 +292,8 @@ describe("useAttentionSync", () => {
         enabled: false,
         revealMode: "click",
         expandedPanelEnabled: false,
+        automaticRevealEnabled: false,
+        tickerEnabled: false,
         preferredDisplayId: null,
         hideDetails: true,
         celebrationsEnabled: true,
@@ -861,7 +867,17 @@ describe("Attention Notch renderer bridge", () => {
       streamId: null,
       revision: 8,
       generatedAt: "2026-07-28T12:00:02.000Z",
+      // `recentActivity` is dropped from the projection; `runningItem` has none.
       items: [runningItem],
+      itemsTruncated: false,
+      counts: {
+        needsYou: 0,
+        working: 1,
+        done: 0,
+        total: 1,
+        machinesOnline: 1,
+        machinesTotal: 1,
+      },
       tombstones: [],
     });
   });
@@ -878,10 +894,14 @@ describe("Attention Notch renderer bridge", () => {
     }, true, {
       revealMode: "click",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: true,
     })).toEqual({
       enabled: true,
       revealMode: "click",
       expandedPanelEnabled: false,
+      automaticRevealEnabled: false,
+      tickerEnabled: true,
       preferredDisplayId: null,
       hideDetails: true,
       celebrationsEnabled: false,
@@ -936,4 +956,202 @@ describe("Attention Notch renderer bridge", () => {
     expect(routingChanged.items[0]?.machine.accountMachineKey)
       .toBe("canonical-machine-1");
   });
+
+  it("publishes a bounded, priority-ordered projection with full-set counts", () => {
+    const itemsById: Record<string, AttentionItem> = {};
+    // 60 ambient rows plus 5 that need you: more than the projection carries,
+    // so the ordering and the counts both have to be doing real work.
+    for (let index = 0; index < 60; index += 1) {
+      const id = `working-${String(index).padStart(3, "0")}`;
+      itemsById[id] = {
+        ...runningItem,
+        id,
+        fingerprint: `${id}:1`,
+        preview: `x`.repeat(400),
+        recentActivity: ["Read package.json", "Ran tests"],
+      };
+    }
+    for (let index = 0; index < 5; index += 1) {
+      const id = `needs-${index}`;
+      itemsById[id] = {
+        ...runningItem,
+        id,
+        fingerprint: `${id}:1`,
+        eventKind: "agent_needs_you",
+        phase: "needs_you",
+        activityTier: "signal",
+      };
+    }
+    attentionStore.setState({
+      revision: 9,
+      generatedAt: "2026-07-28T12:00:02.000Z",
+      itemsById,
+    });
+
+    const snapshot = materializeAttentionNotchSnapshot();
+    expect(snapshot.items).toHaveLength(MAX_NOTCH_PROJECTION_ITEMS);
+    expect(snapshot.itemsTruncated).toBe(true);
+    // Needs-you first, always: the slice is the top of Activity's own order.
+    expect(snapshot.items.slice(0, 5).map((entry) => entry.id).sort()).toEqual([
+      "needs-0",
+      "needs-1",
+      "needs-2",
+      "needs-3",
+      "needs-4",
+    ]);
+    for (const entry of snapshot.items) {
+      expect(entry.preview.length).toBeLessThanOrEqual(160);
+      expect(entry).not.toHaveProperty("recentActivity");
+    }
+    // The store's own objects must be untouched by the projection.
+    expect(attentionStore.getState().itemsById["working-000"]?.preview).toHaveLength(400);
+    expect(attentionStore.getState().itemsById["working-000"]?.recentActivity)
+      .toHaveLength(2);
+    // Counts describe the whole account, not the 48 rows that travelled.
+    expect(snapshot.counts).toEqual({
+      needsYou: 5,
+      working: 60,
+      done: 0,
+      total: 65,
+      machinesOnline: 1,
+      machinesTotal: 1,
+    });
+  });
+
+  it("republishes when only the counts changed", () => {
+    const base = materializeAttentionNotchSnapshot();
+    expect(attentionNotchSnapshotSignature({
+      ...base,
+      counts: {
+        needsYou: 1,
+        working: 0,
+        done: 0,
+        total: 1,
+        machinesOnline: 1,
+        machinesTotal: 1,
+      },
+    })).not.toBe(attentionNotchSnapshotSignature({ ...base, counts: undefined }));
+  });
 });
+
+describe("Attention Notch toast decisions", () => {
+  const signalItem: AttentionItem = {
+    ...runningItem,
+    id: "agent-needs-you",
+    eventKind: "agent_needs_you",
+    phase: "needs_you",
+    activityTier: "signal",
+    title: "Approve the command",
+    preview: "rm -rf ./build",
+    privacyPreview: "Agent needs your attention",
+  };
+
+  const decide = (
+    overrides: Partial<Parameters<typeof attentionToastForTransition>[0]> = {},
+  ) => attentionToastForTransition({
+    items: [signalItem],
+    previousPhases: new Map([[signalItem.id, "running"]]),
+    lastToastAtByItem: new Map(),
+    lastToastAt: 0,
+    availabilityState: "ready",
+    automaticRevealEnabled: true,
+    hideDetails: false,
+    now: 1_000_000,
+    ...overrides,
+  });
+
+  it("fires once on a phase transition and never on first sighting", () => {
+    expect(decide()).toMatchObject({
+      itemId: "agent-needs-you",
+      eventKind: "agent_needs_you",
+      treatment: "alert",
+      title: "Approve the command",
+      subtitle: "rm -rf ./build",
+    });
+    expect(decide({ previousPhases: new Map() })).toBeNull();
+    // Same phase twice is not a transition.
+    expect(decide({
+      previousPhases: new Map([[signalItem.id, "needs_you"]]),
+    })).toBeNull();
+  });
+
+  it("holds an item quiet for ten minutes after its own toast", () => {
+    const lastToastAtByItem = new Map([[signalItem.id, 1_000_000 - 60_000]]);
+    expect(decide({ lastToastAtByItem })).toBeNull();
+    expect(decide({
+      lastToastAtByItem,
+      now: 1_000_000 - 60_000 + TOAST_ITEM_COOLDOWN_MS,
+    })).not.toBeNull();
+  });
+
+  it("rate-limits the account to one toast per five seconds", () => {
+    expect(decide({ lastToastAt: 1_000_000 - (TOAST_MIN_INTERVAL_MS - 1) })).toBeNull();
+    expect(decide({ lastToastAt: 1_000_000 - TOAST_MIN_INTERVAL_MS })).not.toBeNull();
+  });
+
+  it("emits only the highest-priority transition in a burst, and drops the rest", () => {
+    const failed: AttentionItem = {
+      ...signalItem,
+      id: "agent-failed",
+      eventKind: "agent_failed",
+      phase: "failed",
+      activityTier: "signal",
+      title: "Build failed",
+    };
+    const toast = decide({
+      items: [failed, signalItem],
+      previousPhases: new Map([
+        [failed.id, "running"],
+        [signalItem.id, "running"],
+      ]),
+    });
+    // needs_you outranks failed in ATTENTION_PHASE_PRIORITY.
+    expect(toast?.itemId).toBe(signalItem.id);
+  });
+
+  it("stays silent when suppressed", () => {
+    expect(decide({ automaticRevealEnabled: false })).toBeNull();
+    expect(decide({ availabilityState: "degraded" })).toBeNull();
+    expect(decide({ availabilityState: null })).toBeNull();
+    // Ambient rows never interrupt, however much they change.
+    expect(decide({
+      items: [{ ...signalItem, activityTier: "ambient" }],
+    })).toBeNull();
+    expect(decide({
+      items: [{ ...signalItem, seenAt: "2026-07-28T12:00:00.000Z" }],
+    })).toBeNull();
+    expect(decide({
+      items: [{ ...signalItem, dismissedAt: "2026-07-28T12:00:00.000Z" }],
+    })).toBeNull();
+  });
+
+  it("uses privacy copy when hide-details is on", () => {
+    expect(decide({ hideDetails: true })).toMatchObject({
+      title: "Agent update",
+      subtitle: "Agent needs your attention",
+    });
+    expect(decide({
+      hideDetails: true,
+      items: [{ ...signalItem, kind: "pull_request", destination: {
+        kind: "pull_request",
+        number: 42,
+        tab: "overview",
+      } }],
+    })).toMatchObject({ title: "Pull request update" });
+  });
+
+  it("maps a merge to the celebration treatment", () => {
+    expect(decide({
+      items: [{
+        ...signalItem,
+        kind: "pull_request",
+        eventKind: "pr_merged",
+        phase: "merged",
+        activityTier: "signal",
+        destination: { kind: "pull_request", number: 42, tab: "overview" },
+      }],
+      previousPhases: new Map([[signalItem.id, "merge_ready"]]),
+    })).toMatchObject({ treatment: "celebration" });
+  });
+});
+
