@@ -576,6 +576,27 @@ function seedCodexRollout({
   return { filePath, body };
 }
 
+/** Mirrors `workTabCliPrompt`: a fixed ADE preamble, then the user's prompt. */
+function adeCodexPrompt(userPrompt: string): string {
+  return [
+    "ADE session guidance. Treat this as operating guidance for the CLI session",
+    "and keep it in mind while handling the user prompt below.",
+    "",
+    "User prompt:",
+    userPrompt,
+  ].join("\n");
+}
+
+const OWNED_PROMPT = "extract the pty pump helpers and keep the transcript tests green";
+
+/** A user turn as Codex records it in the rollout — the text lands JSON-escaped. */
+function codexUserMessageRecord(text: string): unknown {
+  return {
+    type: "response_item",
+    payload: { type: "message", role: "user", content: [{ type: "input_text", text }] },
+  };
+}
+
 function createDetachedResumableSession(
   sessionService: ReturnType<typeof createHarness>["sessionService"],
   {
@@ -1786,6 +1807,223 @@ describe("ptyService", () => {
         expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
           sessionId,
           "codex resume thread-too-late",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not adopt a same-cwd in-window rollout that lacks this launch's delivered text", async () => {
+      // The window plus the already-adopted exclusion cannot tell a concurrent
+      // unrelated Codex process in the same worktree from this one. When this
+      // launch delivered text of its own, the rollout has to contain it.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        seedCodexRollout({
+          id: "thread-foreign",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 300).toISOString(),
+          mtime: launchAt.getTime() + 300,
+          records: [codexUserMessageRecord("someone else's unrelated codex prompt in this worktree")],
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: adeCodexPrompt(OWNED_PROMPT),
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-foreign"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("adopts the rollout carrying this launch's delivered text over a closer unrelated one", async () => {
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        // Deliberately closer to the launch instant than ours, so plain
+        // timestamp proximity would pick it.
+        seedCodexRollout({
+          id: "thread-foreign",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 300).toISOString(),
+          mtime: launchAt.getTime() + 300,
+          records: [codexUserMessageRecord("someone else's unrelated codex prompt in this worktree")],
+        });
+        seedCodexRollout({
+          id: "thread-ours",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 800).toISOString(),
+          mtime: launchAt.getTime() + 800,
+          records: [codexUserMessageRecord(adeCodexPrompt(OWNED_PROMPT))],
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: adeCodexPrompt(OWNED_PROMPT),
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-ours");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-foreign"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("matches delivered text whose quotes and newlines are JSON-escaped in the rollout", async () => {
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const prompt = "fix the \"adopted id\" guard\nand add a regression test for it";
+        const { body } = seedCodexRollout({
+          id: "thread-escaped",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 400).toISOString(),
+          mtime: launchAt.getTime() + 400,
+          records: [codexUserMessageRecord(adeCodexPrompt(prompt))],
+        });
+        // The rollout stores the prompt inside a JSON string, so the raw text is
+        // not literally present — matching has to go through the escaped form.
+        expect(body).not.toContain(prompt);
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: adeCodexPrompt(prompt),
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-escaped");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps an already-adopted rollout excluded even when it carries this launch's text", async () => {
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const { service, sessionService } = createHarness();
+
+        sessionService.create({
+          sessionId: "session-owner",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: launchAt.toISOString(),
+          transcriptPath: "/tmp/transcripts/session-owner.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-owned-needle",
+        });
+        seedCodexRollout({
+          id: "thread-owned-needle",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 400).toISOString(),
+          mtime: launchAt.getTime() + 400,
+          records: [codexUserMessageRecord(adeCodexPrompt(OWNED_PROMPT))],
+        });
+
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: adeCodexPrompt(OWNED_PROMPT),
+        });
+        await vi.advanceTimersByTimeAsync(60_000);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-owned-needle"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("still adopts by window and exclusion when the launch delivered no text", async () => {
+      // A bare interactive `codex` types nothing, so there is no ownership
+      // signal to demand and capture keeps its pre-needle behavior.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const { service, sessionService } = createHarness();
+
+        sessionService.create({
+          sessionId: "session-owner",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: launchAt.toISOString(),
+          transcriptPath: "/tmp/transcripts/session-owner.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-already-owned",
+        });
+        seedCodexRollout({
+          id: "thread-already-owned",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 300).toISOString(),
+          mtime: launchAt.getTime() + 300,
+        });
+        seedCodexRollout({
+          id: "thread-bare-launch",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 700).toISOString(),
+          mtime: launchAt.getTime() + 700,
+        });
+
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-bare-launch");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-already-owned"),
         );
       } finally {
         vi.useRealTimers();

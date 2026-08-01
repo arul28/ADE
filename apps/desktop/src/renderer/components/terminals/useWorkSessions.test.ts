@@ -146,6 +146,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import { buildWorkTabGroupModel, reorderLaneSessionIdsForDisplay, useWorkSessions } from "./useWorkSessions";
+import { forgetWorkPtyLaunchPin, workPtyLaunchPinFor } from "./cliLaunch";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
@@ -1007,6 +1008,59 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       ptyId: "pty-restored-foreign",
       sessionId: "restored-foreign",
     }, foreignBinding);
+  });
+
+  it("uses the owning machine slice after reload when active and foreign sessions share a lane id", async () => {
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const localSession = makeSession("duplicate-lane-local", "lane-1", {
+      ptyId: "pty-duplicate-lane-local",
+      toolType: "codex",
+    });
+    const foreignSession = makeSession("duplicate-lane-foreign", "lane-1", {
+      ptyId: "pty-duplicate-lane-foreign",
+      toolType: "codex",
+    });
+    // Simulate a fresh renderer: neither stable id has an in-memory launch pin.
+    forgetWorkPtyLaunchPin(foreignSession);
+    expect(workPtyLaunchPinFor(foreignSession)).toBeNull();
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          targetId: "target-b",
+          projectId: "project-b",
+          binding: foreignBinding,
+          online: true,
+          lanes: [{ id: "lane-1" }],
+          sessions: [foreignSession],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    };
+    listSessionsCachedMock.mockResolvedValue([localSession]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
+
+    expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
+    expect(result.current.resolveSessionRuntimePin(localSession)).toBeNull();
   });
 
   it("keeps an active-binding session stop on the unpinned fast path", async () => {

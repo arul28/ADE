@@ -22,7 +22,7 @@ type WorkRuntimePinLookup = {
 };
 
 export type WorkMachineRouter = ChatMachineRouter & {
-  /** Resolve lane ownership first, then the remembered per-launch fallback. */
+  /** Resolve session-slice ownership, lane ownership, then the remembered launch fallback. */
   pinForSession: (session: WorkRuntimePinLookup) => OpenProjectBinding | null;
   /** Keep the launch-pin registry behind the Work routing authority. */
   rememberSessionPin: (
@@ -62,12 +62,27 @@ export function useWorkMachineRouter(): WorkMachineRouter {
       additionalBindings: machines.map((machine) => machine.binding),
     });
     const additionalLaneSources: LaneBindingSource[] = [];
+    // Session ids are globally stable across the Work union, while lane ids can
+    // legitimately exist on more than one machine. Preserve the owning slice's
+    // binding in a parallel index instead of decorating TerminalSessionSummary
+    // rows or depending on the transient launch-pin registry. Build it only
+    // when a machine actually contributes sessions, and only when the memoized
+    // router inputs change, so the local-only render path allocates nothing.
+    let sessionBindingsById: Map<string, OpenProjectBinding> | null = null;
     for (const machine of machines) {
       if (!machine.binding) continue;
       additionalLaneSources.push({
         bindingKey: machine.binding.key,
         laneIds: machine.lanes.map((lane) => lane.id),
       });
+      for (const session of machine.sessions) {
+        const sessionId = session.id?.trim();
+        if (!sessionId) continue;
+        sessionBindingsById ??= new Map();
+        if (!sessionBindingsById.has(sessionId)) {
+          sessionBindingsById.set(sessionId, machine.binding);
+        }
+      }
     }
     const router = createChatMachineRouter(buildChatMachineRoutingState({
       activeBinding: projectBinding ?? null,
@@ -79,6 +94,14 @@ export function useWorkMachineRouter(): WorkMachineRouter {
     return {
       ...router,
       pinForSession: (session) => {
+        const sessionId = session.sessionId ?? session.id ?? null;
+        const slicePin = sessionId ? sessionBindingsById?.get(sessionId) : undefined;
+        if (slicePin) {
+          // The retained cross-machine map can include the active remote
+          // binding's slice. Its session identity is authoritative too, but it
+          // still takes the existing unpinned path.
+          return slicePin.key === projectBinding?.key ? null : slicePin;
+        }
         const lanePin = router.pinForLane(session.laneId);
         if (lanePin) return lanePin;
         const rememberedPin = workPtyLaunchPinFor(session);
