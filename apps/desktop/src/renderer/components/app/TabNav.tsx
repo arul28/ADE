@@ -101,6 +101,10 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
   const projectBinding = useAppStore((s) => s.projectBinding);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const terminalAttention = useAppStore((s) => s.terminalAttention);
+  const ctoAttention = useAppStore((s) => s.ctoAttention);
+  const ctoWaitingLabel = ctoAttention.since
+    ? `The CTO is waiting on you — since ${new Date(ctoAttention.since).toLocaleTimeString()}`
+    : "The CTO is waiting on you";
   const location = useLocation();
   const { status: accountStatus } = useAccountStatus();
   const activeProjectRoot =
@@ -249,6 +253,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
                       ? "ade-status-dot-warning"
                       : "ade-status-dot-active",
                   )}
+                />
+              ) : null}
+              {/* CTO attention dot. The CTO thread is hidden from every session
+                  roster, so it cannot borrow the Work dot above — without this
+                  a question from the CTO would surface nowhere. */}
+              {it.to === "/cto" && ctoAttention.awaitingInput ? (
+                <span
+                  title={ctoWaitingLabel}
+                  className="absolute -right-1 -top-1 ade-status-dot ade-status-dot-warning"
                 />
               ) : null}
             </span>

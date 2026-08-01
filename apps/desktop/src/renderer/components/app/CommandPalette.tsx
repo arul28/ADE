@@ -305,6 +305,17 @@ export function CommandPalette({
   // mount, and the palette is mounted for the whole session. Whatever the Work
   // tab's sync has populated is what we search.
   const foreignMachines = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  /**
+   * Which machine owns the tab's own sessions and lanes. Remote-bound tabs make
+   * that another Mac, and without saying so those threads look local: unmarked
+   * in the results, and unfindable by their machine's name.
+   *
+   * Memoized on the two primitives rather than on `projectBinding`, which is a
+   * fresh object across store writes and would rebuild the whole lowercased
+   * thread index on every one.
+   */
+  const boundTargetId = projectBinding?.kind === "remote" ? projectBinding.targetId : null;
+  const boundRuntimeName = projectBinding?.kind === "remote" ? projectBinding.runtimeName : null;
 
   const [mode, setMode] = useState<CommandPaletteMode>("default");
   const [actionOutcome, setActionOutcome] =
@@ -338,6 +349,22 @@ export function CommandPalette({
       );
     },
     [],
+  );
+  const activeMachine = useMemo(
+    () => {
+      if (!boundTargetId || !boundRuntimeName) return null;
+      const connection = remoteSnapshot?.connections.find(
+        (candidate) => candidate.target.id === boundTargetId,
+      );
+      return {
+        machineId: boundTargetId,
+        machineName: boundRuntimeName,
+        // A remote-bound tab has no local fallback: before its Work slice
+        // arrives, the target connection is the only honest liveness source.
+        online: connection?.state === "connected",
+      };
+    },
+    [boundRuntimeName, boundTargetId, remoteSnapshot],
   );
   const listRef = useRef<HTMLUListElement>(null);
   const browseRequestRef = useRef(0);
@@ -835,7 +862,7 @@ export function CommandPalette({
   // Built once per session/lane list, not per keystroke — the palette can be
   // opened against hundreds of sessions and the lowercasing is the expensive
   // half of the match.
-  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines);
+  const threadIndex = useThreadIndex(threadSessions, lanes, foreignMachines, activeMachine);
   const threadMatches = useMemo(
     () =>
       open && mode === "default" ? rankThreads(threadIndex, trimmedQuery) : [],

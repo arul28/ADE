@@ -311,8 +311,12 @@ struct CtoOnboardingScreen: View {
     // Mark onboarding complete. Desktop's only required step is "identity";
     // stamp completedAt too so older merge paths that don't re-derive it still
     // read as complete.
+    //
+    // Union rather than replace — see `stepsCompletingSetup`.
     patch.onboardingState = CtoOnboardingState(
-      completedSteps: ["identity"],
+      completedSteps: CtoOnboardingState.stepsCompletingSetup(
+        existing: snapshot?.identity.onboardingState?.completedSteps
+      ),
       dismissedAt: nil,
       completedAt: ISO8601DateFormatter().string(from: Date())
     )

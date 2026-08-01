@@ -563,7 +563,7 @@ Agent tools are split by domain:
 |------|--------|
 | `ai/tools/universalTools.ts` | Mutating tools (`bash`, `writeFile`, `editFile`), read/search tools, web tools, todos, and ask-user. |
 | `ai/tools/workflowTools.ts` | Workflow interaction tools. |
-| `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. |
+| `ai/tools/ctoOperatorTools.ts` | CTO-only operator tools. Registered on the live session via `createCtoRuntimeToolMap` through the per-provider transports (`ade-cto` SDK MCP server for Claude, the `ade_cto` dynamic-tool namespace for Codex, a dedicated HTTP MCP lease for Cursor/Droid/OpenCode). Git mutations require an explicit `laneId` because the CTO session is pinned to the primary lane. |
 | `ai/tools/linearTools.ts` | Linear integration tool surface. |
 | `ai/tools/webFetch.ts` / `webSearch.ts` | Outbound web access. |
 | `ai/tools/readFileRange.ts` / `globSearch.ts` / `grepSearch.ts` | Read-only file tools shared across all roles. |
@@ -668,7 +668,10 @@ ade.github.*                 # PR list, review, merge, checks. Also exposes
 ade.prs.*                    # stacked PR queue, integration, rebase/issue
                              # resolver sessions, and merge readiness
 ade.conflicts.*              # risk matrix, simulation, proposals
-ade.cto.*                    # identity, agent roster, Linear
+ade.cto.*                    # identity, agent roster, Linear, and the read-only
+                             # `ctoGetAttention` probe (the CTO thread is hidden
+                             # from every session roster, so it needs its own
+                             # "needs you" signal)
 ade.sessions.*               # terminal session CRUD
 ade.files.*                  # runtime-routed file workspace/tree/read/write/watch/search actions,
                              # including paginated children, Git decorations, range reads,
@@ -919,7 +922,7 @@ Enforced rules (from the stability overhaul):
 2. New integrations are dormant-until-configured.
 3. Feature pages stage data: cheapest (list/summary/topology) first, heavy (dashboard/settings/model metadata/overlays) on delay.
 4. Never mount expensive trees eagerly — settings dialogs, advanced launcher sections unmount when closed.
-5. Renderer polling is route-scoped except application-wide session attention. `useAppWideSessionAttention` stays mounted in `AppShell` across Work, Files, PRs, and other project routes; it refreshes on PTY/chat/session events, focus, and a visible-window 15-second recovery interval so a `Needs you` transition can update the global highlight and Dock badge off the Work route. Project-switch/close cleanup generation-guards stale async results. Lane panels still poll only while live sessions exist. The plain PR list does not fire a GitHub refresh on mount, renders active-repository PR snapshots only, skips conflict analysis, and defers rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. Selected PR detail reads apply progressively so slow comments or action-run hydration do not block status/checks/files from painting. Workflow PR views batch merge contexts and conflict analysis against metadata-only lane rows instead of running per-PR git/status work. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. Run's `LaneRuntimeBar` keeps health/process refreshes separate from preview routing / port / OAuth refreshes so process events do not reread routing state. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
+5. Renderer polling is route-scoped except application-wide session attention. `useAppWideSessionAttention` stays mounted in `AppShell` across Work, Files, PRs, and other project routes; it refreshes on PTY/chat/session events, focus, and a visible-window 15-second recovery interval so a `Needs you` transition can update the global highlight and Dock badge off the Work route. `useCtoAttention` sits beside it on the same cadence for the roster-hidden CTO thread, and debounces its probe behind `shouldRefreshSessionListForChatEvent` so a streaming turn does not re-run a full identity-session scan in main per delta. Project-switch/close cleanup generation-guards stale async results. Lane panels still poll only while live sessions exist. The plain PR list does not fire a GitHub refresh on mount, renders active-repository PR snapshots only, skips conflict analysis, and defers rebase-needs / auto-rebase polling until the user opens a workflow tab or selects a PR. Selected PR detail reads apply progressively so slow comments or action-run hydration do not block status/checks/files from painting. Workflow PR views batch merge contexts and conflict analysis against metadata-only lane rows instead of running per-PR git/status work. The Lanes page reuses the `LaneSummary.autoRebaseStatus` snapshot already in the lane list instead of probing per-lane on `LaneGitActionsPane` mount; a fallback probe runs only when the snapshot is missing and after a visibility-gated 3.5 s delay. Run's `LaneRuntimeBar` keeps health/process refreshes separate from preview routing / port / OAuth refreshes so process events do not reread routing state. The Work top-bar sync chip refreshes on focus and on `sync-status` events instead of a 5 s interval. The chat composer's Cursor model inventory is fetched lazily — `ProviderModelSelector` calls `onOpen` on first open of the model catalog, and `AgentChatPane.refreshCursorModelInventory` is the only entry point that hits `cursor` with `activateRuntime: true`.
 6. Shared caches for high-frequency calls (`sessionListCache`, GitHub fingerprint-based snapshots, and the renderer's project-scoped `aiDiscoveryCache`). ModelPicker provider-auth reads join the cache's single in-flight `ade.ai.getStatus` request and react to cache update/invalidation events; picker instances do not poll, and call sites that already supply auth status skip the full-status read.
 7. Memoize expensive renderer computations (`useMemo`, `React.memo`); isolate frequently-refreshing subtrees (e.g., budget footers).
 8. `Promise.allSettled` over `Promise.all` for parallel startup — one failing service must not block others.
@@ -1029,6 +1032,18 @@ canonical projected session rows on every project route and calls
 that count before forwarding it to Electron's `app.setBadgeCount`. Project
 switch/close cancels the old refresh and clears its count. Quiet ready, idle,
 stale, ended, and settled rows never contribute to the Dock badge.
+
+The CTO thread is the one exception to "canonical projected session rows are the
+whole picture": it is filtered out of every roster, so it never appears in those
+rows. `useCtoAttention` reads it separately through the read-only
+`window.ade.cto.getAttention()` probe into `appStore.ctoAttention`, `TabNav`
+draws the dot on `/cto`, and `useAppWideSessionAttention` folds that one flag
+into its badge count so it remains the single writer of `setDockBadgeCount`. iOS
+reaches the same `agentChatService.getCtoAttention()` implementation through the
+optional `cto.getAttention` sync command and badges its CTO tab. The probe must
+stay side-effect-free on every transport — creating the CTO session to draw a
+badge would materialize a primary lane. See
+[features/cto/README.md](./features/cto/README.md#hidden-from-rosters-but-never-silent).
 
 ### 8.3 ADE CLI auth + API-key storage
 

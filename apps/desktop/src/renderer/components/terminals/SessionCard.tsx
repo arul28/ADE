@@ -23,6 +23,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
+import type { CrossMachineLaneMarker } from "../../state/crossMachineLanes";
 import type { OrchestrationRole } from "../../../shared/types/orchestration";
 import {
   canonicalInputFromSummary,
@@ -296,6 +297,7 @@ export const SessionCard = React.memo(function SessionCard({
   githubStack = null,
   showLaneIdentity = false,
   lanePr = null,
+  machineMarker = null,
   suppressMachineChip = false,
 }: {
   session: TerminalSessionSummary;
@@ -332,6 +334,15 @@ export const SessionCard = React.memo(function SessionCard({
    * divider owns the PR badge and a second copy per row would be noise.
    */
   lanePr?: PrSummary | null;
+  /**
+   * The machine this row's lane lives on, when that is not the Mac you're
+   * sitting at. Resolved once by the cross-machine union and handed down, so a
+   * card and the lane header above it can never disagree about where work is.
+   *
+   * Set for the singleton/headerless form, where this card IS the lane header.
+   * Foreign cards under a real header get `suppressMachineChip` instead.
+   */
+  machineMarker?: CrossMachineLaneMarker | null;
   /**
    * The lane header above already names the machine, so the row's own chip
    * would just repeat it. Set by SessionListPane for children of a lane group
@@ -447,11 +458,20 @@ export const SessionCard = React.memo(function SessionCard({
      ALWAYS muted with `BranchIcon`. Colour is the only thing that tells the two
      concepts apart at a glance, so a muted lane name or an accented branch is a
      bug, not a style choice. */
-  const machineName = runtimePin
-    ? runtimePin.kind === "remote"
-      ? runtimePin.runtimeName
-      : THIS_MACHINE_NAME
-    : null;
+  /* Two different facts, and they must not be conflated:
+     - `machineName` is WHICH machine, for the hover card. Any row that knows its
+       runtime can answer it, including one on this very Mac.
+     - `machineMarker` is whether that machine is ELSEWHERE. Only the union
+       resolver decides that, and it is the sole gate on the glyph below.
+     Deriving the glyph from `machineName` would badge this Mac's own lanes
+     whenever the tab was bound elsewhere — they carry a local `runtimePin` and
+     are perfectly named, they are just not somewhere else. */
+  const machineName = machineMarker?.machineName
+    ?? (runtimePin
+      ? runtimePin.kind === "remote"
+        ? runtimePin.runtimeName
+        : THIS_MACHINE_NAME
+      : null);
   /* The lane's DECLARED branch versus the one the worktree is actually sitting
      on. They agree for every healthy lane — which is exactly why the row stopped
      printing the branch unconditionally: the divider directly above already
@@ -470,27 +490,52 @@ export const SessionCard = React.memo(function SessionCard({
   // are the same branch to git and would otherwise read as a difference.
   const branchDiffersFromLane = Boolean(branchName) && branchName !== laneBranchName;
 
+  /* The machine glyph, pinned to line 1's RIGHT cluster next to the status —
+     not into `whereParts` on the left, where it used to sit.
+
+     Two reasons it moved. It is the one part of line 1 whose width is fixed, so
+     on the left it pushed the elastic lane name around by a constant; and a run
+     of singleton cards down the sidebar now aligns its glyphs in a single
+     column, which is what makes "three of these are elsewhere, one is here"
+     readable at a glance instead of row by row.
+
+     Deliberately an inline element rather than `LaneMachineMarker`: that
+     component wraps itself in its own SmartTooltip with a focusable trigger, and
+     this row already owns a hover card and a click target. The visual identity
+     is identical — amber tower, amber pill — and the name is carried by the
+     hover card's machine row rather than inline, per the glyph-only rule. */
+  const machineGlyph = machineMarker && !suppressMachineChip ? (
+    <span
+      data-session-machine={machineMarker.machineName}
+      data-machine-id={machineMarker.machineId}
+      data-machine-online={machineMarker.online ? "true" : "false"}
+      /* Same attribute `LaneMachineMarker` exposes, on purpose: a badge can live
+         on a lane header OR on the card standing in for one, and "is this row
+         badged" must be a single selector rather than two that drift. */
+      data-machine-marker-mode="glyph"
+      role="img"
+      aria-label={
+        machineMarker.online
+          ? `On ${machineMarker.machineName}`
+          : `On ${machineMarker.machineName}, offline`
+      }
+      className={cn(
+        "inline-flex shrink-0 items-center rounded-full border px-1 py-px leading-none",
+        machineMarker.online
+          ? "border-amber-400/20 bg-amber-400/[0.06]"
+          : "border-white/[0.08] bg-white/[0.03]",
+      )}
+    >
+      <DesktopTower
+        size={10}
+        weight="duotone"
+        className={cn("shrink-0", machineMarker.online ? "text-amber-400/85" : "text-muted-fg/45")}
+        aria-hidden
+      />
+    </span>
+  ) : null;
+
   const whereParts: React.ReactNode[] = [];
-  // `suppressMachineChip` only silences the CHIP. `machineName` still feeds the
-  // tooltip below, because the fact is never the noise — the repetition is.
-  if (machineName && !suppressMachineChip) {
-    // Deliberately an inline chip rather than `LaneMachineMarker`: that
-    // component wraps itself in its own SmartTooltip with a focusable trigger,
-    // and this row already owns a tooltip and a click target. The visual
-    // identity — amber tower glyph inside a NEUTRAL chip — is preserved
-    // exactly; the marker is identity, so it never enters the status slot and
-    // never borrows the status palette.
-    whereParts.push(
-      <span
-        key="machine"
-        data-session-machine={machineName}
-        className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-400/20 bg-amber-400/[0.06] px-1.5 py-px text-[10px] font-medium leading-none text-muted-fg/70"
-      >
-        <DesktopTower size={10} weight="duotone" className="shrink-0 text-amber-400/85" aria-hidden />
-        <span className="max-w-24 truncate">{machineName}</span>
-      </span>,
-    );
-  }
   if (session.pinned) {
     whereParts.push(
       <PushPin
@@ -512,7 +557,7 @@ export const SessionCard = React.memo(function SessionCard({
       <span
         key="lane"
         data-session-lane-identity={lane.name}
-        className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium"
+        className="inline-flex min-w-0 shrink items-center gap-1.5 text-[12px] font-semibold"
         // Inline style, not a class: the accent is per-lane user data.
         style={{ color: laneAccent ?? undefined }}
       >
@@ -522,7 +567,7 @@ export const SessionCard = React.memo(function SessionCard({
         >
           <LaneIcon size={12} weight="regular" />
         </span>
-        <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/80")}>
+        <span className={cn("min-w-0 truncate", laneAccent ? "" : "text-fg/85")}>
           <LaneNamingLabel laneName={lane.name} naming={isAutoNaming} />
         </span>
       </span>,
@@ -922,6 +967,9 @@ export const SessionCard = React.memo(function SessionCard({
           {titleNode}
           {compactLineageGlyph}
           <ToolLogo toolType={session.toolType} size={14} className="shrink-0 opacity-75" />
+          {/* Compact rows have no line 1, so this is their only seat for it —
+              same precedent as `compactLineageGlyph` directly above. */}
+          {machineGlyph}
           {gridIndicator}
           {statusSlot}
         </div>
@@ -938,6 +986,7 @@ export const SessionCard = React.memo(function SessionCard({
                 {part}
               </React.Fragment>
             ))}
+            {machineGlyph}
             {gridIndicator}
             {statusSlot}
           </div>

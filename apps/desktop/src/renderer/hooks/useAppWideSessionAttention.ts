@@ -20,6 +20,11 @@ export function useAppWideSessionAttention(): void {
   const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const showWelcome = useAppStore((state) => state.showWelcome);
   const setTerminalAttention = useAppStore((state) => state.setTerminalAttention);
+  // The CTO thread is hidden from the session list this hook summarizes, so it
+  // must be added to the dock badge explicitly or a CTO question would never
+  // reach a minimized window. Kept in this hook so `setDockBadgeCount` keeps a
+  // single writer.
+  const ctoAwaitingInput = useAppStore((state) => state.ctoAttention.awaitingInput);
   const lastDockBadgeCountRef = useRef<number | null>(null);
   const trackedProjectRoot = showWelcome ? null : currentProjectRoot;
 
@@ -59,11 +64,12 @@ export function useAppWideSessionAttention(): void {
         if (cancelled) return;
         const attention = summarizeTerminalAttention(sessions);
         setTerminalAttention(attention);
+        const badgeCount = attention.needsAttentionCount + (ctoAwaitingInput ? 1 : 0);
         // Dock badge mirrors the loud tier only; push on change so a blocked
         // agent reaches the user even with the window minimized.
-        if (lastDockBadgeCountRef.current !== attention.needsAttentionCount) {
-          lastDockBadgeCountRef.current = attention.needsAttentionCount;
-          void window.ade?.app?.setDockBadgeCount?.(attention.needsAttentionCount)?.catch?.(() => {});
+        if (lastDockBadgeCountRef.current !== badgeCount) {
+          lastDockBadgeCountRef.current = badgeCount;
+          void window.ade?.app?.setDockBadgeCount?.(badgeCount)?.catch?.(() => {});
         }
       } catch {
         // best effort
@@ -136,5 +142,5 @@ export function useAppWideSessionAttention(): void {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [trackedProjectRoot, setTerminalAttention]);
+  }, [trackedProjectRoot, setTerminalAttention, ctoAwaitingInput]);
 }

@@ -82,6 +82,7 @@ import {
   WebAnalyticsConsentBanner,
 } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
+import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { useAttentionSync } from "../attention/useAttentionSync";
 
 type PrToast = {
@@ -358,6 +359,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
   useAppWideSessionAttention();
+  useCtoAttention();
   useAttentionSync(isAttentionRoute);
 
   useEffect(() => {

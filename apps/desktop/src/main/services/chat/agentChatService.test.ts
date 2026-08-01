@@ -574,9 +574,20 @@ vi.mock("../ai/tools/linearTools", () => ({
   createLinearTools: vi.fn(() => []),
 }));
 
-vi.mock("../ai/tools/ctoOperatorTools", () => ({
-  createCtoOperatorTools: vi.fn(() => []),
-}));
+vi.mock("../ai/tools/ctoOperatorTools", async () => {
+  const { z } = await import("zod");
+  // Returns one real ExecutableTool so tests can assert the CTO tool surface is
+  // actually registered on a live session, not just enumerated for the prompt.
+  return {
+    createCtoOperatorTools: vi.fn(() => ({
+      spawnChat: {
+        description: "Create a native ADE work chat session.",
+        inputSchema: z.object({ laneId: z.string().optional() }),
+        execute: async () => ({ success: true }),
+      },
+    })),
+  };
+});
 
 vi.mock("../ai/tools/systemPrompt", () => ({
   buildCodingAgentSystemPrompt: vi.fn(() => "system prompt"),
@@ -1798,6 +1809,17 @@ async function waitForEvent<T extends AgentChatEventEnvelope>(
     await new Promise((resolve) => setTimeout(resolve, 0));
   }
   throw new Error("Timed out waiting for agent chat event.");
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  description: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`Timed out waiting for ${description}.`);
 }
 
 async function waitForFakeTimerCondition(
@@ -3595,6 +3617,55 @@ describe("createAgentChatService", () => {
       // Inverse of the lightweight test: strictMcpConfig must NOT leak into normal
       // chats, or it would silently re-block the user's MCP servers we just enabled.
       expect(opts?.strictMcpConfig).toBeUndefined();
+    });
+
+    // The CTO's operator tools used to exist only in the prompt manifest and the
+    // tool-name preview — the bodies were never registered on a live session, so
+    // the CTO was told it had tools it could not call.
+    it("registers the CTO operator tools on a live Claude CTO session", async () => {
+      const { service } = createService();
+      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      await service.updateSession({ sessionId: session.id, modelId: "anthropic/claude-sonnet-5" });
+      await service.sendMessage({ sessionId: session.id, text: "status?" });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+      const server = opts?.mcpServers?.["ade-cto"];
+      expect(server?.type).toBe("sdk");
+      const toolNames = Object.keys(server?.instance?._registeredTools ?? {});
+      expect(toolNames).toContain("spawnChat");
+
+      // Built from the LIVE session, not the `preview:<lane>` pseudo-session the
+      // prompt manifest uses — that distinction is the whole bug this fixes.
+      const { createCtoOperatorTools } = await import("../ai/tools/ctoOperatorTools");
+      expect(vi.mocked(createCtoOperatorTools)).toHaveBeenCalledWith(
+        expect.objectContaining({ currentSessionId: session.id, defaultLaneId: "lane-1" }),
+      );
+
+      // The CTO is a daily-driver chat: it must NOT get the orchestration lead's
+      // managed-only MCP lockdown, which would strip the user's own servers.
+      expect(opts?.managedSettings?.allowManagedMcpServersOnly).toBeUndefined();
+    });
+
+    it("does not register CTO tools on an ordinary chat", async () => {
+      const { service } = createService();
+      const created = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "",
+        modelId: "anthropic/claude-sonnet-5",
+      });
+      await service.sendMessage({ sessionId: created.id, text: "hello" });
+
+      await vi.waitFor(() => {
+        expect(claudeSdkCreateSessionCompat).toHaveBeenCalled();
+      });
+
+      const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+      expect(opts?.mcpServers?.["ade-cto"]).toBeUndefined();
     });
 
     it("keeps lightweight sessions lean by ignoring on-disk MCP config (strictMcpConfig)", async () => {
@@ -7810,7 +7881,7 @@ describe("createAgentChatService", () => {
   });
 
   describe("CTO memory + model-switch-safe thread", () => {
-    async function createCtoServices() {
+    async function createCtoServices({ seedIntro = false }: { seedIntro?: boolean } = {}) {
       const adeDir = path.join(tmpRoot, ".ade");
       fs.mkdirSync(adeDir, { recursive: true });
       const db = await openKvDb(path.join(adeDir, "ade.db"), createLogger() as any);
@@ -7821,6 +7892,20 @@ describe("createAgentChatService", () => {
         adeDir,
         ctoMemoryService,
       });
+      if (seedIntro) {
+        // The opening turn is dispatched for real, so it needs a runtime stream.
+        vi.mocked(streamText).mockReturnValue({
+          fullStream: (async function* () {
+            yield { type: "finish", totalUsage: { inputTokens: 1, outputTokens: 1 } };
+          })(),
+        } as any);
+      } else {
+        // Creating a CTO session dispatches its opening turn. Tests that are not
+        // about the intro must opt out: the send is fire-and-forget, so it would
+        // otherwise outlive the test and hit a `streamText` mock that beforeEach
+        // has already reset — surfacing as an unhandled rejection.
+        ctoStateService.completeOnboardingStep("intro");
+      }
       return { db, ctoStateService, ctoMemoryService };
     }
 
@@ -7891,6 +7976,117 @@ describe("createAgentChatService", () => {
       expect(session.identityKey).toBe("cto");
 
       db.close();
+    });
+
+    // A freshly created CTO thread used to open on a blank screen. It now seeds
+    // one real, visible first turn. The flag lives in onboarding state so it
+    // survives restarts and cannot fire twice.
+    it("seeds a visible intro turn when the CTO thread is first created", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices({ seedIntro: true });
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+      await waitForCondition(
+        () => ctoStateService.getOnboardingState().completedSteps.includes("intro"),
+        "CTO intro turn to be seeded",
+      );
+
+      // The turn is a real, visible user message — not a fabricated assistant
+      // entry — so it must show up in the transcript as the user's own text.
+      const { entries } = await service.getChatTranscript({ sessionId: session.id });
+      const introTurns = entries.filter(
+        (entry) => entry.role === "user" && entry.text.includes("Introduce yourself"),
+      );
+      expect(introTurns).toHaveLength(1);
+
+      db.close();
+    });
+
+    it("does not re-seed the intro turn when an existing CTO thread is reused", async () => {
+      const { db, ctoStateService, ctoMemoryService } = await createCtoServices({ seedIntro: true });
+      const { service } = createService({ ctoStateService, ctoMemoryService });
+
+      const first = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      await waitForCondition(
+        () => ctoStateService.getOnboardingState().completedSteps.includes("intro"),
+        "CTO intro turn to be seeded",
+      );
+
+      const reused = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+      expect(reused.id).toBe(first.id);
+
+      // Assert on dispatched turns, not the onboarding marker:
+      // completeOnboardingStep is idempotent, so a marker count would hold even
+      // if a second intro were sent. A reused thread already has content, so a
+      // second opening turn would land mid-conversation.
+      const { entries } = await service.getChatTranscript({ sessionId: reused.id });
+      const introTurns = entries.filter(
+        (entry) => entry.role === "user" && entry.text.includes("Introduce yourself"),
+      );
+      expect(introTurns).toHaveLength(1);
+
+      db.close();
+    });
+
+    // The CTO chat is filtered out of every session roster, so it never reaches
+    // `terminalAttention` or the dock badge. `getCtoAttention` is the only thing
+    // standing between a hidden thread and a silently unanswered question.
+    describe("getCtoAttention", () => {
+      it("reports idle without creating a CTO session or a primary lane", async () => {
+        const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+        const { service, sessionService } = createService({ ctoStateService, ctoMemoryService });
+
+        const before = sessionService.list({}).length;
+        const attention = await service.getCtoAttention();
+
+        expect(attention).toEqual({ awaitingInput: false, since: null });
+        // The invariant that matters: drawing a badge must not materialize a
+        // lane and a chat session as a side effect.
+        expect(sessionService.list({}).length).toBe(before);
+
+        db.close();
+      });
+
+      it("reports awaiting input when the CTO thread raises a hand", async () => {
+        const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+        const { service, sessionService } = createService({ ctoStateService, ctoMemoryService });
+        const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+        expect(await service.getCtoAttention()).toEqual({ awaitingInput: false, since: null });
+
+        // `ade chat ask` raises a hand on the backing session row — a separate
+        // signal from the chat-level `awaitingInput` waiter, and the one a
+        // hidden thread would otherwise have no way to surface.
+        const row = sessionService.get(session.id)!;
+        expect(row, "CTO session row").toBeTruthy();
+        row.attentionRequestedAt = new Date().toISOString();
+        const attention = await service.getCtoAttention();
+
+        expect(attention.awaitingInput).toBe(true);
+        expect(attention.since).toBeTruthy();
+
+        db.close();
+      });
+
+      it("clears once the hand-raise is resolved", async () => {
+        const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+        const { service, sessionService } = createService({ ctoStateService, ctoMemoryService });
+        const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
+
+        const row = sessionService.get(session.id)!;
+        expect(row, "CTO session row").toBeTruthy();
+        row.attentionRequestedAt = new Date().toISOString();
+        expect((await service.getCtoAttention()).awaitingInput).toBe(true);
+
+        row.attentionRequestedAt = null;
+        const attention = await service.getCtoAttention();
+
+        expect(attention.awaitingInput).toBe(false);
+        expect(attention.since).toBeNull();
+
+        db.close();
+      });
     });
   });
 

@@ -8,6 +8,7 @@ import type {
   NormalizedLinearIssue,
   OpenProjectBinding,
 } from "../../../shared/types";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { AgentChatComposer } from "./AgentChatComposer";
 import { useAppStore } from "../../state/appStore";
 
@@ -2422,5 +2423,123 @@ describe("AgentChatComposer", () => {
     }
   });
 
+  /**
+   * The running chat's machine label. PR #968 redesigned the new-chat composer
+   * and deleted this chip along the way, leaving no way to tell where a chat was
+   * executing while typing into it. These lock the restored contract.
+   */
+  describe("machine chip", () => {
+    const chip = (container: HTMLElement) =>
+      container.querySelector('[data-chat-composer-machine-chip="readonly"]');
 
+    it("names the remote machine a running chat is pinned to", () => {
+      const { container } = renderComposer({
+        sessionId: "session-1",
+        composerMachineBinding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Arul's Mac Studio",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+
+      expect(chip(container)?.textContent).toContain("Arul's Mac Studio");
+      expect(chip(container)?.getAttribute("aria-label")).toBe("Running on Arul's Mac Studio");
+    });
+
+    it("truncates a long remote machine label while retaining its full accessible name", () => {
+      const machineName = "Arul's always-on Mac Studio in the office rack";
+      const { container } = renderComposer({
+        sessionId: "session-1",
+        composerMachineBinding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: machineName,
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+
+      const element = chip(container)!;
+      expect(element.getAttribute("aria-label")).toBe(`Running on ${machineName}`);
+      expect(element.querySelector("span")?.className).toContain("max-w-24");
+      expect(element.querySelector("span")?.className).toContain("truncate");
+    });
+
+    it("names this Mac when a running chat has no remote binding", () => {
+      // A null binding is not "unknown" — it is local. The composer is one row
+      // with nothing to contrast against, so unlike the sidebar it states the
+      // machine even when the answer is "here".
+      const { container } = renderComposer({
+        sessionId: "session-1",
+        composerMachineBinding: null,
+      });
+
+      expect(chip(container)?.textContent).toContain(THIS_MACHINE_NAME);
+    });
+
+    it("names the remote machine for a running orchestration lead", () => {
+      const { container } = renderComposer({
+        sessionId: "lead-session",
+        orchestrationRole: "lead",
+        composerMachineBinding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Arul's Mac Studio",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+
+      expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+      expect(chip(container)?.textContent).toContain("Arul's Mac Studio");
+      expect(chip(container)?.getAttribute("aria-label")).toBe("Running on Arul's Mac Studio");
+    });
+
+    it("names the remote machine when the host hides model controls", () => {
+      const { container } = renderComposer({
+        sessionId: "embedded-session",
+        hideModelControls: true,
+        composerMachineBinding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Arul's Mac Studio",
+          projectId: "project-a",
+          rootPath: "/repo-a",
+          displayName: "Repo A",
+        },
+      });
+
+      expect(screen.queryByRole("button", { name: /Select model/i })).toBeNull();
+      expect(chip(container)?.textContent).toContain("Arul's Mac Studio");
+      expect(chip(container)?.getAttribute("aria-label")).toBe("Running on Arul's Mac Studio");
+    });
+
+    it("is read-only — moving a chat is the handoff flow's job, not a picker", () => {
+      const { container } = renderComposer({
+        sessionId: "session-1",
+        composerMachineBinding: null,
+      });
+
+      const element = chip(container)!;
+      expect(element.tagName).toBe("SPAN");
+      expect(element.closest("button")).toBeNull();
+      expect(element.getAttribute("aria-haspopup")).toBeNull();
+    });
+
+    it("stays out of a draft composer, where the launch shelf owns the choice", () => {
+      // A draft has a CHOICE of machine, not a machine. Labelling it here would
+      // either duplicate the shelf's picker or assert a default about to change.
+      const { container } = renderComposer({ sessionId: null });
+      expect(chip(container)).toBeNull();
+    });
+  });
 });

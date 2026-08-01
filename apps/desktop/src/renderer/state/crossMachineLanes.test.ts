@@ -292,7 +292,7 @@ describe("This Mac counterpart resolution", () => {
   });
 });
 
-describe("adaptive machine marker", () => {
+describe("machine marker", () => {
   const localRow = () => makeLane({ id: "lane-local", branchRef: "feature/local" });
 
   it("marks only lanes that are not on this machine", () => {
@@ -348,7 +348,9 @@ describe("adaptive machine marker", () => {
           targetId: "target-studio",
           projectId: "project-a",
           binding: activeBinding,
-          online: true,
+          // The active target stays represented by its primary list, but its
+          // retained slice remains the reachability source of truth.
+          online: false,
           lanes: [activeLane],
           sessions: [makeSession({ id: "session-duplicate", laneId: activeLane.id })],
           lastSyncedAtMs: Date.now(),
@@ -379,6 +381,7 @@ describe("adaptive machine marker", () => {
       lane: activeLane,
       machineId: "target-studio",
       machineName: "Mac Studio (12)",
+      online: false,
       isThisMachine: false,
       isActiveBinding: true,
     });
@@ -422,21 +425,23 @@ describe("adaptive machine marker", () => {
     });
 
     const markers = resolveCrossMachineLaneMarkers(rows);
-    // A glyph alone cannot say "offline", so the name is always promoted there.
+    // Offline is carried by `online`, which dims the glyph and the whole row.
+    // The form does NOT change with it: a marker that grew a name when a machine
+    // dropped made the row reflow for a reason the reader could not see.
     expect(markers.get("target-studio:lane-offline")).toMatchObject({
       online: false,
-      mode: "name",
+      mode: "glyph",
     });
     // Commits stranded on a machine you cannot reach are exactly the ones worth
     // naming, so its branch still counts toward "same branch elsewhere".
     expect(markers.get("target-laptop:lane-online")).toMatchObject({
       online: true,
-      mode: "name",
+      mode: "glyph",
       sameBranchElsewhere: true,
     });
   });
 
-  it("names machines when two distinct foreign machines are visible at once", () => {
+  it("keeps the glyph form when two distinct foreign machines are visible at once", () => {
     const rows = buildCrossMachineLaneRows({
       localLanes: [],
       machines: {
@@ -465,11 +470,14 @@ describe("adaptive machine marker", () => {
       },
     });
     const markers = resolveCrossMachineLaneMarkers(rows);
-    expect(markers.get("a:lane-a")?.mode).toBe("name");
-    expect(markers.get("b:lane-b")?.mode).toBe("name");
+    // Two foreign machines used to promote both names inline. They now stay
+    // glyphs and are told apart on hover: a resting form that never moves beat
+    // one that reflowed the column as machines came and went.
+    expect(markers.get("a:lane-a")).toMatchObject({ mode: "glyph", title: "Mac Studio (12)" });
+    expect(markers.get("b:lane-b")).toMatchObject({ mode: "glyph", title: "MacBook Pro (97)" });
   });
 
-  it("names the machine when the same branch exists here too", () => {
+  it("flags a branch held on another machine without changing the marker's form", () => {
     const rows = buildCrossMachineLaneRows({
       localLanes: [makeLane({ id: "lane-local", branchRef: "refs/heads/feature/shared" })],
       machines: {
@@ -487,8 +495,10 @@ describe("adaptive machine marker", () => {
       },
     });
     const marker = resolveCrossMachineLaneMarkers(rows).get("a:lane-foreign");
+    // Still computed — the push-divergence guard reasons about the same
+    // condition — but it no longer promotes the name.
     expect(marker?.sameBranchElsewhere).toBe(true);
-    expect(marker?.mode).toBe("name");
+    expect(marker?.mode).toBe("glyph");
     // The name is always reachable, glyph mode included.
     expect(marker?.title).toBe("Mac Studio (12)");
   });

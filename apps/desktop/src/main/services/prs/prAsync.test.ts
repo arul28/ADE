@@ -845,6 +845,79 @@ describe("prMergeAutoSettlementService", () => {
     );
   });
 
+  it("settles a PR that was already merged when first seen, but announces nothing", async () => {
+    // The machine-switch bug. Point the project tab at another machine and that
+    // machine reconciles, backfilling rows for PRs it had never stored. Every
+    // one arrives already merged, with a freshly-minted `randomUUID()` id that
+    // no `handledPrIds` list can match and a `mergedAt` comfortably after that
+    // machine's `enabledSince` — so each looked like breaking news, and the user
+    // got a stack of toasts about PRs that landed days ago.
+    //
+    // Filing the sessions is still right; announcing is not.
+    const db = createMemoryDb();
+    const settleSessionsWithOutcome = vi.fn((ids: string[]) => ids);
+    const emitEvent = vi.fn();
+    const service = createPrMergeAutoSettlementService({
+      db: db as any,
+      sessionService: {
+        list: vi.fn(() => [{
+          id: "chat-ready",
+          toolType: "claude-chat",
+          archivedAt: null,
+          settledAt: null,
+        }]),
+        settleSessionsWithOutcome,
+      } as any,
+      agentChatService: { getSettlementBlockers: vi.fn(async () => []) } as any,
+      emitEvent,
+    });
+
+    // A first snapshot establishes the baseline state, as any running app has.
+    await service.processSnapshot({
+      prs: [createSummary({ id: "pr-existing", githubPrNumber: 1, state: "open" })],
+      polledAt: "2026-03-24T12:00:00.000Z",
+    });
+
+    // Now the tab switches machines and a batch of long-merged PRs appears for
+    // the first time — merged AFTER enabledSince, so the old guard let them all
+    // through.
+    const historic = [
+      createSummary({
+        id: "pr-977", githubPrNumber: 977, state: "merged", mergedAt: "2026-03-24T12:00:30.000Z",
+      }),
+      createSummary({
+        id: "pr-983", githubPrNumber: 983, state: "merged", mergedAt: "2026-03-24T12:00:40.000Z",
+      }),
+    ];
+    await service.processSnapshot({
+      prs: historic,
+      polledAt: "2026-03-24T12:05:00.000Z",
+    });
+
+    expect(settleSessionsWithOutcome).toHaveBeenCalledTimes(2);
+    expect(emitEvent).not.toHaveBeenCalled();
+
+    // And a merge we actually watch still announces itself, so the fix does not
+    // simply mute the feature.
+    const watched = createSummary({
+      id: "pr-991", githubPrNumber: 991, state: "open",
+    });
+    await service.processSnapshot({
+      prs: [...historic, watched],
+      polledAt: "2026-03-24T12:06:00.000Z",
+    });
+    await service.processSnapshot({
+      prs: [...historic, { ...watched, state: "merged", mergedAt: "2026-03-24T12:07:00.000Z" }],
+      polledAt: "2026-03-24T12:07:05.000Z",
+    });
+
+    expect(emitEvent).toHaveBeenCalledTimes(1);
+    expect(emitEvent).toHaveBeenCalledWith(expect.objectContaining({
+      type: "pr-sessions-auto-settled",
+      prNumber: 991,
+    }));
+  });
+
   it("honors a concurrent disable while blocker checks are in flight", async () => {
     const db = createMemoryDb();
     let releaseBlockerCheck: (() => void) | null = null;

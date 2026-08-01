@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { buildAdeGitignore } from "../../../shared/adeLayout";
 import { openKvDb } from "../state/kvDb";
 import { createCtoStateService } from "./ctoStateService";
+import { buildCtoCapabilityManifest } from "./ctoPromptContent";
 
 function createLogger() {
   return {
@@ -307,5 +308,27 @@ describe("ctoStateService", () => {
     expect(preview.prompt).toContain("Be sharp, skeptical, and deeply execution-focused.");
 
     fixture.db.close();
+  });
+
+  // The capability manifest is the CTO's live lane-routing lever: its operator
+  // tool bodies are not registered on a running session, so the prompt is what
+  // actually steers where CTO-launched work lands. It used to instruct
+  // "always default laneId to the CTO's current lane" — the CTO's lane is the
+  // project's primary lane, so every agent it launched ran against the primary
+  // worktree.
+  it("keeps CTO-launched work off the CTO's own lane", () => {
+    const manifest = buildCtoCapabilityManifest();
+
+    expect(manifest).not.toMatch(/default laneId to the CTO's current lane/i);
+    expect(manifest).toMatch(/never launch implementation work on your own lane/i);
+    expect(manifest).toMatch(/primary lane/i);
+  });
+
+  it("generates the manifest from the registered operator tool surface", () => {
+    const manifest = buildCtoCapabilityManifest();
+
+    expect(manifest).toContain("spawnChat");
+    expect(manifest).toContain("createLane");
+    expect(manifest).toContain("# Operating Rules");
   });
 });

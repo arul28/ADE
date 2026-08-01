@@ -5,14 +5,16 @@ import { SmartTooltip } from "../ui/SmartTooltip";
 import { cn } from "../ui/cn";
 
 /**
- * Adaptive machine marker on a lane header.
+ * Machine marker on a lane header, or on the card that stands in for one.
  *
- * Rendered ONLY for lanes that are not on the machine you're sitting at — the
- * common single-machine case pays nothing. Default form is a bare monochrome
- * glyph; the name is promoted into the row when a glyph alone would be
- * ambiguous (the machine is offline, two or more foreign machines on screen, or
- * the branch also exists elsewhere). The lane accent owns the color channel, so
- * this stays monochrome: a tint here would read as a second lane color.
+ * Rendered ONLY for lanes that are not on the physical Mac you're sitting at —
+ * the common single-machine case pays nothing, and absence is what tells you a
+ * lane is here. Never keyed off the project tab's binding; see
+ * `resolveCrossMachineLaneMarkers` for why that distinction is the whole point.
+ *
+ * The resting form is a bare amber tower in an amber pill, with the name on
+ * hover. Amber is machine identity throughout ADE and never status. Callers with
+ * no lane header of their own (the command palette) pass `mode: "name"`.
  *
  * An unreachable machine keeps its rows, so this has a dimmed form — and it is
  * the only thing on the row that says why the group has gone quiet.

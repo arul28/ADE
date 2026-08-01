@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
+import { ArrowBendDownRight, ArrowUp, At, Bug, CaretDown, Check, Clock, CloudArrowUp, Desktop, DesktopTower, DeviceMobile, DotsThree, GithubLogo, Globe, Image, Lightning, MicrophoneSlash, Paperclip, PencilSimple, Plus, RocketLaunch, Square, SquareSplitHorizontal, Strategy, Trash, X } from "@phosphor-icons/react";
 import { BorderBeam } from "border-beam";
 import {
   inferAttachmentType,
@@ -48,6 +48,7 @@ import {
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
 import { cn } from "../ui/cn";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   PermissionModePicker,
   type PermissionModePickerOption,
@@ -521,6 +522,53 @@ const COMPOSER_TOOLBAR_PICKER_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-0
 // shrinks after the permission/fast labels collapse and the reasoning picker
 // has given up its width.
 const COMPOSER_MODEL_TRIGGER = "max-w-[min(9.5rem,34vw)] shrink min-w-[4.5rem]";
+
+/**
+ * Which machine this chat is executing on, next to the model and thinking-level
+ * pills.
+ *
+ * Read-only by design. A chat is pinned to the machine that owns its lane, so
+ * there is nothing here to pick — moving it is a real operation with real
+ * consequences for the worktree and the transcript, and it already has a home
+ * in Chat actions → Handoff → Continue on another machine. The tooltip points
+ * there rather than pretending this label is a control.
+ *
+ * Shown for LOCAL chats too, which is a deliberate departure from the sidebar,
+ * where absence of a badge means "this is here". That reading only works in a
+ * list, where badged and unbadged rows sit next to each other. A composer is one
+ * row with nothing to contrast against, so a missing label reads as missing
+ * rather than as an answer — and "where is this actually running" is a question
+ * worth answering while you are typing into it.
+ */
+function ComposerMachineChip({ machineName }: { machineName: string }) {
+  return (
+    <SmartTooltip
+      forceEnabled
+      content={{
+        label: machineName,
+        description:
+          "This chat runs on the machine that owns its lane. To move it, use Chat actions → Handoff → Continue on another machine.",
+      }}
+    >
+      <span
+        data-chat-composer-machine-chip="readonly"
+        aria-label={`Running on ${machineName}`}
+        className={cn(
+          "inline-flex h-6 shrink-0 items-center gap-1 px-1",
+          "font-sans text-[9px] font-medium text-muted-fg/60",
+        )}
+        style={{ whiteSpace: "nowrap" }}
+      >
+        {/* Amber tower, the same identity mark the sidebar badge and the session
+            hover card use. Bare here — no pill — because the composer toolbar's
+            other controls are already bordered and a third box would read as a
+            fourth button. */}
+        <DesktopTower size={11} weight="duotone" className="text-amber-400/85" aria-hidden />
+        <span className="max-w-24 truncate">{machineName}</span>
+      </span>
+    </SmartTooltip>
+  );
+}
 
 const COMPOSER_PERMISSION_TRIGGER_CLASS = cn(
   "ade-chat-composer-permission-trigger",
@@ -3148,6 +3196,22 @@ export function AgentChatComposer({
       ? parallelModelSlots[parallelConfiguringIndex]?.fastMode === true
       : fastMode === true;
 
+  /* Where this chat executes.
+
+     Running chats only. A draft has no machine yet — it has a CHOICE of one, and
+     the launch shelf's machine picker owns that; a label there would either
+     duplicate the picker or state a default the user is about to change.
+
+     `composerMachineBinding` is the same binding attachments and the prompt
+     stash are pinned to, so this label can never disagree with where a file you
+     drop actually lands. Its absence is meaningful rather than unknown: a chat
+     with no remote binding is running on this Mac. */
+  const composerMachineName = sessionId
+    ? composerMachineBinding?.kind === "remote"
+      ? composerMachineBinding.runtimeName
+      : THIS_MACHINE_NAME
+    : null;
+
   const claudeSelectionMode = cpmUse === "plan" || im === "plan"
     ? "plan"
     : cpmUse ?? "default";
@@ -4742,6 +4806,13 @@ export function AgentChatComposer({
                   triggerClassName={COMPOSER_TOOLBAR_PICKER_TRIGGER}
                 />
               </>
+            ) : null}
+            {/* Right of the thinking-level selector when controls are present:
+                model, then how hard it thinks, then where it runs. It stays
+                outside that conditional because orchestration leads and host
+                surfaces hide model controls without hiding a running chat. */}
+            {composerMachineName ? (
+              <ComposerMachineChip machineName={composerMachineName} />
             ) : null}
           </div>
 

@@ -16810,6 +16810,51 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(viaTimestamp.isComplete)
   }
 
+  func testCtoSetupCompletionPreservesHostOnboardingMarkers() {
+    // The host records non-user steps here (e.g. "intro", meaning the CTO's
+    // opening turn was already sent) and updateIdentity replaces the whole
+    // object, so completing setup from iOS must not drop them.
+    XCTAssertEqual(
+      CtoOnboardingState.stepsCompletingSetup(existing: ["intro"]),
+      ["intro", "identity"]
+    )
+    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: nil), ["identity"])
+    XCTAssertEqual(CtoOnboardingState.stepsCompletingSetup(existing: []), ["identity"])
+    // Idempotent: re-saving setup must not duplicate the required step.
+    XCTAssertEqual(
+      CtoOnboardingState.stepsCompletingSetup(existing: ["identity", "intro"]),
+      ["identity", "intro"]
+    )
+  }
+
+  func testCtoAttentionDecodesHostIdleAndWaitingPayloads() throws {
+    // `cto.getAttention` returns `{ awaitingInput, since }` and the host sends
+    // JSON `null` for `since` whenever nothing is waiting — a non-optional
+    // `since` would throw there and the tab badge would silently never light.
+    let waitingData = try JSONSerialization.data(withJSONObject: [
+      "awaitingInput": true,
+      "since": "2026-07-31T00:00:00Z",
+    ])
+    let waiting = try JSONDecoder().decode(CtoAttention.self, from: waitingData)
+    XCTAssertTrue(waiting.awaitingInput)
+    XCTAssertEqual(waiting.since, "2026-07-31T00:00:00Z")
+
+    let idleData = try JSONSerialization.data(withJSONObject: [
+      "awaitingInput": false,
+      "since": NSNull(),
+    ])
+    let idle = try JSONDecoder().decode(CtoAttention.self, from: idleData)
+    XCTAssertFalse(idle.awaitingInput)
+    XCTAssertNil(idle.since)
+    XCTAssertEqual(idle, CtoAttention.idle)
+
+    // An older/leaner host may omit the key entirely rather than send null.
+    let omittedData = try JSONSerialization.data(withJSONObject: ["awaitingInput": true])
+    let omitted = try JSONDecoder().decode(CtoAttention.self, from: omittedData)
+    XCTAssertTrue(omitted.awaitingInput)
+    XCTAssertNil(omitted.since)
+  }
+
   func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
     func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
       CtoIdentity(

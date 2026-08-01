@@ -3719,6 +3719,17 @@ final class SyncService: ObservableObject {
   /// for context but never listed.
   @Published private(set) var idleSessionsCount: Int = 0
 
+  /// Whether the CTO thread is blocked on the user.
+  ///
+  /// Deliberately NOT folded into `awaitingInputSessionsCount`: the CTO chat is
+  /// excluded from every session roster, so the roster-derived counters above
+  /// can never see it. Without this the phone shows nothing at all when the CTO
+  /// asks a question.
+  @Published private(set) var ctoAttention: CtoAttention = .idle
+
+  private var ctoAttentionTask: Task<Void, Never>?
+  private var lastCtoAttentionFetchAt: Date?
+
   /// 2s debounce task shared by all writers of the App Group workspace
   /// snapshot. Coalesces bursty state changes into a single widget reload.
   private var snapshotDebouncerTask: Task<Void, Never>?
@@ -8078,6 +8089,16 @@ final class SyncService: ObservableObject {
     var args: [String: Any] = [:]
     if let recentLimit { args["recentLimit"] = recentLimit }
     return try await sendDecodableCommand(action: "cto.getState", args: args, as: CtoSnapshot.self)
+  }
+
+  /// Whether the CTO thread is waiting on the user.
+  ///
+  /// Optional-gated: this action is in
+  /// `MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS`, so a phone on a newer build
+  /// talking to an older brain simply never lights the dot instead of erroring.
+  /// Callers should check `supportsRemoteAction("cto.getAttention")` first.
+  func fetchCtoAttention() async throws -> CtoAttention {
+    try await sendDecodableCommand(action: "cto.getAttention", as: CtoAttention.self)
   }
 
   /// Fetches the CTO's durable memory (`MEMORY.md`), rolling thread state, and
@@ -12572,6 +12593,10 @@ final class SyncService: ObservableObject {
 
   private func saveRemoteCommandDescriptors(_ descriptors: [SyncRemoteCommandDescriptor]) {
     remoteCommandDescriptors = descriptors
+    // `refreshCtoAttentionIfNeeded` no-ops until it knows the host supports the
+    // command, so the first probe after a (re)connect has to happen here —
+    // forced past the debounce, since a reconnect can land inside its window.
+    refreshCtoAttentionIfNeeded(force: true)
     if descriptors.isEmpty {
       UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
     } else if let data = try? encoder.encode(descriptors) {
@@ -18864,6 +18889,13 @@ extension SyncService {
       runningChatCount: runningChatCount,
       idleCount: idleCount
     )
+    // Before the roster early-return, not after: the CTO is excluded from
+    // `allAgents` by design, so a turn where ONLY the CTO changed leaves the
+    // signature identical. Hanging the probe below the guard would mean the
+    // badge only ever updated when some unrelated session happened to change —
+    // and, once lit, never cleared. Its own debounce bounds the traffic.
+    refreshCtoAttentionIfNeeded()
+
     guard nextSignature != activeSessionsSnapshotSignature else { return }
     activeSessionsSnapshotSignature = nextSignature
 
@@ -18873,6 +18905,39 @@ extension SyncService {
     idleSessionsCount = idleCount
 
     scheduleWorkspaceSnapshotWrite()
+  }
+
+  /// Refreshes the CTO attention dot. Best-effort and debounced: it rides the
+  /// same "something changed" pulse as the roster rebuild, but the CTO is not in
+  /// that roster so it needs its own read.
+  ///
+  /// Failure keeps the last known value rather than clearing — falsely dropping
+  /// a pending question is worse than a slightly stale dot.
+  func refreshCtoAttentionIfNeeded(force: Bool = false) {
+    guard supportsRemoteAction("cto.getAttention") else {
+      // Older brain: never light the dot, and clear a value left over from a
+      // newer host we were previously paired with.
+      if ctoAttention.awaitingInput { ctoAttention = .idle }
+      return
+    }
+    guard canSendLiveRequests() else { return }
+    guard ctoAttentionTask == nil else { return }
+    if !force, let last = lastCtoAttentionFetchAt, Date().timeIntervalSince(last) < 5 { return }
+    lastCtoAttentionFetchAt = Date()
+    ctoAttentionTask = Task { [weak self] in
+      guard let self else { return }
+      defer { self.ctoAttentionTask = nil }
+      do {
+        let next = try await self.fetchCtoAttention()
+        self.ctoAttention = next
+      } catch {
+        // Keep the last known state on a TRANSPORT failure — dropping a pending
+        // question is worse than a stale dot. Note this does not cover a
+        // host-side probe failure: `getCtoAttention` swallows those into
+        // `idle`, so the badge would clear. Distinguishing them needs an
+        // explicit "unknown" in CtoAttentionState across all three transports.
+      }
+    }
   }
 
   private func activeSessionsSignature(

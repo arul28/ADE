@@ -1118,6 +1118,19 @@ struct CtoOnboardingState: Codable, Hashable {
   var isComplete: Bool {
     completedAt != nil || completedSteps.contains("identity")
   }
+
+  /// Steps to send when marking setup complete from this device.
+  ///
+  /// `cto.updateIdentity` replaces `onboardingState` wholesale, and the desktop
+  /// keeps non-user markers in this same list (e.g. `"intro"`, recording that
+  /// the CTO's opening turn was already sent). Sending a bare `["identity"]`
+  /// would erase those and make the host redo work it had already done, so the
+  /// required step is unioned into whatever the host already recorded.
+  static func stepsCompletingSetup(existing: [String]?) -> [String] {
+    var steps = existing ?? []
+    if !steps.contains("identity") { steps.append("identity") }
+    return steps
+  }
 }
 
 /// Mirrors desktop `CtoIdentity`. The server has no top-level `id`; we
@@ -1188,6 +1201,19 @@ struct CtoRecentSession: Codable, Hashable, Identifiable {
 struct CtoSnapshot: Codable, Hashable {
   var identity: CtoIdentity
   var recentSessions: [CtoRecentSession]?
+}
+
+/// Returned by the `cto.getAttention` sync command: whether the CTO thread is
+/// blocked on the user.
+///
+/// The phone cannot derive this from its chat roster — the CTO chat is
+/// deliberately excluded from every session list — so it has to ask. `since` is
+/// optional because the host sends JSON `null` when nothing is waiting.
+struct CtoAttention: Codable, Hashable {
+  var awaitingInput: Bool
+  var since: String?
+
+  static let idle = CtoAttention(awaitingInput: false, since: nil)
 }
 
 /// Returned by the `cto.getMemory` sync command: the durable facts the CTO
