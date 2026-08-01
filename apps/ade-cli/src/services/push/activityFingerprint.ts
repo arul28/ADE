@@ -43,13 +43,14 @@ export function activityContentFingerprint(item: AttentionItem): string {
   });
 }
 
-/** Stable identity of the alert, deliberately independent of copy and time. */
+/** Stable identity of one phase entry, independent of preview-copy churn. */
 export function activityAlertFingerprint(item: AttentionItem): string {
   if (item.kind === "pull_request" && item.destination.kind === "pull_request") {
     return sha256({
       id: item.id,
       eventKind: item.eventKind,
       phase: item.phase,
+      statusSince: item.statusSince ?? null,
       number: item.destination.number,
     });
   }
@@ -57,6 +58,7 @@ export function activityAlertFingerprint(item: AttentionItem): string {
     id: item.id,
     eventKind: item.eventKind,
     phase: item.phase,
+    statusSince: item.statusSince ?? null,
     itemId: item.destination.kind === "session"
       ? item.destination.itemId ?? ""
       : "",

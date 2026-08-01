@@ -65,7 +65,7 @@ function errorMessage(error: unknown): string {
 }
 
 function isUnsupportedActivityError(error: unknown): boolean {
-  return /unknown (?:ade )?action|unknown attention action|method not found|unsupported.*attention|attention\.call.*not (?:available|found)/i
+  return /unknown (?:ade )?action|unknown (?:attention|activity) action|method not found|unsupported.*attention|attention\.call.*not (?:available|found)/i
     .test(errorMessage(error));
 }
 

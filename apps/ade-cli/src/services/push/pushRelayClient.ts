@@ -87,6 +87,26 @@ export type ActivityPublishRequest = {
   fullSnapshot?: never;
 };
 
+export type ActivityPublishAcknowledgment = {
+  itemId: string;
+  sourceRevision: number;
+  seenAt: string | null;
+  dismissedAt: string | null;
+};
+
+/** Decoded response contract for both legacy and protocol-2 Activity publishes. */
+export type ActivityPublishResult = {
+  ok: true;
+  protocol?: number;
+  revision?: number;
+  acks?: ActivityPublishAcknowledgment[];
+  upserted?: number;
+  removed?: number;
+  unchanged?: boolean;
+  suppressed?: boolean;
+  itemsTruncated?: boolean;
+};
+
 export type AttentionRelayPublishPayload =
   | LegacyAttentionRelayPublishPayload
   | ActivityPublishRequest;
@@ -275,6 +295,77 @@ export function createPushRelayClient(args: {
     return body as unknown as AttentionSnapshot;
   };
 
+  const requireActivityPublishResult = (
+    response: RelayResponse,
+  ): ActivityPublishResult => {
+    const body = requireOk("publishAttention", response);
+    const validOptionalCount = (value: unknown): boolean =>
+      value === undefined || (Number.isSafeInteger(value) && Number(value) >= 0);
+    const validOptionalBoolean = (value: unknown): boolean =>
+      value === undefined || typeof value === "boolean";
+    if (
+      body.ok !== true
+      || (
+        body.protocol !== undefined
+        && (!Number.isSafeInteger(body.protocol) || Number(body.protocol) <= 0)
+      )
+      || !validOptionalCount(body.revision)
+      || !validOptionalCount(body.upserted)
+      || !validOptionalCount(body.removed)
+      || !validOptionalBoolean(body.unchanged)
+      || !validOptionalBoolean(body.suppressed)
+      || !validOptionalBoolean(body.itemsTruncated)
+      || (body.acks !== undefined && !Array.isArray(body.acks))
+    ) {
+      throw new PushRelayRequestError(
+        "publishAttention",
+        502,
+        "relay returned an invalid Activity publish result",
+      );
+    }
+    const acknowledgments = (body.acks ?? []).map((value) => {
+      if (!isRecord(value)) return null;
+      const itemId = typeof value.itemId === "string" ? value.itemId.trim() : "";
+      const sourceRevision = Number(value.sourceRevision);
+      const seenAt = value.seenAt;
+      const dismissedAt = value.dismissedAt;
+      if (
+        !itemId
+        || !Number.isSafeInteger(sourceRevision)
+        || sourceRevision < 0
+        || (seenAt !== null && typeof seenAt !== "string")
+        || (dismissedAt !== null && typeof dismissedAt !== "string")
+        || (typeof seenAt === "string" && Number.isNaN(Date.parse(seenAt)))
+        || (typeof dismissedAt === "string" && Number.isNaN(Date.parse(dismissedAt)))
+      ) {
+        return null;
+      }
+      return { itemId, sourceRevision, seenAt, dismissedAt };
+    });
+    if (acknowledgments.some((value) => value === null)) {
+      throw new PushRelayRequestError(
+        "publishAttention",
+        502,
+        "relay returned an invalid Activity publish result",
+      );
+    }
+    return {
+      ok: true,
+      ...(body.protocol !== undefined ? { protocol: Number(body.protocol) } : {}),
+      ...(body.revision !== undefined ? { revision: Number(body.revision) } : {}),
+      ...(body.acks !== undefined
+        ? { acks: acknowledgments as ActivityPublishAcknowledgment[] }
+        : {}),
+      ...(body.upserted !== undefined ? { upserted: Number(body.upserted) } : {}),
+      ...(body.removed !== undefined ? { removed: Number(body.removed) } : {}),
+      ...(body.unchanged !== undefined ? { unchanged: body.unchanged as boolean } : {}),
+      ...(body.suppressed !== undefined ? { suppressed: body.suppressed as boolean } : {}),
+      ...(body.itemsTruncated !== undefined
+        ? { itemsTruncated: body.itemsTruncated as boolean }
+        : {}),
+    };
+  };
+
   const machinePath = (suffix: string): string => {
     const { machineKey } = args.store.getOrCreateIdentity();
     return `/machines/${machineKey}${suffix}`;
@@ -346,7 +437,7 @@ export function createPushRelayClient(args: {
       return requireOk("publish", response);
     },
 
-    async publishAttention(payload: AttentionRelayPublishPayload): Promise<Record<string, unknown> | null> {
+    async publishAttention(payload: AttentionRelayPublishPayload): Promise<ActivityPublishResult | null> {
       if (!args.getAccountAccessToken) return null;
       const expectedAccountUserId = args.getAccountUserId?.() ?? undefined;
       if (!expectedAccountUserId) return null;
@@ -360,7 +451,7 @@ export function createPushRelayClient(args: {
       if (response.status === 401 && response.body?.error === "ADE account is not signed in") {
         return null;
       }
-      return requireOk("publishAttention", response);
+      return requireActivityPublishResult(response);
     },
 
     async getAttentionSnapshot(
@@ -460,9 +551,13 @@ export function createPushRelayClient(args: {
       expectedAccountUserId: string,
       preferences: AttentionPreferences,
     ): Promise<void> {
-      // Desktop edits account/project policy only. Omitting device overrides
-      // lets the relay preserve concurrent phone-owned settings atomically.
-      const { devices: _deviceOverrides, ...accountPreferences } = preferences;
+      // Desktop edits account/project policy only. Omitting device and machine
+      // overrides lets the relay preserve concurrent scope-owned settings.
+      const {
+        devices: _deviceOverrides,
+        machines: _machineOverrides,
+        ...accountPreferences
+      } = preferences;
       const response = await request("PUT", "/attention/account/preferences", {
         body: accountPreferences,
         accountAuthorized: true,

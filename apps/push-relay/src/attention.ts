@@ -719,13 +719,17 @@ async function enforceActivityAccountItemCap(
   );
   if (overflow === 0) return { itemsTruncated: false, revision: null };
 
-  const idleCountRow = await env.DB.prepare(`
+  const evictionEligibleCountRow = await env.DB.prepare(`
     select count(*) as count
     from attention_items
-    where user_id = ? and activity_tier = 'idle'
+    where user_id = ?
+      and (activity_tier = 'idle' or activity_tier is null)
   `).bind(userId).first<{ count: number }>();
-  const rowsToRemove = Math.min(overflow, Number(idleCountRow?.count ?? 0));
-  if (rowsToRemove === 0) return { itemsTruncated: true, revision: null };
+  const rowsToRemove = Math.min(
+    overflow,
+    Number(evictionEligibleCountRow?.count ?? 0),
+  );
+  if (rowsToRemove === 0) return { itemsTruncated: false, revision: null };
 
   const revision = await commitAttentionRevision(env, userId, [
     env.DB.prepare(`
@@ -735,8 +739,10 @@ async function enforceActivityAccountItemCap(
       select user_id, item_id, source_revision,
         (select revision from attention_revisions where user_id = ?), 0, ?
       from attention_items
-      where user_id = ? and activity_tier = 'idle'
-      order by updated_at asc
+      where user_id = ?
+        and (activity_tier = 'idle' or activity_tier is null)
+      order by case when activity_tier = 'idle' then 0 else 1 end,
+        updated_at asc
       limit ?
       on conflict(user_id, item_id) do update set
         source_revision = excluded.source_revision,
@@ -750,8 +756,10 @@ async function enforceActivityAccountItemCap(
       where user_id = ? and item_id in (
         select item_id
         from attention_items
-        where user_id = ? and activity_tier = 'idle'
-        order by updated_at asc
+        where user_id = ?
+          and (activity_tier = 'idle' or activity_tier is null)
+        order by case when activity_tier = 'idle' then 0 else 1 end,
+          updated_at asc
         limit ?
       )
     `).bind(userId, userId, rowsToRemove),
@@ -1866,6 +1874,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
   const privacyPreview = boundedText(value.privacyPreview, MAX_PREVIEW_LENGTH);
   const updatedAt = optionalIsoDate(value.updatedAt);
   const occurredAt = optionalIsoDate(value.occurredAt);
+  const statusSince = optionalIsoDate(value.statusSince);
   const expiresAt = optionalIsoDate(value.expiresAt);
   if (
     !id
@@ -1892,6 +1901,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     || !privacyPreview
     || !updatedAt
     || !occurredAt
+    || statusSince === undefined
     || expiresAt === undefined
     || !isRecord(value.machine)
     || requiredString(value.machine.machineKey) !== machineKey
@@ -2097,6 +2107,7 @@ function parseAttentionItem(value: unknown, machineKey: string): ParsedAttention
     actions: actions as Array<Record<string, unknown>>,
     updatedAt,
     occurredAt,
+    statusSince,
     expiresAt: activityTier === "idle" ? null : expiresAt,
     seenAt: null,
     dismissedAt: null,
@@ -2912,6 +2923,13 @@ async function handleSnapshot(
   const responseTombstoneRows = tombstoneRows.results.filter(
     (row) => row.account_revision <= responseRevision,
   );
+  const accountItemCountRow = await env.DB.prepare(`
+    select count(*) as count
+    from attention_items
+    where user_id = ?
+  `).bind(userId).first<{ count: number }>();
+  const itemsTruncated = Number(accountItemCountRow?.count ?? 0)
+    >= MAX_ACCOUNT_ATTENTION_ITEMS;
   const links = await env.DB.prepare(`
     select machine_key, machine_name, last_seen_at
     from attention_machine_links
@@ -2961,6 +2979,7 @@ async function handleSnapshot(
       lastSeenAt: row.last_seen_at,
     })),
     items,
+    itemsTruncated,
     tombstones: responseTombstoneRows.map((row) => ({
       id: row.item_id,
       revision: row.source_revision,

@@ -51,6 +51,10 @@ type PushRegistrationFile = {
   activityProtocol: number | null;
   /** Durable monotonic reconcile epoch; incremented before every new sweep. */
   activityRosterEpoch: number;
+  /** Account owner whose published source-revision clamps are stored below. */
+  lastPublishedRevisionAccountOwnerId: string | null;
+  /** Durable per-item revision floor so live-to-roster fallback survives restart. */
+  lastPublishedRevisionById: Record<string, number>;
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
@@ -115,6 +119,8 @@ function createEmptyFile(): PushRegistrationFile {
     remoteAttentionAcknowledgments: {},
     activityProtocol: null,
     activityRosterEpoch: 0,
+    lastPublishedRevisionAccountOwnerId: null,
+    lastPublishedRevisionById: {},
     lastPublishAt: null,
     lastPublishError: null,
     lastRelayContactAt: null,
@@ -247,6 +253,18 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         && Number(parsed.activityRosterEpoch) >= 0
         ? Number(parsed.activityRosterEpoch)
         : 0,
+      lastPublishedRevisionAccountOwnerId:
+        typeof parsed.lastPublishedRevisionAccountOwnerId === "string"
+          ? parsed.lastPublishedRevisionAccountOwnerId.trim() || null
+          : null,
+      lastPublishedRevisionById: Object.fromEntries(
+        Object.entries(parsed.lastPublishedRevisionById ?? {})
+          .filter(([itemId, revision]) =>
+            itemId.trim().length > 0
+            && Number.isSafeInteger(revision)
+            && Number(revision) >= 0)
+          .map(([itemId, revision]) => [itemId, Number(revision)]),
+      ),
       lastPublishAt: parsed.lastPublishAt ?? null,
       lastPublishError: parsed.lastPublishError ?? null,
       lastRelayContactAt: parsed.lastRelayContactAt ?? null,
@@ -498,6 +516,46 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
       const next = Math.max(0, file.activityRosterEpoch) + 1;
       write({ ...file, activityRosterEpoch: next });
       return next;
+    },
+
+    getLastPublishedActivityRevisions(): {
+      accountOwnerId: string | null;
+      revisions: Record<string, number>;
+    } {
+      const file = load();
+      return {
+        accountOwnerId: file.lastPublishedRevisionAccountOwnerId,
+        revisions: { ...file.lastPublishedRevisionById },
+      };
+    },
+
+    setLastPublishedActivityRevisions(args: {
+      accountOwnerId: string | null;
+      revisions: Record<string, number>;
+    }): void {
+      const file = load();
+      const revisions = Object.fromEntries(
+        Object.entries(args.revisions)
+          .filter(([itemId, revision]) =>
+            itemId.trim().length > 0
+            && Number.isSafeInteger(revision)
+            && Number(revision) >= 0)
+          .map(([itemId, revision]) => [itemId, Number(revision)]),
+      );
+      const accountOwnerId = args.accountOwnerId?.trim() || null;
+      const currentEntries = Object.entries(file.lastPublishedRevisionById);
+      if (
+        file.lastPublishedRevisionAccountOwnerId === accountOwnerId
+        && currentEntries.length === Object.keys(revisions).length
+        && currentEntries.every(([itemId, revision]) => revisions[itemId] === revision)
+      ) {
+        return;
+      }
+      write({
+        ...file,
+        lastPublishedRevisionAccountOwnerId: accountOwnerId,
+        lastPublishedRevisionById: revisions,
+      });
     },
 
     hasRegisteredDevices(): boolean {

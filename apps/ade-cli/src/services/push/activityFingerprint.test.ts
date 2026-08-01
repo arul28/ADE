@@ -36,6 +36,7 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
     actions: [{ id: "open", kind: "open", label: "Open" }],
     occurredAt: "2026-08-01T12:00:00.000Z",
     updatedAt: "2026-08-01T12:00:00.000Z",
+    statusSince: "2026-08-01T12:00:00.000Z",
     seenAt: null,
     dismissedAt: null,
     expiresAt: "2026-08-01T14:00:00.000Z",
@@ -72,5 +73,35 @@ describe("Activity fingerprints", () => {
     });
 
     expect(activityAlertFingerprint(nextApproval)).not.toBe(activityAlertFingerprint(first));
+  });
+
+  it("changes alert identity when a session or pull request re-enters a phase", () => {
+    const firstQuestion = item({
+      eventKind: "agent_needs_you",
+      phase: "needs_you",
+      statusSince: "2026-08-01T12:00:00.000Z",
+      destination: { kind: "session", sessionId: "session", itemId: null },
+    });
+    const reenteredQuestion = item({
+      ...firstQuestion,
+      statusSince: "2026-08-01T12:05:00.000Z",
+    });
+    const firstReview = item({
+      id: "pull-request:machine:42",
+      kind: "pull_request",
+      eventKind: "pr_review_requested",
+      phase: "review_requested",
+      statusSince: "2026-08-01T12:00:00.000Z",
+      destination: { kind: "pull_request", number: 42, tab: "activity" },
+    });
+    const reenteredReview = item({
+      ...firstReview,
+      statusSince: "2026-08-01T12:05:00.000Z",
+    });
+
+    expect(activityAlertFingerprint(reenteredQuestion))
+      .not.toBe(activityAlertFingerprint(firstQuestion));
+    expect(activityAlertFingerprint(reenteredReview))
+      .not.toBe(activityAlertFingerprint(firstReview));
   });
 });

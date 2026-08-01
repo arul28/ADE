@@ -181,7 +181,7 @@ describe("account-wide Activity pane", () => {
   it("names an old signed-out host instead of fabricating an empty machine fallback", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "account.call") return { result: { signedIn: false } };
-      throw new Error("Unsupported Activity method: attention.call");
+      throw new Error("Unknown Activity action: getMachineSnapshot");
     });
 
     await expect(loadActivitySnapshot(

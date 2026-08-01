@@ -30,6 +30,7 @@ import type {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import type {
+  ActivityPublishResult,
   PushRelayAlertItem,
   PushRelayClient,
   PushRelayLiveActivityItem,
@@ -89,6 +90,7 @@ const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
 const ATTENTION_RECENT_TTL_MS = 24 * 60 * 60 * 1000;
 export const ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE = 300;
+export const ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE = 100;
 export const ACTIVITY_PUBLISH_PAGE_ITEMS = 48;
 export const ACTIVITY_RECONCILE_INTERVAL_MS = 30 * 60_000;
 const ACTIVITY_ROSTER_CACHE_MS = 10_000;
@@ -523,9 +525,12 @@ function prActivityTier(phase: AttentionPhase): "signal" | "ambient" {
     : "ambient";
 }
 
-function validTimestampMs(value: string | null | undefined): number {
+function validTimestampMs(
+  value: string | null | undefined,
+  fallback: number,
+): number {
   const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
-  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function agentAttentionEventKind(phase: AgentRunPhase): AttentionEventKind {
@@ -572,7 +577,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let pendingAlerts: PendingAlert[] = [];
   const lastAlertFingerprintByKey = new Map<string, Map<string, string>>();
   const lastPublishedFingerprintById = new Map<string, string>();
-  const lastPublishedRevisionById = new Map<string, number>();
+  const initialAccountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+  const persistedPublishedRevisions =
+    deps.store.getLastPublishedActivityRevisions?.() ?? null;
+  const lastPublishedRevisionById = new Map<string, number>(
+    Object.entries(persistedPublishedRevisions?.revisions ?? {}),
+  );
   const lastOverflowRevisionById = new Map<string, number>();
   let activityProtocol = deps.store.getActivityProtocol?.() ?? null;
   let activityRosterProvider = deps.activityRosterProvider ?? null;
@@ -580,7 +590,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let rosterEpoch = 0;
   let reconcilePending = true;
   let lastReconcileAt = 0;
-  let lastActivityAccountOwnerId: string | null | undefined;
+  let lastActivityAccountOwnerId: string | null | undefined =
+    persistedPublishedRevisions?.accountOwnerId ?? initialAccountOwnerId;
   let activityRosterCap = ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE;
   let lastLegacyAttentionFingerprint: string | null = null;
   let lastAttentionPublishedAt = 0;
@@ -625,6 +636,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const logWarn = (message: string, error: unknown): void => {
     deps.logger.warn(message, { error: error instanceof Error ? error.message : String(error) });
+  };
+
+  const persistLastPublishedRevisions = (): void => {
+    deps.store.setLastPublishedActivityRevisions?.({
+      accountOwnerId: lastActivityAccountOwnerId ?? null,
+      revisions: Object.fromEntries(lastPublishedRevisionById),
+    });
   };
 
   const isGated = (): boolean => {
@@ -818,7 +836,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         return project.chats.map((chat): AttentionItem => {
           const phase = rosterAttentionPhase(chat.status);
           const activityTier = rosterActivityTier(chat.status);
-          const revision = validTimestampMs(chat.lastActivityAt);
+          const revision = validTimestampMs(chat.lastActivityAt, nowMs);
           const activityAt = new Date(revision).toISOString();
           const provider = providerDisplayName(chat.provider ?? chat.toolType);
           const subject = provider ?? chat.title?.trim() ?? "Agent";
@@ -977,7 +995,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // Live state is authoritative on the shared terminal_sessions.id/sessionId
     // namespace and therefore wins every collision with a roster row.
     for (const item of runItems) agentItems.set(item.id, item);
-    return [...agentItems.values(), ...prItems];
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    const remoteRevisionById = new Map(
+      (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
+        .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
+    );
+    return [...agentItems.values(), ...prItems].map((item) => {
+      const revision = Math.max(
+        item.revision,
+        lastPublishedRevisionById.get(item.id) ?? 0,
+        remoteRevisionById.get(item.id) ?? 0,
+      );
+      return revision === item.revision ? item : { ...item, revision };
+    });
   };
 
   const mergeMachineAcknowledgments = (items: AttentionItem[]): AttentionItem[] => {
@@ -1029,8 +1059,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         const current = currentById.get(acknowledgment.itemId);
         return Boolean(
           current
-          && acknowledgment.accountOwnerId === accountOwnerId
-          && acknowledgment.sourceRevision >= current.revision,
+          && acknowledgment.accountOwnerId === accountOwnerId,
         );
       });
     for (let offset = 0; offset < pending.length; offset += 64) {
@@ -1052,6 +1081,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         try {
           const result = await deps.relayClient.acknowledgeAttention({
             itemIds: group.map((acknowledgment) => acknowledgment.itemId),
+            sourceRevisions: Object.fromEntries(
+              group.map((acknowledgment) => [
+                acknowledgment.itemId,
+                currentById.get(acknowledgment.itemId)!.revision,
+              ]),
+            ),
             seenAt: group[0]!.seenAt,
             ...(group[0]!.dismissedAt
               ? { dismissedAt: group[0]!.dismissedAt }
@@ -1059,12 +1094,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             expectedAccountOwnerId: accountOwnerId,
           });
           if (result) {
+            const applied = new Set(result.applied);
             deps.store.markAttentionAcknowledgmentsSynced?.(
-              group.map((acknowledgment) => ({
-                itemId: acknowledgment.itemId,
-                accountOwnerId: acknowledgment.accountOwnerId,
-                updatedAt: acknowledgment.updatedAt,
-              })),
+              group
+                .filter((acknowledgment) => applied.has(acknowledgment.itemId))
+                .map((acknowledgment) => ({
+                  itemId: acknowledgment.itemId,
+                  accountOwnerId: acknowledgment.accountOwnerId,
+                  updatedAt: acknowledgment.updatedAt,
+                })),
             );
           }
         } catch (error) {
@@ -1344,12 +1382,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   type ActivityPublishResponse = {
     protocol: number;
-    result: Record<string, unknown>;
+    result: ActivityPublishResult;
     capShrunk: boolean;
   };
 
   const recordActivityPublishResponse = (
-    result: Record<string, unknown>,
+    result: ActivityPublishResult,
     nowMs: number,
     allowCapShrink = true,
   ): ActivityPublishResponse => {
@@ -1361,25 +1399,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       deps.store.setActivityProtocol?.(protocol);
     }
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
-    const acknowledgments = Array.isArray(result.acks)
-      ? result.acks.flatMap((value) => {
-        if (!value || typeof value !== "object") return [];
-        const acknowledgment = value as Record<string, unknown>;
-        const itemId = typeof acknowledgment.itemId === "string"
-          ? acknowledgment.itemId.trim()
-          : "";
-        const sourceRevision = Number(acknowledgment.sourceRevision);
-        const seenAt = acknowledgment.seenAt === null || typeof acknowledgment.seenAt === "string"
-          ? acknowledgment.seenAt
-          : null;
-        const dismissedAt = acknowledgment.dismissedAt === null || typeof acknowledgment.dismissedAt === "string"
-          ? acknowledgment.dismissedAt
-          : null;
-        return itemId && Number.isFinite(sourceRevision)
-          ? [{ itemId, sourceRevision, seenAt, dismissedAt }]
-          : [];
-      })
-      : [];
+    const acknowledgments = result.acks ?? [];
     if (acknowledgments.length > 0) {
       deps.store.recordRemoteAttentionAcknowledgments?.({
         accountOwnerId,
@@ -1389,7 +1409,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     }
     const previousCap = activityRosterCap;
     if (allowCapShrink && protocol >= 2 && result.itemsTruncated === true) {
-      activityRosterCap = Math.max(1, Math.floor(activityRosterCap * 0.9));
+      activityRosterCap = Math.max(
+        ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE,
+        Math.floor(activityRosterCap * 0.9),
+      );
       reconcilePending = true;
     }
     lastAttentionPublishedAt = nowMs;
@@ -1455,6 +1478,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     });
     if (!result) return "unavailable";
     const response = recordActivityPublishResponse(result, nowMs, false);
+    for (const item of items) {
+      lastPublishedRevisionById.set(item.id, item.revision);
+    }
+    persistLastPublishedRevisions();
     lastLegacyAttentionFingerprint = fingerprint;
     await reconcileMachineAcknowledgments(items);
     if (response.protocol >= 2) {
@@ -1471,7 +1498,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     nowMs: number,
     items: AttentionItem[],
     overflow: AttentionItem[],
-  ): Promise<"published" | "unchanged" | "legacy"> => {
+  ): Promise<"published" | "unchanged" | "unavailable" | "legacy"> => {
     rosterEpoch = deps.store.nextActivityRosterEpoch?.() ?? rosterEpoch + 1;
     const tombstones = overflow.map((item) =>
       activityTombstone(item.id, item.revision, nowMs));
@@ -1496,9 +1523,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: itemPages[page] ?? [],
         tombstones: tombstonePages[page] ?? [],
       });
-      if (!result) throw new Error("Activity relay became unavailable during reconcile.");
+      if (!result) return "unavailable";
       const response = recordActivityPublishResponse(result, nowMs, page === 0);
       if (response.protocol < 2) return "legacy";
+      for (const item of itemPages[page] ?? []) {
+        lastPublishedRevisionById.set(item.id, item.revision);
+      }
+      persistLastPublishedRevisions();
       capShrunk = capShrunk || response.capShrunk;
       unchanged = unchanged && (result.unchanged === true || result.suppressed === true);
     }
@@ -1512,6 +1543,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     for (const item of overflow) {
       lastOverflowRevisionById.set(item.id, item.revision);
     }
+    persistLastPublishedRevisions();
     lastReconcileAt = nowMs;
     reconcilePending = capShrunk;
     await reconcileMachineAcknowledgments(items);
@@ -1523,7 +1555,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     items: AttentionItem[],
     overflow: AttentionItem[],
     presenceOnly: boolean,
-  ): Promise<"published" | "unchanged" | "legacy"> => {
+  ): Promise<"published" | "unchanged" | "unavailable" | "legacy"> => {
     const selectedIds = new Set(items.map((item) => item.id));
     const overflowById = new Map(overflow.map((item) => [item.id, item]));
     const changed = items.filter((item) =>
@@ -1558,7 +1590,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: [],
         tombstones: [],
       });
-      if (!result) throw new Error("Activity relay became unavailable during presence publish.");
+      if (!result) return "unavailable";
       const response = recordActivityPublishResponse(result, nowMs);
       return response.protocol >= 2 ? "unchanged" : "legacy";
     }
@@ -1587,7 +1619,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: pageItems,
         tombstones: pageTombstones,
       });
-      if (!result) throw new Error("Activity relay became unavailable during delta publish.");
+      if (!result) return "unavailable";
       const response = recordActivityPublishResponse(result, nowMs, page === 0);
       if (response.protocol < 2) return "legacy";
       unchanged = unchanged && (result.unchanged === true || result.suppressed === true);
@@ -1603,6 +1635,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         if (overflowItem) lastOverflowRevisionById.set(tombstone.id, overflowItem.revision);
         else lastOverflowRevisionById.delete(tombstone.id);
       }
+      persistLastPublishedRevisions();
     }
     await reconcileMachineAcknowledgments(items);
     return unchanged ? "unchanged" : "published";
@@ -1614,13 +1647,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   ): Promise<"published" | "unchanged" | "unavailable"> => {
     if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
     const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    if (!accountOwnerId) return "unavailable";
     if (lastActivityAccountOwnerId !== accountOwnerId) {
-      if (lastActivityAccountOwnerId !== undefined) {
-        lastPublishedFingerprintById.clear();
-        lastPublishedRevisionById.clear();
-        lastOverflowRevisionById.clear();
-      }
+      lastPublishedFingerprintById.clear();
+      lastPublishedRevisionById.clear();
+      lastOverflowRevisionById.clear();
       lastActivityAccountOwnerId = accountOwnerId;
+      persistLastPublishedRevisions();
       reconcilePending = true;
     }
     if (lastReconcileAt > 0 && nowMs - lastReconcileAt >= ACTIVITY_RECONCILE_INTERVAL_MS) {
@@ -1655,10 +1688,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const protocolResult = reconcilePending
         ? await publishProtocol2Reconcile(nowMs, selected, overflow)
         : await publishProtocol2Delta(nowMs, selected, overflow, presenceOnly);
+      if (protocolResult === "unavailable") {
+        reconcilePending = true;
+        return "unavailable";
+      }
       if (protocolResult !== "legacy") return protocolResult;
       lastPublishedFingerprintById.clear();
       lastPublishedRevisionById.clear();
       lastOverflowRevisionById.clear();
+      persistLastPublishedRevisions();
       reconcilePending = true;
       return await publishLegacyAttention(nowMs, true) === "published"
         ? "published"

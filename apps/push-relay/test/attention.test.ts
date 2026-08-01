@@ -483,6 +483,7 @@ function validAgentItem(): Record<string, unknown> {
     ],
     occurredAt: "2026-07-28T08:00:00.000Z",
     updatedAt: "2026-07-28T08:00:05.000Z",
+    statusSince: "2026-07-28T08:00:00.000Z",
     // Keep the shared fixture live independent of the wall clock. Tests that
     // exercise expiry override this field explicitly.
     expiresAt: "2099-07-29T08:00:05.000Z",
@@ -509,7 +510,7 @@ async function publishActivityForTest(
 function activityAgentItem(
   args: {
     sessionId: string;
-    itemId: string;
+    itemId: string | null;
     revision: number;
     contentFingerprint: string;
     alertFingerprint: string;
@@ -517,6 +518,9 @@ function activityAgentItem(
     updatedAt?: string;
     expiresAt?: string | null;
     preview?: string;
+    eventKind?: "agent_running" | "agent_needs_you";
+    phase?: "running" | "needs_you" | "stale";
+    statusSince?: string;
   },
 ): Record<string, unknown> {
   return {
@@ -526,9 +530,12 @@ function activityAgentItem(
     fingerprint: args.contentFingerprint,
     contentFingerprint: args.contentFingerprint,
     alertFingerprint: args.alertFingerprint,
+    eventKind: args.eventKind ?? "agent_needs_you",
+    phase: args.phase ?? "needs_you",
     ...(args.activityTier ? { activityTier: args.activityTier } : {}),
     preview: args.preview ?? "The database migration is ready for review.",
     updatedAt: args.updatedAt ?? "2026-07-28T08:00:05.000Z",
+    statusSince: args.statusSince ?? "2026-07-28T08:00:00.000Z",
     ...(args.expiresAt !== undefined ? { expiresAt: args.expiresAt } : {}),
     destination: {
       kind: "session",
@@ -592,6 +599,7 @@ describe("account Attention contract", () => {
         sessionId: "session-1",
         itemId: "approval-1",
       },
+      statusSince: "2026-07-28T08:00:00.000Z",
       planProgress: {
         completed: 2,
         total: 3,
@@ -611,6 +619,10 @@ describe("account Attention contract", () => {
     const invalidProgress = validAgentItem();
     invalidProgress.planProgress = { completed: 4, total: 3, current: "Impossible" };
     expect(attentionTestInternals.parseAttentionItem(invalidProgress, MACHINE_KEY)).toBeNull();
+
+    const invalidStatusSince = validAgentItem();
+    invalidStatusSince.statusSince = "not-a-date";
+    expect(attentionTestInternals.parseAttentionItem(invalidStatusSince, MACHINE_KEY)).toBeNull();
   });
 
   it("clamps desktop-first escalation preferences to a safe relay range", () => {
@@ -969,6 +981,164 @@ describe("account Attention contract", () => {
         alert_fingerprint: "destination-alert-2",
       });
       expect(notificationSends).toBe(2);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("alerts twice on needs-you re-entry and round-trips statusSince", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T08:01:00.000Z"));
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    let notificationSends = 0;
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      if (url.startsWith("https://api.sandbox.push.apple.com/")) {
+        notificationSends += 1;
+        return new Response(null, {
+          status: 200,
+          headers: { "apns-id": `question-reentry-${notificationSends}` },
+        });
+      }
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+      APNS_KEY: await generateTestP8(),
+      APNS_KEY_ID: "REENTRY123",
+      APNS_TEAM_ID: "REENTRY12",
+    });
+    const publish = (item: Record<string, unknown>) =>
+      publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "delta",
+        rosterEpoch: 1,
+        items: [item],
+        tombstones: [],
+      });
+    try {
+      insertAttentionDevice(database, {
+        userId: authorization.userId,
+        deviceId: "phone-question-reentry",
+        apnsToken: "ab".repeat(32),
+      });
+      expect((await publish(activityAgentItem({
+        sessionId: "question-reentry",
+        itemId: null,
+        revision: 7,
+        contentFingerprint: "question-content-1",
+        alertFingerprint: "question-needs-you-1",
+        activityTier: "signal",
+        updatedAt: "2026-07-28T08:00:20.000Z",
+        statusSince: "2026-07-28T08:00:10.000Z",
+      }))).status).toBe(200);
+      expect((await publish(activityAgentItem({
+        sessionId: "question-reentry",
+        itemId: null,
+        revision: 8,
+        contentFingerprint: "question-content-running",
+        alertFingerprint: "question-running",
+        activityTier: "ambient",
+        eventKind: "agent_running",
+        phase: "running",
+        updatedAt: "2026-07-28T08:00:30.000Z",
+        statusSince: "2026-07-28T08:00:30.000Z",
+      }))).status).toBe(200);
+      expect((await publish(activityAgentItem({
+        sessionId: "question-reentry",
+        itemId: null,
+        revision: 9,
+        contentFingerprint: "question-content-2",
+        alertFingerprint: "question-needs-you-2",
+        activityTier: "signal",
+        updatedAt: "2026-07-28T08:00:40.000Z",
+        statusSince: "2026-07-28T08:00:40.000Z",
+      }))).status).toBe(200);
+
+      const snapshot = await (await accountRoute(
+        database,
+        authorization.userId,
+        "GET",
+        "/attention/account/snapshot?since=0",
+      )).json() as {
+        items: Array<{ statusSince?: string | null }>;
+      };
+      expect(notificationSends).toBe(2);
+      expect(rows(database, `
+        select alert_fingerprint from attention_alert_log
+        where user_id = ? order by delivered_at asc
+      `, authorization.userId)).toEqual([
+        { alert_fingerprint: "question-needs-you-1" },
+        { alert_fingerprint: "question-needs-you-2" },
+      ]);
+      expect(snapshot.items[0]?.statusSince).toBe("2026-07-28T08:00:40.000Z");
+    } finally {
+      database.close();
+    }
+  });
+
+  it("accepts a roster fallback clamped to the live source revision", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const env = makeAttentionEnv(database, {
+      CLERK_JWKS_URL: authorization.jwksUrl,
+      CLERK_ISSUER: authorization.issuer,
+      CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+    });
+    const publish = (item: Record<string, unknown>) =>
+      publishActivityForTest(env, authorization, {
+        machineName: "Studio",
+        mode: "delta",
+        rosterEpoch: 1,
+        items: [item],
+        tombstones: [],
+      });
+    try {
+      const liveRevision = Date.parse("2026-07-28T08:00:30.000Z");
+      expect((await publish(activityAgentItem({
+        sessionId: "live-to-roster",
+        itemId: null,
+        revision: liveRevision,
+        contentFingerprint: "live-content",
+        alertFingerprint: "live-alert",
+        activityTier: "ambient",
+        eventKind: "agent_running",
+        phase: "running",
+      }))).status).toBe(200);
+
+      const rosterResponse = await publish(activityAgentItem({
+        sessionId: "live-to-roster",
+        itemId: null,
+        revision: liveRevision,
+        contentFingerprint: "roster-content",
+        alertFingerprint: "roster-alert",
+        activityTier: "idle",
+        eventKind: "agent_running",
+        phase: "stale",
+        updatedAt: "2026-07-01T08:00:00.000Z",
+        statusSince: "2026-07-01T08:00:00.000Z",
+        expiresAt: null,
+      }));
+
+      expect(rosterResponse.status).toBe(200);
+      expect(await rosterResponse.json()).toMatchObject({ protocol: 2, upserted: 1 });
+      expect(row(database, `
+        select source_revision, phase, content_fingerprint
+        from attention_items where user_id = ? and item_id = ?
+      `, authorization.userId, `agent:${MACHINE_KEY}:live-to-roster`)).toEqual({
+        source_revision: liveRevision,
+        phase: "stale",
+        content_fingerprint: "roster-content",
+      });
     } finally {
       database.close();
     }
@@ -1537,7 +1707,7 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("caps an account by tombstoning its oldest idle activity row", async () => {
+  it("caps an account and reports snapshot truncation", async () => {
     const database = new SqliteD1Database();
     const authorization = await machinePublishAuthorization();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -1599,6 +1769,174 @@ describe("account Attention contract", () => {
         from attention_tombstones
         where user_id = ? and item_id = 'idle-0000'
       `, authorization.userId)?.revivable).toBe(0);
+      const snapshot = await (await accountRoute(
+        database,
+        authorization.userId,
+        "GET",
+        "/attention/account/snapshot?since=0",
+      )).json() as { itemsTruncated?: boolean };
+      expect(snapshot.itemsTruncated).toBe(true);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("evicts legacy null-tier rows only after idle rows", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const insert = database.native.prepare(`
+      insert into attention_items(
+        user_id, item_id, machine_key, source_revision, account_revision,
+        fingerprint, content_fingerprint, alert_fingerprint, activity_tier,
+        roster_epoch, event_kind, phase, payload_json, seen_at, dismissed_at,
+        expires_at, updated_at
+      ) values (?, ?, ?, 1, 0, ?, ?, ?, ?, 1, 'agent_running',
+        'running', '{}', null, null, null, ?)
+    `);
+    try {
+      for (let index = 0; index < 1_998; index += 1) {
+        const fingerprint = `signal-${index}`;
+        insert.run(
+          authorization.userId,
+          `signal-${index}`,
+          MACHINE_KEY,
+          fingerprint,
+          fingerprint,
+          fingerprint,
+          "signal",
+          "2026-07-01T00:00:02.000Z",
+        );
+      }
+      insert.run(
+        authorization.userId,
+        "legacy-null",
+        MACHINE_KEY,
+        "legacy-null",
+        "legacy-null",
+        "legacy-null",
+        null,
+        "2026-07-01T00:00:00.000Z",
+      );
+      insert.run(
+        authorization.userId,
+        "idle-row",
+        MACHINE_KEY,
+        "idle-row",
+        "idle-row",
+        "idle-row",
+        "idle",
+        "2026-07-01T00:00:01.000Z",
+      );
+      const env = makeAttentionEnv(database, {
+        CLERK_JWKS_URL: authorization.jwksUrl,
+        CLERK_ISSUER: authorization.issuer,
+        CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+      });
+      const publishSignal = (sessionId: string, revision: number) =>
+        publishActivityForTest(env, authorization, {
+          machineName: "Studio",
+          mode: "delta",
+          rosterEpoch: 2,
+          items: [activityAgentItem({
+            sessionId,
+            itemId: null,
+            revision,
+            contentFingerprint: `${sessionId}-content`,
+            alertFingerprint: `${sessionId}-alert`,
+            activityTier: "signal",
+          })],
+          tombstones: [],
+        });
+
+      expect(await (await publishSignal("cap-first", 2)).json())
+        .toMatchObject({ itemsTruncated: true });
+      expect(row(database, `
+        select item_id from attention_items where user_id = ? and item_id = 'idle-row'
+      `, authorization.userId)).toBeUndefined();
+      expect(row(database, `
+        select item_id from attention_items where user_id = ? and item_id = 'legacy-null'
+      `, authorization.userId)).toEqual({ item_id: "legacy-null" });
+
+      expect(await (await publishSignal("cap-second", 3)).json())
+        .toMatchObject({ itemsTruncated: true });
+      expect(row(database, `
+        select item_id from attention_items where user_id = ? and item_id = 'legacy-null'
+      `, authorization.userId)).toBeUndefined();
+      expect(rows(database, `
+        select item_id, revivable from attention_tombstones
+        where user_id = ? and item_id in ('idle-row', 'legacy-null')
+        order by item_id
+      `, authorization.userId)).toEqual([
+        { item_id: "idle-row", revivable: 0 },
+        { item_id: "legacy-null", revivable: 0 },
+      ]);
+    } finally {
+      database.close();
+    }
+  });
+
+  it("does not report truncation when an over-cap account has no evictable rows", async () => {
+    const database = new SqliteD1Database();
+    const authorization = await machinePublishAuthorization();
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const url = input instanceof Request ? input.url : String(input);
+      if (url === authorization.jwksUrl) return Response.json(authorization.jwks);
+      throw new Error(`Unexpected fetch: ${url}`);
+    }));
+    const insertSignal = database.native.prepare(`
+      insert into attention_items(
+        user_id, item_id, machine_key, source_revision, account_revision,
+        fingerprint, content_fingerprint, alert_fingerprint, activity_tier,
+        roster_epoch, event_kind, phase, payload_json, seen_at, dismissed_at,
+        expires_at, updated_at
+      ) values (?, ?, ?, 1, 0, ?, ?, ?, 'signal', 1, 'agent_running',
+        'running', '{}', null, null, null, '2026-07-01T00:00:00.000Z')
+    `);
+    try {
+      for (let index = 0; index < 2_000; index += 1) {
+        const fingerprint = `signal-only-${index}`;
+        insertSignal.run(
+          authorization.userId,
+          `signal-only-${index}`,
+          MACHINE_KEY,
+          fingerprint,
+          fingerprint,
+          fingerprint,
+        );
+      }
+      const response = await publishActivityForTest(
+        makeAttentionEnv(database, {
+          CLERK_JWKS_URL: authorization.jwksUrl,
+          CLERK_ISSUER: authorization.issuer,
+          CLERK_OAUTH_CLIENT_ID: "attention-test-client",
+        }),
+        authorization,
+        {
+          machineName: "Studio",
+          mode: "delta",
+          rosterEpoch: 2,
+          items: [activityAgentItem({
+            sessionId: "signal-overflow",
+            itemId: null,
+            revision: 2,
+            contentFingerprint: "signal-overflow-content",
+            alertFingerprint: "signal-overflow-alert",
+            activityTier: "signal",
+          })],
+          tombstones: [],
+        },
+      );
+      const body = await response.json() as { itemsTruncated?: boolean };
+      expect(response.status).toBe(200);
+      expect(body.itemsTruncated).toBeUndefined();
+      expect(row(database, `
+        select count(*) as count from attention_items where user_id = ?
+      `, authorization.userId)?.count).toBe(2_001);
     } finally {
       database.close();
     }
