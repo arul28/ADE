@@ -17,6 +17,7 @@ import { ReasoningEffortPicker } from "../shared/ModelPicker/ReasoningEffortPick
 import { useAppStore } from "../../state/appStore";
 import { COLORS, MONO_FONT, SANS_FONT } from "../lanes/laneDesignTokens";
 import { useOpenProviderSignIn } from "../shared/useOpenProviderSignIn";
+import { githubStatusHasWriteCredential } from "../../lib/githubIntegrationStatus";
 import type { AppInfo, ProjectInfo } from "../../../shared/types/core";
 import type { GitCommitSummary } from "../../../shared/types/git";
 import type { LaneSummary } from "../../../shared/types/lanes";
@@ -1153,7 +1154,7 @@ export function FeedbackReporterModal({
     if (!open) return;
     void window.ade.github
       .getStatus()
-      .then((status) => setHasGithubToken(status.connected))
+      .then((status) => setHasGithubToken(githubStatusHasWriteCredential(status)))
       .catch(() => setHasGithubToken(false));
   }, [open]);
 

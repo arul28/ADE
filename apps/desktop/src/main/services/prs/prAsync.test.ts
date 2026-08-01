@@ -166,6 +166,47 @@ describe("prPollingService", () => {
     expect(refresh).toHaveBeenLastCalledWith();
   });
 
+  it("uses webhook reconciliation instead of hot polling while the relay is healthy", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const summary = createSummary();
+    const refresh = vi.fn(async () => [summary]);
+    const prService = {
+      listAll: () => [summary],
+      refresh,
+      getHotRefreshDelayMs: () => 5_000,
+      getHotRefreshPrIds: () => ["pr-1"],
+    } as any;
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      isGithubRelayHealthy: () => true,
+      onEvent: vi.fn(),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenLastCalledWith();
+
+    service.poke();
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    service.reconcilePrs(["pr-1"]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(refresh).toHaveBeenLastCalledWith({ prIds: ["pr-1"] });
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000);
+    expect(refresh).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenLastCalledWith();
+  });
+
   it("discovers lane PRs when the local PR cache starts empty", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));

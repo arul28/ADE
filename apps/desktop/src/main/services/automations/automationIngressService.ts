@@ -75,6 +75,27 @@ export const GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS = 5 * 60_000;
 export const GITHUB_RELAY_SUBSCRIPTION_CONNECT_TIMEOUT_MS = 20_000;
 export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS = 1_000;
 export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS = 60_000;
+const GITHUB_RELAY_POLL_BACKOFF_BASE_MS = 30_000;
+const GITHUB_RELAY_POLL_BACKOFF_CAP_MS = 15 * 60_000;
+
+class GithubRelayPollError extends Error {
+  constructor(
+    message: string,
+    readonly retryAtMs: number | null,
+  ) {
+    super(message);
+    this.name = "GithubRelayPollError";
+  }
+}
+
+function relayRetryAtMs(headers: Pick<Headers, "get">): number | null {
+  const value = headers.get("retry-after")?.trim() ?? "";
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Date.now() + seconds * 1_000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 export function computeGithubRelaySubscriptionBackoffMs(
   attempt: number,
@@ -328,6 +349,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let subscriptionConnectTimer: NodeJS.Timeout | null = null;
   let subscriptionReconnectAttempt = 0;
   let subscriptionConnected = false;
+  let githubRelayHealthy = false;
+  let relayPollCooldownUntilMs = 0;
+  let relayPollFailureCount = 0;
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
   // When the hosted relay needs a GitHub App user token that the user has not
   // granted yet, that is an idle state, not an error: skip polling for a
@@ -339,6 +363,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   );
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
+    if (typeof patch.healthy === "boolean") githubRelayHealthy = patch.healthy;
     args.automationService?.updateIngressStatus({
       githubRelay: patch,
     });
@@ -716,6 +741,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   };
 
   const pollGithubRelay = async () => {
+    if (Date.now() < relayPollCooldownUntilMs) return;
     const config = buildGithubRelayConfig();
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
     const accountAccessToken = args.getAccountAccessToken
@@ -736,6 +762,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
     if (!config.configured) {
       disableRelaySubscription();
+      updateGithubRelayStatus({ healthy: false });
       return;
     }
     const committedIngestedPrIds = new Set<string>();
@@ -872,7 +899,24 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           if (pollAbortController === controller) pollAbortController = null;
         });
         if (!response.ok) {
-          throw new Error(`GitHub relay poll failed (${response.status})`);
+          const responseText = await response.text().catch(() => "");
+          let responseMessage = responseText.trim();
+          try {
+            const parsed = JSON.parse(responseText) as { error?: unknown; message?: unknown };
+            responseMessage = typeof parsed.error === "string"
+              ? parsed.error
+              : typeof parsed.message === "string"
+                ? parsed.message
+                : responseMessage;
+          } catch {
+            // Keep the plain-text response.
+          }
+          throw new GithubRelayPollError(
+            responseMessage
+              ? `GitHub relay poll failed (${response.status}): ${responseMessage}`
+              : `GitHub relay poll failed (${response.status})`,
+            relayRetryAtMs(response.headers),
+          );
         }
         const payload = await response.json() as {
           events?: Array<Record<string, unknown>>;
@@ -959,6 +1003,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         pageCursor = pageLastCursor;
       }
       flushCommittedPrReconciliation();
+      relayPollFailureCount = 0;
+      relayPollCooldownUntilMs = 0;
       updateGithubRelayStatus({
         healthy: true,
         status: "ready",
@@ -970,8 +1016,18 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     } catch (error) {
       flushCommittedPrReconciliation();
       if (stopped && error instanceof Error && error.name === "AbortError") return;
+      relayPollFailureCount += 1;
+      const backoffMs = Math.min(
+        GITHUB_RELAY_POLL_BACKOFF_CAP_MS,
+        GITHUB_RELAY_POLL_BACKOFF_BASE_MS * 2 ** Math.max(0, relayPollFailureCount - 1),
+      );
+      relayPollCooldownUntilMs = Math.max(
+        Date.now() + backoffMs,
+        error instanceof GithubRelayPollError ? error.retryAtMs ?? 0 : 0,
+      );
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),
+        retryAt: new Date(relayPollCooldownUntilMs).toISOString(),
       });
       updateGithubRelayStatus({
         healthy: false,
@@ -991,7 +1047,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       do {
         pollRerunRequested = false;
         await pollGithubRelay();
-      } while (pollRerunRequested && !stopped);
+      } while (pollRerunRequested && !stopped && Date.now() >= relayPollCooldownUntilMs);
     })().finally(() => {
       pollInFlight = null;
     });
@@ -1034,6 +1090,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       return args.automationService?.getIngressStatus() ?? null;
     },
 
+    isGithubRelayHealthy() {
+      return githubRelayHealthy;
+    },
+
     listRecentEvents(limit = 20) {
       return args.automationService?.listIngressEvents(limit) ?? [];
     },
@@ -1042,12 +1102,15 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       // Explicit polls (e.g. right after the user authorizes the GitHub App)
       // bypass the auth-pending cooldown.
       hostedAuthPendingUntilMs = 0;
+      relayPollCooldownUntilMs = 0;
+      relayPollFailureCount = 0;
       await pollGithubRelayOnce();
     },
 
     stop() {
       stopped = true;
       started = false;
+      githubRelayHealthy = false;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;

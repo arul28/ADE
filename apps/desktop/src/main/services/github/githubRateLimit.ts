@@ -4,6 +4,7 @@ export class GitHubRateLimitError extends Error {
   constructor(
     message: string,
     readonly rateLimitResetAtMs: number | null,
+    readonly rateLimit: GitHubRateLimitState | null = null,
   ) {
     super(message);
     this.name = "GitHubRateLimitError";
@@ -84,6 +85,16 @@ export function classifyGitHubAuthFailure(args: {
       },
     };
   }
+  if (args.status === 403) {
+    return {
+      rateLimit,
+      authFailure: {
+        kind: "permission_denied",
+        message,
+        retryAt: null,
+      },
+    };
+  }
   if (isTransientGithubProbeFailure(message)) {
     return {
       rateLimit,
@@ -104,6 +115,58 @@ export function classifyGitHubAuthFailure(args: {
   };
 }
 
+export function classifyGitHubGraphqlCredentialFailure(
+  payload: unknown,
+  headers: Pick<Headers, "get">,
+): {
+  status: 403 | 429;
+  message: string;
+  authFailure: GitHubAuthFailure;
+  rateLimit: GitHubRateLimitState | null;
+} | null {
+  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { errors?: unknown }).errors)) {
+    return null;
+  }
+  const errors = (payload as { errors: unknown[] }).errors;
+  const messages = errors.flatMap((error) => {
+    if (!error || typeof error !== "object") return [];
+    const message = (error as { message?: unknown }).message;
+    return typeof message === "string" && message.trim() ? [message.trim()] : [];
+  });
+  const errorTypes = errors.flatMap((error) => {
+    if (!error || typeof error !== "object") return [];
+    const record = error as {
+      type?: unknown;
+      extensions?: { code?: unknown; type?: unknown };
+    };
+    return [record.type, record.extensions?.code, record.extensions?.type]
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.toUpperCase());
+  });
+  const message = messages.join("; ") || "GitHub GraphQL request failed.";
+  const rateLimit = readGitHubRateLimitState(headers);
+  const rateLimited = rateLimit?.remaining === 0
+    || errorTypes.some((type) => type === "RATE_LIMITED" || type === "RATE_LIMIT")
+    || /rate limit|too many requests|abuse detection/i.test(message);
+  if (rateLimited) {
+    return {
+      status: 429,
+      message,
+      ...classifyGitHubAuthFailure({ status: 429, message, headers }),
+    };
+  }
+  const permissionDenied = errorTypes.includes("FORBIDDEN")
+    || /forbidden|resource not accessible|not accessible by integration|does not have access/i.test(message);
+  if (permissionDenied) {
+    return {
+      status: 403,
+      message,
+      ...classifyGitHubAuthFailure({ status: 403, message, headers }),
+    };
+  }
+  return null;
+}
+
 export function githubRateLimitResetAtMs(rateLimit: GitHubRateLimitState | null): number | null {
   if (!rateLimit?.resetAt) return null;
   const parsed = Date.parse(rateLimit.resetAt);
@@ -119,4 +182,10 @@ export function githubRateLimitRetryAtMs(
     if (Number.isFinite(parsed)) return parsed;
   }
   return githubRateLimitResetAtMs(rateLimit);
+}
+
+export function githubRateLimitResourceForPath(path: string): string {
+  if (path === "/graphql" || path.startsWith("/graphql?")) return "graphql";
+  if (path.startsWith("/search/")) return "search";
+  return "core";
 }

@@ -92,7 +92,7 @@ class FakeAccountD1 {
     if (sql.includes("from github_app_repositories")) {
       const repositoryKey = String(values[0]);
       const row = this.repositories.find((entry) => entry.repository_key === repositoryKey);
-      if (!row) return null;
+      if (!row || (sql.includes("installed = 1") && row.installed !== 1)) return null;
       return (sql.includes("select account_id") ? { account_id: row.account_id } : row) as T;
     }
     if (sql.includes("select webhook_secret from linear_organizations")) {
@@ -527,7 +527,9 @@ describe("account integration re-keying", () => {
     });
 
     const accountStatus = await handleRequest(request("/github/repos/acme/repo/status", { accountToken }), env);
+    const providerCallsBeforeAccountGitHub = vi.mocked(fetch).mock.calls.length;
     const accountGitHub = await handleRequest(request("/github/repos/acme/repo/events", { accountToken }), env);
+    expect(fetch).toHaveBeenCalledTimes(providerCallsBeforeAccountGitHub);
     const providerCallsBeforeBearerAccountAuth = vi.mocked(fetch).mock.calls.length;
     const bearerAccountGitHub = await handleRequest(request("/github/repos/acme/repo/events", {
       authorization: `Bearer ${accountToken}`,
@@ -658,5 +660,22 @@ describe("account integration re-keying", () => {
     expect(await (await handleRequest(request("/account/integrations", {
       authorization: `Bearer ${otherAccountToken}`,
     }), env)).json()).toEqual({ repositories: [], linearOrganizations: [] });
+  });
+
+  it("does not authorize account event reads after the GitHub App is removed", async () => {
+    const env = makeEnv();
+    seedRepository(env.DB, "user_1");
+    env.DB.repositories[0]!.installed = 0;
+    env.DB.repositories[0]!.removed_at = "2026-07-15T00:00:00.000Z";
+    stubLegacyApis();
+    const accountToken = await mintToken("user_1");
+    const providerCallsBeforeRead = vi.mocked(fetch).mock.calls.length;
+
+    const response = await handleRequest(request("/github/repos/acme/repo/events", {
+      accountToken,
+    }), env);
+
+    expect(response.status).toBe(401);
+    expect(fetch).toHaveBeenCalledTimes(providerCallsBeforeRead);
   });
 });

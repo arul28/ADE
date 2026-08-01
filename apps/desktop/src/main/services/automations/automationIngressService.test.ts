@@ -773,7 +773,7 @@ describe("automationIngressService", () => {
     expect(onPrStateIngested).toHaveBeenCalledWith(["pr-3"]);
     expect(logger.warn).toHaveBeenCalledWith(
       "automations.github_relay_poll_failed",
-      expect.objectContaining({ error: "GitHub relay poll failed (500)" }),
+      expect.objectContaining({ error: "GitHub relay poll failed (500): upstream error" }),
     );
   });
 
@@ -1194,5 +1194,33 @@ describe("automationIngressService", () => {
       "https://relay.example.com/projects/project-1/github/events",
       expect.any(Object),
     );
+  });
+
+  it("clears relay health when relay configuration is removed", async () => {
+    const secrets = new Map<string, string>([
+      ["automations.githubRelay.apiBaseUrl", "https://relay.example.com"],
+      ["automations.githubRelay.remoteProjectId", "project-1"],
+      ["automations.githubRelay.accessToken", "relay-token"],
+    ]);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ events: [], nextCursor: null }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      secretService: { getSecret: (ref: string) => secrets.get(ref) ?? null } as never,
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+    });
+
+    await service.pollNow();
+    expect(service.isGithubRelayHealthy()).toBe(true);
+    secrets.clear();
+    await service.pollNow();
+
+    expect(service.isGithubRelayHealthy()).toBe(false);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 });

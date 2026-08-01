@@ -28,9 +28,11 @@ import {
   parseGitHubScopeHeaders,
 } from "../../desktop/src/shared/githubScopes";
 import type {
+  GitHubAuthFailure,
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
+  GitHubRateLimitState,
   GitHubStatus,
 } from "../../desktop/src/shared/types";
 import type {
@@ -46,7 +48,14 @@ import {
   type GitHubRelaySecretReader,
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
-import { classifyGitHubAuthFailure } from "../../desktop/src/main/services/github/githubRateLimit";
+import {
+  classifyGitHubAuthFailure,
+  classifyGitHubGraphqlCredentialFailure,
+  GitHubRateLimitError,
+  githubRateLimitResourceForPath,
+  githubRateLimitRetryAtMs,
+  readGitHubRateLimitState,
+} from "../../desktop/src/main/services/github/githubRateLimit";
 import type { AdeRuntimePaths } from "./bootstrap";
 import { createLinearClient as createLinearClientImpl } from "../../desktop/src/main/services/cto/linearClient";
 import { ADE_LINEAR_APP_CLIENT_ID, type LinearOAuthClientSource } from "../../desktop/src/main/services/cto/linearAppClient";
@@ -56,9 +65,22 @@ import { createPrService as createPrServiceImpl } from "../../desktop/src/main/s
 import { createAutomationSecretService as createAutomationSecretServiceImpl } from "../../desktop/src/main/services/automations/automationSecretService";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import {
+  githubOperationCredentialCandidates,
   selectGithubOperationCredential,
-  selectGithubOperationCredentialAsync,
+  type GithubOperationCredentialCapability,
 } from "../../desktop/src/shared/githubOperationCredential";
+import {
+  clearGithubCredentialHealth,
+  githubBackgroundRequestPauseUntilMs,
+  githubCredentialCooldown,
+  githubCredentialStates,
+  githubCredentialTokenDigest,
+  recordGithubCredentialFailure,
+  recordGithubCredentialProbeSuccess,
+  recordGithubCredentialSuccess,
+  registerGithubCredentialIdentity,
+  type GithubCredentialCandidate,
+} from "../../desktop/src/main/services/github/githubCredentialHealth";
 import {
   linearInvalidGrantLikelyStaleRotation,
   linearTokenNeedsRefresh,
@@ -264,6 +286,40 @@ type HeadlessGitHubTokenLookup = {
   ghCliPath: string | null;
   ghAuthError: string | null;
 };
+
+type HeadlessGitHubTokenCandidate = HeadlessGitHubTokenLookup & GithubCredentialCandidate & {
+  token: string;
+};
+
+type HeadlessGitHubCredentialInventory = {
+  candidates: HeadlessGitHubTokenCandidate[];
+  availableSources: Set<HeadlessGitHubTokenCandidate["source"]>;
+  patTokenStored: boolean;
+  ghCliPath: string | null;
+  ghAuthError: string | null;
+};
+
+class HeadlessGithubCredentialAttemptError extends Error {
+  constructor(
+    message: string,
+    readonly authFailure: GitHubAuthFailure,
+    readonly rateLimit: GitHubRateLimitState | null,
+  ) {
+    super(message);
+    this.name = "HeadlessGithubCredentialAttemptError";
+  }
+}
+
+class HeadlessGitHubTokenValidationError extends Error {
+  constructor(
+    message: string,
+    readonly authFailure: GitHubAuthFailure,
+    readonly rateLimit: GitHubRateLimitState | null,
+  ) {
+    super(message);
+    this.name = "HeadlessGitHubTokenValidationError";
+  }
+}
 
 /**
  * gh's file-based credential store. The launchd brain has a minimal PATH (no
@@ -616,6 +672,7 @@ export function createHeadlessGitHubService(
           ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
           : null;
       },
+      app: () => null,
       gh: () => {
         const gh = options.ghAuthTokenProvider?.() ?? ghAuthToken();
         ghFallback = { ...gh, source: "none", patTokenStored };
@@ -624,7 +681,7 @@ export function createHeadlessGitHubService(
       pat: () => patToken
         ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
         : null,
-    }) ?? ghFallback;
+    }, "write") ?? ghFallback;
   };
 
   const readStoredPatTokenAsync = async (): Promise<string | null> => {
@@ -639,32 +696,82 @@ export function createHeadlessGitHubService(
     return null;
   };
 
-  const readTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
+  const readCredentialInventoryAsync = async (): Promise<HeadlessGitHubCredentialInventory> => {
     const patToken = await readStoredPatTokenAsync();
     const patTokenStored = Boolean(patToken);
-    let ghFallback: HeadlessGitHubTokenLookup = {
-      token: null,
-      source: "none",
+    const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
+    const appStatus = appUserAuth.getAuthStatus();
+    const [appToken, gh] = await Promise.all([
+      appStatus.tokenStored
+        ? appUserAuth.getValidTokenForRelay().catch(() => null)
+        : Promise.resolve(null),
+      Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
+    ]);
+    const candidates: HeadlessGitHubTokenCandidate[] = [];
+    if (environmentToken) {
+      candidates.push({
+        token: environmentToken,
+        source: "environment",
+        patTokenStored,
+        ghCliPath: null,
+        ghAuthError: null,
+        capabilities: ["read", "write"],
+      });
+    }
+    if (appToken) {
+      candidates.push({
+        token: appToken,
+        source: "app",
+        patTokenStored,
+        ghCliPath: null,
+        ghAuthError: null,
+        capabilities: ["read"],
+        userLogin: appStatus.userLogin,
+      });
+    }
+    if (gh.token) {
+      candidates.push({
+        token: gh.token,
+        source: "gh",
+        patTokenStored,
+        ghCliPath: gh.ghCliPath,
+        ghAuthError: gh.ghAuthError,
+        capabilities: ["read", "write"],
+      });
+    }
+    if (patToken) {
+      candidates.push({
+        token: patToken,
+        source: "pat",
+        patTokenStored,
+        ghCliPath: gh.ghCliPath,
+        ghAuthError: gh.ghAuthError,
+        capabilities: ["read", "write"],
+      });
+    }
+    return {
+      candidates,
+      availableSources: new Set(candidates.map((candidate) => candidate.source)),
       patTokenStored,
-      ghCliPath: null,
-      ghAuthError: null,
+      ghCliPath: gh.ghCliPath,
+      ghAuthError: gh.ghAuthError,
     };
-    return await selectGithubOperationCredentialAsync<HeadlessGitHubTokenLookup>({
-      environment: () => {
-        const token = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
-        return token
-          ? { token, source: "environment", patTokenStored, ghCliPath: null, ghAuthError: null }
-          : null;
-      },
-      gh: async () => {
-        const gh = options.ghAuthTokenProvider?.() ?? await ghAuthTokenAsync();
-        ghFallback = { ...gh, source: "none", patTokenStored };
-        return gh.token ? { ...gh, source: "gh", patTokenStored } : null;
-      },
-      pat: () => patToken
-        ? { ...ghFallback, token: patToken, source: "pat", patTokenStored }
-        : null,
-    }) ?? ghFallback;
+  };
+
+  const readTokenAsync = async (
+    capability: GithubOperationCredentialCapability = "write",
+  ): Promise<HeadlessGitHubTokenLookup> => {
+    const inventory = await readCredentialInventoryAsync();
+    const candidates = githubOperationCredentialCandidates(inventory.candidates, capability);
+    return candidates.find((candidate) => !githubCredentialCooldown(candidate))
+      ?? candidates[0]
+      ?? {
+        token: null,
+        source: "none",
+        patTokenStored: inventory.patTokenStored,
+        ghCliPath: inventory.ghCliPath,
+        ghAuthError: inventory.ghAuthError,
+      };
   };
 
   const getToken = (): string => readToken().token ?? "";
@@ -713,6 +820,7 @@ export function createHeadlessGitHubService(
     userLogin: string | null;
     scopes: string[];
     tokenType: HeadlessGitHubStatus["tokenType"];
+    rateLimit: GitHubRateLimitState | null;
   }> => {
     const response = await fetchGitHub("https://api.github.com/user", {
       method: "GET",
@@ -723,13 +831,22 @@ export function createHeadlessGitHubService(
       },
     });
     const scopes = parseGitHubScopeHeaders(response.headers);
+    const rateLimit = readGitHubRateLimitState(response.headers);
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(
-        readApiMessage(
-          payload,
-          `GitHub token validation failed (HTTP ${response.status})`,
-        ),
+      const message = readApiMessage(
+        payload,
+        `GitHub token validation failed (HTTP ${response.status})`,
+      );
+      const failure = classifyGitHubAuthFailure({
+        status: response.status,
+        message,
+        headers: response.headers,
+      });
+      throw new HeadlessGitHubTokenValidationError(
+        message,
+        failure.authFailure,
+        failure.rateLimit,
       );
     }
     const userLogin =
@@ -738,12 +855,17 @@ export function createHeadlessGitHubService(
       typeof (payload as { login?: unknown }).login === "string"
         ? (payload as { login: string }).login
         : null;
-    return { userLogin, scopes, tokenType: getTokenType(token) };
+    return { userLogin, scopes, tokenType: getTokenType(token), rateLimit };
   };
   const probeRepoAccess = async (
     token: string,
     repo: { owner: string; name: string },
-  ): Promise<{ ok: boolean; error: string | null }> => {
+  ): Promise<{
+    ok: boolean;
+    error: string | null;
+    authFailure: GitHubAuthFailure | null;
+    rateLimit: GitHubRateLimitState | null;
+  }> => {
     try {
       const response = await fetchGitHub(
         `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
@@ -756,19 +878,55 @@ export function createHeadlessGitHubService(
           },
         },
       );
-      if (response.ok) return { ok: true, error: null };
+      if (response.ok) {
+        return {
+          ok: true,
+          error: null,
+          authFailure: null,
+          rateLimit: readGitHubRateLimitState(response.headers),
+        };
+      }
       const payload = await response.json().catch(() => ({}));
+      const message = readApiMessage(payload, `HTTP ${response.status}`);
+      const failure = classifyGitHubAuthFailure({
+        status: response.status,
+        message,
+        headers: response.headers,
+      });
+      const authFailure = failure.authFailure.kind === "unknown"
+        && (response.status === 403 || response.status === 404)
+        ? {
+            kind: "permission_denied" as const,
+            message: `This credential cannot access ${repo.owner}/${repo.name}.`,
+            retryAt: null,
+          }
+        : failure.authFailure.kind === "unknown"
+          ? null
+          : failure.authFailure;
       return {
         ok: false,
-        error: `${response.status}: ${readApiMessage(payload, `HTTP ${response.status}`)}`,
+        error: `${response.status}: ${message}`,
+        authFailure,
+        rateLimit: failure.rateLimit,
       };
     } catch (error) {
       return {
         ok: false,
         error: error instanceof Error ? error.message : String(error),
+        authFailure: classifyGitHubAuthFailure({
+          message: error instanceof Error ? error.message : String(error),
+        }).authFailure,
+        rateLimit: null,
       };
     }
   };
+
+  const etagCache = new Map<string, {
+    etag: string;
+    data: unknown;
+    linkHeader: string | null;
+  }>();
+  const ETAG_CACHE_MAX_SIZE = 200;
 
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -776,9 +934,23 @@ export function createHeadlessGitHubService(
     query?: Record<string, string | number | boolean | undefined | null>;
     body?: unknown;
     token?: string;
+    accept?: string;
+    capability?: GithubOperationCredentialCapability;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
-    const token = (args.token ?? (await readTokenAsync()).token ?? "").trim();
-    if (!token) {
+    const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
+    const inventory = args.token ? null : await readCredentialInventoryAsync();
+    const explicitToken = args.token?.trim() ?? "";
+    const candidates: HeadlessGitHubTokenCandidate[] = explicitToken
+      ? [{
+          token: explicitToken,
+          source: "environment",
+          patTokenStored: false,
+          ghCliPath: null,
+          ghAuthError: null,
+          capabilities: [capability],
+        }]
+      : githubOperationCredentialCandidates(inventory!.candidates, capability);
+    if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
       );
@@ -788,34 +960,152 @@ export function createHeadlessGitHubService(
       if (value == null) continue;
       url.searchParams.set(key, String(value));
     }
-    const response = await fetchGitHub(url, {
-      method: args.method,
-      headers: {
-        accept: "application/vnd.github+json",
-        authorization: `Bearer ${token}`,
+    const accept = args.accept?.trim() || "application/vnd.github+json";
+    const rateLimitResource = githubRateLimitResourceForPath(args.path);
+    let firstUnavailable: {
+      failure: GitHubAuthFailure;
+      rateLimit: GitHubRateLimitState | null;
+    } | null = null;
+    let lastAttemptError: HeadlessGithubCredentialAttemptError | null = null;
+
+    for (const candidate of candidates) {
+      const cooldown = args.token
+        ? null
+        : githubCredentialCooldown(candidate, Date.now(), { resource: rateLimitResource });
+      if (cooldown) {
+        firstUnavailable ??= cooldown;
+        continue;
+      }
+      const cacheKey = `${githubCredentialTokenDigest(candidate.token)}:${accept}:${url.toString()}`;
+      const headers: Record<string, string> = {
+        accept,
+        authorization: `Bearer ${candidate.token}`,
         "user-agent": "ade-cli",
         ...(args.body == null ? {} : { "content-type": "application/json" }),
-      },
-      body: args.body == null ? undefined : JSON.stringify(args.body),
-    });
-    const text = await response.text();
-    let data: unknown = text;
-    try {
-      data = text.trim().length ? JSON.parse(text) : {};
-    } catch {
-      // keep text payload
+      };
+      if (args.method === "GET") {
+        const cached = etagCache.get(cacheKey);
+        if (cached) headers["if-none-match"] = cached.etag;
+      }
+      const response = await fetchGitHub(url, {
+        method: args.method,
+        headers,
+        body: args.body == null ? undefined : JSON.stringify(args.body),
+      });
+      if (response.status === 304) {
+        const cached = etagCache.get(cacheKey);
+        if (cached) {
+          recordGithubCredentialSuccess(candidate, response.headers);
+          return { data: cached.data as T, response, linkHeader: cached.linkHeader };
+        }
+      }
+      const text = await response.text();
+      let data: unknown = text;
+      try {
+        data = text.trim().length ? JSON.parse(text) : {};
+      } catch {
+        // Keep non-JSON response bodies for callers and error messages.
+      }
+      if (!response.ok) {
+        const message = readApiMessage(
+          data,
+          `GitHub API request failed (HTTP ${response.status})`,
+        );
+        const failure = classifyGitHubAuthFailure({
+          status: response.status,
+          message,
+          headers: response.headers,
+        });
+        recordGithubCredentialFailure(candidate, failure.authFailure, failure.rateLimit);
+        const attemptError = new HeadlessGithubCredentialAttemptError(
+          message,
+          failure.authFailure,
+          failure.rateLimit,
+        );
+        lastAttemptError = attemptError;
+        const canTryNext = !args.token
+          && (response.status === 401 || response.status === 403 || response.status === 429);
+        if (canTryNext) continue;
+        if (attemptError.authFailure.kind === "rate_limited") {
+          const resetAtMs = githubRateLimitRetryAtMs(attemptError.authFailure, attemptError.rateLimit);
+          const resetDetail = resetAtMs == null
+            ? "rate limit exceeded"
+            : `rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()}`;
+          throw new GitHubRateLimitError(
+            `${attemptError.message} (${resetDetail})`,
+            resetAtMs,
+            attemptError.rateLimit,
+          );
+        }
+        throw attemptError;
+      }
+
+      const graphqlFailure = rateLimitResource === "graphql"
+        ? classifyGitHubGraphqlCredentialFailure(data, response.headers)
+        : null;
+      if (graphqlFailure) {
+        recordGithubCredentialFailure(
+          candidate,
+          graphqlFailure.authFailure,
+          graphqlFailure.rateLimit,
+        );
+        const attemptError = new HeadlessGithubCredentialAttemptError(
+          graphqlFailure.message,
+          graphqlFailure.authFailure,
+          graphqlFailure.rateLimit,
+        );
+        lastAttemptError = attemptError;
+        if (!args.token) continue;
+        if (attemptError.authFailure.kind === "rate_limited") {
+          const resetAtMs = githubRateLimitRetryAtMs(attemptError.authFailure, attemptError.rateLimit);
+          throw new GitHubRateLimitError(attemptError.message, resetAtMs, attemptError.rateLimit);
+        }
+        throw attemptError;
+      }
+
+      recordGithubCredentialSuccess(candidate, response.headers);
+      if (candidate !== candidates[0]) {
+        logger.info("github.credential_fallback_used", {
+          capability,
+          fromSource: candidates[0]?.source ?? null,
+          toSource: candidate.source,
+        });
+      }
+      const linkHeader = response.headers.get("link");
+      if (args.method === "GET") {
+        const etag = response.headers.get("etag");
+        if (etag) {
+          while (etagCache.size >= ETAG_CACHE_MAX_SIZE && !etagCache.has(cacheKey)) {
+            const oldest = etagCache.keys().next().value as string | undefined;
+            if (!oldest) break;
+            etagCache.delete(oldest);
+          }
+          etagCache.set(cacheKey, { etag, data, linkHeader });
+        }
+      }
+      return { data: data as T, response, linkHeader };
     }
-    if (!response.ok) {
-      const message =
-        typeof data === "object" &&
-        data &&
-        "message" in data &&
-        typeof (data as { message?: unknown }).message === "string"
-          ? String((data as { message?: unknown }).message)
-          : `GitHub API request failed (HTTP ${response.status})`;
-      throw new Error(message);
+
+    const exhausted = lastAttemptError ?? (firstUnavailable
+      ? new HeadlessGithubCredentialAttemptError(
+          firstUnavailable.failure.message,
+          firstUnavailable.failure,
+          firstUnavailable.rateLimit,
+        )
+      : null);
+    if (exhausted?.authFailure.kind === "rate_limited") {
+      const resetAtMs = githubRateLimitRetryAtMs(exhausted.authFailure, exhausted.rateLimit);
+      const resetDetail = resetAtMs == null
+        ? "rate limit exceeded"
+        : `rate limit exceeded; resets at ${new Date(resetAtMs).toLocaleString()}`;
+      throw new GitHubRateLimitError(
+        `${exhausted.message} (${resetDetail})`,
+        resetAtMs,
+        exhausted.rateLimit,
+      );
     }
-    return { data: data as T, response };
+    if (exhausted) throw exhausted;
+    throw new Error("No usable GitHub credential is available for this operation.");
   };
 
   const apiRequestAllPages = async <T>(args: {
@@ -826,7 +1116,7 @@ export function createHeadlessGitHubService(
     const first = await apiRequest<T[]>({ method: "GET", ...args });
     const out = Array.isArray(first.data) ? [...first.data] : [];
     let nextUrl = parseNextGitHubLink(
-      first.response?.headers.get("link") ?? null,
+      first.linkHeader ?? first.response?.headers.get("link") ?? null,
     );
     while (nextUrl) {
       const url = new URL(nextUrl);
@@ -836,7 +1126,7 @@ export function createHeadlessGitHubService(
         token: args.token,
       });
       if (Array.isArray(next.data)) out.push(...next.data);
-      nextUrl = parseNextGitHubLink(next.response?.headers.get("link") ?? null);
+      nextUrl = parseNextGitHubLink(next.linkHeader ?? next.response?.headers.get("link") ?? null);
     }
     return out;
   };
@@ -1023,10 +1313,10 @@ export function createHeadlessGitHubService(
 
   service = {
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
-      if (
-        opts.forceRefresh
-        && statusLookupInFlight?.generation !== statusLookupGeneration
-      ) {
+      if (opts.forceRefresh) {
+        if (statusLookupInFlight?.generation === statusLookupGeneration) {
+          return await statusLookupInFlight.promise;
+        }
         invalidateStatusCache();
       }
       const now = Date.now();
@@ -1037,105 +1327,239 @@ export function createHeadlessGitHubService(
       }
 
       const lookup = (async (): Promise<HeadlessGitHubStatus> => {
-        const [origin, tokenLookup] = await Promise.all([
+        const [origin, inventory] = await Promise.all([
           readGitOriginAsync(projectRoot),
-          readTokenAsync(),
+          readCredentialInventoryAsync(),
         ]);
         const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
         const hasOrigin = Boolean(origin);
-        const token = tokenLookup.token;
-        if (!token) {
+        const readCandidates = githubOperationCredentialCandidates(inventory.candidates, "read");
+        const writeCandidates = githubOperationCredentialCandidates(inventory.candidates, "write");
+        const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => githubCredentialCooldown(
+          candidate,
+          Date.now(),
+          { ignoreNonRateLimit: opts.forceRefresh === true },
+        );
+        const primaryCandidate = readCandidates[0] ?? null;
+        if (!primaryCandidate) {
           return {
             tokenStored: false,
-            patTokenStored: tokenLookup.patTokenStored,
+            patTokenStored: inventory.patTokenStored,
             tokenDecryptionFailed,
             storageScope: "app",
             authSource: "none",
+            writeAuthSource: "none",
             tokenType: "unknown",
             repo,
             hasOrigin,
             userLogin: null,
             scopes: [],
-            ghCliPath: tokenLookup.ghCliPath,
-            ghAuthError: tokenLookup.ghAuthError,
+            ghCliPath: inventory.ghCliPath,
+            ghAuthError: inventory.ghAuthError,
             checkedAt: null,
+            authFailure: null,
+            rateLimit: null,
+            credentialStates: githubCredentialStates({
+              candidates: inventory.candidates,
+              availableSources: inventory.availableSources,
+              activeReadSource: null,
+              activeWriteSource: null,
+            }),
+            credentialFallback: null,
+            backgroundRefreshPausedUntil: null,
             repoAccessOk: null,
             repoAccessError: null,
             connected: false,
           };
         }
 
-        try {
-          const validated = await validateToken(token);
-          let repoAccessOk: boolean | null = null;
-          let repoAccessError: string | null = null;
-          if (repo) {
-            const probe = await probeRepoAccess(token, repo);
-            repoAccessOk = probe.ok;
-            repoAccessError = probe.error;
-            if (!probe.ok) {
-              logger.warn("github.repo_probe_failed", {
-                repo: `${repo.owner}/${repo.name}`,
-                tokenType: validated.tokenType,
-                error: probe.error,
-              });
+        const failures: Array<{
+          candidate: HeadlessGitHubTokenCandidate;
+          error: string;
+          authFailure: GitHubAuthFailure;
+          rateLimit: GitHubRateLimitState | null;
+        }> = [];
+        let active: {
+          candidate: HeadlessGitHubTokenCandidate;
+          validated: Awaited<ReturnType<typeof validateToken>>;
+          repoAccessOk: boolean | null;
+          repoAccessError: string | null;
+        } | null = null;
+
+        for (const [candidateIndex, candidate] of readCandidates.entries()) {
+          const cooldown = statusCooldown(candidate);
+          if (cooldown) {
+            failures.push({
+              candidate,
+              error: cooldown.failure.message,
+              authFailure: cooldown.failure,
+              rateLimit: cooldown.rateLimit,
+            });
+            continue;
+          }
+          try {
+            const validated = await validateToken(candidate.token);
+            let repoAccessOk: boolean | null = null;
+            let repoAccessError: string | null = null;
+            if (repo && (candidate.source === "app" || validated.tokenType === "fine-grained")) {
+              const probe = await probeRepoAccess(candidate.token, repo);
+              repoAccessOk = probe.ok;
+              repoAccessError = probe.error;
+              validated.rateLimit = probe.rateLimit ?? validated.rateLimit;
+              if (!probe.ok) {
+                logger.warn("github.repo_probe_failed", {
+                  source: candidate.source,
+                  repo: `${repo.owner}/${repo.name}`,
+                  tokenType: validated.tokenType,
+                  error: probe.error,
+                });
+                if (probe.authFailure) {
+                  const hasFallbackCandidate = readCandidates
+                    .slice(candidateIndex + 1)
+                    .some((nextCandidate) => !statusCooldown(nextCandidate));
+                  if (probe.authFailure.kind === "permission_denied" && !hasFallbackCandidate) {
+                    registerGithubCredentialIdentity(candidate, validated.userLogin);
+                    active = { candidate, validated, repoAccessOk, repoAccessError };
+                    break;
+                  }
+                  recordGithubCredentialFailure(candidate, probe.authFailure, probe.rateLimit);
+                  failures.push({
+                    candidate,
+                    error: probe.error ?? probe.authFailure.message,
+                    authFailure: probe.authFailure,
+                    rateLimit: probe.rateLimit,
+                  });
+                  continue;
+                }
+              }
+            }
+            registerGithubCredentialIdentity(candidate, validated.userLogin);
+            recordGithubCredentialProbeSuccess(candidate, validated.rateLimit, validated.userLogin);
+            active = { candidate, validated, repoAccessOk, repoAccessError };
+            break;
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            const classified = error instanceof HeadlessGitHubTokenValidationError
+              ? { authFailure: error.authFailure, rateLimit: error.rateLimit }
+              : classifyGitHubAuthFailure({ message });
+            recordGithubCredentialFailure(candidate, classified.authFailure, classified.rateLimit);
+            failures.push({ candidate, error: message, ...classified });
+            logger.warn("github.token_validation_failed", {
+              source: candidate.source,
+              error: message,
+              kind: classified.authFailure.kind,
+              retryAt: classified.authFailure.retryAt,
+            });
+            if (
+              classified.authFailure.kind === "network"
+              || classified.authFailure.kind === "unknown"
+            ) {
+              break;
             }
           }
+        }
+
+        const currentWriteCandidate = writeCandidates.find((candidate) => !statusCooldown(candidate))
+          ?? null;
+        const pauseUntilMs = githubBackgroundRequestPauseUntilMs(Date.now(), readCandidates);
+        if (active) {
+          const { candidate, validated, repoAccessOk, repoAccessError } = active;
           return {
             tokenStored: true,
-            patTokenStored: tokenLookup.patTokenStored,
+            patTokenStored: inventory.patTokenStored,
             tokenDecryptionFailed: false,
             storageScope: "app",
-            authSource: tokenLookup.source,
+            authSource: candidate.source,
+            writeAuthSource: currentWriteCandidate?.source === "app"
+              ? "none"
+              : currentWriteCandidate?.source ?? "none",
             tokenType: validated.tokenType,
             repo,
             hasOrigin,
             userLogin: validated.userLogin,
             scopes: validated.scopes,
-            ghCliPath: tokenLookup.ghCliPath,
-            ghAuthError: tokenLookup.ghAuthError,
+            ghCliPath: inventory.ghCliPath,
+            ghAuthError: inventory.ghAuthError,
             checkedAt: new Date(now).toISOString(),
+            authFailure: null,
+            rateLimit: validated.rateLimit,
+            credentialStates: githubCredentialStates({
+              candidates: inventory.candidates,
+              availableSources: inventory.availableSources,
+              activeReadSource: candidate.source,
+              activeWriteSource: currentWriteCandidate?.source === "app"
+                ? null
+                : currentWriteCandidate?.source ?? null,
+            }),
+            credentialFallback: failures[0] && failures[0].candidate.source !== candidate.source
+              ? {
+                  capability: "read",
+                  fromSource: failures[0].candidate.source,
+                  toSource: candidate.source,
+                  reason: failures[0].authFailure.kind,
+                  retryAt: failures[0].authFailure.retryAt,
+                }
+              : null,
+            backgroundRefreshPausedUntil: pauseUntilMs == null
+              ? null
+              : new Date(pauseUntilMs).toISOString(),
             repoAccessOk,
             repoAccessError,
             connected: computeConnected({
               tokenStored: true,
               userLogin: validated.userLogin,
-              authSource: tokenLookup.source,
+              authSource: candidate.source,
               tokenType: validated.tokenType,
               scopes: validated.scopes,
               repo,
               repoAccessOk,
             }),
           };
-        } catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          const failure = classifyGitHubAuthFailure({ message });
-          logger.warn("github.token_validation_failed", {
-            error: message,
-            kind: failure.authFailure.kind,
-            retryAt: failure.authFailure.retryAt,
-          });
-          return {
-            tokenStored: true,
-            patTokenStored: tokenLookup.patTokenStored,
-            tokenDecryptionFailed: false,
-            storageScope: "app",
-            authSource: tokenLookup.source,
-            tokenType: getTokenType(token),
-            repo,
-            hasOrigin,
-            userLogin: null,
-            scopes: [],
-            ghCliPath: tokenLookup.ghCliPath,
-            ghAuthError: tokenLookup.ghAuthError,
-            checkedAt: new Date(now).toISOString(),
-            authFailure: failure.authFailure,
-            rateLimit: failure.rateLimit,
-            repoAccessOk: null,
-            repoAccessError: null,
-            connected: false,
-          };
         }
+
+        const failure = failures.find((entry) => entry.authFailure.kind === "rate_limited")
+          ?? failures[0]
+          ?? {
+            candidate: primaryCandidate,
+            error: "GitHub authentication could not be verified.",
+            authFailure: classifyGitHubAuthFailure({ message: "GitHub authentication could not be verified." }).authFailure,
+            rateLimit: null,
+          };
+        return {
+          tokenStored: true,
+          patTokenStored: inventory.patTokenStored,
+          tokenDecryptionFailed: false,
+          storageScope: "app",
+          authSource: primaryCandidate.source,
+          writeAuthSource: currentWriteCandidate?.source === "app"
+            ? "none"
+            : currentWriteCandidate?.source ?? "none",
+          tokenType: getTokenType(primaryCandidate.token),
+          repo,
+          hasOrigin,
+          userLogin: null,
+          scopes: [],
+          ghCliPath: inventory.ghCliPath,
+          ghAuthError: inventory.ghAuthError,
+          checkedAt: new Date(now).toISOString(),
+          authFailure: failure.authFailure,
+          rateLimit: failure.rateLimit,
+          credentialStates: githubCredentialStates({
+            candidates: inventory.candidates,
+            availableSources: inventory.availableSources,
+            activeReadSource: null,
+            activeWriteSource: currentWriteCandidate?.source === "app"
+              ? null
+              : currentWriteCandidate?.source ?? null,
+          }),
+          credentialFallback: null,
+          backgroundRefreshPausedUntil: pauseUntilMs == null
+            ? null
+            : new Date(pauseUntilMs).toISOString(),
+          repoAccessOk: null,
+          repoAccessError: null,
+          connected: false,
+        };
       })();
       statusLookupInFlight = { generation, promise: lookup };
       try {
@@ -1150,6 +1574,13 @@ export function createHeadlessGitHubService(
           statusLookupInFlight = null;
         }
       }
+    },
+    async getBackgroundRequestPauseUntilMs() {
+      const inventory = await readCredentialInventoryAsync();
+      return githubBackgroundRequestPauseUntilMs(
+        Date.now(),
+        githubOperationCredentialCandidates(inventory.candidates, "read"),
+      );
     },
     async getRemoteStatus() {
       const origin = await readGitOriginAsync(projectRoot);
@@ -1185,10 +1616,18 @@ export function createHeadlessGitHubService(
       return await appUserAuth.startDeviceAuth();
     },
     async pollAppUserDeviceAuth(args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> {
-      return await appUserAuth.pollDeviceAuth(args);
+      const result = await appUserAuth.pollDeviceAuth(args);
+      if (result.status === "authorized") {
+        clearGithubCredentialHealth();
+        invalidateStatusCache();
+      }
+      return result;
     },
     clearAppUserAuth(): GitHubAppUserAuthStatus {
-      return appUserAuth.clearAuth();
+      const status = appUserAuth.clearAuth();
+      clearGithubCredentialHealth();
+      invalidateStatusCache();
+      return status;
     },
     async getRepoOrThrow() {
       const repo = await detectGitHubRepoAsync(projectRoot);
@@ -1229,6 +1668,7 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
+      clearGithubCredentialHealth();
       invalidateStatusCache();
       emitStatusChanged();
     },
@@ -1236,6 +1676,7 @@ export function createHeadlessGitHubService(
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
+      clearGithubCredentialHealth();
       invalidateStatusCache();
       emitStatusChanged();
     },

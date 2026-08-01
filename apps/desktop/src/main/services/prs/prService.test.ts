@@ -255,6 +255,7 @@ function makeGithubStatus(overrides?: Record<string, unknown>) {
     tokenDecryptionFailed: false,
     storageScope: "app",
     authSource: "pat",
+    writeAuthSource: "pat",
     tokenType: "classic",
     connected: true,
     repo: REPO,
@@ -930,6 +931,30 @@ describe("prService.getGithubSnapshot", () => {
       path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
       query: expect.objectContaining({ state: "open" }),
     }));
+  });
+
+  it("allows read-only GitHub App snapshots without a write credential", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        authSource: "app",
+        writeAuthSource: "none",
+        patTokenStored: false,
+        connected: true,
+        repoAccessOk: true,
+      })),
+      getTokenOrThrow: vi.fn(() => {
+        throw new Error("GitHub auth missing");
+      }),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await expect(service.getGithubSnapshot({ force: true })).resolves.toMatchObject({
+      repo: REPO,
+      viewerLogin: "octocat",
+      repoPullRequests: [],
+    });
+    expect(githubService.apiRequest).toHaveBeenCalled();
   });
 
   it("fetches all PR state totals in one GraphQL request when mobile asks for counts", async () => {
@@ -6362,13 +6387,13 @@ describe("prService hot refresh", () => {
     const { service } = buildService({ onHotRefreshChanged });
 
     service.markHotRefresh(["pr-1"]);
-    expect(service.getHotRefreshDelayMs()).toBe(5_000);
+    expect(service.getHotRefreshDelayMs()).toBe(15_000);
 
     vi.setSystemTime(new Date("2026-01-01T00:00:59.000Z"));
     service.markHotRefresh(["pr-1"]);
     vi.setSystemTime(new Date("2026-01-01T00:01:01.000Z"));
 
-    expect(service.getHotRefreshDelayMs()).toBe(15_000);
+    expect(service.getHotRefreshDelayMs()).toBe(30_000);
 
     vi.setSystemTime(new Date("2026-01-01T00:03:01.000Z"));
     expect(service.getHotRefreshPrIds()).toEqual([]);

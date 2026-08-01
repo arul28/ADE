@@ -4,6 +4,7 @@ import type { createPrService } from "./prService";
 import type { AdeDb } from "../state/kvDb";
 import type { PrEventPayload, PrNotificationKind, PrSummary } from "../../../shared/types";
 import { nowIso } from "../shared/utils";
+import { githubBackgroundRequestPauseUntilMs } from "../github/githubCredentialHealth";
 
 function clampMs(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
@@ -113,6 +114,8 @@ export function createPrPollingService({
   onEvent,
   onPullRequestsSnapshot,
   onPullRequestsChanged,
+  isGithubRelayHealthy,
+  getGithubBackgroundPauseUntilMs,
   db,
 }: {
   logger: Logger;
@@ -136,6 +139,10 @@ export function createPrPollingService({
     }>;
     polledAt: string;
   }) => void | Promise<void>;
+  /** True while the hosted webhook relay is delivering repository events. */
+  isGithubRelayHealthy?: () => boolean;
+  /** Restricts quota protection to credentials available to this project. */
+  getGithubBackgroundPauseUntilMs?: () => number | null | Promise<number | null>;
   /** Optional database handle used to persist `last_polled_at` per PR for delta polling. */
   db?: AdeDb;
 }) {
@@ -143,6 +150,8 @@ export function createPrPollingService({
   const MIN_INTERVAL_MS = 5_000;
   const MAX_INTERVAL_MS = 5 * 60_000;
   const EMPTY_DISCOVERY_MIN_INTERVAL_MS = 10 * 60_000;
+  const RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS = 30 * 60_000;
+  const RELAY_SAFETY_SWEEP_INTERVAL_MS = 15 * 60_000;
   // Epoch (not "never") so the first tick after start still discovers.
   let lastEmptyDiscoveryAtMs = 0;
 
@@ -183,6 +192,7 @@ export function createPrPollingService({
   let consecutiveFailures = 0;
   let nextDelayOverrideMs: number | null = null;
   let rateLimitResumeAtMs = 0;
+  let lastRelaySafetySweepAtMs = 0;
   let lastPrFingerprint = "";
   const lastFingerprintByPrId = new Map<string, string>();
   const pendingTargetedPrIds = new Set<string>();
@@ -239,15 +249,28 @@ export function createPrPollingService({
 
     const polledAt = nowIso();
     try {
+      const backgroundPauseUntilMs = await Promise.resolve(
+        getGithubBackgroundPauseUntilMs?.() ?? githubBackgroundRequestPauseUntilMs(),
+      );
+      if (backgroundPauseUntilMs != null && backgroundPauseUntilMs > Date.now()) {
+        const untilReset = Math.max(10_000, backgroundPauseUntilMs - Date.now() + 5_000);
+        nextDelayOverrideMs = untilReset;
+        rateLimitResumeAtMs = Date.now() + untilReset;
+        return;
+      }
       const targetedPrIds = Array.from(pendingTargetedPrIds);
       pendingTargetedPrIds.clear();
+      const relayHealthy = isGithubRelayHealthy?.() === true;
       let existing = prService.listAll();
       if (existing.length === 0) {
         // Discovery force-refreshes the whole repo snapshot, which is far
         // heavier than a tracked-PR delta poll. With zero tracked PRs (new
         // users, non-PR projects) run it on a slow cadence instead of every
         // tick — user-driven surfaces discover PRs on their own reads anyway.
-        if (Date.now() - lastEmptyDiscoveryAtMs >= EMPTY_DISCOVERY_MIN_INTERVAL_MS) {
+        const discoveryIntervalMs = relayHealthy
+          ? RELAY_EMPTY_DISCOVERY_MIN_INTERVAL_MS
+          : EMPTY_DISCOVERY_MIN_INTERVAL_MS;
+        if (Date.now() - lastEmptyDiscoveryAtMs >= discoveryIntervalMs) {
           lastEmptyDiscoveryAtMs = Date.now();
           try {
             existing = await prService.discoverLanePullRequests();
@@ -280,6 +303,11 @@ export function createPrPollingService({
       const hotPrIds = prService.getHotRefreshPrIds();
       if (targetedPrIds.length > 0) {
         await prService.refresh({ prIds: targetedPrIds });
+      } else if (relayHealthy) {
+        if (Date.now() - lastRelaySafetySweepAtMs >= RELAY_SAFETY_SWEEP_INTERVAL_MS) {
+          await prService.refresh();
+          lastRelaySafetySweepAtMs = Date.now();
+        }
       } else if (hotPrIds.length > 0) {
         await prService.refresh({ prIds: hotPrIds });
       } else {
@@ -456,8 +484,12 @@ export function createPrPollingService({
       if (pendingTargetedPrIds.size > 0 && rateLimitResumeAtMs <= Date.now()) {
         schedule(0);
       } else {
-        const hotDelay = prService.getHotRefreshDelayMs();
-        const base = hotDelay ?? computeBackoffMs();
+        const relayHealthy = isGithubRelayHealthy?.() === true;
+        const hotDelay = relayHealthy ? null : prService.getHotRefreshDelayMs();
+        const relaySafetyDelay = relayHealthy
+          ? Math.max(1_000, RELAY_SAFETY_SWEEP_INTERVAL_MS - (Date.now() - lastRelaySafetySweepAtMs))
+          : null;
+        const base = hotDelay ?? relaySafetyDelay ?? computeBackoffMs();
         const delay = jitterMs(Math.max(base, nextDelayOverrideMs ?? 0));
         nextDelayOverrideMs = null;
         if (rateLimitResumeAtMs > 0 && Date.now() >= rateLimitResumeAtMs) {

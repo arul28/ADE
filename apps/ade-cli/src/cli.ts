@@ -1212,15 +1212,18 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade github app-auth status --text        Show whether a token is stored (login, expiry)
     $ ade --role cto github app-auth clear      Remove the stored authorization
     $ ade github actions --text                 List raw github service actions
+    $ ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text
+                                                Show active read/write credentials and cooldowns
 
   Notes:
     - login, clear (and the raw start/poll actions) require --role cto.
     - login keeps one connection open for the whole device flow because the
       device-auth session lives in runtime memory; do not split start and poll
       across separate invocations in headless mode.
-    - GitHub operations prefer an explicit environment token, then GitHub CLI,
-      and finally a stored PAT. The GitHub App remains read-only and is used
-      only for webhook-backed PR updates.
+    - GitHub reads try an explicit environment token, the ADE GitHub App,
+      GitHub CLI, then a stored PAT. Writes skip the read-only GitHub App.
+      Authentication failures and rate limits can fall through to the next
+      healthy credential while the failed source is in cooldown.
 
   Flags (login):
     --max-wait <seconds>    Give up waiting after N seconds (default: GitHub's

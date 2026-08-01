@@ -2398,6 +2398,8 @@ app.whenReady().then(async () => {
     const searchServiceHolder: { current: SearchService | null } = { current: null };
     let prPollingServiceRef: ReturnType<typeof createPrPollingService> | null =
       null;
+    let automationIngressServiceRef: ReturnType<typeof createAutomationIngressService> | null =
+      null;
     let testServiceRef: ReturnType<typeof createTestService> | null = null;
     let laneServiceRef: ReturnType<typeof createLaneService> | null = null;
     let gitServiceRef: ReturnType<typeof createGitOperationsService> | null =
@@ -2901,6 +2903,8 @@ app.whenReady().then(async () => {
       prService,
       projectConfigService,
       db,
+      isGithubRelayHealthy: () => automationIngressServiceRef?.isGithubRelayHealthy() === true,
+      getGithubBackgroundPauseUntilMs: () => githubService.getBackgroundRequestPauseUntilMs(),
       onEvent: emitPrEvent,
       onPullRequestsSnapshot: (snapshot) =>
         prMergeAutoSettlementServiceRef?.processSnapshot(snapshot),
@@ -3400,6 +3404,7 @@ app.whenReady().then(async () => {
       // our own relay worker (no GitHub data cost); the service floors at 30s.
       pollIntervalMs: 30_000,
     });
+    automationIngressServiceRef = automationIngressService;
 
     const githubPollingService = automationService
       ? createGithubPollingService({

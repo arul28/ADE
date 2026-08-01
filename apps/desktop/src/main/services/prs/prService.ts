@@ -2065,8 +2065,8 @@ export function createPrService({
 
   const HOT_REFRESH_PHASE_ONE_MS = 60_000;
   const HOT_REFRESH_PHASE_TWO_MS = 3 * 60_000;
-  const HOT_REFRESH_INTERVAL_PHASE_ONE_MS = 5_000;
-  const HOT_REFRESH_INTERVAL_PHASE_TWO_MS = 15_000;
+  const HOT_REFRESH_INTERVAL_PHASE_ONE_MS = 15_000;
+  const HOT_REFRESH_INTERVAL_PHASE_TWO_MS = 30_000;
   const hotRefreshStartedAtByPrId = new Map<string, number>();
 
   const invalidateGithubSnapshotCache = (): void => {
@@ -4212,6 +4212,7 @@ export function createPrService({
     }>({
       method: "POST",
       path: "/graphql",
+      capability: /^\s*mutation\b/i.test(query) ? "write" : "read",
       body: { query, variables },
       ...(options.accept ? { accept: options.accept } : {}),
     });

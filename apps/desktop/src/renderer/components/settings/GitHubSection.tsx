@@ -1,5 +1,5 @@
 import { useEffect, useState, type CSSProperties } from "react";
-import type { GitHubStatus } from "../../../shared/types";
+import type { GitHubCredentialState, GitHubStatus } from "../../../shared/types";
 import {
   GithubLogo,
   CheckCircle,
@@ -62,8 +62,8 @@ function tokenTypeDetectionLabel(type: TokenType): string {
   }
 }
 
-function authSourceLabel(status: GitHubStatus | null): string {
-  switch (status?.authSource) {
+function credentialSourceLabel(source: GitHubStatus["authSource"] | undefined): string {
+  switch (source) {
     case "app":
       return "ADE GitHub App";
     case "gh":
@@ -75,6 +75,31 @@ function authSourceLabel(status: GitHubStatus | null): string {
     default:
       return "Not connected";
   }
+}
+
+function authSourceLabel(status: GitHubStatus | null): string {
+  return credentialSourceLabel(status?.authSource);
+}
+
+function shortRetryTime(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const parsed = new Date(value);
+  if (!Number.isFinite(parsed.getTime())) return null;
+  return parsed.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+}
+
+function credentialStateLabel(state: GitHubCredentialState): string {
+  if (state.activeFor.length === 2) return "Reads & writes";
+  if (state.activeFor[0] === "read") return "Reads";
+  if (state.activeFor[0] === "write") return "Writes";
+  if (state.state === "cooldown") {
+    const retryAt = shortRetryTime(state.failure?.retryAt);
+    if (state.failure?.kind === "rate_limited") return retryAt ? `Paused until ${retryAt}` : "Paused";
+    if (state.failure?.kind === "invalid_token") return "Reconnect needed";
+    if (state.failure?.kind === "permission_denied") return "Access unavailable";
+    return "Temporarily unavailable";
+  }
+  return state.available ? "Fallback" : "Not set up";
 }
 
 export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
@@ -177,6 +202,12 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const isFineGrainedToken = githubStatus?.tokenType === "fine-grained";
   const authFailure = githubStatus?.authFailure ?? null;
   const authFailurePresentation = githubStatus ? describeGithubAuthFailure(githubStatus) : null;
+  const credentialFallback = githubStatus?.credentialFallback ?? null;
+  const credentialStates = githubStatus?.credentialStates ?? [];
+  const activeReadCredential = credentialStates.find((credential) => credential.activeFor.includes("read")) ?? null;
+  const effectiveWriteAuthSource = githubStatus?.writeAuthSource
+    ?? (githubStatus?.authSource && githubStatus.authSource !== "app" ? githubStatus.authSource : "none");
+  const backgroundPausedUntil = shortRetryTime(githubStatus?.backgroundRefreshPausedUntil);
   const hasInspectableScopes = credentialPresentation.hasInspectableScopes;
   const accessState = getGitHubTokenAccessState(githubStatus?.scopes ?? []);
   const repoProbeFailed = tokenAuthenticated && githubStatus?.repoAccessOk === false;
@@ -186,7 +217,10 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     && !accessState.hasRequiredAccess;
   let statusColor: string;
   let statusLabel: string;
-  if (isConnected) {
+  if (isConnected && credentialFallback) {
+    statusColor = COLORS.warning;
+    statusLabel = "Connected · fallback";
+  } else if (isConnected) {
     statusColor = COLORS.success;
     statusLabel = "Connected";
   } else if (authFailurePresentation) {
@@ -215,9 +249,6 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
       || authFailure?.kind === "invalid_token"
       || hasMissingScopes
     );
-  const rateLimitLabel = githubStatus?.rateLimit
-    ? `${githubStatus.rateLimit.remaining ?? "?"} / ${githubStatus.rateLimit.limit ?? "?"} remaining`
-    : null;
   const classicTokenUrl = transcriptGistsEnabled ? GITHUB_CLASSIC_TOKEN_WITH_GIST_NEW_URL : GITHUB_CLASSIC_TOKEN_NEW_URL;
   const openExternal = (url: string) => {
     void window.ade.app.openExternal(url);
@@ -360,10 +391,79 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           >
             {summaryCell("USER", githubStatus?.userLogin ?? null)}
             {summaryCell("REPOSITORY", githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
-            {summaryCell("AUTH METHOD", authSourceLabel(githubStatus))}
-            {summaryCell("TOKEN TYPE", credentialPresentation.tokenTypeLabel)}
-            {githubStatus?.rateLimit ? summaryCell("API QUOTA", rateLimitLabel) : null}
+            {summaryCell("READS WITH", activeReadCredential
+              ? credentialSourceLabel(activeReadCredential.source)
+              : authFailure?.kind === "rate_limited"
+                ? "Paused"
+                : authSourceLabel(githubStatus))}
+            {summaryCell("WRITES WITH", credentialSourceLabel(effectiveWriteAuthSource))}
           </div>
+
+          {credentialFallback ? (
+            <div style={{
+              ...infoBoxStyle,
+              borderColor: "color-mix(in srgb, var(--color-warning) 35%, transparent)",
+              background: "color-mix(in srgb, var(--color-warning) 10%, transparent)",
+              color: COLORS.textPrimary,
+            }}>
+              <strong>{credentialSourceLabel(credentialFallback.fromSource)}</strong> is temporarily unavailable. ADE is using{" "}
+              <strong>{credentialSourceLabel(credentialFallback.toSource)}</strong> and will try the preferred connection again automatically
+              {credentialFallback.retryAt ? ` after ${shortRetryTime(credentialFallback.retryAt)}` : ""}.
+            </div>
+          ) : null}
+
+          {!credentialFallback && backgroundPausedUntil && authFailure?.kind !== "rate_limited" ? (
+            <div style={{
+              ...infoBoxStyle,
+              borderColor: "color-mix(in srgb, var(--color-warning) 30%, transparent)",
+              background: "color-mix(in srgb, var(--color-warning) 8%, transparent)",
+            }}>
+              Real-time updates remain on. ADE paused background catch-up until {backgroundPausedUntil} to protect GitHub access for your own actions.
+            </div>
+          ) : null}
+
+          {credentialStates.length > 0 ? (
+            <div>
+              <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CONNECTION ORDER</div>
+              <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
+                {credentialStates.map((credential, index) => {
+                  const stateColor = credential.state === "active"
+                    ? COLORS.success
+                    : credential.state === "cooldown"
+                      ? COLORS.warning
+                      : credential.available
+                        ? COLORS.textSecondary
+                        : COLORS.textDim;
+                  return (
+                    <div
+                      key={credential.source}
+                      style={{
+                        display: "grid",
+                        gridTemplateColumns: "minmax(140px, 1fr) auto",
+                        alignItems: "center",
+                        gap: 12,
+                        padding: "10px 12px",
+                        borderTop: index === 0 ? "none" : `1px solid ${COLORS.border}`,
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 650, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+                          {index + 1}. {credentialSourceLabel(credential.source)}
+                        </div>
+                        <div style={{ marginTop: 2, fontSize: 10, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                          {credential.capabilities.length === 1 ? "Read-only" : "Read and write"}
+                        </div>
+                      </div>
+                      <span style={inlineBadge(stateColor)}>{credentialStateLabel(credential)}</span>
+                    </div>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: 7, fontSize: 10, lineHeight: "16px", fontFamily: SANS_FONT, color: COLORS.textMuted }}>
+                ADE uses the first working connection. Read requests can use the GitHub App; write actions skip it and use the first available write connection.
+              </div>
+            </div>
+          ) : null}
 
           <div>
             <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>
@@ -388,7 +488,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
                   <span>{credentialPresentation.repoAccessLabel}</span>
                 </div>
                 <div style={{ ...infoBoxStyle, marginTop: 4 }}>
-                  The ADE GitHub App is intentionally read-only and is used only for webhook-backed, real-time pull request updates. GitHub operations use an explicit environment token first, then GitHub CLI, and finally a stored PAT.
+                  The ADE GitHub App is read-only. ADE uses it for pull request data and real-time updates, then uses GitHub CLI or a personal access token for actions that change GitHub.
                 </div>
               </div>
             ) : permissionMode === "fine-grained" ? (

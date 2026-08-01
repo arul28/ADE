@@ -119,8 +119,8 @@ describe("describeGithubCliBanner", () => {
       },
     }));
 
-    expect(banner.title).toBe("GitHub API rate limit reached");
-    expect(banner.detail).toContain("No authentication command is needed");
+    expect(banner.title).toBe("GitHub requests are temporarily paused");
+    expect(banner.detail).toContain("will resume automatically");
     expect(banner.action).toBe("View GitHub status");
     expect(banner.subState).toContain("rate-limited");
   });

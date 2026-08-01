@@ -15,6 +15,7 @@ import {
   deriveGithubRealtimeBlock,
   deriveGithubRepoConnectionState,
   describeGithubCliBanner,
+  githubStatusHasWriteCredential,
   githubAccountIssueCopy,
   githubRepoIssueCopy,
 } from "../../lib/githubIntegrationStatus";
@@ -252,7 +253,9 @@ export function IntegrationBannerHost({
         clearDismissal(`github-app-repo:${repoKey}`);
       }
     }
-    if (githubStatus?.connected) clearDismissal(`github-cli:${currentProjectRoot}`);
+    if (githubStatus?.connected && githubStatusHasWriteCredential(githubStatus)) {
+      clearDismissal(`github-cli:${currentProjectRoot}`);
+    }
     if (hasAnyAiProvider) clearDismissal(`ai-provider:${currentProjectRoot}`);
     if (!(providerMode === "subscription" && aiMockProvider)) {
       clearDismissal(`mock-provider:${currentProjectRoot}`);
@@ -354,7 +357,11 @@ export function IntegrationBannerHost({
 
     // 2) gh CLI / PAT not connected (MIGRATED). A DISTINCT concern from the App
     // block: this is the token ADE uses for git & PR operations, not webhooks.
-    if (currentProjectRoot && githubStatus && !githubStatus.connected) {
+    if (
+      currentProjectRoot
+      && githubStatus
+      && (!githubStatus.connected || !githubStatusHasWriteCredential(githubStatus))
+    ) {
       const cli = describeGithubCliBanner(githubStatus);
       list.push({
         id: "github-cli",

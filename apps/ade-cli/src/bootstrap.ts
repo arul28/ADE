@@ -1446,6 +1446,9 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     projectConfigService,
     db,
+    isGithubRelayHealthy: () => automationIngressService.isGithubRelayHealthy(),
+    getGithubBackgroundPauseUntilMs: () =>
+      headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
     onEvent: emitPrEvent,
     onPullRequestsSnapshot: (snapshot) =>
       prMergeAutoSettlementService?.processSnapshot(snapshot),

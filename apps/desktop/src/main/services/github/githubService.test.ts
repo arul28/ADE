@@ -55,6 +55,7 @@ import {
   createGithubService,
   fetchAdeLatestRelease,
 } from "./githubService";
+import { clearGithubCredentialHealth } from "./githubCredentialHealth";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -70,6 +71,7 @@ function makeLogger() {
 }
 
 function resetMocks() {
+  clearGithubCredentialHealth();
   vi.clearAllMocks();
   mockFetch.mockReset();
   runGitMock.mockReset();
@@ -368,6 +370,103 @@ describe("githubService.apiRequest", () => {
 
     const [, init] = mockFetch.mock.calls.at(-1) as [string, RequestInit];
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer ghp_machine_token");
+  });
+
+  it("falls back when GraphQL reports a rate limit in an HTTP 200 response", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    const resetAt = Math.floor(Date.now() / 1_000) + 3600;
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        data: null,
+        errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+      }, {
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(resetAt),
+        "x-ratelimit-resource": "graphql",
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, { data: { viewer: { login: "alice" } } }));
+
+    const result = await makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).apiRequest<{ data: { viewer: { login: string } } }>({
+      method: "POST",
+      path: "/graphql",
+      capability: "read",
+      body: { query: "query { viewer { login } }" },
+    });
+
+    expect(result.data.data.viewer.login).toBe("alice");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect((mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization)
+      .toBe("Bearer ghu_app_user_token");
+    expect((mockFetch.mock.calls[1]?.[1]?.headers as Record<string, string>).authorization)
+      .toBe("Bearer gho_cli_token");
+  });
+
+  it("skips the read-only GitHub App for write requests", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(200, { ok: true }));
+
+    await makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).apiRequest({ method: "POST", path: "/repos/acme/ade/issues", body: { title: "Test" } });
+
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect((mockFetch.mock.calls[0]?.[1]?.headers as Record<string, string>).authorization)
+      .toBe("Bearer gho_cli_token");
+  });
+
+  it("keeps conditional response data isolated by credential", async () => {
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { value: "first" }, { etag: '"first"' }))
+      .mockResolvedValueOnce(jsonResponse(200, { value: "second" }, { etag: '"second"' }))
+      .mockResolvedValueOnce(jsonResponse(304, {}));
+    const service = makeService();
+
+    await service.apiRequest({ method: "GET", path: "/repos/acme/ade", token: "ghp_first" });
+    await service.apiRequest({ method: "GET", path: "/repos/acme/ade", token: "ghp_second" });
+    const firstAgain = await service.apiRequest<{ value: string }>({
+      method: "GET",
+      path: "/repos/acme/ade",
+      token: "ghp_first",
+    });
+
+    expect(mockFetch.mock.calls[1]?.[1]?.headers).not.toMatchObject({ "if-none-match": '"first"' });
+    expect(mockFetch.mock.calls[2]?.[1]?.headers).toMatchObject({ "if-none-match": '"first"' });
+    expect(firstAgain.data).toEqual({ value: "first" });
   });
 
   it("stores and clears GitHub PATs in the shared machine credential store", () => {
@@ -784,10 +883,9 @@ describe("githubService.getStatus", () => {
     expect(mockFetch).toHaveBeenCalledTimes(1);
   });
 
-  it("keeps the read-only GitHub App out of operational REST credential selection", async () => {
+  it("uses the GitHub App for reads but reports write access missing when it is the only credential", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.token.v1", "ghp_stored_token");
     credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
       accessToken: "ghu_app_user_token",
       tokenType: "bearer",
@@ -798,91 +896,22 @@ describe("githubService.getStatus", () => {
       userLogin: "alice",
       updatedAt: new Date().toISOString(),
     }));
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
-    );
-
-    const status = await makeService({ credentialStore }).getStatus();
-
-    expect(status).toMatchObject({
-      authSource: "pat",
-      connected: true,
-      patTokenStored: true,
-      repoAccessOk: null,
-      userLogin: "alice",
-    });
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>).authorization)
-      .toBe("Bearer ghp_stored_token");
-  });
-
-  it("keeps GitHub CLI auth ahead of GitHub App authorization for async REST calls", async () => {
-    stubOriginRemote();
-    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
-    const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.token.v1", "ghp_stored_token");
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_app_user_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      refreshToken: null,
-      refreshTokenExpiresAt: null,
-      userLogin: "alice",
-      updatedAt: new Date().toISOString(),
-    }));
-    mockFetch.mockResolvedValueOnce(
-      jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
-    );
-
-    const service = makeService({
-      credentialStore,
-      ghAuthTokenProvider: () => ({
-        token: "gho_cli_token",
-        ghCliPath: "/opt/homebrew/bin/gh",
-        ghAuthError: null,
-      }),
-    });
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { login: "alice" }))
+      .mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }));
+    const service = makeService({ credentialStore });
     const status = await service.getStatus();
 
     expect(status).toMatchObject({
-      authSource: "gh",
+      authSource: "app",
+      writeAuthSource: "none",
       connected: true,
-      patTokenStored: true,
-      repoAccessOk: null,
-      userLogin: "alice",
-    });
-    expect(service.getTokenOrThrow()).toBe("gho_cli_token");
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-    const [, init] = mockFetch.mock.calls[0] as [string, RequestInit];
-    expect((init.headers as Record<string, string>).authorization)
-      .toBe("Bearer gho_cli_token");
-  });
-
-  it("does not use a relay-only GitHub App token when no operation credential is available", async () => {
-    stubOriginRemote();
-    const credentialStore = new MemoryCredentialStore();
-    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_app_user_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      refreshToken: null,
-      refreshTokenExpiresAt: null,
-      userLogin: "alice",
-      updatedAt: new Date().toISOString(),
-    }));
-    const status = await makeService({ credentialStore }).getStatus();
-
-    expect(status).toMatchObject({
-      authSource: "none",
-      connected: false,
       patTokenStored: false,
-      repoAccessOk: null,
-      userLogin: null,
+      repoAccessOk: true,
+      userLogin: "alice",
     });
-    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    await expect(service.getTokenOrThrowAsync()).rejects.toThrow("GitHub auth missing");
   });
 
   it("reports an exhausted GitHub API quota as rate limited instead of missing permissions", async () => {
@@ -1100,32 +1129,6 @@ describe("githubService.getStatus", () => {
     now.mockRestore();
   });
 
-  it("does not extend the shared cooldown for an invalid gh token", async () => {
-    stubOriginRemote();
-    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
-    const baseNow = Date.now();
-    const now = vi.spyOn(Date, "now").mockReturnValue(baseNow);
-    const ghAuthTokenProvider = vi.fn(() => ({
-      token: "gho_invalid_token",
-      ghCliPath: "/opt/homebrew/bin/gh",
-      ghAuthError: null,
-    }));
-    mockFetch.mockResolvedValue(jsonResponse(401, { message: "Bad credentials" }));
-
-    const first = await makeService({ ghAuthTokenProvider }).getStatus();
-    expect(first.connected).toBe(false);
-    expect(first.authFailure?.kind).toBe("invalid_token");
-    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(1);
-    expect(mockFetch).toHaveBeenCalledTimes(1);
-
-    now.mockReturnValue(baseNow + 31_000);
-    const second = await makeService({ ghAuthTokenProvider }).getStatus();
-    expect(second.connected).toBe(false);
-    expect(ghAuthTokenProvider).toHaveBeenCalledTimes(2);
-    expect(mockFetch).toHaveBeenCalledTimes(2);
-    now.mockRestore();
-  });
-
   it("does not reuse a project-local status after the shared gh token changes", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
@@ -1182,6 +1185,44 @@ describe("githubService.getStatus", () => {
     expect(mockFetch).toHaveBeenCalledTimes(2);
     expect((mockFetch.mock.calls[1]?.[1]?.headers as Record<string, string>).authorization)
       .toBe("Bearer gho_hosts_bob");
+  });
+
+  it("lets a forced status refresh retry a credential after a permission failure", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(403, { message: "Resource not accessible" }))
+      .mockResolvedValueOnce(jsonResponse(
+        200,
+        { login: "fallback-user" },
+        { "x-oauth-scopes": "repo, workflow" },
+      ))
+      .mockResolvedValueOnce(jsonResponse(
+        200,
+        { login: "environment-user" },
+        { "x-oauth-scopes": "repo, workflow" },
+      ));
+    const service = makeService({
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.getStatus()).resolves.toMatchObject({
+      authSource: "gh",
+      userLogin: "fallback-user",
+    });
+    await expect(service.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+      authSource: "environment",
+      userLogin: "environment-user",
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+    expect((mockFetch.mock.calls[2]?.[1]?.headers as Record<string, string>).authorization)
+      .toBe("Bearer ghp_environment_token");
   });
 
   it("clearing a stored PAT falls back to gh auth", async () => {
