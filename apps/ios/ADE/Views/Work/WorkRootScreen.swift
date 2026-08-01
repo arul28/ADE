@@ -112,6 +112,9 @@ struct WorkRootSessionPresentationTaskKey: Equatable {
 struct WorkRootScreen: View {
   @Environment(\.accessibilityReduceMotion) var reduceMotion
   @EnvironmentObject var syncService: SyncService
+  /// Machine presence for the offline banner. Injected on the root content in
+  /// `ContentView`, the same place the bell above this list reads it from.
+  @EnvironmentObject private var activityDrawer: ActivityDrawerModel
   /// App-level dictation singleton. Re-injected into pushed composer
   /// destinations below since `navigationDestination` builds outside the view
   /// tree and does not inherit environment objects.
@@ -167,6 +170,10 @@ struct WorkRootScreen: View {
   /// the new project's live roster while the database reload catches up.
   @State var loadedProjectionProjectId: String?
   @AppStorage("ade.work.archivedSessionIds") var archivedSessionIdsStorage = ""
+  /// Read-only mirror of the Lanes tab's pin store. Pins decide the top lane
+  /// tier and keep a lane's header, so the Work list has to see them; it never
+  /// writes here, so pinning stays a Lanes-tab gesture with one owner.
+  @AppStorage("ade.lanes.pinnedIds") private var pinnedLaneIdsStorage: String = ""
   @State var sessionOrganizationRaw = WorkSessionOrganization.byLane.rawValue
   @State var collapsedSectionIdsStorage = ""
   /// The project+host scope the five view-state properties above currently hold.
@@ -450,6 +457,22 @@ struct WorkRootScreen: View {
     sessionPresentation.sessionGroups
   }
 
+  /// Lanes the user has pinned, read from the Lanes tab's store.
+  var workPinnedLaneIds: Set<String> {
+    Set(pinnedLaneIdsStorage.split(separator: ",").map(String.init).filter { !$0.isEmpty })
+  }
+
+  /// Machines that own work in this project and are no longer reachable. The
+  /// connected host is online by definition, so anything here is a second Mac
+  /// whose lanes reached this list through the account feed.
+  var offlineMachineBanners: [WorkOfflineMachineBanner] {
+    workOfflineMachineBanners(
+      scopes: activityDrawer.offlineScopes,
+      activeProjectId: syncService.activeProjectId,
+      laneIds: Set(lanes.map(\.id))
+    )
+  }
+
   var isWorkRootActive: Bool {
     isTabActive && path.isEmpty
   }
@@ -558,6 +581,19 @@ struct WorkRootScreen: View {
               action: { Task { await reload(refreshRemote: true) } }
             )
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 8, trailing: 16))
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+          }
+
+          // Above the list, not per row: every row below belongs to the same
+          // project, so one banner explains the whole outage instead of
+          // repeating itself down the column.
+          ForEach(offlineMachineBanners) { banner in
+            ActivityOfflineMachineBanner(
+              machineName: banner.machineName,
+              lastSeenLabel: banner.lastSeenLabel
+            )
+            .listRowInsets(EdgeInsets(top: 2, leading: 16, bottom: 6, trailing: 16))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
           }
@@ -892,14 +928,32 @@ struct WorkRootScreen: View {
 
   /// A quiet lane is collapsed unless explicitly expanded; every other section
   /// is expanded unless explicitly collapsed.
+  ///
+  /// A headerless lane is never collapsed: there is no header to collapse it
+  /// with, so a collapsed one would be a row the user could not get back.
   private func workGroupIsCollapsed(_ group: WorkSessionGroup) -> Bool {
-    group.isQuiet
+    if group.isHeaderless { return false }
+    return group.isQuiet
       ? !collapsedSectionIds.contains(group.quietOpenSectionId)
       : collapsedSectionIds.contains(group.id)
   }
 
   @ViewBuilder
   private func workSessionGroupRows(_ group: WorkSessionGroup) -> some View {
+    // The singleton form: one top-level row in the lane, so the header would be
+    // a divider carrying a name the row already says. The row takes the lane
+    // identity instead (its meta line and its "Go to lane" / PR actions).
+    if group.isHeaderless {
+      ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in
+        workSessionRows(session, showsLaneIdentity: true)
+      }
+    } else {
+      workSessionGroupRowsWithHeader(group)
+    }
+  }
+
+  @ViewBuilder
+  private func workSessionGroupRowsWithHeader(_ group: WorkSessionGroup) -> some View {
     let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
     let collapsed = workGroupIsCollapsed(group)
     let isQuietRow = group.isQuiet && collapsed
@@ -947,7 +1001,14 @@ struct WorkRootScreen: View {
         // An expanded quiet lane holds only settled rows: the full card's
         // preview line and meta row are about work in flight, of which there is
         // none here.
-        workSessionRows(session, compact: group.isQuiet)
+        //
+        // A row under a lane header does not repeat the lane name — the header
+        // two rows up already says it, and the space is worth more as the model.
+        workSessionRows(
+          session,
+          compact: group.isQuiet,
+          showsLaneIdentity: group.laneId == nil
+        )
       }
     }
   }
@@ -955,7 +1016,8 @@ struct WorkRootScreen: View {
   @ViewBuilder
   private func workSessionRows(
     _ session: TerminalSessionSummary,
-    compact: Bool = false
+    compact: Bool = false,
+    showsLaneIdentity: Bool = true
   ) -> some View {
     WorkSessionListRow(
       session: session,
@@ -970,6 +1032,7 @@ struct WorkRootScreen: View {
         ? sessionTransitionNamespace
         : nil,
       compact: compact,
+      showsLaneIdentity: showsLaneIdentity,
       isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
       selectedSessionId: $selectedSessionTransitionId,
       isSelecting: isSelecting,

@@ -95,6 +95,11 @@ struct WorkSessionGroup: Identifiable, Equatable {
   /// the `status:snoozed` tail, so they can't be here). The section renders as a
   /// single thin row instead of a full header over nothing.
   let isQuiet: Bool
+  /// The singleton form: one top-level row, so the group renders with no header
+  /// at all and the lone row carries the lane identity instead. Orthogonal to
+  /// `isQuiet` — a quiet lane still has a header to fold, and the two rules are
+  /// derived independently (see `workHeaderlessLaneIds`).
+  let isHeaderless: Bool
 
   enum Icon: Equatable {
     case statusDot
@@ -112,7 +117,8 @@ struct WorkSessionGroup: Identifiable, Equatable {
     laneColor: String? = nil,
     laneIcon: LaneIcon? = nil,
     isOrphaned: Bool = false,
-    isQuiet: Bool = false
+    isQuiet: Bool = false,
+    isHeaderless: Bool = false
   ) {
     self.id = id
     self.label = label
@@ -123,6 +129,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
     self.laneIcon = laneIcon
     self.isOrphaned = isOrphaned
     self.isQuiet = isQuiet
+    self.isHeaderless = isHeaderless
   }
 
   /// Inverted collapse marker: a quiet lane starts collapsed, and only an
@@ -145,6 +152,7 @@ struct WorkSessionGroup: Identifiable, Equatable {
       && lhs.laneIcon == rhs.laneIcon
       && lhs.isOrphaned == rhs.isOrphaned
       && lhs.isQuiet == rhs.isQuiet
+      && lhs.isHeaderless == rhs.isHeaderless
       && lhs.sessions.map(\.id) == rhs.sessions.map(\.id)
   }
 }
@@ -246,11 +254,13 @@ func buildWorkRootSessionPresentation(
   orderedLanes: [LaneSummary],
   pullRequests: [PullRequestListItem] = [],
   githubPrs: [GitHubPrListItem] = [],
-  deletingLaneIds: Set<String> = []
+  deletingLaneIds: Set<String> = [],
+  pinnedLaneIds: Set<String> = [],
+  laneSortMode: WorkLaneSortMode = .created,
+  now: Date = Date()
 ) -> WorkRootSessionPresentation {
   let committedIds = Set(sessions.map(\.id))
   let draftValues = optimisticSessions.values.filter { !committedIds.contains($0.id) }
-  let workOrderedLanes = sortWorkLanesForTabs(orderedLanes)
   let laneById = Dictionary(orderedLanes.map { ($0.id, $0) }, uniquingKeysWith: { _, new in new })
   let lanePrTagsByLaneId = lanePrTagByLaneId(
     lanes: orderedLanes,
@@ -312,6 +322,30 @@ func buildWorkRootSessionPresentation(
     }
   }
 
+  // Lane ordering and the singleton rule both read the UNFILTERED roster, so
+  // neither the shelf a lane sits on nor whether it has a header changes while
+  // the user types in search. Same precedent as the quiet-lane derivation.
+  let workOrderedLanes = orderWorkLanes(
+    orderedLanes,
+    inputs: workLaneOrderInputs(
+      lanes: orderedLanes,
+      sessions: mergedSessions,
+      chatSummaries: chatSummaries,
+      archivedSessionIds: archivedSessionIds,
+      pinnedLaneIds: pinnedLaneIds,
+      now: now
+    ),
+    mode: laneSortMode
+  )
+  let headerlessLaneIds = workHeaderlessLaneIds(
+    workHeaderlessLaneInputs(
+      lanes: orderedLanes,
+      sessions: mergedSessions,
+      pinnedLaneIds: pinnedLaneIds
+    ),
+    sortMode: laneSortMode
+  )
+
   let sessionGroups = workSessionGroups(
     organization: organization,
     sessions: displaySessions,
@@ -320,7 +354,9 @@ func buildWorkRootSessionPresentation(
     statusBySessionId: statusBySessionId,
     archivedSessionIds: archivedSessionIds,
     orderedLanes: workOrderedLanes,
-    deletingLaneIds: deletingLaneIds
+    deletingLaneIds: deletingLaneIds,
+    headerlessLaneIds: headerlessLaneIds,
+    now: now
   )
 
   return WorkRootSessionPresentation(
@@ -419,6 +455,10 @@ private func workRootSessionPresentationRenderSignature(
   for group in sessionGroups {
     hasher.combine(group.id)
     hasher.combine(group.label)
+    hasher.combine(group.isQuiet)
+    // Gaining or losing a header reshapes the whole section; without this the
+    // equatable short-circuit freezes the old shape on screen.
+    hasher.combine(group.isHeaderless)
     hasher.combine(group.sessions.map(\.id))
   }
   for key in childGroupsByParentId.keys.sorted() {
@@ -449,21 +489,66 @@ private func workRootSessionPresentationRenderSignature(
   return hasher.finalize()
 }
 
-func sortWorkLanesForTabs(_ lanes: [LaneSummary]) -> [LaneSummary] {
-  lanes.enumerated().sorted { lhsPair, rhsPair in
-    let lhs = lhsPair.element
-    let rhs = rhsPair.element
-    let lhsPrimary = lhs.laneType == "primary"
-    let rhsPrimary = rhs.laneType == "primary"
-    if lhsPrimary != rhsPrimary { return lhsPrimary }
+/// Derive the per-lane ordering facts a `LaneSummary` does not carry: the most
+/// recent session activity, whether the lane is quiet, and whether it is pinned.
+func workLaneOrderInputs(
+  lanes: [LaneSummary],
+  sessions: [TerminalSessionSummary],
+  chatSummaries: [String: AgentChatSessionSummary],
+  archivedSessionIds: Set<String>,
+  pinnedLaneIds: Set<String>,
+  now: Date = Date()
+) -> [String: WorkLaneOrderInput] {
+  var latestByLaneId: [String: Date] = [:]
+  for session in sessions {
+    guard let activity = workParsedDate(
+      workSessionActivityTimestamp(session: session, summary: chatSummaries[session.id])
+    ) else { continue }
+    if let current = latestByLaneId[session.laneId], current >= activity { continue }
+    latestByLaneId[session.laneId] = activity
+  }
 
-    let lhsDate = parseWorkSessionTimestamp(lhs.createdAt)
-    let rhsDate = parseWorkSessionTimestamp(rhs.createdAt)
-    if let lhsDate, let rhsDate, lhsDate != rhsDate {
-      return lhsDate > rhsDate
-    }
-    return lhsPair.offset < rhsPair.offset
-  }.map(\.element)
+  var inputs: [String: WorkLaneOrderInput] = [:]
+  inputs.reserveCapacity(lanes.count)
+  for lane in lanes {
+    inputs[lane.id] = WorkLaneOrderInput(
+      lane: lane,
+      lastActivityAt: latestByLaneId[lane.id],
+      quiet: workLaneSessionsAreQuiet(
+        laneId: lane.id,
+        sessions: sessions,
+        chatSummaries: chatSummaries,
+        archivedSessionIds: archivedSessionIds,
+        now: now
+      ),
+      pinned: pinnedLaneIds.contains(lane.id)
+    )
+  }
+  return inputs
+}
+
+/// Per-lane inputs to the singleton rule. Counts TOP-LEVEL rows only — a chat
+/// with terminal children is one unit — over the unfiltered roster.
+func workHeaderlessLaneInputs(
+  lanes: [LaneSummary],
+  sessions: [TerminalSessionSummary],
+  pinnedLaneIds: Set<String>
+) -> [WorkHeaderlessLaneInput] {
+  let rosterIds = Set(sessions.map(\.id))
+  var topLevelByLaneId: [String: Int] = [:]
+  for session in sessions {
+    let parentId = session.chatSessionId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+    let isChild = !parentId.isEmpty && parentId != session.id && rosterIds.contains(parentId)
+    guard !isChild else { continue }
+    topLevelByLaneId[session.laneId, default: 0] += 1
+  }
+  return lanes.map { lane in
+    WorkHeaderlessLaneInput(
+      laneId: lane.id,
+      topLevelSessionCount: topLevelByLaneId[lane.id] ?? 0,
+      pinned: pinnedLaneIds.contains(lane.id)
+    )
+  }
 }
 
 func workSessionChildGroupsByParentId(sessions: [TerminalSessionSummary]) -> [String: WorkSessionChildGroup] {
@@ -550,6 +635,7 @@ func workSessionGroups(
   archivedSessionIds: Set<String>,
   orderedLanes: [LaneSummary],
   deletingLaneIds: Set<String> = [],
+  headerlessLaneIds: Set<String> = [],
   now: Date = Date()
 ) -> [WorkSessionGroup] {
   var snoozed: [TerminalSessionSummary] = []
@@ -575,7 +661,8 @@ func workSessionGroups(
     groups = workSessionGroupsByLane(
       sessions: awake,
       orderedLanes: orderedLanes,
-      deletingLaneIds: deletingLaneIds
+      deletingLaneIds: deletingLaneIds,
+      headerlessLaneIds: headerlessLaneIds
     ).map { group in
       group.markingQuiet(
         workLaneGroupIsQuiet(
@@ -618,7 +705,25 @@ extension WorkSessionGroup {
       sessions: sessions,
       laneColor: laneColor,
       laneIcon: laneIcon,
-      isQuiet: quiet
+      isOrphaned: isOrphaned,
+      isQuiet: quiet,
+      isHeaderless: isHeaderless
+    )
+  }
+
+  func markingHeaderless(_ headerless: Bool) -> WorkSessionGroup {
+    guard headerless != isHeaderless else { return self }
+    return WorkSessionGroup(
+      id: id,
+      label: label,
+      icon: icon,
+      tint: tint,
+      sessions: sessions,
+      laneColor: laneColor,
+      laneIcon: laneIcon,
+      isOrphaned: isOrphaned,
+      isQuiet: isQuiet,
+      isHeaderless: headerless
     )
   }
 }
@@ -736,7 +841,8 @@ func workSessionGroupsByStatus(
 func workSessionGroupsByLane(
   sessions: [TerminalSessionSummary],
   orderedLanes: [LaneSummary],
-  deletingLaneIds: Set<String> = []
+  deletingLaneIds: Set<String> = [],
+  headerlessLaneIds: Set<String> = []
 ) -> [WorkSessionGroup] {
   var byLaneId: [String: [TerminalSessionSummary]] = [:]
   for session in sessions {
@@ -754,7 +860,11 @@ func workSessionGroupsByLane(
       tint: LaneColorPalette.displayColor(forHex: lane.color),
       sessions: list,
       laneColor: lane.color,
-      laneIcon: lane.icon
+      laneIcon: lane.icon,
+      // Derived from the unfiltered roster, so a search that narrows a busy
+      // lane to one hit never collapses its header mid-keystroke. `list` may
+      // still hold that row's terminal children — they render nested under it.
+      isHeaderless: headerlessLaneIds.contains(lane.id)
     ))
   }
   // Surface any sessions whose lane isn't in the ordered list (e.g., soft-deleted lanes)
@@ -831,6 +941,45 @@ func workSessionGroupsByTime(sessions: [TerminalSessionSummary]) -> [WorkSession
     groups.append(WorkSessionGroup(id: "time:older", label: "Older", icon: .none, tint: ADEColor.textMuted, sessions: older))
   }
   return groups
+}
+
+// MARK: - Offline machine banner
+
+/// One "this machine is gone" banner for the Work list. Presentation only: the
+/// rows themselves keep working, they just stop pretending they can be acted on.
+struct WorkOfflineMachineBanner: Identifiable, Equatable {
+  let id: String
+  let machineName: String
+  let lastSeenLabel: String?
+}
+
+/// Which offline machines own work in the project the Work list is showing.
+///
+/// The connected host is online by definition — that is what "connected" means —
+/// so anything this returns is a foreign machine whose lanes are visible through
+/// the account feed. Scope match is by project id, falling back to lane id for
+/// items published before a project id was carried.
+func workOfflineMachineBanners(
+  scopes: [ActivityOfflineScope],
+  activeProjectId: String?,
+  laneIds: Set<String> = [],
+  now: Date = Date()
+) -> [WorkOfflineMachineBanner] {
+  let project = activeProjectId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  var seen: Set<String> = []
+  var banners: [WorkOfflineMachineBanner] = []
+  for scope in scopes {
+    let matchesProject = !project.isEmpty && scope.projectId == project
+    let matchesLane = scope.laneId.map(laneIds.contains) ?? false
+    guard matchesProject || matchesLane else { continue }
+    guard seen.insert(scope.machineKey).inserted else { continue }
+    banners.append(WorkOfflineMachineBanner(
+      id: scope.machineKey,
+      machineName: scope.machineName,
+      lastSeenLabel: scope.lastSeenLabel(now: now)
+    ))
+  }
+  return banners.sorted { $0.machineName.localizedCaseInsensitiveCompare($1.machineName) == .orderedAscending }
 }
 
 /// Persistence helper for the comma-separated collapsed-section-ids string stored in AppStorage.

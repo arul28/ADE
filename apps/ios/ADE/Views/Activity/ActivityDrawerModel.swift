@@ -74,6 +74,10 @@ public final class ActivityDrawerModel: ObservableObject {
     @Published public private(set) var inbox: [ActivityRowPresentation] = []
     /// Machine presence from the snapshot, for the offline banners.
     @Published public private(set) var machines: [AccountAttentionMachine] = []
+    /// Where each offline machine's work lives, so a surface scoped to one
+    /// project — the Work list — can tell whether the outage touches it. The
+    /// drawer itself banners per row and does not need this.
+    @Published public private(set) var offlineScopes: [ActivityOfflineScope] = []
     @Published public private(set) var unreadCount: Int = 0
     @Published public private(set) var source: ActivitySource = .none
     /// The relay capped the account feed. Surfaced so the drawer can say so
@@ -153,6 +157,7 @@ public final class ActivityDrawerModel: ObservableObject {
         sessions = []
         inbox = []
         machines = []
+        offlineScopes = []
         source = .none
         itemsTruncated = false
         recomputeUnreadCount()
@@ -181,6 +186,7 @@ public final class ActivityDrawerModel: ObservableObject {
             .filter { $0.isPullRequest || ($0.needsInbox && $0.band == .done) }
             .sortedByActivityPriority()
         self.machines = machines
+        offlineScopes = Self.offlineScopes(from: items)
         self.source = source
         itemsTruncated = truncated
         pruneSeenItems(activeIDs: Set(rows.map(\.id)))
@@ -340,10 +346,65 @@ public final class ActivityDrawerModel: ObservableObject {
         defaults.set(Array(seenItemIDs).sorted(), forKey: Self.seenItemIDsKey)
     }
 
+    /// One scope entry per offline (machine, project, lane) an item mentions.
+    /// Deduplicated so a machine with forty stalled rows contributes one entry
+    /// per lane, not forty.
+    static func offlineScopes(from items: [AccountAttentionItem]) -> [ActivityOfflineScope] {
+        var seen: Set<String> = []
+        var scopes: [ActivityOfflineScope] = []
+        for item in items where !item.machine.online {
+            let scope = ActivityOfflineScope(
+                machineKey: item.machine.machineKey,
+                machineName: nonEmpty(item.machine.name) ?? "Mac",
+                lastSeenAt: item.machine.lastSeenAt,
+                projectId: item.project.projectId,
+                laneId: nonEmpty(item.laneId)
+            )
+            guard seen.insert(scope.id).inserted else { continue }
+            scopes.append(scope)
+        }
+        return scopes
+    }
+
     private static func nonEmpty(_ value: String?) -> String? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines),
               !value.isEmpty else { return nil }
         return value
+    }
+}
+
+/// Where one offline machine's work lives. Presence plus scope, nothing else —
+/// the row vocabulary stays in `ActivityRowPresentation`.
+public struct ActivityOfflineScope: Identifiable, Hashable, Sendable {
+    public let machineKey: String
+    public let machineName: String
+    public let lastSeenAt: Date?
+    public let projectId: String
+    public let laneId: String?
+
+    public var id: String { "\(machineKey)|\(projectId)|\(laneId ?? "")" }
+
+    public init(
+        machineKey: String,
+        machineName: String,
+        lastSeenAt: Date?,
+        projectId: String,
+        laneId: String?
+    ) {
+        self.machineKey = machineKey
+        self.machineName = machineName
+        self.lastSeenAt = lastSeenAt
+        self.projectId = projectId
+        self.laneId = laneId
+    }
+
+    /// "last seen 2h ago" — the same wording and the same clock arithmetic the
+    /// row banner uses, so two banners for one machine cannot disagree.
+    public func lastSeenLabel(now: Date = Date()) -> String? {
+        guard let lastSeenAt,
+              let duration = ActivityRowPresentation.formatDuration(now.timeIntervalSince(lastSeenAt))
+        else { return nil }
+        return "last seen \(duration) ago"
     }
 }
 

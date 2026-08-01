@@ -21,10 +21,14 @@
 		AA1100000000000000000001 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
 		AA1100000000000000000002 /* ADESharedModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000002 /* ADESharedModels.swift */; };
 		AA1100000000000000000004 /* ActivityRowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000004 /* ActivityRowPresentation.swift */; };
+		AA1100000000000000000005 /* ActivityWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000005 /* ActivityWidgetPresentation.swift */; };
 		AA1100000000000000000014 /* ActivityRowPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000004 /* ActivityRowPresentation.swift */; };
+		AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000005 /* ActivityWidgetPresentation.swift */; };
 		D3000000000000000000002A /* ActivityRow.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3000000000000000000001A /* ActivityRow.swift */; };
 		E200000000000000000000A2 /* HubLiveStrip.swift in Sources */ = {isa = PBXBuildFile; fileRef = D200000000000000000000A2 /* HubLiveStrip.swift */; };
 		AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000001 /* ActivityRowPresentationTests.swift */; };
+		AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000003 /* WorkSessionGroupingTests.swift */; };
+		AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */; };
 		AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7500000000000000000002 /* HubProjectPresentationTests.swift */; };
 		AA1100000000000000000003 /* ADESharedTheme.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* ADESharedTheme.swift */; };
 		AA1100000000000000000011 /* ADESharedContainer.swift in Sources */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000001 /* ADESharedContainer.swift */; };
@@ -112,6 +116,7 @@
 		E1000000000000000000003A /* WorkReasoningCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003A /* WorkReasoningCard.swift */; };
 		E1000000000000000000003B /* WorkActivityIndicator.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003B /* WorkActivityIndicator.swift */; };
 		E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1000000000000000000003C /* WorkSessionGrouping.swift */; };
+		E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F01 /* WorkLaneOrder.swift */; };
 		H10000000000000000000001 /* CtoRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000010 /* CtoRootScreen.swift */; };
 		H10000000000000000000002 /* CtoSessionDestinationView.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000011 /* CtoSessionDestinationView.swift */; };
 		H10000000000000000000005 /* CtoIdentityEditor.swift in Sources */ = {isa = PBXBuildFile; fileRef = H10000000000000000000014 /* CtoIdentityEditor.swift */; };
@@ -319,9 +324,12 @@
 		AA1000000000000000000001 /* ADESharedContainer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedContainer.swift; path = ADE/Shared/ADESharedContainer.swift; sourceTree = "<group>"; };
 		AA1000000000000000000002 /* ADESharedModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedModels.swift; path = ADE/Shared/ADESharedModels.swift; sourceTree = "<group>"; };
 		AA1000000000000000000004 /* ActivityRowPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentation.swift; path = ADE/Shared/ActivityRowPresentation.swift; sourceTree = "<group>"; };
+		AA1000000000000000000005 /* ActivityWidgetPresentation.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentation.swift; path = ADE/Shared/ActivityWidgetPresentation.swift; sourceTree = "<group>"; };
 		D3000000000000000000001A /* ActivityRow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRow.swift; path = ADE/Views/Activity/ActivityRow.swift; sourceTree = "<group>"; };
 		D200000000000000000000A2 /* HubLiveStrip.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubLiveStrip.swift; path = ADE/Views/Hub/HubLiveStrip.swift; sourceTree = "<group>"; };
 		AC7500000000000000000001 /* ActivityRowPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityRowPresentationTests.swift; path = ADETests/ActivityRowPresentationTests.swift; sourceTree = "<group>"; };
+		AC7500000000000000000003 /* WorkSessionGroupingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGroupingTests.swift; path = ADETests/WorkSessionGroupingTests.swift; sourceTree = "<group>"; };
+		AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityWidgetPresentationTests.swift; path = ADETests/ActivityWidgetPresentationTests.swift; sourceTree = "<group>"; };
 		AC7500000000000000000002 /* HubProjectPresentationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = HubProjectPresentationTests.swift; path = ADETests/HubProjectPresentationTests.swift; sourceTree = "<group>"; };
 		AA1000000000000000000003 /* ADESharedTheme.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ADESharedTheme.swift; path = ADE/Shared/ADESharedTheme.swift; sourceTree = "<group>"; };
 		AA0000000000000000000002 /* ADEWidgets.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ADEWidgets.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -407,6 +415,7 @@
 		D10000000000000000000049 /* TerminalSessionScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = TerminalSessionScreen.swift; path = ADE/Views/Work/TerminalSessionScreen.swift; sourceTree = "<group>"; };
 		D1000000000000000000004A /* SwiftTermSessionView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SwiftTermSessionView.swift; path = ADE/Views/Work/SwiftTermSessionView.swift; sourceTree = "<group>"; };
 		D1000000000000000000003C /* WorkSessionGrouping.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionGrouping.swift; path = ADE/Views/Work/WorkSessionGrouping.swift; sourceTree = "<group>"; };
+		D10000000000000000000F01 /* WorkLaneOrder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkLaneOrder.swift; path = ADE/Views/Work/WorkLaneOrder.swift; sourceTree = "<group>"; };
 		H10000000000000000000010 /* CtoRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoRootScreen.swift; path = ADE/Views/Cto/CtoRootScreen.swift; sourceTree = "<group>"; };
 		H10000000000000000000011 /* CtoSessionDestinationView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoSessionDestinationView.swift; path = ADE/Views/Cto/CtoSessionDestinationView.swift; sourceTree = "<group>"; };
 		H10000000000000000000014 /* CtoIdentityEditor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CtoIdentityEditor.swift; path = ADE/Views/Cto/CtoIdentityEditor.swift; sourceTree = "<group>"; };
@@ -845,6 +854,7 @@
 				D10000000000000000000049 /* TerminalSessionScreen.swift */,
 				D1000000000000000000004A /* SwiftTermSessionView.swift */,
 				D1000000000000000000003C /* WorkSessionGrouping.swift */,
+				D10000000000000000000F01 /* WorkLaneOrder.swift */,
 				D1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift */,
 				D1000000000000000000002D /* WorkChatRichCardViews.swift */,
 				D10000000000000000000055 /* WorkChatPrViews.swift */,
@@ -981,6 +991,7 @@
 				AA1000000000000000000002 /* ADESharedModels.swift */,
 				AA1000000000000000000003 /* ADESharedTheme.swift */,
 				AA1000000000000000000004 /* ActivityRowPresentation.swift */,
+				AA1000000000000000000005 /* ActivityWidgetPresentation.swift */,
 				AA5100000000000000000004 /* AttentionActionIntents.swift */,
 				AE00000000000000000000A5 /* ADEAgentActivityAttributes.swift */,
 			);
@@ -1080,6 +1091,8 @@
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
 				D30000000000000000000005 /* ActivityDrawerModelTests.swift */,
 				AC7500000000000000000001 /* ActivityRowPresentationTests.swift */,
+				AC7500000000000000000003 /* WorkSessionGroupingTests.swift */,
+				AC7500000000000000000004 /* ActivityWidgetPresentationTests.swift */,
 				AC7500000000000000000002 /* HubProjectPresentationTests.swift */,
 				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				AC7300000000000000000001 /* ActivityAckQueueTests.swift */,
@@ -1369,6 +1382,7 @@
 				AA1100000000000000000002 /* ADESharedModels.swift in Sources */,
 				AA1100000000000000000003 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000004 /* ActivityRowPresentation.swift in Sources */,
+				AA1100000000000000000005 /* ActivityWidgetPresentation.swift in Sources */,
 				C10000000000000000000002 /* ADECodeRenderingCache.swift in Sources */,
 				0A1E077A24A5367ED58900F9 /* ADEDesignSystem.swift in Sources */,
 				E7C4AFA1DEBFC844E11CC907 /* SpeechDictationService.swift in Sources */,
@@ -1536,6 +1550,7 @@
 				E10000000000000000000049 /* TerminalSessionScreen.swift in Sources */,
 				E1000000000000000000004A /* SwiftTermSessionView.swift in Sources */,
 				E1000000000000000000003C /* WorkSessionGrouping.swift in Sources */,
+				E10000000000000000000F01 /* WorkLaneOrder.swift in Sources */,
 				E1000000000000000000002C /* WorkChatHeaderAndMessageViews.swift in Sources */,
 				E1000000000000000000002D /* WorkChatRichCardViews.swift in Sources */,
 				E10000000000000000000055 /* WorkChatPrViews.swift in Sources */,
@@ -1589,6 +1604,8 @@
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,
 				D30000000000000000000015 /* ActivityDrawerModelTests.swift in Sources */,
 				AC7600000000000000000001 /* ActivityRowPresentationTests.swift in Sources */,
+				AC7600000000000000000003 /* WorkSessionGroupingTests.swift in Sources */,
+				AC7600000000000000000004 /* ActivityWidgetPresentationTests.swift in Sources */,
 				AC7600000000000000000002 /* HubProjectPresentationTests.swift in Sources */,
 				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				AC7400000000000000000001 /* ActivityAckQueueTests.swift in Sources */,
@@ -1614,6 +1631,7 @@
 				AA1100000000000000000012 /* ADESharedModels.swift in Sources */,
 				AA1100000000000000000013 /* ADESharedTheme.swift in Sources */,
 				AA1100000000000000000014 /* ActivityRowPresentation.swift in Sources */,
+				AA1100000000000000000015 /* ActivityWidgetPresentation.swift in Sources */,
 				AA5200000000000000000011 /* ADEWidgetBundle.swift in Sources */,
 				AA5200000000000000000014 /* ADELockScreenWidget.swift in Sources */,
 				AA5100000000000000000024 /* AttentionActionIntents.swift in Sources */,

@@ -164,6 +164,12 @@ public enum ActivityPhaseVocabulary {
             return .init(label: "Planning", tone: .violet, glyph: .planning, showsElapsed: true, prominent: false, active: true)
         case "waiting":
             return .init(label: "Waiting", tone: .neutral, glyph: .waiting, showsElapsed: false, prominent: false, active: false)
+        // The two resting states a session sits in between turns. Neither is a
+        // claim on anyone, so both are neutral and neither ticks.
+        case "ready":
+            return .init(label: "Ready", tone: .neutral, glyph: nil, showsElapsed: false, prominent: false, active: false)
+        case "idle":
+            return .init(label: "Idle", tone: .neutral, glyph: nil, showsElapsed: false, prominent: false, active: false)
         case "stopped":
             return .init(label: "Stopped", tone: .neutral, glyph: nil, showsElapsed: false, prominent: false, active: false)
         case "ended":

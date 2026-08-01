@@ -14,18 +14,8 @@ enum ActivityRowDensity {
     case compact
 }
 
-/// Tone token → the app's palette. The five session hues keep the meanings
-/// documented on `ActivityTone`; violet is the PR-review hue.
-func activityToneColor(_ tone: ActivityTone) -> Color {
-    switch tone {
-    case .blue: return ADESharedTheme.statusRunning
-    case .violet: return ADESharedTheme.statusReview
-    case .amber: return ADESharedTheme.warningAmber
-    case .emerald: return ADESharedTheme.statusSuccess
-    case .red: return ADESharedTheme.statusFailed
-    case .neutral: return ADESharedTheme.statusIdle
-    }
-}
+// `activityToneColor` lives in `ADE/Shared/ActivityWidgetPresentation.swift` so
+// the widget extension can read the same table; it is not app-only.
 
 struct ActivityRow: View {
     let row: ActivityRowPresentation

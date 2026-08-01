@@ -53,6 +53,10 @@ extension WorkRootScreen {
       buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
     )
     let organization = WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus
+    // A pin is an explicit "keep this where I can see it": it lifts the lane to
+    // the top tier and keeps its header, singleton or not. Same store the Lanes
+    // tab writes, so one pin means one thing across both surfaces.
+    let pinnedLaneIdsSnapshot = workPinnedLaneIds
 
     sessionPresentationRebuildTask = Task.detached(priority: .utility) {
       try? await Task.sleep(for: .milliseconds(40))
@@ -70,7 +74,8 @@ extension WorkRootScreen {
         orderedLanes: lanesSnapshot,
         pullRequests: pullRequestsSnapshot,
         githubPrs: githubPrsSnapshot,
-        deletingLaneIds: deletingLaneIds
+        deletingLaneIds: deletingLaneIds,
+        pinnedLaneIds: pinnedLaneIdsSnapshot
       )
       await MainActor.run {
         guard generation == sessionPresentationRebuildGeneration, !Task.isCancelled else { return }

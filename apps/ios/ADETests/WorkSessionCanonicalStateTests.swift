@@ -291,6 +291,160 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertNil(badge)
   }
 
+  // MARK: - The full status vocabulary
+  //
+  // `badge` stays the attention third — the three states something downstream
+  // may reasonably treat as "act on this". `workSessionStatusBadge` is the wider
+  // vocabulary the row renders, and every word and hue in it comes from the
+  // shared `ActivityPhaseVocabulary`, not from a second table here.
+
+  func testStatusBadgeCoversTheDescriptiveStates() {
+    struct Case {
+      let name: String
+      let session: TerminalSessionSummary
+      let summary: AgentChatSessionSummary?
+      let kind: SessionBadgeKind?
+      let label: String?
+      let tone: ActivityTone
+    }
+
+    let cases: [Case] = [
+      Case(
+        name: "running agent",
+        session: makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now)),
+        summary: nil,
+        kind: .working,
+        label: "Working",
+        tone: .blue
+      ),
+      Case(
+        name: "planning chat",
+        session: makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now)),
+        summary: makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan"),
+        kind: .planning,
+        label: "Planning",
+        tone: .violet
+      ),
+      Case(
+        name: "settled",
+        session: makeSession(status: "running", runtimeState: "idle", toolType: "codex-chat", settledAt: iso(now)),
+        summary: nil,
+        kind: .done,
+        label: "Done",
+        tone: .emerald
+      ),
+      Case(
+        name: "blocked on the user",
+        session: makeSession(
+          status: "running",
+          runtimeState: "running",
+          toolType: "codex-chat",
+          pendingInputItemId: "approval-1"
+        ),
+        summary: nil,
+        kind: .needsYou,
+        label: "Needs you",
+        tone: .amber
+      ),
+      Case(
+        name: "failed",
+        session: makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130),
+        summary: nil,
+        kind: .failed,
+        label: "Failed",
+        tone: .red
+      ),
+      Case(
+        name: "stale",
+        session: makeSession(
+          status: "running",
+          runtimeState: "running",
+          toolType: "codex-chat",
+          startedAt: iso(now)
+        ),
+        summary: makeChatSummary(status: "active", awaitingInput: false),
+        kind: .stale,
+        label: "Stale",
+        tone: .neutral
+      ),
+    ]
+
+    for testCase in cases {
+      var summary = testCase.summary
+      if testCase.name == "stale" {
+        summary?.lastActivityAt = silentFor(sessionStaleAfterSeconds + 60)
+      }
+      let badge = workSessionStatusBadge(session: testCase.session, summary: summary, now: now)
+      XCTAssertEqual(badge?.kind, testCase.kind, testCase.name)
+      XCTAssertEqual(badge?.label, testCase.label, testCase.name)
+      XCTAssertEqual(badge?.tone, testCase.tone, testCase.name)
+      XCTAssertEqual(
+        workSessionRowTone(session: testCase.session, summary: summary, now: now),
+        testCase.tone,
+        testCase.name
+      )
+    }
+  }
+
+  /// Resting states still earn no capsule: the row must not shift layout to say
+  /// that nothing is happening.
+  func testStatusBadgeStaysNilForRestingStates() {
+    let ready = makeSession(status: "ended", runtimeState: "exited", toolType: "codex-chat")
+    let idle = makeSession(status: "running", runtimeState: "idle", toolType: "codex")
+    let stopped = makeSession(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130)
+
+    for session in [ready, idle, stopped] {
+      XCTAssertNil(workSessionStatusBadge(session: session, summary: nil, now: now))
+      XCTAssertEqual(workSessionRowTone(session: session, summary: nil, now: now), .neutral)
+    }
+  }
+
+  /// Planning is a presentation fact derived from the chat's interaction mode,
+  /// exactly as on desktop — it never becomes a canonical phase.
+  func testPlanningNeverBecomesACanonicalPhase() {
+    let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", startedAt: iso(now))
+    let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
+
+    XCTAssertEqual(workCanonicalSessionState(session: session, summary: summary, now: now).phase, .running)
+    XCTAssertEqual(workSessionStatusBadge(session: session, summary: summary, now: now)?.kind, .planning)
+  }
+
+  /// A blocked session is amber whatever mode it is in — planning must never
+  /// outvote a raised hand.
+  func testNeedsYouOutranksPlanning() {
+    let session = makeSession(
+      status: "running",
+      runtimeState: "running",
+      toolType: "codex-chat",
+      pendingInputItemId: "approval-1"
+    )
+    let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
+
+    XCTAssertEqual(workSessionStatusBadge(session: session, summary: summary, now: now)?.kind, .needsYou)
+  }
+
+  func testCanonicalPhasesMapOntoTheSharedVocabulary() {
+    XCTAssertEqual(workActivityPhase(for: .running), .running)
+    XCTAssertEqual(workActivityPhase(for: .starting), .starting)
+    XCTAssertEqual(workActivityPhase(for: .needsYou), .needsYou)
+    XCTAssertEqual(workActivityPhase(for: .failed), .failed)
+    XCTAssertEqual(workActivityPhase(for: .stale), .stale)
+    XCTAssertEqual(workActivityPhase(for: .settled), .completed)
+    XCTAssertEqual(workActivityPhase(for: .ready), .unrecognized("ready"))
+    XCTAssertEqual(workActivityPhase(for: .idle), .unrecognized("idle"))
+    XCTAssertEqual(workActivityPhase(for: .stopped), .unrecognized("stopped"))
+    XCTAssertEqual(workActivityPhase(for: .ended), .unrecognized("ended"))
+  }
+
+  /// The one-hue rule, from the other direction: the coarse status string every
+  /// roster surface holds must not be able to paint amber for a resting chat.
+  func testChatStatusToneSpendsAmberOnlyOnNeedsYou() {
+    XCTAssertEqual(workChatStatusTone("awaiting-input"), .amber)
+    XCTAssertEqual(workChatStatusTone("active"), .blue)
+    XCTAssertEqual(workChatStatusTone("idle"), .neutral)
+    XCTAssertEqual(workChatStatusTone("ended"), .neutral)
+  }
+
   func testWorkSessionRowPreviewUsesFreshOutputBeforeSummaryAndGoal() {
     var session = makeSession(
       status: "running",
@@ -470,7 +624,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     exitCode: Int? = nil,
     pendingInputItemId: String? = nil,
     lastOutputPreview: String? = nil,
-    startedAt: String? = nil
+    startedAt: String? = nil,
+    settledAt: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: "s-1",
@@ -487,6 +642,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       startedAt: startedAt ?? iso(now),
       endedAt: nil,
       archivedAt: nil,
+      settledAt: settledAt,
       exitCode: exitCode,
       transcriptPath: "",
       headShaStart: nil,
@@ -557,7 +713,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   private func makeChatSummary(
     status: String,
     awaitingInput: Bool?,
-    pendingInputItemId: String? = nil
+    pendingInputItemId: String? = nil,
+    interactionMode: String? = nil
   ) -> AgentChatSessionSummary {
     AgentChatSessionSummary(
       sessionId: "chat-1",
@@ -573,7 +730,7 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       fastMode: nil,
       executionMode: nil,
       permissionMode: nil,
-      interactionMode: nil,
+      interactionMode: interactionMode,
       claudePermissionMode: nil,
       codexApprovalPolicy: nil,
       codexSandbox: nil,
