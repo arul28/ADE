@@ -3,6 +3,10 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import {
+  readOrCreateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterialAsync,
+} from "./windowsDpapiMaterial";
 
 export interface CredentialStore {
   get(key: string): Promise<string | null>;
@@ -599,11 +603,14 @@ async function readMacKeychainMaterialAsync(): Promise<Buffer | null> {
   });
 }
 
-function readDefaultOsBoundKeyMaterial(): Buffer | null {
+function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
   const envMaterial = readCredentialPassphraseFromEnv();
   if (envMaterial) return envMaterial;
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (process.platform === "win32") {
+    return readOrCreateWindowsDpapiMaterial(secretsDir);
+  }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   const material = readOrCreateMacKeychainMaterial();
   if (material) {
@@ -613,11 +620,14 @@ function readDefaultOsBoundKeyMaterial(): Buffer | null {
   return material;
 }
 
-async function readDefaultOsBoundKeyMaterialAsync(): Promise<Buffer | null> {
+async function readDefaultOsBoundKeyMaterialAsync(secretsDir: string): Promise<Buffer | null> {
   const envMaterial = readCredentialPassphraseFromEnv();
   if (envMaterial) return envMaterial;
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (process.platform === "win32") {
+    return await readOrCreateWindowsDpapiMaterialAsync(secretsDir);
+  }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   if (
     lastMissingDefaultOsBoundKeyMaterialAt > 0
@@ -675,12 +685,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
+    const osBindingDir = path.dirname(this.machineKeyPath);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
-    this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
+    this.keyMaterialProvider = args.keyMaterialProvider
+      ?? (() => readDefaultOsBoundKeyMaterial(osBindingDir));
     this.keyMaterialProviderAsync = args.keyMaterialProviderAsync
       ?? (args.keyMaterialProvider
         ? async () => args.keyMaterialProvider?.() ?? null
-        : readDefaultOsBoundKeyMaterialAsync);
+        : () => readDefaultOsBoundKeyMaterialAsync(osBindingDir));
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
       : args.credentialChangePollIntervalMs;

@@ -10,6 +10,10 @@ import {
   KeytarCredentialStore,
   createDefaultCredentialStore,
 } from "./credentialStore";
+import {
+  readOrCreateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterialAsync,
+} from "./windowsDpapiMaterial";
 
 let tempDir = "";
 
@@ -22,6 +26,70 @@ afterEach(() => {
 });
 
 describe("EncryptedFileCredentialStore", () => {
+  it.runIf(process.platform === "win32")(
+    "binds headless credential encryption to the current Windows account with DPAPI",
+    async () => {
+      const previousNodeEnv = process.env.NODE_ENV;
+      const previousVitest = process.env.VITEST;
+      delete process.env.NODE_ENV;
+      delete process.env.VITEST;
+      try {
+        const syncDir = path.join(tempDir, "sync-dpapi");
+        const syncMaterial = readOrCreateWindowsDpapiMaterial(syncDir);
+        const protectedKeyPath = path.join(syncDir, ".credential-key.dpapi");
+        const protectedKey = fs.readFileSync(protectedKeyPath, "utf8");
+
+        expect(syncMaterial).toHaveLength(32);
+        expect(protectedKey).toContain("ADE_WINDOWS_DPAPI_KEY_V1");
+        expect(protectedKey).not.toContain(syncMaterial.toString("base64"));
+        expect(readOrCreateWindowsDpapiMaterial(syncDir)).toEqual(syncMaterial);
+
+        const store = new EncryptedFileCredentialStore({ secretsDir: syncDir });
+        store.setSync("account.session.v1", "windows-account-session");
+        const credentialsPath = path.join(syncDir, "credentials.json.enc");
+        const machineKeyPath = path.join(syncDir, ".machine-key");
+        expect(fs.readFileSync(credentialsPath, "utf8"))
+          .not.toContain("windows-account-session");
+
+        const explicitPathReader = new EncryptedFileCredentialStore({
+          credentialsPath,
+          machineKeyPath,
+        });
+        expect(explicitPathReader.getSync("account.session.v1"))
+          .toBe("windows-account-session");
+        await expect(explicitPathReader.get("account.session.v1"))
+          .resolves.toBe("windows-account-session");
+
+        const customCredentialDir = path.join(tempDir, "custom-credential-dir");
+        const customKeyDir = path.join(tempDir, "custom-key-dir");
+        const customMachineKeyPath = path.join(customKeyDir, ".machine-key");
+        const customStore = new EncryptedFileCredentialStore({
+          secretsDir: customCredentialDir,
+          machineKeyPath: customMachineKeyPath,
+        });
+        customStore.setSync("account.session.v1", "custom-key-location");
+        expect(fs.existsSync(path.join(customKeyDir, ".credential-key.dpapi"))).toBe(true);
+        expect(fs.existsSync(path.join(customCredentialDir, ".credential-key.dpapi"))).toBe(false);
+        expect(new EncryptedFileCredentialStore({
+          credentialsPath: path.join(customCredentialDir, "credentials.json.enc"),
+          machineKeyPath: customMachineKeyPath,
+        }).getSync("account.session.v1")).toBe("custom-key-location");
+
+        const asyncDir = path.join(tempDir, "async-dpapi");
+        const asyncMaterial = await readOrCreateWindowsDpapiMaterialAsync(asyncDir);
+        expect(asyncMaterial).toHaveLength(32);
+        expect(fs.readFileSync(path.join(asyncDir, ".credential-key.dpapi"), "utf8"))
+          .not.toContain(asyncMaterial.toString("base64"));
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        if (previousVitest === undefined) delete process.env.VITEST;
+        else process.env.VITEST = previousVitest;
+      }
+    },
+    20_000,
+  );
+
   it("persists credentials encrypted on disk", async () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 

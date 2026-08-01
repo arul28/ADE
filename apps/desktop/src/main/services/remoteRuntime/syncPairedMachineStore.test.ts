@@ -297,7 +297,9 @@ describe("DesktopPairedMachineStore", () => {
       ],
     });
     expect(store.path).toBe(path.join(adeHome, "secrets", "desktop-paired-machines.json"));
-    expect(fs.statSync(store.path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(store.path).mode & 0o777).toBe(0o600);
+    }
     expect(new DesktopPairedMachineStore().get("mac-studio-host")).toEqual(paired);
     expect(new DesktopPairedMachineStore().get("machine-123")).toEqual(paired);
     expect(new DesktopPairedMachineStore().getForReference({
