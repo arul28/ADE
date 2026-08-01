@@ -23,7 +23,7 @@ export function buildEditableContextMenuTemplate(
     template.push(
       { type: "separator" },
       {
-        label: "Add to Dictionary",
+        label: "Add to dictionary",
         click: () => target.session.addWordToSpellCheckerDictionary(params.misspelledWord),
       },
       { type: "separator" },

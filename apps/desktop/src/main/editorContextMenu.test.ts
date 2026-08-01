@@ -112,7 +112,7 @@ describe("editable context menu", () => {
       "misspelled",
       "misapplied",
       "separator",
-      "Add to Dictionary",
+      "Add to dictionary",
       "separator",
     ]);
     template?.[0]?.click?.({} as never, undefined, {} as never);
