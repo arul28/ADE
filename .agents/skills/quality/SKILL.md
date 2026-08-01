@@ -4,8 +4,10 @@ description: >-
   Make the code correct, clean, and current. A thermo dual-review: a
   correctness/security track and a maintainability/code-judo track run in
   parallel, then a synthesis step dedupes, severity-ranks (Blocker/High/Medium/
-  Low), verifies each finding against the real code, auto-applies the safe
-  behavior-preserving fixes, re-reviews, and gates the rest. Grounded in ADE's
+  Low), verifies each finding against the real code, and FIXES EVERY VERIFIED
+  FINDING at any severity — re-reviewing until clean. Only findings needing a
+  product decision, or a behavior change this branch was not asked to make,
+  reach the merge-blocking gate. Grounded in ADE's
   own bug classes (runtime-backed null services, daemon action-domain wiring,
   cr-sqlite CRR, IPC contract drift, fast-tier loading).
 ---
@@ -107,15 +109,37 @@ are handled by the synthesis step below, not a separate phase.
 5. **Sweep the bug class.** When an accepted finding is a repeated pattern, scan
    the diff scope for sibling instances and fix them together — stop at touched
    surfaces and owner boundaries; no refactor beyond the class.
-6. **Apply** the fixes that are **unambiguous and behavior-preserving** — safe
-   correctness fixes and Track B judo moves. Every applied change must be
-   verifiable by reading the diff; do not change behavior.
-7. **Re-review until clean.** If step 6 changed code, re-run Track A on the *new*
-   diff. New accepted findings → verify (4), apply (6), re-check. Stop when a
-   pass yields no new accepted findings (cap 2 extra passes; anything still open
-   goes to the gate). Catches fix-induced regressions before `/test` or `/ship`.
-8. **Gate** — do NOT auto-apply Blockers or judgment-call findings. Surface them
-   in the report for the author and for `/ship` to gate the merge on.
+6. **Apply every finding you accepted in step 4 — all of them, whatever the
+   severity.** Verified means valid; valid means fix it. Medium and Low are not a
+   backlog, and "behavior-preserving" describes *how* you apply a fix, not which
+   findings earn one. This is the entire point of the skill: a run that surfaces
+   real problems and leaves them in the code has cost the user tokens and
+   returned nothing.
+
+   Fix correctness findings and Track B judo moves alike. If a fix is genuinely
+   large (a multi-file extraction, a schema migration), it is still yours to do —
+   do it here, in this run, not "as a follow-up".
+7. **Re-review until clean.** If step 6 changed code, re-run **both mandatory
+   tracks, A and B,** on the *new* diff. New accepted findings → verify (4),
+   apply (6), re-check with both tracks again. Stop only when the same pass
+   yields no new accepted findings from either track. A re-review count is never
+   a reason to defer a verified finding or move it to the gate. This catches
+   fix-induced correctness regressions and maintainability debt before `/test`
+   or `/ship`.
+8. **Gate — the narrow exception, not the escape hatch.** Only two kinds of
+   accepted finding may go to the gate unfixed:
+   - it needs a **product decision you cannot make** (which of two valid
+     behaviors the user wants), or
+   - the fix is **not behavior-preserving** and changing behavior is not what
+     this branch was asked to do.
+
+   "Structural", "large", "risky", "pre-existing", "out of scope for this PR",
+   and "worth doing deliberately" are **not** gate reasons — those are fixes you
+   owe. If you gate a finding, the report must say which of the two reasons
+   applies and what decision you need. Anything in the Gate table blocks the
+   merge until the author resolves it; `/ship` treats a non-empty gate as a stop.
+
+   A finding you neither fixed nor gated is a bug in your run.
 9. **Reconcile (optional)** — if a PR exists, *after* the independent audit, read
    the PR discussion and review-bot comments (`gh pr view --comments`, or the
    `ade-pr-workflows` skill). ADE's review bots are `@copilot` (first push) and
@@ -126,8 +150,9 @@ are handled by the synthesis step below, not a separate phase.
 
 ## Completion
 
-Output a summary. The **Gate** section is what `/test` and `/ship` consume — list
-every Blocker and High finding that was NOT auto-fixed.
+Output a summary. The **Gate** section is what `/test` and `/ship` consume, and a
+non-empty gate blocks the merge. List only findings you could not fix for one of
+the two permitted reasons — not findings you chose to defer.
 
 ```markdown
 ## Quality Summary
@@ -137,11 +162,24 @@ every Blocker and High finding that was NOT auto-fixed.
 - Auto-applied: [count] (safe correctness fixes + structural judo moves)
 - Re-review passes: [n]
 
-### Gate (not auto-fixed — for /test regression targets and /ship merge gate)
-| Severity | file:line | Finding | Why not auto-fixed |
-|---|---|---|---|
-| Blocker | ... | ... | needs human judgment / product intent |
-| High | ... | ... | ... |
+### Gate (MERGE-BLOCKING — every row needs an author decision)
+Only two reasons belong here: a product decision you cannot make, or a fix that
+is not behavior-preserving on a branch that was not asked to change behavior.
+Empty is the expected outcome. "Structural / large / out of scope" is not a
+gate reason — those get fixed above.
 
-Next: /test (turn each Blocker/High above into a named regression test).
+When empty, print exactly:
+
+- Empty.
+
+Do not print a table. When non-empty, replace `- Empty.` with a table containing
+only real findings and these columns: Severity, file:line, Finding, Which gate
+reason, Decision needed. Never leave an example or placeholder row that another
+skill could mistake for a live gate.
+
+Next: /test (itemize every accepted correctness finding and give each a named
+regression test or explicit alternate verification).
+
+**Before you print this:** every accepted finding is either in "Auto-applied" or
+the Gate section. If one is in neither, go back to step 6 and fix it.
 ```
