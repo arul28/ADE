@@ -13,6 +13,15 @@ import {
 import { deriveSmartLinkPreview, type SmartLinkPreview } from "../shared/smartLinks";
 import { sessionLifecycleApplied } from "../shared/sessionLifecycleResult";
 import { createOrchestrationBridge } from "./orchestrationBridge";
+import {
+  createPinnedRuntimeEvents,
+  isPinnedRuntimeEventStale,
+  normalizePinnedRuntimeEventEpoch,
+  rememberPinnedRuntimeEventId,
+  REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS,
+  REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS,
+  REMOTE_RUNTIME_EVENT_IDLE_POLL_MS,
+} from "./pinnedRuntimeEvents";
 import type { OrchestrationEventPayload } from "../shared/types/orchestration";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
 import type {
@@ -1848,6 +1857,9 @@ let remoteRuntimeEventTimer: ReturnType<typeof setTimeout> | null = null;
 let remoteRuntimeEventInFlight = false;
 let remoteRuntimeEventCursor = 0;
 let remoteRuntimeEventBindingKey: string | null = null;
+// The binding the pump is currently subscribed to, kept alongside its key so a
+// switch can tell main which subscription to drop.
+let remoteRuntimeEventBinding: OpenProjectBinding | null = null;
 let remoteRuntimeEventGeneration = -1;
 let remoteRuntimeEventEpoch: string | null = null;
 let remoteRuntimeEventStartedAtMs = 0;
@@ -1856,12 +1868,18 @@ let remoteRuntimeEmptyPollCount = 0;
 let remoteRuntimeSeenEventBindingKey: string | null = null;
 const remoteRuntimeSeenEventIds = new Set<number>();
 const LOCAL_RUNTIME_EVENT_IDLE_POLL_MS = 750;
-const REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS = 750;
 const REMOTE_RUNTIME_EVENT_INITIAL_IDLE_POLL_MS = 2_500;
-const REMOTE_RUNTIME_EVENT_IDLE_POLL_MS = 5_000;
-const REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS = 50;
-const PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS = 2_000;
-const PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS = 30_000;
+
+// Every pump that reads a binding the window is not bound to lives in this
+// subsystem; the active-binding pump below stays here and shares its helpers.
+const pinnedRuntimeEvents = createPinnedRuntimeEvents({
+  ipcRenderer,
+  toWrappedEvent,
+  syncPtyDataSubscriptions: () => syncPtyDataSubscriptions(),
+  isPtyDataFilteringConfigured: () => ptyDataSubscriptionsConfigured,
+});
+const startPinnedRuntimeEventPump =
+  pinnedRuntimeEvents.startPinnedRuntimeEventPump;
 
 function clearPendingRemoteRuntimeEventPoll(): void {
   if (!remoteRuntimeEventTimer) return;
@@ -1885,12 +1903,8 @@ function shouldDispatchRemoteRuntimeEvent(
   if (remoteRuntimeSeenEventBindingKey !== bindingKey) {
     resetRemoteRuntimeEventDedup(bindingKey);
   }
-  if (remoteRuntimeSeenEventIds.has(event.id)) return false;
-  remoteRuntimeSeenEventIds.add(event.id);
-  while (remoteRuntimeSeenEventIds.size > 1_000) {
-    const oldest = remoteRuntimeSeenEventIds.values().next().value;
-    if (typeof oldest !== "number") break;
-    remoteRuntimeSeenEventIds.delete(oldest);
+  if (!rememberPinnedRuntimeEventId(remoteRuntimeSeenEventIds, event.id)) {
+    return false;
   }
   remoteRuntimeEventCursor = Math.max(remoteRuntimeEventCursor, event.id);
   return true;
@@ -1958,13 +1972,37 @@ function shouldDispatchPtyDataEvent(payload: PtyDataEvent): boolean {
   return subscribedPtyDataIds.has(payload.ptyId);
 }
 
-async function setPtyDataSubscriptions(args: { ptyIds?: string[] }): Promise<void> {
-  ptyDataSubscriptionsConfigured = true;
-  subscribedPtyDataIds = normalizePtyDataSubscriptionIds(args?.ptyIds);
-  ensureRemoteRuntimeEventPump();
-  await ipcRenderer.invoke(IPC.ptyDataSubscriptions, {
-    ptyIds: [...subscribedPtyDataIds],
+function collectPtyDataSubscriptionIds(): string[] {
+  const ids = new Set(subscribedPtyDataIds);
+  for (const ptyId of pinnedRuntimeEvents.collectPinnedPtyDataSubscriptionIds()) {
+    ids.add(ptyId);
+  }
+  return [...ids];
+}
+
+function syncPtyDataSubscriptions(): Promise<void> {
+  // Until the active path opts into filtering, main-process delivery is
+  // intentionally unrestricted. A pinned view must not narrow that legacy
+  // stream merely by mounting; its own filter still applies in preload.
+  if (!ptyDataSubscriptionsConfigured) return Promise.resolve();
+  return ipcRenderer.invoke(IPC.ptyDataSubscriptions, {
+    ptyIds: collectPtyDataSubscriptionIds(),
   });
+}
+
+async function setPtyDataSubscriptions(
+  args: { ptyIds?: string[] },
+  pin?: OpenProjectBinding | null,
+): Promise<void> {
+  const ptyIds = normalizePtyDataSubscriptionIds(args?.ptyIds);
+  if (pin) {
+    await pinnedRuntimeEvents.setPinnedPtyDataSubscriptions(pin, ptyIds);
+    return;
+  }
+  ptyDataSubscriptionsConfigured = true;
+  subscribedPtyDataIds = ptyIds;
+  ensureRemoteRuntimeEventPump();
+  await syncPtyDataSubscriptions();
 }
 
 function ensureRemoteRuntimeEventPump(): void {
@@ -1974,6 +2012,19 @@ function ensureRemoteRuntimeEventPump(): void {
     remoteRuntimeEventTimer = null;
     void pollRemoteRuntimeEvents();
   }, 0);
+}
+
+// The active pump owns exactly one main-side subscription at a time. Without an
+// explicit release, a binding the window switched away from keeps streaming
+// orchestrator/dag_mutation/runtime events into a preload that discards them all,
+// for up to the idle-expiry window, once per switch.
+function releaseRuntimeEventSubscriptionForPreviousBinding(
+  nextBinding: OpenProjectBinding | null,
+): void {
+  const previous = remoteRuntimeEventBinding;
+  remoteRuntimeEventBinding = nextBinding;
+  if (!previous || previous.key === nextBinding?.key) return;
+  pinnedRuntimeEvents.releaseRuntimeEventSubscriptionIfUnpinned(previous);
 }
 
 function scheduleRemoteRuntimeEventPoll(delayMs: number): void {
@@ -1994,6 +2045,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
   try {
     const binding = await getProjectRuntimeBinding();
     if (!binding) {
+      releaseRuntimeEventSubscriptionForPreviousBinding(null);
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = null;
       remoteRuntimeEventGeneration = projectBindingGeneration;
@@ -2009,6 +2061,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       remoteRuntimeEventBindingKey !== binding.key ||
       remoteRuntimeEventGeneration !== projectBindingGeneration
     ) {
+      releaseRuntimeEventSubscriptionForPreviousBinding(binding);
       remoteRuntimeEventCursor = 0;
       remoteRuntimeEventBindingKey = binding.key;
       remoteRuntimeEventGeneration = projectBindingGeneration;
@@ -2051,10 +2104,7 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
       return;
     }
 
-    const batchEpoch =
-      typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
-        ? batch.eventEpoch.trim()
-        : null;
+    const batchEpoch = normalizePinnedRuntimeEventEpoch(batch.eventEpoch);
     if (batchEpoch) {
       const epochChanged = remoteRuntimeEventEpoch
         ? batchEpoch !== remoteRuntimeEventEpoch
@@ -2082,13 +2132,9 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
     }
 
     for (const event of batch.events) {
-      const eventTime = Date.parse(event.timestamp);
-      if (
-        binding.kind === "local" &&
-        remoteRuntimeEventStartedAtMs > 0 &&
-        Number.isFinite(eventTime) &&
-        eventTime < remoteRuntimeEventStartedAtMs - 1_000
-      ) {
+      // `remoteRuntimeEventStartedAtMs` is 0 for remote bindings, so the shared
+      // helper's zero guard already restricts this to local ones.
+      if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, event.timestamp)) {
         continue;
       }
       if (!shouldDispatchRemoteRuntimeEvent(binding.key, event)) continue;
@@ -2140,6 +2186,11 @@ async function pollRemoteRuntimeEvents(): Promise<void> {
 function handleRemoteRuntimeEventNotification(value: unknown): void {
   const payload = toRemoteRuntimeEventNotificationPayload(value);
   if (!payload) return;
+  pinnedRuntimeEvents.handlePinnedPtyRuntimeEventNotification(
+    payload.bindingKey,
+    payload.eventEpoch,
+    payload.event,
+  );
   const pinnedLocalCallbacks = pinnedLocalAgentChatEventCallbacks.get(
     payload.bindingKey,
   );
@@ -2155,10 +2206,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
   const binding = currentProjectBinding;
   if (!binding || payload.bindingKey !== binding.key) return;
   resetRemoteRuntimeEmptyPolls();
-  const notificationEpoch =
-    typeof payload.eventEpoch === "string" && payload.eventEpoch.trim()
-      ? payload.eventEpoch.trim()
-      : null;
+  const notificationEpoch = normalizePinnedRuntimeEventEpoch(payload.eventEpoch);
   if (notificationEpoch) {
     const epochChanged = remoteRuntimeEventEpoch
       ? notificationEpoch !== remoteRuntimeEventEpoch
@@ -2170,13 +2218,7 @@ function handleRemoteRuntimeEventNotification(value: unknown): void {
       resetRemoteRuntimeEventDedup(binding.key);
     }
   }
-  const eventTime = Date.parse(payload.event.timestamp);
-  if (
-    binding.kind === "local" &&
-    remoteRuntimeEventStartedAtMs > 0 &&
-    Number.isFinite(eventTime) &&
-    eventTime < remoteRuntimeEventStartedAtMs - 1_000
-  ) {
+  if (isPinnedRuntimeEventStale(remoteRuntimeEventStartedAtMs, payload.event.timestamp)) {
     return;
   }
   if (!shouldDispatchRemoteRuntimeEvent(payload.bindingKey, payload.event))
@@ -2964,30 +3006,11 @@ function subscribeAgentChatEvents(
   const forcePinned = Boolean(pin && options?.forcePinned === true);
   const removeLocal = forcePinned ? () => undefined : agentChatEventFanout(cb);
   if (pin && (forcePinned || pin.key !== currentProjectBinding?.key)) {
-    let cancelled = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    let cursor = 0;
-    let eventEpoch: string | null = null;
-    let replaySuppressed = pin.kind === "remote";
     const startedAtMs = pin.kind === "local" ? Date.now() : 0;
-    let consecutiveFailures = 0;
     const seenLocalEventIds = new Set<number>();
     const dispatchPinnedLocalEvent = (event: RemoteRuntimeBufferedEvent): void => {
-      const eventTime = Date.parse(event.timestamp);
-      if (
-        startedAtMs > 0
-        && Number.isFinite(eventTime)
-        && eventTime < startedAtMs - 1_000
-      ) {
-        return;
-      }
-      if (seenLocalEventIds.has(event.id)) return;
-      seenLocalEventIds.add(event.id);
-      while (seenLocalEventIds.size > 1_000) {
-        const oldest = seenLocalEventIds.values().next().value;
-        if (typeof oldest !== "number") break;
-        seenLocalEventIds.delete(oldest);
-      }
+      if (isPinnedRuntimeEventStale(startedAtMs, event.timestamp)) return;
+      if (!rememberPinnedRuntimeEventId(seenLocalEventIds, event.id)) return;
       const envelope = toAgentChatEventEnvelope(event.payload);
       if (!envelope) return;
       agentChatSummaryCache.clear();
@@ -3002,73 +3025,22 @@ function subscribeAgentChatEvents(
       pinnedLocalCallbacks.add(dispatchPinnedLocalEvent);
       pinnedLocalAgentChatEventCallbacks.set(pin.key, pinnedLocalCallbacks);
     }
-    const poll = async (): Promise<void> => {
-      let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
-      try {
-        const request = {
-          cursor,
-          limit: 200,
-          ...(replaySuppressed && cursor === 0 ? { replay: false } : {}),
-        } satisfies RemoteRuntimeStreamEventsRequest;
-        const batch = await ipcRenderer.invoke(
-          pin.kind === "remote"
-            ? IPC.remoteRuntimeStreamEvents
-            : IPC.localRuntimeStreamEvents,
-          pin.kind === "remote"
-            ? { id: pin.targetId, projectId: pin.projectId, request }
-            : { rootPath: pin.rootPath, request },
-        ) as RemoteRuntimeStreamEventsResult;
-        if (cancelled) return;
-        consecutiveFailures = 0;
-        let resetForEpochChange = false;
-        const batchEpoch =
-          typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
-            ? batch.eventEpoch.trim()
-            : null;
-        if (batchEpoch) {
-          const epochChanged = eventEpoch
-            ? batchEpoch !== eventEpoch
-            : cursor > 0;
-          eventEpoch = batchEpoch;
-          if (epochChanged) {
-            cursor = 0;
-            replaySuppressed = pin.kind === "remote";
-            delay = 0;
-            resetForEpochChange = true;
-          }
+    const stopPump = startPinnedRuntimeEventPump({
+      pin,
+      label: "chat",
+      suppressReplay: pin.kind === "remote",
+      dispatch: (event) => {
+        if (pin.kind === "local") {
+          // Shared with the push-notification path, so it owns dedup itself.
+          dispatchPinnedLocalEvent(event);
+          return;
         }
-        if (!resetForEpochChange) {
-          cursor = Number.isFinite(batch.nextCursor) ? Math.max(0, Math.floor(batch.nextCursor)) : cursor;
-          if (request.replay === false) replaySuppressed = false;
-          for (const event of batch.events ?? []) {
-            if (pin.kind === "local") {
-              dispatchPinnedLocalEvent(event);
-            } else {
-              const envelope = toAgentChatEventEnvelope(event.payload);
-              if (envelope) cb(envelope);
-            }
-          }
-          delay = batch.hasMore
-            ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
-            : batch.events?.length
-              ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
-              : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
-        }
-      } catch (error) {
-        if (!cancelled) console.warn("ADE pinned chat event polling failed", error);
-        consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
-        delay = Math.min(
-          PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS *
-            2 ** (consecutiveFailures - 1),
-          PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS,
-        );
-      }
-      if (!cancelled) timer = setTimeout(() => void poll(), delay);
-    };
-    void poll();
+        const envelope = toAgentChatEventEnvelope(event.payload);
+        if (envelope) cb(envelope);
+      },
+    });
     return () => {
-      cancelled = true;
-      if (timer) clearTimeout(timer);
+      stopPump();
       if (pinnedLocalCallbacks) {
         pinnedLocalCallbacks.delete(dispatchPinnedLocalEvent);
         if (pinnedLocalCallbacks.size === 0) {
@@ -3087,7 +3059,9 @@ function subscribeAgentChatEvents(
 
 function subscribePtyDataEvents(
   cb: (payload: PtyDataEvent) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  if (pin) return pinnedRuntimeEvents.subscribePinnedPtyDataEvents(pin, cb);
   const filteredCb = (payload: PtyDataEvent) => {
     if (shouldDispatchPtyDataEvent(payload)) cb(payload);
   };
@@ -3101,7 +3075,9 @@ function subscribePtyDataEvents(
 
 function subscribePtyExitEvents(
   cb: (payload: PtyExitEvent) => void,
+  pin?: OpenProjectBinding | null,
 ): () => void {
+  if (pin) return pinnedRuntimeEvents.subscribePinnedPtyExitEvents(pin, cb);
   const removeLocal = ptyExitEventFanout(cb);
   const removeRemote = subscribeRemotePtyExitEvents(cb);
   return () => {
@@ -3176,84 +3152,17 @@ function subscribePinnedProjectRuntimeEvents<T>(
   onPayload?: () => void,
 ): (() => void) | null {
   if (!pin || pin.key === currentProjectBinding?.key) return null;
-  let cancelled = false;
-  let timer: ReturnType<typeof setTimeout> | null = null;
-  let cursor = 0;
-  let eventEpoch: string | null = null;
-  let replaySuppressed = true;
-  let consecutiveFailures = 0;
-
-  const poll = async (): Promise<void> => {
-    let delay = REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
-    try {
-      const request = {
-        cursor,
-        limit: 200,
-        ...(replaySuppressed && cursor === 0 ? { replay: false } : {}),
-      } satisfies RemoteRuntimeStreamEventsRequest;
-      const batch = await ipcRenderer.invoke(
-        pin.kind === "remote"
-          ? IPC.remoteRuntimeStreamEvents
-          : IPC.localRuntimeStreamEvents,
-        pin.kind === "remote"
-          ? { id: pin.targetId, projectId: pin.projectId, request }
-          : { rootPath: pin.rootPath, request },
-      ) as RemoteRuntimeStreamEventsResult;
-      if (cancelled) return;
-      consecutiveFailures = 0;
-      let resetForEpochChange = false;
-      const batchEpoch =
-        typeof batch.eventEpoch === "string" && batch.eventEpoch.trim()
-          ? batch.eventEpoch.trim()
-          : null;
-      if (batchEpoch) {
-        const epochChanged = eventEpoch
-          ? batchEpoch !== eventEpoch
-          : cursor > 0;
-        eventEpoch = batchEpoch;
-        if (epochChanged) {
-          cursor = 0;
-          replaySuppressed = true;
-          delay = 0;
-          resetForEpochChange = true;
-        }
-      }
-      if (!resetForEpochChange) {
-        cursor = Number.isFinite(batch.nextCursor)
-          ? Math.max(0, Math.floor(batch.nextCursor))
-          : cursor;
-        if (request.replay === false) replaySuppressed = false;
-        for (const event of batch.events ?? []) {
-          const payload = decode(event.payload);
-          if (!payload) continue;
-          onPayload?.();
-          cb(payload);
-        }
-        delay = batch.hasMore
-          ? REMOTE_RUNTIME_EVENT_CATCH_UP_POLL_MS
-          : batch.events?.length
-            ? REMOTE_RUNTIME_EVENT_ACTIVE_POLL_MS
-            : REMOTE_RUNTIME_EVENT_IDLE_POLL_MS;
-      }
-    } catch (error) {
-      if (!cancelled) {
-        console.warn(`ADE pinned ${label} event polling failed`, error);
-      }
-      consecutiveFailures = Math.min(consecutiveFailures + 1, 5);
-      delay = Math.min(
-        PINNED_CHAT_EVENT_FAILURE_BASE_POLL_MS *
-          2 ** (consecutiveFailures - 1),
-        PINNED_CHAT_EVENT_FAILURE_MAX_POLL_MS,
-      );
-    }
-    if (!cancelled) timer = setTimeout(() => void poll(), delay);
-  };
-
-  void poll();
-  return () => {
-    cancelled = true;
-    if (timer) clearTimeout(timer);
-  };
+  return startPinnedRuntimeEventPump({
+    pin,
+    label,
+    suppressReplay: true,
+    dispatch: (event) => {
+      const payload = decode(event.payload);
+      if (!payload) return;
+      onPayload?.();
+      cb(payload);
+    },
+  });
 }
 
 function subscribeComputerUseEvents(
@@ -7430,17 +7339,15 @@ contextBridge.exposeInMainWorld("ade", {
     },
     preview: async (
       args: ChatTerminalPreviewArgs = {},
-    ): Promise<ChatTerminalPreviewResult> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<ChatTerminalPreviewResult>(
-          "terminal",
-          "preview",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.terminalPreview, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatTerminalPreviewResult> =>
+      callPinnedOrBoundRuntimeActionOr<ChatTerminalPreviewResult>(
+        pin,
+        "terminal",
+        "preview",
+        { args },
+        () => ipcRenderer.invoke(IPC.terminalPreview, args),
+      ),
     write: async (args: ChatTerminalWriteArgs): Promise<{ ok: true }> => {
       const runtime = await callProjectRuntimeActionIfBound<{ ok: true }>(
         "terminal",
@@ -7549,17 +7456,15 @@ contextBridge.exposeInMainWorld("ade", {
     },
     resumeSession: async (
       args: PtyResumeSessionArgs,
-    ): Promise<PtyResumeSessionResult> => {
-      const runtime =
-        await callProjectRuntimeActionIfBound<PtyResumeSessionResult>(
-          "pty",
-          "resumeSession",
-          { args },
-        );
-      return runtime.handled
-        ? runtime.result
-        : ipcRenderer.invoke(IPC.ptyResumeSession, args);
-    },
+      pin?: OpenProjectBinding | null,
+    ): Promise<PtyResumeSessionResult> =>
+      callPinnedOrBoundRuntimeActionOr<PtyResumeSessionResult>(
+        pin,
+        "pty",
+        "resumeSession",
+        { args },
+        () => ipcRenderer.invoke(IPC.ptyResumeSession, args),
+      ),
     sendToSession: async (
       args: PtySendToSessionArgs,
       pin?: OpenProjectBinding | null,

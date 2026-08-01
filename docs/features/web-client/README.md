@@ -220,7 +220,15 @@ Browser `window.ade` adapter:
   are legitimate no-ops for a row that is not in the expected state (waking a
   row that was never snoozed), and reporting a no-op as applied would strand a
   stale overlay, so the helper checks whether the host actually changed that
-  row.
+  row. It also exports `assertWebRuntimePinUnsupported`, the fail-loud guard for
+  the desktop's per-session runtime pins: these namespaces target one web host
+  and cannot route a pinned call, so every pty/terminal shim,
+  `sessions.list` / `get` / `readTranscriptTail`, `lanes.list`, and the draft
+  attachment shim in `agentChat.ts` throw when a pin arrives rather than
+  answering from the wrong machine. `project.ts` deliberately omits
+  `gitOriginUrl` from `listRecent` for the same reason: cross-machine lane
+  discovery keys off it, and supplying it would start pinned reads this adapter
+  cannot serve.
 - `apps/desktop/src/renderer/webclient/adapter/sessionLifecycleOverlay.ts` -
   optimistic overlay for lifecycle writes. Desktop and iOS both own a local
   database, so a settle or snooze lands in local state instantly and the UI

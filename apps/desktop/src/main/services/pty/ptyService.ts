@@ -68,11 +68,13 @@ import {
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  isClaudeBinaryCommand,
   sanitizeTrackedCliPromptSeed,
+  shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  withClaudePluginInCommandLine,
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
-import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -129,10 +131,15 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 }
 
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
-const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
+/** A resumed PTY that exits nonzero within this window never actually launched. */
+const RESUME_LAUNCH_FAILURE_WINDOW_MS = 5_000;
+// Live capture itself stops after 60 seconds. Ninety seconds covers Codex CLI
+// startup plus modest write/timestamp skew without admitting unrelated launches
+// several minutes later; storage backfill keeps its wider historical window.
+const CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS = 90_000;
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 50;
 // Echo latency is dominated by the data batch window. After a user keystroke
@@ -625,6 +632,18 @@ type PtyEntry = {
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
+  /**
+   * For a resume/reattach launch only: the terminal end state this launch took
+   * over. If the new process dies immediately (a launch failure — a bad flag,
+   * a missing binary, a shell usage error), closeEntry restores this instead
+   * of stamping the row `failed`, so a still-resumable session does not become
+   * permanently dead-looking. `running` is deliberately unrepresentable here.
+   */
+  priorEndState: {
+    status: Exclude<TerminalSessionStatus, "running">;
+    exitCode: number | null;
+    endedAt: string | null;
+  } | null;
 };
 
 function isHighSurrogateCodeUnit(codeUnit: number): boolean {
@@ -1073,40 +1092,17 @@ function hasClaudePluginRoot(args: string[], pluginRoot: string): boolean {
   );
 }
 
-function shellWordSpans(command: string): Array<{ start: number; end: number }> {
-  const spans: Array<{ start: number; end: number }> = [];
-  let index = 0;
-  while (index < command.length) {
-    while (index < command.length && /\s/.test(command[index]!)) index += 1;
-    if (index >= command.length) break;
-
-    const start = index;
-    let quote: "'" | "\"" | null = null;
-    let escaped = false;
-    while (index < command.length) {
-      const char = command[index]!;
-      if (escaped) {
-        escaped = false;
-      } else if (quote === "'") {
-        if (char === "'") quote = null;
-      } else if (quote === "\"") {
-        if (char === "\"") quote = null;
-        else if (char === "\\") escaped = true;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === "'" || char === "\"") {
-        quote = char;
-      } else if (/\s/.test(char)) {
-        break;
-      }
-      index += 1;
-    }
-    spans.push({ start, end: index });
-  }
-  return spans;
-}
-
+/**
+ * `args` are the argv of whatever `command` is actually spawned — which is the
+ * Claude binary for ordinary launches but `/bin/bash ... -lc "<command line>"`
+ * for resume and reattach launches. Prepending Claude flags to a shell's argv
+ * makes bash die with "invalid option", so the flag goes wherever the `claude`
+ * token really lives: the argv for a direct Claude spawn, the -lc command line
+ * for a shell wrapper, and the startup command written into an interactive
+ * shell.
+ */
 function withBundledClaudePlugin(
+  command: string | null,
   args: string[],
   startupCommand: string,
   toolType: TerminalToolType | null,
@@ -1118,32 +1114,24 @@ function withBundledClaudePlugin(
   const pluginRoot = claudeAgentSkillPluginRoots(env)[0];
   if (!pluginRoot) return { args, startupCommand };
 
-  const normalizedArgs = hasClaudePluginRoot(args, pluginRoot)
-    ? args
-    : ["--plugin-dir", pluginRoot, ...args];
-  let normalizedStartupCommand = startupCommand;
-  if (startupCommand?.trim()) {
-    let commandArgs: string[] = [];
-    try {
-      commandArgs = parseCommandLine(startupCommand);
-    } catch {
-      // Keep malformed or unsupported shell input intact.
+  let normalizedArgs = args;
+  if (isClaudeBinaryCommand(command)) {
+    if (!hasClaudePluginRoot(args, pluginRoot)) {
+      normalizedArgs = ["--plugin-dir", pluginRoot, ...args];
     }
-    const claudeIndex = commandArgs.findIndex((arg, index) =>
-      arg === "claude"
-      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
-    );
-    if (claudeIndex >= 0 && !hasClaudePluginRoot(commandArgs.slice(claudeIndex + 1), pluginRoot)) {
-      const claudeSpan = shellWordSpans(startupCommand)[claudeIndex];
-      if (claudeSpan) {
-        const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
-        normalizedStartupCommand = `${startupCommand.slice(0, claudeSpan.end)} ${pluginArgs}${startupCommand.slice(claudeSpan.end)}`;
+  } else if (command?.trim()) {
+    const commandLineIndex = shellCommandLineArgIndex(args);
+    if (commandLineIndex >= 0) {
+      const rewritten = withClaudePluginInCommandLine(args[commandLineIndex]!, pluginRoot);
+      if (rewritten !== args[commandLineIndex]) {
+        normalizedArgs = args.slice();
+        normalizedArgs[commandLineIndex] = rewritten;
       }
     }
   }
   return {
     args: normalizedArgs,
-    startupCommand: normalizedStartupCommand,
+    startupCommand: withClaudePluginInCommandLine(startupCommand, pluginRoot),
   };
 }
 
@@ -1548,6 +1536,21 @@ function getPtyHostReadyPromise(pty: IPty): Promise<void> | null {
     return ready;
   }
   return null;
+}
+
+function resumeTargetIdForProvider(
+  session: TerminalSessionSummary,
+  provider: TerminalResumeProvider,
+): string | null {
+  const metadataTargetId = session.resumeMetadata?.provider === provider
+    ? sanitizeResumeTargetId(session.resumeMetadata.targetId ?? null)
+    : null;
+  if (metadataTargetId) return metadataTargetId;
+
+  const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+  return parsedResumeCommand?.provider === provider
+    ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+    : null;
 }
 
 export function createPtyService({
@@ -2604,7 +2607,7 @@ export function createPtyService({
     startedAt?: string | null;
     maxStartDeltaMs?: number;
     notBeforeMs?: number;
-    requiredText?: string;
+    excludedIds?: ReadonlySet<string>;
   }): CodexStorageSessionMatch | null => {
     try {
       const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
@@ -2648,14 +2651,7 @@ export function createPtyService({
         const id = typeof payload?.id === "string" ? payload.id.trim() : "";
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
-        if (args.requiredText) {
-          // ADE's injected session guidance can land after a large session_meta
-          // line plus restored context, so scan beyond the first few KB while
-          // still keeping the live poll bounded.
-          const prefix = readFilePrefix(candidate.filePath, CODEX_ADE_GUIDANCE_SCAN_BYTES);
-          if (!prefix?.includes(args.requiredText)) continue;
-        }
-
+        if (args.excludedIds?.has(id)) continue;
         if (!hasStartedAt) {
           return {
             id,
@@ -2788,6 +2784,23 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The directory a session's agent actually ran in. Transcripts live under the
+   * project root even for lane sessions, so the transcript path is only a
+   * fallback: every storage backfill below matches on an exact cwd, and a lane
+   * session's rollout records the lane worktree, not the project root.
+   */
+  const resolveSessionRunCwd = (session: TerminalSessionSummary): string | null => {
+    let worktreePath = "";
+    try {
+      worktreePath = (laneService.getLaneBaseAndBranch(session.laneId).worktreePath ?? "").trim();
+    } catch {
+      // Deleted lane: fall back to the transcript-derived directory.
+    }
+    if (worktreePath) return worktreePath;
+    return inferSessionCwdFromTranscriptPath(session.transcriptPath);
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
@@ -2800,7 +2813,7 @@ export function createPtyService({
     if (!isTrackedAgentCliToolType(effectiveToolType)) return false;
     const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
     if (existingTargetId) {
-      const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+      const cwd = sessionCwd ?? resolveSessionRunCwd(session);
       if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
         scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, existingTargetId, cwd);
       }
@@ -2838,7 +2851,7 @@ export function createPtyService({
     }
 
     // Strategy 2: Read the session/thread ID from the CLI's local storage
-    const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+    const cwd = sessionCwd ?? resolveSessionRunCwd(session);
     const effectiveProvider = providerFromTool(effectiveToolType);
     const hasStorageBackfillEvidence = effectiveProvider
       ? hasProviderStorageBackfillEvidence(effectiveProvider, transcript)
@@ -3057,6 +3070,16 @@ export function createPtyService({
     }
   };
 
+  const listOtherAdoptedCodexTargetIds = (sessionId: string): Set<string> => {
+    const adoptedIds = new Set<string>();
+    for (const candidate of sessionService.list({ limit: null })) {
+      if (candidate.id === sessionId) continue;
+      const targetId = resumeTargetIdForProvider(candidate, "codex");
+      if (targetId) adoptedIds.add(targetId);
+    }
+    return adoptedIds;
+  };
+
   // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
   // rollout JSONL is the only handle on the session's UUID. We watch the day directory for
   // the file's appearance, then store the UUID directly for resume and separately adopt any
@@ -3106,12 +3129,39 @@ export function createPtyService({
         cleanup();
         return true;
       }
+      let excludedIds: Set<string>;
+      try {
+        excludedIds = listOtherAdoptedCodexTargetIds(sessionId);
+      } catch (err) {
+        // Capturing no target is safer than assigning a thread when the
+        // cross-session ownership check could not run.
+        logger.warn("pty.codex_session_id_exclusion_query_failed", {
+          sessionId,
+          source,
+          attempt,
+          err: String(err),
+        });
+        return false;
+      }
+      // Identification is cwd + timestamp, deliberately with no text gate.
+      // ADE used to require the "ADE session guidance" preamble marker in the
+      // rollout, but only the Work-tab CLI preamble ever emits it — goal
+      // launches send `<codex_internal_context source="goal">` instead — so
+      // the gate was closed for nearly every real session and thread ids were
+      // essentially never captured live.
+      //
+      // Mis-adoption safety for concurrent Codex runs in the SAME worktree has
+      // two protections: a narrow launch window (including the existing
+      // not-before floor), and exclusion of thread ids already owned by every
+      // other terminal row. Timestamp proximity still breaks ties among the
+      // remaining candidates, but does not claim that rollout write order
+      // uniquely proves which PTY launched a thread.
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt,
-        maxStartDeltaMs: 5 * 60_000,
+        maxStartDeltaMs: CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS,
         ...(startedAtFinite !== null ? { notBeforeMs: startedAtFinite - 1_000 } : {}),
-        requiredText: "ADE session guidance",
+        excludedIds,
       });
       if (!codexSession) return false;
 
@@ -3217,8 +3267,31 @@ export function createPtyService({
     entry.recentOutputTail = "";
 
     const endedAt = new Date().toISOString();
-    const status = statusFromExit(exitCode);
-    sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    let status = statusFromExit(exitCode);
+    let endExitCode = exitCode;
+    let endEndedAt = endedAt;
+    // A resume that dies on launch must not clobber the row it took over: the
+    // prior session is still resumable, and stamping it failed/exit-2 makes it
+    // look permanently dead. Only an *immediate* nonzero exit counts as a
+    // launch failure (a bad flag, a missing binary, a shell usage error) —
+    // once the CLI has actually been running, a real nonzero exit is its own.
+    const priorEndState = entry.priorEndState;
+    if (
+      priorEndState
+      && status === "failed"
+      && Date.now() - entry.createdAt <= RESUME_LAUNCH_FAILURE_WINDOW_MS
+    ) {
+      logger.warn("pty.resume_launch_failed_status_preserved", {
+        sessionId: entry.sessionId,
+        ptyId,
+        exitCode,
+        priorStatus: priorEndState.status,
+      });
+      status = priorEndState.status;
+      endExitCode = priorEndState.exitCode;
+      endEndedAt = priorEndState.endedAt ?? endedAt;
+    }
+    sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
     flushTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
@@ -4052,23 +4125,15 @@ export function createPtyService({
         `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
       );
     };
-    const resumeTargetIdFor = (candidate: TerminalSessionSummary): string | null => {
-      const parsedResumeCommand = parseTrackedCliResumeCommand(candidate.resumeCommand, candidate.toolType);
-      return sanitizeResumeTargetId(candidate.resumeMetadata?.targetId ?? null)
-        ?? (parsedResumeCommand?.provider === provider
-          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
-          : null);
-    };
-
     let resolvedSession = session;
-    let storedResumeTargetId = resumeTargetIdFor(resolvedSession);
+    let storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
     if (!storedResumeTargetId && provider !== "cursor" && isTrackedAgentCliToolType(resolvedSession.toolType)) {
-      const cwd = inferSessionCwdFromTranscriptPath(resolvedSession.transcriptPath);
+      const cwd = resolveSessionRunCwd(resolvedSession);
       const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
       const updatedSession = backfilled ? sessionService.get(sessionId) : null;
       if (updatedSession) {
         resolvedSession = updatedSession;
-        storedResumeTargetId = resumeTargetIdFor(resolvedSession);
+        storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
       }
     }
     if (
@@ -4279,6 +4344,18 @@ export function createPtyService({
       if (existingSession && !existingSession.tracked) {
         throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
+      // Snapshot only a real terminal end state before reattach/backfill can
+      // overwrite it. A row may still say `running` after its owning brain
+      // died; capturing that stale state would make closeEntry restore a dead
+      // relaunch to `running`. Leaving it null makes closeEntry persist the new
+      // failure, while detached/completed/failed restore byte-for-byte.
+      const priorEndState = existingSession && existingSession.status !== "running"
+        ? {
+          status: existingSession.status,
+          exitCode: existingSession.exitCode ?? null,
+          endedAt: existingSession.endedAt ?? null,
+        }
+        : null;
       const liveAttachedEntry = existingSession
         ? Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === existingSession.id && !entry.disposed)
         : null;
@@ -4533,6 +4610,7 @@ export function createPtyService({
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
+        directCommand,
         directArgs,
         startupCommand,
         toolTypeHint,
@@ -4737,6 +4815,7 @@ export function createPtyService({
         initialInputTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
+        priorEndState,
       };
       ptys.set(ptyId, entry);
       if (chatSessionId) {

@@ -13,6 +13,7 @@ import type {
   ChatTerminalPreviewResult,
   LaneLinearIssue,
   LaneSummary,
+  OpenProjectBinding,
   TerminalResumeProvider,
   TerminalResumeLaunchConfig,
   TerminalSessionSummary,
@@ -738,6 +739,7 @@ const CLI_FLOATING_PANE_CARD_CLASS =
 function CliSessionSurface({
   session,
   lanes,
+  runtimePin = null,
   stopping = false,
   layoutVariant = "standard",
   surfaceActive,
@@ -754,6 +756,8 @@ function CliSessionSurface({
 }: {
   session: TerminalSessionSummary & { ptyId: string };
   lanes: LaneSummary[];
+  /** See `SessionSurface.runtimePin`. */
+  runtimePin?: OpenProjectBinding | null;
   stopping?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   surfaceActive: boolean;
@@ -801,6 +805,7 @@ function CliSessionSurface({
           sessionId={session.id}
           isActive={surfaceActive}
           isVisible={pageActive && terminalVisible}
+          runtimePin={runtimePin}
           imagePasteMode="runtime-attachment"
           className="h-full w-full"
         />
@@ -835,6 +840,7 @@ function SessionSurface({
   sessionTitleById,
   lanes,
   isActive,
+  runtimePin = null,
   pageActive = true,
   shouldAutofocus = false,
   layoutVariant = "standard",
@@ -859,6 +865,13 @@ function SessionSurface({
   sessionTitleById?: ReadonlyMap<string, string>;
   lanes: LaneSummary[];
   isActive: boolean;
+  /**
+   * Set only for a session that lives on another open binding; `null` means the
+   * tab's own machine (the hot path — same calls as before per-session routing).
+   * The ADE chat pane resolves its own pin from the lane, so this is consumed by
+   * the PTY surfaces only.
+   */
+  runtimePin?: OpenProjectBinding | null;
   pageActive?: boolean;
   shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
@@ -924,6 +937,7 @@ function SessionSurface({
         <CliSessionSurface
           session={session}
           lanes={lanes}
+          runtimePin={runtimePin}
           stopping={stopping}
           layoutVariant={layoutVariant}
           surfaceActive={surfaceActive}
@@ -947,6 +961,7 @@ function SessionSurface({
         sessionId={session.id}
         isActive={surfaceActive}
         isVisible={pageActive && terminalVisible}
+        runtimePin={runtimePin}
         className="h-full w-full"
       />
     );
@@ -1127,6 +1142,7 @@ export function WorkViewArea({
   onAddSessionToGrid,
   onCreateGridFromSingle,
   onRemoveSessionFromGrid,
+  resolveSessionRuntimePin,
 }: {
   pageActive?: boolean;
   lanes: LaneSummary[];
@@ -1181,6 +1197,16 @@ export function WorkViewArea({
   onCreateGridFromSingle?: (draggedSessionId: string, targetSessionId: string, edge: DropEdge) => void;
   /** A grid tile was dragged out of the grid — pop it back to single view. */
   onRemoveSessionFromGrid?: (sessionId: string) => void;
+  /**
+   * Per-session runtime routing: the binding a session's PTY calls must target,
+   * or `null` when it lives on the machine the project tab is already bound to.
+   *
+   * The Work sidebar is a union across machines, so a CLI/shell surface here can
+   * belong to another machine — it is opened in place and its calls carry this
+   * pin instead of the tab being rebound. Omitted (or `null`) is the hot path
+   * for every local terminal and is behaviorally identical to before.
+   */
+  resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const sessionsById = useMemo(() => {
@@ -1213,6 +1239,7 @@ export function WorkViewArea({
       // transfers activeItemId (WorkGridView's onPaneMouseDown) before typing.
       isActive={session.id === activeItemId}
       pageActive={pageActive}
+      runtimePin={resolveSessionRuntimePin?.(session) ?? null}
       shouldAutofocus={session.id === activeItemId}
       terminalVisible
       onInfoClick={onInfoClick}
@@ -1265,6 +1292,7 @@ export function WorkViewArea({
           lanes={lanes}
           isActive
           pageActive={pageActive}
+          runtimePin={resolveSessionRuntimePin?.(activeSession) ?? null}
           terminalVisible
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}

@@ -6,6 +6,7 @@ import type {
   RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { assertWebRuntimePinUnsupported } from "./sessionsPty";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
@@ -31,11 +32,14 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
   );
 
   const lanes: Record<string, unknown> = {
-    list: (args?: unknown) => commands.call("lanes.list", asRecord(args), {
-      fallback: [],
-      idempotent: true,
-      cacheTtlMs: 3_000,
-    }),
+    list: (args?: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("lanes.list", pin);
+      return commands.call("lanes.list", asRecord(args), {
+        fallback: [],
+        idempotent: true,
+        cacheTtlMs: 3_000,
+      });
+    },
     listSnapshots: async (args?: unknown) => {
       const result = await call<unknown>("lanes.refreshSnapshots", args, []);
       return arrayField<LaneListSnapshot>(result, "snapshots");

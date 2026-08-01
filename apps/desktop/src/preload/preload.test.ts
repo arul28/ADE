@@ -7304,6 +7304,731 @@ describe("per-chat runtime routing", () => {
     );
   });
 
+  it("routes every terminal session read through an explicit runtime pin", async () => {
+    const { bridge, invoke } = await mountBridge(machineA);
+
+    await bridge.terminal.preview(
+      { terminalId: "session-b", maxBytes: 4_096 },
+      machineB,
+    );
+    await bridge.sessions.get("session-b", machineB);
+    await bridge.sessions.readTranscriptTail(
+      { sessionId: "session-b", maxBytes: 8_192, raw: true },
+      machineB,
+    );
+    await bridge.pty.resumeSession(
+      { sessionId: "session-b", cols: 120, rows: 40 },
+      machineB,
+    );
+
+    const requests = invoke.mock.calls
+      .filter(([channel]) => channel === IPC.remoteRuntimeCallAction)
+      .map(([, arg]) => (arg as { request: unknown }).request);
+    expect(requests).toEqual([
+      {
+        domain: "terminal",
+        action: "preview",
+        args: { terminalId: "session-b", maxBytes: 4_096 },
+      },
+      { domain: "session", action: "get", arg: "session-b" },
+      {
+        domain: "session",
+        action: "readTranscriptTail",
+        args: { sessionId: "session-b", maxBytes: 8_192, raw: true },
+      },
+      {
+        domain: "pty",
+        action: "resumeSession",
+        args: { sessionId: "session-b", cols: 120, rows: 40 },
+      },
+    ]);
+    expect(invoke).not.toHaveBeenCalledWith(
+      IPC.localRuntimeCallAction,
+      expect.anything(),
+    );
+  });
+
+  it("delivers pinned PTY data and exit events without rebinding the active project", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineB);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 10,
+            hasMore: false,
+            eventEpoch: "machine-a-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onData = vi.fn();
+      const onExit = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineA);
+      const removeExit = bridge.pty.onExit(onExit, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(invoke).toHaveBeenCalledWith(IPC.localRuntimeStreamEvents, {
+        rootPath: "/repo-a",
+        request: {
+          cursor: 0,
+          limit: 200,
+          category: "pty",
+        },
+      });
+      expect(invoke).not.toHaveBeenCalledWith(
+        IPC.remoteRuntimeStreamEvents,
+        expect.anything(),
+      );
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+      const dataEvent = {
+        ptyId: "pty-a",
+        sessionId: "session-a",
+        data: "foreign output",
+      };
+      const exitEvent = {
+        ptyId: "pty-a",
+        sessionId: "session-a",
+        exitCode: 0,
+      };
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "machine-a-epoch",
+        event: {
+          id: 11,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: { type: "pty_data", event: dataEvent },
+        },
+      });
+      runtimeListener({}, {
+        bindingKey: machineA.key,
+        eventEpoch: "machine-a-epoch",
+        event: {
+          id: 12,
+          timestamp: "2026-07-28T12:00:02.000Z",
+          category: "pty",
+          payload: { type: "pty_exit", event: exitEvent },
+        },
+      });
+
+      expect(onData).toHaveBeenCalledWith(dataEvent);
+      expect(onExit).toHaveBeenCalledWith(exitEvent);
+      removeData();
+      removeExit();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("drops the duplicate copy when a binding is covered by two runtime event subscriptions", async () => {
+    // Main holds one subscription per (sender, requestKey), so a window running
+    // the active `*` pump and a pinned `pty` pump over the same binding receives
+    // each event twice. Every consumer dedups on event.id, so it stays harmless.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-28T12:00:00.500Z"));
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.localRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "shared-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onActive = vi.fn();
+      const onPinned = vi.fn();
+      const removeActive = bridge.pty.onData(onActive);
+      const removePinned = bridge.pty.onData(onPinned, machineA);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      const notification = {
+        bindingKey: machineA.key,
+        eventEpoch: "shared-epoch",
+        event: {
+          id: 21,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: {
+            type: "pty_data",
+            event: { ptyId: "pty-a", sessionId: "session-a", data: "once" },
+          },
+        },
+      };
+      runtimeListener({}, notification);
+      runtimeListener({}, notification);
+
+      expect(onPinned).toHaveBeenCalledTimes(1);
+      expect(onActive).toHaveBeenCalledTimes(1);
+
+      removeActive();
+      removePinned();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("isolates PTY data filters per pin and updates the sender filter before polling", async () => {
+    vi.useFakeTimers();
+    try {
+      const machineC = {
+        kind: "remote" as const,
+        key: "remote:target-c:project-c",
+        targetId: "target-c",
+        runtimeName: "machine-c",
+        projectId: "project-c",
+        rootPath: "/repo-c",
+        displayName: "Machine C",
+      };
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "pinned-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
+      const onDataB = vi.fn();
+      const onDataC = vi.fn();
+      const removeB = bridge.pty.onData(onDataB, machineB);
+      const removeC = bridge.pty.onData(onDataC, machineC);
+
+      // The active sender filter is already narrow, so merely subscribing must
+      // not start a pump that would discard the first foreign PTY chunks.
+      await vi.advanceTimersByTimeAsync(0);
+      expect(invoke).not.toHaveBeenCalledWith(
+        IPC.remoteRuntimeStreamEvents,
+        expect.anything(),
+      );
+
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-b"] }, machineB);
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-c"] }, machineC);
+      expect(
+        invoke.mock.calls
+          .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
+          .map(([, arg]) => arg),
+      ).toEqual([
+        { ptyIds: ["pty-a"] },
+        { ptyIds: ["pty-a", "pty-b"] },
+        { ptyIds: ["pty-a", "pty-b", "pty-c"] },
+      ]);
+
+      await vi.advanceTimersByTimeAsync(0);
+      const streamTargets = invoke.mock.calls
+        .filter(([channel]) => channel === IPC.remoteRuntimeStreamEvents)
+        .map(([, arg]) => (arg as { id: string }).id)
+        .sort();
+      expect(streamTargets).toEqual(["target-b", "target-c"]);
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      expect(runtimeListener).toBeTypeOf("function");
+      const emitData = (
+        bindingKey: string,
+        id: number,
+        ptyId: string,
+        data: string,
+      ) => runtimeListener({}, {
+        bindingKey,
+        eventEpoch: "pinned-epoch",
+        event: {
+          id,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: {
+            type: "pty_data",
+            event: { ptyId, sessionId: `session-${ptyId}`, data },
+          },
+        },
+      });
+      // Reusing ids across runtimes also proves their dedup state is isolated.
+      emitData(machineB.key, 1, "pty-c", "wrong for B");
+      emitData(machineB.key, 2, "pty-b", "right for B");
+      emitData(machineC.key, 1, "pty-b", "wrong for C");
+      emitData(machineC.key, 2, "pty-c", "right for C");
+
+      expect(onDataB).toHaveBeenCalledTimes(1);
+      expect(onDataB).toHaveBeenCalledWith(
+        expect.objectContaining({ ptyId: "pty-b", data: "right for B" }),
+      );
+      expect(onDataC).toHaveBeenCalledTimes(1);
+      expect(onDataC).toHaveBeenCalledWith(
+        expect.objectContaining({ ptyId: "pty-c", data: "right for C" }),
+      );
+
+      removeB();
+      removeC();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the epoch rewind when a pinned PTY poll is in flight across it", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      const streamRequests: Array<Record<string, unknown>> = [];
+      const pendingStreamPolls: Array<(batch: unknown) => void> = [];
+      const releaseStream = (batch: unknown): void => {
+        const resolve = pendingStreamPolls.shift();
+        expect(resolve).toBeTypeOf("function");
+        resolve?.(batch);
+      };
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(
+            (arg as { request: Record<string, unknown> }).request,
+          );
+          return await new Promise((resolve) => {
+            pendingStreamPolls.push(resolve as (batch: unknown) => void);
+          });
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onData = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+      releaseStream({
+        events: [],
+        nextCursor: 10,
+        hasMore: false,
+        eventEpoch: "epoch-1",
+      });
+      await vi.advanceTimersByTimeAsync(0);
+
+      // Second poll leaves with the epoch-1 cursor and is still in flight when
+      // the runtime restarts.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(streamRequests).toHaveLength(2);
+      expect(streamRequests[1]).toMatchObject({ cursor: 10 });
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-2",
+        event: {
+          id: 3,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: {
+            type: "pty_data",
+            event: { ptyId: "pty-b", sessionId: "session-b", data: "reborn" },
+          },
+        },
+      });
+      // The push announced the new epoch, so it is replayed by the pump rather
+      // than dispatched here.
+      expect(onData).not.toHaveBeenCalled();
+
+      // The in-flight batch predates the rewind: applying its cursor would skip
+      // events 4..10 of the new epoch.
+      releaseStream({
+        events: [],
+        nextCursor: 10,
+        hasMore: false,
+        eventEpoch: "epoch-2",
+      });
+      // The fixed pump re-polls immediately; without the guard it waits out the
+      // idle delay and re-polls from the restored cursor 10.
+      await vi.advanceTimersByTimeAsync(5_000);
+
+      expect(streamRequests).toHaveLength(3);
+      expect(streamRequests[2]).toMatchObject({ cursor: 0, replay: false });
+
+      removeData();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("replays a restarted pinned PTY epoch instead of dispatching the push that announced it", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      const ptyEvent = (id: number, data: string) => ({
+        id,
+        timestamp: `2026-07-28T12:00:0${id}.000Z`,
+        category: "pty" as const,
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-b", sessionId: "session-b", data },
+        },
+      });
+      const streamRequests: Array<Record<string, unknown>> = [];
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.runtimeEventsRelease) return { released: 0 };
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamRequests.push(
+            (arg as { request: Record<string, unknown> }).request,
+          );
+          if (streamRequests.length === 1) {
+            return {
+              events: [],
+              nextCursor: 4,
+              hasMore: false,
+              eventEpoch: "epoch-1",
+            };
+          }
+          return {
+            events: [ptyEvent(1, "first of new epoch"), ptyEvent(2, "reborn")],
+            nextCursor: 2,
+            hasMore: false,
+            eventEpoch: "epoch-2",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const onData = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(1);
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-2",
+        event: ptyEvent(2, "reborn"),
+      });
+
+      // Dispatching the pushed event would drag the cursor to 2 and strand
+      // event 1 of the restarted buffer, so the pump replays the epoch instead.
+      expect(onData).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamRequests).toHaveLength(2);
+      expect(streamRequests[1]).toMatchObject({ cursor: 0, replay: false });
+      expect(
+        onData.mock.calls.map(([payload]) => (payload as { data: string }).data),
+      ).toEqual(["first of new epoch", "reborn"]);
+
+      // A push on the epoch the pump already tracks still dispatches directly.
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "epoch-2",
+        event: ptyEvent(3, "live"),
+      });
+      expect(onData).toHaveBeenCalledTimes(3);
+      expect(onData.mock.calls.at(-1)?.[0]).toMatchObject({ data: "live" });
+
+      removeData();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases a pinned pump's main-side subscription on teardown instead of waiting for idle expiry", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.runtimeEventsRelease) return { released: 1 };
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "machine-b-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const removeData = bridge.pty.onData(vi.fn(), machineB);
+      const removeExit = bridge.pty.onExit(vi.fn(), machineB);
+      const removeChat = bridge.agentChat.onEvent(vi.fn(), machineB);
+      await vi.advanceTimersByTimeAsync(0);
+
+      const releaseCalls = () =>
+        invoke.mock.calls
+          .filter(([channel]) => channel === IPC.runtimeEventsRelease)
+          .map(([, payload]) => payload);
+      expect(releaseCalls()).toEqual([]);
+
+      // Both PTY listeners share one pump, so only the last one releases it.
+      removeData();
+      expect(releaseCalls()).toEqual([]);
+      removeExit();
+      await Promise.resolve();
+      expect(releaseCalls()).toEqual([
+        { id: "target-b", projectId: "project-b", category: "pty" },
+      ]);
+
+      removeChat();
+      expect(releaseCalls()).toEqual([
+        { id: "target-b", projectId: "project-b", category: "pty" },
+        { id: "target-b", projectId: "project-b" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retain a pinned PTY subscription when its filter is set before any listener subscribes", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        if (channel === IPC.runtimeEventsRelease) return { released: 1 };
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "machine-b-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const releaseCalls = () =>
+        invoke.mock.calls
+          .filter(([channel]) => channel === IPC.runtimeEventsRelease)
+          .map(([, payload]) => payload);
+
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-b"] }, machineB);
+      await Promise.resolve();
+      expect(releaseCalls()).toEqual([
+        { id: "target-b", projectId: "project-b", category: "pty" },
+      ]);
+
+      const removeData = bridge.pty.onData(vi.fn(), machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      removeData();
+      await Promise.resolve();
+
+      // The filter-only state released its retain, so this real listener owns a
+      // fresh ref and its teardown reaches main immediately as well.
+      expect(releaseCalls()).toEqual([
+        { id: "target-b", projectId: "project-b", category: "pty" },
+        { id: "target-b", projectId: "project-b", category: "pty" },
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("releases the previous binding's subscription when the active pump switches machines", async () => {
+    vi.useFakeTimers();
+    try {
+      let activeBinding: typeof machineA | typeof machineB = machineA;
+      const { bridge, invoke } = await mountBridge(machineA);
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.appGetWindowSession) {
+          return {
+            windowId: 1,
+            project: {
+              rootPath: activeBinding.rootPath,
+              displayName: activeBinding.displayName,
+            },
+            binding: activeBinding,
+          };
+        }
+        if (channel === IPC.runtimeEventsRelease) return { released: 1 };
+        if (
+          channel === IPC.localRuntimeStreamEvents ||
+          channel === IPC.remoteRuntimeStreamEvents
+        ) {
+          return { events: [], nextCursor: 0, hasMore: false };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      const unsubscribe = bridge.orchestration.subscribe(
+        { runId: "run-1" },
+        vi.fn(),
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      const releaseCalls = () =>
+        invoke.mock.calls
+          .filter(([channel]) => channel === IPC.runtimeEventsRelease)
+          .map(([, payload]) => payload);
+      expect(releaseCalls()).toEqual([]);
+
+      activeBinding = machineB;
+      await bridge.app.getWindowSession();
+      await vi.advanceTimersByTimeAsync(750);
+
+      expect(releaseCalls()).toEqual([{ rootPath: "/repo-a" }]);
+
+      unsubscribe();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("tears down a pinned PTY pump and frees its sender-filter state after the last listener", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      let streamCalls = 0;
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        if (channel === IPC.remoteRuntimeStreamEvents) {
+          streamCalls += 1;
+          return {
+            events: [],
+            nextCursor: 0,
+            hasMore: false,
+            eventEpoch: "machine-b-epoch",
+          };
+        }
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
+      const onData = vi.fn();
+      const onExit = vi.fn();
+      const removeData = bridge.pty.onData(onData, machineB);
+      const removeExit = bridge.pty.onExit(onExit, machineB);
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-b"] }, machineB);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(streamCalls).toBe(1);
+
+      removeData();
+      expect(vi.getTimerCount()).toBe(1);
+      removeExit();
+      await Promise.resolve();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(
+        invoke.mock.calls
+          .filter(([channel]) => channel === IPC.ptyDataSubscriptions)
+          .at(-1)?.[1],
+      ).toEqual({ ptyIds: ["pty-a"] });
+
+      const runtimeListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.runtimeEvent,
+      )?.[1];
+      runtimeListener({}, {
+        bindingKey: machineB.key,
+        eventEpoch: "machine-b-epoch",
+        event: {
+          id: 1,
+          timestamp: "2026-07-28T12:00:01.000Z",
+          category: "pty",
+          payload: {
+            type: "pty_data",
+            event: { ptyId: "pty-b", sessionId: "session-b", data: "late" },
+          },
+        },
+      });
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(onData).not.toHaveBeenCalled();
+      expect(onExit).not.toHaveBeenCalled();
+      expect(streamCalls).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps the unpinned PTY fanout and subscription hot path unchanged", async () => {
+    vi.useFakeTimers();
+    try {
+      const { bridge, invoke, on, removeListener } = await mountBridge(machineA);
+      await bridge.app.getWindowSession();
+      invoke.mockImplementation(async (channel: string, arg?: unknown) => {
+        if (channel === IPC.ptyDataSubscriptions) return undefined;
+        throw new Error(`unexpected IPC: ${channel} ${JSON.stringify(arg)}`);
+      });
+
+      await bridge.pty.setDataSubscriptions({ ptyIds: ["pty-a"] });
+      const onData = vi.fn();
+      const onExit = vi.fn();
+      const removeData = bridge.pty.onData(onData);
+      const removeExit = bridge.pty.onExit(onExit);
+
+      expect(
+        invoke.mock.calls.filter(
+          ([channel]) => channel === IPC.ptyDataSubscriptions,
+        ),
+      ).toEqual([[IPC.ptyDataSubscriptions, { ptyIds: ["pty-a"] }]]);
+      expect(
+        invoke.mock.calls.some(
+          ([channel]) =>
+            channel === IPC.localRuntimeStreamEvents ||
+            channel === IPC.remoteRuntimeStreamEvents,
+        ),
+      ).toBe(false);
+
+      const localDataListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.ptyData,
+      )?.[1];
+      const localExitListener = on.mock.calls.find(
+        ([channel]) => channel === IPC.ptyExit,
+      )?.[1];
+      expect(localDataListener).toBeTypeOf("function");
+      expect(localExitListener).toBeTypeOf("function");
+      localDataListener({}, {
+        ptyId: "pty-hidden",
+        sessionId: "session-hidden",
+        data: "hidden",
+      });
+      localDataListener({}, {
+        ptyId: "pty-a",
+        sessionId: "session-a",
+        data: "visible",
+      });
+      localExitListener({}, {
+        ptyId: "pty-a",
+        sessionId: "session-a",
+        exitCode: 0,
+      });
+
+      expect(onData).toHaveBeenCalledTimes(1);
+      expect(onData).toHaveBeenCalledWith(
+        expect.objectContaining({ ptyId: "pty-a", data: "visible" }),
+      );
+      expect(onExit).toHaveBeenCalledWith(
+        expect.objectContaining({ ptyId: "pty-a", exitCode: 0 }),
+      );
+
+      removeData();
+      removeExit();
+      expect(removeListener).toHaveBeenCalledWith(IPC.ptyData, localDataListener);
+      expect(removeListener).toHaveBeenCalledWith(IPC.ptyExit, localExitListener);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("resets a pinned chat event cursor when the remote runtime epoch changes", async () => {
     vi.useFakeTimers();
     try {

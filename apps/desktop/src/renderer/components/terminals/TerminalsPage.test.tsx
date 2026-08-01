@@ -12,6 +12,7 @@ import type {
 } from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
+import { forgetWorkPtyLaunchPin, rememberWorkPtyLaunchPin } from "./cliLaunch";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -167,6 +168,19 @@ const workMocks = vi.hoisted(() => {
     projectRoot: null as string | null,
     projectBinding: null as OpenProjectBinding | null,
     handoffLaunchJobsByScope: {} as Record<string, unknown[]>,
+    /** Bindings this window has open besides the active one (per-session pin targets). */
+    openRemoteProjectTabs: [] as OpenProjectBinding[],
+    /** Cross-machine union slices — lane ownership for `useWorkMachineRouter`. */
+    crossMachineLanesByMachineId: {} as Record<string, {
+      machineId: string;
+      machineName: string;
+      targetId: string | null;
+      projectId: string | null;
+      binding?: OpenProjectBinding | null;
+      lanes: LaneSummary[];
+      sessions: TerminalSessionSummary[];
+      online: boolean;
+    }>,
     fns,
     makeTerminalSession,
   };
@@ -206,6 +220,12 @@ const sessionListPaneProps = vi.hoisted(() => ({
   latest: null as null | MockSessionListPaneProps,
 }));
 
+const workViewAreaProps = vi.hoisted(() => ({
+  latest: null as null | {
+    resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
+  },
+}));
+
 vi.mock("../../state/appStore", () => ({
   selectActiveProjectRoot: (state: {
     projectBinding?: { kind?: string; rootPath?: string | null } | null;
@@ -231,11 +251,17 @@ vi.mock("../../state/appStore", () => ({
     selectLane: typeof workMocks.fns.selectLane;
     focusSession: typeof workMocks.fns.focusSession;
     setWorkViewState: typeof workMocks.fns.setWorkViewState;
+    lanes: LaneSummary[];
+    openRemoteProjectTabs: OpenProjectBinding[];
+    openProjectTabRoots: string[];
   }) => T): T =>
     selector({
       selectedLaneId: "lane-primary",
       laneDeleteProgressByLaneId: {},
       projectBinding: workMocks.projectBinding,
+      lanes: workMocks.currentWork.lanes,
+      openRemoteProjectTabs: workMocks.openRemoteProjectTabs,
+      openProjectTabRoots: [],
       switchRemoteProject: workMocks.fns.switchRemoteProject,
       switchProjectToPath: workMocks.fns.switchProjectToPath,
       selectLane: workMocks.fns.selectLane,
@@ -247,15 +273,29 @@ vi.mock("../../state/appStore", () => ({
     }),
   useRootAppStore: <T,>(selector: (state: {
     handoffLaunchJobsByScope: typeof workMocks.handoffLaunchJobsByScope;
+    crossMachineLanesByMachineId: typeof workMocks.crossMachineLanesByMachineId;
   }) => T): T =>
     selector({
       handoffLaunchJobsByScope: workMocks.handoffLaunchJobsByScope,
+      crossMachineLanesByMachineId: workMocks.crossMachineLanesByMachineId,
     }),
 }));
 
-vi.mock("./useWorkSessions", () => ({
-  useWorkSessions: () => workMocks.currentWork,
-}));
+vi.mock("./useWorkSessions", async () => {
+  const { useWorkMachineRouter } = await vi.importActual<typeof import("./useWorkMachineRouter")>(
+    "./useWorkMachineRouter",
+  );
+  return {
+    useWorkSessions: () => {
+      const machineRouter = useWorkMachineRouter();
+      return {
+        ...workMocks.currentWork,
+        machineRouter,
+        resolveSessionRuntimePin: machineRouter.pinForSession,
+      };
+    },
+  };
+});
 
 vi.mock("./useWorkLaneDeleteProgress", () => ({
   useWorkLaneDeleteProgress: () => undefined,
@@ -389,7 +429,10 @@ vi.mock("./WorkViewArea", () => ({
     onToggleTerminalPane?: () => void;
     onOpenTerminalPane?: () => void;
     terminalPaneOpen?: boolean;
-  }) => (
+    resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
+  }) => {
+    workViewAreaProps.latest = props;
+    return (
     <div data-testid="work-view-area">
       <button
         type="button"
@@ -436,7 +479,8 @@ vi.mock("./WorkViewArea", () => ({
         open terminal pane
       </button>
     </div>
-  ),
+    );
+  },
 }));
 
 describe("TerminalsPage chat session activation", () => {
@@ -446,8 +490,13 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.projectRoot = null;
     workMocks.projectBinding = null;
     workMocks.handoffLaunchJobsByScope = {};
+    workMocks.openRemoteProjectTabs = [];
+    workMocks.crossMachineLanesByMachineId = {};
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
+    workViewAreaProps.latest = null;
+    forgetWorkPtyLaunchPin({ sessionId: "shell-foreign", ptyId: "pty-shell-foreign" });
+    forgetWorkPtyLaunchPin({ sessionId: "shell-now-active", ptyId: "pty-shell-now-active" });
     vi.clearAllMocks();
   });
 
@@ -518,7 +567,177 @@ describe("TerminalsPage chat session activation", () => {
     );
   });
 
-  it("switches to a foreign shell's owning project before selecting it", async () => {
+  it("opens a foreign CLI session in place, pinned, without switching projects", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const session = workMocks.makeTerminalSession("shell-foreign", "lane-foreign", "shell");
+    // The owning machine is open in this window, so it is a live pin target.
+    workMocks.openRemoteProjectTabs = [studioBinding];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+        sessions: [session],
+        online: true,
+      },
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    act(() => {
+      sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
+        session,
+        studioBinding,
+        event,
+        [session.id],
+      );
+    });
+
+    // The whole point: the project tab (Lanes/PRs/Files) never moves.
+    expect(workMocks.fns.switchRemoteProject).not.toHaveBeenCalled();
+    expect(workMocks.fns.switchProjectToPath).not.toHaveBeenCalled();
+    expect(workMocks.fns.setWorkViewState).not.toHaveBeenCalled();
+    // Selected/opened in the CURRENT view state, exactly like a chat.
+    expect(workMocks.currentWork.setSelectedSessionId).toHaveBeenCalledWith("shell-foreign");
+    expect(workMocks.currentWork.openSessionTab).toHaveBeenCalledWith("shell-foreign");
+    // And its runtime calls carry the owning machine as a per-session pin.
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toEqual(studioBinding);
+  });
+
+  it("keeps the TerminalView pin identity stable while cross-machine scope reloads", async () => {
+    const studioBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const session = workMocks.makeTerminalSession("shell-foreign", "lane-foreign", "shell");
+    // This binding is discoverable only through the replace-on-refresh
+    // cross-machine scope, matching the production flap.
+    workMocks.openRemoteProjectTabs = [];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+        sessions: [session],
+        online: true,
+      },
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    const rendered = render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    act(() => {
+      sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
+        session,
+        studioBinding,
+        { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent,
+        [session.id],
+      );
+    });
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBe(studioBinding);
+
+    workMocks.crossMachineLanesByMachineId = {};
+    rendered.rerender(<TerminalsPage />);
+
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBe(studioBinding);
+  });
+
+  it("leaves a session on the tab's own machine unpinned", async () => {
+    workMocks.projectRoot = "/repo";
+    workMocks.projectBinding = {
+      kind: "local",
+      key: "local:/repo",
+      rootPath: "/repo",
+      displayName: "repo",
+    };
+    // A foreign machine is present, so the lane index is non-empty and the null
+    // below is a real "this lane is on the active binding", not an empty map.
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: {
+          kind: "remote",
+          key: "remote:target-studio:project-a",
+          targetId: "target-studio",
+          runtimeName: "Mac Studio",
+          projectId: "project-a",
+          rootPath: "/remote/repo-a",
+          displayName: "repo-a",
+        },
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+        sessions: [],
+        online: true,
+      },
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const local = workMocks.makeTerminalSession("shell-local", "lane-primary", "shell");
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(local)).toBeNull();
+  });
+
+  it("drops a remembered pin when that binding is now active", async () => {
+    const activeBinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-studio:project-a",
+      targetId: "target-studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a",
+      displayName: "repo-a",
+    };
+    const session = workMocks.makeTerminalSession("shell-now-active", "lane-primary", "shell");
+    // This pin was remembered while the same binding was foreign. After the
+    // project tab rebinds to it, lane routing returns null and the registry is
+    // the fallback that must also collapse to the unpinned fast path.
+    rememberWorkPtyLaunchPin(session, activeBinding);
+    workMocks.projectBinding = activeBinding;
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBeNull();
+  });
+
+  it("falls back to switching projects when the foreign shell's binding is not open", async () => {
     let resolveSwitch!: () => void;
     workMocks.fns.switchRemoteProject.mockImplementationOnce(
       () => new Promise<void>((resolve) => {

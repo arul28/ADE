@@ -447,7 +447,17 @@ Renderer surfaces:
   `WorkPtyLaunchArgs` / `WorkPtyLaunchResult` contract. Ended tracked
   CLI sessions expose a prompt-free Resume action wired to
   `window.ade.pty.resumeSession`, alongside the continuation composer
-  that sends a new prompt through `window.ade.pty.sendToSession`.
+  that sends a new prompt through `window.ade.pty.sendToSession`. Resume and
+  continue share one request path (`runCliResumeRequest` +
+  `finalizeCliResumeResult`) that resolves the row's pin through
+  `resolveSessionRuntimePin` first, passes it to whichever call it is making, and
+  remembers it against the resulting session/PTY id. A pinned resume leaves the
+  local snapshot patch and lane selection to the cross-machine union's own sync
+  round rather than inventing a local lane for a foreign session.
+  It also owns `onSelectForeignRuntimeSession`: a CLI/shell row whose owning
+  binding is still open is remembered as a per-session pin and opened in the
+  current view state, and only a binding this window does not have open falls
+  back to switching the project tab.
   Opening a row that carries a woke marker clears it
   (`clearSessionWokeMarker`): opening *is* the acknowledgement, since the marker
   exists only to explain an unexpected return.
@@ -578,10 +588,15 @@ Renderer surfaces:
   include the owning machine id (`<machineId>:<laneId>`), and an explicit
   `lane-open:` marker is cleared when active foreign work returns so a future
   quiet spell starts collapsed instead of inheriting stale expanded state.
-  Every foreign row carries its owning `OpenProjectBinding`. Chat rows open
-  through the per-chat runtime pin without rebinding the project tab; shell and
-  CLI rows switch the tab to the owning project first because a PTY has no
-  per-session runtime pin. Row/lane context actions pass the same binding so
+  Every foreign row carries its owning `OpenProjectBinding`. Both chat and
+  CLI/shell rows open **in place** through a per-session runtime pin, leaving the
+  project tab pointed wherever the user put it — rebinding would drag Lanes, PRs,
+  and Files to the session's machine. They differ only in who resolves the pin: a
+  chat's is derived from its lane by `AgentChatPane` itself, while a CLI/shell
+  session's is handed to the PTY surfaces through the page's
+  `onSelectForeignRuntimeSession` handler. Rebinding the tab survives as the
+  fallback for the one case that has nothing to pin to: the owning binding is not
+  open in this window. Row/lane context actions pass the same binding so
   mutations cannot fall through to the active machine. A machine that goes
   offline keeps its rows, dimmed and folded shut: every card is inert and reads
   "<machine> is offline", the lane context menu's machine-bound actions are
@@ -792,6 +807,15 @@ Renderer surfaces:
   `replace: true` invalidates the hydration generation, clears queued frame/
   hydration writes, resets xterm, and writes the authoritative snapshot so an
   older async preview cannot repaint stale bytes after a gap repair.
+  Accepts an optional `runtimePin`: the cached runtime records it, it is part of
+  the runtime cache key, and every PTY/preview/transcript call the runtime makes
+  carries it. A pin change relocates a mounted session to a new key, so
+  `ensureRuntime` sweeps the runtime stranded at the old key
+  (`teardownRelocatedRuntimes`) before reusing or creating one — otherwise the
+  orphan would hold its PTY subscriptions open forever and a second xterm would
+  be built for the same PTY. PTY data/exit subscriptions and the main-side id
+  filter are grouped per pin, and the unpinned local path keeps its original
+  single listener, single signature, and one-argument preload calls.
 - `apps/desktop/src/renderer/components/terminals/terminalMacShiftSelection.ts`
   — macOS-only capture bridge used by `TerminalView`. While terminal mouse
   tracking is active, it converts an unmodified left-button Shift+mousedown
@@ -811,6 +835,24 @@ Renderer surfaces:
   `paneTreeOps.ts` — recursive pane tree component + pure operations
   (`reconcilePaneTree`, `splitPaneAtEdge`, `swapPanes`, `removePaneFromTree`,
   `detectDropEdge`) shared by every tiled surface, including the Work grid.
+- `apps/desktop/src/renderer/components/terminals/useWorkMachineRouter.ts` —
+  the Work tab's single per-session runtime routing authority, and the CLI/shell
+  counterpart to the chat pane's router. It builds a `ChatMachineRouter` from the
+  same shared helpers (`collectOpenProjectBindings` +
+  `buildChatMachineRoutingState` in `renderer/lib/chatMachineRouting.ts`) over
+  the active binding, open remote tabs, open local project roots, and every
+  cross-machine machine slice, then adds `pinForSession` / `rememberSessionPin` /
+  `forgetSessionPin` on top. `pinForSession` resolves lane ownership first and
+  falls back to the remembered launch pin from `cliLaunch.ts`; a pin that equals
+  the active binding collapses to `null` so every local session keeps the
+  unpinned fast path and its local IPC fallback. The remembered foreign pin is
+  deliberately **not** liveness-gated: the cross-machine lane scope is replaced
+  wholesale while it reloads, so a healthy binding briefly vanishes from the open
+  set, and dropping the pin in that window would query the tab's machine, discard
+  the parked terminal buffer, and hydrate a foreign session id there. Click-time
+  rebinding still consults `isLivePin`. `useWorkSessions` owns the single
+  instance and re-exports it as `machineRouter` / `resolveSessionRuntimePin`;
+  nothing else in Work constructs one.
 - `apps/desktop/src/renderer/components/terminals/useWorkSessions.ts` —
   hook that owns work view state (open items, active tab, draft kind,
   view mode, filters) and persists it to `localStorage` under
@@ -831,10 +873,15 @@ Renderer surfaces:
   non-authoritative until the active project refresh returns; cache mirroring
   and open-tab pruning pause during that window so the previous project's
   sessions cannot poison the new project's Work state. `canMutatePinnedProjectUi`
-  gates pinned updates on whether the pinned binding is still **open**
-  (`isLivePinnedBinding`), not on whether it is the active one: a pin that differs
-  from the active binding is the normal state of any chat whose lane lives on
-  another open machine, so only a pin for a closed project is discarded.
+  delegates to the machine router's `isLivePin`, gating pinned updates on whether
+  the pinned binding is still **open**, not on whether it is the active one: a
+  pin that differs from the active binding is the normal state of any session
+  whose lane lives on another open machine, so only a pin for a closed project is
+  discarded. `stopRuntime` resolves the row through the combined union map and
+  asks `machineRouter.pinForSession` for its binding, so disposing a foreign PTY
+  reaches its owning machine while local PTYs keep the unpinned call; `stopAll`
+  runs every running row in that same union through `stopRuntime` (chat rows
+  without a PTY are skipped).
   Remote-bound projects
   use a slower running-session refresh cadence and skip visibility-triggered
   refreshes unless hidden changes were observed, reducing background SSH
@@ -917,7 +964,11 @@ Renderer surfaces:
   rebuilds a resume command line from `TerminalResumeMetadata` for any
   provider; `parseTrackedCliResumeCommand`
   (`apps/desktop/src/main/utils/terminalSessionSignals.ts`) is the
-  inverse it relies on for round-tripping. `resolveLaunchFields` is
+  inverse it relies on for round-tripping. It also owns the shell-command-line
+  primitives `ptyService` uses to place Claude's `--plugin-dir` flag on the real
+  `claude` token: `shellWordSpans`, `isClaudeBinaryCommand`,
+  `shellCommandLineArgIndex` (the argument after `-c`/`-lc`), and the idempotent
+  `withClaudePluginInCommandLine`. `resolveLaunchFields` is
   the atomic-override helper that mixes a caller's
   `command`/`args`/`startupCommand`/`env` with the profile defaults
   (only when the caller passed nothing). `TRACKED_CLI_PERMISSION_MODES`

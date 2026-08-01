@@ -153,7 +153,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     }
   }
 
-  async function listSessions(args?: unknown): Promise<TerminalSessionSummary[]> {
+  async function listSessions(args?: unknown, pin?: unknown): Promise<TerminalSessionSummary[]> {
+    assertWebRuntimePinUnsupported("sessions.list", pin);
     const record = asRecord(args);
     const key = stableCacheKey(record);
     const mirrored = sessionMirror.get(key);
@@ -271,7 +272,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
 
   const sessions: Record<string, unknown> = {
     list: listSessions,
-    get: async (sessionId: string) => {
+    get: async (sessionId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("sessions.get", pin);
       const detail = await commands.call<TerminalSessionDetail | null>("work.getSession", { sessionId }, {
         fallback: null,
         idempotent: true,
@@ -371,7 +373,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         CLEAR_WOKE_PATCH,
         appliedToAll,
       )),
-    readTranscriptTail: async (args: unknown) => {
+    readTranscriptTail: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("sessions.readTranscriptTail", pin);
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId");
       const maxBytes = numberField(record, "maxBytes");
@@ -387,8 +390,16 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
     onChanged: (listener: (event: unknown) => void) => events.on("sessionsChanged", listener as never),
   };
 
+  // Contract gap: these Electron-shaped namespaces target one web host and do
+  // not accept runtime pins. The shared guard below covers every pty/terminal
+  // shim, sessions.list/get/readTranscriptTail, lanes.list, and the draft
+  // attachment shim in agentChat.ts — the surfaces cross-machine reads actually
+  // reach today. The wider lanes/sessions pin params in the Electron contract
+  // predate per-session routing and stay unguarded; a cross-machine web union
+  // must extend the adapter (and these guards) before relying on any pin.
   const pty: Record<string, unknown> = {
-    create: async (args: unknown): Promise<PtyCreateResult> => {
+    create: async (args: unknown, pin?: unknown): Promise<PtyCreateResult> => {
+      assertWebRuntimePinUnsupported("pty.create", pin);
       const record = asRecord(args);
       const result = await commands.call<Record<string, unknown> | null>(
         "work.startCliSession",
@@ -419,7 +430,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       });
       return { ptyId, sessionId, pid: null };
     },
-    resumeSession: async (args: unknown): Promise<PtySendToSessionResult> => {
+    resumeSession: async (args: unknown, pin?: unknown): Promise<PtySendToSessionResult> => {
+      assertWebRuntimePinUnsupported("pty.resumeSession", pin);
       const result = await commands.call<PtySendToSessionResult | null>("work.resumeCliSession", asRecord(args), {
         fallback: null,
         idempotent: false,
@@ -430,7 +442,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       return result ?? fallbackSendResult(asRecord(args));
     },
-    sendToSession: async (args: unknown): Promise<PtySendToSessionResult> => {
+    sendToSession: async (args: unknown, pin?: unknown): Promise<PtySendToSessionResult> => {
+      assertWebRuntimePinUnsupported("pty.sendToSession", pin);
       const result = await commands.call<PtySendToSessionResult | null>("work.sendToSession", asRecord(args), {
         fallback: null,
         idempotent: false,
@@ -441,19 +454,22 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       }
       return result ?? fallbackSendResult(asRecord(args));
     },
-    write: async (args: unknown) => {
+    write: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("pty.write", pin);
       const record = asRecord(args);
       const sessionId = terminalRegistry.sessionForPty(stringField(record, "ptyId"));
       if (!sessionId) return;
       await client.sendTerminalInput(sessionId, stringField(record, "data"));
     },
-    resize: async (args: unknown) => {
+    resize: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("pty.resize", pin);
       const record = asRecord(args);
       const sessionId = terminalRegistry.sessionForPty(stringField(record, "ptyId"));
       if (!sessionId) return;
       await client.sendTerminalResize(sessionId, numberField(record, "cols") ?? 80, numberField(record, "rows") ?? 24);
     },
-    dispose: async (args: unknown): Promise<PtyDisposeResult> => {
+    dispose: async (args: unknown, pin?: unknown): Promise<PtyDisposeResult> => {
+      assertWebRuntimePinUnsupported("pty.dispose", pin);
       const record = asRecord(args);
       const sessionId = stringField(record, "sessionId") || terminalRegistry.sessionForPty(stringField(record, "ptyId"));
       if (sessionId) unsubscribeSession(sessionId);
@@ -462,7 +478,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         idempotent: false,
       });
     },
-    setDataSubscriptions: async (args: unknown) => {
+    setDataSubscriptions: async (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("pty.setDataSubscriptions", pin);
       const ptyIds = Array.isArray(asRecord(args).ptyIds) ? (asRecord(args).ptyIds as unknown[]) : [];
       const wanted = new Set<string>();
       for (const ptyId of ptyIds) {
@@ -475,8 +492,14 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
         if (!wanted.has(sessionId)) unsubscribeSession(sessionId);
       }
     },
-    onData: (listener: (event: unknown) => void) => events.on("ptyData", listener as never),
-    onExit: (listener: (event: unknown) => void) => events.on("ptyExit", listener as never),
+    onData: (listener: (event: unknown) => void, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("pty.onData", pin);
+      return events.on("ptyData", listener as never);
+    },
+    onExit: (listener: (event: unknown) => void, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("pty.onExit", pin);
+      return events.on("ptyExit", listener as never);
+    },
   };
 
   const terminal: Record<string, unknown> = {
@@ -497,7 +520,8 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
       const history = await client.requestTerminalHistory({ sessionId, beforeOffset, maxBytes });
       return { terminalId: sessionId, data: history.data, nextSince: history.endOffset };
     },
-    preview: async (args?: unknown): Promise<ChatTerminalPreviewResult> => {
+    preview: async (args?: unknown, pin?: unknown): Promise<ChatTerminalPreviewResult> => {
+      assertWebRuntimePinUnsupported("terminal.preview", pin);
       const record = asRecord(args);
       let sessionId = terminalRegistry.resolveSessionId(record);
       if (!sessionId && record.chatSessionId) {
@@ -608,6 +632,14 @@ function normalizeWakeReason(reason?: string): SessionWakeReason {
 
 function asRecord(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+}
+
+export function assertWebRuntimePinUnsupported(operation: string, pin: unknown): void {
+  if (pin == null) return;
+  const key = stringField(asRecord(pin), "key") || "unknown binding";
+  throw new Error(
+    `ADE Web cannot route ${operation} to pinned runtime ${key}; cross-machine web routing is not implemented.`,
+  );
 }
 
 function stringField(record: Record<string, unknown>, key: string): string {

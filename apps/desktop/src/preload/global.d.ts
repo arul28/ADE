@@ -2045,6 +2045,7 @@ declare global {
         read: (args?: ChatTerminalReadArgs) => Promise<ChatTerminalReadResult>;
         preview: (
           args?: ChatTerminalPreviewArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<ChatTerminalPreviewResult>;
         write: (args: ChatTerminalWriteArgs) => Promise<{ ok: true }>;
         signal: (args: ChatTerminalSignalArgs) => Promise<{ ok: true }>;
@@ -2071,6 +2072,7 @@ declare global {
         create: (args: PtyCreateArgs, pin?: OpenProjectBinding | null) => Promise<PtyCreateResult>;
         resumeSession: (
           args: PtyResumeSessionArgs,
+          pin?: OpenProjectBinding | null,
         ) => Promise<PtyResumeSessionResult>;
         sendToSession: (
           args: PtySendToSessionArgs,
@@ -2089,9 +2091,18 @@ declare global {
           pin?: OpenProjectBinding | null,
         ) => Promise<void>;
         dispose: (args: { ptyId: string; sessionId?: string }, pin?: OpenProjectBinding | null) => Promise<PtyDisposeResult>;
-        setDataSubscriptions: (args: { ptyIds: string[] }) => Promise<void>;
-        onData: (cb: (ev: PtyDataEvent) => void) => () => void;
-        onExit: (cb: (ev: PtyExitEvent) => void) => () => void;
+        setDataSubscriptions: (
+          args: { ptyIds: string[] },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<void>;
+        onData: (
+          cb: (ev: PtyDataEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
+        onExit: (
+          cb: (ev: PtyExitEvent) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
       };
       diff: {
         getChanges: (args: GetDiffChangesArgs) => Promise<DiffChanges>;

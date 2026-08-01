@@ -15,6 +15,7 @@ import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
+import { assertWebRuntimePinUnsupported } from "./sessionsPty";
 
 // The browser gets authoritative ordered history through
 // chat.getChatEventHistory. chat_subscribe snapshots still matter as bounded
@@ -302,7 +303,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await call("chat.killDroidWorker", args, undefined, false);
     },
     getSessionCapabilities: (args: unknown) => call("chat.getSessionCapabilities", args, { capabilities: [] }),
-    saveTempAttachment: (args: unknown) => call("chat.saveTempAttachment", args, { path: "" }, false),
+    saveTempAttachment: (args: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("agentChat.saveTempAttachment", pin);
+      return call("chat.saveTempAttachment", args, { path: "" }, false);
+    },
     getImageDataUrl: async (path: string) => ({ dataUrl: (await requestDataUrl(client, infra.state, "readArtifact", { path })) ?? "" }),
     resolveSmartLinkPreview: (args: unknown) => {
       const record = asRecord(args);

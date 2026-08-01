@@ -573,6 +573,15 @@ Cross-machine Work union:
   `apps/desktop/src/renderer/lib/terminalAttention.ts` — route chat-created
   ownership metadata into the local or foreign optimistic path and render both
   through the shared `sessionFilingBucket` lifecycle-plus-snooze contract.
+- `apps/desktop/src/renderer/components/terminals/useWorkMachineRouter.ts` —
+  per-session machine routing for the union. A CLI or shell session on another
+  machine opens **in place** with its owning `OpenProjectBinding` carried as a
+  per-session runtime pin, exactly like a chat: the PTY spawn/write/resize/
+  dispose calls, terminal preview, transcript reads, and PTY data/exit
+  subscriptions all target the owning machine while the project tab stays where
+  the user put it. Switching the tab is reserved for a session whose binding this
+  window does not have open. Local sessions resolve to a `null` pin and keep the
+  unpinned path unchanged.
 
 Cross-machine Work chat handoff:
 

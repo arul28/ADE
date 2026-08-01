@@ -883,6 +883,13 @@ export const SessionListPane = React.memo(function SessionListPane({
     visibleSessionIds: string[],
     binding?: OpenProjectBinding | null,
   ) => void;
+  /**
+   * A CLI/shell row on another machine. Same in-place open as a chat — the page
+   * carries `binding` as a per-session runtime pin and leaves the project tab
+   * alone. Only when that binding is not open in this window (nothing to pin to)
+   * does the page fall back to rebinding the tab; deciding that needs the open
+   * bindings, which live on the page, not here.
+   */
   onSelectForeignRuntimeSession?: (
     session: TerminalSessionSummary,
     binding: OpenProjectBinding,
@@ -1799,6 +1806,13 @@ export const SessionListPane = React.memo(function SessionListPane({
         isSelected={selectedSessionId === session.id}
         isMultiSelected={selectedSessionIds?.has(session.id) ?? false}
         onSelect={(id, event) => {
+          // Both foreign branches open the row IN PLACE and carry the owning
+          // binding as a per-session runtime pin; neither rebinds the project
+          // tab. They differ only in who resolves the pin: a chat's is derived
+          // from its lane by the chat pane itself, while a CLI/shell session's
+          // has to be handed to the PTY surface, so it goes through the page's
+          // foreign-runtime handler (which also owns the not-open-binding
+          // fallback). The machine chip on the card is untouched either way.
           if (!foreignRow) {
             onSelectSession(id, event, renderedSessionIds);
           } else if (isChatToolType(session.toolType)) {

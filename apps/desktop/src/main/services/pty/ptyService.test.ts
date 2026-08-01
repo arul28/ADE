@@ -407,6 +407,13 @@ function createHarness(overrides: {
       return session;
     }),
     get: vi.fn((id: string) => sessionStore.get(id) ?? null),
+    list: vi.fn((args: { laneId?: string; status?: string; limit?: number | null; toolTypes?: string[] } = {}) => {
+      const sessions = Array.from(sessionStore.values())
+        .filter((session) => !args.laneId || session.laneId === args.laneId)
+        .filter((session) => !args.status || session.status === args.status)
+        .filter((session) => !args.toolTypes?.length || args.toolTypes.includes(session.toolType));
+      return args.limit === null ? sessions : sessions.slice(0, args.limit ?? 200);
+    }),
     setSummary: vi.fn(),
     setLastOutputPreview: vi.fn((sessionId: string, preview: string, opts?: { clearSettled?: boolean }) => {
       const session = sessionStore.get(sessionId);
@@ -516,6 +523,94 @@ function createHarness(overrides: {
     logger,
     loadPty,
   };
+}
+
+function seedCodexRollout({
+  id,
+  cwd,
+  startedAt,
+  mtime,
+  records = [],
+}: {
+  id: string;
+  cwd: string;
+  startedAt: string;
+  mtime: number | string | Date;
+  records?: unknown[];
+}): { filePath: string; body: string } {
+  const date = new Date(startedAt);
+  const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
+  const dirPath = path.join(
+    sessionsBase,
+    String(date.getFullYear()),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  );
+  const filePath = path.join(dirPath, `rollout-${startedAt.replace(/[:.]/g, "-")}-${id}.jsonl`);
+  const body = [
+    JSON.stringify({
+      timestamp: startedAt,
+      type: "session_meta",
+      payload: { id, timestamp: startedAt, cwd },
+    }),
+    ...records.map((record) => JSON.stringify(record)),
+  ].join("\n") + "\n";
+  const mtimeMs = mtime instanceof Date
+    ? mtime.getTime()
+    : typeof mtime === "number"
+      ? mtime
+      : Date.parse(mtime);
+
+  mocks.existsSyncResults.set(sessionsBase, true);
+  mocks.existsSyncResults.set(dirPath, true);
+  mocks.dirEntries.set(dirPath, Array.from(new Set([
+    ...(mocks.dirEntries.get(dirPath) ?? []),
+    path.basename(filePath),
+  ])));
+  mocks.fileContents.set(filePath, body);
+  mocks.fileStats.set(filePath, {
+    size: Buffer.byteLength(body, "utf8"),
+    mtimeMs,
+    isDirectory: false,
+  });
+  return { filePath, body };
+}
+
+function createDetachedResumableSession(
+  sessionService: ReturnType<typeof createHarness>["sessionService"],
+  {
+    sessionId,
+    startedAt = "2026-04-09T12:00:00.000Z",
+    endedAt = "2026-04-09T12:30:00.000Z",
+  }: {
+    sessionId: string;
+    startedAt?: string;
+    endedAt?: string;
+  },
+): void {
+  sessionService.create({
+    sessionId,
+    laneId: "lane-1",
+    ptyId: null,
+    tracked: true,
+    title: "Claude CLI",
+    startedAt,
+    transcriptPath: `/tmp/transcripts/${sessionId}.log`,
+    toolType: "claude",
+    resumeCommand: "claude --resume claude-session-123",
+    resumeMetadata: {
+      provider: "claude",
+      targetKind: "session",
+      targetId: "claude-session-123",
+      launch: { permissionMode: "default" },
+    },
+  });
+  sessionService.end({
+    sessionId,
+    endedAt,
+    exitCode: null,
+    status: "detached",
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1399,6 +1494,329 @@ describe("ptyService", () => {
       });
 
       expect(mockPty.write).toHaveBeenCalledWith(`${startupCommand}\r`);
+    });
+
+    it("routes the bundled Claude plugin into the -lc command line of shell-wrapped resume launches", async () => {
+      // Regression: resume/reattach launches spawn `/bin/bash --noprofile
+      // --norc -lc "claude …"`. Prepending --plugin-dir to that argv makes
+      // bash itself die with "invalid option" (exit 2), which used to kill
+      // every Claude resume.
+      const pluginRoot = "/Applications/ADE.app/Contents/Resources/agent-skills";
+      mocks.fileStats.set(path.join(pluginRoot, ".claude-plugin", "plugin.json"), { isDirectory: false });
+      const { service, loadPty } = createHarness({
+        getAdeCliAgentEnv: (env) => ({
+          ...env,
+          ADE_AGENT_SKILLS_DIRS: pluginRoot,
+          ADE_BUNDLED_AGENT_SKILLS_DIR: pluginRoot,
+        }),
+      });
+
+      await service.create({
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        command: "/bin/bash",
+        args: ["--noprofile", "--norc", "-lc", "claude --resume claude-session-123"],
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const [spawnedCommand, spawnedArgs] = ptyLib.spawn.mock.calls.at(-1) as [string, string[]];
+      expect(spawnedCommand).toBe("/bin/bash");
+      // bash's own argv must be untouched apart from the rewritten -lc payload.
+      expect(spawnedArgs.slice(0, 3)).toEqual(["--noprofile", "--norc", "-lc"]);
+      expect(spawnedArgs).toHaveLength(4);
+      expect(spawnedArgs[3]).toBe(`claude --plugin-dir "${pluginRoot}" --resume claude-session-123`);
+    });
+
+    it("keeps a resumable session's prior status when the resume launch dies immediately", async () => {
+      // Regression: a resume whose spawned shell exits nonzero right away used
+      // to stamp the reused row failed/exit-2, making a still-resumable
+      // detached session look permanently dead.
+      const { service, sessionService, mockPty } = createHarness();
+      createDetachedResumableSession(sessionService, { sessionId: "session-resume-status" });
+
+      await service.create({
+        sessionId: "session-resume-status",
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --resume claude-session-123",
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 2 });
+
+      const session = sessionService.get("session-resume-status");
+      expect(session.status).toBe("detached");
+      expect(session.exitCode).toBeNull();
+      expect(session.endedAt).toBe("2026-04-09T12:30:00.000Z");
+    });
+
+    it("does not restore a stale running status when a resume launch dies immediately", async () => {
+      // A brain restart can leave a running row without a live PTY. That row
+      // is eligible for relaunch, but it is not a valid prior end state.
+      const { service, sessionService, mockPty } = createHarness();
+      sessionService.create({
+        sessionId: "session-stale-running",
+        laneId: "lane-1",
+        ptyId: null,
+        tracked: true,
+        title: "Claude CLI",
+        startedAt: "2026-04-09T12:00:00.000Z",
+        transcriptPath: "/tmp/transcripts/session-stale-running.log",
+        toolType: "claude",
+        resumeCommand: "claude --resume claude-session-123",
+        resumeMetadata: {
+          provider: "claude",
+          targetKind: "session",
+          targetId: "claude-session-123",
+          launch: { permissionMode: "default" },
+        },
+      });
+
+      await service.create({
+        sessionId: "session-stale-running",
+        laneId: "lane-1",
+        title: "Claude CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "claude",
+        startupCommand: "claude --resume claude-session-123",
+      });
+
+      mockPty._emitter.emit("exit", { exitCode: 2 });
+
+      const session = sessionService.get("session-stale-running");
+      expect(session.status).toBe("failed");
+      expect(session.exitCode).toBe(2);
+      expect(session.endedAt).not.toBeNull();
+      expect(session.ptyId).toBeNull();
+    });
+
+    it("captures a live Codex thread id from a rollout without the ADE guidance marker", async () => {
+      // Regression: live capture used to require the string "ADE session
+      // guidance" in the rollout, which only the Work-tab CLI preamble emits.
+      // Goal-launched sessions never wrote it, so thread ids were essentially
+      // never captured live. Identification is cwd + timestamp proximity.
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        // A goal launch: no "ADE session guidance" anywhere in the rollout.
+        seedCodexRollout({
+          id: "thread-goal",
+          cwd: "/tmp/test-worktree",
+          startedAt: fakeNow.toISOString(),
+          mtime: fakeNow,
+          records: [{ type: "event_msg", payload: { message: "<codex_internal_context source=\"goal\">" } }],
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-goal");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not adopt a same-cwd Codex rollout that predates the session", async () => {
+      // The existing not-before floor must continue rejecting rollouts that
+      // were already present before this launch.
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        const otherStartedAt = "2026-04-15T21:00:00.000Z";
+        seedCodexRollout({
+          id: "thread-other",
+          cwd: "/tmp/test-worktree",
+          startedAt: otherStartedAt,
+          mtime: fakeNow,
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(sessionId, "codex resume thread-other");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("excludes Codex rollout ids already adopted by other terminal sessions", async () => {
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const { service, sessionService } = createHarness();
+
+        sessionService.create({
+          sessionId: "session-owned-metadata",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: launchAt.toISOString(),
+          transcriptPath: "/tmp/transcripts/session-owned-metadata.log",
+          toolType: "codex",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-owned-metadata",
+            launch: { permissionMode: "default" },
+          },
+        });
+        sessionService.create({
+          sessionId: "session-owned-command",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: launchAt.toISOString(),
+          transcriptPath: "/tmp/transcripts/session-owned-command.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-owned-command",
+        });
+
+        const atOffset = (offsetMs: number) => new Date(launchAt.getTime() + offsetMs).toISOString();
+        seedCodexRollout({
+          id: "thread-owned-metadata",
+          cwd: "/tmp/test-worktree",
+          startedAt: atOffset(400),
+          mtime: launchAt.getTime() + 400,
+        });
+        seedCodexRollout({
+          id: "thread-owned-command",
+          cwd: "/tmp/test-worktree",
+          startedAt: atOffset(500),
+          mtime: launchAt.getTime() + 500,
+        });
+        seedCodexRollout({
+          id: "thread-this-session",
+          cwd: "/tmp/test-worktree",
+          startedAt: atOffset(800),
+          mtime: launchAt.getTime() + 800,
+        });
+
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        expect(sessionService.list).toHaveBeenCalledWith({ limit: null });
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          sessionId,
+          "codex resume thread-this-session",
+        );
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringMatching(/thread-owned-(metadata|command)/),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("uses a 90-second window for live Codex rollout capture", async () => {
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const atOffset = (offsetMs: number) => new Date(launchAt.getTime() + offsetMs).toISOString();
+        seedCodexRollout({
+          id: "thread-too-late",
+          cwd: "/tmp/test-worktree",
+          startedAt: atOffset(90_001),
+          mtime: launchAt.getTime() + 90_001,
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          "codex resume thread-too-late",
+        );
+
+        seedCodexRollout({
+          id: "thread-in-window",
+          cwd: "/tmp/test-worktree",
+          startedAt: atOffset(90_000),
+          mtime: launchAt.getTime() + 90_000,
+        });
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          sessionId,
+          "codex resume thread-in-window",
+        );
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          "codex resume thread-too-late",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("marks a resumed session failed when it exits nonzero after actually running", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, sessionService, mockPty } = createHarness();
+        createDetachedResumableSession(sessionService, { sessionId: "session-resume-real-exit" });
+
+        await service.create({
+          sessionId: "session-resume-real-exit",
+          laneId: "lane-1",
+          title: "Claude CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          startupCommand: "claude --resume claude-session-123",
+        });
+
+        await vi.advanceTimersByTimeAsync(60_000);
+        mockPty._emitter.emit("exit", { exitCode: 2 });
+
+        const session = sessionService.get("session-resume-real-exit");
+        expect(session.status).toBe("failed");
+        expect(session.exitCode).toBe(2);
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("waits for agent CLI readiness before sending initialInput", async () => {
@@ -3030,27 +3448,13 @@ describe("ptyService", () => {
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
         vi.setSystemTime(fakeNow);
-
-        const homedir = os.homedir();
-        const sessionsBase = path.join(homedir, ".codex", "sessions");
-        const dirPath = path.join(sessionsBase, "2026", "04", "15");
-        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-storage.jsonl");
         const startedAt = "2026-04-15T21:30:00.000Z";
-        const firstLine = JSON.stringify({
-          timestamp: startedAt,
-          type: "session_meta",
-          payload: {
-            id: "thread-storage",
-            timestamp: startedAt,
-            cwd: "/tmp/worktree",
-          },
+        seedCodexRollout({
+          id: "thread-storage",
+          cwd: "/tmp/test-worktree",
+          startedAt,
+          mtime: fakeNow.getTime() - 30_000,
         });
-
-        mocks.existsSyncResults.set(sessionsBase, true);
-        mocks.existsSyncResults.set(dirPath, true);
-        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
-        mocks.fileContents.set(filePath, `${firstLine}\n`);
-        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, sessionService, loadPty } = createHarness();
         sessionService.readTranscriptTail.mockResolvedValue("OpenAI Codex\nmodel: gpt-5\n› ");
@@ -3061,7 +3465,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Codex CLI",
           startedAt,
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-codex-storage-send.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-codex-storage-send.log",
           toolType: "codex",
           resumeCommand: "codex --no-alt-screen resume",
         });
@@ -5961,6 +6365,87 @@ describe("ptyService", () => {
   });
 
   describe("ensureResumeTargets", () => {
+    it("resolves the backfill cwd from the lane worktree, not the transcript path", async () => {
+      // Transcripts live under the project root even for lane sessions, so a
+      // transcript-derived cwd searched the wrong directory and never matched
+      // the rollout Codex wrote in the lane worktree.
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        seedCodexRollout({
+          id: "thread-lane",
+          cwd: "/tmp/test-worktree",
+          startedAt,
+          mtime: fakeNow.getTime() - 30_000,
+        });
+
+        const { service, sessionService, laneService } = createHarness();
+        sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
+        sessionService.create({
+          sessionId: "session-lane-cwd",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          // Project-root transcript, deliberately NOT under the lane worktree.
+          transcriptPath: "/tmp/test-project/.ade/transcripts/session-lane-cwd.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-lane-cwd"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(laneService.getLaneBaseAndBranch).toHaveBeenCalledWith("lane-1");
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith("session-lane-cwd", "codex resume thread-lane");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("falls back to the transcript-derived cwd when the lane lookup fails", async () => {
+      vi.useFakeTimers();
+      try {
+        const fakeNow = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(fakeNow);
+        const startedAt = "2026-04-15T21:30:00.000Z";
+        seedCodexRollout({
+          id: "thread-fallback",
+          cwd: "/tmp/deleted-lane",
+          startedAt,
+          mtime: fakeNow.getTime() - 30_000,
+        });
+
+        const { service, sessionService, laneService } = createHarness();
+        laneService.getLaneBaseAndBranch.mockImplementation(() => {
+          throw new Error("lane 'lane-1' no longer exists");
+        });
+        sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
+        sessionService.create({
+          sessionId: "session-fallback-cwd",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt,
+          transcriptPath: "/tmp/deleted-lane/.ade/transcripts/session-fallback-cwd.log",
+          toolType: "codex",
+        });
+
+        await service.ensureResumeTargets(["session-fallback-cwd"]);
+        await vi.advanceTimersByTimeAsync(0);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(
+          "session-fallback-cwd",
+          "codex resume thread-fallback",
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("backfills Codex storage resume targets during session-list hydration", async () => {
       // The session-list path is how older sessions (whose transcripts no
       // longer contain an explicit resume command) get their resume target
@@ -5970,27 +6455,13 @@ describe("ptyService", () => {
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
         vi.setSystemTime(fakeNow);
-
-        const homedir = os.homedir();
-        const sessionsBase = path.join(homedir, ".codex", "sessions");
-        const dirPath = path.join(sessionsBase, "2026", "04", "15");
-        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-abc.jsonl");
         const startedAt = "2026-04-15T21:30:00.000Z";
-        const firstLine = JSON.stringify({
-          timestamp: startedAt,
-          type: "session_meta",
-          payload: {
-            id: "thread-abc",
-            timestamp: startedAt,
-            cwd: "/tmp/worktree",
-          },
+        seedCodexRollout({
+          id: "thread-abc",
+          cwd: "/tmp/test-worktree",
+          startedAt,
+          mtime: fakeNow.getTime() - 30_000,
         });
-
-        mocks.existsSyncResults.set(sessionsBase, true);
-        mocks.existsSyncResults.set(dirPath, true);
-        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
-        mocks.fileContents.set(filePath, `${firstLine}\n`);
-        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, sessionService } = createHarness();
         sessionService.readTranscriptTail.mockResolvedValueOnce("OpenAI Codex\nmodel: gpt-5\n› ");
@@ -6001,7 +6472,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Codex CLI",
           startedAt,
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-1.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-1.log",
           toolType: "codex",
         });
 
@@ -6020,27 +6491,13 @@ describe("ptyService", () => {
       try {
         const fakeNow = new Date("2026-04-15T22:00:00.000Z");
         vi.setSystemTime(fakeNow);
-
-        const homedir = os.homedir();
-        const sessionsBase = path.join(homedir, ".codex", "sessions");
-        const dirPath = path.join(sessionsBase, "2026", "04", "15");
-        const filePath = path.join(dirPath, "rollout-2026-04-15T21-30-00-thread-live.jsonl");
         const startedAt = "2026-04-15T21:30:00.000Z";
-        const firstLine = JSON.stringify({
-          timestamp: startedAt,
-          type: "session_meta",
-          payload: {
-            id: "thread-live",
-            timestamp: startedAt,
-            cwd: "/tmp/worktree",
-          },
+        seedCodexRollout({
+          id: "thread-live",
+          cwd: "/tmp/test-worktree",
+          startedAt,
+          mtime: fakeNow.getTime() - 30_000,
         });
-
-        mocks.existsSyncResults.set(sessionsBase, true);
-        mocks.existsSyncResults.set(dirPath, true);
-        mocks.dirEntries.set(dirPath, [path.basename(filePath)]);
-        mocks.fileContents.set(filePath, `${firstLine}\n`);
-        mocks.fileStats.set(filePath, { size: firstLine.length, mtimeMs: fakeNow.getTime() - 30_000, isDirectory: false });
 
         const { service, sessionService, logger } = createHarness();
         sessionService.readTranscriptTail.mockResolvedValueOnce([
@@ -6055,7 +6512,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Codex CLI",
           startedAt,
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-update-only.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-update-only.log",
           toolType: "codex",
         });
 
@@ -6095,7 +6552,7 @@ describe("ptyService", () => {
         tracked: true,
         title: "Claude CLI",
         startedAt: "2026-04-15T21:30:00.000Z",
-        transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-with-codex-words.log",
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-claude-with-codex-words.log",
         toolType: "claude",
       });
 
@@ -6123,20 +6580,20 @@ describe("ptyService", () => {
 
         const matchedId = "11111111-1111-1111-1111-111111111111";
         const newerDifferentId = "22222222-2222-2222-2222-222222222222";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
         const matchedPath = path.join(claudeProjectDir, `${matchedId}.jsonl`);
         const newerDifferentPath = path.join(claudeProjectDir, `${newerDifferentId}.jsonl`);
         const matchedFirstLine = JSON.stringify({
           timestamp: "2026-04-15T21:30:00.000Z",
           type: "user",
           sessionId: matchedId,
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
         const newerDifferentFirstLine = JSON.stringify({
           timestamp: "2026-04-15T22:00:00.000Z",
           type: "user",
           sessionId: newerDifferentId,
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
 
         mocks.existsSyncResults.set(claudeProjectDir, true);
@@ -6158,7 +6615,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Claude CLI",
           startedAt: "2026-04-15T21:30:00.000Z",
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-storage.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-claude-storage.log",
           toolType: "claude",
         });
 
@@ -6185,13 +6642,13 @@ describe("ptyService", () => {
         vi.setSystemTime(fakeNow);
 
         const otherId = "33333333-3333-3333-3333-333333333333";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
         const otherPath = path.join(claudeProjectDir, `${otherId}.jsonl`);
         const otherFirstLine = JSON.stringify({
           timestamp: "2026-04-15T21:31:00.000Z",
           type: "user",
           sessionId: otherId,
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
 
         mocks.existsSyncResults.set(claudeProjectDir, true);
@@ -6208,7 +6665,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Claude CLI",
           startedAt: "2026-04-15T21:30:00.000Z",
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-targetless.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-claude-targetless.log",
           toolType: "claude",
         });
         sessionService.end({
@@ -6238,20 +6695,20 @@ describe("ptyService", () => {
 
         const firstId = "44444444-4444-4444-4444-444444444444";
         const secondId = "55555555-5555-5555-5555-555555555555";
-        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-worktree");
+        const claudeProjectDir = path.join(os.homedir(), ".claude", "projects", "-tmp-test-worktree");
         const firstPath = path.join(claudeProjectDir, `${firstId}.jsonl`);
         const secondPath = path.join(claudeProjectDir, `${secondId}.jsonl`);
         const firstLine = JSON.stringify({
           timestamp: "2026-04-15T21:30:00.500Z",
           type: "user",
           sessionId: firstId,
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
         const secondLine = JSON.stringify({
           timestamp: "2026-04-15T21:30:01.000Z",
           type: "user",
           sessionId: secondId,
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
 
         mocks.existsSyncResults.set(claudeProjectDir, true);
@@ -6270,7 +6727,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Claude CLI",
           startedAt: "2026-04-15T21:30:00.000Z",
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-ambiguous.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-claude-ambiguous.log",
           toolType: "claude",
         });
         sessionService.end({
@@ -6305,7 +6762,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Codex CLI",
           startedAt: "2026-04-15T21:30:00.000Z",
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-missing.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-missing.log",
           toolType: "codex",
         });
 
@@ -6339,7 +6796,7 @@ describe("ptyService", () => {
         stdout: JSON.stringify([
           {
             id: "ses_abc",
-            directory: "/tmp/worktree",
+            directory: "/tmp/test-worktree",
             created: Date.parse(startedAt),
             updated: Date.parse(startedAt) + 1000,
           },
@@ -6356,7 +6813,7 @@ describe("ptyService", () => {
         tracked: true,
         title: "OpenCode CLI",
         startedAt,
-        transcriptPath: "/tmp/worktree/.ade/transcripts/session-opencode.log",
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-opencode.log",
         toolType: "opencode",
       });
 
@@ -6366,7 +6823,7 @@ describe("ptyService", () => {
         bundledOpenCode,
         ["session", "list", "--format", "json", "--max-count", "80"],
         expect.objectContaining({
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
           encoding: "utf8",
         }),
       );
@@ -6380,7 +6837,7 @@ describe("ptyService", () => {
         stdout: JSON.stringify([
           {
             id: "ses_false_match",
-            directory: "/tmp/worktree",
+            directory: "/tmp/test-worktree",
             created: Date.parse(startedAt),
             updated: Date.parse(startedAt) + 1000,
           },
@@ -6397,7 +6854,7 @@ describe("ptyService", () => {
         tracked: true,
         title: "OpenCode CLI",
         startedAt,
-        transcriptPath: "/tmp/worktree/.ade/transcripts/session-opencode-false-match.log",
+        transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-opencode-false-match.log",
         toolType: "opencode",
       });
 
@@ -6417,12 +6874,12 @@ describe("ptyService", () => {
         vi.setSystemTime(fakeNow);
         const startedAt = "2026-04-15T21:30:00.000Z";
         const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
-        const projectDir = path.join(droidSessionsDir, "-tmp-worktree");
+        const projectDir = path.join(droidSessionsDir, "-tmp-test-worktree");
         const filePath = path.join(projectDir, "droid-session.jsonl");
         const firstLine = JSON.stringify({
           type: "session_start",
           id: "droid_false_match",
-          cwd: "/tmp/worktree",
+          cwd: "/tmp/test-worktree",
         });
         mocks.dirEntries.set(projectDir, [path.basename(filePath)]);
         mocks.fileContents.set(filePath, `${firstLine}\n`);
@@ -6437,7 +6894,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Droid CLI",
           startedAt,
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-droid-false-match.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-droid-false-match.log",
           toolType: "droid",
         });
 
@@ -6461,7 +6918,7 @@ describe("ptyService", () => {
           os.homedir(),
           ".claude",
           "projects",
-          "-tmp-worktree",
+          "-tmp-test-worktree",
           `${claudeSessionId}.jsonl`,
         );
         mocks.fileContents.set(filePath, `${JSON.stringify({
@@ -6478,7 +6935,7 @@ describe("ptyService", () => {
           tracked: true,
           title: "Say exactly: patched exit works",
           startedAt: "2026-04-15T21:30:00.000Z",
-          transcriptPath: "/tmp/worktree/.ade/transcripts/session-claude-existing.log",
+          transcriptPath: "/tmp/test-worktree/.ade/transcripts/session-claude-existing.log",
           toolType: "claude",
           resumeMetadata: {
             provider: "claude",

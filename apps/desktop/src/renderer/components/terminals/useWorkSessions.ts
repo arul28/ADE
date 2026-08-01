@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
-import type { AgentChatSession, LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
-import { isLivePinnedBinding } from "../../lib/chatMachineRouting";
+import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../../shared/types";
 import {
   PROVIDER_TOOL_TYPE,
   type ExternalSessionImportResult,
@@ -42,17 +41,15 @@ import {
   subscribeWorkChatSessionCreated,
 } from "../../lib/chatSessionEvents";
 import {
-  forgetWorkPtyLaunchPin,
   LAUNCH_PROFILE_TITLE,
   LAUNCH_PROFILE_TOOL_TYPE,
-  rememberWorkPtyLaunchPin,
   resolveLaunchFields,
-  workPtyLaunchPinFor,
   type WorkPtyLaunchArgs,
   type WorkPtyLaunchResult,
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
+import { useWorkMachineRouter } from "./useWorkMachineRouter";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
 
@@ -441,6 +438,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const machineRouter = useWorkMachineRouter();
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -459,19 +457,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   // tab. The question is no longer "is this the active binding?" but "is this
   // binding still open?", so updates for a foreign chat are applied and only a
   // pin for a closed project is discarded.
-  const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => {
-    const state = appStore.getState();
-    const open: OpenProjectBinding[] = [];
-    if (state.projectBinding) open.push(state.projectBinding);
-    for (const binding of state.openRemoteProjectTabs ?? []) open.push(binding);
-    for (const machine of Object.values(crossMachineLanesByMachineId)) {
-      if (machine.binding) open.push(machine.binding);
-    }
-    for (const rootPath of state.openProjectTabRoots ?? []) {
-      open.push({ kind: "local", key: `local:${rootPath}`, rootPath, displayName: rootPath } as OpenProjectBinding);
-    }
-    return isLivePinnedBinding(pin, open);
-  }, [appStore, crossMachineLanesByMachineId]);
+  const canMutatePinnedProjectUi = useCallback(
+    (pin: WorkPtyLaunchArgs["pin"] | undefined) => machineRouter.isLivePin(pin),
+    [machineRouter],
+  );
   const hasRunningSessionsRef = useRef(false);
   const backgroundRefreshTimerRef = useRef<number | null>(null);
   const pendingHiddenSessionRefreshRef = useRef(false);
@@ -597,6 +586,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     }
     return map;
   }, [crossMachineLanesByMachineId, localSessionsById]);
+  const sessionsByIdRef = useRef(sessionsById);
+  useLayoutEffect(() => {
+    sessionsByIdRef.current = sessionsById;
+  }, [sessionsById]);
   const missingSessionLaneIdsSignature = useMemo(() => {
     if (sessions.length === 0) return "";
     const knownLaneIds = new Set(lanes.map((lane) => lane.id));
@@ -1634,8 +1627,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   }, [sessionListOrganization, chipFiltered]);
 
   const runningSessions = useMemo(
-    () => sessions.filter((session) => session.status === "running"),
-    [sessions],
+    () => [...sessionsById.values()].filter((session) => session.status === "running"),
+    [sessionsById],
   );
 
   const gridLayoutId = useMemo(
@@ -1745,7 +1738,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       });
       invalidateSessionListCache();
       const endedAt = markPtyClosed(ptyId, sessionId);
-      const pin = workPtyLaunchPinFor({ ptyId, sessionId });
+      const session = sessionId
+        ? sessionsByIdRef.current.get(sessionId)
+        : [...sessionsByIdRef.current.values()].find((candidate) => candidate.ptyId === ptyId);
+      const pin = machineRouter.pinForSession(session ?? { ptyId, sessionId });
 
       let disposeError: unknown = null;
       try {
@@ -1759,11 +1755,11 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
             restorePtyClosed(previousSessions);
           } else {
             rememberStoppedRuntime(ptyId, sessionId, endedAt);
-            forgetWorkPtyLaunchPin({ ptyId, sessionId });
+            machineRouter.forgetSessionPin({ ptyId, sessionId });
           }
         } else {
           rememberStoppedRuntime(ptyId, sessionId, endedAt);
-          forgetWorkPtyLaunchPin({ ptyId, sessionId });
+          machineRouter.forgetSessionPin({ ptyId, sessionId });
         }
       } catch (error) {
         disposeError = error;
@@ -1782,16 +1778,21 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       }
       if (disposeError) throw disposeError;
     },
-    [refresh],
+    [machineRouter, refresh],
   );
 
   const stopAllRuntimes = useCallback(async () => {
+    // "Stop all" spans the combined Work union, including foreign rows. Each
+    // stop goes through the same session resolver as an individual stop, so a
+    // foreign PTY is disposed on its owning binding while local PTYs keep the
+    // unpinned fast path. Chat rows without a PTY are intentionally skipped.
     await Promise.allSettled([
-      ...runningSessions
+      ...[...sessionsByIdRef.current.values()]
         .filter((session) => Boolean(session.ptyId))
+        .filter((session) => session.status === "running")
         .map((session) => stopRuntime(session.ptyId as string, session.id)),
     ]);
-  }, [runningSessions, stopRuntime]);
+  }, [stopRuntime]);
 
   const launchPtySession = useCallback(
     async (args: WorkPtyLaunchArgs): Promise<WorkPtyLaunchResult> => {
@@ -1826,7 +1827,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       const result = args.pin
         ? await window.ade.pty.create(createArgs, args.pin)
         : await window.ade.pty.create(createArgs);
-      rememberWorkPtyLaunchPin(result, args.pin);
+      machineRouter.rememberSessionPin(result, args.pin);
       if (!canMutatePinnedProjectUi(args.pin)) {
         return result;
       }
@@ -1878,7 +1879,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [canMutatePinnedProjectUi, focusSession, lanes, openSessionTab, refresh, selectLane],
+    [canMutatePinnedProjectUi, focusSession, lanes, machineRouter, openSessionTab, refresh, selectLane],
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
@@ -2073,5 +2074,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     navigate,
     selectLane,
     focusSession,
+    machineRouter,
+    resolveSessionRuntimePin: machineRouter.pinForSession,
   };
 }

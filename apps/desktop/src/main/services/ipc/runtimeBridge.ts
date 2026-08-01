@@ -45,6 +45,8 @@ import type {
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
   RemoteRuntimeTrustSshHostKeyResult,
+  RuntimeEventsReleaseRequest,
+  RuntimeEventsReleaseResult,
   SyncWebPairingInfo,
 } from "../../../shared/types";
 import type { LocalRuntimeConnectionPool } from "../localRuntime/localRuntimeConnectionPool";
@@ -63,6 +65,10 @@ import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { createSyncCloudRelayStore } from "../../../../../ade-cli/src/services/sync/syncCloudRelayStore";
+import {
+  createRuntimeEventSubscriptionRegistry,
+  type RuntimeEventWindowSubscription,
+} from "./runtimeEventSubscriptionRegistry";
 
 // Lane attach/adopt performed through the runtime action path never touches the
 // in-process IPC.lanesAttach handler, so the project-path inspection cache must
@@ -127,12 +133,6 @@ const REMOTE_RUNTIME_SYNC_METHODS = new Set([
   "modelPicker.getRecents",
   "modelPicker.pushRecent",
 ]);
-
-type RuntimeEventWindowSubscription = {
-  bindingKey: string;
-  requestKey: string;
-  cleanup: (() => void) | null;
-};
 
 type RuntimeEventSubscriptionInit = Pick<
   RemoteRuntimeStreamEventsResult,
@@ -272,6 +272,18 @@ function resolveAuthorizedLocalRuntimeRootPath(
     : null;
 }
 
+// A window bound to the same local project shares that binding's key; any other
+// authorized root gets a root-scoped key of its own.
+function localRuntimeEventBindingKey(
+  binding: WindowRuntimeSession["binding"] | null | undefined,
+  rootPath: string,
+): string {
+  return binding?.kind === "local" &&
+    localRuntimeRootKey(binding.rootPath) === localRuntimeRootKey(rootPath)
+    ? binding.key
+    : `local:${rootPath}`;
+}
+
 function canBindRemoteProjectToSender(
   windowId: number | null,
   sender: WebContents,
@@ -396,11 +408,14 @@ export function registerRuntimeBridge({
     { appVersion, getAccountRelayProof, getAuthorizedAccountOwnerId },
     pairedMachineStore,
   );
-  const runtimeEventSubscriptions = new Map<
-    number,
-    RuntimeEventWindowSubscription
-  >();
-  const runtimeEventWatchedSenders = new Set<number>();
+  const {
+    addRuntimeEventSubscription,
+    attachRuntimeEventSubscriptionCleanup,
+    cleanupRuntimeEventSubscriptions,
+    getRuntimeEventSubscription,
+    refreshRuntimeEventSubscription,
+    removeRuntimeEventSubscription,
+  } = createRuntimeEventSubscriptionRegistry();
   const remoteOpenProjectGenerations = new Map<string, number>();
   let remoteOpenProjectGeneration = 0;
   let lastDiscoveredMachines: RemoteRuntimeDiscoveryResult["machines"] = [];
@@ -495,24 +510,20 @@ export function registerRuntimeBridge({
     };
   }
 
-  const cleanupRuntimeEventSubscription = (senderId: number): void => {
-    const existing = runtimeEventSubscriptions.get(senderId);
-    runtimeEventSubscriptions.delete(senderId);
-    try {
-      existing?.cleanup?.();
-    } catch {
-      // Best-effort subscription cleanup.
-    }
-  };
+  // One shape for the (binding, category, replay) subscription key, so the
+  // release handler can rebuild exactly the key the subscribe path registered.
+  const runtimeEventRequestKeyPrefix = (
+    bindingKey: string,
+    category: RemoteRuntimeEventCategory | undefined,
+  ): string => `${bindingKey}:${category ?? "*"}:`;
 
-  const watchRuntimeEventSender = (sender: WebContents): void => {
-    if (runtimeEventWatchedSenders.has(sender.id)) return;
-    runtimeEventWatchedSenders.add(sender.id);
-    sender.once("destroyed", () => {
-      runtimeEventWatchedSenders.delete(sender.id);
-      cleanupRuntimeEventSubscription(sender.id);
-    });
-  };
+  const runtimeEventRequestKey = (
+    bindingKey: string,
+    request: RemoteRuntimeStreamEventsRequest,
+  ): string =>
+    `${runtimeEventRequestKeyPrefix(bindingKey, request.category)}${
+      request.replay === false ? "live" : "replay"
+    }`;
 
   const shouldForwardRuntimeEvent = (
     sender: WebContents,
@@ -530,17 +541,13 @@ export function registerRuntimeBridge({
   };
 
   const sendRuntimeEvent = (
-    sender: WebContents,
-    bindingKey: string,
-    requestKey: string,
+    subscription: RuntimeEventWindowSubscription,
     event: RemoteRuntimeBufferedEvent,
     eventEpoch?: string | null,
   ): void => {
-    const existing = runtimeEventSubscriptions.get(sender.id);
+    const { sender, bindingKey, requestKey } = subscription;
     if (
-      !existing ||
-      existing.bindingKey !== bindingKey ||
-      existing.requestKey !== requestKey ||
+      getRuntimeEventSubscription(sender.id, requestKey) !== subscription ||
       sender.isDestroyed()
     )
       return;
@@ -563,43 +570,44 @@ export function registerRuntimeBridge({
     requestKey: string,
     subscribe: RuntimeEventSubscribe,
   ): Promise<RuntimeEventSubscriptionInit | null> => {
-    const existing = runtimeEventSubscriptions.get(sender.id);
-    if (existing?.requestKey === requestKey) return null;
-    cleanupRuntimeEventSubscription(sender.id);
-    watchRuntimeEventSender(sender);
-    runtimeEventSubscriptions.set(sender.id, { bindingKey, requestKey, cleanup: null });
+    // `requestKey` is prefixed with `bindingKey`, so an identical request key is
+    // an identical binding: this pump already owns a live subscription and only
+    // needs its idle-expiry clock refreshed.
+    const existing = refreshRuntimeEventSubscription(sender.id, requestKey);
+    if (existing) return null;
+    const subscription = addRuntimeEventSubscription({
+      sender,
+      bindingKey,
+      requestKey,
+      cleanup: null,
+    });
     const onEnded = () => {
-      const current = runtimeEventSubscriptions.get(sender.id);
-      if (current?.requestKey === requestKey && current.bindingKey === bindingKey) {
-        runtimeEventSubscriptions.delete(sender.id);
-      }
+      removeRuntimeEventSubscription(sender.id, requestKey, subscription);
     };
     let subscriptionInit: RuntimeEventSubscriptionInit | null = null;
     try {
       const cleanup = await subscribe(
-        (event, eventEpoch) =>
-          sendRuntimeEvent(sender, bindingKey, requestKey, event, eventEpoch),
+        (event, eventEpoch) => sendRuntimeEvent(subscription, event, eventEpoch),
         onEnded,
         (result) => {
           subscriptionInit = result;
         },
       );
-      const current = runtimeEventSubscriptions.get(sender.id);
       if (
-        !current ||
-        current.requestKey !== requestKey ||
-        current.bindingKey !== bindingKey ||
-        sender.isDestroyed()
+        !attachRuntimeEventSubscriptionCleanup(
+          sender.id,
+          requestKey,
+          subscription,
+          cleanup,
+        )
       ) {
         cleanup();
         return subscriptionInit;
       }
-      current.cleanup = cleanup;
       return subscriptionInit;
     } catch (error) {
-      const current = runtimeEventSubscriptions.get(sender.id);
-      if (current?.requestKey === requestKey && current.bindingKey === bindingKey && !current.cleanup) {
-        runtimeEventSubscriptions.delete(sender.id);
+      if (!subscription.cleanup) {
+        removeRuntimeEventSubscription(sender.id, requestKey, subscription);
       }
       console.warn("Runtime event subscription failed", error);
       throw error;
@@ -1262,11 +1270,7 @@ export function registerRuntimeBridge({
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const requestedRootPath = normalizeLocalRuntimeRootPath(arg?.rootPath);
       if (binding?.kind === "local" || requestedRootPath) {
-        const bindingKey =
-          binding?.kind === "local" &&
-          localRuntimeRootKey(binding.rootPath) === localRuntimeRootKey(rootPath)
-            ? binding.key
-            : `local:${rootPath}`;
+        const bindingKey = localRuntimeEventBindingKey(binding, rootPath);
         const subscribe = (
           onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
           onEnded: () => void,
@@ -1284,7 +1288,7 @@ export function registerRuntimeBridge({
             onEnded,
             onSubscribed,
           );
-        const requestKey = `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`;
+        const requestKey = runtimeEventRequestKey(bindingKey, request);
         const subscriptionInit = await ensureRuntimeEventSubscription(
           event.sender,
           bindingKey,
@@ -1326,7 +1330,7 @@ export function registerRuntimeBridge({
       if (!target) throw new Error("Remote target was not found.");
       const request = normalizeRuntimeStreamEventsRequest(arg?.request);
       const bindingKey = remoteProjectBindingKey(target.id, projectId);
-      const requestKey = `${bindingKey}:${request.category ?? "*"}:${request.replay === false ? "live" : "replay"}`;
+      const requestKey = runtimeEventRequestKey(bindingKey, request);
       const subscribe = (
         onEvent: (event: RemoteRuntimeBufferedEvent, eventEpoch?: string | null) => void,
         onEnded: () => void,
@@ -1376,6 +1380,50 @@ export function registerRuntimeBridge({
     },
   );
 
+  // Idle expiry alone leaves a switched-away binding streaming for up to a
+  // minute per switch, into a renderer that discards every event. The pump that
+  // stops reading says so explicitly; expiry stays as the backstop for renderers
+  // that die without one. The argument mirrors the subscribe call so main can
+  // re-derive the same request key rather than trust one the renderer guessed.
+  ipcMain.handle(
+    IPC.runtimeEventsRelease,
+    async (
+      event,
+      arg: RuntimeEventsReleaseRequest,
+    ): Promise<RuntimeEventsReleaseResult> => {
+      const id = typeof arg?.id === "string" ? arg.id.trim() : "";
+      const projectId =
+        typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      let bindingKey: string | null = null;
+      if (id && projectId) {
+        bindingKey = remoteProjectBindingKey(id, projectId);
+      } else {
+        const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
+        const session = getWindowSession ? getWindowSession(windowId) : null;
+        const rootPath = resolveAuthorizedLocalRuntimeRootPath(
+          session,
+          arg?.rootPath,
+          authorizeLocalRuntimeRoot,
+        );
+        if (rootPath) {
+          bindingKey = localRuntimeEventBindingKey(session?.binding, rootPath);
+        }
+      }
+      if (!bindingKey) return { released: 0 };
+      // A pump's replay flag flips from `live` to `replay` once it is caught up,
+      // so it can own both key variants. Release the whole (binding, category).
+      const prefix = runtimeEventRequestKeyPrefix(
+        bindingKey,
+        isRemoteRuntimeEventCategory(arg?.category) ? arg.category : undefined,
+      );
+      const released = cleanupRuntimeEventSubscriptions(
+        event.sender.id,
+        (subscription) => subscription.requestKey.startsWith(prefix),
+      );
+      return { released };
+    },
+  );
+
   ipcMain.handle(
     IPC.remoteRuntimeDisconnect,
     async (
@@ -1384,10 +1432,12 @@ export function registerRuntimeBridge({
     ): Promise<{ disconnected: boolean }> => {
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       if (!id) return { disconnected: false };
-      const currentSubscription = runtimeEventSubscriptions.get(event.sender.id);
-      if (currentSubscription?.bindingKey.startsWith(`remote:${id}:`)) {
-        cleanupRuntimeEventSubscription(event.sender.id);
-      }
+      // Drop every subscription this window holds against the target, not just
+      // the most recent one: a window can hold the active pump plus one or more
+      // pinned pumps on the same remote runtime.
+      cleanupRuntimeEventSubscriptions(event.sender.id, (subscription) =>
+        subscription.bindingKey.startsWith(`remote:${id}:`),
+      );
       remoteConnectionService.disconnect(id, { manual: arg.manual !== false });
       return { disconnected: true };
     },
