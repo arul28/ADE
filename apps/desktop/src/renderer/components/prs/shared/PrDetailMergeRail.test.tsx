@@ -135,6 +135,60 @@ describe("PrDetailMergeRail", () => {
     expect(screen.getByTestId("pr-merge-merged-banner")).toBeTruthy();
   });
 
+  it("records how a merged PR shipped, including the lane it outlived", () => {
+    render(
+      <PrDetailMergeRail
+        pr={makePr({
+          state: "merged",
+          createdAt: "2026-01-01T00:00:00.000Z",
+          mergedAt: "2026-01-03T04:00:00.000Z",
+          mergedBy: { login: "arul", avatarUrl: null },
+          mergeMethod: "squash",
+          commitCount: 12,
+          changedFiles: 9,
+          detached: {
+            at: "2026-01-04T00:00:00.000Z",
+            laneName: "auto-naming",
+            laneColor: "#4ADE80",
+            chats: 3,
+            artifacts: 2,
+            checkpoints: 5,
+          },
+        })}
+        status={makeStatus({ state: "merged" })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+      />,
+    );
+
+    const summary = screen.getByTestId("pr-shipped-summary");
+    expect(summary.textContent).toContain("by arul · squash");
+    expect(summary.textContent).toContain("12 commits · 9 files · open 2d 4h");
+    // The lane is gone, but what happened in it is not.
+    expect(summary.textContent).toContain("was: auto-naming · 3 chats · 2 proof");
+  });
+
+  it("omits shipped facts that were never recorded rather than showing blanks", () => {
+    render(
+      <PrDetailMergeRail
+        pr={makePr({ state: "merged", mergedAt: null })}
+        status={makeStatus({ state: "merged" })}
+        checks={[]}
+        reviews={[]}
+        mergeMethod="squash"
+        actionBusy={false}
+        onMerge={() => {}}
+      />,
+    );
+
+    // A PR merged before ADE recorded merge metadata still renders its banner.
+    expect(screen.getByTestId("pr-merge-merged-banner")).toBeTruthy();
+    expect(screen.queryByTestId("pr-shipped-summary")).toBeNull();
+  });
+
   it("requires confirmation before closing an open PR", () => {
     const onClose = vi.fn();
     render(

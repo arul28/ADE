@@ -15,9 +15,73 @@ import type {
   UpdateBranchStrategy,
 } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
+import { formatTimestampShort } from "./prFormatters";
 import { canAttemptMerge } from "./prMergeRailUtils";
 import { PrMergeChecklist } from "./PrMergeChecklist";
 import { PrMergeDialog, type PrMergeDialogResult } from "./PrMergeDialog";
+
+/**
+ * The record of how a PR shipped, shown under the merged banner.
+ *
+ * Every line is optional and independently omitted: PRs merged before ADE recorded
+ * merge metadata show less rather than showing blanks or invented values. The lane line
+ * is the part GitHub cannot give you — it survives the lane's deletion because the
+ * counts are frozen at detach time.
+ */
+function PrShippedSummary({ pr }: { pr: PrWithConflicts }) {
+  const lines: string[] = [];
+
+  const attribution = [pr.mergedBy?.login, pr.mergeMethod].filter(Boolean) as string[];
+  const mergedOn = pr.mergedAt ? formatTimestampShort(pr.mergedAt) : null;
+  if (attribution.length > 0 || mergedOn) {
+    lines.push([attribution.length > 0 ? `by ${attribution.join(" · ")}` : null, mergedOn].filter(Boolean).join(" · "));
+  }
+
+  const openFor = formatOpenDuration(pr.createdAt, pr.mergedAt);
+  const size = [
+    pr.commitCount != null ? `${pr.commitCount} commit${pr.commitCount === 1 ? "" : "s"}` : null,
+    pr.changedFiles != null ? `${pr.changedFiles} file${pr.changedFiles === 1 ? "" : "s"}` : null,
+    openFor ? `open ${openFor}` : null,
+  ].filter(Boolean) as string[];
+  if (size.length > 0) lines.push(size.join(" · "));
+
+  const detached = pr.detached;
+  if (detached?.laneName) {
+    const counts = [
+      detached.chats > 0 ? `${detached.chats} chat${detached.chats === 1 ? "" : "s"}` : null,
+      detached.artifacts > 0 ? `${detached.artifacts} proof` : null,
+    ].filter(Boolean) as string[];
+    lines.push([`was: ${detached.laneName}`, ...counts].join(" · "));
+  }
+
+  if (lines.length === 0) return null;
+  return (
+    <div
+      data-testid="pr-shipped-summary"
+      className="mt-1.5 space-y-0.5 text-[10px] leading-snug"
+      style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
+    >
+      {lines.map((line) => (
+        <div key={line}>{line}</div>
+      ))}
+    </div>
+  );
+}
+
+/** "2d 4h" / "5h" / "12m" — how long the PR was open before it merged. */
+function formatOpenDuration(createdAt: string | null | undefined, mergedAt: string | null | undefined): string | null {
+  if (!createdAt || !mergedAt) return null;
+  const start = new Date(createdAt).getTime();
+  const end = new Date(mergedAt).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return null;
+  const minutes = Math.round((end - start) / 60_000);
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  const remainderHours = hours % 24;
+  return remainderHours > 0 ? `${days}d ${remainderHours}h` : `${days}d`;
+}
 
 /** localStorage key for the remembered merge method (dialog default). */
 const LAST_MERGE_METHOD_KEY = "ade:prs:lastMergeMethod";
@@ -181,6 +245,7 @@ export const PrDetailMergeRail = memo(function PrDetailMergeRail({
                   <div className="mt-1 text-[10px] leading-snug" style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}>
                     <span className="font-mono">{pr.headBranch}</span> into <span className="font-mono">{pr.baseBranch}</span>
                   </div>
+                  <PrShippedSummary pr={pr} />
                 </div>
               </div>
             </div>

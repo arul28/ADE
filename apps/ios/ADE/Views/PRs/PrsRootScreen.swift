@@ -831,14 +831,33 @@ struct PRsTabView: View {
       let repoItems = githubDerived.repoItems
       let externalItems = githubDerived.externalItems
       if !repoItems.isEmpty {
-        ForEach(repoItems) { item in
-          githubRowNavigation(for: item)
-            .prListRowCard()
+        // Merged/closed history reads as a log, so it gets period headers. Open stays
+        // flat — a work queue does not benefit from being chopped up by date.
+        if selectedGitHubCategory.wrappedValue == .open {
+          ForEach(repoItems) { item in
+            githubRowNavigation(for: item)
+              .prListRowCard()
+          }
+        } else {
+          ForEach(prListPeriodGroups(repoItems)) { group in
+            PrsPeriodHeader(group: group)
+              .prListRow()
+            ForEach(group.items) { item in
+              githubRowNavigation(for: item)
+                .prListRowCard()
+            }
+          }
         }
       }
       if !externalItems.isEmpty {
+        // Only count rows that could still be mapped. A merged external PR has no lane
+        // to map to, so counting it here would recreate the noise we just removed.
         let unmappedCount = externalItems.filter {
-          $0.adeKind == nil && $0.linkedPrId == nil && $0.linkedLaneId == nil
+          $0.adeKind == nil
+            && $0.linkedPrId == nil
+            && $0.linkedLaneId == nil
+            && $0.state != "merged"
+            && $0.state != "closed"
         }.count
         HStack(spacing: 6) {
           PrsEyebrowLabel(

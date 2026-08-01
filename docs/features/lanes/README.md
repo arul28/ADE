@@ -481,7 +481,14 @@ a lane parented to primary would always show zero behind.
    `database_cleanup` step wraps every cascade delete inside a single
    `begin immediate` / `commit` transaction so a partial failure rolls
    back to a consistent DB state instead of leaving lane rows
-   half-deleted. Before that transaction, ADE collects and deletes proof files
+   half-deleted. That step does **not** delete the lane's
+   `pull_requests` rows: it detaches them
+   (`detachPullRequestRowsForLane`), stamping the lane's name, colour and
+   a frozen count of its chats / proof artifacts / checkpoints onto each
+   row so the merged PR keeps its ADE provenance after the lane is gone.
+   The detach must run *before* the session / artifact / checkpoint
+   deletes, because it counts them. See
+   [Detached PR rows](../pull-requests/README.md#detached-pr-rows). Before that transaction, ADE collects and deletes proof files
    attributed by `computer_use_artifacts.lane_id` or a legacy lane owner link.
    Every file is realpath-confined to `.ade/artifacts`; a capture also owned by
    a chat in another lane survives, and archive remains non-destructive.
@@ -543,7 +550,7 @@ fork points.
 |--------|---------|
 | `laneService.listBranchProfiles(laneId)` | Returns every branch profile recorded for the lane plus the active branch (auto-upserts a profile for the lane's current `branch_ref` so the active branch is always present). |
 | `laneService.previewBranchSwitch(args)` | Pure read: dirty-tree probe, duplicate-owner detection (another lane already on that branch), active terminal/process inventory, base-ref/parent inference, remote-prefix stripping. Used to drive the iOS/desktop branch picker confirmation UI. |
-| `laneService.switchBranch(args)` | Performs the checkout: refuses dirty trees, refuses duplicate-owner branches, requires `acknowledgeActiveWork` if active sessions/processes exist, then `git checkout` (or `checkout -b` in `mode: "create"`), updates the lane row, upserts the branch profile, and prunes stale `pull_requests` rows whose `head_branch` no longer matches the new branch. (`pull_requests.lane_id` is `not null`, so stale rows are deleted along with their child rows in `pr_group_members`.) |
+| `laneService.switchBranch(args)` | Performs the checkout: refuses dirty trees, refuses duplicate-owner branches, requires `acknowledgeActiveWork` if active sessions/processes exist, then `git checkout` (or `checkout -b` in `mode: "create"`), updates the lane row, upserts the branch profile, and **detaches** stale `pull_requests` rows whose `head_branch` no longer matches the new branch (`detachPullRequestRowsByIds`). Those rows are stamped with the lane's name/colour and its provenance counts, which takes them out of live lane lookups while keeping the PR's history. They are not deleted — deleting them is what made merged PRs render as `unmapped`. See [Detached PR rows](../pull-requests/README.md#detached-pr-rows). |
 | `laneService.updateBranchRef(laneId, branchRef)` | Internal helper used after rename/import paths to keep the active profile and `lanes.branch_ref` in sync. After the transaction commits it emits the refresh-only `lane-branch-updated` lifecycle event so Work hover details, Lanes, and both Git Actions panes replace stale branch identity immediately. |
 
 IPC channels (registered in `services/ipc/registerIpc.ts`, exposed via
@@ -750,6 +757,14 @@ open lanes; primary lanes render with a home icon.
   run if another run in the same root stack is currently `running`.
   Root stack is computed via `resolveRootAncestorId` walking up
   `parent_lane_id`.
+- **Deleting a lane does not delete its PRs.** Lane delete, `switchBranch`,
+  and rename-with-branch-change all *detach* `pull_requests` rows instead
+  (`pullRequestRowCleanup.ts`). Detached rows keep a dangling `lane_id` by
+  design, so any lane-scoped query over `pull_requests` must add
+  `detached_at is null` or it will read a deleted lane's PR as live lane
+  state. `laneService` already does this in the base-ref repair, the
+  branch-rename sweep, and the "lane has a PR" delete guard. See
+  [Detached PR rows](../pull-requests/README.md#detached-pr-rows).
 - **Startup repair runs every boot.** If you introduce a new lane
   field that can drift, handle it in the repair routines too.
 - **Half-created worktrees must stay invisible to recovery.** A new

@@ -154,7 +154,13 @@ export function formatPrSummary(value: unknown): string {
   const draft = pickBoolean(pr, ["isDraft", "draft"]) === true ? " · draft" : "";
   const title = pickString(pr, ["title", "name"]) ?? "Untitled PR";
   const id = pickString(pr, ["id", "prId"]);
-  const lane = pickString(pr, ["laneName", "laneId"]);
+  // A PR whose lane was deleted (or moved to another branch) keeps its row and its now
+  // dangling `laneId`, so the raw id would read as a live mapping. Show it as history.
+  const detached = isRecord(pr.detached) ? pr.detached : null;
+  const laneValue = pickString(pr, ["laneName", "laneId"]);
+  const lane = detached
+    ? `was ${pickString(detached, ["laneName"]) ?? laneValue ?? "deleted lane"}`
+    : laneValue;
   const head = pickString(pr, ["headBranch", "headRefName", "branchRef", "branch"]);
   const base = pickString(pr, ["baseBranch", "baseRefName", "baseRef", "targetBranch"]);
   const githubUrl = pickString(root, ["githubUrl", "githubPrUrl"])

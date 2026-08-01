@@ -26,6 +26,7 @@ import { PrManageLaneDialogHost } from "../shared/PrManageLaneDialogHost";
 import { COLORS, MONO_FONT, SANS_FONT, LABEL_STYLE, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { AdeDiffViewer } from "../../shared/AdeDiffViewer";
 import { getPrStateBadge, InlinePrBadge } from "../shared/prVisuals";
+import { isTerminalPrState } from "../../../lib/prState";
 import { usePrs } from "../state/PrsContext";
 import {
   buildUnifiedChecks,
@@ -1475,8 +1476,14 @@ export function PrDetailPane({
             </div>
           </div>
           {/* Unmapped-PR affordance: top-right of the header, above the
-              refresh / GitHub action buttons. */}
-          {!pr.laneId && unmappedAffordance ? (
+              refresh / GitHub action buttons.
+
+              Never shown for a terminal PR. Its two actions cannot fire there —
+              "create lane from PR branch" requires an open PR, and mapping matches on a
+              head branch that has usually been deleted — so on a merged PR it was a
+              warning with nothing behind it. The merge rail carries the shipped summary
+              instead. */}
+          {!pr.laneId && unmappedAffordance && !isTerminalPrState(pr.state) ? (
             <UnmappedPrBanner affordance={unmappedAffordance} />
           ) : null}
         </div>

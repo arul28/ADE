@@ -476,6 +476,41 @@ struct PrsExternalSectionHeader: View {
   }
 }
 
+/// Period header for the merged/closed log — `THIS WEEK · 4 merged · +1.2k −380`.
+///
+/// Mirrors the desktop PRs tab. The aggregate is the point: it turns a scroll through
+/// history into a shipping record rather than an undifferentiated list.
+struct PrsPeriodHeader: View {
+  let group: PrListPeriodGroup
+
+  var body: some View {
+    HStack(spacing: 8) {
+      Text(group.label.uppercased())
+        .font(.caption2.weight(.semibold))
+        .kerning(0.4)
+        .foregroundStyle(PrsGlass.textMuted)
+      Text(summary)
+        .font(.caption2.monospaced())
+        .foregroundStyle(PrsGlass.textMuted.opacity(0.75))
+      Rectangle()
+        .fill(Color.white.opacity(0.06))
+        .frame(height: 0.5)
+    }
+    .padding(.horizontal, 4)
+    .padding(.top, 12)
+    .padding(.bottom, 4)
+    .accessibilityElement(children: .combine)
+    .accessibilityAddTraits(.isHeader)
+    .accessibilityLabel("\(group.label), \(summary)")
+  }
+
+  private var summary: String {
+    let count = "\(group.count) \(group.outcome)"
+    guard let diff = group.diffSummary else { return count }
+    return "\(count) · \(diff)"
+  }
+}
+
 // MARK: - LaunchPad-style floating search pill.
 //
 // 14pt rounded capsule, ultraThinMaterial + white α0.06 wash, white α0.12

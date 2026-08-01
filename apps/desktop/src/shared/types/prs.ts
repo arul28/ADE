@@ -84,6 +84,32 @@ export type PrSummary = {
   creationStrategy?: PrCreationStrategy | null;
   /** Native GitHub stack membership, when this PR currently belongs to a stack. */
   stack?: GitHubPrStackMembership | null;
+  /** Lane provenance frozen when the lane was deleted or retargeted. */
+  detached?: PrDetachedLane | null;
+  /** How the PR shipped. Null for PRs merged before ADE started recording this. */
+  mergedBy?: PrMergedBy | null;
+  mergeMethod?: MergeMethod | null;
+  commitCount?: number | null;
+  changedFiles?: number | null;
+};
+
+/**
+ * What ADE remembers about the lane a merged PR was built in, after that lane is gone.
+ * The counts cannot be recomputed later — the lane's sessions, artifacts and checkpoints
+ * are hard-deleted with it — so they are frozen at detach time.
+ */
+export type PrDetachedLane = {
+  at: string;
+  laneName: string | null;
+  laneColor: string | null;
+  chats: number;
+  artifacts: number;
+  checkpoints: number;
+};
+
+export type PrMergedBy = {
+  login: string;
+  avatarUrl: string | null;
 };
 
 export type PrLaneSummary = {
@@ -282,6 +308,19 @@ export type GitHubPrListItem = {
   commentCount: number;
   /** Additive for compatibility with older runtime snapshots. */
   stack?: GitHubPrStackMembership | null;
+  /**
+   * Set when the linked lane is gone. `linkedLaneId`/`linkedLaneName` stay null in that
+   * case, so the merged row renders this as history (`was: <lane>`) rather than as an
+   * actionable mapping.
+   */
+  detached?: PrDetachedLane | null;
+  mergedAt?: string | null;
+  mergedBy?: PrMergedBy | null;
+  mergeMethod?: MergeMethod | null;
+  additions?: number | null;
+  deletions?: number | null;
+  commitCount?: number | null;
+  changedFiles?: number | null;
 };
 
 export type GitHubPrSnapshot = {

@@ -296,6 +296,8 @@ export function createAutoRebaseService(args: {
           from pull_requests
           where lane_id = ?
             and state in ('open', 'draft')
+            -- Detached rows describe a branch this lane no longer tracks.
+            and detached_at is null
           order by updated_at desc, created_at desc
           limit 1
         `,

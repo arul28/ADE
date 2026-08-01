@@ -91,6 +91,9 @@ struct PrOverviewMergeRailModel {
   let canReopen: Bool
   let isBusy: Bool
   let mergeMethod: PrMergeMethodOption
+  /// How this PR shipped, for the merged section. All optional — a PR merged before
+  /// the host recorded this shows less rather than showing blanks.
+  var shipped: PrShippedFacts? = nil
 
   let onMerge: () -> Void
   let onChangeMethod: () -> Void
@@ -100,6 +103,62 @@ struct PrOverviewMergeRailModel {
 
   var commandLine: String {
     "gh -R \(repoOwner)/\(repoName) pr merge \(prNumber) --\(mergeMethod.rawValue)"
+  }
+}
+
+/// The record of how a PR shipped, and of the lane it outlived.
+struct PrShippedFacts {
+  var mergedByLogin: String?
+  var mergeMethod: String?
+  var mergedAt: String?
+  var createdAt: String?
+  var commitCount: Int?
+  var changedFiles: Int?
+  var detached: PrDetachedLane?
+
+  /// `by arul · squash · 3 Jan`
+  var attributionLine: String? {
+    var parts: [String] = []
+    var attribution: [String] = []
+    if let login = mergedByLogin, !login.isEmpty { attribution.append(login) }
+    if let method = mergeMethod, !method.isEmpty { attribution.append(method) }
+    if !attribution.isEmpty { parts.append("by \(attribution.joined(separator: " · "))") }
+    if let mergedAt, prParsedDate(mergedAt) != nil { parts.append(prAbsoluteTime(mergedAt)) }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  /// `12 commits · 9 files · open 2d 4h`
+  var sizeLine: String? {
+    var parts: [String] = []
+    if let commitCount { parts.append("\(commitCount) commit\(commitCount == 1 ? "" : "s")") }
+    if let changedFiles { parts.append("\(changedFiles) file\(changedFiles == 1 ? "" : "s")") }
+    if let open = openDuration { parts.append("open \(open)") }
+    return parts.isEmpty ? nil : parts.joined(separator: " · ")
+  }
+
+  /// `was: auto-naming · 3 chats · 2 proof`
+  var provenanceLine: String? {
+    guard let detached, let name = detached.laneName, !name.isEmpty else { return nil }
+    var parts = ["was: \(name)"]
+    if detached.chats > 0 { parts.append("\(detached.chats) chat\(detached.chats == 1 ? "" : "s")") }
+    if detached.artifacts > 0 { parts.append("\(detached.artifacts) proof") }
+    return parts.joined(separator: " · ")
+  }
+
+  /// "2d 4h" / "5h" / "12m" — how long the PR was open before it merged.
+  private var openDuration: String? {
+    guard let start = prParsedDate(createdAt), let end = prParsedDate(mergedAt), end > start else { return nil }
+    let minutes = Int((end.timeIntervalSince(start) / 60).rounded())
+    if minutes < 60 { return "\(minutes)m" }
+    let hours = minutes / 60
+    if hours < 24 { return "\(hours)h" }
+    let days = hours / 24
+    let remainder = hours % 24
+    return remainder > 0 ? "\(days)d \(remainder)h" : "\(days)d"
+  }
+
+  var isEmpty: Bool {
+    attributionLine == nil && sizeLine == nil && provenanceLine == nil
   }
 }
 
@@ -136,6 +195,18 @@ struct PrOverviewMergeRail: View {
   private var mergedSection: some View {
     VStack(alignment: .leading, spacing: 12) {
       statusLine(icon: "checkmark.seal.fill", tint: ADEColor.success, title: "Merged and closed")
+      if let shipped = model.shipped, !shipped.isEmpty {
+        VStack(alignment: .leading, spacing: 2) {
+          if let line = shipped.attributionLine { Text(line) }
+          if let line = shipped.sizeLine { Text(line) }
+          // The lane is gone, but what happened in it is not — and this is the part
+          // GitHub cannot show.
+          if let line = shipped.provenanceLine { Text(line) }
+        }
+        .font(.caption2)
+        .foregroundStyle(ADEColor.textSecondary)
+        .accessibilityElement(children: .combine)
+      }
       if model.canDeleteBranch {
         if confirmDelete {
           confirmRow(

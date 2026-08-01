@@ -3938,6 +3938,12 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var workflowDisplayState: String?
   var cleanupState: String?
   var stack: GitHubPrStackMembership? = nil
+  var mergedAt: String? = nil
+  var detached: PrDetachedLane? = nil
+  var mergedBy: PrMergedBy? = nil
+  var mergeMethod: String? = nil
+  var commitCount: Int? = nil
+  var changedFiles: Int? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
@@ -4275,6 +4281,36 @@ struct GitHubPrListItem: Codable, Identifiable, Equatable {
   var isBot: Bool
   var commentCount: Int
   var stack: GitHubPrStackMembership? = nil
+  /// Lane provenance frozen when the lane was deleted. Present instead of
+  /// `linkedLaneId`/`linkedLaneName` once a PR outlives its lane.
+  var detached: PrDetachedLane? = nil
+  /// How the PR shipped. All nil for PRs merged before the host recorded this, and
+  /// against older desktop hosts — hence optional with defaults, or decoding the whole
+  /// snapshot would throw.
+  var mergedAt: String? = nil
+  var mergedBy: PrMergedBy? = nil
+  var mergeMethod: String? = nil
+  var additions: Int? = nil
+  var deletions: Int? = nil
+  var commitCount: Int? = nil
+  var changedFiles: Int? = nil
+}
+
+/// What ADE remembers about the lane a merged PR was built in, after that lane is gone.
+/// The counts cannot be recomputed — the lane's sessions and artifacts are deleted with
+/// it — so the host freezes them at detach time.
+struct PrDetachedLane: Codable, Equatable {
+  var at: String
+  var laneName: String?
+  var laneColor: String?
+  var chats: Int
+  var artifacts: Int
+  var checkpoints: Int
+}
+
+struct PrMergedBy: Codable, Equatable {
+  var login: String
+  var avatarUrl: String?
 }
 
 struct GitHubPrSnapshot: Codable, Equatable {

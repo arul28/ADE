@@ -381,6 +381,13 @@ function preflightConflicts(preflight: any): unknown[] {
 function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRows: any[] = []) {
   const rows = [...initialRows];
 
+  // Lane-scoped and ownership lookups carry `detached_at is null`; identity lookups
+  // (by row id) deliberately do not. Honouring that here keeps the store faithful to
+  // the real queries — without it a detached row looks live to every lookup and the
+  // detach behaviour cannot be exercised.
+  const liveOnly = (text: string) => text.includes("detached_at is null");
+  const matchesLiveness = (row: any, text: string) => !liveOnly(text) || !row.detached_at;
+
   db.get.mockImplementation((sql: string, params: unknown[] = []) => {
     const text = String(sql);
     if (!text.includes("from pull_requests")) return null;
@@ -394,10 +401,13 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
         && String(row.repo_owner).toLowerCase() === String(owner).toLowerCase()
         && String(row.repo_name).toLowerCase() === String(name).toLowerCase()
         && Number(row.github_pr_number) === Number(prNumber)
+        && matchesLiveness(row, text)
       ) ?? null;
     }
     if (text.includes("where lane_id = ?")) {
-      return rows.find((row) => row.lane_id === params[0] && row.project_id === params[1]) ?? null;
+      return rows.find((row) =>
+        row.lane_id === params[0] && row.project_id === params[1] && matchesLiveness(row, text)
+      ) ?? null;
     }
     return null;
   });
@@ -406,10 +416,12 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
     const text = String(sql);
     if (!text.includes("from pull_requests")) return [];
     if (text.includes("where lane_id = ?")) {
-      return rows.filter((row) => row.lane_id === params[0] && row.project_id === params[1]);
+      return rows.filter((row) =>
+        row.lane_id === params[0] && row.project_id === params[1] && matchesLiveness(row, text)
+      );
     }
     if (text.includes("where project_id = ?")) {
-      return rows.filter((row) => row.project_id === params[0]);
+      return rows.filter((row) => row.project_id === params[0] && matchesLiveness(row, text));
     }
     return rows;
   });
@@ -6481,5 +6493,160 @@ describe("prService.reconcileOnFocus", () => {
 
     const reconcileEvents = events.filter((e) => e.type === "pr-reconcile");
     expect(reconcileEvents.map((e) => e.state)).toEqual(["running", "idle"]);
+  });
+});
+
+describe("prService detached PR rows", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /**
+   * A PR outlives its lane: deleting the lane detaches the row rather than deleting
+   * it, so merged history keeps its ADE identity. These tests pin the three ways that
+   * previously went wrong.
+   */
+  function detachedRow(overrides?: Record<string, unknown>) {
+    return makePrRow({
+      id: "pr-detached",
+      github_pr_number: 90,
+      detached_at: "2026-07-30T00:00:00Z",
+      detached_lane_name: "auto-naming",
+      detached_lane_color: "#4ADE80",
+      detached_provenance: JSON.stringify({ chats: 3, artifacts: 2, checkpoints: 5 }),
+      ...overrides,
+    });
+  }
+
+  function githubServiceForPr90(row: { github_url: string; title: string }) {
+    return makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return {
+            data: makeGitHubPull({
+              number: 90,
+              html_url: row.github_url,
+              title: row.title,
+              state: "closed",
+              merged: true,
+              merged_at: "2026-07-29T00:00:00Z",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path.includes("/status")) return { data: { state: "success", statuses: [] } };
+        if (args.path.includes("/check-runs")) return { data: { check_runs: [] } };
+        if (args.path.includes("/reviews")) return { data: [] };
+        if (args.path.includes("/compare/")) return { data: { behind_by: 0 } };
+        return { data: {} };
+      }),
+    });
+  }
+
+  it("updates a detached row instead of re-inserting its primary key", async () => {
+    // The lane-branch lookup is live-only, so it cannot see a detached row. Resolving
+    // by identity first is what keeps this an UPDATE — otherwise every merged PR whose
+    // lane was deleted would hit a duplicate-primary-key insert on open.
+    const row = detachedRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const { service } = buildService({ db, githubService: githubServiceForPr90(row) });
+
+    await service.getStatus("pr-detached");
+
+    const sqlRun: string[] = db.run.mock.calls.map(([sql]: [unknown]) => String(sql));
+    expect(sqlRun.some((sql: string) => sql.includes("update pull_requests"))).toBe(true);
+    expect(sqlRun.some((sql: string) => sql.includes("insert into pull_requests"))).toBe(false);
+  });
+
+  it("keeps a detached row detached when its lane no longer exists", async () => {
+    // A background refresh must never resurrect history. The lane is gone, so nothing
+    // can reclaim the row.
+    const row = detachedRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const { service } = buildService({
+      db,
+      githubService: githubServiceForPr90(row),
+      laneService: makeLaneService([]),
+    });
+
+    await service.getStatus("pr-detached");
+
+    const clearedDetach = db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("set detached_at = null"),
+    );
+    expect(clearedDetach).toBe(false);
+  });
+
+  it("keeps a detached row detached when its lane moved to another branch", async () => {
+    // switchBranch/rename detach while the lane lives on. Lane existence alone is not
+    // enough to reclaim — the lane must still track this PR's head branch, or a poll
+    // would reattach a PR to a lane that has moved on.
+    const row = detachedRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from lanes")) return { branch_ref: "refs/heads/some-other-branch" };
+      if (!text.includes("from pull_requests")) return null;
+      if (text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const { service } = buildService({ db, githubService: githubServiceForPr90(row) });
+
+    await service.getStatus("pr-detached");
+
+    const clearedDetach = db.run.mock.calls.some(([sql]: [unknown]) =>
+      String(sql).includes("set detached_at = null"),
+    );
+    expect(clearedDetach).toBe(false);
+  });
+
+  it("reclaims a detached row when a lane on the same branch takes it back", async () => {
+    const row = detachedRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    db.get.mockImplementation((sql: string, params: unknown[] = []) => {
+      const text = String(sql);
+      if (text.includes("from lanes")) return { branch_ref: "refs/heads/my-feature" };
+      if (!text.includes("from pull_requests")) return null;
+      if (text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const { service } = buildService({ db, githubService: githubServiceForPr90(row) });
+
+    await service.getStatus("pr-detached");
+
+    const clearCall = db.run.mock.calls.find(([sql]: [unknown]) =>
+      String(sql).includes("set detached_at = null"),
+    );
+    expect(clearCall).toBeTruthy();
+    // The dead lane's provenance goes with the marker — it describes a lane this PR
+    // no longer belongs to.
+    expect(String(clearCall?.[0])).toContain("detached_lane_name = null");
+    expect(String(clearCall?.[0])).toContain("detached_provenance = null");
+  });
+
+  it("exposes frozen lane provenance on the summary of a detached row", async () => {
+    const row = detachedRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const { service } = buildService({ db });
+
+    const detached = service.listAll().find((entry: { id: string }) => entry.id === "pr-detached");
+
+    expect(detached?.detached).toMatchObject({
+      laneName: "auto-naming",
+      laneColor: "#4ADE80",
+      chats: 3,
+      artifacts: 2,
+    });
+    expect(detached?.laneId).toBe(LANE_ID);
   });
 });

@@ -4098,10 +4098,37 @@ describe("laneService delete teardown + cancellation + streaming", () => {
     expect(count("conflict_proposals", "lane_id = ? or peer_lane_id = ?", ["lane-child", "lane-child"])).toBe(0);
     expect(count("files_workspaces", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("file_directory_snapshots", "workspace_id = ?", ["workspace-child"])).toBe(0);
-    expect(count("pull_requests", "id = ?", ["pr-child"])).toBe(0);
+    // The PR row is DETACHED, not deleted: a merged PR outlives its lane, and deleting
+    // the row is what made merged PRs render as `unmapped` in the PRs tab.
+    expect(count("pull_requests", "id = ?", ["pr-child"])).toBe(1);
+    const detachedPr = db.get<{
+      lane_id: string;
+      detached_at: string | null;
+      detached_lane_name: string | null;
+      detached_provenance: string | null;
+    }>(
+      "select lane_id, detached_at, detached_lane_name, detached_provenance from pull_requests where id = ?",
+      ["pr-child"],
+    );
+    expect(detachedPr?.detached_at).toBeTruthy();
+    // lane_id deliberately still points at the deleted lane — it is NOT NULL, CRR
+    // strips the FK, and it stays useful as a provenance key.
+    expect(detachedPr?.lane_id).toBe("lane-child");
+    expect(detachedPr?.detached_lane_name).toBeTruthy();
+    expect(JSON.parse(detachedPr?.detached_provenance ?? "{}")).toMatchObject({
+      chats: expect.any(Number),
+      artifacts: expect.any(Number),
+      checkpoints: expect.any(Number),
+    });
     expect(count("pr_group_members", "lane_id = ?", ["lane-child"])).toBe(0);
-    expect(count("pull_request_ai_summaries", "pr_id = ?", ["pr-child"])).toBe(0);
-    expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(0);
+    // The snapshot row survives with the bulky kinds purged, so storage does not grow.
+    expect(count("pull_request_snapshots", "pr_id = ?", ["pr-child"])).toBe(1);
+    expect(
+      db.get<{ files_json: string | null; checks_json: string | null }>(
+        "select files_json, checks_json, comments_json, reviews_json from pull_request_snapshots where pr_id = ?",
+        ["pr-child"],
+      ),
+    ).toEqual({ files_json: null, checks_json: null, comments_json: null, reviews_json: null });
     expect(count("pr_auto_link_ignores", "lane_id = ?", ["lane-child"])).toBe(0);
     expect(count("review_runs", "id = ?", ["review-run-child"])).toBe(0);
     expect(count("review_reviewer_runs", "id = ?", ["reviewer-run-child"])).toBe(0);
@@ -4746,13 +4773,22 @@ describe("laneService - branchSwitch", () => {
         );
         expect(keep?.lane_id).toBe("lane-a");
 
-        const stale = db.get<{ lane_id: string | null }>(
-          "select lane_id from pull_requests where id = ?",
+        // Stale rows are detached, not deleted — the PR happened on this lane even
+        // though the lane now tracks a different branch.
+        const stale = db.get<{ lane_id: string | null; detached_at: string | null; detached_lane_name: string | null }>(
+          "select lane_id, detached_at, detached_lane_name from pull_requests where id = ?",
           ["pr-stale"],
         );
-        expect(stale).toBeNull();
-        expect(db.get<{ count: number }>("select count(1) as count from pull_request_ai_summaries where pr_id = ?", ["pr-stale"])?.count).toBe(0);
-        expect(db.get<{ count: number }>("select count(1) as count from pull_request_snapshots where pr_id = ?", ["pr-stale"])?.count).toBe(0);
+        expect(stale?.detached_at).toBeTruthy();
+        expect(stale?.lane_id).toBe("lane-a");
+        // A detached row must not be treated as live: the kept row is the only one
+        // still claiming the lane's current branch.
+        expect(
+          db.get<{ count: number }>(
+            "select count(1) as count from pull_requests where lane_id = ? and detached_at is null",
+            ["lane-a"],
+          )?.count,
+        ).toBe(1);
       } finally {
         db.close();
         fs.rmSync(repoRoot, { recursive: true, force: true });

@@ -43,6 +43,20 @@ describe("rightPaneFormatters", () => {
     expect(body).not.toContain("\"title\"");
   });
 
+  it("renders a detached PR's lane as history, not as a live mapping", () => {
+    const body = formatPrSummary({
+      id: "pr-9",
+      number: 9,
+      title: "Merged work",
+      state: "merged",
+      laneId: "lane-deleted-uuid",
+      detached: { at: "2026-07-30T00:00:00Z", laneName: "prs-tab", laneColor: null },
+    });
+
+    expect(body).toContain("was prs-tab");
+    expect(body).not.toContain("lane-deleted-uuid");
+  });
+
   it("formats PR create links from the new action envelope", () => {
     const body = formatPrSummary({
       pr: {

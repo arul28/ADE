@@ -1075,6 +1075,127 @@ func prAbsoluteTime(_ iso: String?) -> String {
   return prAbsoluteFormatter.string(from: date)
 }
 
+// MARK: - Merged/closed period grouping
+
+/// A period header in the merged/closed list, mirroring the desktop PRs tab.
+///
+/// Merged history is a log, not a queue: it only grows, and the useful question is
+/// "what shipped, and when". Open PRs are deliberately left ungrouped.
+struct PrListPeriodGroup: Identifiable, Equatable {
+  let id: String
+  let label: String
+  let items: [GitHubPrListItem]
+
+  var count: Int { items.count }
+
+  /// What these rows did. Both merged and closed are grouped, so the header cannot
+  /// hardcode "merged".
+  var outcome: String { items.first?.state == "closed" ? "closed" : "merged" }
+
+  /// `+1.2k −380`, or nil when nothing has diff stats recorded.
+  var diffSummary: String? {
+    let additions = items.reduce(0) { $0 + max(0, $1.additions ?? 0) }
+    let deletions = items.reduce(0) { $0 + max(0, $1.deletions ?? 0) }
+    guard additions > 0 || deletions > 0 else { return nil }
+    return "+\(prAbbreviatedCount(additions)) −\(prAbbreviatedCount(deletions))"
+  }
+}
+
+func prAbbreviatedCount(_ value: Int) -> String {
+  guard value >= 1000 else { return String(value) }
+  let thousands = Double(value) / 1000.0
+  if thousands >= 10 { return "\(Int(thousands.rounded()))k" }
+  return String(format: "%.1fk", thousands).replacingOccurrences(of: ".0k", with: "k")
+}
+
+/// The timestamp a terminal row is filed under: when it shipped, else last touched.
+func prListGroupDate(_ item: GitHubPrListItem) -> Date? {
+  prParsedDate(item.mergedAt) ?? prParsedDate(item.updatedAt) ?? prParsedDate(item.createdAt)
+}
+
+/// Label for the period `date` falls in. Recent periods get names people actually use;
+/// older ones get an explicit range or month, because "5 weeks ago" is hard to place.
+/// Weeks are Monday-anchored to match the desktop PRs tab. `Calendar.current` is
+/// locale-dependent — Sunday-first under en_US — which would otherwise put the same PR
+/// in "This week" on iOS and "Last week" on desktop.
+func prMondayAnchoredCalendar(_ base: Calendar = .current) -> Calendar {
+  var calendar = base
+  calendar.firstWeekday = 2
+  return calendar
+}
+
+func prListGroupLabel(for date: Date, now: Date, calendar: Calendar = prMondayAnchoredCalendar()) -> (id: String, label: String) {
+  if calendar.isDateInToday(date) { return ("today", "Today") }
+  if calendar.isDateInYesterday(date) { return ("yesterday", "Yesterday") }
+
+  let itemWeek = calendar.dateInterval(of: .weekOfYear, for: date)
+  let thisWeek = calendar.dateInterval(of: .weekOfYear, for: now)
+  if let itemWeek, let thisWeek {
+    if itemWeek.start == thisWeek.start { return ("this-week", "This week") }
+    if let lastWeekStart = calendar.date(byAdding: .weekOfYear, value: -1, to: thisWeek.start),
+       itemWeek.start == lastWeekStart {
+      return ("last-week", "Last week")
+    }
+    // Within the same calendar year, an explicit week range stays scannable.
+    if calendar.component(.year, from: itemWeek.start) == calendar.component(.year, from: thisWeek.start) {
+      let end = calendar.date(byAdding: .day, value: 6, to: itemWeek.start) ?? itemWeek.start
+      let key = ISO8601DateFormatter().string(from: itemWeek.start).prefix(10)
+      return ("week-\(key)", "\(prDayMonthFormatter.string(from: itemWeek.start)) – \(prDayMonthFormatter.string(from: end))")
+    }
+  }
+
+  let year = calendar.component(.year, from: date)
+  let month = calendar.component(.month, from: date)
+  return ("month-\(year)-\(month)", prMonthYearFormatter.string(from: date))
+}
+
+/// Group an already-sorted list into periods, preserving the caller's order exactly.
+func prListPeriodGroups(
+  _ items: [GitHubPrListItem],
+  now: Date = Date(),
+  calendar: Calendar = prMondayAnchoredCalendar()
+) -> [PrListPeriodGroup] {
+  var groups: [PrListPeriodGroup] = []
+  var currentId: String?
+  var currentLabel = ""
+  var buffer: [GitHubPrListItem] = []
+
+  func flush() {
+    guard let id = currentId, !buffer.isEmpty else { return }
+    groups.append(PrListPeriodGroup(id: id, label: currentLabel, items: buffer))
+    buffer = []
+  }
+
+  for item in items {
+    let resolved: (id: String, label: String)
+    if let date = prListGroupDate(item) {
+      resolved = prListGroupLabel(for: date, now: now, calendar: calendar)
+    } else {
+      resolved = ("unknown", "Undated")
+    }
+    if resolved.id != currentId {
+      flush()
+      currentId = resolved.id
+      currentLabel = resolved.label
+    }
+    buffer.append(item)
+  }
+  flush()
+  return groups
+}
+
+let prDayMonthFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("MMMd")
+  return formatter
+}()
+
+let prMonthYearFormatter: DateFormatter = {
+  let formatter = DateFormatter()
+  formatter.setLocalizedDateFormatFromTemplate("MMMMy")
+  return formatter
+}()
+
 func prDurationText(startedAt: String?, completedAt: String?) -> String? {
   guard let started = prParsedDate(startedAt), let completed = prParsedDate(completedAt) else { return nil }
   let seconds = max(completed.timeIntervalSince(started), 0)

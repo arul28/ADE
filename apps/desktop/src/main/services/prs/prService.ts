@@ -56,6 +56,8 @@ import type {
   PrCommit,
   PrConflictAnalysis,
   PrCreationStrategy,
+  PrDetachedLane,
+  PrMergedBy,
   PrEventPayload,
   PrGroupMemberRole,
   PrHealth,
@@ -215,6 +217,17 @@ type PullRequestRow = {
   updated_at: string;
   merged_at: string | null;
   creation_strategy: string | null;
+  /** Set when the lane was deleted or moved to another branch. See pullRequestRowCleanup. */
+  detached_at?: string | null;
+  detached_lane_name?: string | null;
+  detached_lane_color?: string | null;
+  /** JSON `{ chats, artifacts, checkpoints }` frozen at detach time. */
+  detached_provenance?: string | null;
+  merged_by_login?: string | null;
+  merged_by_avatar_url?: string | null;
+  merge_method?: string | null;
+  commit_count?: number | null;
+  changed_files?: number | null;
 };
 
 type PrAutoLinkIgnoreRow = {
@@ -1046,7 +1059,53 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     mergedAt: row.merged_at,
-    creationStrategy
+    creationStrategy,
+    detached: rowDetachedLane(row),
+    mergedBy: rowMergedBy(row),
+    mergeMethod: normalizeMergeMethod(row.merge_method),
+    commitCount: normalizeCount(row.commit_count),
+    changedFiles: normalizeCount(row.changed_files)
+  };
+}
+
+function normalizeCount(value: unknown): number | null {
+  if (value == null) return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+}
+
+function normalizeMergeMethod(value: unknown): MergeMethod | null {
+  return value === "squash" || value === "merge" || value === "rebase" ? value : null;
+}
+
+function rowMergedBy(row: PullRequestRow): PrMergedBy | null {
+  const login = String(row.merged_by_login ?? "").trim();
+  if (!login) return null;
+  return { login, avatarUrl: row.merged_by_avatar_url ?? null };
+}
+
+/**
+ * Rehydrate the lane provenance frozen at detach time. Returns null for live rows.
+ * A malformed or missing provenance blob still yields a usable record — the lane name
+ * is the part the UI leads with, and zeroed counts are simply not rendered.
+ */
+function rowDetachedLane(row: PullRequestRow): PrDetachedLane | null {
+  const at = String(row.detached_at ?? "").trim();
+  if (!at) return null;
+  let counts: { chats?: unknown; artifacts?: unknown; checkpoints?: unknown } = {};
+  try {
+    const parsed = JSON.parse(String(row.detached_provenance ?? "{}"));
+    if (parsed && typeof parsed === "object") counts = parsed as typeof counts;
+  } catch {
+    /* a corrupt blob must not hide the lane name */
+  }
+  return {
+    at,
+    laneName: row.detached_lane_name ?? null,
+    laneColor: row.detached_lane_color ?? null,
+    chats: normalizeCount(counts.chats) ?? 0,
+    artifacts: normalizeCount(counts.artifacts) ?? 0,
+    checkpoints: normalizeCount(counts.checkpoints) ?? 0,
   };
 }
 
@@ -1416,7 +1475,16 @@ export function createPrService({
   const PR_COLUMNS = `id, lane_id, project_id, repo_owner, repo_name, github_pr_number,
     github_url, github_node_id, title, state, base_branch, head_branch,
     checks_status, review_status, additions, deletions, last_synced_at,
-    created_at, updated_at, merged_at, creation_strategy, merge_conflicts, behind_base_by, head_sha`;
+    created_at, updated_at, merged_at, creation_strategy, merge_conflicts, behind_base_by, head_sha,
+    detached_at, detached_lane_name, detached_lane_color, detached_provenance,
+    merged_by_login, merged_by_avatar_url, merge_method, commit_count, changed_files`;
+  /**
+   * Lane-scoped "what is this lane working on" lookups must ignore detached rows.
+   * A detached row is history: its lane was deleted, or the lane moved to another
+   * branch. It still belongs in project-wide reads (that is how the merged view gets
+   * its provenance back), just not in live lane state.
+   */
+  const LIVE_PR_ROWS = "detached_at is null";
   const GITHUB_PROJECTION_COLUMNS = `project_id, repo_owner, repo_name, github_pr_number,
     github_node_id, github_url, title, state, is_draft, base_branch, head_branch,
     head_repo_owner, head_repo_name, head_sha, base_sha, author, labels_json,
@@ -1662,6 +1730,28 @@ export function createPrService({
       [projectId, repoOwner, repoName, prNumber]
     );
 
+  /**
+   * "Does a lane already own this PR?" — the question every mapping guard asks.
+   *
+   * Distinct from `getRowForRepoPr`, which answers "is there a row for these
+   * coordinates at all" and must still see detached rows so `upsertRow` updates them
+   * instead of inserting a duplicate primary key. A detached row owns nothing: its
+   * lane was deleted or moved on, so it must never block re-mapping.
+   */
+  const getLiveRowForRepoPr = (repoOwner: string, repoName: string, prNumber: number): PullRequestRow | null =>
+    db.get<PullRequestRow>(
+      `select ${PR_COLUMNS}
+         from pull_requests
+        where project_id = ?
+          and lower(repo_owner) = lower(?)
+          and lower(repo_name) = lower(?)
+          and github_pr_number = ?
+          and ${LIVE_PR_ROWS}
+        order by updated_at desc
+        limit 1`,
+      [projectId, repoOwner, repoName, prNumber]
+    );
+
   const getRowByNumber = (
     prNumber: number,
     repoOwner?: string,
@@ -1759,6 +1849,7 @@ export function createPrService({
           from pull_requests
          where lane_id = ?
            and project_id = ?
+           and ${LIVE_PR_ROWS}
          order by
            case when state in ('open', 'draft') then 0 else 1 end,
            updated_at desc,
@@ -1894,6 +1985,10 @@ export function createPrService({
                 and lower(mapped.repo_owner) = lower(projection.repo_owner)
                 and lower(mapped.repo_name) = lower(projection.repo_name)
                 and mapped.github_pr_number = projection.github_pr_number
+                -- A detached row no longer speaks for this PR, so it must not
+                -- suppress the projection fallback — otherwise a lane recreated on
+                -- the same branch shows no PR at all.
+                and mapped.${LIVE_PR_ROWS}
            )
          order by projection.updated_at desc, projection.created_at desc
       `,
@@ -1929,7 +2024,7 @@ export function createPrService({
     const lane = getLanePrLookupRow(laneId);
     if (!lane || lane.archived_at) return null;
     const mappedRows = db.all<PullRequestRow>(
-      `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ?`,
+      `select ${PR_COLUMNS} from pull_requests where lane_id = ? and project_id = ? and ${LIVE_PR_ROWS}`,
       [laneId, projectId],
     );
     return selectLanePrDisplayCandidate({
@@ -1951,6 +2046,7 @@ export function createPrService({
          where lane_id = ?
            and project_id = ?
            and state in ('open', 'draft')
+           and ${LIVE_PR_ROWS}
          order by updated_at desc, created_at desc
       `,
       [laneId, projectId],
@@ -1976,6 +2072,7 @@ export function createPrService({
          where lane_id = ?
            and project_id = ?
            and head_branch = ?
+           and ${LIVE_PR_ROWS}
          order by updated_at desc
          limit 1
       `,
@@ -2412,11 +2509,37 @@ export function createPrService({
     // creation because a PR already exists for the head branch) is the only
     // legitimate use of the repo/PR-number fallback; it opts in via
     // `allowRepoPrAdoption: true`.
-    const existing = options?.allowRepoPrAdoption
-      ? getRowForLaneBranch(summary.laneId, summary.headBranch)
-          ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
-      : getRowForLaneBranch(summary.laneId, summary.headBranch);
+    // Identity first. The lane-branch lookup is deliberately live-only (it answers
+    // "what is this lane working on"), so on its own it would miss a detached row and
+    // send us down the insert path with a primary key that already exists.
+    const existing = getRowById(summary.id)
+      ?? (options?.allowRepoPrAdoption
+        ? getRowForLaneBranch(summary.laneId, summary.headBranch)
+            ?? getRowForRepoPr(summary.repoOwner, summary.repoName, summary.githubPrNumber)
+        : getRowForLaneBranch(summary.laneId, summary.headBranch));
     if (existing) {
+      // A detached row is only reclaimed by a lane that still exists AND still tracks
+      // the PR's head branch.
+      //
+      // Lane existence alone is not enough: `switchBranch`/`rename` detach rows while
+      // the lane lives on, so a background refresh would otherwise reattach a PR to a
+      // lane that has moved to a different branch — reinstating exactly the stale
+      // reference the old DELETE prevented, and destroying the provenance snapshot on
+      // the way. The branch check also settles archived lanes correctly: one that still
+      // tracks the branch may reclaim its PR, one that moved on may not.
+      const reattachesToLiveLane = Boolean(
+        existing.detached_at
+          && (() => {
+            const lane = db.get<{ branch_ref: string | null }>(
+              "select branch_ref from lanes where id = ? and project_id = ?",
+              [summary.laneId, projectId],
+            );
+            if (!lane) return false;
+            const laneBranch = normalizeBranchName(branchNameFromRef(lane.branch_ref ?? ""));
+            const prBranch = normalizeBranchName(branchNameFromRef(summary.headBranch ?? ""));
+            return Boolean(laneBranch) && laneBranch === prBranch;
+          })(),
+      );
       if (existing.lane_id !== summary.laneId) {
         db.run(`delete from pr_group_members where pr_id = ?`, [existing.id]);
         db.run(`update integration_proposals set linked_pr_id = null where linked_pr_id = ?`, [existing.id]);
@@ -2476,6 +2599,23 @@ export function createPrService({
           projectId,
         ]
       );
+      if (reattachesToLiveLane) {
+        // A lane that still exists has claimed this row back, so it is live work
+        // again: the detach marker goes, and with it the dead lane's provenance.
+        // Kept separate from the upsert so a plain refresh of a detached row — whose
+        // `lane_id` still names its deleted lane — can never resurrect it.
+        db.run(
+          `
+            update pull_requests
+               set detached_at = null,
+                   detached_lane_name = null,
+                   detached_lane_color = null,
+                   detached_provenance = null
+             where id = ? and project_id = ?
+          `,
+          [existing.id, projectId],
+        );
+      }
       return existing.id;
     }
 
@@ -2718,7 +2858,7 @@ export function createPrService({
     if (!autoMapByBranchEnabled()) return null;
 
     // Guard #5: PR not already mapped to any lane.
-    if (getRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
+    if (getLiveRowForRepoPr(repo.owner, repo.name, candidate.prNumber)) return null;
 
     // Guard #3: exactly one non-archived worktree lane whose head branch
     // matches the PR head branch. Zero or >1 → do nothing.
@@ -2890,7 +3030,7 @@ export function createPrService({
       if (ignoredAutoLinks.has(autoLinkIgnoreKey({ owner: repo.owner, repo: repo.name, prNumber, laneId: lane.id }))) {
         continue;
       }
-      const existingRepoRow = getRowForRepoPr(repo.owner, repo.name, prNumber);
+      const existingRepoRow = getLiveRowForRepoPr(repo.owner, repo.name, prNumber);
       if (existingRepoRow && existingRepoRow.lane_id !== lane.id) continue;
       const state = toPrState({
         state: asString(rawPr?.state) || "open",
@@ -3941,7 +4081,7 @@ export function createPrService({
       blockingConflicts: block ? [block] : [],
     });
 
-    const existingPr = getRowForRepoPr(repo.owner, repo.name, githubPrNumber);
+    const existingPr = getLiveRowForRepoPr(repo.owner, repo.name, githubPrNumber);
     if (existingPr) {
       const lane = (await laneService.list({ includeArchived: true, includeStatus: false }))
         .find((entry) => entry.id === existingPr.lane_id);
@@ -4980,6 +5120,18 @@ export function createPrService({
       mergedAt: asString(pr?.merged_at) || null,
     };
     upsertRow(refreshed);
+
+    // A merged PR should be able to describe how it shipped without another GitHub
+    // call. `pr` here is the single-PR payload, which carries merged_by/commits/
+    // changed_files; this is the only place we see them for free.
+    if (status.state === "merged") {
+      recordMergeOutcome(summary.id, {
+        mergedByLogin: asString(pr?.merged_by?.login) || null,
+        mergedByAvatarUrl: asString(pr?.merged_by?.avatar_url) || null,
+        commitCount: normalizeCount(pr?.commits),
+        changedFiles: normalizeCount(pr?.changed_files),
+      });
+    }
 
     return status;
   };
@@ -6310,7 +6462,7 @@ export function createPrService({
     // that default here so linked PRs participate in strategy-aware rebase
     // behavior (follow-up 3) instead of being treated as "unset". The
     // upsertRow path uses COALESCE so we never clobber an existing value.
-    const existingRow = getRowForRepoPr(repo.owner, repo.name, locator.number);
+    const existingRow = getLiveRowForRepoPr(repo.owner, repo.name, locator.number);
     if (existingRow && existingRow.lane_id !== lane.id) {
       const existingLane = (await laneService.list({ includeArchived: true, includeStatus: false }))
         .find((entry) => entry.id === existingRow.lane_id);
@@ -6848,6 +7000,14 @@ export function createPrService({
       });
 
       const mergeCommitSha = asString(merge.data?.sha) || null;
+
+      // Record how this shipped. GitHub's merge response does not name the actor, but
+      // we merged as the authenticated viewer, so that is who merged it. Without this
+      // the merged view could never say more than "merged at <time>".
+      recordMergeOutcome(row.id, {
+        method: args.method,
+        mergedByLogin: await resolveViewerLoginForMerge(),
+      });
 
       const cleanup = await runPostMergeCleanup({
         prId: row.id,
@@ -8465,6 +8625,108 @@ export function createPrService({
     };
   };
 
+  /**
+   * Resolve the lane columns of a list row.
+   *
+   * A detached row reports NO live lane (`linkedLaneId`/`linkedLaneName` stay null) and
+   * carries `detached` instead, so the renderer shows it as history rather than as a
+   * mapping it could act on. Previously the lane name fell back to the raw lane UUID
+   * when the lane row was missing, which surfaced a bare id in the list.
+   */
+  const deriveGithubSnapshotLaneLink = (
+    linked: PullRequestRow | null,
+    laneById: Map<string, LaneSummary> | undefined,
+  ): Pick<GitHubPrListItem, "linkedLaneId" | "linkedLaneName" | "detached"> => {
+    if (!linked) return { linkedLaneId: null, linkedLaneName: null, detached: null };
+    const detached = rowDetachedLane(linked);
+    if (detached) return { linkedLaneId: null, linkedLaneName: null, detached };
+    const laneName = laneById?.get(linked.lane_id)?.name ?? null;
+    return { linkedLaneId: linked.lane_id, linkedLaneName: laneName, detached: null };
+  };
+
+  /** Merge outcome + size, so a merged row can describe itself without a GitHub call. */
+  const deriveGithubSnapshotMergeFacts = (
+    linked: PullRequestRow | null,
+  ): Pick<
+    GitHubPrListItem,
+    "mergedAt" | "mergedBy" | "mergeMethod" | "additions" | "deletions" | "commitCount" | "changedFiles"
+  > => {
+    if (!linked) {
+      return {
+        mergedAt: null,
+        mergedBy: null,
+        mergeMethod: null,
+        additions: null,
+        deletions: null,
+        commitCount: null,
+        changedFiles: null,
+      };
+    }
+    return {
+      mergedAt: linked.merged_at ?? null,
+      mergedBy: rowMergedBy(linked),
+      mergeMethod: normalizeMergeMethod(linked.merge_method),
+      additions: normalizeCount(linked.additions),
+      deletions: normalizeCount(linked.deletions),
+      commitCount: normalizeCount(linked.commit_count),
+      changedFiles: normalizeCount(linked.changed_files),
+    };
+  };
+
+  /**
+   * Persist how a PR shipped. Written once at merge time and again by the poller when
+   * it observes the merge; `coalesce` keeps whichever arrived first rather than letting
+   * a later, thinner observation blank out good data.
+   */
+  const recordMergeOutcome = (
+    prId: string,
+    outcome: {
+      method?: MergeMethod | null;
+      mergedByLogin?: string | null;
+      mergedByAvatarUrl?: string | null;
+      commitCount?: number | null;
+      changedFiles?: number | null;
+    },
+  ): void => {
+    try {
+      db.run(
+        `
+          update pull_requests
+          set merge_method = coalesce(merge_method, ?),
+              merged_by_login = coalesce(merged_by_login, ?),
+              merged_by_avatar_url = coalesce(merged_by_avatar_url, ?),
+              commit_count = coalesce(?, commit_count),
+              changed_files = coalesce(?, changed_files)
+          where id = ? and project_id = ?
+        `,
+        [
+          normalizeMergeMethod(outcome.method),
+          outcome.mergedByLogin?.trim() || null,
+          outcome.mergedByAvatarUrl?.trim() || null,
+          normalizeCount(outcome.commitCount),
+          normalizeCount(outcome.changedFiles),
+          prId,
+          projectId,
+        ],
+      );
+    } catch (error) {
+      // Merge metadata is a nicety on a history view — never fail a merge over it.
+      logger.warn("prService.record_merge_outcome_failed", {
+        prId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+
+  /** The account that performed the merge is the authenticated viewer. */
+  const resolveViewerLoginForMerge = async (): Promise<string | null> => {
+    try {
+      return (await githubService.getStatus()).userLogin ?? null;
+    } catch {
+      return null;
+    }
+  };
+
   const deriveGithubSnapshotAdeKind = (
     workflow: IntegrationProposalRow | null,
     group: { group_id: string } | null | undefined,
@@ -8543,8 +8805,8 @@ export function createPrService({
       updatedAt: row.updated_at || row.synced_at || nowIso(),
       linkedPrId: linkedPrRow?.id ?? null,
       linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
-      linkedLaneId: linkedPrRow?.lane_id ?? null,
-      linkedLaneName: linkedPrRow ? (metadata.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+      ...deriveGithubSnapshotLaneLink(linkedPrRow, metadata.laneById),
+      ...deriveGithubSnapshotMergeFacts(linkedPrRow),
       adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
       workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
       cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
@@ -8588,8 +8850,8 @@ export function createPrService({
       updatedAt: asString(rawPr?.updated_at) || asString(rawPr?.created_at) || nowIso(),
       linkedPrId: linkedPrRow?.id ?? null,
       linkedGroupId: asString(workflowRow?.linked_group_id).trim() || groupRow?.group_id || null,
-      linkedLaneId: linkedPrRow?.lane_id ?? null,
-      linkedLaneName: linkedPrRow ? (metadata?.laneById.get(linkedPrRow.lane_id)?.name ?? linkedPrRow.lane_id) : null,
+      ...deriveGithubSnapshotLaneLink(linkedPrRow, metadata?.laneById),
+      ...deriveGithubSnapshotMergeFacts(linkedPrRow),
       adeKind: deriveGithubSnapshotAdeKind(workflowRow, groupRow, linkedPrRow),
       workflowDisplayState: workflowRow ? parseWorkflowDisplayState(workflowRow.workflow_display_state) : null,
       cleanupState: workflowRow ? parseCleanupState(workflowRow.cleanup_state) : null,
@@ -9423,6 +9685,7 @@ export function createPrService({
          and json_extract(source_lane_ids_json, '$[0]') in (
            select lane_id from pull_requests
            where project_id = ? and state in ('open', 'draft', 'merged')
+             and detached_at is null
          )`,
       [projectId, projectId],
     );
@@ -10131,7 +10394,11 @@ export function createPrService({
     listAll(args: { laneId?: string } = {}): PrSummary[] {
       const laneId = String(args.laneId ?? "").trim();
       const summaries = withGithubStackMemberships(listRows().map(rowToSummary));
-      return laneId ? summaries.filter((pr) => pr.laneId === laneId) : summaries;
+      // Unscoped is the project-wide history view and keeps detached rows — that is how
+      // the merged bucket retains its provenance. Scoping to a lane makes this a
+      // lane-state question, where a detached row's dangling `lane_id` would otherwise
+      // pass the filter and report a PR the lane no longer owns.
+      return laneId ? summaries.filter((pr) => pr.laneId === laneId && !pr.detached) : summaries;
     },
 
     async listPrsByLane(): Promise<PrLaneSummary[]> {

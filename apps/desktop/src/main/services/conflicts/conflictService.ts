@@ -4380,6 +4380,9 @@ export function createConflictService({
         from pull_requests
         where project_id = ?
           and state in ('open', 'draft')
+          -- A detached row belongs to a lane that was deleted or has moved to another
+          -- branch; it must not raise rebase needs against the live lane.
+          and detached_at is null
         order by updated_at desc, created_at desc
       `,
       [projectId],
