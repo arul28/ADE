@@ -3,6 +3,7 @@ import {
   evaluateGithubCredentialCapabilities,
   resolveGithubStatusCredentials,
 } from "./githubOperationCredential";
+import type { GithubStatusCredentialProbeResult } from "./githubOperationCredential";
 
 describe("githubOperationCredential", () => {
   it("keeps a repo-validated fine-grained token available for writes", () => {
@@ -53,5 +54,41 @@ describe("githubOperationCredential", () => {
       { repositoryAccessFailure: true, phase: "read" },
     );
     expect(accepted).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-probes an accepted but unvalidated read credential before using it for writes", async () => {
+    const gh = { source: "gh" as const, token: "shared" };
+    type Probe = { repoAccessOk: boolean; write: boolean };
+    const probe = vi.fn<[typeof gh], Promise<GithubStatusCredentialProbeResult<Probe>>>()
+      .mockResolvedValueOnce({
+        ok: false as const,
+        error: "Not Found",
+        authFailure: {
+          kind: "permission_denied" as const,
+          message: "Not Found",
+          retryAt: null,
+        },
+        rateLimit: null,
+        value: { repoAccessOk: false, write: false },
+      })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        value: { repoAccessOk: true, write: true },
+      });
+
+    const result = await resolveGithubStatusCredentials({
+      readCandidates: [gh],
+      writeCandidates: [gh],
+      cooldown: () => null,
+      probe,
+      capabilities: (_candidate, value) => ({ read: value.repoAccessOk, write: value.write }),
+      isRepositoryAccessFailure: (result) => result.value?.repoAccessOk === false,
+      onAcceptedProbe: vi.fn(),
+      onRejectedProbe: vi.fn(),
+    });
+
+    expect(result.active?.candidate).toBe(gh);
+    expect(result.activeWriteSource).toBe("gh");
+    expect(probe).toHaveBeenCalledTimes(2);
   });
 });

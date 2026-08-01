@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const originalDisableGhAuthFallback = process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
@@ -35,7 +36,12 @@ vi.mock("../../desktop/src/main/services/automations/automationSecretService", (
 
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
 import { createHeadlessGitHubService, createHeadlessLinearServices } from "./headlessLinearServices";
-import { clearGithubCredentialHealth } from "../../desktop/src/main/services/github/githubCredentialHealth";
+import {
+  clearGithubCredentialHealth,
+  githubCredentialCooldown,
+  githubCredentialRepositoryAccess,
+  recordGithubCredentialFailure,
+} from "../../desktop/src/main/services/github/githubCredentialHealth";
 
 const HEADLESS_GITHUB_ENV_KEYS = [
   "ADE_HOME",
@@ -50,12 +56,15 @@ function isolateHeadlessGithubAuth(prefix: string, options: { emptyGhConfig?: bo
     HEADLESS_GITHUB_ENV_KEYS.map((key) => [key, process.env[key]]),
   );
   const previousFetch = globalThis.fetch;
-  process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+  const temporaryDirectories = [fs.mkdtempSync(path.join(os.tmpdir(), prefix))];
+  process.env.ADE_HOME = temporaryDirectories[0];
   delete process.env.ADE_GITHUB_TOKEN;
   delete process.env.GITHUB_TOKEN;
   delete process.env.GH_TOKEN;
   if (options.emptyGhConfig) {
-    process.env.GH_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}gh-`));
+    const ghConfigDir = fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}gh-`));
+    temporaryDirectories.push(ghConfigDir);
+    process.env.GH_CONFIG_DIR = ghConfigDir;
   }
   return {
     restore(): void {
@@ -63,6 +72,9 @@ function isolateHeadlessGithubAuth(prefix: string, options: { emptyGhConfig?: bo
       for (const [key, value] of previousEnvironment) {
         if (value == null) delete process.env[key];
         else process.env[key] = value;
+      }
+      for (const temporaryDirectory of temporaryDirectories) {
+        fs.rmSync(temporaryDirectory, { recursive: true, force: true });
       }
     },
   };
@@ -216,6 +228,85 @@ describe("headlessLinearServices", () => {
       globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
+  it("clears only changed PAT health when headless credentials change", () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-pat-health-", {
+      emptyGhConfig: true,
+    });
+    const credentialStore = new EncryptedFileCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_old_token");
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    const environmentCandidate = {
+      source: "environment" as const,
+      token: "ghp_environment_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const oldPatCandidate = {
+      source: "pat" as const,
+      token: "ghp_old_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const newPatCandidate = {
+      source: "pat" as const,
+      token: "ghp_new_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const invalid = { kind: "invalid_token" as const, message: "Bad credentials", retryAt: null };
+
+    try {
+      recordGithubCredentialFailure(environmentCandidate, invalid, null);
+      recordGithubCredentialFailure(oldPatCandidate, invalid, null);
+      recordGithubCredentialFailure(newPatCandidate, invalid, null);
+
+      githubService.setToken("ghp_new_token");
+      expect(githubCredentialCooldown(oldPatCandidate)).toBeNull();
+      expect(githubCredentialCooldown(newPatCandidate)).toBeNull();
+      expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
+
+      recordGithubCredentialFailure(newPatCandidate, invalid, null);
+      githubService.clearToken();
+      expect(githubCredentialCooldown(newPatCandidate)).toBeNull();
+      expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("clears only App health when headless App authorization is removed", () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-health-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    const appCandidate = {
+      source: "app" as const,
+      token: "ghu_app_user_token",
+      capabilities: ["read"] as const,
+    };
+    const environmentCandidate = {
+      source: "environment" as const,
+      token: "ghp_environment_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const invalid = { kind: "invalid_token" as const, message: "Bad credentials", retryAt: null };
+
+    try {
+      recordGithubCredentialFailure(appCandidate, invalid, null);
+      recordGithubCredentialFailure(environmentCandidate, invalid, null);
+
+      githubService.clearAppUserAuth();
+      expect(githubCredentialCooldown(appCandidate)).toBeNull();
+      expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
+    } finally {
+      environment.restore();
     }
   });
 
@@ -922,6 +1013,211 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("preserves an earlier headless REST rate limit after fallback permission failure", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-rest-rate-precedence-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    const resetAt = Math.floor(Date.now() / 1_000) + 3_600;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
+      new Headers(init?.headers).get("authorization") === "Bearer ghu_app_user_token"
+        ? new Response(JSON.stringify({ message: "API rate limit exceeded" }), {
+            status: 403,
+            headers: {
+              "x-ratelimit-limit": "5000",
+              "x-ratelimit-remaining": "0",
+              "x-ratelimit-reset": String(resetAt),
+              "x-ratelimit-resource": "core",
+            },
+          })
+        : new Response(JSON.stringify({ message: "Resource not accessible" }), { status: 403 })
+    )) as unknown as typeof fetch;
+    const service = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(service.apiRequest({ method: "GET", path: "/repos/acme/ade" }))
+        .rejects.toMatchObject({
+          name: "GitHubRateLimitError",
+          rateLimitResetAtMs: resetAt * 1_000,
+        });
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("preserves an earlier headless GraphQL rate limit after fallback permission failure", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-graphql-rate-precedence-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    const resetAt = Math.floor(Date.now() / 1_000) + 3_600;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => (
+      new Headers(init?.headers).get("authorization") === "Bearer ghu_app_user_token"
+        ? new Response(JSON.stringify({
+            data: null,
+            errors: [{ type: "RATE_LIMITED", message: "API rate limit exceeded" }],
+          }), {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "x-ratelimit-limit": "5000",
+              "x-ratelimit-remaining": "0",
+              "x-ratelimit-reset": String(resetAt),
+              "x-ratelimit-resource": "graphql",
+            },
+          })
+        : new Response(JSON.stringify({
+            data: null,
+            errors: [{ type: "FORBIDDEN", message: "Resource not accessible" }],
+          }), { status: 200, headers: { "content-type": "application/json" } })
+    )) as unknown as typeof fetch;
+    const service = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(service.apiRequest({
+        method: "POST",
+        path: "/graphql",
+        capability: "read",
+        body: { query: "query { viewer { login } }" },
+      })).rejects.toMatchObject({
+        name: "GitHubRateLimitError",
+        rateLimitResetAtMs: resetAt * 1_000,
+      });
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("retries raw repository redirects after an ambiguous App 404", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-raw-404-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    const authorizations: string[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      authorizations.push(authorization);
+      if (authorization === "Bearer ghu_app_user_token") {
+        return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+      }
+      return new Response(null, {
+        status: 302,
+        headers: {
+          location: "https://productionresultssa.blob.core.windows.net/actions-results/job.zip",
+        },
+      });
+    }) as unknown as typeof fetch;
+    const service = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      const response = await service.requestRawWithCredentialFallback({
+        url: "https://api.github.com/repos/acme/ade/actions/jobs/123/logs",
+        redirect: "manual",
+        repo: { owner: "acme", name: "ade" },
+      });
+
+      expect(response.status).toBe(302);
+      expect(authorizations).toEqual([
+        "Bearer ghu_app_user_token",
+        "Bearer gho_cli_token",
+      ]);
+      expect(githubCredentialRepositoryAccess({
+        source: "app",
+        token: "ghu_app_user_token",
+        capabilities: ["read"],
+      }, { owner: "acme", name: "ade" })).toBeNull();
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("does not cache a generic headless repo-probe 403 as repository denial", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-generic-403-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    const projectRoot = path.join(process.env.ADE_HOME!, "project");
+    fs.mkdirSync(projectRoot, { recursive: true });
+    execFileSync("git", ["init", projectRoot]);
+    execFileSync("git", ["-C", projectRoot, "remote", "add", "origin", "https://github.com/acme/ade.git"]);
+    const authorizations: string[] = [];
+    globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      authorizations.push(authorization);
+      const url = String(input);
+      if (authorization === "Bearer ghu_app_user_token" && url.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "octocat" }), { status: 200 });
+      }
+      if (authorization === "Bearer ghu_app_user_token" && url.endsWith("/repos/acme/ade")) {
+        return new Response(JSON.stringify({
+          message: "Resource protected by organization SAML enforcement.",
+        }), { status: 403 });
+      }
+      if (authorization === "Bearer gho_cli_token" && url.endsWith("/user")) {
+        return new Response(JSON.stringify({ login: "fallback-user" }), {
+          status: 200,
+          headers: { "x-oauth-scopes": "repo, workflow" },
+        });
+      }
+      return new Response(JSON.stringify([{ id: 1 }]), { status: 200 });
+    }) as unknown as typeof fetch;
+    const service = createHeadlessGitHubService(
+      projectRoot,
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(service.getStatus()).resolves.toMatchObject({
+        authSource: "gh",
+        userLogin: "fallback-user",
+      });
+      await expect(service.apiRequest({
+        method: "GET",
+        path: "/repos/acme/ade/issues",
+      })).resolves.toMatchObject({ data: [{ id: 1 }] });
+      expect(authorizations.at(-1)).toBe("Bearer ghu_app_user_token");
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("falls back for headless repository NOT_FOUND and skips the known-negative credential", async () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-graphql-not-found-");
     storeHeadlessAppUserToken();
@@ -1088,6 +1384,7 @@ describe("headlessLinearServices", () => {
       ]);
       await expect(githubService.getTokenOrThrowAsync()).rejects.toThrow("GitHub write access is unavailable");
       await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
+      await expect(githubService.getGitTransportTokenOrThrowAsync()).rejects.toThrow("GitHub auth missing");
     } finally {
       globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
@@ -1103,16 +1400,35 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("uses a stored PAT instead of the App token for headless Git transport", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-transport-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    new EncryptedFileCredentialStore().setSync("github.token.v1", "github_pat_read_only_contents");
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: null,
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
+      await expect(githubService.getGitTransportTokenOrThrowAsync())
+        .resolves.toBe("github_pat_read_only_contents");
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("drops a cached headless writer when that credential disappears", async () => {
-    const previousAdeHome = process.env.ADE_HOME;
-    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
-    const previousGitHubToken = process.env.GITHUB_TOKEN;
-    const previousGhToken = process.env.GH_TOKEN;
-    const previousFetch = globalThis.fetch;
-    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-cache-"));
-    delete process.env.ADE_GITHUB_TOKEN;
-    delete process.env.GITHUB_TOKEN;
-    delete process.env.GH_TOKEN;
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-cache-");
     const machineCredentialStore = new EncryptedFileCredentialStore();
     machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
       accessToken: "ghu_app_user_token",
@@ -1168,15 +1484,7 @@ describe("headlessLinearServices", () => {
         "Bearer ghu_app_user_token",
       ]);
     } finally {
-      globalThis.fetch = previousFetch;
-      if (previousAdeHome == null) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = previousAdeHome;
-      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
-      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
-      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previousGitHubToken;
-      if (previousGhToken == null) delete process.env.GH_TOKEN;
-      else process.env.GH_TOKEN = previousGhToken;
+      environment.restore();
     }
   });
 

@@ -4,6 +4,14 @@ export type GitHubRepositoryApiPath = GitHubRepoRef & {
   isRepositoryRoot: boolean;
 };
 
+export function isGithubRepositorySpecificAccessDenial(
+  status: number,
+  message: string,
+): boolean {
+  return status === 404
+    || /repository (?:is )?not accessible|cannot access (?:this )?repository|does not have access to (?:this )?repository/i.test(message);
+}
+
 export function classifyGitHubRepositoryApiPath(path: string): GitHubRepositoryApiPath | null {
   const pathname = path.split(/[?#]/, 1)[0] ?? "";
   const match = pathname.match(/^\/repos\/([^/]+)\/([^/]+)(\/.*)?$/);

@@ -479,6 +479,25 @@ describe("account integration re-keying", () => {
     expect(env.DB.linearOrganizations[0]?.account_id).toBeNull();
   });
 
+  it("binds an unassociated repository when the first account-authenticated request is an event poll", async () => {
+    const env = makeEnv();
+    seedRepository(env.DB, null);
+    stubLegacyApis();
+    const accountToken = await mintToken("user_1");
+
+    const response = await handleRequest(request("/github/repos/acme/repo/events", {
+      authorization: "Bearer ghu_app_user_token",
+      accountToken,
+    }), env);
+
+    expect(response.status).toBe(200);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(env.DB.repositories[0]?.account_id).toBe("user_1");
+    expect(env.DB.githubEvents[0]?.account_id).toBe("user_1");
+    expect((await response.json() as { events: Array<{ eventId: string }> }).events)
+      .toEqual([expect.objectContaining({ eventId: "github-delivery-1" })]);
+  });
+
   it("stamps account mappings, isolates account lists, supports both auth keys, and revokes only account access", async () => {
     const env = makeEnv();
     seedRepository(env.DB, null);
@@ -619,8 +638,13 @@ describe("account integration re-keying", () => {
     expect(env.DB.linearEvents[0]?.account_id).toBeNull();
 
     const revokedGitHub = await handleRequest(request("/github/repos/acme/repo/events", { accountToken }), env);
+    const revokedGitHubWithProvider = await handleRequest(request("/github/repos/acme/repo/events", {
+      authorization: "Bearer ghp_repo_token",
+      accountToken,
+    }), env);
     const revokedLinear = await handleRequest(request("/linear/orgs/org-1/events", { accountToken }), env);
     expect(revokedGitHub.status).toBe(401);
+    expect(revokedGitHubWithProvider.status).toBe(401);
     expect(revokedLinear.status).toBe(401);
     expect((await handleRequest(request("/github/repos/acme/repo/events", {
       authorization: "Bearer ghp_repo_token",

@@ -49,6 +49,7 @@ export function createGitHubAppUserAuthService(args: {
   startDeviceAuth(): Promise<GitHubAppDeviceAuthStartResult>;
   pollDeviceAuth(args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult>;
   clearAuth(): GitHubAppUserAuthStatus;
+  getStoredTokenForHealth(): string | null;
   getValidTokenForRelay(): Promise<string>;
   auditLog: GitHubRelayAuthAuditLog;
 } {
@@ -286,6 +287,7 @@ export function createGitHubAppUserAuthService(args: {
     startDeviceAuth,
     pollDeviceAuth,
     clearAuth,
+    getStoredTokenForHealth: () => readAppUserTokenRecord()?.accessToken ?? null,
     getValidTokenForRelay: getValidAppUserTokenForRelay,
     auditLog,
   };

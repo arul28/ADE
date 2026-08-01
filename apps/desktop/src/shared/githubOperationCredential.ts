@@ -198,7 +198,6 @@ export async function resolveGithubStatusCredentials<
         .some((fallback) => !args.cooldown(fallback));
       if (repositoryAccessFailure && result.value && !hasFallback) {
         active = { candidate, value: result.value };
-        successfulProbes.set(candidate.token, result.value);
         args.onAcceptedProbe(candidate, result.value, false);
         break;
       }

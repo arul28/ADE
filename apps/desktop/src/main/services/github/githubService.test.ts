@@ -55,7 +55,12 @@ import {
   createGithubService,
   fetchAdeLatestRelease,
 } from "./githubService";
-import { clearGithubCredentialHealth } from "./githubCredentialHealth";
+import {
+  clearGithubCredentialHealth,
+  githubCredentialCooldown,
+  githubCredentialRepositoryAccess,
+  recordGithubCredentialFailure,
+} from "./githubCredentialHealth";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -312,6 +317,186 @@ describe("githubService.apiRequest", () => {
       .resolves.toBe("ghp_rate_limited_but_valid");
   });
 
+  it("does not use the read-only GitHub App token for Git transport", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    const service = makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
+    await expect(service.getGitTransportTokenOrThrowAsync()).resolves.toBe("gho_cli_token");
+  });
+
+  it("keeps a stored PAT eligible for Git transport when the App is connected", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "github_pat_read_only_contents");
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+
+    await expect(makeService({ credentialStore }).getGitTransportTokenOrThrowAsync())
+      .resolves.toBe("github_pat_read_only_contents");
+  });
+
+  it("memoizes credential inventory until authentication changes", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    const readStoredCredential = vi.spyOn(credentialStore, "getSync");
+    const service = makeService({ credentialStore });
+
+    await service.getReadTokenOrThrowAsync();
+    const readsAfterFirstLookup = readStoredCredential.mock.calls.length;
+    await service.getReadTokenOrThrowAsync();
+    expect(readStoredCredential).toHaveBeenCalledTimes(readsAfterFirstLookup);
+
+    service.setToken("ghp_new_token");
+    const readsAfterMutation = readStoredCredential.mock.calls.length;
+    await service.getReadTokenOrThrowAsync();
+    expect(readStoredCredential.mock.calls.length).toBeGreaterThan(readsAfterMutation);
+  });
+
+  it("preserves a primary rate-limit signal when a fallback is forbidden", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    const resetAtSec = Math.floor(Date.now() / 1_000) + 3_600;
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(403, { message: "API rate limit exceeded" }, {
+        "x-ratelimit-limit": "5000",
+        "x-ratelimit-remaining": "0",
+        "x-ratelimit-reset": String(resetAtSec),
+        "x-ratelimit-resource": "core",
+      }))
+      .mockResolvedValueOnce(jsonResponse(403, { message: "Resource not accessible" }));
+    const service = makeService({
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.apiRequest({
+      method: "GET",
+      path: "/repos/acme/ade",
+      token: "ghp_environment_token",
+    })).rejects.toMatchObject({ name: "GitHubRateLimitError" });
+    await expect(service.apiRequest({ method: "GET", path: "/repos/acme/ade" }))
+      .rejects.toMatchObject({
+        name: "GitHubRateLimitError",
+        rateLimitResetAtMs: resetAtSec * 1_000,
+      });
+  });
+
+  it("retries manual-redirect requests with the next healthy credential", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(404, { message: "Not Found" }))
+      .mockResolvedValueOnce(jsonResponse(302, {}, {
+        location: "https://productionresultssa.blob.core.windows.net/actions-results/job.zip",
+      }));
+    const service = makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    const response = await service.requestRawWithCredentialFallback({
+      url: "https://api.github.com/repos/acme/ade/actions/jobs/123/logs",
+      method: "GET",
+      headers: { accept: "application/vnd.github+json" },
+      redirect: "manual",
+      capability: "read",
+      repo: { owner: "acme", name: "ade" },
+    });
+
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toContain("actions-results/job.zip");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(new Headers(mockFetch.mock.calls[0]?.[1]?.headers).get("authorization"))
+      .toBe("Bearer ghu_app_user_token");
+    expect(new Headers(mockFetch.mock.calls[1]?.[1]?.headers).get("authorization"))
+      .toBe("Bearer gho_cli_token");
+    expect(mockFetch.mock.calls[1]?.[1]?.redirect).toBe("manual");
+    await response.text();
+  });
+
+  it("does not mark a repository accessible after a raw server error", async () => {
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(503, { message: "Service unavailable" }));
+    const repo = { owner: "acme", name: "ade" };
+    const candidate = {
+      source: "app" as const,
+      token: "ghu_app_user_token",
+      capabilities: ["read"] as const,
+    };
+
+    const response = await makeService({ credentialStore }).requestRawWithCredentialFallback({
+      url: "https://api.github.com/repos/acme/ade/actions/jobs/123/logs",
+      redirect: "manual",
+      repo,
+    });
+
+    expect(response.status).toBe(503);
+    expect(githubCredentialRepositoryAccess(candidate, repo)).toBeNull();
+    await response.text();
+  });
+
   it.each([
     {
       name: "when GitHub also returns a primary reset",
@@ -564,6 +749,42 @@ describe("githubService.apiRequest", () => {
       .toBe("Bearer ghp_environment_token");
   });
 
+  it("falls back for zero-data repository-scoped GraphQL mutations", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, {
+        data: null,
+        errors: [{ type: "FORBIDDEN", message: "Repository write is not accessible" }],
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, {
+        data: { resolveReviewThread: { thread: { isResolved: true } } },
+      }));
+    const service = makeService({
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.apiRequest({
+      method: "POST",
+      path: "/graphql",
+      capability: "write",
+      repo: { owner: "acme", name: "ade" },
+      body: { query: "mutation { resolveReviewThread(input: {}) { thread { isResolved } } }" },
+    })).resolves.toMatchObject({
+      data: { data: { resolveReviewThread: { thread: { isResolved: true } } } },
+    });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(new Headers(mockFetch.mock.calls[0]?.[1]?.headers).get("authorization"))
+      .toBe("Bearer ghp_environment_token");
+    expect(new Headers(mockFetch.mock.calls[1]?.[1]?.headers).get("authorization"))
+      .toBe("Bearer gho_cli_token");
+  });
+
   it("falls back on repository-scoped 404s without retrying unrelated 404s", async () => {
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const credentialStore = new MemoryCredentialStore();
@@ -695,13 +916,39 @@ describe("githubService.apiRequest", () => {
 
   it("stores and clears GitHub PATs in the shared machine credential store", () => {
     const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_old_token");
     const service = makeService({ credentialStore });
+    const environment = {
+      source: "environment" as const,
+      token: "ghp_environment_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const oldPat = {
+      source: "pat" as const,
+      token: "ghp_old_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const newPat = {
+      source: "pat" as const,
+      token: "ghp_saved_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const invalid = { kind: "invalid_token" as const, message: "Bad credentials", retryAt: null };
+    recordGithubCredentialFailure(environment, invalid, null);
+    recordGithubCredentialFailure(oldPat, invalid, null);
+    recordGithubCredentialFailure(newPat, invalid, null);
 
     service.setToken("ghp_saved_token");
     expect(credentialStore.getSync("github.token.v1")).toBe("ghp_saved_token");
+    expect(githubCredentialCooldown(oldPat)).toBeNull();
+    expect(githubCredentialCooldown(newPat)).toBeNull();
+    expect(githubCredentialCooldown(environment)).not.toBeNull();
 
+    recordGithubCredentialFailure(newPat, invalid, null);
     service.clearToken();
     expect(credentialStore.getSync("github.token.v1")).toBeNull();
+    expect(githubCredentialCooldown(newPat)).toBeNull();
+    expect(githubCredentialCooldown(environment)).not.toBeNull();
   });
 });
 
@@ -1482,6 +1729,51 @@ describe("githubService.getStatus", () => {
       .toBe("Bearer ghp_environment_token");
   });
 
+  it("does not cache generic 403 responses as repository-specific denial", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { login: "alice" }))
+      .mockResolvedValueOnce(jsonResponse(403, {
+        message: "Resource protected by organization SAML enforcement.",
+      }))
+      .mockResolvedValueOnce(jsonResponse(
+        200,
+        { login: "fallback-user" },
+        { "x-oauth-scopes": "repo, workflow" },
+      ))
+      .mockResolvedValueOnce(jsonResponse(200, [{ id: 1 }]));
+    const service = makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.getStatus()).resolves.toMatchObject({
+      authSource: "gh",
+      userLogin: "fallback-user",
+    });
+    await expect(service.apiRequest({ method: "GET", path: "/repos/acme/ade/issues" }))
+      .resolves.toMatchObject({ data: [{ id: 1 }] });
+
+    expect(new Headers(mockFetch.mock.calls[3]?.[1]?.headers).get("authorization"))
+      .toBe("Bearer ghu_app_user_token");
+  });
+
   it("clearing a stored PAT falls back to gh auth", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
@@ -1595,7 +1887,7 @@ describe("githubService.getStatus", () => {
       writeAuthSource: "pat",
       connected: true,
     });
-    credentialStore.deleteSync("github.token.v1");
+    service.clearToken();
     await expect(service.getStatus()).resolves.toMatchObject({
       authSource: "app",
       writeAuthSource: "none",
@@ -2372,6 +2664,19 @@ describe("githubService GitHub App user authorization", () => {
   it("stores the GitHub App user token returned by device flow polling", async () => {
     const credentialStore = new MemoryCredentialStore();
     const service = makeService({ credentialStore });
+    const appCandidate = {
+      source: "app" as const,
+      token: "ghu_app_user_token",
+      capabilities: ["read"] as const,
+    };
+    const environmentCandidate = {
+      source: "environment" as const,
+      token: "ghp_environment_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const invalid = { kind: "invalid_token" as const, message: "Bad credentials", retryAt: null };
+    recordGithubCredentialFailure(appCandidate, invalid, null);
+    recordGithubCredentialFailure(environmentCandidate, invalid, null);
     mockFetch
       .mockResolvedValueOnce(jsonResponse(200, {
         device_code: "device-code",
@@ -2410,6 +2715,8 @@ describe("githubService GitHub App user authorization", () => {
       refreshToken: "ghr_refresh_token",
       userLogin: "octocat",
     });
+    expect(githubCredentialCooldown(appCandidate)).toBeNull();
+    expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
   });
 
   it("refreshes an expiring GitHub App user token before using it for the relay", async () => {
@@ -2504,6 +2811,19 @@ describe("githubService GitHub App user authorization", () => {
     });
 
     const service = makeService({ credentialStore });
+    const appCandidate = {
+      source: "app" as const,
+      token: "ghu_old_token",
+      capabilities: ["read"] as const,
+    };
+    const environmentCandidate = {
+      source: "environment" as const,
+      token: "ghp_environment_token",
+      capabilities: ["read", "write"] as const,
+    };
+    const invalid = { kind: "invalid_token" as const, message: "Bad credentials", retryAt: null };
+    recordGithubCredentialFailure(appCandidate, invalid, null);
+    recordGithubCredentialFailure(environmentCandidate, invalid, null);
     const tokenPromise = service.getAppUserTokenForRelay();
     service.clearAppUserAuth();
     resolveRefresh(jsonResponse(200, {
@@ -2519,6 +2839,8 @@ describe("githubService GitHub App user authorization", () => {
     );
     expect(credentialStore.getSync("github.appUserToken.v1")).toBeNull();
     expect(service.getAppUserAuthStatus()).toMatchObject({ tokenStored: false, userLogin: null });
+    expect(githubCredentialCooldown(appCandidate)).toBeNull();
+    expect(githubCredentialCooldown(environmentCandidate)).not.toBeNull();
   });
 });
 

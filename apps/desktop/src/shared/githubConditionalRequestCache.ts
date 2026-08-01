@@ -14,12 +14,20 @@ export function createGithubConditionalRequestCache(maxSize = 200) {
     else activeConditionalRequests.set(key, count - 1);
   };
 
+  const touch = (key: string): GithubConditionalRequestCacheEntry | null => {
+    const entry = entries.get(key);
+    if (!entry) return null;
+    entries.delete(key);
+    entries.set(key, entry);
+    return entry;
+  };
+
   return {
     begin(key: string): {
       entry: GithubConditionalRequestCacheEntry;
       release: () => void;
     } | null {
-      const entry = entries.get(key);
+      const entry = touch(key);
       if (!entry) return null;
       activeConditionalRequests.set(key, (activeConditionalRequests.get(key) ?? 0) + 1);
       let released = false;
@@ -33,7 +41,7 @@ export function createGithubConditionalRequestCache(maxSize = 200) {
       };
     },
     get(key: string): GithubConditionalRequestCacheEntry | null {
-      return entries.get(key) ?? null;
+      return touch(key);
     },
     deleteWhere(predicate: (key: string) => boolean): void {
       for (const key of entries.keys()) {
@@ -51,6 +59,7 @@ export function createGithubConditionalRequestCache(maxSize = 200) {
         if (!evictable) break;
         entries.delete(evictable);
       }
+      entries.delete(key);
       entries.set(key, entry);
     },
   };

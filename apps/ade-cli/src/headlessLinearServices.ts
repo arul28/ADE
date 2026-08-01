@@ -47,6 +47,10 @@ import {
 } from "../../desktop/src/main/services/github/githubRelayConfig";
 import { createGitHubAppUserAuthService } from "../../desktop/src/main/services/github/githubAppUserAuthService";
 import {
+  requestGithubRawWithCredentialFallback,
+  type GithubRawRequestArgs,
+} from "../../desktop/src/main/services/github/githubRawRequest";
+import {
   classifyGitHubAuthFailure,
   classifyGitHubGraphqlCredentialFailure,
   GitHubRateLimitError,
@@ -73,6 +77,7 @@ import {
 import {
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
+  isGithubRepositorySpecificAccessDenial,
 } from "../../desktop/src/shared/githubApiPath";
 import { createGithubConditionalRequestCache } from "../../desktop/src/shared/githubConditionalRequestCache";
 import {
@@ -598,6 +603,10 @@ const GITHUB_API_TIMEOUT_MS = 20_000;
 
 async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
   const controller = new AbortController();
+  const upstreamSignal = init.signal;
+  const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
+  if (upstreamSignal?.aborted) abortFromUpstream();
+  else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
   const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
   try {
     return await fetch(input, { ...init, signal: controller.signal });
@@ -610,6 +619,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
     throw error;
   } finally {
     clearTimeout(timer);
+    upstreamSignal?.removeEventListener("abort", abortFromUpstream);
   }
 }
 
@@ -939,6 +949,10 @@ export function createHeadlessGitHubService(
         message,
         headers: response.headers,
       });
+      const repositoryAccessDenied = isGithubRepositorySpecificAccessDenial(
+        response.status,
+        message,
+      );
       const authFailure = failure.authFailure.kind === "unknown"
         && (response.status === 403 || response.status === 404)
         ? {
@@ -949,7 +963,7 @@ export function createHeadlessGitHubService(
         : failure.authFailure.kind === "unknown"
           ? null
           : failure.authFailure;
-      if (authFailure?.kind === "permission_denied") {
+      if (authFailure?.kind === "permission_denied" && repositoryAccessDenied) {
         recordGithubCredentialRepositoryAccess(candidate, repo, false);
       }
       return {
@@ -1006,6 +1020,23 @@ export function createHeadlessGitHubService(
 
   const conditionalRequestCache = createGithubConditionalRequestCache();
 
+  const requestRawWithCredentialFallback = async (
+    args: GithubRawRequestArgs,
+  ): Promise<Response> => await requestGithubRawWithCredentialFallback({
+    ...args,
+    candidates: (await readCredentialInventoryAsync()).candidates,
+    fetchImpl: fetchGitHub,
+    userAgent: "ade-cli",
+    authMissingMessage: "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+    onFallback: ({ capability, fromSource, toSource }) => {
+      logger.info("github.credential_fallback_used", {
+        capability,
+        fromSource,
+        toSource,
+      });
+    },
+  });
+
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
     path: string;
@@ -1055,6 +1086,7 @@ export function createHeadlessGitHubService(
       rateLimit: GitHubRateLimitState | null;
     } | null = null;
     let lastAttemptError: HeadlessGithubCredentialAttemptError | null = null;
+    let firstRateLimitError: HeadlessGithubCredentialAttemptError | null = null;
 
     for (const candidate of candidates) {
       if (
@@ -1147,6 +1179,9 @@ export function createHeadlessGitHubService(
           failure.rateLimit,
         );
         lastAttemptError = attemptError;
+        if (attemptError.authFailure.kind === "rate_limited") {
+          firstRateLimitError ??= attemptError;
+        }
         const canTryNext = !args.token
           && (
             response.status === 401
@@ -1192,6 +1227,9 @@ export function createHeadlessGitHubService(
           graphqlFailure.rateLimit,
         );
         lastAttemptError = attemptError;
+        if (attemptError.authFailure.kind === "rate_limited") {
+          firstRateLimitError ??= attemptError;
+        }
         const canTryNext = !args.token
           && (capability === "read" || !graphqlFailure.hasData);
         if (canTryNext) continue;
@@ -1221,13 +1259,17 @@ export function createHeadlessGitHubService(
       return { data: data as T, response, linkHeader };
     }
 
-    const exhausted = lastAttemptError ?? (firstUnavailable
+    const unavailableError = firstUnavailable
       ? new HeadlessGithubCredentialAttemptError(
           firstUnavailable.failure.message,
           firstUnavailable.failure,
           firstUnavailable.rateLimit,
         )
-      : null);
+      : null;
+    const exhausted = firstRateLimitError
+      ?? (unavailableError?.authFailure.kind === "rate_limited" ? unavailableError : null)
+      ?? lastAttemptError
+      ?? unavailableError;
     if (exhausted?.authFailure.kind === "rate_limited") {
       const resetAtMs = githubRateLimitRetryAtMs(exhausted.authFailure, exhausted.rateLimit);
       const resetDetail = resetAtMs == null
@@ -1745,16 +1787,20 @@ export function createHeadlessGitHubService(
       return await appUserAuth.startDeviceAuth();
     },
     async pollAppUserDeviceAuth(args: { sessionId: string }): Promise<GitHubAppDeviceAuthPollResult> {
+      const previousToken = appUserAuth.getStoredTokenForHealth();
       const result = await appUserAuth.pollDeviceAuth(args);
       if (result.status === "authorized") {
-        clearGithubCredentialHealth();
+        const currentToken = appUserAuth.getStoredTokenForHealth();
+        if (previousToken) clearGithubCredentialHealth(previousToken);
+        if (currentToken && currentToken !== previousToken) clearGithubCredentialHealth(currentToken);
         invalidateStatusCache();
       }
       return result;
     },
     clearAppUserAuth(): GitHubAppUserAuthStatus {
+      const previousToken = appUserAuth.getStoredTokenForHealth();
       const status = appUserAuth.clearAuth();
-      clearGithubCredentialHealth();
+      if (previousToken) clearGithubCredentialHealth(previousToken);
       invalidateStatusCache();
       return status;
     },
@@ -1793,7 +1839,7 @@ export function createHeadlessGitHubService(
       return token;
     },
     async getGitTransportTokenOrThrowAsync() {
-      const token = (await readTokenAsync("read", "non-rate-limit-only")).token ?? "";
+      const token = (await readTokenAsync("write", "non-rate-limit-only")).token ?? "";
       if (!token) {
         throw new Error(
           "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1808,6 +1854,7 @@ export function createHeadlessGitHubService(
     parseNextLink: parseNextGitHubLink,
     setToken(nextToken: string) {
       const clean = nextToken.trim();
+      const previousToken = readStoredPatToken();
       tokenOverride = clean || null;
       if (clean) {
         credentialStore.setSync(tokenKey, clean);
@@ -1815,18 +1862,21 @@ export function createHeadlessGitHubService(
         credentialStore.deleteSync(tokenKey);
       }
       tokenDecryptionFailed = false;
-      clearGithubCredentialHealth();
+      if (previousToken) clearGithubCredentialHealth(previousToken);
+      if (clean && clean !== previousToken) clearGithubCredentialHealth(clean);
       invalidateStatusCache();
       emitStatusChanged();
     },
     clearToken() {
+      const previousToken = readStoredPatToken();
       tokenOverride = null;
       credentialStore.deleteSync(tokenKey);
       tokenDecryptionFailed = false;
-      clearGithubCredentialHealth();
+      if (previousToken) clearGithubCredentialHealth(previousToken);
       invalidateStatusCache();
       emitStatusChanged();
     },
+    requestRawWithCredentialFallback,
     apiRequest,
     createRepository,
     getRepository,

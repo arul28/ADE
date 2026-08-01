@@ -246,6 +246,7 @@ function makeGithubService(overrides?: Record<string, unknown>) {
     getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     getReadTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     getGitTransportTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    requestRawWithCredentialFallback: vi.fn(),
     ...remainingOverrides,
   } as any;
 }
@@ -875,6 +876,89 @@ describe("prService.getForLane", () => {
       }));
 
     await expect(service.listPrsByLane()).resolves.toEqual(perLane);
+  });
+});
+
+describe("prService repository-scoped GraphQL mutations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes the owning repository for every node-only review mutation", async () => {
+    const row = makePrRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string; body?: unknown }) => {
+        if (args.path !== "/graphql") throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+        if (query.includes("query AdePullRequestReviewThreads")) {
+          return {
+            data: {
+              data: {
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                      nodes: [{
+                        id: "thread-1",
+                        isResolved: false,
+                        isOutdated: false,
+                        comments: { nodes: [] },
+                      }],
+                    },
+                  },
+                },
+              },
+            },
+          };
+        }
+        if (query.includes("addPullRequestReviewThreadReply")) {
+          return {
+            data: {
+              data: {
+                addPullRequestReviewThreadReply: {
+                  comment: { id: "comment-1", body: "reply", author: { login: "octocat" } },
+                },
+              },
+            },
+          };
+        }
+        if (query.includes("resolveReviewThread")) {
+          return {
+            data: {
+              data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } },
+            },
+          };
+        }
+        if (query.includes("addReaction")) {
+          return {
+            data: { data: { addReaction: { reaction: { id: "reaction-1", content: "THUMBS_UP" } } } },
+          };
+        }
+        throw new Error("Unexpected GraphQL operation");
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await service.replyToReviewThread({ prId: row.id, threadId: "thread-1", body: "reply" });
+    await service.resolveReviewThread({ prId: row.id, threadId: "thread-1" });
+    await service.postReviewComment({ prId: row.id, threadId: "thread-1", body: "reply" });
+    await service.setReviewThreadResolved({ prId: row.id, threadId: "thread-1", resolved: true });
+    await service.reactToComment({ prId: row.id, commentId: "comment-1", content: "+1" });
+
+    const mutationCalls = githubService.apiRequest.mock.calls
+      .map(([args]: [{ body?: unknown }]) => args)
+      .filter((args: { body?: unknown }) => /^\s*mutation\b/i.test(
+        String((args.body as { query?: unknown } | undefined)?.query ?? ""),
+      ));
+    expect(mutationCalls).toHaveLength(5);
+    for (const call of mutationCalls) {
+      expect(call).toEqual(expect.objectContaining({
+        capability: "write",
+        repo: REPO,
+      }));
+    }
   });
 });
 
@@ -3628,6 +3712,91 @@ describe("prService.getCheckLog", () => {
         prId: "pr-actions",
         jobId: 999,
       });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("downloads the API redirect through credential fallback without authenticating the blob request", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const redirectResponse = new Response(null, {
+      status: 302,
+      headers: { location: "https://pipelines.actions.githubusercontent.com/log.txt" },
+    });
+    const discardRedirectBody = vi.spyOn(redirectResponse, "arrayBuffer");
+    const requestRawWithCredentialFallback = vi.fn(async () => redirectResponse);
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback,
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7,
+                name: "CI",
+                status: "completed",
+                conclusion: "failure",
+                head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z",
+                updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111,
+                name: "build",
+                status: "completed",
+                conclusion: "failure",
+                steps: [{ number: 1, name: "test", status: "completed", conclusion: "failure" }],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("test failed\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111 });
+
+      expect(excerpt).toMatchObject({ jobId: 111, jobName: "build" });
+      expect(requestRawWithCredentialFallback).toHaveBeenCalledWith({
+        url: "https://api.github.com/repos/test-owner/test-repo/actions/jobs/111/logs",
+        method: "GET",
+        headers: { accept: "application/vnd.github+json" },
+        redirect: "manual",
+        signal: expect.any(AbortSignal),
+        capability: "read",
+        repo: REPO,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [blobUrl, blobInit] = fetchMock.mock.calls[0] ?? [];
+      expect(String(blobUrl)).toBe("https://pipelines.actions.githubusercontent.com/log.txt");
+      expect(blobInit).toEqual({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      });
+      expect(discardRedirectBody).toHaveBeenCalledOnce();
     } finally {
       vi.unstubAllGlobals();
     }

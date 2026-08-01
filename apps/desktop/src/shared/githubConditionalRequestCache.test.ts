@@ -21,4 +21,17 @@ describe("githubConditionalRequestCache", () => {
     expect(cache.get("one")).toBeNull();
     expect(cache.get("three")?.data).toEqual({ value: "three" });
   });
+
+  it("evicts the least recently used inactive entry", () => {
+    const cache = createGithubConditionalRequestCache(2);
+    cache.store("one", { etag: '"one"', data: 1, linkHeader: null });
+    cache.store("two", { etag: '"two"', data: 2, linkHeader: null });
+
+    expect(cache.get("one")?.data).toBe(1);
+    cache.store("three", { etag: '"three"', data: 3, linkHeader: null });
+
+    expect(cache.get("one")?.data).toBe(1);
+    expect(cache.get("two")).toBeNull();
+    expect(cache.get("three")?.data).toBe(3);
+  });
 });

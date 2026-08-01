@@ -17,6 +17,10 @@ import {
   recordGithubCredentialSuccess,
 } from "../github/githubCredentialHealth";
 
+afterEach(() => {
+  clearGithubCredentialHealth();
+});
+
 // ---------------------------------------------------------------------------
 // Shared helpers
 // ---------------------------------------------------------------------------
@@ -85,7 +89,6 @@ describe("prPollingService", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
-    clearGithubCredentialHealth();
   });
 
   it("refreshes only hot PRs and ignores updatedAt-only churn", async () => {
@@ -284,6 +287,8 @@ describe("prPollingService", () => {
     await vi.advanceTimersByTimeAsync(9_999);
     expect(listAll).toHaveBeenCalledTimes(1);
     await vi.advanceTimersByTimeAsync(1);
+    // The backoff tick reads once to choose work and once to publish the
+    // unchanged snapshot; the failed safety sweep itself is not retried.
     expect(listAll).toHaveBeenCalledTimes(3);
     expect(refresh).toHaveBeenCalledTimes(1);
 

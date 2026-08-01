@@ -4204,10 +4204,11 @@ export function createPrService({
   const graphqlRequest = async <T>(
     query: string,
     variables: Record<string, unknown>,
-    options: { accept?: string } = {},
+    options: { accept?: string; repo?: GitHubRepoRef } = {},
   ): Promise<T> => {
     const owner = typeof variables.owner === "string" ? variables.owner.trim() : "";
     const name = typeof variables.name === "string" ? variables.name.trim() : "";
+    const repo = options.repo ?? (owner && name ? { owner, name } : null);
     const { data: payload } = await githubService.apiRequest<{
       data?: T;
       errors?: Array<{ message?: unknown }>;
@@ -4215,7 +4216,7 @@ export function createPrService({
       method: "POST",
       path: "/graphql",
       capability: /^\s*mutation\b/i.test(query) ? "write" : "read",
-      ...(owner && name ? { repo: { owner, name } } : {}),
+      ...(repo ? { repo } : {}),
       body: { query, variables },
       ...(options.accept ? { accept: options.accept } : {}),
     });
@@ -5747,23 +5748,20 @@ export function createPrService({
     repo: GitHubRepoRef;
     jobId: number;
   }): Promise<{ text: string; truncated: boolean } | null> => {
-    const token = await githubService.getReadTokenOrThrowAsync();
     const apiUrl = `https://api.github.com/repos/${args.repo.owner}/${args.repo.name}/actions/jobs/${args.jobId}/logs`;
-    const headers = {
-      accept: "application/vnd.github+json",
-      authorization: `Bearer ${token}`,
-      "user-agent": "ade-desktop",
-    };
-
-    const redirect = await fetch(apiUrl, {
+    const redirect = await githubService.requestRawWithCredentialFallback({
+      url: apiUrl,
       method: "GET",
-      headers,
+      headers: { accept: "application/vnd.github+json" },
       redirect: "manual",
       signal: AbortSignal.timeout(CHECK_LOG_FETCH_TIMEOUT_MS),
+      capability: "read",
+      repo: args.repo,
     });
     let blobResponse: Response;
     if (redirect.status >= 300 && redirect.status < 400) {
       const location = redirect.headers.get("location");
+      await redirect.arrayBuffer().catch(() => undefined);
       if (!location) return null;
       let blobUrl: URL;
       try {
@@ -5781,6 +5779,7 @@ export function createPrService({
     } else if (redirect.ok) {
       blobResponse = redirect;
     } else {
+      await redirect.arrayBuffer().catch(() => undefined);
       return null;
     }
     if (!blobResponse.ok || !blobResponse.body) return null;
@@ -10926,6 +10925,7 @@ export function createPrService({
           threadId: args.threadId,
           body: args.body,
         },
+        { repo },
       );
 
       const comment = data.addPullRequestReviewThreadReply?.comment;
@@ -10962,11 +10962,12 @@ export function createPrService({
           }
         `,
         { threadId: args.threadId },
+        { repo },
       );
     },
 
     async postReviewComment(args: PostPrReviewCommentArgs): Promise<PrReviewThreadComment> {
-      await assertThreadBelongsToPr(args.prId, args.threadId);
+      const { repo } = await assertThreadBelongsToPr(args.prId, args.threadId);
       const data = await graphqlRequest<{
         addPullRequestReviewThreadReply?: {
           comment?: {
@@ -10994,6 +10995,7 @@ export function createPrService({
           }
         `,
         { threadId: args.threadId, body: args.body },
+        { repo },
       );
       const comment = data.addPullRequestReviewThreadReply?.comment;
       if (!comment) {
@@ -11011,7 +11013,7 @@ export function createPrService({
     },
 
     async setReviewThreadResolved(args: SetPrReviewThreadResolvedArgs): Promise<SetPrReviewThreadResolvedResult> {
-      await assertThreadBelongsToPr(args.prId, args.threadId);
+      const { repo } = await assertThreadBelongsToPr(args.prId, args.threadId);
       if (args.resolved) {
         const data = await graphqlRequest<{
           resolveReviewThread?: { thread?: { id?: unknown; isResolved?: unknown } | null } | null;
@@ -11024,6 +11026,7 @@ export function createPrService({
             }
           `,
           { threadId: args.threadId },
+          { repo },
         );
         const thread = data.resolveReviewThread?.thread ?? null;
         return {
@@ -11042,6 +11045,7 @@ export function createPrService({
           }
         `,
         { threadId: args.threadId },
+        { repo },
       );
       const thread = data.unresolveReviewThread?.thread ?? null;
       return {
@@ -11051,14 +11055,9 @@ export function createPrService({
     },
 
     async reactToComment(args: ReactToPrCommentArgs): Promise<void> {
-      // requireRow gates the caller's access to the PR, but the commentId is
-      // trusted from the UI: reactions can target review comments, issue
-      // comments, or review threads — validating ownership for every node type
-      // would require an extra GraphQL round-trip per click and offers little
-      // defense given the user already has write access to the PR's comments.
-      // Unmapped GitHub-tab PRs carry a synthetic "gh:" id with no row — the
-      // reaction keys on the global commentId, so skip the row gate for those.
-      if (!parseSyntheticGithubPrId(args.prId)) requireRow(args.prId);
+      // Node ids are global, but the repository context lets GitHub credential
+      // failover skip tokens that cannot write to this PR's repository.
+      const { repo } = resolvePrThreadTarget(args.prId);
       const contentEnum = reactionToGraphqlEnum(args.content);
       await graphqlRequest(
         `
@@ -11069,6 +11068,7 @@ export function createPrService({
           }
         `,
         { subjectId: args.commentId, content: contentEnum },
+        { repo },
       );
     },
 
