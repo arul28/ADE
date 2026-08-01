@@ -5975,7 +5975,7 @@ const ORCHESTRATION_SESSION_FIELD_NAMES = [
 type OrchestrationFieldSource = Partial<Record<(typeof ORCHESTRATION_SESSION_FIELD_NAMES)[number], unknown>>;
 
 const VALID_ORCHESTRATION_ROLES = new Set(["lead", "worker", "validator"]);
-const VALID_AGENT_CHAT_SPAWN_KINDS = new Set(["subagent", "peer", "none"]);
+const VALID_AGENT_CHAT_SPAWN_KINDS = new Set(["subagent", "peer"]);
 
 /**
  * Read orchestration fields from an untyped record (e.g. persisted JSON),
@@ -5996,7 +5996,7 @@ function hydrateOrchestrationFields(
   if (typeof parentId === "string" && parentId.trim().length) out.orchestrationParentSessionId = parentId.trim();
   const spawnKind = record.spawnKind;
   if (typeof spawnKind === "string" && VALID_AGENT_CHAT_SPAWN_KINDS.has(spawnKind)) {
-    out.spawnKind = spawnKind as "subagent" | "peer" | "none";
+    out.spawnKind = spawnKind as "subagent" | "peer";
   }
   const tag = record.orchestrationTag;
   if (typeof tag === "string" && tag.trim().length) out.orchestrationTag = tag.trim();
@@ -6062,8 +6062,14 @@ function stringifyExecutableToolOutput(output: unknown): string {
 function buildSpawnSelfReportGuidance(
   session: Pick<AgentChatSession, "orchestrationParentSessionId" | "spawnKind">,
 ): string | null {
-  if (!session.orchestrationParentSessionId?.trim() || session.spawnKind !== "subagent") return null;
-  return "You were spawned as a subagent. When you finish, report a one-paragraph summary to your spawner with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. ADE will also notify them automatically, so this is enrichment, not required.";
+  if (!session.orchestrationParentSessionId?.trim()) return null;
+  if (session.spawnKind === "subagent") {
+    return "You were spawned as a subagent. ADE automatically wakes your parent after parent-requested turns and includes your latest assistant summary. You may send extra context or recover from a delivery failure with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`. Do not poll the parent transcript for coordination.";
+  }
+  if (session.spawnKind === "peer") {
+    return "You were spawned as a peer for fire-and-forget work. ADE records quiet completion notes but does not wake your parent. If the parent unexpectedly needs your result, report it directly with: `ade actions run chat.messageSession --input-json '{\"sessionId\":\"$ADE_PARENT_CHAT_SESSION_ID\",\"kind\":\"auto\",\"text\":\"<summary>\"}'`.";
+  }
+  return "This legacy child session has parent lineage but no supported spawn type. Report your result directly to `$ADE_PARENT_CHAT_SESSION_ID`, and use `--type subagent|peer` for any new child session.";
 }
 
 function buildAdeGuidanceForLane(
@@ -8571,6 +8577,35 @@ export function createAgentChatService(args: {
     return runtime.taskTodos.byId;
   };
 
+  const transcriptEntryCharCount = (entry: AgentChatTranscriptEntry): number =>
+    entry.text.length + (entry.displayText?.length ?? 0);
+
+  const clipTranscriptField = (value: string, budget: number): string => {
+    if (value.length <= budget) return value;
+    if (budget <= 0) return "";
+    return budget > 3
+      ? `${value.slice(0, budget - 3).trimEnd()}...`
+      : value.slice(0, budget);
+  };
+
+  const boundTranscriptEntry = (
+    entry: AgentChatTranscriptEntry,
+    maxChars: number,
+  ): AgentChatTranscriptEntry => {
+    if (transcriptEntryCharCount(entry) <= maxChars) return entry;
+    let remainingChars = maxChars;
+    const displayText = entry.displayText == null
+      ? undefined
+      : clipTranscriptField(entry.displayText, remainingChars);
+    remainingChars -= displayText?.length ?? 0;
+    const text = clipTranscriptField(entry.text, remainingChars);
+    return {
+      ...entry,
+      text,
+      ...(displayText == null ? {} : { displayText }),
+    };
+  };
+
   const getChatTranscript = async ({
     sessionId,
     limit = DEFAULT_TRANSCRIPT_READ_LIMIT,
@@ -8614,15 +8649,13 @@ export function createAgentChatService(args: {
         truncated = true;
         break;
       }
-      if (entry.text.length <= remainingChars) {
+      const entryChars = transcriptEntryCharCount(entry);
+      if (entryChars <= remainingChars) {
         bounded.push(entry);
-        remainingChars -= entry.text.length;
+        remainingChars -= entryChars;
         continue;
       }
-      bounded.push({
-        ...entry,
-        text: remainingChars > 3 ? `${entry.text.slice(0, remainingChars - 3).trimEnd()}...` : entry.text.slice(0, remainingChars),
-      });
+      bounded.push(boundTranscriptEntry(entry, remainingChars));
       truncated = true;
       remainingChars = 0;
       break;
@@ -8710,7 +8743,7 @@ export function createAgentChatService(args: {
           onEntrySourceOffset: (offset) => convertedEntryOffsets.push(offset),
         },
       );
-      const convertedChars = converted.reduce((total, entry) => total + entry.text.length, 0);
+      const convertedChars = converted.reduce((total, entry) => total + transcriptEntryCharCount(entry), 0);
       if (
         converted.length >= normalizedLimit
         || convertedChars >= normalizedMaxChars
@@ -8730,17 +8763,16 @@ export function createAgentChatService(args: {
         charTruncated = true;
         break;
       }
-      if (entry.text.length <= remainingChars) {
+      const entryChars = transcriptEntryCharCount(entry);
+      if (entryChars <= remainingChars) {
         boundedNewestFirst.push(entry);
-        remainingChars -= entry.text.length;
+        remainingChars -= entryChars;
       } else {
-        // A byte cursor can only resume at an envelope boundary. Splitting a
-        // coalesced transcript entry here would advance past the entry and
-        // silently discard its omitted suffix. Keep one oversize boundary
-        // entry whole instead; the collected source window is itself bounded,
-        // so this remains safely below the remote RPC response limit.
+        // The public maxChars contract is a hard context-safety ceiling. A byte
+        // cursor resumes only at envelope boundaries, so an oversized entry is
+        // visibly clipped rather than allowing one message to bypass the cap.
         if (boundedNewestFirst.length === 0) {
-          boundedNewestFirst.push(entry);
+          boundedNewestFirst.push(boundTranscriptEntry(entry, remainingChars));
         }
         charTruncated = true;
         break;
@@ -13046,10 +13078,11 @@ export function createAgentChatService(args: {
     }
 
     if (normalizedEvent.type === "done") {
-      // If this session was spawned as a child of another chat, reflect the
-      // first finished turn as the child's terminal status in the parent's
-      // subagents panel. No-op unless the spawn was tracked this process.
-      reportChildSpawnEnded(managed.session.id, normalizedEvent.status);
+      // Parented chats report every completed turn. Parent-dispatched subagent
+      // turns wake the parent; human-dispatched turns and peers leave a quiet
+      // completion notice. Causality and dedupe are derived from persisted
+      // transcript metadata, so process restarts do not sever the channel.
+      reportChildSpawnEnded(managed.session.id, normalizedEvent.status, normalizedEvent.turnId);
       if (normalizedEvent.status === "failed") {
         sessionService.markLastTurnFailed(managed.session.id);
       } else if (normalizedEvent.status === "completed") {
@@ -28556,26 +28589,19 @@ export function createAgentChatService(args: {
   };
 
   /**
-   * Child chat sessions spawned with a parent lineage — spawnAgent and CLI
-   * spawns (`ade chat create` / `ade new --mode chat` default the parent from
-   * the ADE_CHAT_SESSION_ID env var ADE injects into every tracked agent
-   * shell). The durable lineage record is the child session's
-   * orchestrationParentSessionId field itself (persisted via
-   * collectOrchestrationFields independent of run/role); manifest
-   * DelegationEdges are not used here because they require an approved-plan
-   * orchestration run. The parent transcript gets a "Subagent spawned"
-   * system_notice chip; plain spawns outside an orchestration run (which
-   * already has the Work-tab orchestrator UI) additionally get synthetic
-   * subagent_* events so the child lists in the parent's subagents panel
-   * with live status. Tracking is process-transient on purpose: after a
-   * restart no stale subagent_result can fire for a spawn event that
-   * predates the process.
+   * Child chat sessions spawned with a parent lineage. The relationship lives
+   * on the persisted child session, while parent-dispatch causality lives on
+   * the child turn's persisted user-message metadata. Completion deliveries
+   * carry the child turn id in the parent transcript, providing durable dedupe
+   * without a process-local spawn tracker.
    */
-  const childSpawnTracking = new Map<string, { parentSessionId: string; emitInlineEvents: boolean }>();
+  const spawnCompletionDeliveriesInFlight = new Set<string>();
 
   const notifyParentSessionOfSpawn = (child: ManagedChatSession, label: string): void => {
     const parentSessionId = child.session.orchestrationParentSessionId?.trim();
     if (!parentSessionId || parentSessionId === child.session.id) return;
+    const spawnKind = child.session.spawnKind;
+    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
     const parent = managedSessions.get(parentSessionId);
     if (!parent || parent.deleted || parent.closed) return;
     emitChatEvent(parent, {
@@ -28589,7 +28615,7 @@ export function createAgentChatService(args: {
           laneId: child.session.laneId ?? null,
           title: label,
         },
-        spawnKind: child.session.spawnKind ?? "none",
+        spawnKind,
         // A plain spawn also emits an inline `subagent_started` card below; an
         // orchestration-run child emits only this notice. The renderer keeps the
         // quiet deep-link pill only when no card accompanies it.
@@ -28597,7 +28623,6 @@ export function createAgentChatService(args: {
       },
     });
     const emitInlineEvents = !child.session.orchestrationRunId;
-    childSpawnTracking.set(child.session.id, { parentSessionId, emitInlineEvents });
     if (!emitInlineEvents) return;
     emitChatEvent(parent, {
       type: "subagent_started",
@@ -28608,83 +28633,156 @@ export function createAgentChatService(args: {
       description: label,
       background: false,
       taskType: "subagent",
-      spawnKind: child.session.spawnKind ?? "none",
+      spawnKind,
     });
   };
 
   const reportChildSpawnEnded = (
     childSessionId: string,
     status: "completed" | "interrupted" | "failed",
+    turnId?: string,
   ): void => {
-    const tracked = childSpawnTracking.get(childSessionId);
-    if (!tracked) return;
-    // Terminal once — deleting the entry both enforces that and keeps the
-    // map from growing over a long-lived process.
-    childSpawnTracking.delete(childSessionId);
-    const parent = managedSessions.get(tracked.parentSessionId);
-    if (!parent || parent.deleted || parent.closed) return;
     const child = managedSessions.get(childSessionId);
+    if (!child || child.deleted) return;
+    const parentSessionId = child.session.orchestrationParentSessionId?.trim();
+    if (!parentSessionId || parentSessionId === childSessionId) return;
+    const spawnKind = child.session.spawnKind;
+    // Old persisted sessions may still carry `none` or no type. They remain
+    // readable but cannot create new silent completion behavior.
+    if (spawnKind !== "subagent" && spawnKind !== "peer") return;
+    const resolvedTurnId = turnId?.trim()
+      || [...child.recentConversationEntries].reverse().find((entry) => entry.turnId?.trim())?.turnId?.trim()
+      || `event-${child.eventSequence + 1}`;
+    const deliveryKey = `${parentSessionId}:${childSessionId}:${resolvedTurnId}`;
+    if (spawnCompletionDeliveriesInFlight.has(deliveryKey)) return;
+
+    const parentWasDispatcher = (() => {
+      const history = mergeEnvelopeStreams(
+        readTranscriptEnvelopes(child),
+        eventHistoryBySession.get(childSessionId) ?? [],
+      );
+      for (let index = history.length - 1; index >= 0; index -= 1) {
+        const event = history[index]?.event;
+        if (event?.type !== "user_message" || event.turnId !== resolvedTurnId) continue;
+        return event.metadata?.spawnDispatch?.parentSessionId === parentSessionId;
+      }
+      return false;
+    })();
     const resultStatus = status === "interrupted" ? "stopped" : status === "failed" ? "failed" : "completed";
-    const summary = resultStatus === "completed"
-      ? "Kickoff turn finished."
+    const assistantSummary = [...child.recentConversationEntries]
+      .reverse()
+      .find((entry) => entry.role === "assistant" && entry.turnId === resolvedTurnId)
+      ?.text
+      .replace(/\s+/g, " ")
+      .trim();
+    const summary = resultStatus === "completed" && assistantSummary
+      ? assistantSummary.length > 1_200
+        ? `${assistantSummary.slice(0, 1_197).trimEnd()}...`
+        : assistantSummary
+      : resultStatus === "completed"
+        ? spawnKind === "subagent" ? "Subagent turn finished." : "Peer turn finished."
       : resultStatus === "stopped"
         ? "Stopped before finishing."
         : "Turn failed.";
-    if (tracked.emitInlineEvents) {
-      emitChatEvent(parent, {
-        type: "subagent_result",
-        taskId: `chat:${childSessionId}`,
-        agentId: childSessionId,
-        ...(child?.session.provider ? { agentType: child.session.provider } : {}),
-        parentToolUseId: null,
-        status: resultStatus,
-        summary,
-        finalSummary: summary,
-        taskType: "subagent",
-      });
-    }
-    // Untyped spawns default to "none" (silent) — the completion report is opt-in
-    // via `--type subagent|peer`, matching the CLI docs and the self-report guidance.
-    const spawnKind = child?.session.spawnKind ?? "none";
-    if (spawnKind === "none") return;
     const childTitle = sessionService.get(childSessionId)?.title?.trim()
-      || defaultChatSessionTitle(child?.session.provider ?? "claude");
+      || defaultChatSessionTitle(child.session.provider);
     const spawnCompletion: AgentChatSpawnCompletion = {
       childSessionId,
       childTitle,
       spawnKind,
+      childTurnId: resolvedTurnId,
       status: resultStatus,
       summary,
     };
-    // Delivery is best-effort: a failed wake/notice must never break child cleanup.
-    const onCompletionDeliveryFailed = (error: unknown) => {
-      logger.warn("agent_chat.spawn_completion_delivery_failed", {
-        childSessionId,
-        parentSessionId: parent.session.id,
-        spawnKind,
-        error: error instanceof Error ? error.message : String(error),
+
+    const parentAlreadyHasCompletion = (parent: ManagedChatSession): boolean =>
+      mergeEnvelopeStreams(
+        readTranscriptEnvelopes(parent),
+        eventHistoryBySession.get(parent.session.id) ?? [],
+      ).some((envelope) => {
+        const event = envelope.event;
+        const completion = event.type === "user_message"
+          ? event.metadata?.spawnCompletion
+          : event.type === "system_notice"
+            ? (event.detail as { spawnCompletion?: AgentChatSpawnCompletion } | undefined)?.spawnCompletion
+            : undefined;
+        return completion?.childSessionId === childSessionId
+          && completion.childTurnId === resolvedTurnId;
       });
-    };
-    try {
-      if (spawnKind === "subagent") {
-        void messageSession({
-          sessionId: parent.session.id,
-          kind: "wake",
-          text: `Your subagent "${childTitle}" finished — ${summary}`,
-          metadata: { spawnCompletion },
-        }, { trustedSpawnCompletion: true }).catch(onCompletionDeliveryFailed);
-      } else {
-        emitChatEvent(parent, {
+
+    spawnCompletionDeliveriesInFlight.add(deliveryKey);
+    void (async () => {
+      let lastError: unknown = null;
+      let inlineEventEmitted = false;
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          const parent = ensureManagedSession(parentSessionId);
+          if (parent.deleted) throw new Error("Parent session was deleted.");
+          if (parentAlreadyHasCompletion(parent)) return;
+          if (!child.session.orchestrationRunId && !inlineEventEmitted) {
+            emitChatEvent(parent, {
+              type: "subagent_result",
+              taskId: `chat:${childSessionId}`,
+              agentId: childSessionId,
+              agentType: child.session.provider,
+              parentToolUseId: null,
+              status: resultStatus,
+              summary,
+              finalSummary: summary,
+              taskType: "subagent",
+            });
+            inlineEventEmitted = true;
+          }
+          if (spawnKind === "subagent" && parentWasDispatcher) {
+            await messageSession({
+              sessionId: parentSessionId,
+              kind: "wake",
+              text: `Your subagent "${childTitle}" finished a turn — ${summary}`,
+              metadata: { spawnCompletion },
+            }, { trustedSpawnCompletion: true });
+          } else {
+            emitChatEvent(parent, {
+              type: "system_notice",
+              noticeKind: "info",
+              status: "spawn_completed",
+              message: `${spawnKind === "subagent" ? "Subagent" : "Peer"} "${childTitle}" turn finished`,
+              detail: { spawnCompletion },
+            });
+          }
+          return;
+        } catch (error) {
+          lastError = error;
+          logger.warn("agent_chat.spawn_completion_delivery_failed", {
+            childSessionId,
+            childTurnId: resolvedTurnId,
+            parentSessionId,
+            spawnKind,
+            attempt,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          if (attempt < 3) {
+            await new Promise<void>((resolve) => setTimeout(resolve, attempt * 250));
+          }
+        }
+      }
+      if (!child.deleted) {
+        emitChatEvent(child, {
           type: "system_notice",
-          noticeKind: "info",
-          status: "spawn_completed",
-          message: `Peer "${childTitle}" finished`,
-          detail: { spawnCompletion },
+          noticeKind: "warning",
+          status: "spawn_completion_delivery_failed",
+          message: `ADE could not notify parent ${parentSessionId} after 3 attempts. Retry with chat.messageSession using $ADE_PARENT_CHAT_SESSION_ID.`,
+          detail: {
+            spawnCompletionDeliveryFailure: {
+              childTurnId: resolvedTurnId,
+              parentSessionId,
+              error: lastError instanceof Error ? lastError.message : String(lastError),
+            },
+          },
         });
       }
-    } catch (error) {
-      onCompletionDeliveryFailed(error);
-    }
+    })().finally(() => {
+      spawnCompletionDeliveriesInFlight.delete(deliveryKey);
+    });
   };
 
   type AgentChatCreateInternalArgs = AgentChatCreateArgs & {
@@ -28730,6 +28828,15 @@ export function createAgentChatService(args: {
     idempotencyKey,
   }: AgentChatCreateInternalArgs): Promise<AgentChatSession> => {
     const requestedFastMode = requestedFastModeArg ?? requestedLegacyFastModeArg;
+    const normalizedParentSessionId = requestedOrchestrationParentSessionId?.trim() || null;
+    if (normalizedParentSessionId && requestedSpawnKind !== "subagent" && requestedSpawnKind !== "peer") {
+      throw new Error(
+        "A parented agent chat requires spawnKind 'subagent' or 'peer'. Use subagent whenever the parent will need, join, or review the result; use peer only for fire-and-forget work.",
+      );
+    }
+    if (!normalizedParentSessionId && requestedSpawnKind) {
+      throw new Error("spawnKind requires orchestrationParentSessionId.");
+    }
     const launchContext = resolveLaneLaunchContext({
       laneService,
       projectRoot,
@@ -39794,17 +39901,19 @@ export function createAgentChatService(args: {
       }
     }
 
-    // Tombstone the session before any async work so in-flight persistence
-    // (auto-title, summary, chat state writes) bails instead of recreating files.
-    // We do NOT set endedNotified here — dispose() still needs to run finishSession
-    // so sessionService.end fires.
+    // Report a child stop before tombstoning it. The reporter intentionally
+    // ignores deleted sessions so late provider events cannot recreate lineage
+    // after deletion.
     const tombstoned = managedSessions.get(trimmedSessionId);
+    reportChildSpawnEnded(trimmedSessionId, "interrupted");
+
+    // Tombstone the session before any other async work so in-flight
+    // persistence (auto-title, summary, chat state writes) bails instead of
+    // recreating files. We do NOT set endedNotified here — dispose() still
+    // needs to run finishSession so sessionService.end fires.
     if (tombstoned) {
       tombstoned.deleted = true;
     }
-    // A tracked child spawn that never finished a turn would otherwise leave
-    // a running row in the parent's subagents panel forever.
-    reportChildSpawnEnded(trimmedSessionId, "interrupted");
 
     if (scheduledWorkScheduler) {
       await Promise.all(

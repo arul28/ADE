@@ -87,9 +87,9 @@ ade lanes link-linear-issue <lane> --linear-issue-json '{...}'
 Start work from an issue:
 
 ```
-ade new chat --mode chat --lane <lane> --provider codex --model <m> --prompt "Work this issue"
-ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <m>
-ade chat create --from-linear-issue ENG-431            # compatibility path: chat with the issue attached + kickoff
+ade new chat --mode chat --lane <lane> --provider codex --model <m> --type subagent --prompt "Work this issue"
+ade lanes create-from-linear --issue-id ENG-431 --start-chat --provider codex --model <m> --type subagent
+ade chat create --from-linear-issue ENG-431 --type subagent # compatibility path: chat with the issue attached + kickoff
 ```
 
 ## Chat vs. CLI sessions
@@ -98,9 +98,9 @@ Use `ade new chat` as the canonical launch command. It mirrors the desktop New
 Chat mode toggle:
 
 ```
-ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
-ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
-ade new chat --mode chat --lane auto --lane-name fix-issue --prompt "Fix the issue"
+ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --type subagent --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --type subagent --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the issue"
+ade new chat --mode chat --lane auto --lane-name fix-issue --type subagent --prompt "Fix the issue"
 ```
 
 `--mode chat` creates a persistent ADE Work chat. `--mode cli` starts a tracked
@@ -110,21 +110,56 @@ permission mode, fast/no-fast, and prompt flags. Use `--lane auto` or
 
 ### Spawning agents
 
-`ade new chat --mode chat --provider <p> --prompt "..."` spawns a tracked ADE
-agent and automatically links it back to the current chat through
-`ADE_CHAT_SESSION_ID`. Add `--type subagent|peer|none` to choose the cosmetic
-relationship and completion-report policy: `subagent` wakes the parent, `peer`
-adds a quiet note, and `none` adds no report. A typed agent is still a full ADE
-agent with the same runtime, permissions, and tools.
+`ade new chat --mode chat --provider <p> --type <subagent|peer> --prompt "..."`
+spawns a tracked ADE agent and automatically links it to the current chat
+through `ADE_CHAT_SESSION_ID`. The type is required for every parented agent
+spawn; omitting it is a hard error whose message includes the decision rule.
+There is no silent `none` type.
+
+- Use `subagent` whenever the parent will need, join, read, or review the
+  result. Parallel fan-out that later joins is subagent work.
+- Use `peer` only for fire-and-forget work whose result the parent does not
+  expect to join, read, or review. Peer turns leave quiet completion notes and
+  do not wake the parent.
+- Use `--no-parent` only for a genuinely independent top-level session. Do not
+  use it to avoid choosing a type.
+
+For persistent Work chats, every parent-dispatched subagent turn reports back
+with its child turn id and latest assistant summary. ADE steers an active parent
+or wakes an idle parent. A turn sent directly by the human leaves a quiet note
+because the human already owns that interaction. The persisted parent link and
+turn metadata survive brain restarts; a delivery failure retries and then
+becomes a visible warning in the child. Every child receives
+`ADE_PARENT_CHAT_SESSION_ID` and direct-report guidance as a recovery path.
+
+Tracked provider CLI sessions also require `subagent` or `peer` when parented
+and receive the same lineage environment. Their process boundary is still
+checked with `ade chat wait`; use `--mode chat` when you need automatic
+turn-completion wakeups and summaries.
 
 When the new work must carry the current lane's unmerged commits, follow the
 child-lane rule in the `ade-lanes-git` skill and use
 `ade lanes child --lane <current> --name <n>` instead of a fresh lane.
 
-Use `ade chat read <session> --text` to confirm recent transcript messages
-before and after steering another chat.
+Transcript reads are silent and available for any project-backed chat in any
+registered project on this machine. Personal/no-project chats remain on the
+separate `--personal` surface and are not included. Reads are bounded by
+default; inspect a recent window, then page older content deliberately:
 
-Use `ade chat show <session> --text` before messaging a chat you do not own:
+```bash
+ade chat read <session> --limit 20 --max-chars 8000 --text
+ade chat read <session> --page --cursor <nextCursor> --limit 20 --max-chars 8000 --text
+```
+
+The first read returns `truncated` when more content exists. A paged read
+returns `nextCursor`; repeat only while you actually need older context. Do not
+dump an entire long transcript into the model context. `--max-chars` is a hard
+response ceiling; a single oversized entry is visibly clipped and the response
+sets `truncated`. This machine-wide route is read-only; it does not broaden
+cross-project message or mutation routing.
+
+Within the active project, use `ade chat show <session> --text` before messaging
+a chat you do not own:
 
 - If you just need to hand context/directive/status to another chat, prefer
   `ade chat message <session> --kind auto --text ...`. ADE inspects the target:
@@ -139,7 +174,7 @@ Use `ade chat show <session> --text` before messaging a chat you do not own:
   the next turn. The CLI also checks the session summary and will steer instead
   of sending when the target is already active, but prefer the explicit verb
   when your intent is to steer.
-- If you need to wait for a peer before reading final output, use
+- If you need to wait for a subagent before reading final output, use
   `ade chat wait <session> --for idle --timeout-ms <ms>` (also supports
   `active`, `awaiting-input`, and `terminal`).
 - If you need to stop or redirect a running chat, use
@@ -153,10 +188,13 @@ Use `ade chat show <session> --text` before messaging a chat you do not own:
 Prefer **harness-tracked** delegation and wait on the tracked handle — do not
 background a raw CLI and then guess at its state:
 
-- **ADE agents:** wait with `ade chat wait <session> --for idle|terminal
-  --timeout-ms <ms>`, or spawn with `--type subagent` so completion wakes you
-  automatically. These are reliable signals; you never poll a transcript in a
-  loop.
+- **ADE Work-chat subagents:** spawn with `--type subagent`; every
+  parent-dispatched completed turn wakes or steers the parent. Read the bounded
+  transcript after that signal when you need more detail. You never poll a
+  transcript in a loop.
+- **Tracked provider CLI subagents:** wait with `ade chat wait <session> --for
+  idle|terminal --timeout-ms <ms>` or require an explicit direct report through
+  `$ADE_PARENT_CHAT_SESSION_ID`.
 - **A background provider CLI (e.g. `codex exec`):** run it detached with its own
   log and stdin closed, capturing the PID immediately, e.g.
   `codex exec "…" </dev/null >"$LOG" 2>&1 & CODEX_PID=$!` (closing stdin is
@@ -319,7 +357,7 @@ ade chat schedules "$ADE_CHAT_SESSION_ID" --pause --text
 Compatibility commands still exist, but do not teach them as the first choice:
 
 ```
-ade chat create --lane <lane> --provider codex --model <m> --prompt "Fix"      # persistent Work chat
+ade chat create --lane <lane> --provider codex --model <m> --type subagent --prompt "Fix" # persistent Work chat
 ade shell start-cli codex --lane <lane> --model <m> --prompt "Fix"             # tracked provider CLI terminal
 ```
 

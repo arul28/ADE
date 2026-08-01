@@ -386,18 +386,21 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
       let subagentTaskType = optionalString(eventDict["taskType"])
         ?? optionalString(eventDict["task_type"])
       let subagentCommand = optionalString(eventDict["command"])
+      let subagentSpawnKind = optionalString(eventDict["spawnKind"])
+        .map(AgentChatSpawnKind.init(wireValue:))
       let event: WorkChatEvent
 
       switch type {
       case "user_message":
-        event = .userMessage(
-          text: userMessageDisplayText(from: eventDict),
-          attachments: parseAgentChatFileRefs(from: eventDict["attachments"]),
-          turnId: turnId,
-          steerId: optionalString(eventDict["steerId"]),
-          deliveryState: optionalString(eventDict["deliveryState"]),
-          processed: eventDict["processed"] as? Bool
-        )
+        event = workSpawnCompletionEvent(from: eventDict["metadata"], fallbackTurnId: turnId)
+          ?? .userMessage(
+            text: userMessageDisplayText(from: eventDict),
+            attachments: parseAgentChatFileRefs(from: eventDict["attachments"]),
+            turnId: turnId,
+            steerId: optionalString(eventDict["steerId"]),
+            deliveryState: optionalString(eventDict["deliveryState"]),
+            processed: eventDict["processed"] as? Bool
+          )
       case "user_message_resolution":
         event = .userMessageResolution(
           steerId: stringValue(eventDict["steerId"]),
@@ -609,7 +612,11 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         }
         event = .todoUpdate(items: items, turnId: turnId)
       case "system_notice":
-        event = .systemNotice(
+        event = workSpawnCompletionEvent(
+          from: eventDict["detail"],
+          fallbackTurnId: turnId,
+          includePeer: false
+        ) ?? .systemNotice(
           kind: stringValue(eventDict["noticeKind"]),
           message: stringValue(eventDict["message"]),
           detail: optionalString(prettyPrintedJSONString(eventDict["detail"])),
@@ -997,10 +1004,39 @@ func parseWorkChatTranscript(_ raw: String) -> [WorkChatEnvelope] {
         sequence: sequence,
         event: event,
         subagentTaskType: subagentTaskType,
-        subagentCommand: subagentCommand
+        subagentCommand: subagentCommand,
+        subagentSpawnKind: subagentSpawnKind
       )
     }
     .sorted(by: workChatEnvelopeOrderedBefore)
+}
+
+private func workSpawnCompletionEvent(
+  from value: Any?,
+  fallbackTurnId: String?,
+  includePeer: Bool = true
+) -> WorkChatEvent? {
+  guard let container = value as? [String: Any],
+        let completion = container["spawnCompletion"] as? [String: Any],
+        let childSessionId = optionalString(completion["childSessionId"])
+  else { return nil }
+  let spawnKind = optionalString(completion["spawnKind"])
+  if !includePeer, spawnKind == "peer" { return nil }
+  let status = optionalString(completion["status"]) ?? "completed"
+  let summary = optionalString(completion["summary"])
+    ?? (status == "stopped" ? "Stopped before finishing." : status == "failed" ? "Turn failed." : "Subagent turn finished.")
+  return .subagentResult(
+    taskId: "chat:\(childSessionId)",
+    agentId: childSessionId,
+    agentType: nil,
+    parentToolUseId: nil,
+    status: status,
+    summary: summary,
+    label: optionalString(completion["childTitle"]),
+    model: nil,
+    reasoningEffort: nil,
+    turnId: optionalString(completion["childTurnId"]) ?? fallbackTurnId
+  )
 }
 
 private func parseAgentChatFileRefs(from value: Any?) -> [AgentChatFileRef]? {

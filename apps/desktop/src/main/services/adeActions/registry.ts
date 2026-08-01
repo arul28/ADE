@@ -639,6 +639,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "saveTempAttachment",
     "sendMessage",
     "readTranscript",
+    "readTranscriptPage",
     "setClaudeOutputStyle",
     "setParallelLaunchState",
     "cancelScheduledWork",
@@ -1081,9 +1082,14 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade actions run chat.cancelScheduledWork --input-json '{\"sessionId\":\"chat-123\",\"scheduleId\":\"cron-abc\"}' --text",
     },
     readTranscript: {
-      description: "Read recent user/assistant messages for a chat session.",
-      input: "object { sessionId: string, limit?: number, since?: ISO timestamp }",
-      example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20}'",
+      description: "Read a bounded recent window of user/assistant messages for any project-backed chat on this machine.",
+      input: "object { sessionId: string, limit?: number, maxChars?: number, since?: ISO timestamp }",
+      example: "ade actions run chat.readTranscript --input-json '{\"sessionId\":\"chat-123\",\"limit\":20,\"maxChars\":8000}'",
+    },
+    readTranscriptPage: {
+      description: "Read a bounded page of recent or older user/assistant messages for any project-backed chat on this machine.",
+      input: "object { sessionId: string, beforeOffset?: number, limit?: number, maxChars?: number }",
+      example: "ade actions run chat.readTranscriptPage --input-json '{\"sessionId\":\"chat-123\",\"beforeOffset\":4096,\"limit\":20,\"maxChars\":8000}'",
     },
     getChatEventHistory: {
       description: "Read the recent raw chat event stream, including scheduled work, transcript retractions, tool calls, and metadata events.",
@@ -1573,38 +1579,106 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
           ? Number.parseInt(limitValue, 10)
           : undefined;
       const limit = typeof parsedLimit === "number" && Number.isFinite(parsedLimit)
-        ? Math.max(1, Math.min(500, Math.floor(parsedLimit)))
+        ? Math.max(1, Math.min(100, Math.floor(parsedLimit)))
         : undefined;
+      const maxCharsValue = record.maxChars;
+      const parsedMaxChars = typeof maxCharsValue === "number"
+        ? maxCharsValue
+        : typeof maxCharsValue === "string" && maxCharsValue.trim()
+          ? Number.parseInt(maxCharsValue, 10)
+          : undefined;
+      const maxChars = typeof parsedMaxChars === "number" && Number.isFinite(parsedMaxChars)
+        ? Math.max(200, Math.min(120_000, Math.floor(parsedMaxChars)))
+        : 8_000;
       const since = typeof record.since === "string" && record.since.trim()
         ? record.since.trim()
         : undefined;
       const chatService = agentChatService as {
         readTranscript?: (sessionId: string, limit?: number, since?: string) => Promise<unknown> | unknown;
-        getChatTranscript?: (args: { sessionId: string; limit?: number }) => Promise<unknown> | unknown;
+        getChatTranscript?: (args: { sessionId: string; limit?: number; maxChars?: number }) => Promise<unknown> | unknown;
       };
-      if (typeof chatService.readTranscript === "function") {
-        return chatService.readTranscript(sessionId, limit, since);
-      }
       if (typeof chatService.getChatTranscript === "function") {
         const transcript = await chatService.getChatTranscript({
           sessionId,
           ...(limit !== undefined ? { limit } : {}),
+          maxChars,
         });
         const entries = Array.isArray(transcript)
           ? transcript
           : isRecord(transcript) && Array.isArray(transcript.entries)
             ? transcript.entries
             : [];
-        if (!since) return entries;
+        if (!since) return transcript;
         const sinceMs = Date.parse(since);
-        if (!Number.isFinite(sinceMs)) return entries;
-        return entries.filter((entry) => {
+        if (!Number.isFinite(sinceMs)) return transcript;
+        const filteredEntries = entries.filter((entry) => {
           if (!isRecord(entry) || typeof entry.timestamp !== "string") return true;
           const timestampMs = Date.parse(entry.timestamp);
           return !Number.isFinite(timestampMs) || timestampMs >= sinceMs;
         });
+        return isRecord(transcript)
+          ? { ...transcript, entries: filteredEntries }
+          : filteredEntries;
+      }
+      if (typeof chatService.readTranscript === "function") {
+        const entries = await chatService.readTranscript(sessionId, limit, since);
+        if (!Array.isArray(entries)) return entries;
+        let remaining = maxChars;
+        const bounded: unknown[] = [];
+        for (let index = entries.length - 1; index >= 0 && remaining > 0; index -= 1) {
+          const entry = entries[index];
+          if (!isRecord(entry) || typeof entry.text !== "string") {
+            bounded.push(entry);
+            continue;
+          }
+          const text = entry.text.length <= remaining
+            ? entry.text
+            : `${entry.text.slice(0, Math.max(0, remaining - 3)).trimEnd()}...`;
+          bounded.push({ ...entry, text });
+          remaining -= text.length;
+        }
+        return bounded.reverse();
       }
       throw new Error("Chat transcript reads are not available in this runtime.");
+    },
+    readTranscriptPage: async (args?: unknown) => {
+      const record = readObjectActionArg(args, "chat.readTranscriptPage");
+      const sessionId = requireNonEmptyString(record.sessionId, "sessionId");
+      const readBoundedInteger = (
+        value: unknown,
+        fallback: number | undefined,
+        min: number,
+        max: number,
+      ): number | undefined => {
+        const parsed = typeof value === "number"
+          ? value
+          : typeof value === "string" && value.trim()
+            ? Number.parseInt(value, 10)
+            : fallback;
+        return typeof parsed === "number" && Number.isFinite(parsed)
+          ? Math.max(min, Math.min(max, Math.floor(parsed)))
+          : undefined;
+      };
+      const beforeOffset = readBoundedInteger(record.beforeOffset, undefined, 0, Number.MAX_SAFE_INTEGER);
+      const limit = readBoundedInteger(record.limit, 20, 1, 100);
+      const maxChars = readBoundedInteger(record.maxChars, 8_000, 200, 120_000);
+      const chatService = agentChatService as {
+        getChatTranscriptPage?: (args: {
+          sessionId: string;
+          beforeOffset?: number;
+          limit?: number;
+          maxChars?: number;
+        }) => Promise<unknown> | unknown;
+      };
+      if (typeof chatService.getChatTranscriptPage !== "function") {
+        throw new Error("Paged chat transcript reads are not available in this runtime.");
+      }
+      return chatService.getChatTranscriptPage({
+        sessionId,
+        ...(beforeOffset !== undefined ? { beforeOffset } : {}),
+        ...(limit !== undefined ? { limit } : {}),
+        ...(maxChars !== undefined ? { maxChars } : {}),
+      });
     },
     sendMessage: async (args?: unknown) => {
       const record = readObjectActionArg(args, "chat.sendMessage");

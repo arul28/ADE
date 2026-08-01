@@ -3567,9 +3567,10 @@ describe("createAgentChatService", () => {
       const opts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls[0]?.[0] as {
         plugins?: Array<{ type?: string; path?: string }>;
       } | undefined;
-      expect(opts?.plugins).toEqual([
-        { type: "local", path: fs.realpathSync(pluginRoot) },
-      ]);
+      expect(opts?.plugins).toContainEqual({
+        type: "local",
+        path: fs.realpathSync(pluginRoot),
+      });
     });
 
     it("loads user/project MCP servers in normal chats (no managed-only lock)", async () => {
@@ -10319,10 +10320,18 @@ describe("createAgentChatService", () => {
       await expect(createService().service.getSessionSummary(child.id)).resolves.toMatchObject({ spawnKind: "subagent" });
     });
 
-    it("wakes the parent with spawnCompletion metadata when a subagent finishes", async () => {
+    it("wakes the parent with durable turn metadata when a parent-dispatched subagent turn finishes", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const stream = vi.fn(() => (async function* () {
         yield { type: "system", subtype: "init", session_id: "sdk-spawn-wake", slash_commands: [] };
+        yield {
+          type: "assistant",
+          message: {
+            id: "msg-spawn-summary",
+            content: [{ type: "text", text: "Implemented the retry and added regression tests." }],
+            usage: { input_tokens: 1, output_tokens: 8 },
+          },
+        };
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
@@ -10344,7 +10353,16 @@ describe("createAgentChatService", () => {
         spawnKind: "subagent",
       });
 
-      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Finish the task.",
+        metadata: {
+          spawnDispatch: {
+            parentSessionId: parent.id,
+            dispatchedAt: "2026-08-01T00:00:00.000Z",
+          },
+        },
+      });
 
       await vi.waitFor(() => {
         const wake = events.find((event) =>
@@ -10359,9 +10377,77 @@ describe("createAgentChatService", () => {
           childTitle: "Wake contract child",
           spawnKind: "subagent",
           status: "completed",
-          summary: "Kickoff turn finished.",
+          summary: "Implemented the retry and added regression tests.",
+          childTurnId: expect.any(String),
         });
+        expect((wake!.event as any).text).toContain("Implemented the retry and added regression tests.");
       });
+
+      await service.messageSession({
+        sessionId: child.id,
+        text: "Handle the follow-up too.",
+        metadata: {
+          spawnDispatch: {
+            parentSessionId: parent.id,
+            dispatchedAt: "2026-08-01T00:01:00.000Z",
+          },
+        },
+      });
+      await vi.waitFor(() => {
+        const completions = events.filter((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "user_message"
+          && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+        );
+        expect(completions).toHaveLength(2);
+        expect(new Set(completions.map((event) =>
+          event.event.type === "user_message"
+            ? event.event.metadata?.spawnCompletion?.childTurnId
+            : undefined
+        )).size).toBe(2);
+      });
+    });
+
+    it("leaves a quiet completion note for a human-dispatched subagent turn", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const stream = vi.fn(() => (async function* () {
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-human", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-spawn-human",
+        setPermissionMode: vi.fn().mockResolvedValue(undefined),
+      } as any);
+
+      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      const child = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        title: "Human-directed child",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "subagent",
+      });
+
+      await service.sendMessage({ sessionId: child.id, text: "Human follow-up." });
+
+      await vi.waitFor(() => {
+        expect(events.some((event) =>
+          event.sessionId === parent.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed"
+          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+        )).toBe(true);
+      });
+      expect(events.some((event) =>
+        event.sessionId === parent.id
+        && event.event.type === "user_message"
+        && event.event.metadata?.spawnCompletion?.childSessionId === child.id
+      )).toBe(false);
     });
 
     it("emits a quiet completion notice without a wake when a peer finishes", async () => {
@@ -10412,101 +10498,123 @@ describe("createAgentChatService", () => {
       )).toBe(false);
     });
 
-    it("emits no completion notice or wake when an untyped child finishes", async () => {
+    it("reports a stopped completion before deleting an unfinished child", async () => {
       const events: AgentChatEventEnvelope[] = [];
-      const stream = vi.fn(() => (async function* () {
-        yield { type: "system", subtype: "init", session_id: "sdk-spawn-none", slash_commands: [] };
-        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
-      })());
-      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
-        send: vi.fn().mockResolvedValue(undefined),
-        stream,
-        close: vi.fn(),
-        sessionId: "sdk-spawn-none",
-        setPermissionMode: vi.fn().mockResolvedValue(undefined),
-      } as any);
-
       const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
       const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       const child = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
+        title: "Deleted child",
         orchestrationParentSessionId: parent.id,
-        spawnKind: "none",
+        spawnKind: "subagent",
       });
 
-      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+      await service.deleteSession({ sessionId: child.id });
 
       await vi.waitFor(() => {
-        expect(events.some((event) =>
+        const completion = events.find((event) =>
           event.sessionId === parent.id
-          && event.event.type === "subagent_result"
-          && event.event.agentId === child.id
-        )).toBe(true);
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completed"
+          && (event.event.detail as any)?.spawnCompletion?.childSessionId === child.id
+        );
+        expect(completion).toBeTruthy();
+        expect((completion!.event as any).detail.spawnCompletion).toMatchObject({
+          childSessionId: child.id,
+          childTitle: "Deleted child",
+          spawnKind: "subagent",
+          status: "stopped",
+          summary: "Stopped before finishing.",
+        });
       });
-
-      expect(events.some((event) =>
-        event.sessionId === parent.id
-        && event.event.type === "system_notice"
-        && event.event.status === "spawn_completed"
-      )).toBe(false);
-      expect(events.some((event) =>
-        event.sessionId === parent.id
-        && event.event.type === "user_message"
-        && (event.event.metadata as any)?.spawnCompletion
-      )).toBe(false);
     });
 
-    it("treats a parented spawn with no explicit type as silent (no wake, no notice)", async () => {
-      // Regression (quality A1): an untyped `ade new chat` spawn — spawnKind
-      // genuinely absent, not "none" — must NOT wake the parent. Before the fix
-      // the absent case resolved to "subagent" and fired a wake; the report is
-      // opt-in via --type subagent/peer.
+    it("retries a failed completion delivery and makes the failure visible in the child", async () => {
       const events: AgentChatEventEnvelope[] = [];
+      let releaseTurn!: () => void;
+      let markTurnStarted!: () => void;
+      const turnGate = new Promise<void>((resolve) => { releaseTurn = resolve; });
+      const turnStarted = new Promise<void>((resolve) => { markTurnStarted = resolve; });
       const stream = vi.fn(() => (async function* () {
-        yield { type: "system", subtype: "init", session_id: "sdk-spawn-absent", slash_commands: [] };
+        yield { type: "system", subtype: "init", session_id: "sdk-spawn-delivery-failure", slash_commands: [] };
+        markTurnStarted();
+        await turnGate;
         yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
       })());
       vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
         send: vi.fn().mockResolvedValue(undefined),
         stream,
         close: vi.fn(),
-        sessionId: "sdk-spawn-absent",
+        sessionId: "sdk-spawn-delivery-failure",
         setPermissionMode: vi.fn().mockResolvedValue(undefined),
       } as any);
 
-      const { service } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
+      const { service, logger } = createService({ onEvent: (event: AgentChatEventEnvelope) => events.push(event) });
       const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       const child = await service.createSession({
         laneId: "lane-1",
         provider: "claude",
         model: "sonnet",
         orchestrationParentSessionId: parent.id,
-        // spawnKind intentionally omitted — the genuinely-untyped default.
+        spawnKind: "subagent",
       });
-      expect(child.spawnKind).toBeUndefined();
 
-      await service.sendMessage({ sessionId: child.id, text: "Finish the task." });
+      const turn = service.messageSession({
+        sessionId: child.id,
+        text: "Finish after the parent disappears.",
+        metadata: {
+          spawnDispatch: {
+            parentSessionId: parent.id,
+            dispatchedAt: "2026-08-01T00:02:00.000Z",
+          },
+        },
+      });
+      await turnStarted;
+      await service.deleteSession({ sessionId: parent.id });
+      releaseTurn();
+      await turn;
 
       await vi.waitFor(() => {
         expect(events.some((event) =>
-          event.sessionId === parent.id
-          && event.event.type === "subagent_result"
-          && event.event.agentId === child.id
+          event.sessionId === child.id
+          && event.event.type === "system_notice"
+          && event.event.status === "spawn_completion_delivery_failed"
         )).toBe(true);
-      });
+      }, { timeout: 2_500 });
+      expect(logger.warn).toHaveBeenCalledTimes(3);
+      expect(logger.warn).toHaveBeenLastCalledWith(
+        "agent_chat.spawn_completion_delivery_failed",
+        expect.objectContaining({
+          childSessionId: child.id,
+          parentSessionId: parent.id,
+          attempt: 3,
+        }),
+      );
+    });
 
-      expect(events.some((event) =>
-        event.sessionId === parent.id
-        && event.event.type === "system_notice"
-        && event.event.status === "spawn_completed"
-      )).toBe(false);
-      expect(events.some((event) =>
-        event.sessionId === parent.id
-        && event.event.type === "user_message"
-        && (event.event.metadata as any)?.spawnCompletion
-      )).toBe(false);
+    it("rejects the legacy silent spawn type for new child chats", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+        spawnKind: "none" as never,
+      })).rejects.toThrow(/requires spawnKind 'subagent' or 'peer'/);
+    });
+
+    it("rejects a parented child chat with no explicit spawn type", async () => {
+      const { service } = createService();
+      const parent = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await expect(service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        orchestrationParentSessionId: parent.id,
+      })).rejects.toThrow(/requires spawnKind 'subagent' or 'peer'/);
     });
   });
 
@@ -22336,6 +22444,36 @@ describe("createAgentChatService", () => {
       });
     });
 
+    it("counts displayText against the hard transcript character budget", async () => {
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      vi.mocked(parseAgentChatTranscript).mockReturnValue([{
+        sessionId: session.id,
+        timestamp: "2026-08-01T00:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "Hidden full prompt",
+          displayText: "d".repeat(1_000),
+        },
+      }]);
+
+      const transcript = await service.getChatTranscript({
+        sessionId: session.id,
+        maxChars: 200,
+      });
+
+      expect(transcript.entries).toHaveLength(1);
+      expect((transcript.entries[0]?.displayText?.length ?? 0) + transcript.entries[0]!.text.length).toBeLessThanOrEqual(200);
+      expect(transcript.entries[0]?.displayText).toBe(`${"d".repeat(197)}...`);
+      expect(transcript.entries[0]?.text).toBe("");
+      expect(transcript.truncated).toBe(true);
+    });
+
     it("reads active transcripts from the uncapped dedicated transcript after the legacy cap", async () => {
       const { service } = createService();
       const session = await service.createSession({
@@ -22648,7 +22786,7 @@ describe("createAgentChatService", () => {
       expect(older.nextCursor).toBeNull();
     });
 
-    it("keeps an oversize boundary entry whole so its suffix is not lost behind the byte cursor", async () => {
+    it("clips an oversize boundary entry to the hard character budget", async () => {
       installRealTranscriptParser();
       const { service } = createService();
       const session = await service.createSession({
@@ -22679,8 +22817,49 @@ describe("createAgentChatService", () => {
       });
 
       expect(page.entries).toHaveLength(1);
-      expect(page.entries[0]?.text).toBe(fullText);
+      expect(page.entries[0]?.text).toHaveLength(200);
+      expect(page.entries[0]?.text).toBe(`${"x".repeat(197)}...`);
+      expect(page.truncated).toBe(true);
       expect(page.nextCursor).toBeNull();
+    });
+
+    it("counts displayText against the paged transcript character budget", async () => {
+      installRealTranscriptParser();
+      const { service } = createService();
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+      const envelope: AgentChatEventEnvelope = {
+        sessionId: session.id,
+        timestamp: "2026-08-01T00:00:00.000Z",
+        sequence: 1,
+        event: {
+          type: "user_message",
+          text: "Hidden full prompt",
+          displayText: "d".repeat(1_000),
+        },
+      };
+      const transcriptFile = path.join(
+        tmpRoot,
+        ".ade",
+        "transcripts",
+        "chat",
+        `${session.id}.jsonl`,
+      );
+      fs.writeFileSync(transcriptFile, `${JSON.stringify(envelope)}\n`, "utf8");
+
+      const page = await service.getChatTranscriptPage({
+        sessionId: session.id,
+        maxChars: 200,
+      });
+
+      expect(page.entries).toHaveLength(1);
+      expect((page.entries[0]?.displayText?.length ?? 0) + page.entries[0]!.text.length).toBeLessThanOrEqual(200);
+      expect(page.entries[0]?.displayText).toBe(`${"d".repeat(197)}...`);
+      expect(page.entries[0]?.text).toBe("");
+      expect(page.truncated).toBe(true);
     });
   });
 
@@ -26943,6 +27122,7 @@ describe("createAgentChatService", () => {
           model: "gpt-5.5",
           orchestrationRole: "worker",
           orchestrationParentSessionId: parent.id,
+          spawnKind: "subagent",
         });
 
         await service.sendMessage({

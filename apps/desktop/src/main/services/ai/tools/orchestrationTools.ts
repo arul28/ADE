@@ -326,7 +326,7 @@ function createSpawnAgentTool(
       stepId: z.string().min(1, "stepId is required"),
       initialMessage: z.string().min(1, "initialMessage is required"),
       requestId: z.string().min(1).optional(),
-      spawnKind: z.enum(["subagent", "peer", "none"]).optional(),
+      spawnKind: z.enum(["subagent", "peer"]).optional(),
       modelOverride: z
         .object({
           provider: z.string(),

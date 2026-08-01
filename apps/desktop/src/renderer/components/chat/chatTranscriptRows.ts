@@ -1183,7 +1183,7 @@ function enrichSubagentStateFromEvent(
   if (taskId && taskId.startsWith("chat:") && !state.childSessionId) {
     state.childSessionId = subagentText(event.agentId) ?? (taskId.slice("chat:".length) || null);
   }
-  if (typeof record.spawnKind === "string" && (record.spawnKind === "subagent" || record.spawnKind === "peer" || record.spawnKind === "none")) {
+  if (record.spawnKind === "subagent" || record.spawnKind === "peer") {
     state.spawnKind = record.spawnKind;
   }
   const parentAgentId = subagentText((event as { parentAgentId?: unknown }).parentAgentId);
@@ -1467,7 +1467,7 @@ export function appendCollapsedChatTranscriptEvent(
     const completion = event.metadata?.spawnCompletion;
     if (completion) {
       const childSessionId = completion.childSessionId?.trim() ?? "";
-      const spawnKind = completion.spawnKind === "subagent" || completion.spawnKind === "peer" || completion.spawnKind === "none"
+      const spawnKind = completion.spawnKind === "subagent" || completion.spawnKind === "peer"
         ? completion.spawnKind
         : null;
       const status = completion.status === "completed" || completion.status === "failed" || completion.status === "stopped"

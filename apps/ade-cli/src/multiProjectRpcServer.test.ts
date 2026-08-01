@@ -1331,6 +1331,178 @@ describe("multi-project RPC server", () => {
     handler.dispose();
   });
 
+  it("silently routes bounded chat reads across registered projects and aggregates chat search", async () => {
+    const { root, projectRoot, registry } = createRegistry();
+    const current = registry.add(projectRoot);
+    const foreignRootRaw = path.join(root, "foreign-project");
+    fs.mkdirSync(foreignRootRaw, { recursive: true });
+    const foreign = registry.add(fs.realpathSync.native(foreignRootRaw));
+    const currentRuntime = makeRuntime("current") as ReturnType<typeof makeRuntime> & {
+      agentChatService: {
+        getChatTranscript: ReturnType<typeof vi.fn>;
+        getChatTranscriptPage: ReturnType<typeof vi.fn>;
+      };
+      searchService: { query: ReturnType<typeof vi.fn> };
+    };
+    const foreignRuntime = makeRuntime("foreign") as ReturnType<typeof makeRuntime> & {
+      agentChatService: {
+        getChatTranscript: ReturnType<typeof vi.fn>;
+        getChatTranscriptPage: ReturnType<typeof vi.fn>;
+      };
+      searchService: { query: ReturnType<typeof vi.fn> };
+    };
+    (currentRuntime.sessionService as any).get = vi.fn((sessionId: string) => sessionId === "current-chat"
+      ? { id: sessionId, toolType: "codex-chat" }
+      : null);
+    (foreignRuntime.sessionService as any).get = vi.fn((sessionId: string) => sessionId === "foreign-chat"
+      ? { id: sessionId, toolType: "claude-chat" }
+      : null);
+    currentRuntime.agentChatService = {
+      getChatTranscript: vi.fn(async () => ({
+        sessionId: "current-chat",
+        entries: [{ role: "assistant", text: "local" }],
+        totalEntries: 1,
+        truncated: false,
+      })),
+      getChatTranscriptPage: vi.fn(),
+    };
+    foreignRuntime.agentChatService = {
+      getChatTranscript: vi.fn(async (args: Record<string, unknown>) => ({
+        sessionId: args.sessionId,
+        entries: [{ role: "assistant", text: "foreign bounded result" }],
+        totalEntries: 1,
+        truncated: false,
+      })),
+      getChatTranscriptPage: vi.fn(async (args: Record<string, unknown>) => ({
+        sessionId: args.sessionId,
+        entries: [],
+        totalEntries: 0,
+        truncated: true,
+        nextCursor: 1024,
+        cursorKind: "byte",
+      })),
+    };
+    const searchHit = (project: "current" | "foreign") => ({
+      kind: "chat" as const,
+      id: `chat:${project}`,
+      title: `${project} chat`,
+      snippet: `${project} result`,
+      matchRanges: [],
+      laneId: null,
+      laneName: null,
+      sessionId: `${project}-chat`,
+      deepLink: `ade://work/session/${project}-chat`,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    });
+    currentRuntime.searchService = {
+      query: vi.fn(async () => ({
+        results: [searchHit("current")],
+        totalByKind: { chat: 1 },
+        nextCursor: null,
+      })),
+    };
+    foreignRuntime.searchService = {
+      query: vi.fn(async () => ({
+        results: [searchHit("foreign")],
+        totalByKind: { chat: 201 },
+        nextCursor: "foreign-project-more",
+      })),
+    };
+    const scopeRegistry = {
+      get: vi.fn(async (projectId: string) => {
+        const record = projectId === current.projectId ? current : foreign;
+        const runtime = projectId === current.projectId ? currentRuntime : foreignRuntime;
+        return { registryProjectId: record.projectId, record, runtime, dispose: vi.fn() };
+      }),
+      dispose: vi.fn(),
+      disposeAll: vi.fn(),
+    } as unknown as ProjectScopeRegistry;
+    const handler = createMultiProjectRpcRequestHandler({
+      serverVersion: "test",
+      projectRegistry: registry,
+      scopeRegistry,
+    });
+    await handler({ jsonrpc: "2.0", id: 1, method: "ade/initialize", params: {} });
+
+    const transcript = await handler({
+      jsonrpc: "2.0",
+      id: 2,
+      method: "ade/actions/call",
+      params: {
+        projectId: current.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "readTranscript",
+          args: { sessionId: "foreign-chat", limit: 12, maxChars: 6000 },
+        },
+      },
+    }) as { result: { sessionId: string } };
+    expect(transcript.result.sessionId).toBe("foreign-chat");
+    expect(foreignRuntime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
+      sessionId: "foreign-chat",
+      limit: 12,
+      maxChars: 6000,
+    });
+    expect(currentRuntime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
+
+    const transcriptPage = await handler({
+      jsonrpc: "2.0",
+      id: 21,
+      method: "ade/actions/call",
+      params: {
+        projectId: current.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: "chat",
+          action: "readTranscriptPage",
+          args: { sessionId: "foreign-chat", beforeOffset: 2048, limit: 6, maxChars: 4000 },
+        },
+      },
+    }) as { result: { sessionId: string; nextCursor: number } };
+    expect(transcriptPage.result).toMatchObject({ sessionId: "foreign-chat", nextCursor: 1024 });
+    expect(foreignRuntime.agentChatService.getChatTranscriptPage).toHaveBeenCalledWith({
+      sessionId: "foreign-chat",
+      beforeOffset: 2048,
+      limit: 6,
+      maxChars: 4000,
+    });
+
+    const search = await handler({
+      jsonrpc: "2.0",
+      id: 3,
+      method: "ade/actions/call",
+      params: {
+        projectId: current.projectId,
+        name: "run_ade_action",
+        arguments: {
+          domain: "search",
+          action: "query",
+          args: { query: "result", kinds: ["chat"], limit: 10 },
+        },
+      },
+    }) as {
+      result: {
+        results: Array<{ projectId?: string }>;
+        projectsSearched?: number;
+        resultsTruncated?: boolean;
+      };
+    };
+    expect(search.result.projectsSearched).toBe(2);
+    expect(search.result.resultsTruncated).toBe(true);
+    expect(search.result.results.map((item) => item.projectId)).toEqual([
+      current.projectId,
+      foreign.projectId,
+    ]);
+    expect(foreignRuntime.searchService.query).toHaveBeenCalledWith(expect.objectContaining({
+      query: "result",
+      kinds: ["chat"],
+      limit: 200,
+    }));
+
+    handler.dispose();
+  });
+
   it("exposes runtime sync PIN methods through the active sync host scope", async () => {
     const { projectRoot, registry } = createRegistry();
     const added = registry.add(projectRoot);

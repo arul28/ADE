@@ -47,6 +47,10 @@ export type SearchResultItem = {
   deepLink: string;
   /** ISO timestamp used for the deterministic recency tie-break. */
   updatedAt: string;
+  /** Present when the machine router combines chat hits across projects. */
+  projectId?: string;
+  projectName?: string;
+  projectRoot?: string;
 };
 
 export type SearchQueryArgs = {
@@ -56,14 +60,9 @@ export type SearchQueryArgs = {
   limit?: number;
   /** Opaque pagination cursor returned by a previous query. */
   cursor?: string;
-  /**
-   * Restrictive scope injected by the RPC gate (mirrors the chat/terminal
-   * read scoping). Session-bound non-CTO callers — ADE-launched workers —
-   * get chat and terminal results limited to their owning session (attached
-   * terminals match via their owner). Unbound callers keep whole-project
-   * search. Caller-supplied values can only narrow results, never widen
-   * them; excludeSessionContent removes chat/terminal results entirely.
-   */
+  /** Legacy internal filter retained for direct search-service consumers.
+   * Public ADE RPC callers cannot set it; the machine router searches
+   * project-backed chats across every registered project. */
   callerScope?: { chatSessionId?: string | null; excludeSessionContent?: boolean };
 };
 
@@ -72,6 +71,11 @@ export type SearchQueryResult = {
   /** Total matched docs per kind (pre-limit), for "show more" affordances. */
   totalByKind: Partial<Record<SearchDocKind, number>>;
   nextCursor: string | null;
+  /** Registered project scopes consulted for machine-wide chat discovery. */
+  projectsSearched?: number;
+  projectsUnavailable?: string[];
+  /** True when one or more project result sets exceeded the router's bounded page cap. */
+  resultsTruncated?: boolean;
 };
 
 export type SearchIndexStatus = {

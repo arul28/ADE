@@ -802,6 +802,33 @@ struct AgentChatSetScheduledWorkPausedResult: Codable, Equatable {
   var nextWakeAt: String?
 }
 
+enum AgentChatSpawnKind: Equatable, Codable {
+  case subagent
+  case peer
+  case legacyUntyped
+
+  init(wireValue raw: String) {
+    switch raw {
+    case "subagent": self = .subagent
+    case "peer": self = .peer
+    default: self = .legacyUntyped
+    }
+  }
+
+  init(from decoder: Decoder) throws {
+    self.init(wireValue: try decoder.singleValueContainer().decode(String.self))
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.singleValueContainer()
+    switch self {
+    case .subagent: try container.encode("subagent")
+    case .peer: try container.encode("peer")
+    case .legacyUntyped: try container.encode("none")
+    }
+  }
+}
+
 struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var id: String { sessionId }
   var sessionId: String
@@ -860,6 +887,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -914,6 +942,7 @@ struct AgentChatSessionSummary: Codable, Identifiable, Equatable {
       && lhs.orchestrationRunId == rhs.orchestrationRunId
       && lhs.orchestrationRole == rhs.orchestrationRole
       && lhs.orchestrationParentSessionId == rhs.orchestrationParentSessionId
+      && lhs.spawnKind == rhs.spawnKind
       && lhs.orchestrationTag == rhs.orchestrationTag
       && lhs.orchestrationStepId == rhs.orchestrationStepId
       && lhs.orchestrationBundlePath == rhs.orchestrationBundlePath
@@ -1530,6 +1559,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
   var orchestrationRunId: String? = nil
   var orchestrationRole: String? = nil
   var orchestrationParentSessionId: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
   var orchestrationTag: String? = nil
   var orchestrationStepId: String? = nil
   var orchestrationBundlePath: String? = nil
@@ -1575,6 +1605,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     case orchestrationRunId
     case orchestrationRole
     case orchestrationParentSessionId
+    case spawnKind
     case orchestrationTag
     case orchestrationStepId
     case orchestrationBundlePath
@@ -1622,6 +1653,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     orchestrationRunId = try container.decodeIfPresent(String.self, forKey: .orchestrationRunId)
     orchestrationRole = try container.decodeIfPresent(String.self, forKey: .orchestrationRole)
     orchestrationParentSessionId = try container.decodeIfPresent(String.self, forKey: .orchestrationParentSessionId)
+    spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     orchestrationTag = try container.decodeIfPresent(String.self, forKey: .orchestrationTag)
     orchestrationStepId = try container.decodeIfPresent(String.self, forKey: .orchestrationStepId)
     orchestrationBundlePath = try container.decodeIfPresent(String.self, forKey: .orchestrationBundlePath)
@@ -1667,6 +1699,7 @@ struct AgentChatSession: Codable, Identifiable, Equatable {
     try container.encodeIfPresent(orchestrationRunId, forKey: .orchestrationRunId)
     try container.encodeIfPresent(orchestrationRole, forKey: .orchestrationRole)
     try container.encodeIfPresent(orchestrationParentSessionId, forKey: .orchestrationParentSessionId)
+    try container.encodeIfPresent(spawnKind, forKey: .spawnKind)
     try container.encodeIfPresent(orchestrationTag, forKey: .orchestrationTag)
     try container.encodeIfPresent(orchestrationStepId, forKey: .orchestrationStepId)
     try container.encodeIfPresent(orchestrationBundlePath, forKey: .orchestrationBundlePath)
@@ -2021,6 +2054,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   /// widening every AgentChatEvent lifecycle associated value.
   var subagentTaskType: String?
   var subagentCommand: String?
+  var subagentSpawnKind: AgentChatSpawnKind?
 
   init(
     sessionId: String,
@@ -2029,7 +2063,8 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     sequence: Int? = nil,
     provenance: AgentChatEventProvenance? = nil,
     subagentTaskType: String? = nil,
-    subagentCommand: String? = nil
+    subagentCommand: String? = nil,
+    subagentSpawnKind: AgentChatSpawnKind? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -2038,6 +2073,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     self.provenance = provenance
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
+    self.subagentSpawnKind = subagentSpawnKind
   }
 
   private enum CodingKeys: String, CodingKey {
@@ -2051,11 +2087,13 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
   private struct SubagentMetadata: Decodable {
     var taskType: String?
     var command: String?
+    var spawnKind: AgentChatSpawnKind?
 
     private enum CodingKeys: String, CodingKey {
       case taskType
       case taskTypeSnake = "task_type"
       case command
+      case spawnKind
     }
 
     init(from decoder: Decoder) throws {
@@ -2063,6 +2101,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
       taskType = try container.decodeIfPresent(String.self, forKey: .taskType)
         ?? container.decodeIfPresent(String.self, forKey: .taskTypeSnake)
       command = try container.decodeIfPresent(String.self, forKey: .command)
+      spawnKind = try container.decodeIfPresent(AgentChatSpawnKind.self, forKey: .spawnKind)
     }
   }
 
@@ -2076,6 +2115,7 @@ struct AgentChatEventEnvelope: Decodable, Identifiable, Equatable {
     let metadata = try? container.decode(SubagentMetadata.self, forKey: .event)
     subagentTaskType = metadata?.taskType
     subagentCommand = metadata?.command
+    subagentSpawnKind = metadata?.spawnKind
   }
 }
 
@@ -2141,6 +2181,43 @@ struct AgentChatFileRef: Codable, Equatable, Hashable {
   var path: String
   var type: String
   var url: String? = nil
+}
+
+private struct AgentChatSpawnCompletionPayload: Decodable {
+  var childSessionId: String
+  var childTitle: String
+  var spawnKind: AgentChatSpawnKind
+  var childTurnId: String?
+  var status: AgentChatSubagentStatus
+  var summary: String?
+
+  func event(fallbackTurnId: String?) -> AgentChatEvent {
+    let resolvedSummary = summary?.trimmingCharacters(in: .whitespacesAndNewlines)
+    let fallbackSummary: String
+    switch status {
+    case .completed: fallbackSummary = "Subagent turn finished."
+    case .failed: fallbackSummary = "Turn failed."
+    case .stopped: fallbackSummary = "Stopped before finishing."
+    }
+    return .subagentResult(
+      taskId: "chat:\(childSessionId)",
+      agentId: childSessionId,
+      agentType: nil,
+      parentAgentId: nil,
+      parentToolUseId: nil,
+      status: status,
+      summary: resolvedSummary.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackSummary,
+      usage: nil,
+      label: childTitle,
+      model: nil,
+      reasoningEffort: nil,
+      turnId: childTurnId ?? fallbackTurnId
+    )
+  }
+}
+
+private struct AgentChatSpawnCompletionContainer: Decodable {
+  var spawnCompletion: AgentChatSpawnCompletionPayload?
 }
 
 enum AgentChatEvent: Decodable, Equatable {
@@ -2516,13 +2593,18 @@ extension AgentChatEvent {
 
     switch type {
     case "user_message":
+      let eventTurnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      if let completion = try container.decodeIfPresent(AgentChatSpawnCompletionContainer.self, forKey: .metadata)?.spawnCompletion {
+        self = completion.event(fallbackTurnId: eventTurnId)
+        return
+      }
       let text = try container.decode(String.self, forKey: .text)
       let displayText = try container.decodeIfPresent(String.self, forKey: .displayText)?
         .trimmingCharacters(in: .whitespacesAndNewlines)
       self = .userMessage(
         text: displayText.flatMap { $0.isEmpty ? nil : $0 } ?? text,
         attachments: try container.decodeIfPresent([AgentChatFileRef].self, forKey: .attachments),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
+        turnId: eventTurnId,
         steerId: try container.decodeIfPresent(String.self, forKey: .steerId),
         deliveryState: try container.decodeIfPresent(String.self, forKey: .deliveryState),
         processed: try container.decodeIfPresent(Bool.self, forKey: .processed)
@@ -2987,13 +3069,19 @@ extension AgentChatEvent {
         turnId: try container.decodeIfPresent(String.self, forKey: .turnId)
       )
     case "system_notice":
-      self = .systemNotice(
-        noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
-        message: try container.decode(String.self, forKey: .message),
-        detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
-        turnId: try container.decodeIfPresent(String.self, forKey: .turnId),
-        steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
-      )
+      let eventTurnId = try container.decodeIfPresent(String.self, forKey: .turnId)
+      if let completion = try container.decodeIfPresent(AgentChatSpawnCompletionContainer.self, forKey: .detail)?.spawnCompletion,
+         completion.spawnKind == .subagent {
+        self = completion.event(fallbackTurnId: eventTurnId)
+      } else {
+        self = .systemNotice(
+          noticeKind: try container.decode(AgentChatNoticeKind.self, forKey: .noticeKind),
+          message: try container.decode(String.self, forKey: .message),
+          detail: try container.decodeIfPresent(RemoteJSONValue.self, forKey: .detail),
+          turnId: eventTurnId,
+          steerId: try container.decodeIfPresent(String.self, forKey: .steerId)
+        )
+      }
     case "completion_report":
       self = .completionReport(
         report: try container.decode(ChatCompletionReport.self, forKey: .report),

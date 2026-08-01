@@ -582,7 +582,8 @@ func makeWorkChatTranscript(from entries: [AgentChatEventEnvelope]) -> [WorkChat
       sequence: entry.sequence,
       event: makeWorkChatEvent(from: entry.event),
       subagentTaskType: entry.subagentTaskType,
-      subagentCommand: entry.subagentCommand
+      subagentCommand: entry.subagentCommand,
+      subagentSpawnKind: entry.subagentSpawnKind
     )
   }
   .sorted(by: workChatEnvelopeOrderedBefore)

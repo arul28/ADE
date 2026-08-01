@@ -339,7 +339,7 @@ const TOOL_SPECS: ToolSpec[] = [
         cwd: { type: "string" },
         chatSessionId: { type: "string" },
         orchestrationParentSessionId: { type: "string", minLength: 1 },
-        spawnKind: { type: "string", enum: ["subagent", "peer", "none"] },
+        spawnKind: { type: "string", enum: ["subagent", "peer"] },
         tracked: { type: "boolean", default: true }
       }
     }
@@ -1720,12 +1720,12 @@ function parseCliSessionPermissionMode(value: unknown): AgentChatPermissionMode 
 function parseCliSessionSpawnKind(value: unknown): AgentChatSpawnKind | null {
   if (value == null) return null;
   const spawnKind = asTrimmedString(value).toLowerCase();
-  if (spawnKind === "subagent" || spawnKind === "peer" || spawnKind === "none") {
+  if (spawnKind === "subagent" || spawnKind === "peer") {
     return spawnKind;
   }
   throw new JsonRpcError(
     JsonRpcErrorCode.invalidParams,
-    "spawnKind must be one of subagent, peer, or none",
+    "spawnKind must be subagent or peer; silent spawn kind 'none' is no longer supported",
   );
 }
 
@@ -2629,7 +2629,6 @@ function scopeTerminalAdeActionArgs(
 }
 
 const SCOPED_CHAT_ACTIONS = new Set([
-  "readTranscript",
   "getChatEventHistory",
   "getChatEventHistoryPage",
   "sendMessage",
@@ -2665,7 +2664,7 @@ function scopeChatAdeActionArgs(
   const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
   const requestedSessionId = asOptionalTrimmedString(scopedArgs.sessionId);
   if (session.identity.role === "external" && !callerChatSessionId) {
-    if (action === "readTranscript" || action === "sendMessage") return scopedArgs;
+    if (action === "sendMessage") return scopedArgs;
     chatAccessDenied(method, { callerChatSessionId, requestedSessionId });
   }
 
@@ -2676,29 +2675,45 @@ function scopeChatAdeActionArgs(
   return scopedArgs;
 }
 
-/**
- * Universal search scoping for session-bound non-CTO callers: chat and
- * terminal results are limited to the caller's own session, mirroring
- * scopeChatAdeActionArgs / scopeTerminalAdeActionArgs on the direct read
- * paths. Unbound callers (user CLI, desktop, CTO) keep whole-project search;
- * pr/commit/branch/lane/file kinds are unaffected because those surfaces are
- * already readable unscoped through their own actions.
- */
-function scopeSearchAdeActionArgs(
+function withTrustedSpawnDispatchMetadata(
+  runtime: AdeRuntime,
   session: SessionState,
+  chatArgs: Record<string, unknown>,
+): Record<string, unknown> {
+  const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+  const targetSessionId = asOptionalTrimmedString(chatArgs.sessionId);
+  const existingMetadata = isRecord(chatArgs.metadata) ? { ...chatArgs.metadata } : {};
+  // This marker controls whether a child completion may wake another agent.
+  // Never trust caller-supplied provenance; derive it from the bound session
+  // and the target's persisted direct-parent relationship.
+  delete existingMetadata.spawnDispatch;
+  const targetSession = targetSessionId ? runtime.sessionService.get(targetSessionId) : null;
+  const targetParentSessionId = asOptionalTrimmedString(
+    targetSession?.orchestrationParentSessionId,
+  );
+  if (callerSessionId && targetParentSessionId === callerSessionId) {
+    existingMetadata.spawnDispatch = {
+      parentSessionId: callerSessionId,
+      dispatchedAt: new Date().toISOString(),
+    };
+  }
+  if (!Object.keys(existingMetadata).length) {
+    const { metadata: _metadata, ...withoutMetadata } = chatArgs;
+    return withoutMetadata;
+  }
+  return { ...chatArgs, metadata: existingMetadata };
+}
+
+/** Search is a machine-readable discovery surface. Drop the old internal-only
+ * callerScope field at the RPC edge so bound agents and unbound shells receive
+ * the same project-wide results and cannot accidentally request silent scope
+ * filtering. The multi-project router aggregates registered-project results. */
+function scopeSearchAdeActionArgs(
+  _session: SessionState,
   searchArgs: Record<string, unknown>,
 ): Record<string, unknown> {
-  const callerChatSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
-  // Session-bound callers are ADE-launched workers (ADE exports
-  // ADE_CHAT_SESSION_ID into every tracked agent shell and chat runtime), so
-  // scoping the bound case alone achieves the worker isolation that
-  // chat/terminal reads enforce. Unbound callers are human/dev shells — the
-  // plain `ade` CLI initializes as role "agent" with no session binding — and
-  // whole-project search is this feature's documented contract for them;
-  // unlike chat.readTranscript, search exposes bounded snippets, not full
-  // transcripts.
-  if (!callerChatSessionId) return searchArgs;
-  return { ...searchArgs, callerScope: { chatSessionId: callerChatSessionId } };
+  const { callerScope: _callerScope, ...unscopedArgs } = searchArgs;
+  return unscopedArgs;
 }
 
 function scopeBuiltInBrowserAdeActionArgs(
@@ -3742,7 +3757,25 @@ async function runTool(args: {
           : { dedupeKey }),
       };
     }
-    if (!callerIsCto && domain === "pty") {
+    if (domain === "chat" && (action === "readTranscript" || action === "readTranscriptPage")) {
+      const chatArgs = requireObjectArgsForScopedAdeAction(
+        domain,
+        action,
+        argsList,
+        hasScalarArg,
+        rawObjectArgs,
+      );
+      const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
+      scopedObjectArgs = asOptionalTrimmedString(chatArgs.sessionId) || !callerSessionId
+        ? chatArgs
+        : { ...chatArgs, sessionId: callerSessionId };
+    } else if (domain === "chat" && action === "messageSession") {
+      scopedObjectArgs = withTrustedSpawnDispatchMetadata(
+        runtime,
+        session,
+        requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+      );
+    } else if (!callerIsCto && domain === "pty") {
       scopedObjectArgs = requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs);
       if (action === "list") {
         result = listAuthorizedPtySessions(runtime, session, `run_ade_action:pty.${action}`, scopedObjectArgs);
@@ -3762,13 +3795,19 @@ async function runTool(args: {
       && domain === "chat"
       && SCOPED_CHAT_ACTIONS.has(action)
     ) {
-      const chatArgs = requireObjectArgsForScopedAdeAction(
-        domain,
-        action,
-        argsList,
-        hasScalarArg,
-        rawObjectArgs,
-      );
+      const chatArgs = action === "sendMessage"
+        ? withTrustedSpawnDispatchMetadata(
+            runtime,
+            session,
+            requireObjectArgsForScopedAdeAction(domain, action, argsList, hasScalarArg, rawObjectArgs),
+          )
+        : requireObjectArgsForScopedAdeAction(
+            domain,
+            action,
+            argsList,
+            hasScalarArg,
+            rawObjectArgs,
+          );
       const callerSessionId = asOptionalTrimmedString(session.identity.chatSessionId);
       const requestedSessionId = asOptionalTrimmedString(chatArgs.sessionId);
       const legacyCrossSessionSend = action === "sendMessage"
@@ -3930,6 +3969,24 @@ async function runTool(args: {
       ? null
       : assertNonEmptyString(toolArgs.orchestrationParentSessionId, "orchestrationParentSessionId");
     const spawnKind = parseCliSessionSpawnKind(toolArgs.spawnKind);
+    if (provider === "shell" && (orchestrationParentSessionId || spawnKind)) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "Plain shell terminals do not record agent spawn lineage.",
+      );
+    }
+    if (isCliProvider(provider) && orchestrationParentSessionId && !spawnKind) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "spawnKind is required for a parented agent session: use subagent when the parent will need the result, or peer only for fire-and-forget work",
+      );
+    }
+    if (!orchestrationParentSessionId && spawnKind) {
+      throw new JsonRpcError(
+        JsonRpcErrorCode.invalidParams,
+        "spawnKind requires orchestrationParentSessionId",
+      );
+    }
     try {
       validateLaunchProfilePermissionMode(provider, permissionMode);
     } catch (err) {

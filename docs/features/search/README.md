@@ -64,7 +64,8 @@ Main-process service (`apps/desktop/src/main/services/search/`):
 Shared contract:
 
 - `apps/desktop/src/shared/types/search.ts` — `SearchDocKind`,
-  `SearchResultItem`, `SearchQueryArgs` (including the `callerScope` gate),
+  `SearchResultItem`, `SearchQueryArgs` (including a legacy internal-only
+  `callerScope` filter),
   `SearchQueryResult`, `SearchIndexStatus`, `SearchRebuildResult`. Re-exported
   from `shared/types/index.ts`.
 
@@ -75,11 +76,16 @@ ADE action domain + RPC scoping:
   (`query`, `indexStatus`, `rebuildIndex`), the CTO-only gate on
   `rebuildIndex` (`ADE_ACTION_CTO_ONLY`), and `buildSearchDomainService`
   (returns `null` when the runtime has no `searchService`).
-- `apps/ade-cli/src/adeRpcServer.ts` — `scopeSearchAdeActionArgs` injects the
-  `callerScope` for non-CTO callers of `search.query`: a session-bound caller
-  gets chat/terminal results limited to its own session; an unbound
-  agent/orchestrator/evaluator gets session content excluded entirely;
-  unbound external callers (user CLI/desktop) keep whole-project search.
+- `apps/ade-cli/src/adeRpcServer.ts` — `scopeSearchAdeActionArgs` removes any
+  caller-supplied `callerScope`, so session-bound agents and unbound shells see
+  the same project-backed results.
+- `apps/ade-cli/src/multiProjectRpcServer.ts` — keeps non-chat kinds in the
+  active project and aggregates bounded chat hits from every registered
+  project, adding project identity to each result. Each project contributes at
+  most 200 hits to one aggregate query; `resultsTruncated` makes that ceiling
+  explicit so callers can narrow the query instead of mistaking the bounded
+  window for an exhaustive result set. Personal chats are outside the project
+  registry and are not queried.
 - `apps/ade-cli/src/bootstrap.ts` — constructs the runtime's search service
   via `createProjectSearchService`, wires `notifyTerminalData` into
   `broadcastData`, `notifyLaneActivity` into `onLifecycleEvent`, and
@@ -208,17 +214,13 @@ same-document metadata rather than appending a duplicate. FTS candidates and
 delegated candidates are ranked together through the one comparator, then
 paginated with an opaque base64 cursor.
 
-### Caller scoping policy
+### Machine search policy
 
-`search.query` mirrors the read-scoping of the direct chat/terminal read paths
-(`scopeChatAdeActionArgs` / `scopeTerminalAdeActionArgs`). The RPC gate injects
-a `callerScope` that can only narrow results, never widen them: a session-bound
-non-CTO caller sees chat/terminal hits only for its own session; an unbound
-agent/orchestrator/evaluator (which `chat.readTranscript` would deny) gets
-session content excluded entirely; unbound external callers (user CLI, desktop)
-and CTO callers keep whole-project search. PR/commit/branch/lane/file kinds are
-unaffected — those surfaces are already readable unscoped through their own
-actions. `rebuildIndex` is CTO-only.
+`search.query` is not narrowed by the caller's chat session. The machine router
+queries the active project normally and queries every other registered project
+for chat hits only. Results carry `projectId`, `projectName`, and `projectRoot`;
+personal/no-project chats are excluded. PR/commit/branch/lane/file/terminal and
+other non-chat kinds remain active-project results. `rebuildIndex` is CTO-only.
 
 ### Dual-host known limitation
 

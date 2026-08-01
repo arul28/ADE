@@ -218,7 +218,7 @@ function normalizeResumeMetadata(raw: unknown): TerminalResumeMetadata | null {
   const orchestrationParentSessionId = typeof record.orchestrationParentSessionId === "string"
     ? record.orchestrationParentSessionId.trim()
     : "";
-  const spawnKind = record.spawnKind === "subagent" || record.spawnKind === "peer" || record.spawnKind === "none"
+  const spawnKind = record.spawnKind === "subagent" || record.spawnKind === "peer"
     ? record.spawnKind
     : null;
   if (!provider || !targetKind) return null;

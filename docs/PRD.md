@@ -115,7 +115,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 - [**Terminals and Sessions**](./features/terminals-and-sessions/README.md) — PTY and session services. Canonical cross-client session lifecycle, two-tier attention, the quiet settled tier, agent-authored status notes, AI titles, lazy resume-target hydration, and stale reconciliation.
 - [**Files and Editor**](./features/files-and-editor/README.md) — Atomic writes, ref-counted chokidar watcher, file search index, Monaco surfaces (edit/diff/conflict), preload trust boundary.
-- [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
+- [**Universal Search**](./features/search/README.md) — One deterministic FTS5 index per project (disposable `.ade/cache/search-index.db`) over chat/terminal/PR/commit/branch text, unioned at query time with delegated lanes/files/artifacts/Linear. The machine router keeps non-chat kinds in the active project and aggregates bounded, explicitly truncated chat hits across every registered project. Debounced off-hot-path ingestion, deterministic ranking tiers, one `search` action domain behind ⌘K, the TUI palette, and `ade search`.
 - [**Onboarding and Settings**](./features/onboarding-and-settings/README.md) — First-run wizard (stack detection, suggested config, import), 9-tab settings, configuration schema with trust model.
 
 ### Integrations

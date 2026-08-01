@@ -28,8 +28,8 @@ export { navigateToSpawnedChat };
 
 /**
  * Type-tinted accent for a spawned ADE chat card. subagent = violet (the chat's
- * `--color-accent`); peer = steel/neutral slate. `none`/null spawns keep the
- * default `--chat-accent` styling and show no type chip.
+ * `--color-accent`); peer = steel/neutral slate. Missing legacy metadata keeps
+ * the default `--chat-accent` styling and shows no type chip.
  */
 export function spawnTypeAccent(
   spawnKind: AgentChatSpawnKind | null | undefined,

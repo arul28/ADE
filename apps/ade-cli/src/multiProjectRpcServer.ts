@@ -13,6 +13,7 @@ import { inspectProjectPath } from "../../desktop/src/main/services/projects/pro
 import { createProjectScaffoldService } from "../../desktop/src/main/services/projects/projectScaffoldService";
 import { runGit } from "../../desktop/src/main/services/git/git";
 import type { Logger } from "../../desktop/src/main/services/logging/logger";
+import { isSearchDocKind } from "../../desktop/src/shared/types";
 import type {
   AttentionPreferences,
   AttentionPresence,
@@ -22,6 +23,9 @@ import type {
   ProjectBrowseInput,
   RuntimeActivityCounts,
   RuntimeActivitySummary,
+  SearchDocKind,
+  SearchQueryResult,
+  SearchResultItem,
 } from "../../desktop/src/shared/types";
 import type { BufferedEvent } from "./eventBuffer";
 import { computeRuntimeBuildHash as hashRuntimeBuild } from "./services/runtime/runtimeBuildIdentity";
@@ -90,6 +94,38 @@ type RuntimeEventSubscription = {
   projectId: ProjectId;
   unsubscribe: () => void;
 };
+
+function decodeSearchQueryResult(
+  value: unknown,
+): Pick<SearchQueryResult, "results" | "totalByKind" | "nextCursor"> {
+  if (!isRecord(value)) return { results: [], totalByKind: {}, nextCursor: null };
+  const results = Array.isArray(value.results)
+    ? value.results.filter((item): item is SearchResultItem =>
+        isRecord(item)
+        && isSearchDocKind(item.kind)
+        && typeof item.id === "string"
+        && typeof item.title === "string"
+        && typeof item.snippet === "string"
+        && Array.isArray(item.matchRanges)
+        && (typeof item.laneId === "string" || item.laneId === null)
+        && (typeof item.laneName === "string" || item.laneName === null)
+        && (typeof item.sessionId === "string" || item.sessionId === null)
+        && typeof item.deepLink === "string"
+        && typeof item.updatedAt === "string")
+    : [];
+  const totalByKind: Partial<Record<SearchDocKind, number>> = {};
+  if (isRecord(value.totalByKind)) {
+    for (const [kind, count] of Object.entries(value.totalByKind)) {
+      if (isSearchDocKind(kind) && typeof count === "number" && Number.isFinite(count)) {
+        totalByKind[kind] = count;
+      }
+    }
+  }
+  const nextCursor = typeof value.nextCursor === "string" && value.nextCursor.trim()
+    ? value.nextCursor
+    : null;
+  return { results, totalByKind, nextCursor };
+}
 
 export type MultiProjectRpcHandlerOptions = {
   serverVersion: string;
@@ -784,6 +820,158 @@ export function createMultiProjectRpcRequestHandler(
       handlers.delete(projectId);
       throw error;
     }
+  };
+
+  const orderedProjectRecords = (preferredProjectId: ProjectId) => {
+    const records = projectRegistry.list();
+    return [
+      ...records.filter((record) => record.projectId === preferredProjectId),
+      ...records
+        .filter((record) => record.projectId !== preferredProjectId)
+        .sort((left, right) => right.lastOpenedAt - left.lastOpenedAt),
+    ];
+  };
+
+  const resolveProjectBackedChatOwner = async (
+    sessionId: string,
+    preferredProjectId: ProjectId,
+  ): Promise<ProjectId | null> => {
+    for (const record of orderedProjectRecords(preferredProjectId)) {
+      try {
+        const scope = await scopeRegistry.get(record.projectId);
+        const session = scope.runtime.sessionService.get(sessionId);
+        const toolType = typeof session?.toolType === "string"
+          ? session.toolType.trim().toLowerCase()
+          : "";
+        if (toolType === "cursor" || toolType.endsWith("-chat")) {
+          return record.projectId;
+        }
+      } catch {
+        // A stale/unavailable registered project cannot own a readable chat in
+        // this process. Continue through the remaining project-backed scopes.
+      }
+    }
+    return null;
+  };
+
+  const aggregateProjectSearch = async (args: {
+    request: JsonRpcRequest;
+    params: Record<string, unknown>;
+    preferredProjectId: ProjectId;
+    actionEnvelope: Record<string, unknown>;
+    queryArgs: Record<string, unknown>;
+  }): Promise<unknown> => {
+    const explicitKinds = Array.isArray(args.queryArgs.kinds)
+      ? args.queryArgs.kinds.filter((kind): kind is SearchDocKind => typeof kind === "string")
+      : null;
+    if (explicitKinds && !explicitKinds.includes("chat")) {
+      const entry = await getProjectHandler(args.preferredProjectId);
+      return entry.handler({
+        ...args.request,
+        params: omitProjectId(args.params),
+      });
+    }
+
+    const requestedLimit = typeof args.queryArgs.limit === "number" && Number.isFinite(args.queryArgs.limit)
+      ? Math.max(1, Math.min(200, Math.floor(args.queryArgs.limit)))
+      : 50;
+    const offset = (() => {
+      if (typeof args.queryArgs.cursor !== "string" || !args.queryArgs.cursor.trim()) return 0;
+      try {
+        const decoded = JSON.parse(Buffer.from(args.queryArgs.cursor, "base64").toString("utf8"));
+        return isRecord(decoded) && typeof decoded.offset === "number" && Number.isInteger(decoded.offset)
+          ? Math.max(0, decoded.offset)
+          : 0;
+      } catch {
+        return 0;
+      }
+    })();
+    const records = orderedProjectRecords(args.preferredProjectId);
+    const buckets: SearchResultItem[][] = [];
+    const totals: Partial<Record<SearchDocKind, number>> = {};
+    const unavailableProjects: string[] = [];
+    let baseResponse: Record<string, unknown> | null = null;
+    let firstError: unknown = null;
+    let resultsTruncated = false;
+
+    for (const record of records) {
+      try {
+        const entry = await getProjectHandler(record.projectId);
+        const projectQueryArgs: Record<string, unknown> = {
+          ...args.queryArgs,
+          ...(record.projectId === args.preferredProjectId
+            ? {}
+            : { kinds: ["chat"] }),
+          limit: 200,
+        };
+        delete projectQueryArgs.cursor;
+        delete projectQueryArgs.callerScope;
+        const response = await entry.handler({
+          ...args.request,
+          params: {
+            ...omitProjectId(args.params),
+            arguments: {
+              ...args.actionEnvelope,
+              args: projectQueryArgs,
+            },
+          },
+        });
+        if (!isRecord(response) || !isRecord(response.result)) continue;
+        if (record.projectId === args.preferredProjectId) baseResponse = response;
+        const result = decodeSearchQueryResult(response.result);
+        resultsTruncated ||= result.nextCursor != null;
+        const projectResults = result.results.map((item) => ({
+          ...item,
+          projectId: record.projectId,
+          projectName: record.displayName,
+          projectRoot: record.rootPath,
+        }));
+        buckets.push(projectResults);
+        for (const [kind, count] of Object.entries(result.totalByKind)) {
+          totals[kind as SearchDocKind] = (totals[kind as SearchDocKind] ?? 0) + count;
+        }
+      } catch (error) {
+        firstError ??= error;
+        unavailableProjects.push(record.displayName);
+      }
+    }
+    if (!buckets.length && firstError) throw firstError;
+
+    // Preserve each project's relevance order while preventing one project
+    // from burying every other project's top chat hit.
+    const interleaved: SearchResultItem[] = [];
+    const maxBucketLength = Math.max(0, ...buckets.map((bucket) => bucket.length));
+    for (let index = 0; index < maxBucketLength; index += 1) {
+      for (const bucket of buckets) {
+        const item = bucket[index];
+        if (item) interleaved.push(item);
+      }
+    }
+    const page = interleaved.slice(offset, offset + requestedLimit);
+    const nextCursor = offset + requestedLimit < interleaved.length
+      ? Buffer.from(JSON.stringify({ offset: offset + requestedLimit, scope: "machine-project-chats" }), "utf8").toString("base64")
+      : null;
+    const merged: SearchQueryResult = {
+      results: page,
+      totalByKind: totals,
+      nextCursor,
+      projectsSearched: buckets.length,
+      ...(unavailableProjects.length ? { projectsUnavailable: unavailableProjects } : {}),
+      ...(resultsTruncated ? { resultsTruncated: true } : {}),
+    };
+    return {
+      ...(baseResponse ?? {
+        domain: "search",
+        action: "query",
+        statusHints: {
+          operationId: null,
+          testRunId: null,
+          chatSessionId: null,
+          runId: null,
+        },
+      }),
+      result: merged,
+    };
   };
 
   const subscribeRuntimeEvents = async (params: Record<string, unknown>) => {
@@ -1705,6 +1893,44 @@ export function createMultiProjectRpcRequestHandler(
         JsonRpcErrorCode.invalidParams,
         `Method ${method} requires params.projectId.`,
       );
+    }
+
+    const actionEnvelope = method === "ade/actions/call" && params.name === "run_ade_action"
+      ? safeParams(params.arguments)
+      : null;
+    const actionDomain = actionEnvelope && typeof actionEnvelope.domain === "string"
+      ? actionEnvelope.domain
+      : null;
+    const actionName = actionEnvelope && typeof actionEnvelope.action === "string"
+      ? actionEnvelope.action
+      : null;
+    const actionArgs = actionEnvelope ? safeParams(actionEnvelope.args) : {};
+    if (
+      actionDomain === "chat"
+      && (actionName === "readTranscript" || actionName === "readTranscriptPage")
+      && typeof actionArgs.sessionId === "string"
+      && actionArgs.sessionId.trim()
+    ) {
+      const ownerProjectId = await resolveProjectBackedChatOwner(
+        actionArgs.sessionId.trim(),
+        projectId,
+      );
+      if (ownerProjectId) {
+        const entry = await getProjectHandler(ownerProjectId);
+        return entry.handler({
+          ...request,
+          params: omitProjectId(params),
+        });
+      }
+    }
+    if (actionDomain === "search" && actionName === "query" && actionEnvelope) {
+      return aggregateProjectSearch({
+        request,
+        params,
+        preferredProjectId: projectId,
+        actionEnvelope,
+        queryArgs: actionArgs,
+      });
     }
 
     const entry = await getProjectHandler(projectId);

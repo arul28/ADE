@@ -4,7 +4,7 @@ import { createServer } from "node:http";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   applySyncWebPairingFlags,
   automaticProjectRegistrationParams,
@@ -142,6 +142,15 @@ function writeSyncHostSingletonLock(args: {
 }
 
 describe("ADE CLI", () => {
+  const ambientChatSessionId = process.env.ADE_CHAT_SESSION_ID;
+  beforeEach(() => {
+    delete process.env.ADE_CHAT_SESSION_ID;
+  });
+  afterEach(() => {
+    if (ambientChatSessionId === undefined) delete process.env.ADE_CHAT_SESSION_ID;
+    else process.env.ADE_CHAT_SESSION_ID = ambientChatSessionId;
+  });
+
   it("includes the system host in the mobile catalog without exposing other system projects", () => {
     const projects = [
       { projectId: "project_recent", catalogVisibility: "recent" as const },
@@ -2038,6 +2047,24 @@ describe("ADE CLI", () => {
     expect(query.exitCodeFromResult?.({ results: [] })).toBe(1);
     expect(query.exitCodeFromResult?.({ results: [{ id: "chat:1" }] })).toBe(0);
 
+    const boundedCoverage = formatOutput({
+      results: [],
+      totalByKind: {},
+      nextCursor: null,
+      projectsSearched: 2,
+      projectsUnavailable: ["Unavailable project"],
+      resultsTruncated: true,
+    }, {
+      ...baseResolveOpts(),
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      text: true,
+    }, "search-results");
+    expect(boundedCoverage).toContain("(no results)");
+    expect(boundedCoverage).toContain("coverage: 2 projects searched");
+    expect(boundedCoverage).toContain("unavailable projects: Unavailable project");
+    expect(boundedCoverage).toContain("bounded: a project has more than 200 matches");
+
     // Bare query omits optional args entirely.
     const bare = expectExecutePlan(buildCliPlan(["search", "just words"]));
     expect(bare.steps[0]?.params).toEqual({
@@ -2579,6 +2606,8 @@ describe("ADE CLI", () => {
       "openai/gpt-5.5",
       "--type",
       "peer",
+      "--parent",
+      "parent-session-1",
     ]);
     const executePlan = expectExecutePlan(plan);
     const createParams = (executePlan.steps[0]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({});
@@ -2599,7 +2628,7 @@ describe("ADE CLI", () => {
       "lane-1",
       "--type",
       "manager",
-    ])).toThrow(/--type must be subagent, peer, or none/);
+    ])).toThrow(/--type must be subagent or peer/);
   });
 
   it("builds the unmerged-work child-lane nudge when the current lane is ahead", () => {
@@ -2774,9 +2803,16 @@ describe("ADE CLI", () => {
 
     it("defaults orchestrationParentSessionId from ADE_CHAT_SESSION_ID", () => {
       process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
-      const staticPlan = expectStaticPlan(dryRunCreate());
-      expect((staticPlan.value as { input: Record<string, unknown> }).input.orchestrationParentSessionId)
-        .toBe("parent-session-1");
+      const staticPlan = expectStaticPlan(dryRunCreate("--type", "subagent"));
+      expect((staticPlan.value as { input: Record<string, unknown> }).input).toMatchObject({
+        orchestrationParentSessionId: "parent-session-1",
+        spawnKind: "subagent",
+      });
+    });
+
+    it("rejects an inherited parent when --type is missing", () => {
+      process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
+      expect(() => dryRunCreate()).toThrow(/--type is required for a parented agent spawn/);
     });
 
     it("omits the parent when the env var is not set", () => {
@@ -2788,7 +2824,10 @@ describe("ADE CLI", () => {
 
     it("--parent overrides the env default", () => {
       process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
-      const staticPlan = expectStaticPlan(dryRunCreate("--parent", "explicit-parent"));
+      const staticPlan = expectStaticPlan(dryRunCreate(
+        "--parent", "explicit-parent",
+        "--type", "peer",
+      ));
       expect((staticPlan.value as { input: Record<string, unknown> }).input.orchestrationParentSessionId)
         .toBe("explicit-parent");
     });
@@ -2812,6 +2851,7 @@ describe("ADE CLI", () => {
         "--lane", "lane-1",
         "--provider", "codex",
         "--model", "openai/gpt-5.5",
+        "--type", "subagent",
         "--print-config",
       ]);
       const staticPlan = expectStaticPlan(plan);
@@ -2861,6 +2901,7 @@ describe("ADE CLI", () => {
         "--lane-name", "spawn-target",
         "--provider", "codex",
         "--parent", "parent-session-1",
+        "--type", "subagent",
         "--print-config",
       ]);
       const staticPlan = expectStaticPlan(plan);
@@ -2886,21 +2927,16 @@ describe("ADE CLI", () => {
       expect(value.launch).not.toHaveProperty("orchestrationParentSessionId");
     });
 
-    it("does not record spawn lineage for plain shell terminals", () => {
+    it("rejects agent spawn types for plain shell terminals", () => {
       process.env.ADE_CHAT_SESSION_ID = "parent-session-1";
-      const plan = buildCliPlan([
+      expect(() => buildCliPlan([
         "new", "chat",
         "--mode", "cli",
         "--lane", "lane-1",
         "--provider", "shell",
         "--type", "peer",
         "--print-config",
-      ]);
-      const staticPlan = expectStaticPlan(plan);
-      const launch = (staticPlan.value as { launch: Record<string, unknown> }).launch;
-      expect(launch.provider).toBe("shell");
-      expect(launch).not.toHaveProperty("orchestrationParentSessionId");
-      expect(launch).not.toHaveProperty("spawnKind");
+      ])).toThrow(/plain shell terminals do not record spawn lineage/);
     });
   });
 
@@ -3046,6 +3082,20 @@ describe("ADE CLI", () => {
         },
       },
     });
+
+    const emptyPage = formatOutput({
+      sessionId: "chat-1",
+      entries: [],
+      truncated: true,
+      nextCursor: 4096,
+    }, {
+      ...baseResolveOpts(),
+      projectRoot: "/tmp/project",
+      workspaceRoot: "/tmp/project",
+      text: true,
+    }, "chat-read");
+    expect(emptyPage).toContain("(no messages in this physical page)");
+    expect(emptyPage).toContain("more: --page --cursor 4096");
   });
 
   it("builds session lifecycle chat commands without inventing a session id", () => {
@@ -6934,14 +6984,14 @@ describe("ADE CLI", () => {
     const newChatHelp = buildCliPlan(["help", "new", "chat"]);
     expect(newChatHelp.kind).toBe("help");
     if (newChatHelp.kind !== "help") return;
-    expect(newChatHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newChatHelp.text).toContain("--type <subagent|peer>");
     expect(newChatHelp.text).toContain("Override with --parent <sessionId>");
     expect(newChatHelp.text).toContain("plain shell terminals don't record lineage");
 
     const newHelp = buildCliPlan(["new", "--help"]);
     expect(newHelp.kind).toBe("help");
     if (newHelp.kind !== "help") return;
-    expect(newHelp.text).toContain("--type <subagent|peer|none>");
+    expect(newHelp.text).toContain("--type <subagent|peer>");
     expect(newHelp.text).toContain("--parent <sessionId>");
     expect(newHelp.text).toContain("Plain shell terminals do not record lineage");
 
@@ -7373,6 +7423,34 @@ describe("ADE CLI", () => {
     const sendArgs = (sendParams.arguments as { args: { text: string } }).args;
     expect(sendArgs.text).toContain("ENG-431");
     expect(sendArgs.text).toContain("https://linear.app/x/ENG-431");
+  });
+
+  it("requires and persists a spawn type when create-from-linear starts a child chat", () => {
+    const baseArgs = [
+      "lanes",
+      "create-from-linear",
+      "--linear-issue-json",
+      '{"id":"issue-1","identifier":"ENG-431","title":"Fix OAuth"}',
+      "--start-chat",
+    ];
+    withEnv({ ADE_CHAT_SESSION_ID: "parent-chat-1" }, () => {
+      expect(() => buildCliPlan(baseArgs)).toThrow(/--type is required for a parented agent spawn/);
+      const plan = expectExecutePlan(buildCliPlan([...baseArgs, "--type", "subagent"]));
+      const chatParams = (plan.steps[1]?.params as (v: Record<string, unknown>) => Record<string, unknown>)({
+        lane: { domain: "lane", action: "create", result: { lane: { id: "lane-new" } } },
+      });
+      expect(chatParams).toMatchObject({
+        arguments: {
+          domain: "chat",
+          action: "createSession",
+          args: {
+            laneId: "lane-new",
+            orchestrationParentSessionId: "parent-chat-1",
+            spawnKind: "subagent",
+          },
+        },
+      });
+    });
   });
 
   it("builds a per-issue create_lane step for batch-create-from-linear", () => {
@@ -7818,6 +7896,47 @@ describe("ADE CLI", () => {
         tracked: true,
       }),
     });
+  });
+
+  it("requires and forwards spawn type for inherited start-cli lineage", () => {
+    withEnv({ ADE_CHAT_SESSION_ID: "parent-chat-1" }, () => {
+      expect(() => buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+      ])).toThrow(/--type is required for a parented agent spawn/);
+
+      const plan = expectExecutePlan(buildCliPlan([
+        "shell",
+        "start-cli",
+        "codex",
+        "--lane",
+        "lane-1",
+        "--type",
+        "subagent",
+      ]));
+      expect(plan.steps[0]?.params).toMatchObject({
+        name: "start_cli_session",
+        arguments: {
+          orchestrationParentSessionId: "parent-chat-1",
+          spawnKind: "subagent",
+        },
+      });
+    });
+  });
+
+  it("rejects explicit spawn lineage for plain shell CLI sessions", () => {
+    expect(() => buildCliPlan([
+      "shell",
+      "start-cli",
+      "shell",
+      "--lane",
+      "lane-1",
+      "--parent",
+      "parent-chat-1",
+    ])).toThrow(/--parent applies only to agent providers/);
   });
 
   it("forwards model and reasoning flags for provider shell launches", () => {

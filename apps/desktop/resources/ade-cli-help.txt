@@ -343,8 +343,9 @@ _    ____  _____
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
     $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
                                                     Unlink one issue (or all non-primary links) from a lane
-    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --provider codex --model <m>]
+    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --type subagent --provider codex --model <m>]
                                                     Create a lane from an issue, optionally auto-launching an agent
+                                                    Spawn flags: --type subagent|peer, --chat-parent <session>, --no-parent
     $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
                                                     Create one lane per issue (partial success, no orphans)
     $ ade lanes create --base <ref>                 Override the base ref (omit to use the configured new-lane base, remote-first by default)
@@ -452,10 +453,11 @@ _    ____  _____
 
   ADE Search
 
-  Search across everything ADE indexes — chat transcripts, terminal scrollback,
-  CLI sessions, PRs, commits, branches, lanes, files, Linear issues, and proof
-  artifacts — from one deterministic full-text index. Returns ranked matches
-  with a deep link per result. Prefer this over grepping .ade/ internals.
+  Search project-backed chat transcripts across every project registered with
+  the machine brain. Terminal scrollback, CLI sessions, PRs, commits, branches,
+  lanes, files, Linear issues, and proof artifacts come from the active project.
+  Personal/no-project chats are excluded. Returns ranked matches with a deep
+  link per result. Prefer this over grepping .ade/ internals.
 
     $ ade search "login redirect" --text
     $ ade search "flaky test" --kind chat,terminal --text
@@ -482,7 +484,8 @@ _    ____  _____
     --actions               List the raw search service actions exposed via ADE actions.
     --status                Show index doc counts, backfill state, and index path.
     --rebuild               Rebuild the whole index from scratch (CTO-only).
-    --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
+    --text                  Aligned rows (including PROJECT when routed across
+                            projects) plus a count summary.
     --json                  Full SearchQueryResult payload (default).
 
   Exit codes:
@@ -586,21 +589,21 @@ _    ____  _____
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because it owns provider/session state.
 
-  Session scope: when you are an ADE-launched agent (ADE_CHAT_SESSION_ID is set),
-  reads are limited to your OWN chat — "ade chat read <other-session>" is denied
-  by design, because transcripts are not shared across workers. Sending is not
-  restricted: "ade chat send <session>" reaches any session, which is how a
-  subagent reports back to its spawner.
+  Transcript reads are silent and may target any project-backed ADE chat on
+  this machine, including chats in other projects. Personal/no-project chats
+  stay on the separate --personal surface. Reads are bounded by message and
+  character limits; use --page and --cursor to walk older content.
 
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --no-archived --text
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
+    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+                                                    Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (3–6 words, max 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
@@ -622,7 +625,9 @@ _    ____  _____
     $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
                                                     Run an accepted-but-unprocessed follow-up next, or dismiss it
     $ ade chat models --provider codex --json       List models and supported reasoning tiers
-    $ ade chat read <session> --limit 20 --text     Read recent chat messages
+    $ ade chat read <session> --limit 20 --max-chars 8000 --text
+                                                    Read a bounded recent window
+    $ ade chat read <session> --page --cursor <n>  Page older transcript content
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
     $ ade chat goal <session> --status paused       Update a Codex goal status
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
@@ -645,7 +650,7 @@ _    ____  _____
                                                     Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
-    $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -656,7 +661,7 @@ _    ____  _____
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
@@ -674,6 +679,16 @@ _    ____  _____
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link.
+    --type <subagent|peer>  Required with a parent. subagent wakes the parent
+                            after parent-requested turns; peer leaves quiet notes.
+
+  Transcript read flags:
+    --limit <n>             Messages per bounded window (default 50, max 100).
+    --max-chars <n>         Character budget (default 8000, max 120000).
+    --page                  Use byte-cursor paging for older content.
+    --cursor <offset>       Continue before a prior page's nextCursor.
+    --since <iso>           Filter the recent window by timestamp; do not combine
+                            with --page/--cursor.
 
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.

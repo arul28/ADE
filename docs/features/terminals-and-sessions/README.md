@@ -165,8 +165,8 @@ and in tests.
 - `apps/ade-cli/src/tuiClient/closedCliSessions.ts`,
   `apps/ade-cli/src/tuiClient/components/Drawer.tsx` — ADE Code projects spawn
   lineage from closed tracked CLI resume metadata and shows compact `sub` /
-  `peer` markers for chat and CLI children in the session drawer; `none` stays
-  visually quiet.
+  `peer` markers for chat and CLI children in the session drawer; missing
+  legacy lineage metadata stays visually quiet.
 - `apps/desktop/src/main/services/sessions/sessionDeltaService.ts` —
   end-of-session git diff + transcript delta computation, reads from
   `session_deltas` table.
