@@ -7,6 +7,7 @@ import type {
   ProjectConfigFile,
 } from "../../../shared/types";
 import { NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import { defaultEffectiveGitConfig } from "../../../shared/types/config";
 
 function makeLogger() {
   return {
@@ -31,7 +32,7 @@ function makeEffective(overrides: Partial<EffectiveProjectConfig> = {}): Effecti
     testSuites: [],
     laneOverlayPolicies: [],
     automations: [],
-    git: { autoRebaseOnHeadChange: false, newLaneBaseSource: "remote" },
+    git: defaultEffectiveGitConfig(),
     ...overrides,
   };
 }

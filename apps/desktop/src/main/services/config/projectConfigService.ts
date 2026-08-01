@@ -59,6 +59,12 @@ import type {
   TestSuiteTag
 } from "../../../shared/types";
 import { AUTOMATION_TRIGGER_TYPES, NO_DEFAULT_LANE_TEMPLATE } from "../../../shared/types";
+import {
+  DEFAULT_LANE_BANNER_BUDGET,
+  DEFAULT_REBASE_SUGGESTIONS,
+  DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+  type RebaseSuggestionDisplay,
+} from "../../../shared/types/config";
 import type { Logger } from "../logging/logger";
 import type { AdeDb } from "../state/kvDb";
 import { isRecord, resolvePathWithinRoot } from "../shared/utils";
@@ -181,6 +187,17 @@ function asComputeBackend(value: unknown): "local" | "vps" | "daytona" | undefin
 
 function asNewLaneBaseSource(value: unknown): "local" | "remote" | undefined {
   return value === "local" || value === "remote" ? value : undefined;
+}
+
+function asRebaseSuggestionDisplay(value: unknown): RebaseSuggestionDisplay | undefined {
+  return value === "off" || value === "badge" || value === "banner" ? value : undefined;
+}
+
+/** Whole counts only; a negative or fractional threshold is meaningless here. */
+function asNonNegativeInt(value: unknown): number | undefined {
+  const numeric = typeof value === "number" ? value : Number(value);
+  if (!Number.isFinite(numeric)) return undefined;
+  return Math.max(0, Math.floor(numeric));
 }
 
 function coerceOrchestratorHookConfig(value: unknown): { command: string; timeoutMs?: number } | null {
@@ -2047,9 +2064,15 @@ function coerceConfigFile(value: unknown): ProjectConfigFile {
     if (!isRecord(value.git)) return undefined;
     const autoRebaseOnHeadChange = asBool(value.git.autoRebaseOnHeadChange);
     const newLaneBaseSource = asNewLaneBaseSource(value.git.newLaneBaseSource);
+    const rebaseSuggestions = asRebaseSuggestionDisplay(value.git.rebaseSuggestions);
+    const rebaseSuggestionMinBehind = asNonNegativeInt(value.git.rebaseSuggestionMinBehind);
+    const laneBannerBudget = asNonNegativeInt(value.git.laneBannerBudget);
     const out: NonNullable<ProjectConfigFile["git"]> = {};
     if (autoRebaseOnHeadChange != null) out.autoRebaseOnHeadChange = autoRebaseOnHeadChange;
     if (newLaneBaseSource) out.newLaneBaseSource = newLaneBaseSource;
+    if (rebaseSuggestions) out.rebaseSuggestions = rebaseSuggestions;
+    if (rebaseSuggestionMinBehind != null) out.rebaseSuggestionMinBehind = rebaseSuggestionMinBehind;
+    if (laneBannerBudget != null) out.laneBannerBudget = laneBannerBudget;
     return Object.keys(out).length ? out : undefined;
   })();
 
@@ -2479,6 +2502,9 @@ function resolveEffectiveConfig(shared: ProjectConfigFile, local: ProjectConfigF
     git: {
       autoRebaseOnHeadChange: mergedGit?.autoRebaseOnHeadChange ?? false,
       newLaneBaseSource: mergedGit?.newLaneBaseSource ?? "remote",
+      rebaseSuggestions: mergedGit?.rebaseSuggestions ?? DEFAULT_REBASE_SUGGESTIONS,
+      rebaseSuggestionMinBehind: mergedGit?.rebaseSuggestionMinBehind ?? DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+      laneBannerBudget: mergedGit?.laneBannerBudget ?? DEFAULT_LANE_BANNER_BUDGET,
     },
     ...(effectiveAi ? { ai: effectiveAi } : {}),
     ...(mergedProviders ? { providers: mergedProviders } : {}),

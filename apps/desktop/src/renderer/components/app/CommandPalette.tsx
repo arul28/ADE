@@ -69,6 +69,12 @@ import { ProjectActionSuccess } from "../projects/ProjectActionSuccess";
 import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { ReadmeMarkdown } from "./ReadmeMarkdown";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
+import {
+  SETTINGS_ENTRIES,
+  SETTINGS_TABS,
+  settingsEntryPath,
+  settingsTabLabel,
+} from "../settings/settingsManifest";
 
 export type CommandPaletteIntent =
   | "default"
@@ -92,6 +98,8 @@ type Command = {
   id: string;
   title: string;
   hint?: string;
+  /** Extra search terms that widen matching without being rendered. */
+  keywords?: string[];
   shortcut?: string;
   group?: string;
   closeOnRun?: boolean;
@@ -639,55 +647,27 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/settings"),
       },
-      {
-        id: "go-settings-general",
-        title: "Go to General Settings",
-        hint: "Setup reminder, app info",
+      // One command per settings *tab*, generated from the manifest.
+      ...SETTINGS_TABS.map((tab) => ({
+        id: `go-settings-${tab.id}`,
+        title: `Go to ${tab.label}`,
+        hint: tab.description,
         group: "Settings",
-        run: () => navigate("/settings?tab=general"),
-      },
-      {
-        id: "go-settings-appearance",
-        title: "Go to Appearance",
-        hint: "Theme, chat font size, chat notifications",
+        run: () => navigate(`/settings?tab=${tab.id}`),
+      })),
+      // ...and one per individual setting, so Cmd-K "rebase" finds the
+      // auto-rebase toggle rather than only commits that mention rebasing.
+      // Each lands on its own card via the manifest's anchor.
+      ...SETTINGS_ENTRIES.map((entry) => ({
+        id: `setting-${entry.id}`,
+        title: entry.label,
+        hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
         group: "Settings",
-        run: () => navigate("/settings?tab=appearance"),
-      },
-      {
-        id: "go-settings-ai",
-        title: "Go to AI Connections",
-        hint: "Providers, models, sign-in",
-        group: "Settings",
-        run: () => navigate("/settings?tab=ai"),
-      },
-      {
-        id: "go-settings-secrets",
-        title: "Go to Secrets",
-        hint: "Encrypted project secrets for agents",
-        group: "Settings",
-        run: () => navigate("/settings?tab=secrets"),
-      },
-      {
-        id: "go-settings-background-jobs",
-        title: "Go to Background Jobs",
-        hint: "AI-powered automations: summaries, PR descriptions, commit messages",
-        group: "Settings",
-        run: () => navigate("/settings?tab=background-jobs"),
-      },
-      {
-        id: "go-settings-connections",
-        title: "Go to Connections",
-        hint: "GitHub and Linear setup in General settings",
-        group: "Settings",
-        run: () => navigate("/settings?tab=general#github-connection"),
-      },
-      {
-        id: "go-settings-usage",
-        title: "Go to Stats",
-        hint: "AI usage, cost breakdown, GitHub activity",
-        group: "Settings",
-        run: () => navigate("/settings?tab=stats"),
-      },
+        // Keywords never render; they widen what the palette's own filter
+        // matches on, so "telemetry" reaches "Product analytics".
+        keywords: entry.keywords,
+        run: () => navigate(settingsEntryPath(entry)),
+      })),
       {
         id: "action-create-lane",
         title: "Create Lane",
@@ -809,7 +789,8 @@ export function CommandPalette({
     return commands.filter(
       (command) =>
         command.title.toLowerCase().includes(needle) ||
-        (command.hint ?? "").toLowerCase().includes(needle),
+        (command.hint ?? "").toLowerCase().includes(needle) ||
+        (command.keywords ?? []).some((keyword) => keyword.toLowerCase().includes(needle)),
     );
   }, [commands, q]);
 

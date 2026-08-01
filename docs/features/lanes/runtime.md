@@ -45,10 +45,9 @@ Renderer surfaces:
 | Component | Role |
 |-----------|------|
 | `renderer/components/lanes/LaneEnvInitProgress.tsx` | Per-step env init progress inside `CreateLaneDialog` |
-| `renderer/components/settings/ProxyAndPreviewSection.tsx` | Settings surface for proxy start/stop, OAuth redirect setup |
-| `renderer/components/settings/DiagnosticsDashboardSection.tsx` | Global diagnostics view |
+| `renderer/components/settings/storage/StorageDiagnostics.tsx` | Diagnostics view, inside Settings > Storage & Diagnostics |
 | `renderer/components/settings/LaneTemplatesSection.tsx` | Template management |
-| `renderer/components/settings/LaneBehaviorSection.tsx` | Auto-rebase + cleanup policy |
+| `renderer/components/settings/LaneBehaviorSection.tsx` | New-lane base, auto-rebase, rebase-suggestion display (off/badge/banner) + threshold. Cleanup policy lives in `StorageSection.tsx`. |
 
 ## Environment initialization (W1)
 

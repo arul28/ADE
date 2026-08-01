@@ -211,22 +211,35 @@ Renderer — onboarding:
 Renderer — settings:
 
 - `apps/desktop/src/renderer/components/app/SettingsPage.tsx` — tab
-  container. The current top-level sections are General, Appearance,
-  AI Connections, Secrets, Background Jobs, Lane Templates, Storage, and
-  Stats. Legacy
-  `workspace`, `project`, `context`, `integrations`, `github`, and
-  `linear` deep links land in General; `providers` lands in AI
-  Connections; `automations` lands in Background Jobs; `disk` lands in
-  Storage. Welcome video
-  replay and help preferences live under the Help menu in the top bar,
-  not as a Settings tab.
-- `apps/desktop/src/renderer/components/settings/GeneralSection.tsx`
-  — consolidated general preferences: GitHub and Linear connections,
-  privacy-bounded product analytics, voice input, launch-prompt clipboard,
-  agent completion sound, automatic update installation, PR chat transcript
-  gists, project `.ade` health, and environment
-  (About + compact `AdeCliSection`). Each block uses
-  `SettingsSectionShell` for a branded header. Deep links:
+  container. It renders; it does not decide. Tabs, ordering, deep-link
+  resolution, and search all resolve through
+  `settings/settingsManifest.ts`, which is also what generates the Cmd-K
+  entries. The nine tabs are General, Appearance, Agents & Models,
+  Lanes & Git, Integrations, Notifications & Sound, Secrets,
+  Storage & Diagnostics, and Stats. Every tab id ADE has ever shipped in
+  a URL still resolves via `LEGACY_TAB_ALIASES`
+  (`settingsManifest.test.ts` asserts this); the one exception is
+  `keybindings`, dropped because it pointed at a tab with no keybindings
+  UI. Welcome video replay and help preferences live under the Help menu
+  in the top bar, not as a Settings tab.
+- `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
+  the registry. One `SettingEntry` per setting (`id`, `label`,
+  `keywords`, `tab`, `anchor`, `scope`, `group`). Add a setting here and
+  it becomes navigable, searchable, and deep-linkable at once.
+- `apps/desktop/src/renderer/components/settings/primitives/` — the
+  control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
+  `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,
+  `useSavedFlash`). There is **no Save button anywhere in settings**:
+  every control persists on change and reports via `SavedFlash`.
+  `ScopeChip` (Team / This Mac / This app) is shown only where the
+  backing store would surprise — clicking it names the file and who it
+  affects.
+- `GeneralSection.tsx` and `EnvironmentSection.tsx` were dissolved in the
+  IA rewrite — General was a flat stack of 11 unrelated sections, and
+  `EnvironmentSection` was App version + ADE CLI (now in General and
+  Integrations), not environment variables. `ProxyAndPreviewSection.tsx`
+  and `DiagnosticsDashboardSection.tsx` were deleted outright: 1,641
+  lines imported by nothing. Legacy deep links:
   `#github-connection`, `#linear-connection`, `#voice-input`,
   `#chat-launch-clipboard`, `#agent-completion-sound`,
   `#auto-updates`, `#pr-chat-transcripts`.
@@ -308,12 +321,14 @@ Renderer — settings:
   and GitHub autolink setup. Embedded inside General.
 - `apps/desktop/src/renderer/components/settings/PrChatTranscriptsSection.tsx`
   — toggles `prTranscriptGists.enabled` in project local config.
-- `apps/desktop/src/renderer/components/settings/EnvironmentSection.tsx`
-  — About (version, runtime) plus compact ADE CLI install surface.
+- `apps/desktop/src/renderer/components/settings/AboutSection.tsx`
+  — About (version, runtime); rendered in General.
+  `AdeCliSection.tsx` is rendered in Integrations. The
+  `EnvironmentSection.tsx` wrapper that used to pair them is gone.
 - `apps/desktop/src/renderer/components/settings/settingsSectionUi.tsx`
   — shared section headers (`SettingsSectionShell`) and toggle styling.
 - `apps/desktop/src/renderer/components/settings/AppearanceSection.tsx`
-  — theme and chat appearance preferences. Renders `ChatAppearancePreview`
+  — theme, chat appearance, and terminal text. Renders `ChatAppearancePreview`
   and writes local user preferences through `appStore` (font size,
   transcript density, chrome tint, shell geometry, user minimap, and the
   default-on prompt-stash bookmark visibility; hiding the bookmark leaves
@@ -336,7 +351,7 @@ Renderer — settings:
   — surfaces `window.ade.adeCli.getStatus()` / `installForUser()`.
   Status carries `terminalInstalled`, `agentPathReady`,
   `bundledAvailable`, and the resolved `installTargetPath` for the
-  bundled `ade` binary. In compact form (used by `GeneralSection` and
+  bundled `ade` binary. In compact form (used by the Integrations tab and
   the onboarding `DevToolsSection`) it shows the current install
   path, an Install / Repair button that runs the platform
   install-path helper, and an "Add to PATH" hint when the install
@@ -574,10 +589,11 @@ Renderer — settings:
   theme)` returns a per-provider brand color (Claude's rust family, distinct
   hues for the other providers) with a deterministic hashed fallback for
   unknown providers.
-- `apps/desktop/src/renderer/components/settings/ProxyAndPreviewSection.tsx`
-  — proxy/preview configuration UI.
-- `apps/desktop/src/renderer/components/settings/DiagnosticsDashboardSection.tsx`
-  — runtime diagnostics.
+Diagnostics are rendered inside `StorageSection.tsx`
+(`storage/StorageDiagnostics.tsx`) under Storage & Diagnostics. The
+standalone `ProxyAndPreviewSection.tsx` and
+`DiagnosticsDashboardSection.tsx` files were imported by nothing and have
+been deleted.
 
 Auto-update (General preference, top-bar control, and exceptional recovery
 banner):
@@ -747,7 +763,7 @@ the General settings tab via `AdeCliSection`:
    delegates to the platform helper script bundled with the desktop
    (`/Applications/ADE.app/Contents/Resources/ade-cli/install-path.sh`
    on macOS, equivalents on other platforms). The compact form embedded
-   in `GeneralSection` and the onboarding `DevToolsSection` shows the
+   in the Integrations tab and the onboarding `DevToolsSection` shows the
    current install path, an Install / Repair button, and an "Add to
    PATH" hint when the install target is not on the user's `$PATH`.
 5. Register projects with the runtime. Opening a project on desktop
@@ -806,21 +822,31 @@ changing rather than which service backs it:
 
 | Tab | Section file | What lives here |
 |---|---|---|
-| General | `GeneralSection.tsx` (GitHub/Linear connections, product analytics, voice input, launch prompts, completion sound, PR transcripts, project files, environment) | Consolidated day-to-day preferences and integrations. Product analytics exposes only status and the machine-wide opt-out. GitHub and Linear auth live here (not a separate Integrations tab). Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` redirect to General with hash anchors (`#github-connection`, `#linear-connection`). Also receives `?tab=onboarding`, `?tab=help`, `?tab=tours`, and `?tab=keybindings` via `TAB_ALIASES`. |
-| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, code-block copy-button position, chat font size, transcript density, chrome tint, shell geometry, the user-message minimap toggle, and the default-on prompt-stash bookmark visibility. Hiding the bookmark does not disable Cmd/Ctrl+S. Persisted to `localStorage` under `ade.userPreferences.v1`. |
-| AI Connections | `ProvidersSection.tsx`, `OAuthConnectModal.tsx` | Two groups: **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access** (models.dev catalog freshness + Subscriptions/OAuth & Kimi, API Provider Keys incl. Moonshot AI, a searchable ~160-provider chip cloud, Local Model Servers, and Advanced custom providers/model slugs). Subscription connects run through `OAuthConnectModal`; custom providers/slugs persist to `ai.customProviders` / `ai.customModelSlugs`. When Claude is installed but unauthenticated, the shared `Login to Claude` CTA opens a primary-lane terminal running `claude auth login` and navigates to Work. Legacy `?tab=providers` lands here. |
-| Background Jobs | `AiFeaturesSection.tsx` | AI-powered automations: summaries, PR descriptions, commit messages, auto-naming, plus project-wide scheduled-work recovery. **Pause all scheduled work** keeps Claude wakeups, cron tasks, and loops armed while suppressing `nextWakeAt`; on resume each overdue schedule runs once before cron work returns to its normal cadence. **Active scheduled work** lists KV-backed durable jobs from every chat with per-job Cancel and an explicit unavailable/error state. Legacy `?tab=automations` lands here. Each feature row has an independent reasoning-effort override (`ReasoningEffortPicker` with `useFamilyDefaults={false}`). |
-| Lane Templates | `LaneTemplatesSection.tsx`, `LaneBehaviorSection.tsx` | Lane init recipes, creation/rebase behavior, and lane lifecycle policy. |
-| Storage | `StorageSection.tsx`, `storage/StorageCleanupDialog.tsx`, `storage/StorageDiagnostics.tsx`, `storage/StorageMaintenanceJournal.tsx`, `storage/storageView.ts` | Disk-usage and lane-storage dashboard. Explains all cleanup rules in plain language and reviews archived lanes, orphaned worktrees, DerivedData, build output, and proof/attachments with ownership, age, blocked reasons, and reclaim estimates. Archive & Reclaim is typed-confirmation only and explains what remains and how restore recreates the worktree. Proof/attachments are selectable `review_first` cleanup targets; after deleting their bytes, the backend removes matching proof records. The page also includes categories and policy chips, database breakdown, storage doctor, Health & diagnostics, recent cleanups, preview-confirmed generic cleanup, and manual history compression. Reads `window.ade.storage.*`, `window.ade.projectConfig.*`, `window.ade.lanes.*`, and `window.ade.app.getRuntimeHealth`. Deep links from `?tab=storage` and `?tab=disk` (via `TAB_ALIASES`); the top-bar load pill deep-links to `?tab=storage#diagnostics` (`?tab=diagnostics` also aliases here). See [Storage and recovery](../storage-and-recovery/README.md). |
-| Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard: overview stat tiles, an activity/tokens/code/clients module, and split AI-usage and GitHub-vs-local Code & PRs panels, with project/machine scope and day/week/month/year/all ranges. Fast cached local-provider, project-DB, GitHub, and cross-client activity. Deep links from `?tab=usage` and `?tab=stats` land here. |
+| General | `ProjectSection.tsx`, `LaunchPromptSection.tsx`, `AutoUpdatesSection.tsx`, `ProductAnalyticsSection.tsx`, `AboutSection.tsx` | Project identity, launch behavior, updates, privacy, and version info. Legacy `?tab=workspace`, `?tab=project`, `?tab=context`, `?tab=onboarding`, `?tab=help`, and `?tab=tours` land here. |
+| Appearance | `AppearanceSection.tsx` (renders `ChatAppearancePreview`) | Theme, chat typography and density, chat surface (tint, corners), chat details (copy-button position, message minimap, prompt-stash bookmark, live preview), and terminal text. Rebuilt on the primitives — the old version used `font-mono` for every prose line and four different control idioms. Persisted to `localStorage` under `ade.userPreferences.v1`. |
+| Agents & Models | `ProvidersSection.tsx`, `OAuthConnectModal.tsx`, `AiFeaturesSection.tsx`, `BudgetCapEditor.tsx`, `DictationSection.tsx` | Provider connections, model routing, background helpers, spend cap, and voice input — merged because provider auth and per-task model routing are one mental model. **Coding Agents** cards (Claude Code, Codex CLI, Cursor, Droid) and **OpenCode — Universal Model Access**. Background helpers cover summaries, PR descriptions, commit messages, auto-naming, and scheduled-work recovery. Legacy `?tab=ai`, `?tab=providers`, `?tab=background-jobs`, and `?tab=automations` land here. |
+| Lanes & Git | `LaneBehaviorSection.tsx`, `LaneTemplatesSection.tsx`, `PrChatTranscriptsSection.tsx` | How lanes start (`new lane base`), stay current (`auto-rebase`), and tell you they fell behind (`rebase suggestions` off/badge/banner + min-behind threshold), plus lane init recipes and PR transcript gists. Legacy `?tab=lane-templates` lands here. |
+| Integrations | `GitHubIntegrationSection.tsx`, `LinearIntegrationSection.tsx`, `AdeCliSection.tsx` | GitHub, Linear, and the `ade` command line — reinstated as its own tab. Legacy `?tab=integrations`, `?tab=github`, and `?tab=linear` land here, as does `?integration=github|linear|cli`. |
+| Notifications & Sound | `NotificationsSection.tsx`, `AgentCompletionSoundSection.tsx` | The canonical home for `AttentionPreferences`. Per-event delivery policy (off / ambient / notify) for agent and PR events, quiet hours, focus suppression, phone delivery and escalation, previews, sounds, celebrations, the attention notch, and the Lanes banner budget. The per-event matrix and quiet hours were fully modelled with balanced defaults but had **no UI at all** before this tab. The header `AttentionSettingsPopover` is now three quick toggles that point here. |
+| Secrets | `SecretsSection.tsx` | Encrypted key/value pairs for agents, desktop, and the CLI, with `.env` import. Legacy `?tab=secret` lands here. |
+| Storage & Diagnostics | `StorageSection.tsx`, `storage/*`, `SessionLifecycleSection.tsx` | Disk-usage and lane-storage dashboard, lane storage rules, session lifecycle, and diagnostics. Rule fields now show the value actually in force with an explicit "Inherited" marker instead of an empty box whose real value hid in the placeholder. Legacy `?tab=disk` and `?tab=diagnostics` land here. See [Storage and recovery](../storage-and-recovery/README.md). |
+| Stats | `AdeUsageSection.tsx`, `ActivityModule.tsx`, `providerColors.ts` | Usage page with live Limits plus a sectioned Activity dashboard. Legacy `?tab=usage` and `?tab=ade-usage` land here. |
 
 > Live provider quota windows and automation guardrails live in the top-bar Usage popup (`HeaderUsageControl.tsx` → `UsageQuotaPanel.tsx` + collapsible `BudgetCapEditor`) and Settings > Usage > Limits. The Activity tab is the retrospective cross-client dashboard.
 
 
-The Settings page itself (`SettingsPage.tsx`) has a legacy alias
-table (`TAB_ALIASES`) that forwards deep links (`?tab=context`,
-`?tab=providers`, `?tab=github`, etc.) to the correct section after
-the consolidation that collapsed many top-level tabs into sub-sections.
+Legacy deep links are forwarded by `LEGACY_TAB_ALIASES` /
+`LEGACY_HASH_ALIASES` in `settingsManifest.ts` (previously `TAB_ALIASES`
+and `HASH_TARGET_SECTIONS` in `SettingsPage.tsx`). A legacy route that
+silently resolves to the wrong page is invisible in review, so
+`settingsManifest.test.ts` asserts that every tab id ADE has shipped
+still resolves and that every hash alias points at a live entry.
+
+Settings search lives in the content header and filters cards in place
+via the `data-settings-anchor` each card carries; a group whose cards all
+filter out hides its heading too. Cmd-K entries are generated from the
+same manifest — one per tab plus one per setting — so searching "rebase"
+surfaces *Auto-rebase child lanes — Lanes & Git* and lands on that card.
 
 ### Where durable data lives
 

@@ -386,6 +386,16 @@ export type AppNavigationTarget =
       prNumber?: number | null;
     }
   | {
+      /**
+       * A settings tab, optionally anchored at a specific setting. Lets
+       * surfaces outside the router tree (the attention popover, the notch)
+       * hand off to Settings without taking a `useNavigate` dependency.
+       */
+      kind: "settings";
+      tab?: string | null;
+      anchor?: string | null;
+    }
+  | {
       kind: "linear-issue";
       // Linear coding-tool hand-off. The renderer resolves the actual lane
       // by looking up lane.linearIssue.identifier; if no lane matches, the

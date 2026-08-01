@@ -265,7 +265,9 @@ per-lane:  http://<slug>.localhost:<proxyPort>/oauth/callback
             (listed for every currently active route)
 ```
 
-The `ProxyAndPreviewSection` settings panel surfaces these via
+These are exposed only through IPC — the `ProxyAndPreviewSection` panel
+that used to surface them was unreachable dead code and has been deleted.
+The IPC surface is unchanged:
 "Copy Redirect URIs" buttons so the user can paste them into the
 provider's console.
 

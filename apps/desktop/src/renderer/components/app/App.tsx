@@ -11,6 +11,7 @@ import {
 import { useShallow } from "zustand/react/shallow";
 
 import { AppShell } from "./AppShell";
+import { resolveSettingsTab } from "../settings/settingsManifest";
 import {
   InboundDeeplinkModal,
   type InboundDeeplinkDispatchOptions,
@@ -1202,6 +1203,21 @@ function AppNavigationBridge() {
       // History does not expose a stable focused-artifact URL yet; route to the
       // local proof/history surface optimistically.
       navigate("/history");
+      return true;
+    }
+
+    if (target.kind === "settings") {
+      // Lets surfaces outside the router tree (the attention popover, the
+      // notch) open a settings tab — and land on a specific card — without
+      // taking a `useNavigate` dependency. Unknown tabs fall back to the
+      // settings root rather than 404-ing to General.
+      const tab = resolveSettingsTab(target.tab ?? null);
+      const anchor = target.anchor?.trim();
+      navigate({
+        pathname: "/settings",
+        search: tab ? `?tab=${tab}` : "",
+        hash: anchor ? `#${anchor}` : "",
+      });
       return true;
     }
 

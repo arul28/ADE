@@ -30,6 +30,7 @@ import type {
   LaneCleanupConfig,
   LaneReclaimRisk,
 } from "../../../shared/types";
+import { ScopeChip, SettingsNumber } from "./primitives";
 import { relativeWhen } from "../../lib/format";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced } from "../../lib/resourcePressure";
 import {
@@ -689,65 +690,102 @@ function StoragePolicyPanel({
   effectiveValue,
   busy,
   onChange,
-  onSave,
 }: {
   value: LaneCleanupConfig;
   effectiveValue: LaneCleanupConfig;
   busy: boolean;
+  /** Persists immediately (debounced) — there is no Save button. */
   onChange: (value: LaneCleanupConfig) => void;
-  onSave: () => void;
 }) {
+  /**
+   * These rules are three-state: unset (inherit from shared config), 0 (a
+   * sentinel meaning "no limit" / "never"), or a real count. The old UI
+   * rendered unset as an *empty box* with the inherited value only in the
+   * placeholder, so "inherited 24" and "you typed nothing" looked identical
+   * and you could never read the value actually in force. Now the field always
+   * shows the number in effect, and says where it came from.
+   */
   const field = (
     key: keyof Pick<LaneCleanupConfig, "maxActiveLanes" | "autoArchiveAfterHours" | "cleanupIntervalHours" | "reclaimArchivedAfterHours">,
     label: string,
     help: string,
-    placeholder: string,
+    sentinelLabel: string,
+    suffix: string,
   ) => {
+    const local = value[key];
     const inherited = effectiveValue[key];
-    const effectiveHelp = value[key] == null && inherited != null
-      ? `${help} Current inherited value: ${inherited}.`
-      : help;
+    const shown = local ?? inherited ?? 0;
+    const isInherited = local == null;
     return (
-    <label style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-      <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, fontWeight: 650, color: COLORS.textPrimary }}>{label}</span>
-      <input
-        type="number"
-        min={0}
-        value={value[key] ?? ""}
-        placeholder={inherited != null ? `Inherited: ${inherited}` : placeholder}
-        onChange={(event) => onChange({
-          ...value,
-          [key]: event.target.value ? Math.max(0, Math.floor(Number(event.target.value))) : undefined,
-        })}
-        style={{
-          height: 34,
-          borderRadius: 8,
-          border: `1px solid ${COLORS.outlineBorder}`,
-          background: COLORS.recessedBg,
-          color: COLORS.textPrimary,
-          padding: "0 10px",
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          outline: "none",
-        }}
-      />
-      <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{effectiveHelp}</span>
-    </label>
+      <div key={key} style={{ display: "flex", flexDirection: "column", gap: 6, minWidth: 0 }}>
+        <span style={{ fontFamily: SANS_FONT, fontSize: 11.5, fontWeight: 650, color: COLORS.textPrimary }}>
+          {label}
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <SettingsNumber
+            ariaLabel={label}
+            value={shown}
+            min={0}
+            suffix={suffix}
+            sentinelLabel={sentinelLabel}
+            sentinelValue={0}
+            onChange={(next) => onChange({ ...value, [key]: Math.max(0, Math.floor(next)) })}
+          />
+          {isInherited ? (
+            <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, color: COLORS.textDim }}>Inherited</span>
+          ) : (
+            <button
+              type="button"
+              onClick={() => onChange({ ...value, [key]: undefined })}
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 10.5,
+                color: COLORS.textDim,
+                background: "none",
+                border: "none",
+                padding: 0,
+                cursor: "pointer",
+                textDecoration: "underline",
+              }}
+            >
+              Reset to inherited
+            </button>
+          )}
+        </div>
+        <span style={{ fontFamily: SANS_FONT, fontSize: 10.5, lineHeight: 1.45, color: COLORS.textMuted }}>{help}</span>
+      </div>
     );
   };
+
   return (
-    <section style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 14 }}>
-      <div>
-        <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>Lane storage rules</h3>
-        <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
-          ADE can archive lanes when they are safely idle. It never removes lane folders in the background.
-        </p>
+    <section
+      id="lane-storage-rules"
+      data-settings-anchor="lane-storage-rules"
+      style={{ ...PANEL_STYLE, display: "flex", flexDirection: "column", gap: 14 }}
+    >
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <h3 style={{ margin: 0, fontFamily: SANS_FONT, fontSize: 14, color: COLORS.textPrimary }}>
+              Lane storage rules
+            </h3>
+            <ScopeChip scope="team" />
+          </div>
+          <p style={{ margin: "5px 0 0", fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.5, color: COLORS.textMuted }}>
+            ADE can archive lanes when they are safely idle. It never removes lane folders in the background.
+          </p>
+        </div>
+        {busy ? (
+          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textDim, whiteSpace: "nowrap" }}>
+            Saving…
+          </span>
+        ) : null}
       </div>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 14 }}>
-        {field("maxActiveLanes", "Maximum active lanes", "0 means no limit. Only clean, merged, idle lanes can be archived.", "No limit")}
-        {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it. 0 means never.", "Never")}
-        {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates this review list.", "Disabled")}
-        {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for your review. ADE still waits for confirmation.", "Never")}
+        {field("maxActiveLanes", "Maximum active lanes", "Only clean, merged, idle lanes can be archived.", "No limit", "lanes")}
+        {field("autoArchiveAfterHours", "Archive after inactivity", "Hours without lane activity before ADE may archive it.", "Never", "hours")}
+        {field("cleanupIntervalHours", "Check every", "Hours between safety scans. A scan only archives eligible lanes and updates the review list.", "Disabled", "hours")}
+        {field("reclaimArchivedAfterHours", "Review archived files after", "Hours before archived lane folders are marked ready for review. ADE still waits for confirmation.", "Never", "hours")}
       </div>
       <details style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
         <summary style={{ cursor: "pointer", color: COLORS.textSecondary }}>What counts as safe?</summary>
@@ -756,11 +794,6 @@ function StoragePolicyPanel({
           Attached folders and the primary lane are always left alone.
         </div>
       </details>
-      <div>
-        <button type="button" onClick={onSave} disabled={busy} style={{ ...primaryButton({ height: 32 }), opacity: busy ? 0.65 : 1 }}>
-          {busy ? "Saving…" : "Save storage rules"}
-        </button>
-      </div>
     </section>
   );
 }
@@ -989,6 +1022,7 @@ export function StorageSection() {
   const [reclaimBusy, setReclaimBusy] = React.useState(false);
   const [toast, setToast] = React.useState<string | null>(null);
   const toastTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const policySaveTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const compressNow = React.useMemo(() => getCompressNow(), []);
   const runMaintenanceNow = React.useMemo(() => getRunMaintenanceNow(), []);
@@ -1051,6 +1085,8 @@ export function StorageSection() {
     void loadDiagnostics();
     return () => {
       if (toastTimer.current) clearTimeout(toastTimer.current);
+      // Flush a pending rule edit rather than dropping it on unmount.
+      if (policySaveTimer.current) clearTimeout(policySaveTimer.current);
     };
   }, [load, loadDiagnostics]);
 
@@ -1083,22 +1119,35 @@ export function StorageSection() {
     }
   }, [runMaintenanceNow, maintenanceBusy, showToast, load, loadDiagnostics]);
 
-  const savePolicy = React.useCallback(async () => {
+  const savePolicy = React.useCallback(async (next: LaneCleanupConfig) => {
     setPolicyBusy(true);
     try {
       const current = await window.ade.projectConfig.get();
       await window.ade.projectConfig.save({
         shared: current.shared,
-        local: { ...current.local, laneCleanup: policy },
+        local: { ...current.local, laneCleanup: next },
       });
-      showToast("Storage rules saved.");
       void load({ force: true, silent: true });
     } catch (err) {
       showToast(err instanceof Error ? err.message : "Could not save storage rules");
     } finally {
       setPolicyBusy(false);
     }
-  }, [load, policy, showToast]);
+  }, [load, showToast]);
+
+  /**
+   * Storage rules save as you edit — there is no Save button anywhere in
+   * settings. The debounce is so typing "120" doesn't write 1, then 12, then
+   * 120; the field stays responsive because local state updates immediately.
+   */
+  const commitPolicy = React.useCallback((next: LaneCleanupConfig) => {
+    setPolicy(next);
+    if (policySaveTimer.current) clearTimeout(policySaveTimer.current);
+    policySaveTimer.current = setTimeout(() => {
+      policySaveTimer.current = null;
+      void savePolicy(next);
+    }, 600);
+  }, [savePolicy]);
 
   const openReclaim = React.useCallback(async (laneId: string) => {
     try {
@@ -1223,8 +1272,7 @@ export function StorageSection() {
               value={policy}
               effectiveValue={effectivePolicy}
               busy={policyBusy}
-              onChange={setPolicy}
-              onSave={() => void savePolicy()}
+              onChange={commitPolicy}
             />
 
             <StorageReviewPanel

@@ -38,7 +38,10 @@ export function SettingsSectionShell({
   children: React.ReactNode;
 }) {
   return (
-    <section id={id}>
+    // `data-settings-anchor` mirrors the id so shell-based sections take part
+    // in settings search and Cmd-K landing like `SettingsCard` does. Without
+    // it they stay visible through every filter and can't be deep-linked to.
+    <section id={id} data-settings-anchor={id}>
       <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 16 }}>
         <div
           style={{

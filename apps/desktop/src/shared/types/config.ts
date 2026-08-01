@@ -238,6 +238,33 @@ export const NO_DEFAULT_LANE_TEMPLATE = "__ade_none__";
 
 export type NewLaneBaseSource = "local" | "remote";
 
+/** How ADE surfaces a lane that has fallen behind its parent branch. */
+export type RebaseSuggestionDisplay = "off" | "badge" | "banner";
+
+export const DEFAULT_REBASE_SUGGESTIONS: RebaseSuggestionDisplay = "banner";
+/** One commit behind is enough to suggest, matching the pre-setting behavior. */
+export const DEFAULT_REBASE_SUGGESTION_MIN_BEHIND = 1;
+/** Lanes used to stack two full-width strips unconditionally. */
+export const DEFAULT_LANE_BANNER_BUDGET = 2;
+
+/**
+ * The fully-defaulted `git` block of an effective config. Use this when
+ * building an `EffectiveProjectConfig` (including in tests) so adding a git
+ * setting doesn't require editing every fixture that never cared about it.
+ */
+export function defaultEffectiveGitConfig(
+  overrides: Partial<EffectiveProjectConfig["git"]> = {},
+): EffectiveProjectConfig["git"] {
+  return {
+    autoRebaseOnHeadChange: false,
+    newLaneBaseSource: "remote",
+    rebaseSuggestions: DEFAULT_REBASE_SUGGESTIONS,
+    rebaseSuggestionMinBehind: DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+    laneBannerBudget: DEFAULT_LANE_BANNER_BUDGET,
+    ...overrides,
+  };
+}
+
 /** IPC args for listing templates */
 export type ListLaneTemplatesArgs = Record<string, never>;
 
@@ -1401,6 +1428,17 @@ export type ProjectConfigFile = {
   git?: {
     autoRebaseOnHeadChange?: boolean;
     newLaneBaseSource?: NewLaneBaseSource;
+    /**
+     * How a lane that has fallen behind its parent is surfaced.
+     * `banner` (default) is the full-width strip above the lane list,
+     * `badge` is a count chip on the lane row itself, `off` stops the
+     * suggestion scan entirely.
+     */
+    rebaseSuggestions?: RebaseSuggestionDisplay;
+    /** Don't suggest a rebase until the lane is at least this far behind. */
+    rebaseSuggestionMinBehind?: number;
+    /** Most banners allowed to stack above the Lanes list at once. */
+    laneBannerBudget?: number;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */
@@ -1439,6 +1477,9 @@ export type EffectiveProjectConfig = {
   git: {
     autoRebaseOnHeadChange: boolean;
     newLaneBaseSource: NewLaneBaseSource;
+    rebaseSuggestions: RebaseSuggestionDisplay;
+    rebaseSuggestionMinBehind: number;
+    laneBannerBudget: number;
   };
   ai?: AiConfig;
   /** Default lane environment initialization config */

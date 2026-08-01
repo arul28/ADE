@@ -3,6 +3,11 @@ import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
 import type { createLaneService } from "./laneService";
 import type { LaneSummary, RebaseSuggestion, RebaseSuggestionsEventPayload, RebaseTargetCommit } from "../../../shared/types";
+import {
+  DEFAULT_REBASE_SUGGESTIONS,
+  DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+  type RebaseSuggestionDisplay,
+} from "../../../shared/types/config";
 import { branchNameFromLaneRef, shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { isRecord, nowIso } from "../shared/utils";
@@ -97,8 +102,26 @@ export function createRebaseSuggestionService(args: {
   projectRoot: string;
   laneService: ReturnType<typeof createLaneService>;
   onEvent?: (event: RebaseSuggestionsEventPayload) => void;
+  /**
+   * Reads the effective `git.rebaseSuggestions` / `rebaseSuggestionMinBehind`
+   * settings. Optional so existing callers and tests keep the historical
+   * behavior (banner, suggest at 1 commit behind) without wiring config.
+   */
+  getSuggestionPolicy?: () => { display: RebaseSuggestionDisplay; minBehind: number };
 }) {
-  const { db, logger, projectId, projectRoot, laneService, onEvent } = args;
+  const { db, logger, projectId, projectRoot, laneService, onEvent, getSuggestionPolicy } = args;
+
+  const suggestionPolicy = (): { display: RebaseSuggestionDisplay; minBehind: number } => {
+    try {
+      return getSuggestionPolicy?.() ?? {
+        display: DEFAULT_REBASE_SUGGESTIONS,
+        minBehind: DEFAULT_REBASE_SUGGESTION_MIN_BEHIND,
+      };
+    } catch {
+      // A config read must never take the Lanes list down with it.
+      return { display: DEFAULT_REBASE_SUGGESTIONS, minBehind: DEFAULT_REBASE_SUGGESTION_MIN_BEHIND };
+    }
+  };
 
   const getPrLaneIds = (): Set<string> => {
     const rows = db.all<{ lane_id: string }>(
@@ -267,6 +290,12 @@ export function createRebaseSuggestionService(args: {
 
   const computeSuggestions = async (options: ListSuggestionsOptions = {}): Promise<RebaseSuggestion[]> => {
     const startedAt = Date.now();
+    const policy = suggestionPolicy();
+    // "off" skips the whole scan, not just the banner. Suggestions are one of
+    // the expensive decorations on the lane snapshot path (remote-tracking
+    // fetch + per-lane behind-count), so hiding them in the renderer would
+    // keep paying for work nobody asked for.
+    if (policy.display === "off") return [];
     const lanes = options.lanes ?? await laneService.list({ includeArchived: false });
     const laneById = new Map(lanes.map((lane) => [lane.id, lane] as const));
     const primaryParentHeadByBranch = new Map<string, string | null>();
@@ -315,6 +344,8 @@ export function createRebaseSuggestionService(args: {
         baseHeadSha: base.parentHeadSha,
       }));
       if (behindCount <= 0) return null;
+      // Below the user's threshold this lane isn't worth mentioning at all.
+      if (behindCount < policy.minBehind) return null;
 
       const existing = await timePhase("load_state", () => loadState(lane.id));
 

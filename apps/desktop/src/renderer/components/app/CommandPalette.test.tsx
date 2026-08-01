@@ -1040,4 +1040,49 @@ describe("CommandPalette", () => {
       });
     });
   });
+
+  it("finds an individual setting by name and routes to its card", async () => {
+    // The palette used to carry eight hardcoded "Go to X Settings" commands and
+    // nothing per-setting, so searching "rebase" surfaced commits and PRs but
+    // never the auto-rebase toggle. Entries are now generated from the settings
+    // manifest, one per setting, each landing on its own anchor.
+    seedStore();
+    render(
+      <MemoryRouter>
+        <LocationProbe />
+        <CommandPalette open intent="command" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(
+      "Search commands, projects, and threads…",
+    );
+    fireEvent.change(input, { target: { value: "rebase" } });
+
+    const entry = await screen.findByText("Auto-rebase child lanes");
+    expect(entry).toBeTruthy();
+    fireEvent.click(entry);
+
+    await waitFor(() => {
+      expect(screen.getByTestId("location").textContent).toBe("/settings?tab=lanes-git");
+    });
+  });
+
+  it("matches a setting by keyword when its label does not contain the query", async () => {
+    // Keywords widen matching without being rendered, so "telemetry" reaches
+    // "Product analytics".
+    seedStore();
+    render(
+      <MemoryRouter>
+        <CommandPalette open intent="command" onOpenChange={vi.fn()} />
+      </MemoryRouter>,
+    );
+
+    const input = await screen.findByPlaceholderText(
+      "Search commands, projects, and threads…",
+    );
+    fireEvent.change(input, { target: { value: "telemetry" } });
+
+    expect(await screen.findByText("Product analytics")).toBeTruthy();
+  });
 });

@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useReducedMotion } from "motion/react";
 import {
+  ArrowSquareOut,
   ArrowsOutSimple,
   BellRinging,
   Check,
@@ -31,6 +32,7 @@ import {
   writeAttentionNotchPresentation,
 } from "./attentionNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
+import { navigateToAppTarget } from "../../lib/openExternal";
 
 const DESKTOP_FIRST_OPTIONS = [
   { value: 0, label: "Immediately" },
@@ -360,7 +362,7 @@ export function AttentionSettingsPopover() {
             ) : (
               <>
                 <section>
-                  <h3>Surfaces</h3>
+                  <h3>Quick toggles</h3>
                   <ToggleRow
                     icon={Notches}
                     label="ADE Notch"
@@ -369,89 +371,14 @@ export function AttentionSettingsPopover() {
                     checked={notchEnabled}
                     onChange={setNotchEnabled}
                   />
-                  <label
-                    className="attention-settings-delay"
-                    data-disabled={!notchEnabled || undefined}
-                  >
-                    <span className="attention-settings-row-icon" aria-hidden>
-                      <CursorClick size={16} weight="duotone" />
-                    </span>
-                    <span className="attention-settings-row-copy">
-                      <span><strong>Notch behavior</strong></span>
-                      <em>{NOTCH_REVEAL_HELP[notchPresentation.revealMode]}</em>
-                    </span>
-                    <select
-                      aria-label="Notch behavior"
-                      value={notchPresentation.revealMode}
-                      disabled={!notchEnabled}
-                      onChange={(event) => {
-                        const revealMode = event.target.value;
-                        if (!isAttentionNotchRevealMode(revealMode)) return;
-                        setNotchPresentation((current) => ({ ...current, revealMode }));
-                      }}
-                    >
-                      {NOTCH_REVEAL_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
                   <ToggleRow
-                    icon={ArrowsOutSimple}
-                    label="Expanded panel"
-                    description="Let a click open the tall panel. Off keeps the notch clear of the menu bar."
-                    disabled={!notchEnabled}
-                    checked={notchPresentation.expandedPanelEnabled}
-                    onChange={(expandedPanelEnabled) =>
-                      setNotchPresentation((current) => ({ ...current, expandedPanelEnabled }))}
-                  />
-                  <ToggleRow
-                    icon={BellRinging}
+                    icon={DeviceMobile}
                     label="Phone notifications"
-                    description="Send only events whose policy is set to notify."
+                    description="Send notify-level events to the ADE app on your phone."
                     checked={preferences.account.notificationsEnabled}
                     onChange={(notificationsEnabled) =>
                       updateAccount({ notificationsEnabled })}
                   />
-                  <ToggleRow
-                    icon={DeviceMobile}
-                    label="Live Activities"
-                    description="Show focused work on iPhone and Dynamic Island."
-                    checked={preferences.account.liveActivitiesEnabled}
-                    onChange={(liveActivitiesEnabled) =>
-                      updateAccount({ liveActivitiesEnabled })}
-                  />
-                </section>
-
-                <section>
-                  <h3>Delivery</h3>
-                  <label
-                    className="attention-settings-delay"
-                    data-disabled={!preferences.account.notificationsEnabled || undefined}
-                  >
-                    <span className="attention-settings-row-icon" aria-hidden>
-                      <HourglassMedium size={16} weight="duotone" />
-                    </span>
-                    <span className="attention-settings-row-copy">
-                      <span><strong>Phone escalation</strong></span>
-                      <em>How long an active desktop gets before your phone rings.</em>
-                    </span>
-                    <select
-                      aria-label="Phone escalation"
-                      value={desktopFirstDelay}
-                      disabled={!preferences.account.notificationsEnabled}
-                      onChange={(event) => {
-                        const delay = Number(event.target.value);
-                        updateAccount({
-                          desktopFirstEnabled: delay > 0,
-                          desktopFirstDelaySeconds: delay > 0 ? delay : 30,
-                        });
-                      }}
-                    >
-                      {DESKTOP_FIRST_OPTIONS.map((option) => (
-                        <option key={option.value} value={option.value}>{option.label}</option>
-                      ))}
-                    </select>
-                  </label>
                   <ToggleRow
                     icon={SpeakerHigh}
                     label="Sounds"
@@ -459,21 +386,28 @@ export function AttentionSettingsPopover() {
                     checked={preferences.account.soundsEnabled}
                     onChange={(soundsEnabled) => updateAccount({ soundsEnabled })}
                   />
-                  <ToggleRow
-                    icon={Confetti}
-                    label="Celebrations"
-                    description="Use a brief flourish for meaningful completed work."
-                    checked={preferences.account.celebrationsEnabled}
-                    onChange={(celebrationsEnabled) =>
-                      updateAccount({ celebrationsEnabled })}
-                  />
-                  <ToggleRow
-                    icon={LockKey}
-                    label="Hide previews"
-                    description="Use private summaries on the notch and phone."
-                    checked={preferences.account.hideDetails}
-                    onChange={(hideDetails) => updateAccount({ hideDetails })}
-                  />
+                  {/*
+                    The full model — per-event delivery policies, quiet hours,
+                    escalation, previews, celebrations — lives in Settings.
+                    Keeping the popover to three toggles stops the two surfaces
+                    drifting apart the way they did before.
+                  */}
+                  {/*
+                    Routed through the app navigation bus rather than
+                    `useNavigate`: the attention subtree is mounted outside the
+                    router in tests and must not take a Router dependency.
+                  */}
+                  <button
+                    type="button"
+                    className="attention-settings-open-full"
+                    onClick={() => {
+                      closePopover(true);
+                      navigateToAppTarget({ kind: "settings", tab: "notifications" });
+                    }}
+                  >
+                    All notification settings
+                    <ArrowSquareOut size={13} weight="bold" />
+                  </button>
                 </section>
               </>
             )}

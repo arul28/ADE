@@ -463,7 +463,31 @@ describe("StorageSection", () => {
     expect(document.activeElement).toBe(trigger);
   });
 
-  it("saves only local lane cleanup overrides and shows inherited values as guidance", async () => {
+  it("shows the value actually in force for an inherited rule, not an empty box", async () => {
+    installAdeMock({
+      config: {
+        shared: { laneCleanup: { autoArchiveAfterHours: 24 } },
+        local: { laneCleanup: { maxActiveLanes: 3 } },
+        effective: {
+          laneCleanup: {
+            maxActiveLanes: 3,
+            autoArchiveAfterHours: 24,
+            cleanupIntervalHours: 6,
+            reclaimArchivedAfterHours: 72,
+          },
+        },
+      },
+    });
+    render(<StorageSection />);
+
+    // Previously this rendered blank with the real value hidden in the
+    // placeholder, so "inherited 24" and "unset" were indistinguishable.
+    const inherited = await screen.findByLabelText(/Archive after inactivity/i);
+    expect((inherited as HTMLInputElement).value).toBe("24");
+    expect(screen.getAllByText("Inherited").length).toBeGreaterThan(0);
+  });
+
+  it("saves a rule edit without a Save button, and only as a local override", async () => {
     const { saveProjectConfig } = installAdeMock({
       config: {
         shared: { laneCleanup: { autoArchiveAfterHours: 24 } },
@@ -480,16 +504,17 @@ describe("StorageSection", () => {
     });
     render(<StorageSection />);
 
-    const inherited = await screen.findByLabelText(/Archive after inactivity/i);
-    expect((inherited as HTMLInputElement).value).toBe("");
-    expect((inherited as HTMLInputElement).placeholder).toBe("Inherited: 24");
-    fireEvent.click(screen.getByRole("button", { name: /save storage rules/i }));
+    const maxLanes = await screen.findByLabelText(/Maximum active lanes/i);
+    expect(screen.queryByRole("button", { name: /save storage rules/i })).toBeNull();
 
-    await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1));
-    const saved = saveProjectConfig.mock.calls[0]![0];
-    const savedLaneCleanup = saved.local.laneCleanup;
-    expect(savedLaneCleanup).toBeDefined();
-    expect(savedLaneCleanup!.maxActiveLanes).toBe(3);
+    fireEvent.change(maxLanes, { target: { value: "5" } });
+    // Writes are debounced so typing "120" doesn't save 1, then 12, then 120.
+    expect(saveProjectConfig).not.toHaveBeenCalled();
+
+    await waitFor(() => expect(saveProjectConfig).toHaveBeenCalledTimes(1), { timeout: 3000 });
+    const savedLaneCleanup = saveProjectConfig.mock.calls[0]![0].local.laneCleanup;
+    expect(savedLaneCleanup!.maxActiveLanes).toBe(5);
+    // Untouched rules stay inherited rather than being frozen as overrides.
     expect(savedLaneCleanup!.autoArchiveAfterHours).toBeUndefined();
     expect(savedLaneCleanup!.cleanupIntervalHours).toBeUndefined();
     expect(savedLaneCleanup!.reclaimArchivedAfterHours).toBeUndefined();
