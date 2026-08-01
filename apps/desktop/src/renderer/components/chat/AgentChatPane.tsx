@@ -7486,14 +7486,24 @@ export function AgentChatPane({
           // the chip would otherwise stay stuck on "plan" after the plan is
           // accepted. Setting it here makes the change immediate and race-proof.
           if (envelope.sessionId === selectedSessionIdRef.current) {
+            // The host reports the access mode in force after the transition.
+            // Trust it rather than assuming: exiting plan mode used to hardcode
+            // "default", which demoted a session that had been in
+            // bypassPermissions or acceptEdits before it entered plan mode.
+            const modeAfter = typeof detail?.permissionModeAfterTransition === "string"
+              ? detail.permissionModeAfterTransition as AgentChatClaudePermissionMode
+              : null;
             if (transition === "entered_plan_mode") {
               setInteractionMode("plan");
+              setClaudePermissionMode(modeAfter ?? "plan");
             } else {
               setInteractionMode("default");
-              // The Claude mode picker also writes "plan" into claudePermissionMode
-              // (handleClaudeModeChange), so clear it too — otherwise the chip
-              // would still render "plan" via the access-mode fall-through.
-              setClaudePermissionMode((prev) => (prev === "plan" ? "default" : prev));
+              // Clear "plan" out of the access mode, or the chip keeps
+              // rendering plan via the access-mode fall-through.
+              setClaudePermissionMode((prev) => {
+                if (modeAfter && modeAfter !== "plan") return modeAfter;
+                return prev === "plan" ? "default" : prev;
+              });
             }
           }
           scheduleSessionsRefresh();

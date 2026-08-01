@@ -80,6 +80,11 @@ import {
 } from "./laneUtils";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { getProjectConfigCached } from "../../lib/projectConfigCache";
+import {
+  DEFAULT_LANE_BANNER_BUDGET,
+  DEFAULT_REBASE_SUGGESTIONS,
+  type RebaseSuggestionDisplay,
+} from "../../../shared/types/config";
 import { getGitHubSnapshotCoalesced, listPrsCoalesced, refreshPrsCoalesced, warmPrSurfaceCoalesced } from "../../lib/prReadCache";
 import { logRendererDebugEvent } from "../../lib/debugLog";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
@@ -500,6 +505,9 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [laneVisiblePrRefreshVisibilityToken, setLaneVisiblePrRefreshVisibilityToken] = useState(0);
   const hasActiveLaneRuntimeRef = useRef(false);
   const [autoRebaseEnabled, setAutoRebaseEnabled] = useState(false);
+  const [rebaseSuggestionDisplay, setRebaseSuggestionDisplay] =
+    useState<RebaseSuggestionDisplay>(DEFAULT_REBASE_SUGGESTIONS);
+  const [laneBannerBudget, setLaneBannerBudget] = useState(DEFAULT_LANE_BANNER_BUDGET);
   const [rebaseSuggestionError, setRebaseSuggestionError] = useState<string | null>(null);
   const [rebaseScopePrompt, setRebaseScopePrompt] = useState<RebaseScopePromptState | null>(null);
   const [rebasePushReview, setRebasePushReview] = useState<RebasePushReviewState | null>(null);
@@ -860,11 +868,21 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const refreshAutoRebaseEnabled = useCallback(async () => {
     try {
       const snapshot = await getProjectConfigCached({ projectRoot: activeProjectRoot });
-      const enabled =
-        typeof snapshot.effective.git?.autoRebaseOnHeadChange === "boolean"
-          ? snapshot.effective.git.autoRebaseOnHeadChange
-          : false;
+      const git = snapshot.effective.git;
+      const enabled = typeof git?.autoRebaseOnHeadChange === "boolean" ? git.autoRebaseOnHeadChange : false;
       setAutoRebaseEnabled(enabled);
+      // Read the banner-noise settings from the same snapshot rather than
+      // opening a second config read on the Lanes load path.
+      setRebaseSuggestionDisplay(
+        git?.rebaseSuggestions === "off" || git?.rebaseSuggestions === "badge" || git?.rebaseSuggestions === "banner"
+          ? git.rebaseSuggestions
+          : DEFAULT_REBASE_SUGGESTIONS,
+      );
+      setLaneBannerBudget(
+        typeof git?.laneBannerBudget === "number" && Number.isFinite(git.laneBannerBudget)
+          ? Math.max(0, Math.floor(git.laneBannerBudget))
+          : DEFAULT_LANE_BANNER_BUDGET,
+      );
     } catch {
       setAutoRebaseEnabled(false);
     }
@@ -3661,6 +3679,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onViewRebaseDetails={openRebaseDetails}
         onDismissRebase={(laneId) => { void dismissRebaseSuggestion(laneId); }}
         onDismissAutoRebase={(laneId) => { void dismissAutoRebaseStatus(laneId); }}
+        display={rebaseSuggestionDisplay}
+        bannerBudget={laneBannerBudget}
       />
 
       {/* Floating pane tiling layout */}

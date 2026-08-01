@@ -171,4 +171,63 @@ describe("rebaseSuggestionService", () => {
 
     expect(listMock).toHaveBeenCalledTimes(2);
   });
+  it("skips the scan entirely when rebase suggestions are off", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-off-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const listMock = vi.fn(async () => []);
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId: "proj-off",
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+      getSuggestionPolicy: () => ({ display: "off", minBehind: 1 }),
+    });
+
+    expect(await service.listSuggestions({ force: true })).toEqual([]);
+    // "off" must avoid the work, not just hide the result — the scan does a
+    // remote-tracking fetch plus a per-lane behind-count.
+    expect(listMock).not.toHaveBeenCalled();
+  });
+
+  it("still scans when suggestions are set to badge", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-badge-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const listMock = vi.fn(async () => []);
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId: "proj-badge",
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+      getSuggestionPolicy: () => ({ display: "badge", minBehind: 1 }),
+    });
+
+    await service.listSuggestions({ force: true });
+
+    // Badge is a quieter presentation of the same data, not a suppression.
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to scanning when the policy lookup throws", async () => {
+    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-rebase-policy-throw-"));
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const listMock = vi.fn(async () => []);
+
+    const service = createRebaseSuggestionService({
+      db,
+      logger: createLogger(),
+      projectId: "proj-policy-throw",
+      projectRoot: repoRoot,
+      laneService: { list: listMock } as any,
+      getSuggestionPolicy: () => { throw new Error("config unreadable"); },
+    });
+
+    await service.listSuggestions({ force: true });
+
+    // An unreadable config must not silently disable rebase suggestions.
+    expect(listMock).toHaveBeenCalledTimes(1);
+  });
 });

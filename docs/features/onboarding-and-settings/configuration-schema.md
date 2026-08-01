@@ -46,7 +46,16 @@ type ProjectConfigFile = {
   automations?: ConfigAutomationRule[];
   environments?: EnvironmentMapping[];
   github?: { prPollingIntervalSeconds?: number };
-  git?: { autoRebaseOnHeadChange?: boolean };
+  git?: {
+    autoRebaseOnHeadChange?: boolean;
+    newLaneBaseSource?: "local" | "remote";
+    /** How a lane that fell behind its parent is surfaced. */
+    rebaseSuggestions?: "off" | "badge" | "banner";
+    /** Don't suggest until the lane is at least this far behind. */
+    rebaseSuggestionMinBehind?: number;
+    /** Max banners stacked above the Lanes list before they collapse. */
+    laneBannerBudget?: number;
+  };
   ai?: AiConfig;
   laneEnvInit?: LaneEnvInitConfig;
   laneTemplates?: ConfigLaneTemplate[];
@@ -181,7 +190,9 @@ type LaneCleanupConfig = {
 ```
 
 Policy enforced by the lane cleanup service. UI lives in
-`LaneBehaviorSection.tsx`.
+`StorageSection.tsx` (Settings > Storage & Diagnostics), not
+`LaneBehaviorSection.tsx` — that section owns lane *behavior*
+(base source, auto-rebase, rebase noise), not storage rules.
 
 ## Port allocation and proxy
 
@@ -190,8 +201,11 @@ Port allocation is runtime-only, not stored in YAML. The
 `portsPerLane`, `maxPort`.
 
 Proxy is similar — runtime, with `proxyPort` and `hostnameSuffix`
-fields. Settings > Proxy & Preview reads/writes these through
-dedicated IPC.
+fields, read and written through dedicated IPC.
+
+> There is no Proxy & Preview settings surface. `ProxyAndPreviewSection.tsx`
+> was imported by nothing and was deleted in the settings IA rewrite; the
+> proxy IPC has no UI today.
 
 OAuth redirect handling (runtime again):
 
@@ -326,9 +340,18 @@ The service does a shallow-first, deep-on-known-fields merge:
    `EffectiveProjectConfig`. Unknown fields produce validation
    warnings rather than errors.
 
-`EffectiveProjectConfig` always has fully-populated defaults for
-`git.autoRebaseOnHeadChange`, `version`, and required arrays (empty
-list if unset).
+`EffectiveProjectConfig` always has fully-populated defaults for every
+`git` field, `version`, and required arrays (empty list if unset). Build
+the git block with `defaultEffectiveGitConfig()` from
+`shared/types/config.ts` rather than by hand — including in tests — so
+adding a git setting doesn't require editing every fixture.
+
+`git.rebaseSuggestions` defaults to `banner`,
+`git.rebaseSuggestionMinBehind` to `1`, and `git.laneBannerBudget` to `2`,
+which together reproduce the pre-setting behavior. `off` is honored in
+`rebaseSuggestionService` *before* the scan runs, so it skips the
+remote-tracking fetch and per-lane behind-count rather than just hiding
+the result.
 
 ## Trust model
 

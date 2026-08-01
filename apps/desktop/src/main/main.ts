@@ -2764,6 +2764,10 @@ app.whenReady().then(async () => {
       laneService,
       onEvent: (event) =>
         emitProjectEvent(projectRoot, IPC.lanesRebaseSuggestionsEvent, event),
+      getSuggestionPolicy: () => {
+        const git = projectConfigService.getEffective().git;
+        return { display: git.rebaseSuggestions, minBehind: git.rebaseSuggestionMinBehind };
+      },
     });
 
     let githubRelaySecretService: ReturnType<typeof createAutomationSecretService> | null = null;

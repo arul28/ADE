@@ -21214,6 +21214,109 @@ describe("createAgentChatService", () => {
       expect(setPermissionMode.mock.invocationCallOrder[0]).toBeLessThan(send.mock.invocationCallOrder[1]);
     });
 
+    it("shows a plan approval card even when the session is in bypassPermissions", async () => {
+      // The reported bug: a full-auto / bypassPermissions session entered plan
+      // mode, and ExitPlanMode auto-approved 13ms later with no card ever
+      // rendered — because the gate read the access mode, which entering plan
+      // mode had left on "bypassPermissions".
+      const events: AgentChatEventEnvelope[] = [];
+      const setPermissionMode = vi.fn().mockResolvedValue(undefined);
+      let streamCall = 0;
+      let service: ReturnType<typeof createService>["service"];
+      let sessionId = "";
+      let sawApprovalCard = false;
+
+      const stream = vi.fn(() => (async function* () {
+        streamCall += 1;
+        if (streamCall === 1) {
+          yield {
+            type: "system",
+            subtype: "init",
+            session_id: "sdk-session-plan-bypass",
+            slash_commands: [],
+          };
+          return;
+        }
+
+        const sessionOpts = vi.mocked(claudeSdkCreateSessionCompat).mock.calls.at(-1)?.[0] as any;
+        await sessionOpts.canUseTool("EnterPlanMode", {}, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-enter-plan-bypass",
+        });
+
+        const entered = await service.getSessionSummary(sessionId);
+        // Genuinely in plan mode — nothing still reads as bypass.
+        expect(entered?.claudePermissionMode).toBe("plan");
+        expect(entered?.permissionMode).toBe("plan");
+
+        const exitPromise = sessionOpts.canUseTool("ExitPlanMode", {
+          planDescription: "Plan that must be approved, not auto-accepted.",
+        }, {
+          signal: new AbortController().signal,
+          toolUseID: "tool-exit-plan-bypass",
+        });
+
+        const approvalEvent = await waitForEvent(
+          events,
+          (event): event is AgentChatEventEnvelope & {
+            event: Extract<AgentChatEventEnvelope["event"], { type: "approval_request" }>;
+          } =>
+            event.event.type === "approval_request"
+            && ((event.event.detail as { request?: { kind?: string } } | undefined)?.request?.kind === "plan_approval"),
+        );
+        sawApprovalCard = true;
+
+        await service.approveToolUse({
+          sessionId,
+          itemId: approvalEvent.event.itemId,
+          decision: "accept",
+        });
+        await exitPromise;
+
+        yield {
+          type: "assistant",
+          message: {
+            content: [{ type: "text", text: "Approved by a human." }],
+            usage: { input_tokens: 1, output_tokens: 1 },
+          },
+        };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+      })());
+
+      vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+        send: vi.fn().mockResolvedValue(undefined),
+        stream,
+        close: vi.fn(),
+        sessionId: "sdk-session-plan-bypass",
+        setPermissionMode,
+      } as any);
+
+      ({ service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      }));
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "claude",
+        model: "sonnet",
+        modelId: "anthropic/claude-sonnet-5",
+        permissionMode: "full-auto",
+        claudePermissionMode: "bypassPermissions",
+      });
+      sessionId = session.id;
+
+      await service.runSessionTurn({
+        sessionId: session.id,
+        text: "Plan something, then exit plan mode.",
+      });
+
+      expect(sawApprovalCard).toBe(true);
+      // Leaving plan mode puts the session back where it was.
+      const summary = await service.getSessionSummary(session.id);
+      expect(summary?.claudePermissionMode).toBe("bypassPermissions");
+      expect(summary?.permissionMode).toBe("full-auto");
+    });
+
     it("preserves Claude access overrides when entering and exiting plan mode", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const setPermissionMode = vi.fn().mockResolvedValue(undefined);
@@ -21243,7 +21346,11 @@ describe("createAgentChatService", () => {
 
         const entered = await service.getSessionSummary(sessionId);
         expect(entered?.permissionMode).toBe("plan");
-        expect(entered?.claudePermissionMode).toBe("acceptEdits");
+        // While in plan mode the access mode is "plan" too. It used to stay on
+        // the pre-plan value, which is what let a bypassPermissions session
+        // auto-approve its own plan and kept the composer chip on Bypass. The
+        // pre-plan mode is stashed and restored on exit (asserted below).
+        expect(entered?.claudePermissionMode).toBe("plan");
 
         const exitPromise = sessionOpts.canUseTool("ExitPlanMode", {
           planDescription: "Ship the approved Claude changes.",

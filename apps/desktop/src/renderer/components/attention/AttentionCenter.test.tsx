@@ -112,6 +112,10 @@ afterEach(() => {
 });
 
 describe("AttentionCenter", () => {
+  // Notch presentation (reveal mode, expanded panel) moved to
+  // Settings > Notifications; its coverage lives in
+  // settings/NotificationsSection.test.tsx.
+
   it("opens exact context before acknowledging an unhandled action", async () => {
     const online = item("approval");
     attentionStore.setState({
@@ -385,10 +389,11 @@ describe("AttentionCenter", () => {
 
     fireEvent.click(screen.getByRole("switch", { name: "ADE Notch" }));
     fireEvent.click(screen.getByRole("switch", { name: "Sounds" }));
-    fireEvent.change(screen.getByRole("combobox", { name: "Phone escalation" }), {
-      target: { value: "120" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // Escalation, quiet hours, and per-event policies moved to
+    // Settings > Notifications; the popover keeps three quick toggles.
+    expect(screen.queryByRole("combobox", { name: "Phone escalation" })).toBeNull();
 
     await waitFor(() => {
       expect(putPreferences).toHaveBeenCalledWith(
@@ -396,8 +401,6 @@ describe("AttentionCenter", () => {
         expect.objectContaining({
           account: expect.objectContaining({
             soundsEnabled: true,
-            desktopFirstEnabled: true,
-            desktopFirstDelaySeconds: 120,
           }),
         }),
       );
@@ -411,76 +414,7 @@ describe("AttentionCenter", () => {
 
   // Off, the three reveal modes, and the expanded-panel switch are the whole
   // presentation contract; they only mean anything if they reach the helper.
-  it("sends the chosen notch presentation to the native helper and keeps it on this Mac", async () => {
-    const updateSettings = vi.fn(async () => undefined);
-    Object.defineProperty(window, "ade", {
-      configurable: true,
-      writable: true,
-      value: {
-        ...(window.ade ?? {}),
-        attention: {
-          getSnapshot: vi.fn(),
-          acknowledge: vi.fn(),
-          reportPresence: vi.fn(),
-          getPreferences: vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES),
-          putPreferences: vi.fn(async () => undefined),
-        },
-        attentionNotch: {
-          publishSnapshot: vi.fn(),
-          updateSettings,
-          getHealth: vi.fn(async () => ({
-            state: "running" as const,
-            title: "ADE Notch is active",
-            message: "Showing account activity in the menu bar.",
-            recovery: null,
-            surface: "menu_bar" as const,
-          })),
-          onAcknowledgeRequested: vi.fn(() => () => {}),
-        },
-      },
-    });
-    render(<AttentionCenter />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Attention settings" }));
-    await screen.findByRole("dialog", { name: "Attention settings" });
-    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
-
-    // Defaults are today's surface, so an untouched Mac changes nothing.
-    expect((behavior as HTMLSelectElement).value).toBe("hover");
-    expect(screen.getByRole("switch", { name: "Expanded panel" }).getAttribute("aria-checked"))
-      .toBe("true");
-
-    fireEvent.change(behavior, { target: { value: "click" } });
-    fireEvent.click(screen.getByRole("switch", { name: "Expanded panel" }));
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
-
-    await waitFor(() => {
-      expect(updateSettings).toHaveBeenCalledWith(expect.objectContaining({
-        enabled: true,
-        revealMode: "click",
-        expandedPanelEnabled: false,
-      }));
-      expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
-      expect(window.localStorage.getItem("ade:attention:notch-expanded-panel")).toBe("false");
-    });
-  });
-
-  it("locks the notch presentation controls while ADE Notch is off", async () => {
-    render(<AttentionCenter />);
-
-    fireEvent.click(screen.getByRole("button", { name: "Attention settings" }));
-    await screen.findByRole("dialog", { name: "Attention settings" });
-    await screen.findByRole("combobox", { name: "Notch behavior" });
-
-    fireEvent.click(screen.getByRole("switch", { name: "ADE Notch" }));
-
-    await waitFor(() => {
-      expect(screen.getByRole("combobox", { name: "Notch behavior" }).hasAttribute("disabled"))
-        .toBe(true);
-      expect(screen.getByRole("switch", { name: "Expanded panel" }).hasAttribute("disabled"))
-        .toBe(true);
-    });
-  });
 
   it("clears a closed save without letting its stale result interrupt a replacement", async () => {
     let resolveStaleSave: () => void = () => {};
@@ -707,5 +641,27 @@ describe("attention notch local settings", () => {
       expandedPanelEnabled: false,
     });
     unsubscribe();
+  });
+  it("links to Settings through the navigation bus, not the router", async () => {
+    // The attention subtree is mounted outside the router here (and in the
+    // notch), so the link must dispatch an app-navigation target rather than
+    // calling useNavigate — which would throw "may be used only in the context
+    // of a <Router>".
+    const targets: unknown[] = [];
+    const onNavigate = (event: Event) => {
+      targets.push((event as CustomEvent).detail?.target);
+    };
+    window.addEventListener("ade:navigate-target", onNavigate);
+    try {
+      render(<AttentionCenter />);
+      fireEvent.click(screen.getByRole("button", { name: "Attention settings" }));
+      await screen.findByRole("dialog", { name: "Attention settings" });
+
+      fireEvent.click(await screen.findByRole("button", { name: /All notification settings/ }));
+
+      expect(targets).toEqual([{ kind: "settings", tab: "notifications" }]);
+    } finally {
+      window.removeEventListener("ade:navigate-target", onNavigate);
+    }
   });
 });

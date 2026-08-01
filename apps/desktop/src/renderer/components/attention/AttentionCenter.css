@@ -1631,6 +1631,31 @@
   pointer-events: none;
 }
 
+/* Link out to the canonical settings surface. The popover is three quick
+   toggles; the full delivery model lives in Settings > Notifications. */
+.attention-settings-open-full {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-secondary-fg);
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: 9px;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.attention-settings-open-full:hover {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
 /* ── Focus and motion ───────────────────────────────────────────────── */
 
 .attention-center button:focus-visible,
