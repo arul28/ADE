@@ -1150,6 +1150,13 @@ export type AppState = {
    */
   crossMachineLaneScopeKey: string | null;
   /**
+   * Authoritative machine membership for the current cross-machine scope.
+   * `null` means the scope is still resolving; `[]` means it resolved empty.
+   * Kept separately from arriving slices so a partial refill can distinguish a
+   * slow machine from one that was deliberately removed.
+   */
+  crossMachineLaneIntendedMachineIds: string[] | null;
+  /**
    * Cross-machine Work union, keyed by machine id. Shared store state on
    * purpose: every surface that needs it (sidebar markers, the push-divergence
    * guard) reads it as derived state through a selector rather than opening its
@@ -1187,7 +1194,10 @@ export type AppState = {
    * union; re-applying the same scope is a no-op (identity preserved), so this
    * is safe to call on every render pass of the sidebar.
    */
-  applyCrossMachineLaneScope: (scopeKey: string | null) => void;
+  applyCrossMachineLaneScope: (
+    scopeKey: string | null,
+    intendedMachineIds?: readonly string[] | null,
+  ) => void;
   /**
    * Merges one machine's slice. Omitted `lanes` / `sessions` are RETAINED, which
    * is what makes a failed read leave the machine's rows on screen instead of
@@ -1519,6 +1529,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
   dismissedGithubBannerRoots: {},
   openRemoteProjectTabs: [],
   crossMachineLaneScopeKey: null,
+  crossMachineLaneIntendedMachineIds: null,
   crossMachineLanesByMachineId: {},
 
   setProject: (project) =>
@@ -1726,15 +1737,37 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         },
       };
     }),
-  applyCrossMachineLaneScope: (scopeKey) =>
+  applyCrossMachineLaneScope: (scopeKey, intendedMachineIds) =>
     set((prev) => {
-      if (prev.crossMachineLaneScopeKey === scopeKey) return {};
+      const scopeChanged = prev.crossMachineLaneScopeKey !== scopeKey;
+      const normalizedIntendedMachineIds = intendedMachineIds === undefined
+        ? undefined
+        : intendedMachineIds === null
+          ? null
+          : Array.from(new Set(
+              intendedMachineIds.map((machineId) => machineId.trim()).filter(Boolean),
+            )).sort();
+      const nextIntendedMachineIds = normalizedIntendedMachineIds === undefined
+        ? scopeChanged
+          // Preserve the membership needle across the wholesale clear. A later
+          // sync pass replaces it once the new scope's machine set is known.
+          ? Object.keys(prev.crossMachineLanesByMachineId).sort()
+          : prev.crossMachineLaneIntendedMachineIds
+        : normalizedIntendedMachineIds;
+      const stableIntendedMachineIds = reuseStructurallyEqualArray(
+        nextIntendedMachineIds ?? undefined,
+        prev.crossMachineLaneIntendedMachineIds ?? undefined,
+      ) ?? null;
+      const intendedChanged = stableIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
+
+      if (!scopeChanged && !intendedChanged) return {};
       // Identity matters: consumers select this record straight out of the
       // store, so a fresh `{}` on every call would re-render the whole sidebar.
       const alreadyEmpty = Object.keys(prev.crossMachineLanesByMachineId).length === 0;
       return {
         crossMachineLaneScopeKey: scopeKey,
-        ...(alreadyEmpty ? {} : { crossMachineLanesByMachineId: {} }),
+        crossMachineLaneIntendedMachineIds: stableIntendedMachineIds,
+        ...(scopeChanged && !alreadyEmpty ? { crossMachineLanesByMachineId: {} } : {}),
       };
     }),
 
@@ -1742,6 +1775,10 @@ const createAppState: StateCreator<AppState> = (set, get) => {
     set((prev) => {
       const machineId = entry.machineId.trim();
       if (!machineId) return {};
+      const nextIntendedMachineIds = prev.crossMachineLaneIntendedMachineIds?.includes(machineId)
+        ? prev.crossMachineLaneIntendedMachineIds
+        : [...(prev.crossMachineLaneIntendedMachineIds ?? []), machineId].sort();
+      const intendedChanged = nextIntendedMachineIds !== prev.crossMachineLaneIntendedMachineIds;
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
       const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
       const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
@@ -1763,7 +1800,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
           entry.lanes || entry.sessions ? Date.now() : previous?.lastSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
-      if (
+      const sliceUnchanged = (
         previous
         && previous.machineName === next.machineName
         && previous.targetId === next.targetId
@@ -1774,14 +1811,20 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.sessions === next.sessions
         && previous.lastSyncedAtMs === next.lastSyncedAtMs
         && previous.error === next.error
-      ) {
-        return {};
-      }
+      );
+      if (sliceUnchanged && !intendedChanged) return {};
       return {
-        crossMachineLanesByMachineId: {
-          ...prev.crossMachineLanesByMachineId,
-          [machineId]: next,
-        },
+        ...(sliceUnchanged
+          ? {}
+          : {
+              crossMachineLanesByMachineId: {
+                ...prev.crossMachineLanesByMachineId,
+                [machineId]: next,
+              },
+            }),
+        ...(intendedChanged
+          ? { crossMachineLaneIntendedMachineIds: nextIntendedMachineIds }
+          : {}),
       };
     }),
 
@@ -1816,7 +1859,19 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         }
         nextRecord[machineId] = entry;
       }
-      return changed ? { crossMachineLanesByMachineId: nextRecord } : {};
+      const nextIntendedMachineIds = prev.crossMachineLaneIntendedMachineIds?.filter(
+        (machineId) => !dropped.has(machineId),
+      ) ?? null;
+      const intendedChanged = nextIntendedMachineIds !== null
+        && nextIntendedMachineIds.length !== prev.crossMachineLaneIntendedMachineIds?.length;
+      return changed || intendedChanged
+        ? {
+            ...(changed ? { crossMachineLanesByMachineId: nextRecord } : {}),
+            ...(intendedChanged
+              ? { crossMachineLaneIntendedMachineIds: nextIntendedMachineIds }
+              : {}),
+          }
+        : {};
     }),
 
   setLaneInspectorTab: (laneId, tab) =>

@@ -12,7 +12,11 @@ import type {
 } from "../../../shared/types";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
 import { TerminalsPage } from "./TerminalsPage";
-import { forgetWorkPtyLaunchPin, rememberWorkPtyLaunchPin } from "./cliLaunch";
+import {
+  forgetWorkPtyLaunchPin,
+  rememberWorkPtyLaunchPin,
+  workPtyLaunchPinFor,
+} from "./cliLaunch";
 
 const crossMachineMocks = vi.hoisted(() => ({
   cancelOptimistic: vi.fn(),
@@ -182,6 +186,7 @@ const workMocks = vi.hoisted(() => {
       sessions: TerminalSessionSummary[];
       online: boolean;
     }>,
+    crossMachineLaneIntendedMachineIds: null as string[] | null,
     fns,
     makeTerminalSession,
   };
@@ -276,24 +281,30 @@ vi.mock("../../state/appStore", () => ({
   useRootAppStore: <T,>(selector: (state: {
     handoffLaunchJobsByScope: typeof workMocks.handoffLaunchJobsByScope;
     crossMachineLanesByMachineId: typeof workMocks.crossMachineLanesByMachineId;
+    crossMachineLaneIntendedMachineIds: typeof workMocks.crossMachineLaneIntendedMachineIds;
   }) => T): T =>
     selector({
       handoffLaunchJobsByScope: workMocks.handoffLaunchJobsByScope,
       crossMachineLanesByMachineId: workMocks.crossMachineLanesByMachineId,
+      crossMachineLaneIntendedMachineIds: workMocks.crossMachineLaneIntendedMachineIds,
     }),
 }));
 
 vi.mock("./useWorkSessions", async () => {
-  const { useWorkMachineRouter } = await vi.importActual<typeof import("./useWorkMachineRouter")>(
+  const {
+    useRetainedCrossMachineSlices,
+    useWorkMachineRouter,
+  } = await vi.importActual<typeof import("./useWorkMachineRouter")>(
     "./useWorkMachineRouter",
   );
   return {
     useWorkSessions: () => {
-      const machineRouter = useWorkMachineRouter();
+      const retainedCrossMachineSlices = useRetainedCrossMachineSlices();
+      const machineRouter = useWorkMachineRouter(retainedCrossMachineSlices);
       const sessionsById = workMocks.currentWork.sessionsById
         ?? new Map<string, TerminalSessionSummary>([
           ...workMocks.currentWork.sessions.map((session: TerminalSessionSummary) => [session.id, session] as const),
-          ...Object.values(workMocks.crossMachineLanesByMachineId)
+          ...retainedCrossMachineSlices
             .flatMap((machine) => machine.sessions)
             .map((session) => [session.id, session] as const),
         ]);
@@ -503,6 +514,7 @@ describe("TerminalsPage chat session activation", () => {
     workMocks.handoffLaunchJobsByScope = {};
     workMocks.openRemoteProjectTabs = [];
     workMocks.crossMachineLanesByMachineId = {};
+    workMocks.crossMachineLaneIntendedMachineIds = null;
     sidebarProps.latest = null;
     sessionListPaneProps.latest = null;
     workViewAreaProps.latest = null;
@@ -631,7 +643,7 @@ describe("TerminalsPage chat session activation", () => {
     expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toEqual(studioBinding);
   });
 
-  it("keeps the TerminalView pin identity stable while cross-machine scope reloads", async () => {
+  it("keeps B's runtime pin through an A-before-B scope refill without a launch-registry entry", async () => {
     const studioBinding: OpenProjectBinding = {
       kind: "remote",
       key: "remote:target-studio:project-a",
@@ -642,10 +654,31 @@ describe("TerminalsPage chat session activation", () => {
       displayName: "repo-a",
     };
     const session = workMocks.makeTerminalSession("shell-foreign", "lane-foreign", "shell");
+    const machineABinding: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/remote/repo-a-copy",
+      displayName: "repo-a-copy",
+    };
+    const machineASession = workMocks.makeTerminalSession("shell-a", "lane-a", "shell");
     // This binding is discoverable only through the replace-on-refresh
     // cross-machine scope, matching the production flap.
     workMocks.openRemoteProjectTabs = [];
+    workMocks.crossMachineLaneIntendedMachineIds = ["target-a", "target-studio"];
     workMocks.crossMachineLanesByMachineId = {
+      "target-a": {
+        machineId: "target-a",
+        machineName: "Machine A",
+        targetId: "target-a",
+        projectId: "project-a",
+        binding: machineABinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-a" }],
+        sessions: [machineASession],
+        online: true,
+      },
       "target-studio": {
         machineId: "target-studio",
         machineName: "Mac Studio",
@@ -664,20 +697,32 @@ describe("TerminalsPage chat session activation", () => {
     const rendered = render(<TerminalsPage />);
     await screen.findByTestId("session-list-pane");
 
-    act(() => {
-      sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
-        session,
-        studioBinding,
-        { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent,
-        [session.id],
-      );
-    });
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBe(studioBinding);
+    expect(workPtyLaunchPinFor(session)).toBeNull();
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
 
     workMocks.crossMachineLanesByMachineId = {};
     rendered.rerender(<TerminalsPage />);
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
 
-    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)).toBe(studioBinding);
+    // A arrives first. B's retained complete slice still owns the restored
+    // terminal's session and lane indexes, so hydration/input cannot fall back
+    // to the active machine while B remains intended.
+    workMocks.crossMachineLanesByMachineId = {
+      "target-a": {
+        machineId: "target-a",
+        machineName: "Machine A",
+        targetId: "target-a",
+        projectId: "project-a",
+        binding: machineABinding,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-a" }],
+        sessions: [{ ...machineASession, lastOutputPreview: "fresh-a" }],
+        online: true,
+      },
+    };
+    rendered.rerender(<TerminalsPage />);
+
+    expect(workPtyLaunchPinFor(session)).toBeNull();
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(session)?.key).toBe(studioBinding.key);
   });
 
   it("leaves a session on the tab's own machine unpinned", async () => {
@@ -1318,6 +1363,90 @@ describe("TerminalsPage chat session activation", () => {
     };
     rendered.rerender(<TerminalsPage />);
 
+    await waitFor(() => expect(setGridSets).toHaveBeenCalledTimes(1));
+    const update = setGridSets.mock.calls[0]?.[0];
+    expect(typeof update).toBe("function");
+    expect(update(gridSets)).toEqual([]);
+  });
+
+  it("prunes a retained grid and runtime pin when scope intent removes a pending machine", async () => {
+    const bindingA: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    };
+    const bindingB: OpenProjectBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    };
+    const sessionA = workMocks.makeTerminalSession("term-a", "lane-a", "codex");
+    const sessionB = workMocks.makeTerminalSession("term-b", "lane-b", "codex");
+    const machineA = {
+      machineId: "target-a",
+      machineName: "Machine A",
+      targetId: "target-a",
+      projectId: "project-a",
+      binding: bindingA,
+      lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-a" }],
+      sessions: [sessionA],
+      online: true,
+    };
+    const machineB = {
+      machineId: "target-b",
+      machineName: "Machine B",
+      targetId: "target-b",
+      projectId: "project-b",
+      binding: bindingB,
+      lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-b" }],
+      sessions: [sessionB],
+      online: true,
+    };
+    const gridSets = [{
+      id: "grid-1",
+      layoutId: "layout-grid-1",
+      sessionIds: [sessionA.id, sessionB.id],
+    }];
+    const setGridSets = vi.fn();
+    workMocks.crossMachineLaneIntendedMachineIds = ["target-a", "target-b"];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-a": machineA,
+      "target-b": machineB,
+    };
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      gridSets,
+      setGridSets,
+      closingPtyIds: new Set<string>(),
+    };
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },
+    });
+
+    const rendered = render(<TerminalsPage />);
+    await waitFor(() => expect(setGridSets).toHaveBeenCalled());
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(sessionB)?.key).toBe(bindingB.key);
+
+    workMocks.crossMachineLanesByMachineId = {};
+    rendered.rerender(<TerminalsPage />);
+    workMocks.crossMachineLanesByMachineId = { "target-a": machineA };
+    rendered.rerender(<TerminalsPage />);
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(sessionB)?.key).toBe(bindingB.key);
+
+    setGridSets.mockClear();
+    workMocks.crossMachineLaneIntendedMachineIds = ["target-a"];
+    rendered.rerender(<TerminalsPage />);
+
+    expect(workViewAreaProps.latest?.resolveSessionRuntimePin?.(sessionB)).toBeNull();
     await waitFor(() => expect(setGridSets).toHaveBeenCalledTimes(1));
     const update = setGridSets.mock.calls[0]?.[0];
     expect(typeof update).toBe("function");

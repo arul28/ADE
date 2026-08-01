@@ -145,7 +145,25 @@ const CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS = 90_000;
 const CODEX_OWNERSHIP_NEEDLE_SCAN_BYTES = 160 * 1024;
 /** Shorter slices are not distinctive enough to prove a rollout is ours. */
 const CODEX_OWNERSHIP_NEEDLE_MIN_LEN = 24;
-const CODEX_OWNERSHIP_NEEDLE_MAX_LEN = 200;
+// The needle is the whole delivered prompt, not a short head slice: two
+// launches whose prompts share a long prefix and diverge later are only told
+// apart by a needle that reaches past the shared part. The cap keeps the
+// `includes()` scan bounded for pasted-in prompts of arbitrary length.
+const CODEX_OWNERSHIP_NEEDLE_MAX_LEN = 2_000;
+/**
+ * Codex copies this env var verbatim into `session_meta.payload.originator`
+ * (checked against codex-cli 0.146.0 for both the `source: "cli"` TUI launches
+ * ADE makes and `codex exec`). It is the one per-launch channel ADE controls
+ * that reaches the rollout without adding a single token to the conversation
+ * the model sees, so it — not the prompt text — is the primary ownership proof.
+ */
+const CODEX_ORIGINATOR_OVERRIDE_ENV = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
+/**
+ * Prefixed `ade` so usage attribution keeps counting these launches as
+ * ADE-originated, and deliberately not the bare `ade_desktop` the app-server
+ * client reports, which other services match exactly.
+ */
+const CODEX_LAUNCH_ORIGINATOR_PREFIX = "ade_pty_";
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 50;
 // Echo latency is dominated by the data batch window. After a user keystroke
@@ -328,6 +346,8 @@ type CodexStorageSessionMatch = {
   id: string;
   filePath: string;
   threadName: string | null;
+  /** Which ownership layer proved this rollout belongs to the caller's launch. */
+  ownership: "launch-nonce" | "launch-text" | "window";
 };
 
 type ClaudeStorageSessionMatch = {
@@ -677,6 +697,17 @@ function replaceUnpairedSurrogates(value: string): string {
     segmentStart = index + 1;
   }
   return segmentStart === 0 ? value : `${normalized}${value.slice(segmentStart)}`;
+}
+
+/**
+ * A per-launch ownership nonce, carried to Codex through
+ * `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and written back out as the rollout's
+ * `session_meta.payload.originator`. Unlike the text needle below it is unique
+ * per launch by construction, so it separates two launches that share a
+ * worktree, a launch window, and the exact same prompt.
+ */
+function newCodexLaunchOriginator(): string {
+  return `${CODEX_LAUNCH_ORIGINATOR_PREFIX}${randomUUID().replace(/-/g, "")}`;
 }
 
 /**
@@ -2665,8 +2696,10 @@ export function createPtyService({
    * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
    * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
    * We score recent candidates by cwd match and closeness to ADE's session startedAt.
-   * `ownershipNeedle`, when the caller has one, additionally requires the rollout
-   * to contain text this launch delivered — see `codexLaunchOwnershipNeedle`.
+   * `ownershipOriginator`, when the caller stamped one on the launch, wins
+   * outright: it is a per-launch nonce Codex echoes into `session_meta`.
+   * `ownershipNeedle` is the fallback — it requires the rollout to contain text
+   * this launch delivered, see `codexLaunchOwnershipNeedle`.
    */
   const resolveCodexSessionFromStorage = (args: {
     cwd: string;
@@ -2675,6 +2708,7 @@ export function createPtyService({
     notBeforeMs?: number;
     excludedIds?: ReadonlySet<string>;
     ownershipNeedle?: string | null;
+    ownershipOriginator?: string | null;
   }): CodexStorageSessionMatch | null => {
     try {
       const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
@@ -2703,7 +2737,15 @@ export function createPtyService({
       if (!candidates.length) return null;
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-      let bestMatch: { id: string; filePath: string; score: number; mtimeMs: number } | null = null;
+      type CodexRolloutCandidate = {
+        id: string;
+        filePath: string;
+        mtimeMs: number;
+        /** Session start per the rollout itself, falling back to file mtime. */
+        referenceMs: number;
+        originator: string;
+      };
+      const parsed: CodexRolloutCandidate[] = [];
       for (const candidate of candidates.slice(0, 80)) {
         const firstLine = readJsonlFirstLine(candidate.filePath);
         if (!firstLine) continue;
@@ -2719,35 +2761,70 @@ export function createPtyService({
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
         if (args.excludedIds?.has(id)) continue;
-        if (args.ownershipNeedle) {
-          const prefix = readFilePrefix(candidate.filePath, CODEX_OWNERSHIP_NEEDLE_SCAN_BYTES);
-          if (!prefix || !rolloutTextContainsOwnershipNeedle(prefix, args.ownershipNeedle)) continue;
-        }
-        if (!hasStartedAt) {
-          return {
-            id,
-            filePath: candidate.filePath,
-            threadName: readCodexRuntimeThreadName(candidate.filePath, id),
-          };
-        }
-
+        // Codex subagents fork from the thread ADE launched, share its cwd, and
+        // inherit its environment (nonce included). Resuming one would resume
+        // the wrong thread, so they are never a candidate.
+        const parentThreadId = typeof payload?.parent_thread_id === "string" ? payload.parent_thread_id.trim() : "";
+        if (parentThreadId) continue;
         const payloadTimestamp = typeof payload?.timestamp === "string" ? payload.timestamp : "";
         const payloadTimestampMs = Date.parse(payloadTimestamp);
-        const referenceMs = Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs;
-        if (typeof args.notBeforeMs === "number" && referenceMs < args.notBeforeMs) continue;
-        const score = Math.abs(referenceMs - requestedStartedAtMs);
-        if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
-        if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && candidate.mtimeMs > bestMatch.mtimeMs)) {
-          bestMatch = { id, filePath: candidate.filePath, score, mtimeMs: candidate.mtimeMs };
-        }
+        parsed.push({
+          id,
+          filePath: candidate.filePath,
+          mtimeMs: candidate.mtimeMs,
+          referenceMs: Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs,
+          originator: typeof payload?.originator === "string" ? payload.originator.trim() : "",
+        });
       }
-      return bestMatch
-        ? {
-            id: bestMatch.id,
-            filePath: bestMatch.filePath,
-            threadName: readCodexRuntimeThreadName(bestMatch.filePath, bestMatch.id),
+
+      const toMatch = (
+        candidate: CodexRolloutCandidate,
+        ownership: CodexStorageSessionMatch["ownership"],
+      ): CodexStorageSessionMatch => ({
+        id: candidate.id,
+        filePath: candidate.filePath,
+        threadName: readCodexRuntimeThreadName(candidate.filePath, candidate.id),
+        ownership,
+      });
+
+      const pickBest = (
+        ownership: CodexStorageSessionMatch["ownership"],
+        accept: (candidate: CodexRolloutCandidate) => boolean,
+      ): CodexStorageSessionMatch | null => {
+        let bestMatch: { candidate: CodexRolloutCandidate; score: number } | null = null;
+        for (const candidate of parsed) {
+          if (!accept(candidate)) continue;
+          if (!hasStartedAt) return toMatch(candidate, ownership);
+          if (typeof args.notBeforeMs === "number" && candidate.referenceMs < args.notBeforeMs) continue;
+          const score = Math.abs(candidate.referenceMs - requestedStartedAtMs);
+          if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
+          if (
+            !bestMatch
+            || score < bestMatch.score
+            || (score === bestMatch.score && candidate.mtimeMs > bestMatch.candidate.mtimeMs)
+          ) {
+            bestMatch = { candidate, score };
           }
-        : null;
+        }
+        return bestMatch ? toMatch(bestMatch.candidate, ownership) : null;
+      };
+
+      // The nonce is unique per launch, so it outranks the prompt-text needle,
+      // which two launches can legitimately share.
+      const ownershipOriginator = args.ownershipOriginator?.trim() ?? "";
+      if (ownershipOriginator) {
+        const nonceMatch = pickBest("launch-nonce", (candidate) => candidate.originator === ownershipOriginator);
+        if (nonceMatch) return nonceMatch;
+      }
+
+      // Older Codex builds may not honour the originator override, so ownership
+      // falls back to the delivered text rather than refusing to capture.
+      const ownershipNeedle = args.ownershipNeedle ?? "";
+      return pickBest(ownershipNeedle ? "launch-text" : "window", (candidate) => {
+        if (!ownershipNeedle) return true;
+        const prefix = readFilePrefix(candidate.filePath, CODEX_OWNERSHIP_NEEDLE_SCAN_BYTES);
+        return prefix != null && rolloutTextContainsOwnershipNeedle(prefix, ownershipNeedle);
+      });
     } catch {
       return null;
     }
@@ -3161,6 +3238,7 @@ export function createPtyService({
     cwd: string,
     startedAt: string,
     ownershipNeedle: string | null = null,
+    ownershipOriginator: string | null = null,
   ): void => {
     const startedAtMs = Date.parse(startedAt);
     const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
@@ -3223,19 +3301,23 @@ export function createPtyService({
       // never captured live.
       //
       // Mis-adoption safety for concurrent Codex runs in the SAME worktree has
-      // three layers:
-      //  1. the per-launch ownership needle, when this launch delivered text of
-      //     its own: only a rollout containing that text can be adopted, which
-      //     is what actually rules out an unrelated Codex process that merely
-      //     shares the cwd and the window;
-      //  2. a narrow launch window (including the existing not-before floor);
-      //  3. exclusion of thread ids already owned by every other terminal row —
-      //     an adopted id stays excluded even when the needle matches.
+      // four layers:
+      //  1. the per-launch ownership nonce ADE stamped on this launch's
+      //     environment, which Codex writes back as the rollout's originator:
+      //     unique by construction, so it separates even two launches with
+      //     byte-identical prompts. It is absent only if the Codex build
+      //     ignores the override, in which case ownership degrades to layer 2;
+      //  2. the ownership needle, when this launch delivered text of its own:
+      //     only a rollout containing that text can be adopted, which rules out
+      //     an unrelated Codex process that merely shares the cwd and window;
+      //  3. a narrow launch window (including the existing not-before floor);
+      //  4. exclusion of thread ids already owned by every other terminal row —
+      //     an adopted id stays excluded even when nonce or needle matches.
       // Timestamp proximity still breaks ties among the remaining candidates,
       // but does not claim that rollout write order uniquely proves which PTY
       // launched a thread. A bare interactive `codex` with nothing typed has no
-      // ownership signal to demand, so it falls back to layers 2 and 3 alone
-      // and keeps that residual window.
+      // text to demand, so on a Codex build without the originator override it
+      // falls back to layers 3 and 4 alone and keeps that residual window.
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt,
@@ -3243,6 +3325,7 @@ export function createPtyService({
         ...(startedAtFinite !== null ? { notBeforeMs: startedAtFinite - 1_000 } : {}),
         excludedIds,
         ownershipNeedle,
+        ownershipOriginator,
       });
       if (!codexSession) return false;
 
@@ -3256,7 +3339,7 @@ export function createPtyService({
         codexSessionId: codexSession.id,
         source,
         attempt,
-        ownership: ownershipNeedle ? "launch-text" : "window",
+        ownership: codexSession.ownership,
       });
       cleanup();
       return true;
@@ -4705,6 +4788,19 @@ export function createPtyService({
         directCommand,
         startupCommand,
       });
+      // Stamp a per-launch ownership nonce Codex echoes into its rollout, so
+      // thread capture never has to infer ownership from prompt text alone. An
+      // explicitly configured override wins: the caller's identity choice is
+      // not ADE's to overwrite, capture just falls back to the text needle.
+      let codexLaunchOriginator: string | null = null;
+      if (
+        (toolTypeHint === "codex" || toolTypeHint === "codex-orchestrated")
+        && !hasEnvKey(args.env ?? {}, CODEX_ORIGINATOR_OVERRIDE_ENV)
+        && !hasEnvKey(laneRuntimeEnv, CODEX_ORIGINATOR_OVERRIDE_ENV)
+      ) {
+        codexLaunchOriginator = newCodexLaunchOriginator();
+        launchEnv[CODEX_ORIGINATOR_OVERRIDE_ENV] = codexLaunchOriginator;
+      }
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
@@ -5179,6 +5275,7 @@ export function createPtyService({
           cwd,
           startedAt,
           codexLaunchOwnershipNeedle({ initialInput: requestedInitialInput, args: directArgs }),
+          codexLaunchOriginator,
         );
       }
       if (isClaudeTrackedCliToolType(toolTypeHint) && cwd) {

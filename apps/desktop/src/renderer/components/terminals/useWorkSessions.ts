@@ -12,7 +12,6 @@ import {
   selectActiveProjectRoot,
   useAppStore,
   useAppStoreApi,
-  useRootAppStore,
   type WorkDraftKind,
   type WorkGridSet,
   type WorkProjectViewState,
@@ -49,7 +48,10 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
-import { useWorkMachineRouter } from "./useWorkMachineRouter";
+import {
+  useRetainedCrossMachineSlices,
+  useWorkMachineRouter,
+} from "./useWorkMachineRouter";
 
 type WorkStatusNavigation = "all" | "running" | "awaiting-input" | "ended" | "settled";
 
@@ -437,8 +439,8 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const refreshLanes = useAppStore((s) => s.refreshLanes);
   const workViewByProject = useAppStore((s) => s.workViewByProject);
   const setWorkViewState = useAppStore((s) => s.setWorkViewState);
-  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const machineRouter = useWorkMachineRouter();
+  const retainedCrossMachineSlices = useRetainedCrossMachineSlices();
+  const machineRouter = useWorkMachineRouter(retainedCrossMachineSlices);
 
   const [sessions, setSessions] = useState<TerminalSessionSummary[]>([]);
   const [loading, setLoading] = useState(false);
@@ -579,65 +581,15 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     for (const session of sessions) map.set(session.id, session);
     return map;
   }, [sessions]);
-  const retainedCrossMachineSessionsRef = useRef<{
-    projectStateKey: string | null;
-    sessionsByMachineId: Map<string, Map<string, TerminalSessionSummary>>;
-    /** Machines still waiting for an authoritative slice after a wholesale scope refill. */
-    pendingMachineIds: Set<string> | null;
-  }>({ projectStateKey: null, sessionsByMachineId: new Map(), pendingMachineIds: null });
   const crossMachineSessionsById = useMemo(() => {
-    let retained = retainedCrossMachineSessionsRef.current;
-    if (retained.projectStateKey !== projectStateKey) {
-      retained = {
-        projectStateKey,
-        sessionsByMachineId: new Map(),
-        pendingMachineIds: null,
-      };
-      retainedCrossMachineSessionsRef.current = retained;
-    }
-
-    const machines = Object.values(crossMachineLanesByMachineId);
-    if (machines.length === 0) {
-      // Scope reload clears the replace-on-refresh machine map before its next
-      // slices arrive. Mark every previously listed machine pending so the first
-      // slice to return cannot evict the other machines' tabs or grid members.
-      // Project changes reset the ref above, preserving the same-project rule.
-      if (retained.sessionsByMachineId.size > 0 && retained.pendingMachineIds == null) {
-        retained.pendingMachineIds = new Set(retained.sessionsByMachineId.keys());
-      }
-    } else {
-      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
-
-      if (retained.pendingMachineIds == null) {
-        // Outside a wholesale refill, the store's machine list is authoritative:
-        // dropCrossMachineLanes removes a machine from this record deliberately.
-        for (const machineId of retained.sessionsByMachineId.keys()) {
-          if (!presentMachineIds.has(machineId)) retained.sessionsByMachineId.delete(machineId);
-        }
-      }
-
-      for (const machine of machines) {
-        const sessionsForMachine = new Map<string, TerminalSessionSummary>();
-        for (const session of machine.sessions) {
-          if (!sessionsForMachine.has(session.id)) sessionsForMachine.set(session.id, session);
-        }
-        // A present slice is authoritative for this machine alone. An empty slice
-        // therefore removes its old members without touching still-pending peers.
-        retained.sessionsByMachineId.set(machine.machineId, sessionsForMachine);
-        retained.pendingMachineIds?.delete(machine.machineId);
-      }
-
-      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
-    }
-
     const map = new Map<string, TerminalSessionSummary>();
-    for (const sessionsForMachine of retained.sessionsByMachineId.values()) {
-      for (const session of sessionsForMachine.values()) {
+    for (const machine of retainedCrossMachineSlices) {
+      for (const session of machine.sessions) {
         if (!map.has(session.id)) map.set(session.id, session);
       }
     }
     return map;
-  }, [crossMachineLanesByMachineId, projectStateKey]);
+  }, [retainedCrossMachineSlices]);
   const sessionsById = useMemo(() => {
     const map = new Map(localSessionsById);
     for (const [sessionId, session] of crossMachineSessionsById) {

@@ -4,10 +4,16 @@ import {
   buildChatMachineRoutingState,
   collectOpenProjectBindings,
   createChatMachineRouter,
+  isLivePinnedBinding,
   type ChatMachineRouter,
   type LaneBindingSource,
 } from "../../lib/chatMachineRouting";
-import { selectActiveProjectStateKey, useAppStore, useRootAppStore } from "../../state/appStore";
+import {
+  selectActiveProjectStateKey,
+  useAppStore,
+  useRootAppStore,
+  type CrossMachineMachineLanes,
+} from "../../state/appStore";
 import {
   forgetWorkPtyLaunchPin,
   rememberWorkPtyLaunchPin,
@@ -33,6 +39,81 @@ export type WorkMachineRouter = ChatMachineRouter & {
   forgetSessionPin: (session: WorkRuntimePinLookup) => void;
 };
 
+type RetainedCrossMachineSlices = {
+  projectStateKey: string | null;
+  machinesById: Map<string, CrossMachineMachineLanes>;
+  /** Fallback for older callers that have not supplied authoritative scope intent yet. */
+  pendingMachineIds: Set<string> | null;
+};
+
+/**
+ * One retained cross-machine slice lifecycle for both Work rows and runtime pins.
+ *
+ * `crossMachineLanesByMachineId` is replace-on-refill. The separate intended-id
+ * list is the authoritative membership contract: an absent but intended machine
+ * is still loading, while an id removed from that list is gone immediately.
+ * Keeping complete slices here means the session index, lane index, and binding
+ * index cannot disagree during a partial refill.
+ */
+export function useRetainedCrossMachineSlices(): readonly CrossMachineMachineLanes[] {
+  const projectStateKey = useAppStore(selectActiveProjectStateKey);
+  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const intendedMachineIds = useRootAppStore((s) => s.crossMachineLaneIntendedMachineIds);
+  const retainedRef = useRef<RetainedCrossMachineSlices>({
+    projectStateKey: null,
+    machinesById: new Map(),
+    pendingMachineIds: null,
+  });
+
+  return useMemo(() => {
+    let retained = retainedRef.current;
+    if (retained.projectStateKey !== projectStateKey) {
+      retained = {
+        projectStateKey,
+        machinesById: new Map(),
+        pendingMachineIds: null,
+      };
+      retainedRef.current = retained;
+    }
+
+    const machines = Object.values(crossMachineLanesByMachineId);
+    if (intendedMachineIds != null) {
+      const intended = new Set(intendedMachineIds);
+      for (const machineId of retained.machinesById.keys()) {
+        if (!intended.has(machineId)) retained.machinesById.delete(machineId);
+      }
+      for (const machine of machines) {
+        if (intended.has(machine.machineId)) {
+          retained.machinesById.set(machine.machineId, machine);
+        }
+      }
+      // Authoritative intent makes arrival bookkeeping unnecessary: absence is
+      // pending until membership says otherwise, however many peers arrive first.
+      retained.pendingMachineIds = null;
+    } else if (machines.length === 0) {
+      // Compatibility fallback while scope identity is still unresolved. Once
+      // intent is published, the branch above becomes the only lifecycle rule.
+      if (retained.machinesById.size > 0 && retained.pendingMachineIds == null) {
+        retained.pendingMachineIds = new Set(retained.machinesById.keys());
+      }
+    } else {
+      const presentMachineIds = new Set(machines.map((machine) => machine.machineId));
+      if (retained.pendingMachineIds == null) {
+        for (const machineId of retained.machinesById.keys()) {
+          if (!presentMachineIds.has(machineId)) retained.machinesById.delete(machineId);
+        }
+      }
+      for (const machine of machines) {
+        retained.machinesById.set(machine.machineId, machine);
+        retained.pendingMachineIds?.delete(machine.machineId);
+      }
+      if (retained.pendingMachineIds?.size === 0) retained.pendingMachineIds = null;
+    }
+
+    return Array.from(retained.machinesById.values());
+  }, [crossMachineLanesByMachineId, intendedMachineIds, projectStateKey]);
+}
+
 /**
  * Per-session runtime routing for the Work tab.
  *
@@ -46,20 +127,17 @@ export type WorkMachineRouter = ChatMachineRouter & {
  * sidebar is a union across machines, and clicking a row must reach ITS machine
  * without rebinding the tab (rebinding would drag Lanes/PRs/Files along).
  */
-export function useWorkMachineRouter(): WorkMachineRouter {
+export function useWorkMachineRouter(
+  crossMachineSlices: readonly CrossMachineMachineLanes[],
+): WorkMachineRouter {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const lanes = useAppStore((s) => s.lanes);
   const openRemoteProjectTabs = useAppStore((s) => s.openRemoteProjectTabs);
   const openProjectTabRoots = useAppStore((s) => s.openProjectTabRoots);
-  const projectStateKey = useAppStore(selectActiveProjectStateKey);
-  const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const retainedSessionBindingsRef = useRef<{
-    projectStateKey: string | null;
-    bindingsBySessionId: Map<string, OpenProjectBinding> | null;
-  }>({ projectStateKey: null, bindingsBySessionId: null });
+  const liveCrossMachineSlices = useRootAppStore((s) => s.crossMachineLanesByMachineId);
 
   return useMemo(() => {
-    const machines = Object.values(crossMachineLanesByMachineId ?? {});
+    const machines = crossMachineSlices;
     const openBindings = collectOpenProjectBindings({
       activeBinding: projectBinding ?? null,
       remoteBindings: openRemoteProjectTabs ?? [],
@@ -89,28 +167,26 @@ export function useWorkMachineRouter(): WorkMachineRouter {
         }
       }
     }
-    if (machines.length > 0) {
-      retainedSessionBindingsRef.current = {
-        projectStateKey,
-        bindingsBySessionId: sessionBindingsById,
-      };
-    } else if (retainedSessionBindingsRef.current.projectStateKey === projectStateKey) {
-      // Scope replacement briefly clears every slice. Preserve session
-      // ownership for this same project just like remembered launch pins do;
-      // otherwise a restored foreign tab can fall through to the local runtime.
-      sessionBindingsById = retainedSessionBindingsRef.current.bindingsBySessionId;
-    } else {
-      retainedSessionBindingsRef.current = { projectStateKey, bindingsBySessionId: null };
-    }
     const router = createChatMachineRouter(buildChatMachineRoutingState({
       activeBinding: projectBinding ?? null,
       openBindings,
       activeLaneIds: (lanes ?? []).map((lane) => lane.id),
       additionalLaneSources,
     }));
+    // Runtime ownership survives the refill, but liveness keeps its existing
+    // contract: only bindings present in the live store (or open project tabs)
+    // may mutate UI state. This preserves the sticky-pin fallback's behavior
+    // while retained session/lane indexes keep calls aimed at the right machine.
+    const liveOpenBindings = collectOpenProjectBindings({
+      activeBinding: projectBinding ?? null,
+      remoteBindings: openRemoteProjectTabs ?? [],
+      localProjects: (openProjectTabRoots ?? []).map((rootPath) => ({ rootPath })),
+      additionalBindings: Object.values(liveCrossMachineSlices).map((machine) => machine.binding),
+    });
 
     return {
       ...router,
+      isLivePin: (pin) => isLivePinnedBinding(pin, liveOpenBindings),
       pinForSession: (session) => {
         const sessionId = session.sessionId ?? session.id ?? null;
         const slicePin = sessionId ? sessionBindingsById?.get(sessionId) : undefined;
@@ -145,5 +221,5 @@ export function useWorkMachineRouter(): WorkMachineRouter {
         forgetWorkPtyLaunchPin(session);
       },
     };
-  }, [crossMachineLanesByMachineId, lanes, openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectStateKey]);
+  }, [crossMachineSlices, lanes, liveCrossMachineSlices, openProjectTabRoots, openRemoteProjectTabs, projectBinding]);
 }

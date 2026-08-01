@@ -87,6 +87,7 @@ beforeEach(() => {
     lanes: [],
     projectBinding: null,
     crossMachineLaneScopeKey: null,
+    crossMachineLaneIntendedMachineIds: null,
     crossMachineLanesByMachineId: {},
   });
   resetCrossMachineLaneSyncForTest();
@@ -177,6 +178,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
     });
     useAppStore.getState().dropCrossMachineLanes(["target-studio"]);
     expect(useAppStore.getState().crossMachineLanesByMachineId["target-studio"]).toBeUndefined();
+    expect(useAppStore.getState().crossMachineLaneIntendedMachineIds).toEqual([]);
     const empty = useAppStore.getState().crossMachineLanesByMachineId;
     useAppStore.getState().dropCrossMachineLanes(["target-studio"]);
     expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(empty);
@@ -260,9 +262,12 @@ describe("offline machines stay in the sidebar, dimmed", () => {
     });
     useAppStore.getState().applyCrossMachineLaneScope("local:/repo-a");
     expect(useAppStore.getState().crossMachineLanesByMachineId).toEqual({});
+    expect(useAppStore.getState().crossMachineLaneIntendedMachineIds).toEqual(["target-studio"]);
     const empty = useAppStore.getState().crossMachineLanesByMachineId;
+    const intended = useAppStore.getState().crossMachineLaneIntendedMachineIds;
     useAppStore.getState().applyCrossMachineLaneScope("local:/repo-a");
     expect(useAppStore.getState().crossMachineLanesByMachineId).toBe(empty);
+    expect(useAppStore.getState().crossMachineLaneIntendedMachineIds).toBe(intended);
   });
 });
 

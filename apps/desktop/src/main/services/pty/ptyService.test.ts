@@ -531,12 +531,18 @@ function seedCodexRollout({
   startedAt,
   mtime,
   records = [],
+  originator,
+  parentThreadId,
 }: {
   id: string;
   cwd: string;
   startedAt: string;
   mtime: number | string | Date;
   records?: unknown[];
+  /** Mirrors `session_meta.payload.originator` — ADE's per-launch nonce lands here. */
+  originator?: string;
+  /** Set on subagent rollouts, which fork from a parent thread. */
+  parentThreadId?: string;
 }): { filePath: string; body: string } {
   const date = new Date(startedAt);
   const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
@@ -551,7 +557,13 @@ function seedCodexRollout({
     JSON.stringify({
       timestamp: startedAt,
       type: "session_meta",
-      payload: { id, timestamp: startedAt, cwd },
+      payload: {
+        id,
+        timestamp: startedAt,
+        cwd,
+        ...(originator ? { originator } : {}),
+        ...(parentThreadId ? { parent_thread_id: parentThreadId } : {}),
+      },
     }),
     ...records.map((record) => JSON.stringify(record)),
   ].join("\n") + "\n";
@@ -1972,6 +1984,265 @@ describe("ptyService", () => {
           sessionId,
           expect.stringContaining("thread-owned-needle"),
         );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("tells apart prompts that share a long head and diverge later", async () => {
+      // Regression: the needle used to be a 200-character head slice, so two
+      // launches whose prompts opened identically were indistinguishable. The
+      // needle now spans the whole delivered prompt.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const sharedHead = `${"re-run the pty ownership audit and keep the transcript tests green; ".repeat(4)}then`;
+        expect(sharedHead.length).toBeGreaterThan(200);
+        const ourPrompt = `${sharedHead} extract the codex rollout helpers`;
+        const theirPrompt = `${sharedHead} rewrite the claude storage backfill`;
+
+        // Closer to the launch instant than ours, so timestamp proximity alone
+        // would pick it, and identical for the first 200 characters.
+        seedCodexRollout({
+          id: "thread-shared-head",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 300).toISOString(),
+          mtime: launchAt.getTime() + 300,
+          records: [codexUserMessageRecord(adeCodexPrompt(theirPrompt))],
+        });
+        seedCodexRollout({
+          id: "thread-full-text",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 800).toISOString(),
+          mtime: launchAt.getTime() + 800,
+          records: [codexUserMessageRecord(adeCodexPrompt(ourPrompt))],
+        });
+
+        const { service, sessionService } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: adeCodexPrompt(ourPrompt),
+        });
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-full-text");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-shared-head"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("stamps a distinct ownership nonce on every Codex launch environment", async () => {
+      const { service, loadPty } = createHarness();
+      const launchCodex = async (): Promise<string> => {
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const env = (ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        return String(env?.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "");
+      };
+
+      const first = await launchCodex();
+      const second = await launchCodex();
+      // The `ade` prefix keeps usage attribution counting these as ADE-launched.
+      expect(first).toMatch(/^ade_pty_.+/);
+      expect(second).toMatch(/^ade_pty_.+/);
+      expect(second).not.toBe(first);
+    });
+
+    it("leaves an explicitly configured Codex originator override alone", async () => {
+      const { service, loadPty } = createHarness();
+      await service.create({
+        laneId: "lane-1",
+        title: "Codex CLI",
+        cols: 80,
+        rows: 24,
+        toolType: "codex",
+        command: "codex",
+        args: ["--no-alt-screen"],
+        env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "my_own_client" },
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      const env = (ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+      expect(env?.CODEX_INTERNAL_ORIGINATOR_OVERRIDE).toBe("my_own_client");
+    });
+
+    it("adopts by launch nonce when two same-worktree launches share the same prompt", async () => {
+      // The case the needle cannot decide: same worktree, same launch window,
+      // byte-identical prompts. Only the nonce ADE stamped on this launch, which
+      // Codex writes back as the rollout originator, separates them.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const prompt = adeCodexPrompt(OWNED_PROMPT);
+
+        const { service, sessionService, loadPty } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: prompt,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const env = (ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        const nonce = String(env?.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "");
+        expect(nonce).not.toBe("");
+
+        // The twin launch: same cwd, same text, closer to the launch instant.
+        seedCodexRollout({
+          id: "thread-twin",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 200).toISOString(),
+          mtime: launchAt.getTime() + 200,
+          originator: "ade_pty_ffffffffffffffffffffffffffffffff",
+          records: [codexUserMessageRecord(prompt)],
+        });
+        seedCodexRollout({
+          id: "thread-nonce",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 900).toISOString(),
+          mtime: launchAt.getTime() + 900,
+          originator: nonce,
+          records: [codexUserMessageRecord(prompt)],
+        });
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-nonce");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-twin"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("adopts by launch nonce when the prompt is too short to be a needle", async () => {
+      // Prompts under the needle minimum carry no ownership signal of their own,
+      // which used to leave short-prompt launches racing on timestamps.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+        const prompt = adeCodexPrompt("ship it");
+
+        const { service, sessionService, loadPty } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          initialInput: prompt,
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const env = (ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        const nonce = String(env?.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "");
+
+        seedCodexRollout({
+          id: "thread-short-twin",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 200).toISOString(),
+          mtime: launchAt.getTime() + 200,
+          records: [codexUserMessageRecord(prompt)],
+        });
+        seedCodexRollout({
+          id: "thread-short-ours",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 900).toISOString(),
+          mtime: launchAt.getTime() + 900,
+          originator: nonce,
+          records: [codexUserMessageRecord(prompt)],
+        });
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-short-ours");
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-short-twin"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not adopt a subagent rollout that inherited this launch's nonce", async () => {
+      // Codex subagents fork from the launched thread and inherit its
+      // environment, so they carry the same originator. The thread ADE launched
+      // is the root one.
+      vi.useFakeTimers();
+      try {
+        const launchAt = new Date("2026-04-15T22:00:00.000Z");
+        vi.setSystemTime(launchAt);
+
+        const { service, sessionService, loadPty } = createHarness();
+        const { sessionId } = await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const env = (ptyLib.spawn.mock.calls.at(-1)?.[2] as { env?: NodeJS.ProcessEnv } | undefined)?.env;
+        const nonce = String(env?.CODEX_INTERNAL_ORIGINATOR_OVERRIDE ?? "");
+
+        // The subagent rollout lands first and is the only candidate in the
+        // window: it still must not be adopted, nonce or no nonce.
+        seedCodexRollout({
+          id: "thread-subagent",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 400).toISOString(),
+          mtime: launchAt.getTime() + 400,
+          originator: nonce,
+          parentThreadId: "thread-root",
+        });
+        await vi.advanceTimersByTimeAsync(500);
+
+        expect(sessionService.setResumeCommand).not.toHaveBeenCalledWith(
+          sessionId,
+          expect.stringContaining("thread-subagent"),
+        );
+
+        seedCodexRollout({
+          id: "thread-root",
+          cwd: "/tmp/test-worktree",
+          startedAt: new Date(launchAt.getTime() + 900).toISOString(),
+          mtime: launchAt.getTime() + 900,
+          originator: nonce,
+        });
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        expect(sessionService.setResumeCommand).toHaveBeenCalledWith(sessionId, "codex resume thread-root");
       } finally {
         vi.useRealTimers();
       }

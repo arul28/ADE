@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { WorkChatSessionCreatedDetail } from "../../lib/chatSessionEvents";
+import { createDefaultWorkProjectViewState } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -31,6 +32,7 @@ function resetFakeAppStoreState() {
     setWorkViewState: setWorkViewStateSpy,
     sessionsCacheByProject: {},
     crossMachineLanesByMachineId: {},
+    crossMachineLaneIntendedMachineIds: null,
   };
   routerLocation.pathname = "/work";
   routerLocation.search = "";
@@ -828,7 +830,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }));
   });
 
-  it("retains each pending machine through an asynchronous two-machine scope refill", async () => {
+  it("retains a slow machine's sessions and runtime pin through repeated A-only refill applies", async () => {
     const foreignA = makeSession("foreign-a", "lane-a");
     const foreignB = makeSession("foreign-b", "lane-b");
     const bindingA = {
@@ -874,6 +876,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     fakeAppStoreState = {
       ...fakeAppStoreState,
       workViewByProject: { "/fake/project": workState },
+      crossMachineLaneIntendedMachineIds: ["target-a", "target-b"],
       crossMachineLanesByMachineId: {
         "target-a": {
           machineId: "target-a",
@@ -923,25 +926,79 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     expect(result.current.sessionsById.get(foreignA.id)?.lastOutputPreview).toBe("fresh-a");
     expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
     expect(result.current.visibleSessions).toContainEqual(foreignB);
     expect(result.current.gridSets[0]?.sessionIds).toEqual([foreignA.id, foreignB.id]);
-  });
 
-  it("prunes a machine removed from the authoritative scope list without waiting for its slice", async () => {
-    const foreignA = makeSession("scope-a", "lane-a");
-    const foreignB = makeSession("scope-b", "lane-b");
+    // Another A-only apply is a new slice result, not completion of the whole
+    // scope. B remains retained because membership still says it is intended.
     fakeAppStoreState = {
       ...fakeAppStoreState,
       crossMachineLanesByMachineId: {
         "target-a": {
           machineId: "target-a",
           machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [{ ...foreignA, lastOutputPreview: "fresher-a" }],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreignA.id)?.lastOutputPreview).toBe("fresher-a");
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+  });
+
+  it("prunes retained sessions, tabs, and pins when a machine is removed mid-refill", async () => {
+    const foreignA = makeSession("scope-a", "lane-a");
+    const foreignB = makeSession("scope-b", "lane-b");
+    const bindingA = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    } as const;
+    const bindingB = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const workState = {
+      ...createDefaultWorkProjectViewState(),
+      openItemIds: [foreignA.id, foreignB.id],
+      activeItemId: foreignB.id,
+      selectedItemId: foreignB.id,
+      gridSets: [{
+        id: "grid-1",
+        layoutId: "layout-grid-1",
+        sessionIds: [foreignA.id, foreignB.id],
+      }],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLaneIntendedMachineIds: ["target-a", "target-b"],
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [foreignA],
         },
         "target-b": {
           machineId: "target-b",
           machineName: "Machine B",
+          binding: bindingB,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignB],
         },
@@ -950,15 +1007,28 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     const { result, rerender } = renderHook(() => useWorkSessions());
     await waitFor(() => expect(result.current.sessionsById.has(foreignB.id)).toBe(true));
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
 
-    // dropCrossMachineLanes removes B from the non-empty machine record. That is
-    // an authoritative scope-list change, not an absent/pending session slice.
+    // The wholesale clear starts the refill; both machines are still intended.
     fakeAppStoreState = {
       ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {},
+    };
+    rerender();
+    expect(result.current.sessionsById.has(foreignB.id)).toBe(true);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+
+    setWorkViewStateSpy.mockClear();
+    // B is deliberately forgotten before its slice arrives. Scope intent is
+    // authoritative even though the arriving record only contains A.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLaneIntendedMachineIds: ["target-a"],
       crossMachineLanesByMachineId: {
         "target-a": {
           machineId: "target-a",
           machineName: "Machine A",
+          binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [foreignA],
         },
@@ -969,6 +1039,19 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(result.current.sessionsById.has(foreignA.id)).toBe(true);
     expect(result.current.sessionsById.has(foreignB.id)).toBe(false);
     expect(result.current.visibleSessions).not.toContainEqual(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)).toBeNull();
+
+    await waitFor(() => expect(setWorkViewStateSpy).toHaveBeenCalled());
+    const pruneUpdate = [...setWorkViewStateSpy.mock.calls]
+      .reverse()
+      .map((call) => call[1])
+      .find((next) => typeof next === "function");
+    expect(typeof pruneUpdate).toBe("function");
+    expect((pruneUpdate as (prev: typeof workState) => typeof workState)(workState)).toMatchObject({
+      openItemIds: [foreignA.id],
+      activeItemId: foreignA.id,
+      selectedItemId: foreignA.id,
+    });
   });
 
   it("removes a foreign union member when its present machine slice no longer reports it", async () => {
