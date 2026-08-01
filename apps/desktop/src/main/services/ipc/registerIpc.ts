@@ -4304,7 +4304,7 @@ export function registerIpc({
     bindRemoteProject,
     getGitHubTokenForRemoteClone: async () => {
       try {
-        return await getCtx().githubService.getTokenOrThrowAsync();
+        return await getCtx().githubService.getGitTransportTokenOrThrowAsync();
       } catch {
         return null;
       }

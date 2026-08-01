@@ -4206,6 +4206,8 @@ export function createPrService({
     variables: Record<string, unknown>,
     options: { accept?: string } = {},
   ): Promise<T> => {
+    const owner = typeof variables.owner === "string" ? variables.owner.trim() : "";
+    const name = typeof variables.name === "string" ? variables.name.trim() : "";
     const { data: payload } = await githubService.apiRequest<{
       data?: T;
       errors?: Array<{ message?: unknown }>;
@@ -4213,6 +4215,7 @@ export function createPrService({
       method: "POST",
       path: "/graphql",
       capability: /^\s*mutation\b/i.test(query) ? "write" : "read",
+      ...(owner && name ? { repo: { owner, name } } : {}),
       body: { query, variables },
       ...(options.accept ? { accept: options.accept } : {}),
     });
@@ -5744,7 +5747,7 @@ export function createPrService({
     repo: GitHubRepoRef;
     jobId: number;
   }): Promise<{ text: string; truncated: boolean } | null> => {
-    const token = await githubService.getTokenOrThrowAsync();
+    const token = await githubService.getReadTokenOrThrowAsync();
     const apiUrl = `https://api.github.com/repos/${args.repo.owner}/${args.repo.name}/actions/jobs/${args.jobId}/logs`;
     const headers = {
       accept: "application/vnd.github+json",

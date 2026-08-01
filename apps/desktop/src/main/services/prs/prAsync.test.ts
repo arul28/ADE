@@ -12,6 +12,10 @@ import {
 import { createPrMergeAutoSettlementService } from "./prMergeAutoSettlementService";
 import { createPrPollingService } from "./prPollingService";
 import { buildPrSummaryPrompt, createPrSummaryService, parsePrSummaryJson } from "./prSummaryService";
+import {
+  clearGithubCredentialHealth,
+  recordGithubCredentialSuccess,
+} from "../github/githubCredentialHealth";
 
 // ---------------------------------------------------------------------------
 // Shared helpers
@@ -81,6 +85,7 @@ describe("prPollingService", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    clearGithubCredentialHealth();
   });
 
   it("refreshes only hot PRs and ignores updatedAt-only churn", async () => {
@@ -205,6 +210,85 @@ describe("prPollingService", () => {
     await vi.advanceTimersByTimeAsync(15 * 60_000);
     expect(refresh).toHaveBeenCalledTimes(3);
     expect(refresh).toHaveBeenLastCalledWith();
+  });
+
+  it("does not inherit a global pause when the project-scoped provider returns no pause", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    recordGithubCredentialSuccess({
+      source: "gh",
+      token: "gho_unrelated_project",
+      capabilities: ["read", "write"],
+    }, new Headers({
+      "x-ratelimit-limit": "5000",
+      "x-ratelimit-remaining": "100",
+      "x-ratelimit-used": "4900",
+      "x-ratelimit-reset": String(Date.parse("2026-03-24T13:00:00.000Z") / 1_000),
+      "x-ratelimit-resource": "core",
+    }));
+
+    const summary = createSummary();
+    const refresh = vi.fn(async () => [summary]);
+    const getGithubBackgroundPauseUntilMs = vi.fn(() => null);
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService: {
+        listAll: () => [summary],
+        refresh,
+        getHotRefreshDelayMs: () => null,
+        getHotRefreshPrIds: () => [],
+      } as any,
+      projectConfigService: { get: () => ({ effective: {} }) } as any,
+      getGithubBackgroundPauseUntilMs,
+      onEvent: vi.fn(),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+
+    expect(getGithubBackgroundPauseUntilMs).toHaveBeenCalledTimes(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("backs off a failed relay safety sweep without retrying it every second", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+
+    const summary = createSummary();
+    const listAll = vi.fn(() => [summary]);
+    const refresh = vi.fn(async () => {
+      throw new Error("safety sweep failed");
+    });
+    const service = createPrPollingService({
+      logger: createLogger() as any,
+      prService: {
+        listAll,
+        refresh,
+        getHotRefreshDelayMs: () => null,
+        getHotRefreshPrIds: () => [],
+      } as any,
+      projectConfigService: {
+        get: () => ({ effective: { github: { prPollingIntervalSeconds: 5 } } }),
+      } as any,
+      isGithubRelayHealthy: () => true,
+      onEvent: vi.fn(),
+    });
+
+    service.start();
+    await vi.advanceTimersByTimeAsync(12_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(listAll).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(listAll).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(listAll).toHaveBeenCalledTimes(3);
+    expect(refresh).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000 - 10_000);
+    expect(refresh).toHaveBeenCalledTimes(2);
   });
 
   it("discovers lane PRs when the local PR cache starts empty", async () => {

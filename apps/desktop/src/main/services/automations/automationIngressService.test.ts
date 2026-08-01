@@ -993,6 +993,125 @@ describe("automationIngressService", () => {
     }));
   });
 
+  it("caps relay Retry-After cooldowns and clears them on restart", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T12:00:00.000Z"));
+    const logger = makeLogger();
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response("slow down", {
+        status: 429,
+        headers: { "retry-after": "86400" },
+      }))
+      .mockResolvedValue(new Response(JSON.stringify({ events: [], nextCursor: null, hasMore: false }), {
+        headers: { "content-type": "application/json" },
+      }));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+    });
+
+    await service.pollNow();
+
+    expect(logger.warn).toHaveBeenCalledWith(
+      "automations.github_relay_poll_failed",
+      expect.objectContaining({ retryAt: "2026-08-01T12:15:00.000Z" }),
+    );
+
+    service.stop();
+    await service.start();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("preserves committed reconciliation when a later relay page is superseded", async () => {
+    const updates: Array<Record<string, unknown>> = [];
+    const logger = makeLogger();
+    const cursors = new Map<string, string | null>([["github-relay", "seq:2"]]);
+    const onPrStateIngested = vi.fn();
+    let resolveOldSecondPage: ((response: Response) => void) | null = null;
+    const fetchSpy = vi.spyOn(globalThis, "fetch")
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        events: [
+          { cursor: "seq:3", eventId: "delivery-3", githubEvent: "pull_request", payload: {} },
+        ],
+        nextCursor: "seq:3",
+        hasMore: true,
+      }), { headers: { "content-type": "application/json" } }))
+      .mockImplementationOnce(() => new Promise<Response>((resolve) => {
+        resolveOldSecondPage = resolve;
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        events: [],
+        nextCursor: "seq:3",
+        hasMore: false,
+      }), { headers: { "content-type": "application/json" } }));
+
+    service = createAutomationIngressService({
+      logger: logger as never,
+      automationService: {
+        updateIngressStatus: (patch: Record<string, unknown>) => updates.push(patch),
+        dispatchIngressTrigger: vi.fn(),
+        getIngressCursor: (source: string) => cursors.get(source) ?? null,
+        setIngressCursor: ({ source, cursor }: { source: string; cursor: string | null }) => {
+          cursors.set(source, cursor);
+        },
+        getIngressStatus: () => ({}),
+      } as never,
+      prService: {
+        ingestGithubWebhook: vi.fn(async () => ({
+          processed: true,
+          duplicate: false,
+          repoOwner: "arul28",
+          repoName: "ADE",
+          githubPrNumber: 3,
+          linkedPrIds: ["pr-3"],
+          reason: null,
+        })),
+      } as never,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      onPrStateIngested,
+      listRules: () => [],
+    });
+
+    const firstStart = service.start();
+    await vi.waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
+    expect(cursors.get("github-relay")).toBe("seq:3");
+    expect(onPrStateIngested).toHaveBeenCalledOnce();
+    expect(onPrStateIngested).toHaveBeenCalledWith(["pr-3"]);
+
+    service.stop();
+    const secondStart = service.start();
+    const resolveStalePage = resolveOldSecondPage as ((response: Response) => void) | null;
+    if (!resolveStalePage) throw new Error("Expected the old second page to be in flight");
+    resolveStalePage(new Response("stale failure", { status: 500 }));
+    await Promise.all([firstStart, secondStart]);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(onPrStateIngested).toHaveBeenCalledOnce();
+    expect(logger.warn).not.toHaveBeenCalledWith(
+      "automations.github_relay_poll_failed",
+      expect.anything(),
+    );
+    expect(updates).not.toContainEqual(expect.objectContaining({
+      githubRelay: expect.objectContaining({ status: "error" }),
+    }));
+    expect(updates.at(-1)).toEqual(expect.objectContaining({
+      githubRelay: expect.objectContaining({ healthy: true, status: "ready" }),
+    }));
+  });
+
   it("polls immediately for subscription wake-up frames", async () => {
     const webSockets = makeWebSocketHarness();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>

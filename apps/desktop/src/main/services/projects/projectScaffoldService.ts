@@ -215,7 +215,7 @@ export function createProjectScaffoldService({
     let authHeader = (input.githubAuthHeader ?? "").trim();
     if (!authHeader) {
       try {
-        const storedToken = await githubService.getTokenOrThrowAsync();
+        const storedToken = await githubService.getGitTransportTokenOrThrowAsync();
         const basic = Buffer.from(`x-access-token:${storedToken}`, "utf8").toString("base64");
         authHeader = `basic ${basic}`;
       } catch {
@@ -260,7 +260,7 @@ export function createProjectScaffoldService({
   const listMyGitHubRepos = async (input: ListMyGitHubReposInput): Promise<ListMyGitHubReposResult> => {
     let token: string;
     try {
-      token = await githubService.getTokenOrThrowAsync();
+      token = await githubService.getReadTokenOrThrowAsync();
     } catch (err) {
       const wrapped = new Error("GitHub is not connected. Run gh auth login or add a PAT in Settings.") as Error & { code?: string };
       wrapped.code = "github_not_connected";

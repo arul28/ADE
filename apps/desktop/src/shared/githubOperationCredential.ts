@@ -69,6 +69,21 @@ export function githubOperationCredentialCandidates<
     });
 }
 
+export function resolveGithubOperationCredentialCandidate<
+  T extends {
+    source: GithubOperationCredentialSource;
+    token: string;
+    capabilities: readonly GithubOperationCredentialCapability[];
+  },
+>(args: {
+  candidates: readonly T[];
+  capability: GithubOperationCredentialCapability;
+  isAvailable: (candidate: T) => boolean;
+}): T | null {
+  return githubOperationCredentialCandidates(args.candidates, args.capability)
+    .find(args.isAvailable) ?? null;
+}
+
 export function evaluateGithubCredentialCapabilities(args: {
   source: GithubOperationCredentialSource;
   tokenType: GitHubTokenType;

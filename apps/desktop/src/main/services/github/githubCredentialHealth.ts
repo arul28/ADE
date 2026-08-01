@@ -214,7 +214,7 @@ export function githubCredentialCooldown(
   nowMs = Date.now(),
   options: {
     resource?: string | null;
-    ignoreNonRateLimit?: boolean;
+    failurePolicy?: "all" | "rate-limit-only" | "non-rate-limit-only";
   } = {},
 ): { failure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } | null {
   const health = healthFor(candidate);
@@ -223,11 +223,16 @@ export function githubCredentialCooldown(
   const entries = requestedResource
     ? [health.resources.get(requestedResource), health.resources.get("unknown")]
     : [...health.resources.values()];
+  const failurePolicy = options.failurePolicy ?? "all";
   const cooling = entries
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(
       entry?.failure
       && entry.cooldownUntilMs > nowMs
-      && (!options.ignoreNonRateLimit || entry.failure.kind === "rate_limited"),
+      && (
+        failurePolicy === "all"
+        || (failurePolicy === "rate-limit-only" && entry.failure.kind === "rate_limited")
+        || (failurePolicy === "non-rate-limit-only" && entry.failure.kind !== "rate_limited")
+      ),
     ))
     .sort((left, right) => right.cooldownUntilMs - left.cooldownUntilMs)[0];
   if (!cooling?.failure) return null;

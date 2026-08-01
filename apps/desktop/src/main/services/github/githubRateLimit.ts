@@ -119,8 +119,9 @@ export function classifyGitHubGraphqlCredentialFailure(
   payload: unknown,
   headers: Pick<Headers, "get">,
 ): {
-  status: 403 | 429;
+  status: 403 | 404 | 429;
   message: string;
+  hasData: boolean;
   authFailure: GitHubAuthFailure;
   rateLimit: GitHubRateLimitState | null;
 } | null {
@@ -130,6 +131,16 @@ export function classifyGitHubGraphqlCredentialFailure(
     || !("errors" in payload)
     || !Array.isArray(payload.errors)
   ) return null;
+  const data = "data" in payload ? payload.data : null;
+  const hasMeaningfulData = (value: unknown): boolean => {
+    if (value == null) return false;
+    if (Array.isArray(value)) return value.some(hasMeaningfulData);
+    if (typeof value === "object") {
+      return Object.values(value as Record<string, unknown>).some(hasMeaningfulData);
+    }
+    return true;
+  };
+  const hasData = hasMeaningfulData(data);
   const errors: unknown[] = payload.errors;
   const messages = errors.flatMap((error) => {
     if (!error || typeof error !== "object") return [];
@@ -160,6 +171,7 @@ export function classifyGitHubGraphqlCredentialFailure(
     return {
       status: 429,
       message,
+      hasData,
       ...classifyGitHubAuthFailure({ status: 429, message, headers }),
     };
   }
@@ -169,7 +181,23 @@ export function classifyGitHubGraphqlCredentialFailure(
     return {
       status: 403,
       message,
+      hasData,
       ...classifyGitHubAuthFailure({ status: 403, message, headers }),
+    };
+  }
+  const repositoryNotFound = errorTypes.includes("NOT_FOUND")
+    && /(?:could not resolve to a|not found).*repository|repository.*not found/i.test(message);
+  if (repositoryNotFound) {
+    return {
+      status: 404,
+      message,
+      hasData,
+      rateLimit,
+      authFailure: {
+        kind: "permission_denied",
+        message,
+        retryAt: null,
+      },
     };
   }
   return null;

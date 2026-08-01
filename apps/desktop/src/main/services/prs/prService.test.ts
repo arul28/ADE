@@ -244,6 +244,8 @@ function makeGithubService(overrides?: Record<string, unknown>) {
     clearToken: vi.fn(),
     getTokenOrThrow,
     getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getReadTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getGitTransportTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     ...remainingOverrides,
   } as any;
 }

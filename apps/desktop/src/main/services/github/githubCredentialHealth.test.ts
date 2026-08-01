@@ -127,7 +127,7 @@ describe("githubCredentialHealth", () => {
       retryAt: null,
     }, null);
     expect(githubCredentialCooldown(appCandidate)).not.toBeNull();
-    expect(githubCredentialCooldown(appCandidate, Date.now(), { ignoreNonRateLimit: true }))
+    expect(githubCredentialCooldown(appCandidate, Date.now(), { failurePolicy: "rate-limit-only" }))
       .toBeNull();
 
     recordGithubCredentialFailure(appCandidate, {
@@ -141,7 +141,7 @@ describe("githubCredentialHealth", () => {
       resetAt: new Date(Date.now() + 60_000).toISOString(),
       resource: "core",
     });
-    expect(githubCredentialCooldown(appCandidate, Date.now(), { ignoreNonRateLimit: true })
+    expect(githubCredentialCooldown(appCandidate, Date.now(), { failurePolicy: "rate-limit-only" })
       ?.failure.kind).toBe("rate_limited");
   });
 });

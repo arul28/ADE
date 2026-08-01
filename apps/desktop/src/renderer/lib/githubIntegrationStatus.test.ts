@@ -148,6 +148,17 @@ describe("describeGithubCliBanner", () => {
     expect(banner.action).toBe("Fix GitHub auth");
   });
 
+  it("treats an omitted write source as no write credential for App-only status", () => {
+    const banner = describeGithubCliBanner(makeCliStatus({
+      authSource: "app",
+      writeAuthSource: undefined,
+      connected: true,
+    }));
+
+    expect(banner.subState).toBe("no-write-credential");
+    expect(banner.title).toBe("GitHub write access isn't connected");
+  });
+
   it("keeps raw validation errors in Settings without leaking them into the banner", () => {
     const copy = describeGithubAuthFailure(makeCliStatus({
       authFailure: {

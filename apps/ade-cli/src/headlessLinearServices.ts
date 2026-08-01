@@ -29,6 +29,7 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
+  GitHubRepoRef,
   GitHubRateLimitState,
   GitHubStatus,
 } from "../../desktop/src/shared/types";
@@ -64,6 +65,7 @@ import { EncryptedFileCredentialStore } from "./services/credentials/credentialS
 import {
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
+  resolveGithubOperationCredentialCandidate,
   resolveGithubStatusCredentials,
   selectGithubOperationCredential,
   type GithubOperationCredentialCapability,
@@ -72,6 +74,7 @@ import {
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
 } from "../../desktop/src/shared/githubApiPath";
+import { createGithubConditionalRequestCache } from "../../desktop/src/shared/githubConditionalRequestCache";
 import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
@@ -769,15 +772,18 @@ export function createHeadlessGitHubService(
 
   const readTokenAsync = async (
     capability: GithubOperationCredentialCapability = "write",
+    failurePolicy: "all" | "non-rate-limit-only" = "all",
   ): Promise<HeadlessGitHubTokenLookup> => {
     const inventory = await readCredentialInventoryAsync();
-    const candidates = githubOperationCredentialCandidates(inventory.candidates, capability);
-    return candidates.find((candidate) => !githubCredentialCooldown(
-      candidate,
-      Date.now(),
-      { resource: "core" },
-    ))
-      ?? candidates[0]
+    return resolveGithubOperationCredentialCandidate({
+      candidates: inventory.candidates,
+      capability,
+      isAvailable: (candidate) => !githubCredentialCooldown(
+        candidate,
+        Date.now(),
+        { resource: "core", failurePolicy },
+      ),
+    })
       ?? {
         token: null,
         source: "none",
@@ -998,12 +1004,7 @@ export function createHeadlessGitHubService(
     }
   };
 
-  const etagCache = new Map<string, {
-    etag: string;
-    data: unknown;
-    linkHeader: string | null;
-  }>();
-  const ETAG_CACHE_MAX_SIZE = 200;
+  const conditionalRequestCache = createGithubConditionalRequestCache();
 
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -1013,6 +1014,7 @@ export function createHeadlessGitHubService(
     token?: string;
     accept?: string;
     capability?: GithubOperationCredentialCapability;
+    repo?: GitHubRepoRef;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
     const explicitToken = args.token?.trim() ?? "";
@@ -1041,7 +1043,8 @@ export function createHeadlessGitHubService(
     }
     const accept = args.accept?.trim() || "application/vnd.github+json";
     const rateLimitResource = githubRateLimitResourceForPath(args.path);
-    const repositoryPath = classifyGitHubRepositoryApiPath(args.path);
+    const repositoryPath = classifyGitHubRepositoryApiPath(args.path)
+      ?? (args.repo ? { ...args.repo, isRepositoryRoot: true } : null);
     const repositoryFallback = createGithubRepositoryRequestFallback<HeadlessGitHubTokenCandidate>({
       path: repositoryPath,
       readAccess: githubCredentialRepositoryAccess,
@@ -1084,22 +1087,37 @@ export function createHeadlessGitHubService(
         "user-agent": "ade-cli",
         ...(args.body == null ? {} : { "content-type": "application/json" }),
       };
+      let releaseConditionalRequest: (() => void) | null = null;
       if (args.method === "GET") {
-        const cached = etagCache.get(cacheKey);
-        if (cached) headers["if-none-match"] = cached.etag;
+        const conditional = conditionalRequestCache.begin(cacheKey);
+        if (conditional) {
+          headers["if-none-match"] = conditional.entry.etag;
+          releaseConditionalRequest = conditional.release;
+        }
       }
-      const response = await fetchGitHub(url, {
-        method: args.method,
-        headers,
-        body: args.body == null ? undefined : JSON.stringify(args.body),
-      });
+      let response: Response;
+      try {
+        response = await fetchGitHub(url, {
+          method: args.method,
+          headers,
+          body: args.body == null ? undefined : JSON.stringify(args.body),
+        });
+      } finally {
+        releaseConditionalRequest?.();
+      }
       if (response.status === 304) {
-        const cached = etagCache.get(cacheKey);
+        const cached = conditionalRequestCache.get(cacheKey);
         if (cached) {
           recordGithubCredentialSuccess(candidate, response.headers);
           repositoryFallback.recordSuccess(candidate);
           return { data: cached.data as T, response, linkHeader: cached.linkHeader };
         }
+        delete headers["if-none-match"];
+        response = await fetchGitHub(url, {
+          method: args.method,
+          headers,
+          body: args.body == null ? undefined : JSON.stringify(args.body),
+        });
       }
       const text = await response.text();
       let data: unknown = text;
@@ -1157,18 +1175,26 @@ export function createHeadlessGitHubService(
         ? classifyGitHubGraphqlCredentialFailure(data, response.headers)
         : null;
       if (graphqlFailure) {
-        recordGithubCredentialFailure(
+        const { repositoryNotFound } = repositoryFallback.classifyFailure(
           candidate,
-          graphqlFailure.authFailure,
-          graphqlFailure.rateLimit,
+          graphqlFailure.status,
         );
+        if (!repositoryNotFound) {
+          recordGithubCredentialFailure(
+            candidate,
+            graphqlFailure.authFailure,
+            graphqlFailure.rateLimit,
+          );
+        }
         const attemptError = new HeadlessGithubCredentialAttemptError(
           graphqlFailure.message,
           graphqlFailure.authFailure,
           graphqlFailure.rateLimit,
         );
         lastAttemptError = attemptError;
-        if (!args.token) continue;
+        const canTryNext = !args.token
+          && (capability === "read" || !graphqlFailure.hasData);
+        if (canTryNext) continue;
         if (attemptError.authFailure.kind === "rate_limited") {
           const resetAtMs = githubRateLimitRetryAtMs(attemptError.authFailure, attemptError.rateLimit);
           throw new GitHubRateLimitError(attemptError.message, resetAtMs, attemptError.rateLimit);
@@ -1189,12 +1215,7 @@ export function createHeadlessGitHubService(
       if (args.method === "GET") {
         const etag = response.headers.get("etag");
         if (etag) {
-          while (etagCache.size >= ETAG_CACHE_MAX_SIZE && !etagCache.has(cacheKey)) {
-            const oldest = etagCache.keys().next().value as string | undefined;
-            if (!oldest) break;
-            etagCache.delete(oldest);
-          }
-          etagCache.set(cacheKey, { etag, data, linkHeader });
+          conditionalRequestCache.store(cacheKey, { etag, data, linkHeader });
         }
       }
       return { data: data as T, response, linkHeader };
@@ -1509,7 +1530,10 @@ export function createHeadlessGitHubService(
         const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => githubCredentialCooldown(
           candidate,
           Date.now(),
-          { resource: "core", ignoreNonRateLimit: opts.forceRefresh === true },
+          {
+            resource: "core",
+            failurePolicy: opts.forceRefresh === true ? "rate-limit-only" : "all",
+          },
         );
         const primaryCandidate = readCandidates[0] ?? null;
         if (!primaryCandidate) {
@@ -1751,7 +1775,25 @@ export function createHeadlessGitHubService(
       return token;
     },
     async getTokenOrThrowAsync() {
-      const token = (await readTokenAsync()).token ?? "";
+      const token = (await readTokenAsync("write")).token ?? "";
+      if (!token) {
+        throw new Error(
+          "GitHub write access is unavailable. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, connect GitHub CLI, or add a PAT in Settings.",
+        );
+      }
+      return token;
+    },
+    async getReadTokenOrThrowAsync() {
+      const token = (await readTokenAsync("read")).token ?? "";
+      if (!token) {
+        throw new Error(
+          "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
+        );
+      }
+      return token;
+    },
+    async getGitTransportTokenOrThrowAsync() {
+      const token = (await readTokenAsync("read", "non-rate-limit-only")).token ?? "";
       if (!token) {
         throw new Error(
           "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",

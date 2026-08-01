@@ -672,6 +672,7 @@ describe("account integration re-keying", () => {
     const providerCallsBeforeRead = vi.mocked(fetch).mock.calls.length;
 
     const response = await handleRequest(request("/github/repos/acme/repo/events", {
+      authorization: "Bearer ghp_repo_token",
       accountToken,
     }), env);
 

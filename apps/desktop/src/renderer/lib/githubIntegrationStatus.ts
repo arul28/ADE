@@ -260,7 +260,7 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       action: "Connect GitHub",
     };
   }
-  if (status.writeAuthSource === "none") {
+  if (status.connected && !githubStatusHasWriteCredential(status)) {
     return {
       subState: "no-write-credential",
       title: "GitHub write access isn't connected",

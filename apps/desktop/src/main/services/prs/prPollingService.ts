@@ -250,7 +250,9 @@ export function createPrPollingService({
     const polledAt = nowIso();
     try {
       const backgroundPauseUntilMs = await Promise.resolve(
-        getGithubBackgroundPauseUntilMs?.() ?? githubBackgroundRequestPauseUntilMs(),
+        getGithubBackgroundPauseUntilMs
+          ? getGithubBackgroundPauseUntilMs()
+          : githubBackgroundRequestPauseUntilMs(),
       );
       if (backgroundPauseUntilMs != null && backgroundPauseUntilMs > Date.now()) {
         const untilReset = Math.max(10_000, backgroundPauseUntilMs - Date.now() + 5_000);
@@ -305,8 +307,8 @@ export function createPrPollingService({
         await prService.refresh({ prIds: targetedPrIds });
       } else if (relayHealthy) {
         if (Date.now() - lastRelaySafetySweepAtMs >= RELAY_SAFETY_SWEEP_INTERVAL_MS) {
-          await prService.refresh();
           lastRelaySafetySweepAtMs = Date.now();
+          await prService.refresh();
         }
       } else if (hotPrIds.length > 0) {
         await prService.refresh({ prIds: hotPrIds });
@@ -489,7 +491,9 @@ export function createPrPollingService({
         const relaySafetyDelay = relayHealthy
           ? Math.max(1_000, RELAY_SAFETY_SWEEP_INTERVAL_MS - (Date.now() - lastRelaySafetySweepAtMs))
           : null;
-        const base = hotDelay ?? relaySafetyDelay ?? computeBackoffMs();
+        const base = consecutiveFailures > 0
+          ? computeBackoffMs()
+          : hotDelay ?? relaySafetyDelay ?? computeBackoffMs();
         const delay = jitterMs(Math.max(base, nextDelayOverrideMs ?? 0));
         nextDelayOverrideMs = null;
         if (rateLimitResumeAtMs > 0 && Date.now() >= rateLimitResumeAtMs) {

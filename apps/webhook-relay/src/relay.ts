@@ -1523,8 +1523,14 @@ async function authorizeRepoEventRead(
   // re-proving repository access. The GitHub-token path remains for legacy
   // clients that do not send an ADE account token.
   const accountId = await authenticateAccount(request, env);
-  if (accountId && await githubRepositoryAccountMatches(env, repo, accountId)) {
-    return { authorized: true, accountId };
+  if (accountId) {
+    if (await githubRepositoryAccountMatches(env, repo, accountId)) {
+      return { authorized: true, accountId };
+    }
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "unauthorized" }, { status: 401 }),
+    };
   }
 
   const auth = await assertGitHubRepoAuthorized(request, env, repo);

@@ -24,6 +24,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import {
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
+  resolveGithubOperationCredentialCandidate,
   resolveGithubStatusCredentials,
   selectGithubOperationCredential,
   type GithubOperationCredentialCapability,
@@ -32,6 +33,7 @@ import {
   classifyGitHubRepositoryApiPath,
   createGithubRepositoryRequestFallback,
 } from "../../../shared/githubApiPath";
+import { createGithubConditionalRequestCache } from "../../../shared/githubConditionalRequestCache";
 import { mergePathEntries, resolveExecutableFromKnownLocations } from "../ai/cliExecutableResolver";
 import { fetchGitHubAppInstallationStatus, type GitHubRelaySecretReader } from "./githubRelayConfig";
 import { createGitHubAppUserAuthService } from "./githubAppUserAuthService";
@@ -815,17 +817,19 @@ export function createGithubService({
 
   const readAuthToken = async (
     capability: GithubOperationCredentialCapability = "read",
+    failurePolicy: "all" | "non-rate-limit-only" = "all",
   ): Promise<GitHubTokenLookup> => {
     const inventory = await readCredentialInventory();
-    const candidates = githubOperationCredentialCandidates(inventory.candidates, capability);
-    const selected = candidates.find((candidate) => !githubCredentialCooldown(
-      candidate,
-      Date.now(),
-      { resource: "core" },
-    ))
-      ?? candidates[0]
-      ?? null;
-    return selected ?? {
+    const resolved = resolveGithubOperationCredentialCandidate({
+      candidates: inventory.candidates,
+      capability,
+      isAvailable: (candidate) => !githubCredentialCooldown(
+        candidate,
+        Date.now(),
+        { resource: "core", failurePolicy },
+      ),
+    });
+    return resolved ?? {
       token: null,
       source: "none",
       patTokenStored: inventory.patTokenStored,
@@ -1146,17 +1150,7 @@ export function createGithubService({
 
   // ETag cache for conditional GET requests. Responses that return 304 Not Modified
   // don't count against GitHub's rate limit, so this dramatically reduces API usage.
-  const etagCache = new Map<string, { etag: string; data: unknown; linkHeader: string | null }>();
-  const ETAG_CACHE_MAX_SIZE = 200;
-  const inFlightConditionalGetKeys = new Set<string>();
-
-  const evictOldestEtagCacheEntry = (protectedKeys: ReadonlySet<string>): void => {
-    for (const key of etagCache.keys()) {
-      if (protectedKeys.has(key)) continue;
-      etagCache.delete(key);
-      return;
-    }
-  };
+  const conditionalRequestCache = createGithubConditionalRequestCache();
 
   const apiRequest = async <T>(args: {
     method: "GET" | "POST" | "PATCH" | "PUT" | "DELETE";
@@ -1165,6 +1159,7 @@ export function createGithubService({
     body?: unknown;
     token?: string;
     capability?: GithubOperationCredentialCapability;
+    repo?: GitHubRepoRef;
     /**
      * Override the default `Accept` header. Used to request GitHub schema
      * previews (e.g. `application/vnd.github.merge-info-preview+json` for the
@@ -1200,7 +1195,8 @@ export function createGithubService({
 
     const accept = args.accept?.trim() || "application/vnd.github+json";
     const rateLimitResource = githubRateLimitResourceForPath(args.path);
-    const repositoryPath = classifyGitHubRepositoryApiPath(args.path);
+    const repositoryPath = classifyGitHubRepositoryApiPath(args.path)
+      ?? (args.repo ? { ...args.repo, isRepositoryRoot: true } : null);
     const repositoryFallback = createGithubRepositoryRequestFallback<GitHubTokenCandidate>({
       path: repositoryPath,
       readAccess: githubCredentialRepositoryAccess,
@@ -1245,13 +1241,12 @@ export function createGithubService({
         "user-agent": "ade-desktop",
         "x-github-api-version": GITHUB_REST_API_VERSION,
       };
-      let sentConditionalGet = false;
+      let releaseConditionalRequest: (() => void) | null = null;
       if (args.method === "GET") {
-        const cached = etagCache.get(cacheKey);
-        if (cached) {
-          headers["if-none-match"] = cached.etag;
-          sentConditionalGet = true;
-          inFlightConditionalGetKeys.add(cacheKey);
+        const conditional = conditionalRequestCache.begin(cacheKey);
+        if (conditional) {
+          headers["if-none-match"] = conditional.entry.etag;
+          releaseConditionalRequest = conditional.release;
         }
       }
 
@@ -1263,17 +1258,24 @@ export function createGithubService({
           body: args.body != null ? JSON.stringify(args.body) : undefined,
         });
       } finally {
-        if (sentConditionalGet) inFlightConditionalGetKeys.delete(cacheKey);
+        releaseConditionalRequest?.();
       }
 
       if (response.status === 304) {
-        const cached = etagCache.get(cacheKey);
+        const cached = conditionalRequestCache.get(cacheKey);
         if (cached) {
           recordGithubCredentialSuccess(candidate, response.headers);
           repositoryFallback.recordSuccess(candidate);
           releaseGitHubResponse(response);
           return { data: cached.data as T, response, linkHeader: cached.linkHeader };
         }
+        releaseGitHubResponse(response);
+        delete headers["if-none-match"];
+        response = await fetchGitHub(url.toString(), {
+          method: args.method,
+          headers,
+          body: args.body != null ? JSON.stringify(args.body) : undefined,
+        });
       }
 
       const text = await response.text();
@@ -1342,18 +1344,26 @@ export function createGithubService({
         ? classifyGitHubGraphqlCredentialFailure(data, response.headers)
         : null;
       if (graphqlFailure) {
-        recordGithubCredentialFailure(
+        const { repositoryNotFound } = repositoryFallback.classifyFailure(
           candidate,
-          graphqlFailure.authFailure,
-          graphqlFailure.rateLimit,
+          graphqlFailure.status,
         );
+        if (!repositoryNotFound) {
+          recordGithubCredentialFailure(
+            candidate,
+            graphqlFailure.authFailure,
+            graphqlFailure.rateLimit,
+          );
+        }
         const attemptError = new GithubCredentialAttemptError(
           graphqlFailure.message,
           graphqlFailure.authFailure,
           graphqlFailure.rateLimit,
         );
         lastAttemptError = attemptError;
-        if (!args.token) continue;
+        const canTryNext = !args.token
+          && (capability === "read" || !graphqlFailure.hasData);
+        if (canTryNext) continue;
         if (attemptError.authFailure.kind === "rate_limited") {
           const resetAtMs = githubRateLimitRetryAtMs(attemptError.authFailure, attemptError.rateLimit);
           throw new GitHubRateLimitError(attemptError.message, resetAtMs, attemptError.rateLimit);
@@ -1374,12 +1384,7 @@ export function createGithubService({
       if (args.method === "GET") {
         const etag = response.headers.get("etag");
         if (etag) {
-          while (etagCache.size >= ETAG_CACHE_MAX_SIZE && !etagCache.has(cacheKey)) {
-            const before = etagCache.size;
-            evictOldestEtagCacheEntry(inFlightConditionalGetKeys);
-            if (etagCache.size === before) break;
-          }
-          etagCache.set(cacheKey, { etag, data, linkHeader });
+          conditionalRequestCache.store(cacheKey, { etag, data, linkHeader });
         }
       }
       return { data: data as T, response, linkHeader };
@@ -1465,7 +1470,10 @@ export function createGithubService({
     const statusCooldown = (candidate: GitHubTokenCandidate) => githubCredentialCooldown(
       candidate,
       Date.now(),
-      { resource: "core", ignoreNonRateLimit: opts.forceRefresh === true },
+      {
+        resource: "core",
+        failurePolicy: opts.forceRefresh === true ? "rate-limit-only" : "all",
+      },
     );
     if (!primaryCandidate) {
       cachedStatus = {
@@ -1745,9 +1753,7 @@ export function createGithubService({
         is_alphanumeric: args.isAlphanumeric === true,
       },
     });
-    for (const cacheKey of etagCache.keys()) {
-      if (cacheKey.includes(autolinksPath)) etagCache.delete(cacheKey);
-    }
+    conditionalRequestCache.deleteWhere((cacheKey) => cacheKey.includes(autolinksPath));
     return normalizeAutolink(data);
   };
 
@@ -2211,6 +2217,18 @@ export function createGithubService({
 
     async getTokenOrThrowAsync(): Promise<string> {
       const token = (await readAuthToken("write")).token;
+      if (!token) throw new Error("GitHub write access is unavailable. Connect GitHub CLI or add a personal access token in Settings.");
+      return token;
+    },
+
+    async getReadTokenOrThrowAsync(): Promise<string> {
+      const token = (await readAuthToken("read")).token;
+      if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
+      return token;
+    },
+
+    async getGitTransportTokenOrThrowAsync(): Promise<string> {
+      const token = (await readAuthToken("read", "non-rate-limit-only")).token;
       if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },
