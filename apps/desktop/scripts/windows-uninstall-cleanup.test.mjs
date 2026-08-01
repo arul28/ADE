@@ -7,6 +7,52 @@ import { spawnSync } from "node:child_process";
 
 const cleanupScript = path.resolve("scripts", "windows-uninstall-cleanup.ps1");
 
+function stripExtendedPathPrefix(value) {
+  if (value.startsWith("\\\\?\\UNC\\")) return `\\\\${value.slice(8)}`;
+  if (value.startsWith("\\\\?\\")) return value.slice(4);
+  return value;
+}
+
+function realWindowsPath(value) {
+  return stripExtendedPathPrefix(fs.realpathSync.native(value));
+}
+
+function windowsPathIdentity(value) {
+  return path.win32.normalize(realWindowsPath(value)).replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function shortWindowsPath(value) {
+  const script = [
+    "Add-Type -TypeDefinition @'",
+    "using System;",
+    "using System.Runtime.InteropServices;",
+    "using System.Text;",
+    "public static class AdeTestPathInterop {",
+    '  [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]',
+    "  public static extern uint GetShortPathName(string longPath, StringBuilder shortPath, uint bufferLength);",
+    "}",
+    "'@ | Out-Null",
+    "$buffer = New-Object System.Text.StringBuilder 32768",
+    "$length = [AdeTestPathInterop]::GetShortPathName($env:ADE_TEST_PATH, $buffer, [uint32]$buffer.Capacity)",
+    "if ($length -eq 0) { exit 1 }",
+    "[Console]::Out.Write($buffer.ToString())",
+  ].join("\r\n");
+  const encodedScript = Buffer.from(script, "utf16le").toString("base64");
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-EncodedCommand",
+    encodedScript,
+  ], {
+    encoding: "utf8",
+    env: { ...process.env, ADE_TEST_PATH: value },
+  });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  const resolved = result.stdout.trim();
+  assert.notEqual(resolved, "", "PowerShell did not return a path representation");
+  return resolved;
+}
+
 test("Windows uninstall cleanup removes only CLI shims owned by this installation", {
   skip: process.platform !== "win32",
 }, (t) => {
@@ -17,8 +63,14 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
   const cliBinDir = path.join(tempRoot, "user bin");
   fs.mkdirSync(packagedCliDir, { recursive: true });
   fs.mkdirSync(cliBinDir, { recursive: true });
+  const longInstallDir = realWindowsPath(installDir);
+  const shortPackagedCliDir = shortWindowsPath(packagedCliDir);
   fs.writeFileSync(
     path.join(cliBinDir, "ade.cmd"),
+    `@echo off\r\n"${path.join(shortPackagedCliDir, "ade.cmd")}" %*\r\n`,
+  );
+  fs.writeFileSync(
+    path.join(cliBinDir, "ade-alpha.cmd"),
     `@echo off\r\n"${path.join(packagedCliDir, "ade.cmd")}" %*\r\n`,
   );
   fs.writeFileSync(
@@ -34,7 +86,7 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
     "-File",
     cleanupScript,
     "-InstallDir",
-    installDir,
+    longInstallDir,
     "-CliBinDir",
     cliBinDir,
     "-SkipServiceRemoval",
@@ -43,6 +95,7 @@ test("Windows uninstall cleanup removes only CLI shims owned by this installatio
 
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   assert.equal(fs.existsSync(path.join(cliBinDir, "ade.cmd")), false);
+  assert.equal(fs.existsSync(path.join(cliBinDir, "ade-alpha.cmd")), false);
   assert.equal(fs.existsSync(path.join(cliBinDir, "ade-beta.cmd")), true);
 });
 
@@ -57,6 +110,11 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
   const resultPath = path.join(tempRoot, "service-cleanup.json");
   fs.mkdirSync(cliRoot, { recursive: true });
   fs.mkdirSync(cliBinDir, { recursive: true });
+
+  const unpackedNodeModules = path.join(installDir, "resources", "app.asar.unpacked", "node_modules");
+  const packedNodeModules = path.join(installDir, "resources", "app.asar", "node_modules");
+  fs.mkdirSync(unpackedNodeModules, { recursive: true });
+  fs.mkdirSync(packedNodeModules, { recursive: true });
 
   const appExecutableName = "ADE Beta.exe";
   fs.copyFileSync(process.execPath, path.join(installDir, appExecutableName));
@@ -78,7 +136,7 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
     "-File",
     cleanupScript,
     "-InstallDir",
-    installDir,
+    shortWindowsPath(installDir),
     "-AppExecutableName",
     appExecutableName,
     "-PackageChannel",
@@ -101,11 +159,12 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
   assert.deepEqual(observed.argv, ["serve", "--uninstall-service"]);
   assert.equal(observed.packageChannel, "beta");
   assert.equal(path.win32.basename(observed.adeHome), ".ade-beta");
-  assert.deepEqual(observed.nodePath.split(path.delimiter), [
-    path.join(installDir, "resources", "app.asar.unpacked", "node_modules"),
-    path.join(installDir, "resources", "app.asar", "node_modules"),
-    "C:\\existing-node-modules",
+  const observedNodePath = observed.nodePath.split(path.delimiter);
+  assert.deepEqual(observedNodePath.slice(0, 2).map(windowsPathIdentity), [
+    windowsPathIdentity(unpackedNodeModules),
+    windowsPathIdentity(packedNodeModules),
   ]);
+  assert.equal(observedNodePath[2], "C:\\existing-node-modules");
 });
 
 test("Windows uninstall cleanup reports the packaged executable exit code", {

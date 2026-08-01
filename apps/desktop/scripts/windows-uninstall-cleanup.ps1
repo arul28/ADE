@@ -11,8 +11,86 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+function Remove-TrailingDirectorySeparators([string]$Value) {
+  $root = [System.IO.Path]::GetPathRoot($Value)
+  $minimumLength = if ($null -eq $root) { 0 } else { $root.Length }
+  while (
+    $Value.Length -gt $minimumLength -and
+    ($Value.EndsWith("\", [System.StringComparison]::Ordinal) -or
+      $Value.EndsWith("/", [System.StringComparison]::Ordinal))
+  ) {
+    $Value = $Value.Substring(0, $Value.Length - 1)
+  }
+  return $Value
+}
+
 function Resolve-NormalizedPath([string]$Value) {
-  return [System.IO.Path]::GetFullPath($Value).TrimEnd("\")
+  $fullPath = [System.IO.Path]::GetFullPath($Value)
+  if (-not ("Ade.Windows.PathNormalization" -as [type])) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+namespace Ade.Windows {
+  public static class PathNormalization {
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern uint GetLongPathName(
+      string shortPath, StringBuilder longPath, uint bufferLength);
+  }
+}
+"@ | Out-Null
+  }
+
+  # GetFullPath resolves relative segments but does not consistently expand
+  # DOS 8.3 names under Windows PowerShell. GetLongPathName makes an existing
+  # path compare identically whether NSIS, Node, or the user supplied its short
+  # or long spelling. Nonexistent paths retain their normalized full spelling.
+  $buffer = New-Object System.Text.StringBuilder 32768
+  $length = [Ade.Windows.PathNormalization]::GetLongPathName(
+    $fullPath,
+    $buffer,
+    [uint32]$buffer.Capacity
+  )
+  if ($length -gt 0 -and $length -lt $buffer.Capacity) {
+    $fullPath = $buffer.ToString()
+  }
+  return Remove-TrailingDirectorySeparators $fullPath
+}
+
+function Test-CliShimOwnedByInstall(
+  [string]$ShimPath,
+  [string]$ExpectedCliDir
+) {
+  $contents = Get-Content -LiteralPath $ShimPath -Raw -ErrorAction Stop
+  foreach ($line in ($contents -split "`r?`n")) {
+    $match = [System.Text.RegularExpressions.Regex]::Match(
+      $line,
+      '^\s*"(?<target>[^"]+\.cmd)"\s+%\*\s*$',
+      [System.Text.RegularExpressions.RegexOptions]::IgnoreCase
+    )
+    if (-not $match.Success) { continue }
+
+    $targetPath = $match.Groups["target"].Value
+    if (-not [string]::Equals(
+      [System.IO.Path]::GetFileName($targetPath),
+      "ade.cmd",
+      [System.StringComparison]::OrdinalIgnoreCase
+    )) { continue }
+
+    try {
+      $targetDir = Resolve-NormalizedPath ([System.IO.Path]::GetDirectoryName($targetPath))
+      if ([string]::Equals(
+        $targetDir,
+        $ExpectedCliDir,
+        [System.StringComparison]::OrdinalIgnoreCase
+      )) {
+        return $true
+      }
+    } catch {
+      # An invalid command target is not owned by this installation.
+    }
+  }
+  return $false
 }
 
 function Restore-EnvironmentValue([string]$Name, [string]$Value, [bool]$WasPresent) {
@@ -124,8 +202,7 @@ $resolvedCliBinDir = Resolve-NormalizedPath $CliBinDir
 $packagedCliDir = Resolve-NormalizedPath (Join-Path $resolvedInstallDir "resources\ade-cli\bin")
 if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
   foreach ($shim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*.cmd" -File -ErrorAction Stop) {
-    $contents = Get-Content -LiteralPath $shim.FullName -Raw -ErrorAction Stop
-    if ($contents.IndexOf($packagedCliDir, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+    if (Test-CliShimOwnedByInstall $shim.FullName $packagedCliDir) {
       Remove-Item -LiteralPath $shim.FullName -Force -ErrorAction Stop
     }
   }

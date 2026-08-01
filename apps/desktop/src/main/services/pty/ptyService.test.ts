@@ -3839,6 +3839,7 @@ describe("ptyService", () => {
     });
 
     it("resumes OpenCode on Windows through direct argv and inherited env", async () => {
+      vi.useFakeTimers();
       const originalPlatform = process.platform;
       const previousReplay = process.env.ADE_OPENCODE_REPLAY_RESUME;
       Object.defineProperty(process, "platform", { value: "win32", configurable: true });
@@ -3873,10 +3874,15 @@ describe("ptyService", () => {
         });
 
         const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
-        await expect(service.sendToSession({
+        const pending = service.sendToSession({
           sessionId: "session-opencode-windows",
           text: prompt,
-        })).resolves.toEqual(expect.objectContaining({
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "OpenCode\nWhat do you want to do?\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await expect(pending).resolves.toEqual(expect.objectContaining({
           sessionId: "session-opencode-windows",
           resumed: true,
           reusedExistingRuntime: false,
@@ -3892,10 +3898,15 @@ describe("ptyService", () => {
         expect(spawnArgs).toContain("opencode");
         expect(spawnArgs).toContain("--session");
         expect(spawnArgs).toContain("ses_windows");
-        expect(spawnArgs).toContain("%%TEMP%%");
+        expect(spawnArgs).not.toContain(prompt);
+        expect(spawnArgs).not.toContain("%TEMP%");
         expect(spawnOptions.env.OPENCODE_CONFIG_CONTENT).toContain("\"question\":\"allow\"");
         expect(mockPty.write).not.toHaveBeenCalledWith(expect.stringContaining("OPENCODE_CONFIG_CONTENT="));
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(expect.stringContaining(prompt));
+        expect(writes).not.toContainEqual(expect.stringContaining("%%TEMP%%"));
       } finally {
+        vi.useRealTimers();
         Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
         if (previousReplay === undefined) {
           delete process.env.ADE_OPENCODE_REPLAY_RESUME;
