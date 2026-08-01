@@ -160,6 +160,15 @@ The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
+The gated Windows download uses the existing CTA event with the closed
+`cta_label: "download_for_windows"`, `screen: "download"`, and
+`position: "download_page"` values. It carries no installer URL, release tag,
+platform fingerprint, or referrer. The same CTA key is limited to three
+accepted events per UTC day with a 1.5-second deduplication window, inside the
+unchanged 12-CTA and 40-event public-site ceilings. Because annotated CTA
+clicks suppress the companion feature event, one click still consumes one
+event.
+
 The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does not call a Vercel Function or Edge Function, enable Vercel Web Analytics, create a Vercel log drain, or proxy events through ADE infrastructure. PostHog therefore adds no Vercel compute, function-invocation, log-ingestion, or server-side analytics usage. The site retains only its normal static asset delivery; preview and development deployments intentionally have no PostHog environment variables so internal traffic does not spend quota or skew production data.
 
 ## Consent and kill switches

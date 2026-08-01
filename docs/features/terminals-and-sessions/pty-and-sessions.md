@@ -216,6 +216,14 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      applied per candidate so an `args.env` from the caller is
      overlaid first, then the clean-shell `env` block, before
      `ptyLib.spawn`.
+   - Windows tracked-provider continuation prefers
+     `buildTrackedCliResumeLaunchCommand`'s structured
+     `command` / `args` / `env` fields. The persisted
+     `resume_command` remains a display/legacy compatibility string; it is not
+     typed into PowerShell when structured metadata is available. OpenCode
+     replay uses the same rule, and Droid uses an explicit no-profile
+     PowerShell descriptor because its temporary settings-file lifecycle
+     genuinely requires shell statements.
 10. If the spawn ended up in a shell (no direct launch, or direct
     launch fell back), type `args.startupCommand` into the PTY so the
     shell executes the CLI. Direct launches that succeeded skip this —
@@ -543,14 +551,16 @@ write paths into one call:
    resume-target backfill used by `ensureResumeTargets`; Codex can scan
    rollout storage during this resume-launch path before ADE reports a
    missing target.
-3. Rebuild the resume command via
-   `buildTrackedCliResumeCommand(metadata, overrides)` — runtime
+3. Rebuild the resume launch via
+   `buildTrackedCliResumeLaunchCommand(metadata, overrides)` — runtime
    `model` / `reasoningEffort` / `permissionMode` overrides flow into
-   the command line so the continuation honours the user's current
+   the invocation so the continuation honours the user's current
    model picker. For the first ended-session continuation with
    structured `resumeMetadata`, `text` is also passed as the provider
    prompt argument, except for Cursor where ADE waits for the interactive
-   prompt and writes the text through PTY input.
+   prompt and writes the text through PTY input. Windows consumes direct
+   argv/env (or Droid's explicit PowerShell descriptor); POSIX retains the
+   established shell-string compatibility launch.
 4. De-duplicate concurrent sends through `resumeRuntimeFlights` (one
    in-flight continuation per session id) so rapid sends do not spawn
    parallel PTYs against the same row.

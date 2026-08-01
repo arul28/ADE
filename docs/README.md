@@ -22,7 +22,8 @@ docs/
 ├── logging.md                             # logging + PostHog ground truth
 ├── OPTIMIZATION_OPPORTUNITIES.md          # codebase-wide optimization backlog
 ├── playbooks/
-│   └── ship-lane.md                       # autonomous PR-to-merge driver
+│   ├── ship-lane.md                       # autonomous PR-to-merge driver
+│   └── windows-signed-release.md          # signed Windows publication
 └── features/
     ├── agents/                            # agent identity, tools, personas
     ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient

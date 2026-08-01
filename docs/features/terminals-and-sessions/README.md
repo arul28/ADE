@@ -974,9 +974,17 @@ Renderer surfaces:
   The legacy
   `buildTrackedCliStartupCommand` and `defaultTrackedCliStartupCommand`
   are now thin wrappers over `buildTrackedCliLaunchCommand` for
-  callers that only need the shell string. `buildTrackedCliResumeCommand`
-  rebuilds a resume command line from `TerminalResumeMetadata` for any
-  provider; `parseTrackedCliResumeCommand`
+  callers that only need the shell string.
+  `buildTrackedCliResumeLaunchCommand` rebuilds a structured
+  `{ command, args, env?, startupCommand }` descriptor from
+  `TerminalResumeMetadata` for any provider. Windows continuation paths
+  consume that descriptor directly, so OpenCode permission policy stays in
+  the process environment and Claude/Codex/Cursor argv never passes through
+  PowerShell quoting. Droid is the intentional shell launch: Windows uses a
+  no-profile PowerShell descriptor that writes its temporary settings JSON as
+  BOM-free UTF-8 and cleans it up after the provider exits.
+  `buildTrackedCliResumeCommand` remains the persisted/display POSIX string
+  compatibility wrapper; `parseTrackedCliResumeCommand`
   (`apps/desktop/src/main/utils/terminalSessionSignals.ts`) is the
   inverse it relies on for round-tripping. It also owns the shell-command-line
   primitives `ptyService` uses to place Claude's `--plugin-dir` flag on the real
@@ -1546,7 +1554,7 @@ PTY:
 |---|---|
 | `ade.pty.create` | create or reattach; returns `{ ptyId, sessionId, pid }`. Accepts an optional `chatSessionId` to mark the terminal as attached to that owner session. |
 | `ade.pty.resumeSession` | prompt-free tracked CLI relaunch. Args: `{ sessionId, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Reuses a live PTY when attached; otherwise validates the row, backfills a missing resume target when possible, rebuilds the provider resume command, and spawns a continuation PTY in the same `terminal_sessions` row without writing a prompt. Returns `PtyResumeSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
-| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, backfills a missing resume target when possible, rebuilds the resume command via `buildTrackedCliResumeCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch command when resume metadata is available. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
+| `ade.pty.sendToSession` | send-or-continue. Args: `{ sessionId, text, cols?, rows?, model?, reasoningEffort?, permissionMode? }`. Submits text into the live PTY when one is attached; otherwise validates that the row is a tracked agent CLI session, backfills a missing resume target when possible, rebuilds the provider launch via `buildTrackedCliResumeLaunchCommand` (honouring runtime overrides), spawns the continuation PTY in the same `terminal_sessions` row, and includes the user's text in the launch when resume metadata is available. Windows consumes the returned command/argv/env directly; POSIX retains the existing shell-string compatibility path. Later sends that land after a resume flight has started are serialized through the agent CLI input protocol: line clear, bracketed paste envelope, chunked 64-byte writes with 5 ms inter-chunk delay, then carriage return with a provider-specific submit delay. Returns `PtySendToSessionResult` (`{ ptyId, sessionId, pid, session, resumed, reusedExistingRuntime }`). |
 | `ade.pty.write` | write bytes to PTY |
 | `ade.pty.resize` | cols/rows resize |
 | `ade.pty.dispose` | close PTY; optional `sessionId` used for logging |

@@ -56,8 +56,9 @@ ade-cli modules — there is no second implementation to keep in sync.
 ## Desktop / daemon: native loadable extension
 
 Both the Electron main process and the `ade serve` daemon open SQLite
-through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS) /
-`.so` (linux) as a loadable extension. A fresh connection runs
+through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS),
+`crsqlite.so` (Linux), or `crsqlite.dll` (Windows x64) as a loadable
+extension. A fresh connection runs
 `SELECT load_extension(...)` once, then `AdeDb` marks every eligible
 non-virtual table as a CRR at startup:
 
@@ -104,6 +105,21 @@ hard 10,000-rows-per-project cap (any status) on top of the 2,000 active-row cap
 so an always-on brain dispatching high webhook volume can't grow the table inside
 the 7-day retention window to the point where its rebuild fails mid-copy (see
 [ARCHITECTURE §3.1](../../ARCHITECTURE.md)).
+
+### Windows package proof and failure surface
+
+`validate-win-artifacts.mjs` does more than check that `crsqlite.dll` exists.
+Its installed-package smoke launches Electron as Node, loads the unpacked DLL
+into an in-memory `node:sqlite` database, converts a probe table with
+`crsql_as_crr`, inserts a row, and requires at least one matching
+`crsql_changes` record. A Windows installer therefore cannot pass CI with a
+wrong-architecture, misplaced, or unloadable extension.
+
+At runtime, `SyncRoleSnapshot.crdtSyncAvailable` carries the typed capability
+to the Connections panel. If the Windows runtime still cannot load the
+extension, phone pairing/sync is disabled and the **This computer** card shows
+reinstall-and-restart guidance. Older runtimes that omit the typed field remain
+compatible through the existing bounded status-text fallback.
 
 Sync-managed tables support later `ALTER TABLE ... ADD COLUMN` through
 automatic `crsql_begin_alter` / `crsql_commit_alter` wrapping in the
@@ -433,7 +449,7 @@ After apply, ADE runs post-hooks:
 
 | Piece | Status |
 |---|---|
-| Desktop / daemon extension loading + CRR marking | Implemented |
+| Desktop / daemon extension loading + CRR marking | Implemented on macOS, Linux, and Windows x64; Windows package smoke proves a real CRR change |
 | iOS pure-SQL emulation | Implemented, wire-compatible |
 | Dynamic CRR discovery | Implemented |
 | `ALTER TABLE ADD COLUMN` support | Implemented (wrapped) |

@@ -90,7 +90,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   `pubkey`, which same-account clients verify before a sealed `ade-adopt-v1`
   adoption over a direct route (see the [Sync](../sync-and-multi-device/README.md)
   security model). The published machine name is channel-suffixed (`<name> ·
-  Beta` / `<name> · Alpha`, stable left bare) so two channels on one Mac are
+  Beta` / `<name> · Alpha`, stable left bare) so two channels on one computer are
   distinguishable rows.
 - `apps/ade-cli/src/services/sync/syncTunnelClientService.ts` and
   `apps/ade-cli/src/bootstrap.ts` — the relay side of a paired route. The tunnel
@@ -132,7 +132,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   the brain's `pid`, its bound `syncPort`, the account-directory `publishHealth`
   slice (state + `failingSinceMs` + last-leg durations), and the one-shot
   `lastWedge` recovered by the event-loop watchdog. The Machines panel renders
-  publish health as a This-Mac indicator (`remoteMachineModel.describePublishHealth`,
+  publish health as a This-computer indicator (`remoteMachineModel.describePublishHealth`,
   which reads inactive states as "none" and only alarms a real failure after it
   has persisted ~2 minutes), and the app shell reads `lastWedge` for the
   `BrainRecoveryNotice` banner.
@@ -155,7 +155,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   connected / available / unavailable sections, Pair and SSH entry paths,
   share-this-machine and connection-doctor cards, saved/discovered machine
   rows, route and latency status, SSH host-key trust, structured connection
-  errors, project picker, and the This-Mac
+  errors, project picker, and the This-computer
   route-publish health indicator. `remoteMachineModel.ts`
   (`describePublishHealth`) is the pure classifier for that indicator: the
   publishing `published` state reads healthy, the non-publishing states
@@ -461,12 +461,12 @@ run a local repair against data owned by the remote machine. See
 
 ## Connect flow
 
-1. Open **Connections > Machines**. When signed in, ADE loads the other Macs on
+1. Open **Connections > Machines**. When signed in, ADE loads the other computers on
    the same account. It also combines Bonjour and Tailscale discovery,
    removes this machine's own Bonjour advertisement, and merges routes that
    identify the same machine. Discovered paired-capable ADE desktops appear in
    Available; offline or unsupported machines remain visible in Unavailable.
-2. Select a same-account Mac for the primary PIN-less flow. ADE dials the
+2. Select a same-account computer for the primary PIN-less flow. ADE dials the
    directory-verified Relay first; when the target publishes an ed25519
    identity key in its directory row (`pubkey`), adoption can also fall back
    to Tailscale and LAN routes using the sealed `ade-adopt-v1` handshake —
@@ -493,9 +493,10 @@ run a local repair against data owned by the remote machine. See
    traffic, but never the sealed credentials. This matches the pre-existing
    direct-route trust boundary; relay routes remain trusted-operator
    plaintext-readable as documented above.
-   Without an account, choose **Find nearby Macs**, select a discovered LAN or
-   Tailscale machine, and enter the six-digit PIN shown on that Mac's **This
-   Mac** Connections card. There is no desktop pairing-link paste/scan or
+   Without an account, choose **Find nearby computers**, select a discovered
+   LAN or Tailscale machine, and enter the six-digit PIN shown on that
+   computer's **This computer** Connections card. There is no desktop
+   pairing-link paste/scan or
    manual address + PIN path. A discovered machine with an existing pairing is
    upgraded to a paired target automatically.
 3. Connect. ADE dials paired routes in LAN → tailnet → relay order, preferring a
@@ -599,6 +600,12 @@ Version skew and capability skew no longer fail the connect outright. The bootst
 
 Desktop distributable builds require `apps/desktop/resources/runtime/` to contain every supported `ade-<platform-arch>` binary and matching `.native.tar.gz` archive, plus the packaged ADE CLI resources that include `ptyHostWorker.cjs` for remote terminal hosting. The supported targets are `darwin-arm64`, `darwin-x64`, `linux-arm64`, `linux-x64`.
 
+The Windows x64 desktop package carries that same complete Darwin/Linux
+sidecar set, so a Windows client can bootstrap supported SSH targets. It also
+contains its own bundled Windows CLI/native resources for the local brain.
+`win32-x64` is not currently an SSH-bootstrap target and is intentionally not
+part of the remote sidecar list.
+
 Desktop distributable builds also package `apps/desktop/resources/agent-skills/`.
 Remote bootstrap copies that directory into the selected remote ADE home as
 `agent-skills/`; the CLI then re-seeds ADE-managed skills into runtime-native
@@ -667,9 +674,9 @@ traffic always uses the paired sync WebSocket advertised on the LAN, through a
 Tailscale tailnet, or through the relay. Install Tailscale on the phone and the
 ADE machine for a direct route when they are not on the same local network.
 
-On desktop, the **This Mac** card and **Connections > Phone**/**Web** tabs are
-runtime controls that always describe the **physical Mac the user is sitting
-at**, even while the window is bound to a remote project. Most
+On desktop, the **This computer** card and **Connections > Phone**/**Web** tabs
+are runtime controls that always describe the **physical computer running this
+ADE desktop**, even while the window is bound to a remote project. Most
 `window.ade.sync.*` calls follow the active binding and would report the remote
 machine, so the Connections panel reads its identity, pairing code, and local
 device lists through `window.ade.sync.getLocalStatus(...)`, which deliberately
@@ -680,8 +687,8 @@ window is remote-bound and to name the machine it is working on. Because the
 pairing and device *mutations* (`setPin`, `generatePin`, `clearPin`,
 `forgetDevice`, name edits) continue to route through the binding, the panel
 presents them **read-only while remote-bound** and labels the connected-device
-list with the local Mac's name so it cannot be mistaken for the bound machine's.
-The pairing PIN manager lives on the This Mac card. The legacy in-process
+list with the local computer's name so it cannot be mistaken for the bound machine's.
+The pairing PIN manager lives on the This computer card. The legacy in-process
 desktop sync host is disabled by default and can be re-enabled only for
 diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
 
@@ -719,8 +726,8 @@ identity (and its `siteId`) before it sends the pairing request, because the
 saved record up by two things that both identify a *host*: the caller-supplied
 `hostDeviceId` (a QR/link payload and account-directory adoption both carry it),
 then the relay machine key parsed out of a `/connect/<key>` endpoint. A bare LAN
-address is not a host identity — DHCP handing `192.168.1.240` to a different Mac
-would hand that Mac the identity this desktop uses with the first one — so
+address is not a host identity — DHCP handing `192.168.1.240` to a different computer
+would hand that computer the identity this desktop uses with the first one — so
 matching on a saved endpoint is deliberately not an option, and a LAN pairing
 with no `hostDeviceId` mints a fresh identity.
 

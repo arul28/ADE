@@ -2,6 +2,20 @@
 
 This worktree/branch exists to keep **ADE desktop** fully usable on **Windows** while `main` adds product features. Treat it as the integration lane for the Windows build: rebase it onto the latest `main` regularly, then run Windows-focused validation before shipping Windows installers.
 
+## Current implementation boundary
+
+The Windows x64 implementation is now wired end to end in source and CI:
+local runtime service, user/channel-isolated named pipes, ConPTY/provider
+resume, App Control launch, Windows chrome/capability gating, packaged
+CR-SQLite proof, NSIS packaging, updater authority, and fail-closed signed
+release gates. The pull-request build is intentionally an **unsigned internal
+preview**. Public availability remains disabled until the external clean-VM
+proof gates below pass.
+
+Windows 10/11 x64 is the supported target. Windows ARM64, Windows as an
+SSH-bootstrap remote brain target, native Windows OS computer use, and iOS
+Simulator remain separate follow-ups.
+
 ## Keep this branch current with `main`
 
 From this repo:
@@ -58,9 +72,10 @@ Recent `main` work that is **not** inherently macOS-only but can surface path/sh
 - **Releases** — pull-request CI may publish an unsigned Windows preview artifact for internal testing. With `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`, `release-core.yml` fails the Windows jobs unless the installer, packaged app, and standalone runtime are Authenticode signed, timestamped, and match `WINDOWS_SIGNING_EXPECTED_SUBJECT` or `WINDOWS_SIGNING_EXPECTED_THUMBPRINT`; the installer and packaged app must also share one certificate. That test job cannot block macOS publication while public Windows publication is disabled. SmartScreen reputation remains a release-engineering concern, not only app code.
 - **Docs in `AGENTS.md`** still emphasize macOS Codex/Computer Use; Windows developers should use this file + `docs/ARCHITECTURE.md` for WSL/VM dev notes if applicable.
 
-## Engineering backlog (complete the “parity” bar)
+## External proof gates before public availability
 
-Do these to move from “runs on Windows” to “first-class for Windows users”:
+The implementation and automated contract tests do not replace installed-host
+verification. Complete these before enabling the public website/release flags:
 
 1. **Clean standard-user hosts** — install/uninstall/reinstall on Windows 10
    22H2 and Windows 11 x64 with no global Node; verify first launch, Start Menu
@@ -102,7 +117,9 @@ and publication procedure before this stack can be considered ready.
 
 ```bash
 npm --prefix apps/desktop run typecheck
-npm --prefix apps/desktop run test -- --run apps/desktop/src/renderer/lib/pathUtils.test.ts apps/desktop/src/main/services/shared/processExecution.test.ts
+npm --prefix apps/desktop run test:win:release-contract
+npm --prefix apps/desktop run test -- --run src/main/windowAppearance.test.ts src/main/services/transcription/microphoneAccess.test.ts src/main/services/appControl/appControlService.test.ts src/main/services/pty/ptyService.test.ts src/main/services/updates/autoUpdateService.test.ts
+npm --prefix apps/ade-cli run test -- --run src/serviceManager/common.test.ts src/services/projects/machineLayout.test.ts src/services/sync/syncHostSingleton.test.ts
 npm --prefix apps/desktop run build
 ```
 
