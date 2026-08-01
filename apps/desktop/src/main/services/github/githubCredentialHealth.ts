@@ -207,10 +207,9 @@ export function githubCredentialStates(args: {
     const health = candidate ? healthFor(candidate) : null;
     const cooling = candidate ? githubCredentialCooldown(candidate) : null;
     const capabilities = [...githubOperationCredentialCapabilities(source)];
-    const activeFor: GitHubCredentialCapability[] = [
-      ...(args.activeReadSource === source ? ["read" as const] : []),
-      ...(args.activeWriteSource === source ? ["write" as const] : []),
-    ];
+    const activeFor: GitHubCredentialCapability[] = [];
+    if (args.activeReadSource === source) activeFor.push("read");
+    if (args.activeWriteSource === source) activeFor.push("write");
     return {
       source,
       available: args.availableSources.has(source),

@@ -124,22 +124,30 @@ export function classifyGitHubGraphqlCredentialFailure(
   authFailure: GitHubAuthFailure;
   rateLimit: GitHubRateLimitState | null;
 } | null {
-  if (!payload || typeof payload !== "object" || !Array.isArray((payload as { errors?: unknown }).errors)) {
-    return null;
-  }
-  const errors = (payload as { errors: unknown[] }).errors;
+  if (
+    !payload
+    || typeof payload !== "object"
+    || !("errors" in payload)
+    || !Array.isArray(payload.errors)
+  ) return null;
+  const errors: unknown[] = payload.errors;
   const messages = errors.flatMap((error) => {
     if (!error || typeof error !== "object") return [];
-    const message = (error as { message?: unknown }).message;
+    const message = "message" in error ? error.message : null;
     return typeof message === "string" && message.trim() ? [message.trim()] : [];
   });
   const errorTypes = errors.flatMap((error) => {
     if (!error || typeof error !== "object") return [];
-    const record = error as {
-      type?: unknown;
-      extensions?: { code?: unknown; type?: unknown };
-    };
-    return [record.type, record.extensions?.code, record.extensions?.type]
+    const extensions = "extensions" in error
+      && error.extensions
+      && typeof error.extensions === "object"
+      ? error.extensions
+      : null;
+    return [
+      "type" in error ? error.type : null,
+      extensions && "code" in extensions ? extensions.code : null,
+      extensions && "type" in extensions ? extensions.type : null,
+    ]
       .filter((value): value is string => typeof value === "string")
       .map((value) => value.toUpperCase());
   });

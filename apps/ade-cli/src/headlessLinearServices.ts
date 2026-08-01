@@ -763,7 +763,11 @@ export function createHeadlessGitHubService(
   ): Promise<HeadlessGitHubTokenLookup> => {
     const inventory = await readCredentialInventoryAsync();
     const candidates = githubOperationCredentialCandidates(inventory.candidates, capability);
-    return candidates.find((candidate) => !githubCredentialCooldown(candidate))
+    return candidates.find((candidate) => !githubCredentialCooldown(
+      candidate,
+      Date.now(),
+      { resource: "core" },
+    ))
       ?? candidates[0]
       ?? {
         token: null,
@@ -938,7 +942,6 @@ export function createHeadlessGitHubService(
     capability?: GithubOperationCredentialCapability;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
-    const inventory = args.token ? null : await readCredentialInventoryAsync();
     const explicitToken = args.token?.trim() ?? "";
     const candidates: HeadlessGitHubTokenCandidate[] = explicitToken
       ? [{
@@ -949,7 +952,10 @@ export function createHeadlessGitHubService(
           ghAuthError: null,
           capabilities: [capability],
         }]
-      : githubOperationCredentialCandidates(inventory!.candidates, capability);
+      : githubOperationCredentialCandidates(
+          (await readCredentialInventoryAsync()).candidates,
+          capability,
+        );
     if (candidates.length === 0) {
       throw new Error(
         "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",
@@ -1338,7 +1344,7 @@ export function createHeadlessGitHubService(
         const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => githubCredentialCooldown(
           candidate,
           Date.now(),
-          { ignoreNonRateLimit: opts.forceRefresh === true },
+          { resource: "core", ignoreNonRateLimit: opts.forceRefresh === true },
         );
         const primaryCandidate = readCandidates[0] ?? null;
         if (!primaryCandidate) {

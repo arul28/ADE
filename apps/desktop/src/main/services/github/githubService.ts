@@ -809,7 +809,11 @@ export function createGithubService({
   ): Promise<GitHubTokenLookup> => {
     const inventory = await readCredentialInventory();
     const candidates = githubOperationCredentialCandidates(inventory.candidates, capability);
-    const selected = candidates.find((candidate) => !githubCredentialCooldown(candidate))
+    const selected = candidates.find((candidate) => !githubCredentialCooldown(
+      candidate,
+      Date.now(),
+      { resource: "core" },
+    ))
       ?? candidates[0]
       ?? null;
     return selected ?? {
@@ -1138,7 +1142,6 @@ export function createGithubService({
     accept?: string;
   }): Promise<{ data: T; response: Response | null; linkHeader?: string | null }> => {
     const capability = args.capability ?? (args.method === "GET" ? "read" : "write");
-    const inventory = args.token ? null : await readCredentialInventory();
     const explicitToken = args.token?.trim() ?? "";
     const candidates: GitHubTokenCandidate[] = explicitToken
       ? [{
@@ -1149,7 +1152,10 @@ export function createGithubService({
           ghAuthError: null,
           capabilities: [capability],
         }]
-      : githubOperationCredentialCandidates(inventory!.candidates, capability);
+      : githubOperationCredentialCandidates(
+          (await readCredentialInventory()).candidates,
+          capability,
+        );
     if (candidates.length === 0) {
       throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
     }
@@ -1409,7 +1415,7 @@ export function createGithubService({
     const statusCooldown = (candidate: GitHubTokenCandidate) => githubCredentialCooldown(
       candidate,
       Date.now(),
-      { ignoreNonRateLimit: opts.forceRefresh === true },
+      { resource: "core", ignoreNonRateLimit: opts.forceRefresh === true },
     );
     const currentWriteCandidate = writeCandidates.find((candidate) => !statusCooldown(candidate))
       ?? null;

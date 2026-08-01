@@ -81,6 +81,18 @@ describe("githubCredentialHealth", () => {
     }));
     expect(githubBackgroundRequestPauseUntilMs()).toBe(Date.parse(reserveResetAt));
 
+    recordGithubCredentialFailure(ghCandidate, failure, {
+      limit: 30,
+      remaining: 0,
+      used: 30,
+      resetAt: retryAt,
+      resource: "search",
+    });
+    expect(githubCredentialCooldown(ghCandidate, Date.now(), { resource: "search" }))
+      .not.toBeNull();
+    expect(githubCredentialCooldown(ghCandidate, Date.now(), { resource: "core" }))
+      .toBeNull();
+
     const otherCandidate: GithubCredentialCandidate = {
       source: "pat",
       token: "ghp_other_account",

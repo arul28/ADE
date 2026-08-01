@@ -16,13 +16,16 @@ export const GITHUB_OPERATION_CREDENTIALS = [
   capabilities: readonly GithubOperationCredentialCapability[];
 }[];
 
-export const GITHUB_OPERATION_CREDENTIAL_PRECEDENCE = GITHUB_OPERATION_CREDENTIALS.map(
-  ({ source }) => source,
-);
+export const GITHUB_OPERATION_CREDENTIAL_PRECEDENCE:
+  readonly GithubOperationCredentialSource[] = GITHUB_OPERATION_CREDENTIALS.map(
+    ({ source }) => source,
+  );
 
-const GITHUB_WRITE_CREDENTIAL_PRECEDENCE = GITHUB_OPERATION_CREDENTIAL_PRECEDENCE.filter(
-  (source): source is Exclude<GithubOperationCredentialSource, "app"> => source !== "app",
-);
+const GITHUB_WRITE_CREDENTIAL_PRECEDENCE:
+  readonly Exclude<GithubOperationCredentialSource, "app">[] =
+    GITHUB_OPERATION_CREDENTIAL_PRECEDENCE.filter(
+      (source): source is Exclude<GithubOperationCredentialSource, "app"> => source !== "app",
+    );
 
 export function githubOperationCredentialPrecedence(
   capability: GithubOperationCredentialCapability,
