@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "com.ade.android",
+      "sha256_cert_fingerprints": [
+        "62:3B:5D:C8:60:B9:87:73:14:C9:05:CF:0B:D0:B2:EE:54:7E:C4:43:B9:B1:9B:2D:08:FF:99:AE:C4:43:CE:52"
+      ]
+    }
+  }
+]

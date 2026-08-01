@@ -52,7 +52,7 @@ try {
     .map(({ name }) => name);
 
   const expectedTriggerNames = [
-    "attention_device_ownership_reject_stale",
+    "attention_device_ownership_reject_stale_v2",
     "attention_devices_enforce_user_limit",
   ];
   if (JSON.stringify(triggerNames) !== JSON.stringify(expectedTriggerNames)) {
@@ -104,6 +104,23 @@ try {
         "new-token",
         timestamp,
       ),
+    "stale attention device ownership",
+  );
+
+  const insertFcmOwnership = database.prepare(`
+    insert into attention_device_ownership(
+      device_id, user_id, ownership_epoch, fcm_token, active, updated_at
+    ) values (?, ?, ?, ?, 1, ?)
+  `);
+  insertFcmOwnership.run("android-device", "current-user", 4, "fcm-owned-token", timestamp);
+  expectSqliteError(
+    () => insertFcmOwnership.run(
+      "other-android-device",
+      "stale-user",
+      4,
+      "fcm-owned-token",
+      timestamp,
+    ),
     "stale attention device ownership",
   );
 

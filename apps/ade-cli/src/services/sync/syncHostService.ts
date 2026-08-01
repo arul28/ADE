@@ -1068,12 +1068,12 @@ export function initialSyncHostCursorForPeer(args: {
   serverDbSiteId: string;
   serverDbVersion: number;
 }): number {
-  // A browser may explicitly negotiate an invalidation-only contract: it has
+  // A thin client may explicitly negotiate an invalidation-only contract: it has
   // no SQLite replica, fully refetches its query domains after hello, and uses
   // only post-connect sync messages as invalidation hints. Starting that peer at
   // the current watermark avoids replaying CRR history it cannot apply. Keep
   // legacy browsers on replica semantics unless they declare the capability.
-  if (isInvalidationOnlyBrowserPeer(args.peer)) {
+  if (isInvalidationOnlyPeer(args.peer)) {
     return Math.max(0, Math.floor(args.serverDbVersion));
   }
   const cursorForThisDb = args.peer.dbVersionBySite?.[args.serverDbSiteId]
@@ -1097,11 +1097,11 @@ export function adoptedSyncHostCursorForPeer(args: {
     return initialCursor;
   }
   const snapshotCursor = Math.max(0, Math.floor(args.snapshotLastKnownServerDbVersion));
-  // Invalidation-only browsers have no replica cursor to merge. On a
+  // Invalidation-only peers have no replica cursor to merge. On a
   // same-DB seamless adoption, the deposited cursor is the exact boundary:
   // writes committed while the socket is parked must be exported by the new
   // owner. A different DB still starts at that DB's current watermark.
-  if (isInvalidationOnlyBrowserPeer(args.peer)) {
+  if (isInvalidationOnlyPeer(args.peer)) {
     return Math.min(Math.max(0, Math.floor(args.serverDbVersion)), snapshotCursor);
   }
   // Replica peers may have advertised a newer durable per-site cursor than
@@ -1109,17 +1109,17 @@ export function adoptedSyncHostCursorForPeer(args: {
   return Math.max(initialCursor, snapshotCursor);
 }
 
-function isInvalidationOnlyBrowserPeer(
+function isInvalidationOnlyPeer(
   peer: Pick<SyncPeerMetadata, "deviceType" | "capabilities"> | null | undefined,
 ): boolean {
-  return peer?.deviceType === "browser"
+  return (peer?.deviceType === "browser" || peer?.deviceType === "phone")
     && peer.capabilities?.includes(SYNC_INVALIDATION_ONLY_V1_CAPABILITY) === true;
 }
 
-function isCompactInvalidationBrowserPeer(
+function isCompactInvalidationPeer(
   peer: Pick<SyncPeerMetadata, "deviceType" | "capabilities"> | null | undefined,
 ): boolean {
-  return isInvalidationOnlyBrowserPeer(peer)
+  return isInvalidationOnlyPeer(peer)
     && peer?.capabilities?.includes(SYNC_COMPACT_INVALIDATION_V1_CAPABILITY) === true;
 }
 
@@ -1348,14 +1348,14 @@ export function buildSyncHostHelloOkPayload(args: {
       chatHistoryPaging: {
         enabled: true,
       },
-      ...(isInvalidationOnlyBrowserPeer(args.peer)
+      ...(isInvalidationOnlyPeer(args.peer)
         ? {
             invalidationOnlyV1: {
               enabled: true,
             },
           }
         : {}),
-      ...(isCompactInvalidationBrowserPeer(args.peer)
+      ...(isCompactInvalidationPeer(args.peer)
         ? {
             compactInvalidationV1: {
               enabled: true as const,
@@ -4422,6 +4422,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
 
   function peerSupportsMobileReplicaReseed(peer: PeerState): boolean {
     return isMobileChangesetPeer(peer)
+      && !isInvalidationOnlyPeer(peer.metadata)
       && peerSupportsChangesetAck(peer)
       && peer.metadata?.capabilities?.includes(SYNC_CHUNKED_ENVELOPES_CAPABILITY) === true;
   }
@@ -4444,7 +4445,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       attemptCount: 0,
       retryNotBeforeMs: 0,
     };
-    const sent = isCompactInvalidationBrowserPeer(peer.metadata)
+    const sent = isCompactInvalidationPeer(peer.metadata)
       ? send(peer, "invalidation_batch", buildSyncInvalidationBatchPayload({
         fromDbVersion: payload.fromDbVersion,
         toDbVersion: payload.toDbVersion,
@@ -5687,7 +5688,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       );
       if (pending) {
         peer.changesetRecoveryNotBeforeMs = 0;
-        if (peerSupportsChangesetAck(peer) && !isCompactInvalidationBrowserPeer(peer.metadata)) {
+        if (peerSupportsChangesetAck(peer) && !isCompactInvalidationPeer(peer.metadata)) {
           peer.pendingChangesetBatch = pending;
         } else {
           peer.lastKnownServerDbVersion = Math.max(peer.lastKnownServerDbVersion, pending.toDbVersion);

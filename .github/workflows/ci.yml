@@ -168,6 +168,22 @@ jobs:
           key: nm-v2-${{ hashFiles('apps/desktop/package-lock.json','apps/ade-cli/package-lock.json','apps/web/package-lock.json','apps/webhook-relay/package-lock.json','apps/push-relay/package-lock.json') }}
       - run: cd apps/push-relay && npm run typecheck
 
+  test-android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+      - uses: android-actions/setup-android@v3
+      - name: Install Android SDK 36
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+      - name: Test, lint, and assemble Android
+        working-directory: apps/android
+        run: ./gradlew :sync:test :app:testDebugUnitTest :app:lintDebug :app:assembleDebug :app:bundleRelease
+
   lint-desktop:
     needs: install
     runs-on: ubuntu-latest
@@ -438,6 +454,7 @@ jobs:
       - typecheck-web
       - typecheck-webhook-relay
       - typecheck-push-relay
+      - test-android
       - typecheck-tunnel-relay
       - typecheck-account-directory
       - lint-desktop

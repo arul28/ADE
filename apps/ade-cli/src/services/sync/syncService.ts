@@ -255,7 +255,7 @@ function parseSshPairingRequest(value: unknown): SshPairingRequest {
   }
   const device = request.device as Record<string, unknown>;
   const platform = requiredSshPairingText(device.platform, "device.platform") as SyncPeerPlatform;
-  if (!["macOS", "linux", "windows", "iOS", "unknown"].includes(platform)) {
+  if (!["macOS", "linux", "windows", "iOS", "android", "unknown"].includes(platform)) {
     throw new Error("device.platform is not supported.");
   }
   const type = requiredSshPairingText(device.type, "device.type") as SyncPeerDeviceType;

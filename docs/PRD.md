@@ -1,6 +1,6 @@
 # ADE — Product Requirements
 
-ADE is a **per-machine local-first development system** for AI-assisted software engineering. Its center is the **brain**: the always-on, machine-owned ADE process for a channel. The brain owns projects, git-worktree lanes of work, projectless personal chats, multi-provider agent chat, work sessions, a persistent CTO agent, rule-based automations, PR stacking, conflict simulation, computer-use proofs, the sync websocket, and the project catalog. Four first-party clients attach to it: the **Electron desktop app** (multi-window, one window per project or a machine-level personal-chat tab, optionally bound to a remote runtime over SSH), the **hosted web client**, the **`ade code` terminal client**, and the **iOS app**. The same `ade` CLI is also used directly from any shell.
+ADE is a **per-machine local-first development system** for AI-assisted software engineering. Its center is the **brain**: the always-on, machine-owned ADE process for a channel. The brain owns projects, git-worktree lanes of work, projectless personal chats, multi-provider agent chat, work sessions, a persistent CTO agent, rule-based automations, PR stacking, conflict simulation, computer-use proofs, the sync websocket, and the project catalog. Five first-party clients attach to it: the **Electron desktop app** (multi-window, one window per project or a machine-level personal-chat tab, optionally bound to a remote runtime over SSH), the **hosted web client**, the **`ade code` terminal client**, the **iOS app**, and the **Android app**. The same `ade` CLI is also used directly from any shell.
 
 This doc is the entry point. Every major feature and concept is linked to its detailed breakdown in [`features/`](./features/). For how the pieces fit together, read [ARCHITECTURE.md](./ARCHITECTURE.md) next.
 
@@ -16,6 +16,7 @@ The clients of that brain are equal:
 - **Hosted web client** (`apps/desktop/src/renderer/webclient/`) — static browser controller over the paired machine's sync WebSocket. It keeps no project database locally and reaches projectless Chats through runtime-scoped commands.
 - **ADE Code (`ade code`)** — terminal-native Work chat (Ink + React) in `apps/ade-cli/src/tuiClient/`. Defaults to attaching to the machine brain; starts the brain if missing. `--embedded` keeps the in-process runtime fallback explicit.
 - **iOS app** (`apps/ios/`) — SwiftUI controller; pairs with an ADE machine over WebSocket. The phone never runs agents.
+- **Android app** (`apps/android/`) — native Compose controller; races LAN, tailnet, and Relay routes, uses invalidation-only thin sync, and never runs agents.
 - **SSH-attached desktop** — a desktop window pointed at a remote machine is the same client as a local window; the remote machine's brain is authoritative for its projects.
 
 The primary unit of work inside any project is a **lane**: an isolated git worktree with its own agent and terminal sessions. Many lanes run concurrently — each with its own chat, sessions, and PR. Lanes compose into **stacks** (dependency chains) and can be driven by automation rules when the work needs durable routing.
@@ -26,7 +27,7 @@ Layered on top, all owned by the brain:
 - **Computer use** — direct, signed Codex Computer Use MCP wiring on macOS plus the provider-neutral proof broker for intentional screenshots, videos, traces, and verification artifacts.
 - **ADE browser** — built-in browser with one persistent human-authenticated profile per ADE installation/channel; independent project/window/personal tab collections; durable tab URLs, permissions, and normal Chromium site state; human-gated origin access; capability-bound tab/session ownership; hidden-tab agent actions; diagnostics, traces, and explicit proof promotion.
 - **Linear** — issue read/search plus a developer lane/PR flow and an optional live-status round-trip.
-- **Multi-device sync** — cr-sqlite CRDT replication, owned by the sync service inside the brain. The iOS app and any controller desktops connect through the same sync service. Work chats can also continue on another connected ADE desktop through an explicit clean/published Git handoff and bounded portable context capsule rather than transcript or provider-session replication.
+- **Multi-device sync** — brain-owned WebSocket sync. Replica-capable clients use cr-sqlite CRDT replication; Android and hosted web use invalidation-only thin sync and refetch through remote commands and live streams. Work chats can also continue on another connected ADE desktop through an explicit clean/published Git handoff and bounded portable context capsule rather than transcript or provider-session replication.
 - **Remote runtime** — the desktop ships per-platform `ade-<platform-arch>` binaries plus native deps under `apps/desktop/resources/runtime/`; `bootstrapRemoteRuntime` uploads them on first SSH connect. Headless installs use `curl … install.sh | sh`.
 
 ADE is the control plane. It owns ADE Browser automation for its built-in project browser, while OS-level computer-use still runs through dedicated backends and ADE normalizes their artifacts.
@@ -37,7 +38,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 
 | Concept | Summary | Doc |
 | --- | --- | --- |
-| Brain | The always-on, machine-owned ADE process for one channel. Hosts every project; desktop, `ade code`, and iOS attach as clients. Installable as a launchd / systemd / Windows login service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
+| Brain | The always-on, machine-owned ADE process for one channel. Hosts every project; desktop, web, `ade code`, iOS, and Android attach as clients. Installable as a launchd / systemd / Windows login service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Runtime | ADE execution machinery: processes/services that open DBs and run agents, PTYs, git, and orchestration. A runtime process can host the brain role; manual/headless runtimes can exist for isolated commands and tests. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Manual runtime | A foreground runtime process started explicitly with `ade runtime run --socket <path>`. Sync is always off; used for dev/test work instead of the automated stable/beta/alpha brain service. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
 | Project | One repo entry in the brain's project registry. Identified by stable hash of root path; addressed in the multi-project RPC by `projectId`. | [remote-runtime/README.md](./features/remote-runtime/README.md) |
@@ -63,8 +64,8 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 | Remote runtime | A runtime reached over SSH by a desktop window through `ade rpc --stdio`; the remote machine's brain is authoritative for its projects. |
 | Desktop bridge | Narrow Electron-main side channel for services that require real Electron UI APIs, such as ADE Browser. |
 | Sync service | Brain-owned WebSocket + cr-sqlite service that pairs controllers, replicates ADE DB state, routes mobile commands, and manages phone PIN pairing. |
-| Client | A UI or CLI surface attached to an ADE brain or runtime transport: desktop, `ade code`, iOS, or an SSH-attached desktop window. |
-| Controller | A client that reads runtime state and sends commands without running agents itself; the iOS app is always a controller. |
+| Client | A UI or CLI surface attached to an ADE brain or runtime transport: desktop, hosted web, `ade code`, iOS, Android, or an SSH-attached desktop window. |
+| Controller | A client that reads runtime state and sends commands without running agents itself; the iOS and Android apps are always controllers. |
 | Catalog | The machine-level list of projects the brain serves to clients and ADE Mobile. |
 | Project | A registered repository root known to a machine brain and addressed by `projectId`. |
 | Lane | A task-scoped git worktree with its own agent chat, work sessions, and PR flow. |
@@ -91,6 +92,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 - [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects.
 - [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller, including session ask/note/settle lifecycle controls and the account-wide `/attention` pane.
 - [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB, and account Attention that remains independent of the selected project.
+- [**Android Companion**](./features/android-companion/README.md) — Native Kotlin/Compose thin client. Hub, Lanes, Work, Settings, LAN/tailnet/Relay pairing and adoption, account Attention, FCM, and Play build/release boundaries.
 
 ### Work execution
 
@@ -123,7 +125,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 - [**Linear Integration**](./features/linear-integration/README.md) — Issue read/search, lane/commit/PR attachment flow, batch launch, session-scoped attachment, and an optional live-status round-trip.
 - [**Computer Use**](./features/computer-use/README.md) — Direct signed Codex Computer Use, intentional proof capture, and active App Control. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
-- [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation), host/controller model, WebSocket envelope, remote commands, the [cross-machine session handoff contract](./features/sync-and-multi-device/cross-machine-session-handoff.md), and [ADE Attention](./features/sync-and-multi-device/push-notifications.md): one account-wide source of truth across desktop, web, ADE Code, iOS, notifications, widgets, Live Activities, and the native Mac presentation.
+- [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation), invalidation-only web/Android clients, brain/controller model, WebSocket envelope, remote commands, the [cross-machine session handoff contract](./features/sync-and-multi-device/cross-machine-session-handoff.md), and [ADE Attention](./features/sync-and-multi-device/push-notifications.md): one account-wide source of truth across desktop, web, ADE Code, iOS, Android, APNs/FCM, widgets, Live Activities, and the native Mac presentation.
 
 ---
 
@@ -137,6 +139,7 @@ Quick pointers:
 - **Desktop client**: `apps/desktop/` — Electron main + preload + renderer. Multi-window. `LocalRuntimeConnectionPool` (`apps/desktop/src/main/services/localRuntime/`) speaks to the local runtime; `RemoteConnectionPool` (`apps/desktop/src/main/services/remoteRuntime/`) speaks to a runtime over SSH after `bootstrapRemoteRuntime` uploads the bundled `ade-<platform-arch>` binary. `preload.ts` routes runtime-backed APIs through those pools. In-process desktop services remain only for flows that have no runtime binding yet, Electron-only side effects, diagnostics, and tests.
 - **Terminal client**: `apps/ade-cli/src/tuiClient/` — `ade code` Ink + React Work chat.
 - **iOS client**: `apps/ios/` — SwiftUI controller over WebSocket to the ADE brain's sync service.
+- **Android client**: `apps/android/` — Kotlin/Compose controller using the pure-JVM `:sync` module and invalidation-only WebSocket mode.
 - **Renderer components**: `apps/desktop/src/renderer/components/<feature>/`.
 - **Shared types + IPC contract**: `apps/desktop/src/shared/` (consumed by the desktop client and re-imported by the ADE CLI runtime). New runtime-facing types: `apps/desktop/src/shared/types/remoteRuntime.ts`, `core.ts`.
 - **Data**: SQLite + cr-sqlite. `.ade/` per project (the runtime owns these files regardless of which client is attached), `~/.ade/` global.

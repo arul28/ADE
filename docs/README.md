@@ -2,7 +2,7 @@
 
 Navigation map for the internal docs. **Start with [PRD.md](./PRD.md).**
 
-The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
+The mental model up front: ADE has a **brain** — the always-on, machine-owned ADE process for one channel. The brain owns projects, lanes, projectless personal chats, agent chats, work sessions, sync, proof, and the machine project catalog. The desktop app, hosted web, the terminal `ade code` client, the iOS app, the Android app, and SSH-attached desktop windows are **clients** that attach to it. Read the entry-point docs in that order:
 
 ## Reading order
 
@@ -26,6 +26,7 @@ docs/
 └── features/
     ├── agents/                            # agent identity, tools, personas
     ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient
+    ├── android-companion/                 # native Compose thin client, pairing, lifecycle, FCM, Play build
     ├── automations/                       # rule triggers + actions + guardrails
     ├── chat/                              # multi-provider agent chat
     ├── computer-use/                      # proof control plane, backends, broker
@@ -42,7 +43,7 @@ docs/
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair
-    ├── sync-and-multi-device/             # CRDT sync, account Attention, iOS, remote commands, session handoff
+    ├── sync-and-multi-device/             # CRDT/thin sync, account Attention, mobile clients, remote commands, handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
     └── workspace-graph/                   # React Flow canvas + data sources

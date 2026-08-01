@@ -323,8 +323,8 @@ describe("buildSyncHostHelloOkPayload", () => {
         ],
       },
     }).features;
-    expect(phoneFeatures).not.toHaveProperty("invalidationOnlyV1");
-    expect(phoneFeatures).not.toHaveProperty("compactInvalidationV1");
+    expect(phoneFeatures.invalidationOnlyV1).toEqual({ enabled: true });
+    expect(phoneFeatures.compactInvalidationV1).toEqual({ enabled: true });
   });
 
   it("keeps invalidation envelopes bounded when table metadata is oversized", () => {
@@ -4887,6 +4887,26 @@ describe("initial hydration priority", () => {
       serverDbSiteId: "site-host",
       serverDbVersion: 99,
     })).toBe(11);
+  });
+
+  it("starts invalidation-only phone peers at the current host watermark", () => {
+    expect(initialSyncHostCursorForPeer({
+      peer: {
+        deviceType: "phone",
+        dbVersion: 7,
+        dbVersionBySite: { "site-host": 11 },
+        capabilities: [
+          SYNC_INVALIDATION_ONLY_V1_CAPABILITY,
+          SYNC_COMPACT_INVALIDATION_V1_CAPABILITY,
+          SYNC_CHUNKED_ENVELOPES_CAPABILITY,
+          // A defensive host guard must keep an accidental client capability
+          // from enrolling this replica-free peer in ACK-gated reseeding.
+          "changesetAck",
+        ],
+      },
+      serverDbSiteId: "site-host",
+      serverDbVersion: 99,
+    })).toBe(99);
   });
 
   it("preserves an invalidation browser's same-DB handoff cursor but resets for a new DB", () => {

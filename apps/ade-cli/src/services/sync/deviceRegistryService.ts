@@ -69,7 +69,7 @@ function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
 
 function normalizePlatform(value: unknown): SyncPeerPlatform {
   const raw = typeof value === "string" ? value.trim() : "";
-  if (raw === "macOS" || raw === "linux" || raw === "windows" || raw === "iOS") return raw;
+  if (raw === "macOS" || raw === "linux" || raw === "windows" || raw === "iOS" || raw === "android") return raw;
   return "unknown";
 }
 

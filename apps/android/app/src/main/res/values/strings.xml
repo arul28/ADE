@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">ADE</string>
+    <string name="connection_channel_name">Active ADE sessions</string>
+    <string name="attention_channel_name">Agent attention</string>
+    <string name="attention_silent_channel_name">Silent agent attention</string>
+    <string name="connection_notification_title">Connected to ADE</string>
+</resources>

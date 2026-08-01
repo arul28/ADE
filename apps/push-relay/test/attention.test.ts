@@ -208,6 +208,7 @@ class SqliteD1Database {
         "../migrations/0002_rate_and_budget.sql",
         "../migrations/0003_account_attention.sql",
         "../migrations/0004_device_registration_generation.sql",
+        "../migrations/0005_android_fcm.sql",
       ]) {
         this.native.exec(readFileSync(new URL(migration, import.meta.url), "utf8"));
       }
@@ -380,6 +381,7 @@ function insertAttentionDevice(
     userId: string;
     deviceId: string;
     apnsToken?: string | null;
+    fcmToken?: string | null;
     pushToStartToken?: string | null;
     preferences?: Record<string, unknown>;
     sourceMachineKey?: string | null;
@@ -390,18 +392,22 @@ function insertAttentionDevice(
   const now = "2026-07-28T08:00:00.000Z";
   database.native.prepare(`
     insert into attention_devices(
-      user_id, device_id, source_machine_key, apns_token, push_to_start_token,
+      user_id, device_id, source_machine_key, apns_token, fcm_token, push_to_start_token,
       bundle_id, aps_environment, platform, device_name, preferences_json,
       registered_at, updated_at, lease_expires_at, generation
     ) values (
-      ?, ?, ?, ?, ?, 'com.ade.ios', 'sandbox', 'iOS', null, ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?, ?, ?, ?, ?, null, ?, ?, ?, ?, ?
     )
   `).run(
     args.userId,
     args.deviceId,
     args.sourceMachineKey ?? null,
     args.apnsToken ?? null,
+    args.fcmToken ?? null,
     args.pushToStartToken ?? null,
+    args.fcmToken ? "com.ade.android" : "com.ade.ios",
+    args.fcmToken ? null : "sandbox",
+    args.fcmToken ? "android" : "iOS",
     JSON.stringify(args.preferences ?? {}),
     now,
     now,
@@ -410,13 +416,14 @@ function insertAttentionDevice(
   );
   database.native.prepare(`
     insert into attention_device_ownership(
-      device_id, user_id, ownership_epoch, apns_token, active, updated_at
-    ) values (?, ?, ?, ?, 1, ?)
+      device_id, user_id, ownership_epoch, apns_token, fcm_token, active, updated_at
+    ) values (?, ?, ?, ?, ?, 1, ?)
   `).run(
     args.deviceId,
     args.userId,
     args.ownershipEpoch ?? 1,
     args.apnsToken ?? null,
+    args.fcmToken ?? null,
     now,
   );
 }
@@ -519,6 +526,72 @@ describe("account Attention contract", () => {
       { mutedSessionIds: ["account-muted"] },
       { "phone-1": { mutedSessionIds: [] } },
     )).toEqual([]);
+  });
+
+  it("fans an approval out to Android as the account item plus actionable approval id", async () => {
+    const database = new SqliteD1Database();
+    const parsed = attentionTestInternals.parseAttentionItem(validAgentItem(), MACHINE_KEY);
+    expect(parsed).not.toBeNull();
+    if (!parsed) return database.close();
+    const fcmCalls: Array<Record<string, unknown>> = [];
+    const sendFcm = async (_config: unknown, push: Record<string, unknown>) => {
+      fcmCalls.push(push);
+      return { ok: true, status: 200, messageId: "fcm-1", reason: null, tokenInvalid: false };
+    };
+    try {
+      insertAttentionDevice(database, {
+        userId: "account-a",
+        deviceId: "android-1",
+        fcmToken: "fcm-registration-token-123456789",
+      });
+      database.native.prepare(`
+        insert into attention_preferences(user_id, payload_json, updated_at)
+        values ('account-a', '{"account":{"soundsEnabled":true}}', ?)
+      `).run(new Date().toISOString());
+      database.native.prepare(`
+        insert into attention_items(
+          user_id, item_id, machine_key, source_revision, account_revision,
+          fingerprint, event_kind, phase, payload_json, seen_at, dismissed_at,
+          expires_at, updated_at
+        ) values ('account-a', ?, ?, ?, 1, ?, ?, ?, ?, null, null, ?, ?)
+      `).run(
+        parsed.id,
+        MACHINE_KEY,
+        parsed.revision,
+        parsed.fingerprint,
+        parsed.eventKind,
+        parsed.phase,
+        JSON.stringify(parsed),
+        parsed.expiresAt,
+        parsed.updatedAt,
+      );
+      await attentionTestInternals.deliverAttentionNotifications(
+        makeAttentionEnv(database, {
+          FCM_SERVICE_ACCOUNT_JSON: JSON.stringify({
+            project_id: "ade-android",
+            client_email: "push@ade-android.iam.gserviceaccount.com",
+            private_key: "test-private-key",
+          }),
+        }),
+        "account-a",
+        [parsed],
+        async () => ({ ok: false, status: 0, apnsId: null, reason: "not used", tokenInvalid: false }),
+        sendFcm as never,
+      );
+      expect(fcmCalls).toHaveLength(1);
+      expect(fcmCalls[0]).toMatchObject({
+        deviceToken: "fcm-registration-token-123456789",
+        data: {
+          category: "approval",
+          attentionItemId: parsed.id,
+          sessionId: "session-1",
+          itemId: "approval-1",
+          sound: "default",
+        },
+      });
+    } finally {
+      database.close();
+    }
   });
 
   it("accepts and normalizes a bounded machine-owned agent item", () => {

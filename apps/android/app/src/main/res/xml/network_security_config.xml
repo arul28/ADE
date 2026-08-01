@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Direct LAN/Tailscale sync deliberately uses ws://. Authentication and
+         credential adoption remain cryptographically bound at the ADE layer. -->
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -129,7 +129,7 @@ export const SYNC_CHUNKED_ENVELOPES_CAPABILITY = "chunkedEnvelopes";
 
 export type SyncPayloadEncoding = "json" | "base64";
 
-export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "unknown";
+export type SyncPeerPlatform = "macOS" | "linux" | "windows" | "iOS" | "android" | "unknown";
 
 export type SyncPeerDeviceType = "desktop" | "phone" | "vps" | "browser" | "unknown";
 

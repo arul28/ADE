@@ -36,7 +36,7 @@ prPollingService ─┘          │
                     │                       │
                     │ account snapshots     │ APNs alert / Live Activity
                     ▼                       ▼
- Desktop + web + ADE Code + iOS        iPhone system surfaces
+ Desktop + web + ADE Code + mobile     iPhone + Android system surfaces
                     │
                     └─ desktop renderer snapshot
                               ▼
@@ -46,7 +46,7 @@ prPollingService ─┘          │
 Each brain publishes a bounded full snapshot for its machine, covering every
 project currently hosted by that brain rather than the project selected in any
 one client. The relay merges machine snapshots into an account revision stream.
-Signed-in desktop, hosted web, ADE Code, and iOS clients read that stream
+Signed-in desktop, hosted web, ADE Code, iOS, and Android clients read that stream
 incrementally through an account-scoped path independent of navigation
 selection. They acknowledge items, report presence where supported, and update
 account/device preferences. Exact destinations still identify the owning
@@ -152,9 +152,13 @@ registrations, Live Activity state/tokens, presence, preferences, and delivery
 receipts. Snapshots and fan-out are capped. Expired items, old tombstones, and
 stale presence are pruned.
 
-APNs registrations and invalid-token cleanup retain the existing push relay
-behavior. See `apps/push-relay/README.md` for deployment variables, Clerk
-issuer configuration, APNs configuration, abuse limits, and migrations.
+APNs and FCM registrations share the ownership-epoch fence and invalid-token
+cleanup model. Android registrations provide an FCM token instead of APNs
+environment/token fields. The Worker mints a short-lived Firebase OAuth token
+from `FCM_SERVICE_ACCOUNT_JSON` and uses FCM HTTP v1 data-only messages; an
+`UNREGISTERED` response removes the stale destination. See
+`apps/push-relay/README.md` for deployment variables, Clerk issuer
+configuration, APNs/FCM configuration, abuse limits, and migrations.
 
 ## Brain publisher
 
@@ -227,8 +231,10 @@ phone. The next machine heartbeat escalates an item that remains unseen.
 
 Notification delivery is receipt-deduped per item/device/fingerprint. Quiet
 hours, muted sessions, preview privacy, sound, and exact deep links are applied
-before APNs fan-out. `needs_you` can use time-sensitive interruption; other
-notifying events use active interruption.
+before APNs or FCM fan-out. `needs_you` can use time-sensitive APNs
+interruption; other notifying events use active interruption. Android receives
+the same bounded policy result as a data message and builds its native
+notification locally.
 
 ## Desktop Attention
 
@@ -398,6 +404,34 @@ ActivityKit authorization is independent of alert permission. Disabling Live
 Activities sends an explicit push-to-start-token clear to every active account
 and paired-machine route; omitted tokens preserve the existing registration.
 
+## Android Attention
+
+`AttentionRepository` talks directly to the authenticated account relay. It
+loads the account snapshot/preferences, acknowledges item revisions, registers
+the installation's FCM token with a positive monotonic ownership epoch, and
+reports presence independently of the currently selected project. Sign-out
+commits an encrypted higher ownership epoch before unregistering FCM while the
+Clerk token is still available. If that request fails, the app discards late
+FCM locally and the next owner advances again before claiming the token. Direct
+machine pairing remains intact.
+
+Android reports visible item ids only while the account Attention drawer is
+open and the activity is foreground. Background/closed-drawer reports carry an
+empty visible set so desktop-first suppression cannot mistake cached rows for
+work the user is viewing.
+
+`AdeMessagingService` presents FCM data messages in the native notification
+tray. The payload carries a bounded title/body, sound policy, exact ADE deep
+link, and optional approval routing identifiers. Approval notifications expose
+Approve and Deny actions through an unexported `AttentionActionActivity` that
+requires device credentials before dispatch; the actions are omitted when no
+secure lock screen exists. Immutable actions bind the current owner hash,
+ownership epoch, and account machine key, revalidate them after unlock, and
+connect only that machine. Sign-out invalidates the binding and cancels visible
+Attention notifications. Other remote actions remain inside the app and retain
+command-descriptor gating. Android has no Live Activity or widget surface in
+v1.
+
 ## Live Activity and widgets
 
 There is one account-wide `agent-runs` Live Activity per iPhone. The relay
@@ -441,5 +475,7 @@ Simulator and unit validation can prove snapshot merging, expiry/tombstones,
 preference mapping, exact links, intent safety, widget decoding, and rendering.
 
 A physical iPhone is still required to prove real APNs delivery,
-push-to-start-token minting, background Live Activity updates, and system
-notification presentation.
+push-to-start-token minting, background Live Activity updates, and Apple system
+presentation. A physical Android device or complete emulator image is required
+to prove real FCM registration/delivery, notification actions/deep links,
+foreground-service behavior, and OS background limits.

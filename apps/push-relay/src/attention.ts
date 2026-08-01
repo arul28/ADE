@@ -5,6 +5,12 @@ import {
   type ApnsSendResult,
 } from "./apns";
 import {
+  parseFcmServiceAccount,
+  sendFcmPush,
+  type FcmServiceAccount,
+  type FcmSendResult,
+} from "./fcm";
+import {
   AttentionAuthVerificationUnavailableError,
   inspectAttentionAuthConfiguration,
   verifyAttentionBearerToken,
@@ -26,6 +32,8 @@ export type AttentionRelayEnv = {
   APNS_KEY_ID?: string;
   APNS_TEAM_ID?: string;
   APNS_DEFAULT_TOPIC?: string;
+  /** Firebase service-account JSON, stored as an encrypted Worker secret. */
+  FCM_SERVICE_ACCOUNT_JSON?: string;
 };
 
 type AttentionItemRow = {
@@ -51,9 +59,10 @@ type IncomingAttentionTombstone = {
 type AttentionDeviceRow = {
   device_id: string;
   apns_token: string | null;
+  fcm_token?: string | null;
   push_to_start_token: string | null;
   bundle_id: string;
-  aps_environment: string;
+  aps_environment: string | null;
   preferences_json: string;
   generation: string;
 };
@@ -67,6 +76,7 @@ type AttentionDeviceOwnershipRow = {
   user_id: string;
   ownership_epoch: number;
   apns_token: string | null;
+  fcm_token: string | null;
 };
 
 type ParsedAttentionItem = Record<string, unknown> & {
@@ -103,6 +113,7 @@ const MAX_TITLE_LENGTH = 180;
 const MAX_PREVIEW_LENGTH = 320;
 const MAX_DETAIL_LENGTH = 1_000;
 const APNS_TOKEN_PATTERN = /^[a-f0-9]{32,512}$/i;
+const FCM_TOKEN_PATTERN = /^[A-Za-z0-9_:\-]{20,4096}$/;
 const ACCOUNT_MACHINE_ONLINE_WINDOW_MS = 90_000;
 const DEFAULT_DESKTOP_ESCALATION_DELAY_SECONDS = 30;
 const DESKTOP_PRESENCE_WINDOW_MS = 45_000;
@@ -820,19 +831,137 @@ async function releaseAttentionNotificationDelivery(
   ).run();
 }
 
+type AttentionPushTarget =
+  | {
+      provider: "apns";
+      token: string;
+      config: ApnsKeyConfig;
+      environment: ApnsEnvironment;
+      topic: string;
+    }
+  | {
+      provider: "fcm";
+      token: string;
+      config: FcmServiceAccount;
+    };
+
+function attentionPushTarget(
+  device: AttentionDeviceRow,
+  apns: ApnsKeyConfig | null,
+  firebase: FcmServiceAccount | null,
+  defaultApnsTopic: string,
+): AttentionPushTarget | null {
+  if (device.fcm_token && firebase) {
+    return { provider: "fcm", token: device.fcm_token, config: firebase };
+  }
+  if (
+    device.apns_token
+    && apns
+    && (device.aps_environment === "sandbox" || device.aps_environment === "production")
+  ) {
+    return {
+      provider: "apns",
+      token: device.apns_token,
+      config: apns,
+      environment: device.aps_environment,
+      topic: device.bundle_id || defaultApnsTopic,
+    };
+  }
+  return null;
+}
+
+async function sendAttentionPush(
+  target: AttentionPushTarget,
+  item: ParsedAttentionItem,
+  args: {
+    body: string | null;
+    deepLink: string | null;
+    hideDetails: boolean;
+    nowMs: number;
+    soundsEnabled: boolean;
+  },
+  sendApns: typeof sendApnsPush,
+  sendFcm: typeof sendFcmPush,
+): Promise<ApnsSendResult | FcmSendResult> {
+  if (target.provider === "fcm") {
+    const routing = attentionAlertRoutingPayload(item, args.deepLink);
+    return sendFcm(target.config, {
+      deviceToken: target.token,
+      priority: "high",
+      ttlSeconds: 24 * 60 * 60,
+      collapseKey: item.id,
+      data: {
+        title: notificationTitle(item, args.hideDetails),
+        ...(args.body ? { body: args.body } : {}),
+        category: typeof routing.itemId === "string" ? "approval" : "attention",
+        attentionItemId: item.id,
+        eventKind: item.eventKind,
+        ...(args.soundsEnabled ? { sound: "default" } : {}),
+        ...Object.fromEntries(
+          Object.entries(routing)
+            .filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+        ),
+      },
+    });
+  }
+  return sendApns(target.config, {
+    environment: target.environment,
+    deviceToken: target.token,
+    topic: target.topic,
+    pushType: "alert",
+    priority: 10,
+    expiration: Math.floor(args.nowMs / 1_000) + 24 * 60 * 60,
+    collapseId: item.id,
+    payload: {
+      aps: {
+        alert: {
+          title: notificationTitle(item, args.hideDetails),
+          ...(args.body ? { body: args.body } : {}),
+        },
+        ...(args.soundsEnabled ? { sound: "default" } : {}),
+        "thread-id": item.id,
+        "interruption-level": item.eventKind === "agent_needs_you"
+          ? "time-sensitive"
+          : "active",
+      },
+      ...attentionAlertRoutingPayload(item, args.deepLink),
+    },
+  });
+}
+
+async function clearInvalidAttentionPushToken(
+  env: AttentionRelayEnv,
+  target: AttentionPushTarget,
+  userId: string,
+  deviceId: string,
+  updatedAt: string,
+): Promise<void> {
+  const statement = target.provider === "fcm"
+    ? `update attention_devices set fcm_token = null, updated_at = ?
+       where user_id = ? and device_id = ? and fcm_token = ?`
+    : `update attention_devices set apns_token = null, updated_at = ?
+       where user_id = ? and device_id = ? and apns_token = ?`;
+  await env.DB.prepare(statement).bind(updatedAt, userId, deviceId, target.token).run();
+}
+
 async function deliverAttentionNotifications(
   env: AttentionRelayEnv,
   userId: string,
   items: ParsedAttentionItem[],
   sendPush: typeof sendApnsPush = sendApnsPush,
+  sendFcm: typeof sendFcmPush = sendFcmPush,
 ): Promise<void> {
   const config = apnsConfig(env);
-  if (!config || items.length === 0) return;
+  const firebase = parseFcmServiceAccount(env.FCM_SERVICE_ACCOUNT_JSON);
+  if ((!config && !firebase) || items.length === 0) return;
   const [devicesResult, preferencesRow] = await Promise.all([
     env.DB.prepare(`
-      select device_id, apns_token, bundle_id, aps_environment, preferences_json
+      select device_id, apns_token, fcm_token, bundle_id, aps_environment,
+             preferences_json
       from attention_devices
-      where user_id = ? and apns_token is not null and lease_expires_at > ?
+      where user_id = ?
+        and (apns_token is not null or fcm_token is not null)
+        and lease_expires_at > ?
     `).bind(userId, new Date().toISOString()).all<AttentionDeviceRow>(),
     env.DB
       .prepare("select payload_json from attention_preferences where user_id = ? limit 1")
@@ -908,7 +1037,13 @@ async function deliverAttentionNotifications(
     const deepLink = deepLinkForItem(item);
     for (const device of devicesResult.results) {
       if (notificationAttempts >= MAX_NOTIFICATION_ATTEMPTS_PER_PUBLISH) return;
-      if (!device.apns_token) continue;
+      const target = attentionPushTarget(
+        device,
+        config,
+        firebase,
+        env.APNS_DEFAULT_TOPIC?.trim() || "",
+      );
+      if (!target) continue;
       const override = mergedDevicePreferences(
         device,
         accountPreferences,
@@ -951,31 +1086,15 @@ async function deliverAttentionNotifications(
       const body = hideDetails
         ? boundedText(item.privacyPreview, MAX_PREVIEW_LENGTH)
         : boundedText(item.preview, MAX_PREVIEW_LENGTH);
-      let result: ApnsSendResult;
+      let result: ApnsSendResult | FcmSendResult;
       try {
-        result = await sendPush(config, {
-          environment: device.aps_environment as ApnsEnvironment,
-          deviceToken: device.apns_token,
-          topic: device.bundle_id || env.APNS_DEFAULT_TOPIC?.trim() || "",
-          pushType: "alert",
-          priority: 10,
-          expiration: Math.floor(nowMs / 1_000) + 24 * 60 * 60,
-          collapseId: item.id,
-          payload: {
-            aps: {
-              alert: {
-                title: notificationTitle(item, hideDetails),
-                ...(body ? { body } : {}),
-              },
-              ...(soundsEnabled ? { sound: "default" } : {}),
-              "thread-id": item.id,
-              "interruption-level": item.eventKind === "agent_needs_you"
-                ? "time-sensitive"
-                : "active",
-            },
-            ...attentionAlertRoutingPayload(item, deepLink),
-          },
-        });
+        result = await sendAttentionPush(
+          target,
+          item,
+          { body, deepLink, hideDetails, nowMs, soundsEnabled },
+          sendPush,
+          sendFcm,
+        );
       } catch (error) {
         notificationAttempts += 1;
         await releaseAttentionNotificationDelivery(env, {
@@ -1026,16 +1145,13 @@ async function deliverAttentionNotifications(
         });
       }
       if (!result.ok && result.tokenInvalid) {
-        await env.DB.prepare(`
-          update attention_devices
-          set apns_token = null, updated_at = ?
-          where user_id = ? and device_id = ? and apns_token = ?
-        `).bind(
-          new Date(nowMs).toISOString(),
+        await clearInvalidAttentionPushToken(
+          env,
+          target,
           userId,
           device.device_id,
-          device.apns_token,
-        ).run();
+          new Date(nowMs).toISOString(),
+        );
       }
     }
   }
@@ -2015,18 +2131,17 @@ async function attentionDeviceOwnershipRows(
   env: AttentionRelayEnv,
   deviceId: string,
   apnsToken: string | null,
+  fcmToken: string | null = null,
 ): Promise<AttentionDeviceOwnershipRow[]> {
-  const result = apnsToken
-    ? await env.DB.prepare(`
-        select device_id, user_id, ownership_epoch, apns_token
-        from attention_device_ownership
-        where device_id = ? or apns_token = ?
-      `).bind(deviceId, apnsToken).all<AttentionDeviceOwnershipRow>()
-    : await env.DB.prepare(`
-        select device_id, user_id, ownership_epoch, apns_token
-        from attention_device_ownership
-        where device_id = ?
-      `).bind(deviceId).all<AttentionDeviceOwnershipRow>();
+  const predicates = ["device_id = ?"];
+  const bindings: string[] = [deviceId];
+  if (apnsToken) { predicates.push("apns_token = ?"); bindings.push(apnsToken); }
+  if (fcmToken) { predicates.push("fcm_token = ?"); bindings.push(fcmToken); }
+  const result = await env.DB.prepare(`
+    select device_id, user_id, ownership_epoch, apns_token, fcm_token
+    from attention_device_ownership
+    where ${predicates.join(" or ")}
+  `).bind(...bindings).all<AttentionDeviceOwnershipRow>();
   return result.results;
 }
 
@@ -2062,18 +2177,20 @@ function attentionDeviceOwnershipUpsertStatement(
     userId: string;
     ownershipEpoch: number;
     apnsToken: string | null;
+    fcmToken: string | null;
     active: boolean;
     updatedAt: string;
   },
 ): D1PreparedStatement {
   return env.DB.prepare(`
     insert into attention_device_ownership(
-      device_id, user_id, ownership_epoch, apns_token, active, updated_at
-    ) values (?, ?, ?, ?, ?, ?)
+      device_id, user_id, ownership_epoch, apns_token, fcm_token, active, updated_at
+    ) values (?, ?, ?, ?, ?, ?, ?)
     on conflict(device_id) do update set
       user_id = excluded.user_id,
       ownership_epoch = excluded.ownership_epoch,
       apns_token = coalesce(excluded.apns_token, attention_device_ownership.apns_token),
+      fcm_token = coalesce(excluded.fcm_token, attention_device_ownership.fcm_token),
       active = excluded.active,
       updated_at = excluded.updated_at
     where excluded.ownership_epoch > attention_device_ownership.ownership_epoch
@@ -2086,8 +2203,38 @@ function attentionDeviceOwnershipUpsertStatement(
     args.userId,
     args.ownershipEpoch,
     args.apnsToken,
+    args.fcmToken,
     args.active ? 1 : 0,
     args.updatedAt,
+  );
+}
+
+function releasePriorFcmOwnershipStatement(
+  env: AttentionRelayEnv,
+  args: {
+    deviceId: string;
+    userId: string;
+    ownershipEpoch: number;
+    fcmToken: string;
+    updatedAt: string;
+  },
+): D1PreparedStatement {
+  return env.DB.prepare(`
+    update attention_device_ownership
+    set fcm_token = null, active = 0, updated_at = ?
+    where fcm_token = ?
+      and device_id <> ?
+      and (
+        ownership_epoch < ?
+        or (ownership_epoch = ? and user_id = ?)
+      )
+  `).bind(
+    args.updatedAt,
+    args.fcmToken,
+    args.deviceId,
+    args.ownershipEpoch,
+    args.ownershipEpoch,
+    args.userId,
   );
 }
 
@@ -2124,9 +2271,10 @@ async function latestAttentionDeviceOwnershipEpoch(
   env: AttentionRelayEnv,
   deviceId: string,
   apnsToken: string | null,
+  fcmToken: string | null,
   fallback: number,
 ): Promise<number> {
-  const rows = await attentionDeviceOwnershipRows(env, deviceId, apnsToken);
+  const rows = await attentionDeviceOwnershipRows(env, deviceId, apnsToken, fcmToken);
   return rows.reduce(
     (latest, row) => Math.max(latest, Number(row.ownership_epoch) || 0),
     fallback,
@@ -2653,6 +2801,7 @@ async function handlePresence(
   }
   const platform = payload.platform === "macOS"
     || payload.platform === "iOS"
+    || payload.platform === "android"
     || payload.platform === "web"
     || payload.platform === "unknown"
     ? payload.platform
@@ -2852,26 +3001,33 @@ async function handleDeviceRegistration(
   const rawApnsToken = payload.apnsToken == null
     ? null
     : requiredString(payload.apnsToken, 512);
+  const rawFcmToken = payload.fcmToken == null
+    ? null
+    : requiredString(payload.fcmToken, 4096);
   if (
-    rawApnsToken !== null
-    && (!rawApnsToken || !APNS_TOKEN_PATTERN.test(rawApnsToken))
+    (rawApnsToken !== null && (!rawApnsToken || !APNS_TOKEN_PATTERN.test(rawApnsToken)))
+    || (rawFcmToken !== null && (!rawFcmToken || !FCM_TOKEN_PATTERN.test(rawFcmToken)))
   ) {
     return json({ ok: false, error: "invalid device routing" }, { status: 400 });
   }
   if (request.method === "DELETE") {
-    const deviceOwnership = await attentionDeviceOwnershipRows(env, deviceId, null);
+    const deviceOwnership = await attentionDeviceOwnershipRows(env, deviceId, null, null);
     const registeredDevice = await env.DB.prepare(`
-      select apns_token
+      select apns_token, fcm_token
       from attention_devices
       where device_id = ?
       limit 1
-    `).bind(deviceId).first<{ apns_token: string | null }>();
+    `).bind(deviceId).first<{ apns_token: string | null; fcm_token: string | null }>();
     const apnsToken = deviceOwnership.find((row) => row.device_id === deviceId)?.apns_token
       ?? rawApnsToken
       ?? registeredDevice?.apns_token
       ?? null;
-    const ownershipRows = apnsToken
-      ? await attentionDeviceOwnershipRows(env, deviceId, apnsToken)
+    const fcmToken = deviceOwnership.find((row) => row.device_id === deviceId)?.fcm_token
+      ?? rawFcmToken
+      ?? registeredDevice?.fcm_token
+      ?? null;
+    const ownershipRows = apnsToken || fcmToken
+      ? await attentionDeviceOwnershipRows(env, deviceId, apnsToken, fcmToken)
       : deviceOwnership;
     const staleEpoch = staleAttentionDeviceOwnershipEpoch(
       ownershipRows,
@@ -2881,17 +3037,14 @@ async function handleDeviceRegistration(
     if (staleEpoch !== null) {
       return attentionDeviceOwnershipConflict(staleEpoch);
     }
-    const conflicts = apnsToken
-      ? await env.DB.prepare(`
-          select user_id, device_id
-          from attention_devices
-          where device_id = ? or apns_token = ?
-        `).bind(deviceId, apnsToken).all<{ user_id: string; device_id: string }>()
-      : await env.DB.prepare(`
-          select user_id, device_id
-          from attention_devices
-          where device_id = ?
-        `).bind(deviceId).all<{ user_id: string; device_id: string }>();
+    const deleteTargets = ["device_id = ?"];
+    const deleteBindings: unknown[] = [deviceId];
+    if (apnsToken) { deleteTargets.push("apns_token = ?"); deleteBindings.push(apnsToken); }
+    if (fcmToken) { deleteTargets.push("fcm_token = ?"); deleteBindings.push(fcmToken); }
+    const conflicts = await env.DB.prepare(`
+      select user_id, device_id from attention_devices
+      where ${deleteTargets.join(" or ")}
+    `).bind(...deleteBindings).all<{ user_id: string; device_id: string }>();
     const now = new Date().toISOString();
     const statements: D1PreparedStatement[] = [];
     if (apnsToken) {
@@ -2903,11 +3056,17 @@ async function handleDeviceRegistration(
         updatedAt: now,
       }));
     }
+    if (fcmToken) {
+      statements.push(releasePriorFcmOwnershipStatement(env, {
+        deviceId, userId, ownershipEpoch, fcmToken, updatedAt: now,
+      }));
+    }
     statements.push(attentionDeviceOwnershipUpsertStatement(env, {
       deviceId,
       userId,
       ownershipEpoch,
       apnsToken,
+      fcmToken,
       active: false,
       updatedAt: now,
     }));
@@ -2923,6 +3082,7 @@ async function handleDeviceRegistration(
             env,
             deviceId,
             apnsToken,
+            fcmToken,
             ownershipEpoch,
           ),
         );
@@ -2932,15 +3092,20 @@ async function handleDeviceRegistration(
     return json({ ok: true, deviceId, ownershipEpoch });
   }
   const bundleId = requiredString(payload.bundleId, 200);
-  const apsEnvironment = payload.apsEnvironment;
+  const platform = requiredString(payload.platform, 32) ?? "unknown";
+  const apsEnvironment = payload.apsEnvironment === "sandbox" || payload.apsEnvironment === "production"
+    ? payload.apsEnvironment
+    : null;
   const apnsToken = rawApnsToken;
+  const fcmToken = rawFcmToken;
   const pushToStartToken = payload.pushToStartToken == null
     ? null
     : requiredString(payload.pushToStartToken, 512);
   const clearPushToStartToken = payload.clearPushToStartToken === true;
   if (
     !bundleId
-    || (apsEnvironment !== "sandbox" && apsEnvironment !== "production")
+    || (platform === "android" ? !fcmToken : !apsEnvironment)
+    || (platform === "android" && apnsToken !== null)
     || (apnsToken !== null && (!apnsToken || !APNS_TOKEN_PATTERN.test(apnsToken)))
     || (
       pushToStartToken !== null
@@ -2950,7 +3115,7 @@ async function handleDeviceRegistration(
   ) {
     return json({ ok: false, error: "invalid device routing" }, { status: 400 });
   }
-  const ownershipRows = await attentionDeviceOwnershipRows(env, deviceId, apnsToken);
+  const ownershipRows = await attentionDeviceOwnershipRows(env, deviceId, apnsToken, fcmToken);
   const staleEpoch = staleAttentionDeviceOwnershipEpoch(
     ownershipRows,
     userId,
@@ -2959,21 +3124,17 @@ async function handleDeviceRegistration(
   if (staleEpoch !== null) {
     return attentionDeviceOwnershipConflict(staleEpoch);
   }
-  // A physical installation/APNs token belongs to exactly one authenticated
+  // A physical installation/push token belongs to exactly one authenticated
   // account stream at a time.
-  const conflicts = apnsToken
-    ? await env.DB.prepare(`
-        select user_id, device_id
-        from attention_devices
-        where not (user_id = ? and device_id = ?)
-          and (device_id = ? or apns_token = ?)
-      `).bind(userId, deviceId, deviceId, apnsToken).all<{ user_id: string; device_id: string }>()
-    : await env.DB.prepare(`
-        select user_id, device_id
-        from attention_devices
-        where not (user_id = ? and device_id = ?)
-          and device_id = ?
-      `).bind(userId, deviceId, deviceId).all<{ user_id: string; device_id: string }>();
+  const conflictTargets = ["device_id = ?"];
+  const conflictBindings: unknown[] = [userId, deviceId, deviceId];
+  if (apnsToken) { conflictTargets.push("apns_token = ?"); conflictBindings.push(apnsToken); }
+  if (fcmToken) { conflictTargets.push("fcm_token = ?"); conflictBindings.push(fcmToken); }
+  const conflicts = await env.DB.prepare(`
+    select user_id, device_id from attention_devices
+    where not (user_id = ? and device_id = ?)
+      and (${conflictTargets.join(" or ")})
+  `).bind(...conflictBindings).all<{ user_id: string; device_id: string }>();
   const existingDevice = await env.DB
     .prepare("select 1 as found from attention_devices where user_id = ? and device_id = ? limit 1")
     .bind(userId, deviceId)
@@ -3017,11 +3178,17 @@ async function handleDeviceRegistration(
       updatedAt: now,
     }));
   }
+  if (fcmToken) {
+    transferStatements.push(releasePriorFcmOwnershipStatement(env, {
+      deviceId, userId, ownershipEpoch, fcmToken, updatedAt: now,
+    }));
+  }
   transferStatements.push(attentionDeviceOwnershipUpsertStatement(env, {
     deviceId,
     userId,
     ownershipEpoch,
     apnsToken,
+    fcmToken,
     active: true,
     updatedAt: now,
   }));
@@ -3031,12 +3198,13 @@ async function handleDeviceRegistration(
   transferStatements.push(
     env.DB.prepare(`
       insert into attention_devices(
-        user_id, device_id, source_machine_key, apns_token, push_to_start_token,
+        user_id, device_id, source_machine_key, apns_token, fcm_token, push_to_start_token,
         bundle_id, aps_environment, platform, device_name, preferences_json,
         registered_at, updated_at, lease_expires_at, generation
-      ) values (?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) values (?, ?, null, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       on conflict(user_id, device_id) do update set
         apns_token = coalesce(excluded.apns_token, attention_devices.apns_token),
+        fcm_token = coalesce(excluded.fcm_token, attention_devices.fcm_token),
         push_to_start_token = case
           when ? then null
           else coalesce(excluded.push_to_start_token, attention_devices.push_to_start_token)
@@ -3053,6 +3221,9 @@ async function handleDeviceRegistration(
           when excluded.apns_token is not null
             and excluded.apns_token is not attention_devices.apns_token
             then excluded.generation
+          when excluded.fcm_token is not null
+            and excluded.fcm_token is not attention_devices.fcm_token
+            then excluded.generation
           when excluded.push_to_start_token is not null
             and excluded.push_to_start_token is not attention_devices.push_to_start_token
             then excluded.generation
@@ -3066,10 +3237,11 @@ async function handleDeviceRegistration(
       userId,
       deviceId,
       apnsToken,
+      fcmToken,
       pushToStartToken,
       bundleId,
       apsEnvironment,
-      requiredString(payload.platform, 32),
+      platform,
       boundedText(payload.deviceName, 120),
       JSON.stringify(preferences),
       now,
@@ -3118,6 +3290,7 @@ async function handleDeviceRegistration(
           env,
           deviceId,
           apnsToken,
+          fcmToken,
           ownershipEpoch,
         ),
       );

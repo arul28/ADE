@@ -1,10 +1,12 @@
 # Sync and Multi-Device
 
-ADE syncs live runtime state across an ADE machine runtime and any connected
-controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
-replication layer over a **WebSocket** transport. The design is local-first:
+ADE syncs live runtime state across an ADE machine runtime and connected
+controllers over a **WebSocket** transport. Replica-capable controllers use
+**cr-sqlite** CRDT replication; Android and hosted web use thin,
+invalidation-only projections backed by remote commands and live streams. The
+design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
-desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
+desktop-to-runtime, ADE Code, iOS, and Android connections. The account-gated cloud
 tunnel relay is an always-eligible byte transport whenever the machine is
 signed in to an ADE account; there is no separate relay toggle. Two
 machines on the same LAN (or Tailscale tailnet) converge their application
@@ -17,6 +19,9 @@ does and does not travel, and the layers that implement it. Deep-dives:
   semantics, and the iOS pure-SQL emulation layer.
 - `ios-companion.md` — the iPhone controller path: SwiftUI app, native
   SQLite, pairing, tab structure, command routing from phone to runtime.
+- `../android-companion/README.md` — the Android controller path: native
+  Compose app, pure-JVM sync module, invalidation-only mode, lifecycle, FCM,
+  and Play release boundaries.
 - `../web-client/README.md` — the hosted browser controller path: static
   Cloudflare Pages SPA, account sign-in and directory adoption, WebCrypto DPoP,
   browser-safe sync transports, no local DB, and the `window.ade` adapter over
@@ -27,8 +32,8 @@ does and does not travel, and the layers that implement it. Deep-dives:
   bounded context capsule, destination setup, route confirmation, and
   idempotent recovery used by **Send to machine**.
 - `push-notifications.md` — ADE Attention's account-wide source of truth and
-  its APNs + Live Activity pipeline: machine publishers, the Cloudflare
-  consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
+  its APNs, FCM, and Live Activity pipeline: machine publishers, the Cloudflare
+  consolidation relay, desktop/web/ADE Code/iOS/Android reads, native Mac presentation,
   per-device policy, exact routing, acknowledgments, and ownership fences.
 
 Web client: the browser client is another controller of the same machine
@@ -42,7 +47,7 @@ but the hosted client no longer creates non-account pairings.
 
 Account Attention deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
-the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
+the account relay, while signed-in desktop, hosted web, ADE Code, iOS, and Android read
 the consolidated account stream through an account-scoped path. Navigation and
 actions still carry the owning machine/project/session so the client can adopt
 or select the correct destination. Without an account, a client may show only a
@@ -122,6 +127,11 @@ has not started" in the gap).
 - **iOS app** — client/controller-only, always. Connects to a runtime over
   WebSocket using the same `SyncEnvelope` protocol the desktop uses
   internally.
+- **Android app** — client/controller-only, always. It races native
+  LAN/tailnet/Relay routes and uses `invalidationOnlyV1` plus
+  `compactInvalidationV1`; it has no local CRR replica. Remote commands,
+  roster/catalog messages, and chat/terminal streams supply its state. See
+  `../android-companion/README.md`.
 - **Browser web client** — client/controller-only, hosted static SPA
   (`device_type: "browser"`). Adopts a same-account machine through the
   directory and Relay, then reconnects with a per-device secret + WebCrypto
@@ -217,7 +227,7 @@ See `remote-commands.md` and `../linear-integration/README.md`.
 
 | Data category | Sync mechanism | Devices |
 |---|---|---|
-| Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | All connected devices |
+| Replicated ADE runtime tables in `.ade/ade.db` | cr-sqlite CRRs over WebSocket | Replica-capable desktop/iOS peers; Android and hosted web receive invalidation hints instead |
 | Source code files | `git push`/`git pull` | Desktop peers only |
 | Shared ADE scaffold/config (`.ade/.gitignore`, `.ade/ade.yaml`, human-authored templates/skills, repo-backed workflow YAML under `.ade/workflows/linear/**`) | Git | Desktop peers only |
 | Local overrides (`.ade/local.yaml`, `.ade/local.secret.yaml`) | **Never syncs** | Machine-specific |
@@ -299,6 +309,17 @@ The canonical sync implementation lives in the **ade-cli** runtime
 package. The desktop tree only contains thin re-export proxies plus the
 legacy fallback; do not edit the desktop copies expecting the runtime to
 see your change.
+
+Android client files:
+
+- `apps/android/sync/` — pure-JVM envelope codec, bounded chunk assembly,
+  route race, DPoP/sealed-adoption crypto, QR/PIN pairing, invalidation mapping,
+  and the live client.
+- `apps/android/app/src/main/java/com/ade/android/MainViewModel.kt` — command,
+  roster/catalog, chat/terminal, cache, presence, and capability-gated UI owner.
+- `apps/android/app/src/main/java/com/ade/android/pairing/` and `connection/` —
+  Android-specific Nearby/QR/account adoption, secure profiles, companion-device
+  association, foreground-service lifecycle, and reconnect work.
 
 Runtime support files outside `services/sync/`:
 

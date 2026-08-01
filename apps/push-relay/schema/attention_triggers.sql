@@ -17,7 +17,9 @@ begin
   select raise(abort, 'attention account device limit reached');
 end;
 
-create trigger if not exists attention_device_ownership_reject_stale
+-- Version the trigger name so existing deployments install the FCM-aware body
+-- even when the APNs-only v1 trigger already exists.
+create trigger if not exists attention_device_ownership_reject_stale_v2
 before insert on attention_device_ownership
 when exists (
   select 1
@@ -27,6 +29,10 @@ when exists (
     or (
       new.apns_token is not null
       and current.apns_token = new.apns_token
+    )
+    or (
+      new.fcm_token is not null
+      and current.fcm_token = new.fcm_token
     )
   )
   and (

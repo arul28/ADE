@@ -1,7 +1,7 @@
 # ADE Push Relay
 
 Cloudflare Worker that consolidates ADE attention state across a signed-in
-account, then fans it out to desktop Attention Center, iPhone, APNs, and Live
+account, then fans it out to desktop Attention Center, iPhone, Android, APNs, FCM, and Live
 Activities. ADE machine runtimes publish sanitized state; signed-in clients
 read and acknowledge the account stream directly.
 
@@ -44,7 +44,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
 | GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
 | PATCH | `/attention/account/preferences/devices/:deviceId` | Atomically merge one device's preference override without overwriting concurrent account or other-device changes |
-| PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
+| PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs (`apnsToken`) or Android FCM (`fcmToken`) destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
 
 ### Account Attention semantics
@@ -152,6 +152,21 @@ TestFlight/App Store builds register `production`), and uses the registration's
 
 Until `APNS_KEY`/`APNS_KEY_ID`/`APNS_TEAM_ID` are set, registration endpoints
 work but `publish` returns 503 (`/health` reports `apnsConfigured: false`).
+
+### Firebase signing credentials (required for Android pushes)
+
+Create a Firebase service account with the Firebase Cloud Messaging API
+permission, download its JSON once, and store the complete JSON as an encrypted
+Worker secret:
+
+```bash
+npx wrangler secret put FCM_SERVICE_ACCOUNT_JSON
+```
+
+The worker mints short-lived OAuth tokens for the FCM HTTP-v1 API, sends
+high-priority data-only messages, and clears registrations that FCM reports as
+`UNREGISTERED`. `/health` reports only `fcmConfigured: true|false`; it never
+returns service-account material.
 
 ### Clerk verification (required for account Attention)
 

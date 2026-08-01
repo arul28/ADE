@@ -184,7 +184,7 @@ describe("createSyncService", () => {
     }
   });
 
-  it("persists peer app provenance in device metadata", async () => {
+  it("persists Android peer platform and app provenance in device metadata", async () => {
     const projectRoot = makeTempRoot("ade-sync-service-device-provenance-");
     cleanupRoots.push(projectRoot);
     const db = await openKvDb(path.join(projectRoot, ".ade", "kv.sqlite"), createLogger() as any);
@@ -194,21 +194,22 @@ describe("createSyncService", () => {
 
     registry.upsertPeerMetadata({
       deviceId: "phone-1",
-      deviceName: "Arul iPhone",
-      platform: "iOS",
+      deviceName: "Arul Android",
+      platform: "android",
       deviceType: "phone",
       siteId: "phone-site",
       dbVersion: 14,
       appVersion: "1.1.10",
       appBuild: "4",
-      bundleIdentifier: "com.ade.ios",
+      bundleIdentifier: "com.ade.android",
     });
 
+    expect(registry.getDevice("phone-1")?.platform).toBe("android");
     expect(registry.getDevice("phone-1")?.metadata).toMatchObject({
       dbVersion: 14,
       appVersion: "1.1.10",
       appBuild: "4",
-      bundleIdentifier: "com.ade.ios",
+      bundleIdentifier: "com.ade.android",
     });
 
     await service.dispose();

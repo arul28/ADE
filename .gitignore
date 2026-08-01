@@ -1,4 +1,11 @@
 .DS_Store
+
+# Android machine-local/build state
+apps/android/local.properties
+apps/android/.gradle/
+apps/android/.android/
+apps/android/.avd/
+apps/android/**/build/
 *.pem
 node_modules
 /.npm-cache

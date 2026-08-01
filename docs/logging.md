@@ -54,6 +54,7 @@ Attached clients and native surfaces:
 - `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
 - `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's affirmative choice in browser storage and reasserts it on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
 - `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, default-on behavior, and direct transport. There is no native analytics preference or consent prompt. `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
+- `apps/android/app/src/main/java/com/ade/android/MainViewModel.kt` emits only closed app-open and screen events through the paired host's `analytics.capture` action. Android reasserts its default-on DataStore preference through peer-scoped `analytics.setClientEnabled` after every connection and exposes a durable opt-out in Settings; it has no PostHog SDK, token, or independent transport.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
 
 Build and operations:
@@ -110,6 +111,17 @@ daily ceilings.
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 
 Persisted `usage_events` are the preferred source for meaningful user mutations. The exporter is locally at-most-once and uses a random v4 client UUID as the PostHog insert ID; non-random or malformed client IDs are regenerated at the transport boundary. Screen events are limited to project, Hub, lanes, work, PRs, settings, and onboarding arrivals; utility/detail/loading transitions are skipped. The hosted Hub uses the existing `ade_screen_viewed` event with only `screen: "hub"`, `route_kind: "web"`, and `source: "renderer_route"`. Its two-second per-screen deduplication and the existing 12-per-minute, 80-per-day screen limits bound rapid tab switching without raising the shared 200-event ceiling. Reads, renderer commits, polling, heartbeats, stream chunks, terminal bytes, progress updates, retries, and other high-frequency mechanics must not emit product events.
+
+Android uses that same host-enforced path and budget rather than a native
+transport. A successful machine connection emits `ade_app_opened` with only
+`entry_point: "remote"` and `connection_state: "connected"`; route arrivals
+emit `ade_screen_viewed` for the closed set `onboarding`, `hub`, `project`,
+`chat`, and `settings`. Both use a two-second local dedupe key. The host still
+caps opens at 3 per minute / 12 per day and screens at 12 per minute / 80 per
+day inside the shared 200-event ceiling, so reconnect loops and rapid
+navigation cannot raise the global budget. Pairing, discovery, command
+invocation, notification delivery/actions, Attention refresh/presence, chat and
+terminal streams, and background reconnect attempts remain untracked.
 
 The fresh-install milestone is stored in machine analytics state before enqueue. Activation is stored the same way and derives `time_since_install_seconds` locally. Legacy analytics state is marked as already installed and activated during migration so upgrades never create false funnel entrants. Account identification is pseudonymous and limited to three accepted identity changes per UTC day and two per minute. It still consumes PostHog ingestion quota. Explicit sign-out rotates the anonymous ID so later anonymous activity is not attached to the signed-out account.
 

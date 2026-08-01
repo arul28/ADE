@@ -166,7 +166,7 @@ export type AttentionSnapshot = {
 export type AttentionPresence = {
   deviceId: string;
   deviceName: string;
-  platform: "macOS" | "iOS" | "web" | "unknown";
+  platform: "macOS" | "iOS" | "android" | "web" | "unknown";
   appForeground: boolean;
   ambientSurfaceVisible: boolean;
   visibleItemIds: string[];

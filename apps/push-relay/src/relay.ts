@@ -5,6 +5,7 @@ import {
   type ApnsPushType,
   type ApnsSendResult,
 } from "./apns";
+import { parseFcmServiceAccount } from "./fcm";
 import {
   handleAttentionAccountRequest,
   handleAttentionMachinePublish,
@@ -22,6 +23,8 @@ export type PushRelayEnv = {
   APNS_TEAM_ID?: string;
   /** Fallback apns-topic when a registration has no bundle id (should not happen). */
   APNS_DEFAULT_TOPIC?: string;
+  /** Firebase service-account JSON for Android FCM HTTP-v1 delivery. */
+  FCM_SERVICE_ACCOUNT_JSON?: string;
   REGISTRATION_RETENTION_DAYS?: string;
   MAX_DEVICES_PER_MACHINE?: string;
   /**
@@ -1284,6 +1287,7 @@ export async function handleRequest(request: Request, env: PushRelayEnv): Promis
     return json({
       ok: true,
       apnsConfigured: apnsConfig(env) != null,
+      fcmConfigured: parseFcmServiceAccount(env.FCM_SERVICE_ACCOUNT_JSON) != null,
       accountAuthConfigured: accountAuth.configured,
       primaryAccountAuthConfigured: accountAuth.primaryConfigured,
       secondaryAccountAuthConfigured: accountAuth.secondaryConfigured,
