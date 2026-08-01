@@ -8,6 +8,10 @@ import { SessionStatusLabel } from "../terminals/SessionStatusLabel";
 import { LaneIcon } from "../ui/vcsIcons";
 import { cn } from "../ui/cn";
 import { activityItemPresentation } from "./attentionPresentation";
+// The row carries its own chrome and the shared tone table, so every surface
+// that can render an `ActivityCard` gets both without importing a stylesheet
+// it does not otherwise use.
+import "./Activity.css";
 
 /* ── Why this is not `terminals/SessionCard` ───────────────────────────────
    Three reasons, all of them load-bearing. Anyone tempted to "simplify" this
@@ -120,6 +124,8 @@ export type ActivityCardProps = {
   hideDetails?: boolean;
   /** Two-line form for dense mirrors (notch panel, mobile hub strip). */
   compact?: boolean;
+  /** Keeps the hover treatment on the row whose detail is open. */
+  selected?: boolean;
 };
 
 /**
@@ -132,6 +138,7 @@ export function ActivityCard({
   onOpen,
   hideDetails = false,
   compact = false,
+  selected = false,
 }: ActivityCardProps) {
   const presentation = activityItemPresentation(item);
   const tone = presentation?.tone ?? "neutral";
@@ -155,6 +162,7 @@ export function ActivityCard({
       type="button"
       data-activity-row={item.id}
       data-activity-tone={tone}
+      data-selected={selected ? "true" : undefined}
       className={cn(
         "activity-card group/activity relative block w-full rounded-lg text-left",
         `activity-tone-${tone}`,

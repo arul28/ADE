@@ -1,4 +1,5 @@
 import type { ProjectInfo } from "../../../shared/types";
+import { isWebClientMode } from "../../lib/webClientMode";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { AdeSyncClient } from "../sync";
 import { BrowserAccountClient } from "../account/client";
@@ -47,7 +48,19 @@ export const WEB_HIDDEN_CAPABILITIES = {
   cursorCloud: false,
   transcription: false,
   automations: false,
+  // The notch is a native macOS helper supervised by the desktop main process.
+  // On web the namespace never registers, so `withFallbackProxy` resolves it to
+  // null; naming it here lets settings hide the controls instead of showing
+  // switches that silently do nothing.
+  attentionNotch: false,
 } as const;
+
+export type WebHiddenCapability = keyof typeof WEB_HIDDEN_CAPABILITIES;
+
+/** Whether a capability is unavailable because this window is the web client. */
+export function isWebHiddenCapability(capability: WebHiddenCapability): boolean {
+  return isWebClientMode() && WEB_HIDDEN_CAPABILITIES[capability] === false;
+}
 
 const DOMAIN_EVENTS = {
   lanes: "lanesInvalidated",

@@ -11,6 +11,8 @@ vi.mock("../../lib/account", () => ({
   useAccountStatus: () => ({ status: { signedIn: true, userId: "user-1" } }),
 }));
 
+// Notch presentation, celebrations, previews, and per-machine mute moved to
+// the Activity tab; their coverage moved with them to ActivitySection.test.tsx.
 function installAdeMock() {
   const putPreferences = vi.fn(async (_ownerId: string, _prefs: any) => {});
   const getPreferences = vi.fn(async () => DEFAULT_ATTENTION_PREFERENCES);
@@ -88,18 +90,6 @@ describe("NotificationsSection", () => {
     expect(putPreferences.mock.calls[0]![1].account.notificationsEnabled).toBe(false);
   });
 
-  it("pushes notch presentation to the notch process without touching synced prefs", async () => {
-    const { putPreferences, updateSettings } = installAdeMock();
-    render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
-
-    fireEvent.click(screen.getByRole("switch", { name: "Celebrations" }));
-
-    await waitFor(() => expect(updateSettings).toHaveBeenCalledTimes(1));
-    expect(putPreferences).toHaveBeenCalledTimes(1);
-    expect(updateSettings.mock.calls[0]![0].celebrationsEnabled).toBe(false);
-  });
-
   it("reveals quiet-hour times only once quiet hours are on", async () => {
     installAdeMock();
     render(<NotificationsSection />);
@@ -108,35 +98,5 @@ describe("NotificationsSection", () => {
     expect(screen.queryByLabelText("From")).toBeNull();
     fireEvent.click(screen.getByRole("switch", { name: "Quiet hours" }));
     expect(await screen.findByLabelText("From")).toBeTruthy();
-  });
-  it("keeps notch presentation on this Mac and pushes it to the native helper", async () => {
-    const { putPreferences, updateSettings } = installAdeMock();
-    render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
-
-    // Moved here from the header popover: reveal mode and the expanded panel
-    // are machine-local, so they must reach the notch process and localStorage
-    // without being written into the synced account preferences.
-    const behavior = await screen.findByRole("combobox", { name: "Notch behavior" });
-    fireEvent.change(behavior, { target: { value: "click" } });
-
-    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
-    const pushed = updateSettings.mock.calls.at(-1)![0];
-    expect(pushed.revealMode).toBe("click");
-    expect(window.localStorage.getItem("ade:attention:notch-reveal-mode")).toBe("click");
-    // The synced payload carries no notch presentation.
-    expect(putPreferences.mock.calls.at(-1)![1]).not.toHaveProperty("revealMode");
-  });
-
-  it("hides notch presentation controls while the notch is off", async () => {
-    installAdeMock();
-    render(<NotificationsSection />);
-    await screen.findByText("Notify me about");
-
-    expect(screen.queryByRole("combobox", { name: "Notch behavior" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("switch", { name: "ADE notch" }));
-    await waitFor(() => {
-      expect(screen.queryByRole("combobox", { name: "Notch behavior" })).toBeNull();
-    });
   });
 });

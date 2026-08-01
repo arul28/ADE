@@ -78,6 +78,42 @@ export function writeAttentionNotchPresentation(
   );
 }
 
+/**
+ * Notch presentation now lives in account preferences so a second Mac inherits
+ * it, with localStorage kept as the offline cache. Read synced-else-local: a
+ * signed-out or not-yet-loaded window still shows the choice this Mac made
+ * rather than snapping back to the shipped default for a frame.
+ */
+export function resolveAttentionNotchPresentation(
+  preferences: AttentionPreferences | null | undefined,
+  local: AttentionNotchPresentation = readAttentionNotchPresentation(),
+): AttentionNotchPresentation {
+  const account = preferences?.account;
+  return {
+    revealMode: isAttentionNotchRevealMode(account?.notchRevealMode)
+      ? account.notchRevealMode
+      : local.revealMode,
+    expandedPanelEnabled: typeof account?.notchExpandedPanel === "boolean"
+      ? account.notchExpandedPanel
+      : local.expandedPanelEnabled,
+  };
+}
+
+/** The account half of a write-both. The caller still writes localStorage. */
+export function attentionPreferencesWithNotchPresentation(
+  preferences: AttentionPreferences,
+  presentation: AttentionNotchPresentation,
+): AttentionPreferences {
+  return {
+    ...preferences,
+    account: {
+      ...preferences.account,
+      notchRevealMode: presentation.revealMode,
+      notchExpandedPanel: presentation.expandedPanelEnabled,
+    },
+  };
+}
+
 export function persistAttentionNotchSettings(
   settings: AttentionNotchSettings,
 ): void {

@@ -20,37 +20,14 @@
   --activity-hdr-shadow: 0 28px 70px -30px rgba(0, 0, 0, 0.8);
 }
 
-.activity-hdr-trigger.activity-tone-amber,
-.activity-hdr-panel .activity-tone-amber { --tone-color: #fbbf24; }
-.activity-hdr-trigger.activity-tone-red,
-.activity-hdr-panel .activity-tone-red { --tone-color: #f87171; }
-.activity-hdr-trigger.activity-tone-violet,
-.activity-hdr-panel .activity-tone-violet { --tone-color: #a78bfa; }
-.activity-hdr-trigger.activity-tone-blue,
-.activity-hdr-panel .activity-tone-blue { --tone-color: #60a5fa; }
-.activity-hdr-trigger.activity-tone-emerald,
-.activity-hdr-panel .activity-tone-emerald { --tone-color: #34d399; }
-.activity-hdr-trigger.activity-tone-neutral,
-.activity-hdr-panel .activity-tone-neutral { --tone-color: #a1a1aa; }
+/* The `.activity-tone-*` table itself lives in `Activity.css`, which every
+   Activity surface loads through `ActivityCard`. A second, popover-scoped copy
+   is how this panel and the pane would end up disagreeing about what amber is. */
 
-/* 400-level tones sit near 1.7:1 on a white card; light mode uses the 600/700
-   equivalents so pills and dots stay legible instead of washing out. */
 [data-theme="light"] .activity-hdr-trigger,
 [data-theme="light"] .activity-hdr-panel {
   --activity-hdr-shadow: 0 22px 55px -26px rgba(15, 23, 42, 0.3);
 }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-amber,
-[data-theme="light"] .activity-hdr-panel .activity-tone-amber { --tone-color: #b45309; }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-red,
-[data-theme="light"] .activity-hdr-panel .activity-tone-red { --tone-color: #dc2626; }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-violet,
-[data-theme="light"] .activity-hdr-panel .activity-tone-violet { --tone-color: #6d28d9; }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-blue,
-[data-theme="light"] .activity-hdr-panel .activity-tone-blue { --tone-color: #1d4ed8; }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-emerald,
-[data-theme="light"] .activity-hdr-panel .activity-tone-emerald { --tone-color: #047857; }
-[data-theme="light"] .activity-hdr-trigger.activity-tone-neutral,
-[data-theme="light"] .activity-hdr-panel .activity-tone-neutral { --tone-color: #52525b; }
 
 /* ---- trigger ---------------------------------------------------------- */
 
@@ -323,53 +300,6 @@ button.activity-hdr-freshness {
   color: var(--color-fg);
   background: color-mix(in srgb, var(--color-fg) 6%, transparent);
   outline: none;
-}
-
-/* ---- row chrome (the card itself is Tailwind) -------------------------- */
-
-.activity-card {
-  transition: background-color 120ms ease, box-shadow 120ms ease;
-}
-
-.activity-card::before {
-  content: "";
-  position: absolute;
-  left: 0;
-  top: 8px;
-  bottom: 8px;
-  width: 2px;
-  border-radius: 999px;
-  background: var(--tone-color);
-  opacity: 0;
-  transition: opacity 120ms ease;
-}
-
-.activity-card:hover,
-.activity-card:focus-visible {
-  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
-  outline: none;
-}
-
-.activity-card:hover::before,
-.activity-card:focus-visible::before {
-  opacity: 1;
-}
-
-.activity-card:focus-visible {
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone-color) 55%, transparent);
-}
-
-/* The lane is the row's identity line. Accent, not tone: a lane's colour must
-   not change because its agent's phase did. */
-.activity-card-lane {
-  color: color-mix(in srgb, var(--color-accent) 82%, var(--color-fg));
-}
-
-.activity-card-unseen {
-  width: 6px;
-  height: 6px;
-  border-radius: 999px;
-  background: var(--tone-color);
 }
 
 /* ---- empty states and footer ------------------------------------------ */

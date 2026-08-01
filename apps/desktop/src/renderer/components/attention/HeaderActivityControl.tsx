@@ -32,7 +32,7 @@ import {
 import { useDialogFocusTrap } from "../app/HeaderSheet";
 import { cn } from "../ui/cn";
 import { ActivityCard } from "./ActivityCard";
-import { AttentionSettingsPopover } from "./AttentionSettingsPopover";
+import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import {
   ACTIVITY_SECTION_TONE,
   activityTriggerLabel,
@@ -399,7 +399,7 @@ export function HeaderActivityControl({
                       </span>
                     )
                   ) : null}
-                  <AttentionSettingsPopover />
+                  <ActivitySettingsPopover />
                   <button
                     type="button"
                     className="activity-hdr-icon-button"

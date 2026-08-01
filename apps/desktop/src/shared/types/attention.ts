@@ -200,6 +200,16 @@ export type AttentionPreferenceScope = {
   celebrationsEnabled: boolean;
   hideDetails: boolean;
   dockBadgeScope: "local" | "account";
+  /**
+   * Notch presentation, synced so a second Mac inherits the choice instead of
+   * starting from the shipped default. Optional because every relay and
+   * publisher older than this build omits them, and because localStorage
+   * remains the offline cache of record — readers take the synced value when
+   * it is present and the local one otherwise. The localStorage key strings
+   * are unchanged; only the source of truth moved.
+   */
+  notchRevealMode?: AttentionNotchRevealMode;
+  notchExpandedPanel?: boolean;
   quietHours: {
     enabled: boolean;
     startMinute: number;

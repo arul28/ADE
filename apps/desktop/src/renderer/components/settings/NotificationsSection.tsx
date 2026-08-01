@@ -6,15 +6,7 @@ import {
   type AttentionPreferences,
 } from "../../../shared/types/attention";
 import { ACTIVITY_EVENT_CATALOG } from "../../../shared/activityCatalog";
-import {
-  attentionNotchSettingsFromPreferences,
-  normalizeAttentionPreferences,
-  readAttentionNotchEnabled,
-  readAttentionNotchPresentation,
-  writeAttentionNotchEnabled,
-  writeAttentionNotchPresentation,
-  type AttentionNotchPresentation,
-} from "../attention/attentionNotchLocalSettings";
+import { normalizeAttentionPreferences } from "../attention/attentionNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 import { DEFAULT_LANE_BANNER_BUDGET } from "../../../shared/types/config";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -38,8 +30,10 @@ import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
  * in the header, behind a Save button. The per-event policies and quiet hours
  * had no UI at all despite being fully modelled and honored.
  *
- * This section is the canonical home for that model. The popover stays as a
- * quick toggle; both write through `window.ade.attention.putPreferences`.
+ * This section is the canonical home for delivery: what ADE interrupts you
+ * for, when, and on which device. The surfaces Activity itself paints — the
+ * notch, celebrations, previews, per-machine mute — live on the Activity tab
+ * instead, because that is where the thing they describe lives.
  */
 
 /** The events worth giving a user a dial for, in the order they'll scan them. */
@@ -66,12 +60,6 @@ const ESCALATION_OPTIONS = [
   { value: "300", label: "After 5 minutes" },
 ];
 
-const REVEAL_OPTIONS: { value: AttentionNotchPresentation["revealMode"]; label: string }[] = [
-  { value: "minimal", label: "Compact + peek" },
-  { value: "hover", label: "Reveal on hover" },
-  { value: "click", label: "Click only" },
-];
-
 function minutesToTimeValue(minute: number): string {
   const safe = ((Math.floor(minute) % 1440) + 1440) % 1440;
   const hours = String(Math.floor(safe / 60)).padStart(2, "0");
@@ -93,10 +81,6 @@ export function NotificationsSection() {
   const accountOwnerId = accountStatus.signedIn ? accountStatus.userId : null;
 
   const [preferences, setPreferences] = useState<AttentionPreferences>(DEFAULT_ATTENTION_PREFERENCES);
-  const [notchEnabled, setNotchEnabled] = useState(() => readAttentionNotchEnabled());
-  const [notchPresentation, setNotchPresentation] = useState<AttentionNotchPresentation>(
-    () => readAttentionNotchPresentation(),
-  );
   const [loading, setLoading] = useState(true);
   const { state: saveState, flash, fail } = useSavedFlash();
   const mounted = useRef(true);
@@ -133,10 +117,7 @@ export function NotificationsSection() {
    * state update commits, so reading component state here would save the
    * previous value.
    */
-  const persist = useCallback(async (
-    nextPreferences: AttentionPreferences,
-    nextNotch?: { enabled?: boolean; presentation?: AttentionNotchPresentation },
-  ) => {
+  const persist = useCallback(async (nextPreferences: AttentionPreferences) => {
     const api = window.ade?.attention;
     if (!api || !accountOwnerId) {
       fail("Sign in to change notification settings.");
@@ -144,22 +125,13 @@ export function NotificationsSection() {
     }
     try {
       await api.putPreferences(accountOwnerId, nextPreferences);
-      // Notch presentation is deliberately machine-local: the delivery policy
-      // syncs across devices, but where the HUD sits on *this* screen doesn't.
-      const enabled = nextNotch?.enabled ?? notchEnabled;
-      const presentation = nextNotch?.presentation ?? notchPresentation;
-      writeAttentionNotchEnabled(enabled);
-      writeAttentionNotchPresentation(presentation);
-      await window.ade?.attentionNotch?.updateSettings(
-        attentionNotchSettingsFromPreferences(nextPreferences, enabled, presentation),
-      );
       if (!mounted.current) return;
       flash();
     } catch (error) {
       if (!mounted.current) return;
       fail(error instanceof Error ? error.message : String(error));
     }
-  }, [accountOwnerId, notchEnabled, notchPresentation, flash, fail]);
+  }, [accountOwnerId, flash, fail]);
 
   // Build the next value outside the state updater and save it explicitly.
   // Saving *inside* an updater would fire twice under StrictMode, which
@@ -344,35 +316,9 @@ export function NotificationsSection() {
             />
           }
         />
-        <SettingsCard
-          anchor="hide-previews"
-          title="Hide previews"
-          description="Use private summaries instead of message content on the notch and phone."
-          control={
-            <SettingsToggle
-              label="Hide previews"
-              checked={account.hideDetails}
-              disabled={loading || signedOut}
-              onChange={(hideDetails) => updateAccount({ hideDetails })}
-            />
-          }
-        />
       </SettingsGroup>
 
       <SettingsGroup title="Sound">
-        <SettingsCard
-          anchor="attention-sounds"
-          title="Attention sounds"
-          description="Restrained cues for events that need you."
-          control={
-            <SettingsToggle
-              label="Attention sounds"
-              checked={account.soundsEnabled}
-              disabled={loading || signedOut}
-              onChange={(soundsEnabled) => updateAccount({ soundsEnabled })}
-            />
-          }
-        />
         <AgentCompletionSoundSection />
       </SettingsGroup>
 
@@ -380,69 +326,6 @@ export function NotificationsSection() {
         <LaneBannerBudgetCard />
       </SettingsGroup>
 
-      <SettingsGroup title="Attention notch">
-        <SettingsCard
-          anchor="attention-notch"
-          title="ADE notch"
-          description="A small HUD near the menu bar for work that needs you."
-          scope="machine"
-          showScopeChip
-          control={
-            <SettingsToggle
-              label="ADE notch"
-              checked={notchEnabled}
-              onChange={(enabled) => {
-                setNotchEnabled(enabled);
-                void persist(preferences, { enabled });
-              }}
-            />
-          }
-        >
-          {notchEnabled ? (
-            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>Behavior</span>
-                <SettingsSelect
-                  ariaLabel="Notch behavior"
-                  value={notchPresentation.revealMode}
-                  options={REVEAL_OPTIONS.map((option) => ({ value: option.value, label: option.label }))}
-                  onChange={(revealMode) => {
-                    const presentation = { ...notchPresentation, revealMode };
-                    setNotchPresentation(presentation);
-                    void persist(preferences, { presentation });
-                  }}
-                />
-              </div>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
-                <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textPrimary }}>Expanded panel</span>
-                <SettingsToggle
-                  label="Expanded panel"
-                  checked={notchPresentation.expandedPanelEnabled}
-                  onChange={(expandedPanelEnabled) => {
-                    const presentation = { ...notchPresentation, expandedPanelEnabled };
-                    setNotchPresentation(presentation);
-                    void persist(preferences, { presentation });
-                  }}
-                />
-              </div>
-            </div>
-          ) : null}
-        </SettingsCard>
-
-        <SettingsCard
-          anchor="celebrations"
-          title="Celebrations"
-          description="A brief flourish when meaningful work lands."
-          control={
-            <SettingsToggle
-              label="Celebrations"
-              checked={account.celebrationsEnabled}
-              disabled={loading || signedOut}
-              onChange={(celebrationsEnabled) => updateAccount({ celebrationsEnabled })}
-            />
-          }
-        />
-      </SettingsGroup>
     </div>
   );
 }

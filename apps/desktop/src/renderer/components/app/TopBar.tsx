@@ -951,12 +951,15 @@ export function TopBar({
   personalChatsRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
+  onOpenActivityPane,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
+  /** Raises the shell's Activity pane over whatever tab is in front. */
+  onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
   const hasProject = Boolean(project?.rootPath);
@@ -1586,12 +1589,14 @@ export function TopBar({
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  // Activity is account-wide, so it never depends on a project being open.
-  // P4: this becomes a shell-state flip that opens the Activity pane over the
-  // current tab; until that pane exists it still routes to the old center.
+  // Activity is account-wide, so it never depends on a project being open — and
+  // it is a modal, not a tab, so opening it flips shell state instead of
+  // navigating. The `/activity` pathname still works as a deep link; the shell
+  // turns it back into this same flip.
   const handleOpenActivityPane = useCallback(() => {
-    onNavigate?.("/attention");
-  }, [onNavigate]);
+    if (onOpenActivityPane) onOpenActivityPane();
+    else onNavigate?.("/activity");
+  }, [onNavigate, onOpenActivityPane]);
 
   // Clicking a project tab while either the personal-chats or account machine
   // route is foreground must leave it, or ProjectTabHost's route replay never

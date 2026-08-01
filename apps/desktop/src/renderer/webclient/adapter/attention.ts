@@ -230,7 +230,7 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     || (candidate.itemsTruncated !== undefined && typeof candidate.itemsTruncated !== "boolean")
   ) {
     throw new Error(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
   }
   return {
@@ -304,7 +304,7 @@ function parseAttentionPreferences(value: unknown): AttentionPreferences {
     || !candidate.mutedSessionIds.every((id) => typeof id === "string")
   ) {
     throw new Error(
-      "Account Attention preferences were incompatible. Update ADE and retry.",
+      "Activity preferences were incompatible. Update ADE and retry.",
     );
   }
   return candidate as AttentionPreferences;
@@ -324,7 +324,7 @@ function relayError(action: string, result: RelayResult): Error {
     : typeof body?.error === "string"
       ? body.error
       : `HTTP ${result.response.status}`;
-  return new Error(`Account Attention ${action} failed. ${reason}`);
+  return new Error(`Activity ${action} failed. ${reason}`);
 }
 
 export function createAttentionNamespace(
@@ -352,7 +352,7 @@ export function createAttentionNamespace(
       availability: {
         state: "incompatible",
         title: `${hostName} needs an ADE update`,
-        message: `Update ADE on ${hostName}, then reconnect to load this machine's Attention.`,
+        message: `Update ADE on ${hostName}, then reconnect to load this machine's Activity.`,
         recovery: "update_host",
         hostName,
       },
@@ -366,16 +366,16 @@ export function createAttentionNamespace(
 
   const request = async (
     action: string,
-    method: "GET" | "POST" | "PUT",
+    method: "GET" | "POST" | "PUT" | "PATCH",
     path: string,
     body?: unknown,
   ): Promise<unknown> => {
     const lease = accountClient.captureSessionLease();
-    if (!lease) throw new Error("Sign in to use account-wide Attention.");
+    if (!lease) throw new Error("Sign in to use account-wide Activity.");
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResult> => {
       const accessToken = await accountClient.getAccessToken({ forceRefresh });
       if (!accountClient.isSessionLeaseCurrent(lease)) {
-        throw new Error("The ADE account changed before Attention could load.");
+        throw new Error("The ADE account changed before Activity could load.");
       }
       const response = await fetch(`${relayBaseUrl()}${path}`, {
         method,
@@ -422,7 +422,7 @@ export function createAttentionNamespace(
           availability: {
             state: "signed_out",
             title: `Showing ${hostName} only`,
-            message: `Attention from ${hostName} is available. Sign in to combine work across every ADE machine.`,
+            message: `Activity from ${hostName} is available. Sign in to combine work across every ADE machine.`,
             recovery: "sign_in",
             hostName,
           },
@@ -443,7 +443,7 @@ export function createAttentionNamespace(
         accountOwnerId: accountClient.getSnapshot().userId?.trim() || null,
         availability: {
           state: "ready",
-          title: "Account Attention is live",
+          title: "Activity is live",
           message: "Work from every signed-in ADE machine is available.",
           recovery: null,
         },
@@ -457,7 +457,7 @@ export function createAttentionNamespace(
         : null;
       if (currentAccountOwnerId !== lastSnapshotAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after Attention loaded. Refresh Attention, then try again.",
+          "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
         );
       }
       if (lastSnapshotScope === "machine") {
@@ -466,7 +466,7 @@ export function createAttentionNamespace(
           || args.itemIds.some((itemId) => !lastMachineItemIds.has(itemId))
         ) {
           throw new Error(
-            "Refresh this machine's Attention before acknowledging the item.",
+            "Refresh this machine's Activity before acknowledging the item.",
           );
         }
         if (
@@ -475,13 +475,13 @@ export function createAttentionNamespace(
             !Number.isFinite(args.sourceRevisions?.[itemId]))
         ) {
           throw new Error(
-            "Refresh this machine's Attention before acknowledging a changed item.",
+            "Refresh this machine's Activity before acknowledging a changed item.",
           );
         }
         if (!infra.commands.hasAction("attention.acknowledgeMachine")) {
           const hostName = infra.client.getStatus().hostName?.trim() || "the connected ADE host";
           throw new Error(
-            `Update ADE on ${hostName}, reconnect, then try this Attention action again.`,
+            `Update ADE on ${hostName}, reconnect, then try this Activity action again.`,
           );
         }
         await infra.commands.call(
@@ -500,7 +500,7 @@ export function createAttentionNamespace(
         return;
       }
       if (lastSnapshotScope !== "account" || !currentAccountOwnerId) {
-        throw new Error("Refresh account Attention before acknowledging this item.");
+        throw new Error("Refresh account Activity before acknowledging this item.");
       }
       await request("acknowledgment", "POST", "/attention/account/ack", args);
     },
@@ -513,7 +513,7 @@ export function createAttentionNamespace(
     async getPreferences(accountOwnerId: string) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Attention preferences could load.");
+        throw new Error("The ADE account changed before Activity settings could load.");
       }
       const result = record(await request(
         "preferences",
@@ -531,7 +531,7 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Attention preferences could be saved.");
+        throw new Error("The ADE account changed before Activity settings could be saved.");
       }
       const { devices: _deviceOverrides, ...accountPreferences } = preferences;
       await request(
@@ -539,6 +539,31 @@ export function createAttentionNamespace(
         "PUT",
         "/attention/account/preferences",
         accountPreferences,
+      );
+    },
+
+    /**
+     * Per-machine notification mute. It has its own relay route rather than
+     * riding the preferences PUT because that PUT strips `devices` and replaces
+     * the whole document — a partial machine scope written that way would race
+     * every other tab editing the same preferences.
+     */
+    async putMachinePreferences(
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const key = machineKey.trim();
+      if (!key) throw new Error("A machine is required to change its notifications.");
+      await request(
+        "machine preference update",
+        "PATCH",
+        `/attention/account/preferences/machines/${encodeURIComponent(key)}`,
+        preferences,
       );
     },
 
@@ -553,7 +578,7 @@ export function createAttentionNamespace(
       const currentHostDeviceId = infra.client.getStatus().hostDeviceId?.trim() ?? "";
       if (ownerMachine && ownerMachine.deviceId !== currentHostDeviceId) {
         const lease = accountClient.captureSessionLease();
-        if (!lease) throw new Error("Sign in again to open this Attention item.");
+        if (!lease) throw new Error("Sign in again to open this Activity item.");
         const accessToken = await accountClient.getAccessToken();
         await infra.client.pairWithAccountMachine({
           machine: ownerMachine,
@@ -590,7 +615,7 @@ export function createAttentionNamespace(
         }
       }
       const parsed = parseDeeplink(attentionDestinationDeepLink(item.destination, item));
-      if (!parsed.ok) throw new Error("This Attention destination is invalid.");
+      if (!parsed.ok) throw new Error("This Activity destination is invalid.");
       infra.events.emit("navigate", {
         target: deeplinkToNavigationTarget(parsed.target),
         source: "attention",

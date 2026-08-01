@@ -416,7 +416,7 @@ describe("TopBar", () => {
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
-  it("carries account-wide Activity in the header and routes Open all to the center", () => {
+  it("carries account-wide Activity in the header and raises the pane from Open all", () => {
     const needsYou = {
       contractVersion: ATTENTION_CONTRACT_VERSION,
       id: "needs-you",
@@ -456,8 +456,9 @@ describe("TopBar", () => {
       imageUrl: null,
     });
     const onNavigate = vi.fn();
+    const onOpenActivityPane = vi.fn();
 
-    render(<TopBar onNavigate={onNavigate} />);
+    render(<TopBar onNavigate={onNavigate} onOpenActivityPane={onOpenActivityPane} />);
 
     const trigger = screen.getByTestId("header-activity-trigger");
     // The item belongs to another machine and project entirely — the header is
@@ -467,7 +468,11 @@ describe("TopBar", () => {
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("button", { name: /Open all/ }));
 
-    expect(onNavigate).toHaveBeenCalledWith("/attention");
+    // Activity is a modal over the current tab, so opening it is shell state —
+    // navigating would cost the user whatever tab they were on.
+    expect(onOpenActivityPane).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalledWith("/attention");
+    expect(onNavigate).not.toHaveBeenCalledWith("/activity");
   });
 
   it("shows connections before a project is open without immediate polling", async () => {

@@ -317,7 +317,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
     adapter.dispose();
   });
@@ -358,8 +358,56 @@ describe("createAdeWebAdapter", () => {
       .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
     await expect(adapter.ade.attention.getPreferences("account-a"))
       .rejects.toThrow(
-        "Account Attention preferences were incompatible. Update ADE and retry.",
+        "Activity preferences were incompatible. Update ADE and retry.",
       );
+    adapter.dispose();
+  });
+
+  it("patches one machine's notification mute without rewriting the account document", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.putMachinePreferences!(
+      "account-a",
+      "studio mac/1",
+      { notificationsEnabled: false },
+    )).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    // The machine key goes in the path, so it has to survive a space and a slash.
+    expect(url).toContain("/attention/account/preferences/machines/studio%20mac%2F1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({ notificationsEnabled: false });
+    expect(init.headers).toMatchObject({ authorization: "Bearer account-token" });
+
+    // A machine mute written after an account switch would land on the wrong
+    // account's preferences entirely.
+    await expect(adapter.ade.attention.putMachinePreferences!(
+      "account-b",
+      "studio",
+      { notificationsEnabled: false },
+    )).rejects.toThrow(/account changed/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     adapter.dispose();
   });
 
@@ -546,7 +594,7 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
     adapter.dispose();
   });
