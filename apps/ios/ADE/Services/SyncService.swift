@@ -2678,6 +2678,22 @@ func syncHubTransitionIsOwed(
   return baselineHostIdentity != incoming
 }
 
+/// Whether an attempt actually landed on the machine it asked for.
+///
+/// Storage keys are optional and two nils compare equal, so a naive
+/// `attached == target` reads "reached the target" for ANY attached machine
+/// whenever neither profile has a computable key — and, used in reverse,
+/// suppresses the restore that should follow the failure. A key we cannot
+/// compute is not proof of anything.
+func syncConnectReachedTarget(
+  isAttached: Bool,
+  attachedStorageKey: String?,
+  targetStorageKey: String?
+) -> Bool {
+  guard isAttached, let targetStorageKey else { return false }
+  return attachedStorageKey == targetStorageKey
+}
+
 /// Which paired secret an account `hello_ok` leaves us holding.
 ///
 /// Mirrors the web client's `resolveAccountHelloPairing`
@@ -5825,11 +5841,19 @@ final class SyncService: ObservableObject {
     // Attached AND attached to the machine that was asked for. Testing the
     // state alone would report success for a restore of the PREVIOUS machine,
     // which is exactly what the doc comment above warns callers against.
+    // `profileStorageKey` is optional, and two nils compare equal — which would
+    // read "we reached the target" for any attached machine whenever neither
+    // profile has a usable key, and would equally suppress the restore below.
+    // A key we cannot compute is not proof of anything.
     let targetKey = profileStorageKey(profile)
-    let reachedTarget = isAttached && activeHostProfile.flatMap(profileStorageKey) == targetKey
-    if reachedTarget { return true }
+    if syncConnectReachedTarget(
+      isAttached: isAttached,
+      attachedStorageKey: activeHostProfile.flatMap(profileStorageKey),
+      targetStorageKey: targetKey
+    ) { return true }
     lastConnectAttemptFailure = SyncConnectAttemptFailure(message: lastError ?? "ADE could not reconnect to \(host.hostName).")
-    if let previousProfile, profileStorageKey(previousProfile) != targetKey {
+    if let previousProfile,
+       targetKey == nil || profileStorageKey(previousProfile) != targetKey {
       if wasAttached {
         await restorePreviousConnection(previousProfile)
       } else if tokenForProfile(previousProfile) != nil {
@@ -7009,6 +7033,10 @@ final class SyncService: ObservableObject {
     )
     allowAutoReconnect = true
     setAutoReconnectPausedByUser(false)
+    // The failed attempt marked every domain `.failed`, and `reconnectIfPossible`
+    // only clears `.disconnected`. Without this a successful restore leaves the
+    // whole UI reporting failures for a connection that is working.
+    setDomainStatus(SyncDomain.allCases, phase: .syncingInitialData)
     await reconnectIfPossible(userInitiated: true)
   }
 

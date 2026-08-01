@@ -102,6 +102,43 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     XCTAssertEqual(secret, "fresh-secret")
   }
 
+  // MARK: - syncConnectReachedTarget
+
+  func testReachedTargetWhenAttachedToTheRequestedMachine() {
+    XCTAssertTrue(syncConnectReachedTarget(
+      isAttached: true,
+      attachedStorageKey: "machine:host-1",
+      targetStorageKey: "machine:host-1"
+    ))
+  }
+
+  func testDidNotReachTargetWhenAttachedElsewhere() {
+    XCTAssertFalse(syncConnectReachedTarget(
+      isAttached: true,
+      attachedStorageKey: "machine:host-2",
+      targetStorageKey: "machine:host-1"
+    ))
+  }
+
+  /// The regression: storage keys are optional and two nils compare equal, so
+  /// a direct comparison claimed success for whatever machine happened to be
+  /// attached — and suppressed the restore that should have followed.
+  func testUncomputableKeysAreNotProofOfReachingTheTarget() {
+    XCTAssertFalse(syncConnectReachedTarget(
+      isAttached: true,
+      attachedStorageKey: nil,
+      targetStorageKey: nil
+    ))
+  }
+
+  func testNotAttachedIsNeverReachingTheTarget() {
+    XCTAssertFalse(syncConnectReachedTarget(
+      isAttached: false,
+      attachedStorageKey: "machine:host-1",
+      targetStorageKey: "machine:host-1"
+    ))
+  }
+
   // MARK: - syncHubTransitionIsOwed
 
   /// The regression: every switch path calls `saveProfile(target)` before the
