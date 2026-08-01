@@ -365,7 +365,7 @@ Reused desktop renderer (web-mode adaptation):
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
-- `apps/desktop/src/renderer/components/attention/HeaderAttentionControl.tsx`
+- `apps/desktop/src/renderer/components/attention/HeaderActivityControl.tsx`
   and `AttentionCenter.tsx` - the project-independent header drawer and its
   secondary Open all/history route. Attention is a global utility route, not
   another selected-machine tab, so it is intentionally separate from

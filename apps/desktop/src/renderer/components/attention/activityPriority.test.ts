@@ -7,8 +7,11 @@ import {
 import {
   ACTIVITY_SECTION_DESCRIPTORS,
   activityBadgeCount,
+  ACTIVITY_SECTION_TONE,
   activityHeadline,
   activitySections,
+  activityTriggerLabel,
+  summarizeActivity,
 } from "./activityPriority";
 
 const NOW = Date.parse("2026-08-01T12:00:00.000Z");
@@ -112,5 +115,69 @@ describe("activity priority", () => {
     expect(activityHeadline([activityItem("work", "running")], NOW)).toBe("1 working");
     expect(activityHeadline([activityItem("done", "completed")], NOW)).toBe("1 done");
     expect(activityHeadline([], NOW)).toBe("All clear");
+  });
+});
+
+describe("activity header summary", () => {
+  it("derives counts, machine presence, and the trigger label from one pass", () => {
+    const summary = summarizeActivity(
+      [
+        activityItem("needs", "needs_you"),
+        activityItem("work", "running"),
+        activityItem("done", "completed"),
+        activityItem("offline", "running", {
+          machine: {
+            machineKey: "laptop",
+            name: "MacBook Pro",
+            online: false,
+            lastSeenAt: "2026-08-01T10:00:00.000Z",
+          },
+        }),
+      ],
+      NOW,
+    );
+
+    expect(summary.needsYouCount).toBe(1);
+    expect(summary.workingCount).toBe(2);
+    expect(summary.doneCount).toBe(1);
+    expect(summary.trackedCount).toBe(4);
+    expect(summary.machinesOnline).toBe(1);
+    expect(summary.machinesTotal).toBe(2);
+    expect(summary.staleMachineCount).toBe(1);
+    expect(summary.tone).toBe("amber");
+    expect(activityTriggerLabel(summary)).toBe(
+      "Activity · 1 needs you · 2 working · 1 done",
+    );
+  });
+
+  /**
+   * Amber is the badge's only colour, and it may only mean "your move". Work in
+   * motion is blue and a finished run is emerald — neither may borrow it.
+   */
+  it("reserves amber for needs-you and falls back through working then done", () => {
+    expect(summarizeActivity([activityItem("work", "running")], NOW).tone).toBe("blue");
+    expect(summarizeActivity([activityItem("done", "completed")], NOW).tone).toBe("emerald");
+    expect(summarizeActivity([], NOW).tone).toBe("neutral");
+    expect(ACTIVITY_SECTION_TONE["needs-you"]).toBe("amber");
+  });
+
+  it("says all agents are idle rather than enumerating zeroes", () => {
+    expect(activityTriggerLabel(summarizeActivity([], NOW))).toBe(
+      "Activity · all agents idle",
+    );
+  });
+
+  it("counts a dismissed row out of tracked while still knowing its machine", () => {
+    const summary = summarizeActivity(
+      [
+        activityItem("visible", "needs_you"),
+        activityItem("dismissed", "failed", { dismissedAt: "2026-08-01T11:30:00.000Z" }),
+      ],
+      NOW,
+    );
+
+    expect(summary.trackedCount).toBe(1);
+    expect(summary.needsYouCount).toBe(1);
+    expect(summary.machinesTotal).toBe(1);
   });
 });

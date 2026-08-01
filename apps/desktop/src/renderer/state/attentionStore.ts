@@ -6,6 +6,7 @@ import {
   attentionItemNeedsInbox,
   sortAttentionItems,
   type AttentionItem,
+  type AttentionPreferences,
   type AttentionSnapshot,
   type AttentionTombstone,
 } from "../../shared/types";
@@ -38,11 +39,18 @@ export type AttentionStoreState = {
   scope: AttentionScope;
   selectedItemId: string | null;
   headerSurfaceVisible: boolean;
+  /**
+   * Last account preferences this window loaded. Null means "not loaded yet",
+   * which every reader must treat as the conservative default rather than as
+   * "the user turned it off" — see `selectActivityHideDetails`.
+   */
+  preferences: AttentionPreferences | null;
   syncStatus: AttentionSyncStatus;
   syncError: string | null;
   pendingAcknowledgements: Record<string, PendingAttentionAcknowledgement>;
   acknowledgementErrors: Record<string, string>;
   resetStream: () => void;
+  setPreferences: (preferences: AttentionPreferences | null) => void;
   applySnapshot: (snapshot: AttentionSnapshot) => void;
   upsertItem: (item: AttentionItem) => void;
   removeItem: (tombstone: AttentionTombstone) => void;
@@ -115,6 +123,31 @@ export function selectAttentionCounts(
   };
 }
 
+/**
+ * Whether Activity surfaces may show agent-authored text. Unloaded preferences
+ * resolve to `false` rather than `true`: hide-details is off by default, and
+ * defaulting a *display* choice to "hidden" would make every surface look
+ * broken for the seconds before the account load lands. The native notch takes
+ * the opposite default because it paints over the menu bar of a locked-away
+ * Mac — see `failClosedAttentionNotchSettings` in `useAttentionSync.ts`.
+ */
+export function selectActivityHideDetails(
+  state: Pick<AttentionStoreState, "preferences">,
+): boolean {
+  return state.preferences?.account?.hideDetails === true;
+}
+
+/**
+ * Dock-badge scope. Local by default so a fresh install badges only the work
+ * on the Mac in front of the user; flipping it to `account` is an explicit,
+ * synced choice.
+ */
+export function selectDockBadgeScope(
+  state: Pick<AttentionStoreState, "preferences">,
+): "local" | "account" {
+  return state.preferences?.account?.dockBadgeScope === "account" ? "account" : "local";
+}
+
 export function selectAttentionUnseenCount(
   state: Pick<AttentionStoreState, "itemsById">,
 ): number {
@@ -138,6 +171,7 @@ function createInitialState(): Pick<
   | "scope"
   | "selectedItemId"
   | "headerSurfaceVisible"
+  | "preferences"
   | "syncStatus"
   | "syncError"
   | "pendingAcknowledgements"
@@ -156,6 +190,7 @@ function createInitialState(): Pick<
     scope: { kind: "all" },
     selectedItemId: null,
     headerSurfaceVisible: false,
+    preferences: null,
     syncStatus: "idle",
     syncError: null,
     pendingAcknowledgements: {},
@@ -170,6 +205,9 @@ export const attentionStore = createStore<AttentionStoreState>((set) => ({
       ...createInitialState(),
       headerSurfaceVisible: state.headerSurfaceVisible,
     })),
+  // Preferences are account-scoped, so a stream reset deliberately drops them
+  // rather than letting the previous account's privacy choice govern this one.
+  setPreferences: (preferences) => set({ preferences }),
   applySnapshot: (snapshot) =>
     set((state) => {
       // Account revisions are monotonic only inside one verified account.

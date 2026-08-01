@@ -145,10 +145,9 @@ const SESSION_DERIVED_PRESENTATION = Object.fromEntries(
  * branch policy, CI, or someone else's approval is frequently something the
  * reader cannot clear at all, so it makes no claim on them.
  *
- * NOTE: `attentionHeaderSummary.ts` still files `blocked` into the red
- * "Failing or blocked" bucket. That disagreement with the neutral tone here is
- * known and deliberately left for now — reconciling a phase that has no
- * producer would be two speculative changes instead of one documented one.
+ * `activityPriority.ts` files it in the needs-you band on phase priority alone,
+ * which is the closest thing to a decision anyone can make about a phase with
+ * no producer. Its tone stays neutral here, so it can never paint amber.
  */
 const NON_SESSION_PRESENTATION: Record<
   Exclude<AttentionPhase, SessionDerivedAttentionPhase>,

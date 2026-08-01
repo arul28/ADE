@@ -5,7 +5,6 @@ import {
   ArrowRight,
   BellRinging,
   BellSimpleSlash,
-  GitPullRequest,
   WarningCircle,
   WifiHigh,
   WifiSlash,
@@ -27,114 +26,74 @@ import {
 import {
   acknowledgeAttentionItem,
   attentionStore,
+  selectActivityHideDetails,
   useAttentionStore,
 } from "../../state/attentionStore";
 import { useDialogFocusTrap } from "../app/HeaderSheet";
-import { ProviderLogo } from "../shared/ProviderLogos";
 import { cn } from "../ui/cn";
+import { ActivityCard } from "./ActivityCard";
+import { AttentionSettingsPopover } from "./AttentionSettingsPopover";
 import {
-  attentionPhasePresentation,
-  type AttentionTone,
-} from "./attentionPresentation";
-import {
-  attentionHeaderTriggerLabel,
-  summarizeAttentionForHeader,
-  type AttentionHeaderBucket,
-} from "./attentionHeaderSummary";
+  ACTIVITY_SECTION_TONE,
+  activityTriggerLabel,
+  summarizeActivity,
+  type ActivitySection,
+} from "./activityPriority";
 import { refreshAttentionSnapshot } from "./useAttentionSync";
-import "./HeaderAttentionControl.css";
+import "./HeaderActivityControl.css";
 
-/** Rows shown per section before the overflow hands off to the full center. */
-const MAX_ROWS_PER_BUCKET = 4;
+/**
+ * Rows shown per section before the overflow line hands off to the pane. Six,
+ * not four: the sections are now priority-flat, so a single "Working" section
+ * routinely carries what three buckets used to split.
+ */
+const MAX_ROWS_PER_SECTION = 6;
 const RELATIVE_TIME_TICK_MS = 30_000;
 const IDLE_TICK_MS = 120_000;
-
-function toneClass(tone: AttentionTone): string {
-  return `attention-tone-${tone}`;
-}
-
-function itemIcon(item: AttentionItem, size: number): React.ReactNode {
-  if (item.kind === "pull_request") return <GitPullRequest size={size} weight="duotone" />;
-  return <ProviderLogo family={item.provider || "agent"} size={size} />;
-}
 
 function navigationErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
   return "ADE couldn’t open the exact machine and project for this item.";
 }
 
-function machineLine(item: AttentionItem): string {
-  return item.machine.online
-    ? `${item.project.name} · ${item.machine.name}`
-    : `${item.project.name} · ${item.machine.name} (offline)`;
+function pluralize(count: number, noun: string): string {
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
 
-function AttentionHeaderRow({
-  item,
-  onOpen,
-}: {
-  item: AttentionItem;
-  onOpen: () => void;
-}) {
-  const phase = attentionPhasePresentation(item.phase);
-  return (
-    <button
-      type="button"
-      data-attention-header-row={item.id}
-      className={cn("attn-hdr-row", toneClass(phase.tone))}
-      onClick={onOpen}
-      title={`${item.title} — ${machineLine(item)}`}
-    >
-      <span className="attn-hdr-row-icon" aria-hidden>
-        {itemIcon(item, 15)}
-      </span>
-      <span className="attn-hdr-row-copy">
-        <span className="attn-hdr-row-title">
-          <strong>{item.title}</strong>
-          <time dateTime={item.updatedAt}>{relativeWhen(item.updatedAt)}</time>
-        </span>
-        <span className="attn-hdr-row-meta">
-          <span className="attn-hdr-phase">
-            <span
-              className={cn(
-                "attn-hdr-phase-dot",
-                phase.active && item.machine.online && "is-active",
-              )}
-            />
-            {phase.label}
-          </span>
-          <span className="attn-hdr-row-where">{machineLine(item)}</span>
-        </span>
-      </span>
-      {item.seenAt ? null : <span className="attn-hdr-unseen" aria-label="Unseen" />}
-    </button>
-  );
-}
-
-function AttentionHeaderSection({
-  bucket,
+function ActivityHeaderSection({
+  section,
+  hideDetails,
   onOpenItem,
-  onOpenCenter,
+  onOpenPane,
 }: {
-  bucket: AttentionHeaderBucket;
+  section: ActivitySection;
+  hideDetails: boolean;
   onOpenItem: (item: AttentionItem) => void;
-  onOpenCenter: () => void;
+  onOpenPane: () => void;
 }) {
-  const shown = bucket.items.slice(0, MAX_ROWS_PER_BUCKET);
-  const overflow = bucket.items.length - shown.length;
+  const shown = section.items.slice(0, MAX_ROWS_PER_SECTION);
+  const overflow = section.items.length - shown.length;
   return (
-    <section className={cn("attn-hdr-section", toneClass(bucket.tone))}>
-      <h3 className="attn-hdr-section-heading">
-        <span className="attn-hdr-section-dot" aria-hidden />
-        <span className="min-w-0 flex-1 truncate">{bucket.label}</span>
-        <span className="attn-hdr-section-count">{bucket.items.length}</span>
+    <section
+      data-activity-section={section.id}
+      className={cn("activity-hdr-section", `activity-tone-${ACTIVITY_SECTION_TONE[section.id]}`)}
+    >
+      <h3 className="activity-hdr-section-heading">
+        <span className="activity-hdr-section-dot" aria-hidden />
+        <span className="min-w-0 flex-1 truncate">{section.label}</span>
+        <span className="activity-hdr-section-count">{section.items.length}</span>
       </h3>
       {shown.map((item) => (
-        <AttentionHeaderRow key={item.id} item={item} onOpen={() => onOpenItem(item)} />
+        <ActivityCard
+          key={item.id}
+          item={item}
+          hideDetails={hideDetails}
+          onOpen={onOpenItem}
+        />
       ))}
       {overflow > 0 ? (
-        <button type="button" className="attn-hdr-overflow" onClick={onOpenCenter}>
-          {overflow} more in Attention
+        <button type="button" className="activity-hdr-overflow" onClick={onOpenPane}>
+          {overflow} more
           <ArrowRight size={11} weight="bold" />
         </button>
       ) : null}
@@ -143,22 +102,23 @@ function AttentionHeaderSection({
 }
 
 /**
- * Account-wide Attention, promoted into the global header so live work, things
- * that need you, failures, and finished-but-unreviewed outcomes are one glance
- * away from every tab and every project. The full Attention center stays the
- * place to triage at length; this is the doorway to it.
+ * Account-wide Activity, promoted into the global header so live work, things
+ * that need you, and finished-but-unreviewed outcomes are one glance away from
+ * every tab and every project. Three priority-flat sections — needs you,
+ * working, done — and a handoff to the full pane for everything past the cap.
  */
-export function HeaderAttentionControl({
-  onOpenCenter,
+export function HeaderActivityControl({
+  onOpenPane,
 }: {
-  /** Routes to the full Attention center — the shell owns navigation. */
-  onOpenCenter: () => void;
+  /** Opens the full Activity surface — the shell owns how. */
+  onOpenPane: () => void;
 }) {
   const itemsById = useAttentionStore((state) => state.itemsById);
   const syncStatus = useAttentionStore((state) => state.syncStatus);
   const syncError = useAttentionStore((state) => state.syncError);
   const generatedAt = useAttentionStore((state) => state.generatedAt);
   const availability = useAttentionStore((state) => state.availability);
+  const hideDetails = useAttentionStore(selectActivityHideDetails);
   const { status: accountStatus, loading: accountLoading } = useAccountStatus();
   const signedIn = accountStatus.signedIn;
 
@@ -169,10 +129,7 @@ export function HeaderAttentionControl({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const panelRef = useRef<HTMLDivElement | null>(null);
 
-  const summary = useMemo(
-    () => summarizeAttentionForHeader(itemsById, now),
-    [itemsById, now],
-  );
+  const summary = useMemo(() => summarizeActivity(itemsById, now), [itemsById, now]);
 
   const close = useCallback(() => {
     setOpen(false);
@@ -181,6 +138,9 @@ export function HeaderAttentionControl({
 
   const openPopover = useCallback(() => {
     setOpen(true);
+    // Event name, properties and dedupe key are deliberately unchanged through
+    // the Attention → Activity rename: forking them would fork the PostHog
+    // series and lose every comparison against the surface this replaces.
     void window.ade?.analytics?.capture({
       event: "ade_feature_used",
       properties: {
@@ -260,18 +220,22 @@ export function HeaderAttentionControl({
     setOpen(false);
   }, []);
 
-  const openCenter = useCallback(() => {
+  const openPane = useCallback(() => {
     setOpen(false);
-    onOpenCenter();
-  }, [onOpenCenter]);
+    onOpenPane();
+  }, [onOpenPane]);
 
   const onPanelKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      // The settings popover is a dialog of its own inside this one. While
+      // focus is in it, its keys are its business — otherwise Escape would
+      // close both at once and an arrow key would yank focus out to a row.
+      if ((event.target as HTMLElement | null)?.closest?.(".attention-settings-popover")) {
+        return;
+      }
       const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
       const rows = Array.from(
-        event.currentTarget.querySelectorAll<HTMLButtonElement>(
-          "[data-attention-header-row]",
-        ),
+        event.currentTarget.querySelectorAll<HTMLButtonElement>("[data-activity-row]"),
       );
       if (delta !== 0 && rows.length > 0) {
         event.preventDefault();
@@ -300,24 +264,25 @@ export function HeaderAttentionControl({
     && availability.state !== "ready"
     && availability.state !== "signed_out";
   const signedOutEmpty = signedOut && summary.trackedCount === 0;
-  const badgeCount = summary.waitingCount;
-  const hasLiveOnly = badgeCount === 0 && summary.liveCount > 0;
+  const badgeCount = summary.needsYouCount;
+  const hasLiveOnly = badgeCount === 0 && summary.workingCount > 0;
+  const baseLabel = activityTriggerLabel(summary).replace(/^Activity · /, "");
   const triggerLabel = signedOut
     ? signedOutEmpty
-      ? "Attention · sign in to sync across machines"
-      : `Attention · this machine only · ${attentionHeaderTriggerLabel(summary).replace(/^Attention · /, "")} · sign in to sync`
+      ? "Activity · sign in to sync across machines"
+      : `Activity · this machine only · ${baseLabel} · sign in to sync`
     : degraded
-      ? `Attention · ${availability.title} · ${attentionHeaderTriggerLabel(summary).replace(/^Attention · /, "")}`
-      : attentionHeaderTriggerLabel(summary);
+      ? `Activity · ${availability.title} · ${baseLabel}`
+      : activityTriggerLabel(summary);
   const state = signedOutEmpty
     ? "signed-out"
     : degraded
       ? "degraded"
-    : badgeCount > 0
-      ? "waiting"
-      : hasLiveOnly
-        ? "live"
-        : "clear";
+      : badgeCount > 0
+        ? "waiting"
+        : hasLiveOnly
+          ? "live"
+          : "clear";
 
   const freshness = degraded
     ? {
@@ -326,17 +291,24 @@ export function HeaderAttentionControl({
         retry: availability.recovery === "retry",
       }
     : syncStatus === "error"
-    ? { tone: "error" as const, label: "Sync failed", retry: true }
-    : syncStatus === "syncing"
-      ? { tone: "syncing" as const, label: "Syncing", retry: false }
-      : generatedAt
-        ? { tone: "ready" as const, label: `Synced ${relativeWhen(generatedAt)}`, retry: false }
-        : null;
+      ? { tone: "error" as const, label: "Sync failed", retry: true }
+      : syncStatus === "syncing"
+        ? { tone: "syncing" as const, label: "Syncing", retry: false }
+        : generatedAt
+          ? { tone: "ready" as const, label: `Synced ${relativeWhen(generatedAt)}`, retry: false }
+          : null;
   const notchNeedsAttention = notchHealth != null
     && notchHealth.state !== "disabled"
     && notchHealth.state !== "starting"
     && notchHealth.state !== "running"
     && notchHealth.state !== "unsupported";
+
+  const populatedSections = summary.sections.filter((section) => section.items.length > 0);
+  const machineLine = summary.machinesTotal === 0
+    ? null
+    : summary.machinesOnline === summary.machinesTotal
+      ? pluralize(summary.machinesTotal, "machine")
+      : `${summary.machinesOnline} of ${pluralize(summary.machinesTotal, "machine")} online`;
 
   return (
     <>
@@ -344,12 +316,12 @@ export function HeaderAttentionControl({
         ref={triggerRef}
         type="button"
         className={cn(
-          "ade-shell-control attn-hdr-trigger inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1",
-          toneClass(summary.tone),
+          "ade-shell-control activity-hdr-trigger inline-flex shrink-0 items-center gap-1.5 rounded-md px-1.5 py-1",
+          `activity-tone-${summary.tone}`,
         )}
         data-variant="ghost"
         data-state={state}
-        data-testid="header-attention-trigger"
+        data-testid="header-activity-trigger"
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-label={triggerLabel}
@@ -372,61 +344,54 @@ export function HeaderAttentionControl({
           <BellRinging
             size={14}
             weight={badgeCount > 0 ? "fill" : "regular"}
-            className="attn-hdr-trigger-icon shrink-0"
+            className="activity-hdr-trigger-icon shrink-0"
           />
         )}
         {badgeCount > 0 ? (
-          <span className="attn-hdr-trigger-count">{Math.min(99, badgeCount)}</span>
+          <span className="activity-hdr-trigger-count">{Math.min(99, badgeCount)}</span>
         ) : hasLiveOnly ? (
-          <span className="attn-hdr-trigger-live" aria-hidden />
+          <span className="activity-hdr-trigger-live" aria-hidden />
         ) : null}
       </button>
 
       {open && typeof document !== "undefined"
         ? createPortal(
             <div
-              className="attn-hdr-scrim fixed inset-0 z-[110]"
+              className="activity-hdr-scrim fixed inset-0 z-[110]"
               style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
               onClick={() => setOpen(false)}
             >
               <div
                 ref={panelRef}
-                className="attn-hdr-panel"
+                className="activity-hdr-panel"
                 role="dialog"
                 aria-modal="true"
-                aria-labelledby="attn-hdr-title"
+                aria-labelledby="activity-hdr-title"
                 tabIndex={-1}
                 onClick={(event) => event.stopPropagation()}
                 onKeyDown={onPanelKeyDown}
               >
-                <header className="attn-hdr-panel-head">
-                  <div className="min-w-0 flex-1">
-                    <h2 id="attn-hdr-title">Attention</h2>
-                    <p>
-                      {signedOut
-                        ? availability?.title ?? "This machine only"
-                        : availability?.title
-                          ? availability.title
-                        : summary.machinesTotal > 0
-                          ? `${summary.machinesOnline} of ${summary.machinesTotal} machine${summary.machinesTotal === 1 ? "" : "s"} online`
-                          : "Across every machine on your account"}
-                    </p>
-                  </div>
+                <header className="activity-hdr-panel-head">
+                  {/* No sub-caption. The line that used to sit here only ever
+                      restated the surface's own name ("Account Attention is
+                      live"), and a header that describes itself is a header
+                      that has nothing to say. */}
+                  <h2 id="activity-hdr-title">Activity</h2>
                   {freshness ? (
                     freshness.tone === "error" && freshness.retry ? (
                       <button
                         type="button"
-                        className="attn-hdr-freshness is-error"
+                        className="activity-hdr-freshness is-error"
                         onClick={() => void refreshAttentionSnapshot()}
-                        title={availability?.message ?? syncError ?? "Retry Attention sync"}
+                        title={availability?.message ?? syncError ?? "Retry Activity sync"}
                       >
                         <WifiSlash size={11} />
                         {freshness.label} · Retry
                       </button>
                     ) : (
-                      <span className="attn-hdr-freshness">
+                      <span className="activity-hdr-freshness">
                         {freshness.tone === "syncing" ? (
-                          <ArrowClockwise size={11} className="attn-hdr-spin" />
+                          <ArrowClockwise size={11} className="activity-hdr-spin" />
                         ) : (
                           <WifiHigh size={11} />
                         )}
@@ -434,33 +399,34 @@ export function HeaderAttentionControl({
                       </span>
                     )
                   ) : null}
+                  <AttentionSettingsPopover />
                   <button
                     type="button"
-                    className="attn-hdr-icon-button"
+                    className="activity-hdr-icon-button"
                     onClick={close}
                     title="Close"
-                    aria-label="Close Attention"
+                    aria-label="Close Activity"
                   >
                     <X size={13} />
                   </button>
                 </header>
 
                 {navigationError ? (
-                  <div className="attn-hdr-alert" role="alert">
+                  <div className="activity-hdr-alert" role="alert">
                     <WarningCircle size={14} weight="fill" />
                     <span>{navigationError}</span>
                   </div>
                 ) : null}
 
                 {degraded ? (
-                  <div className="attn-hdr-note" role="status">
+                  <div className="activity-hdr-note" role="status">
                     <WifiSlash size={12} />
                     <span>{availability.message}</span>
                   </div>
                 ) : null}
 
                 {signedOut && !signedOutEmpty ? (
-                  <div className="attn-hdr-note" role="status">
+                  <div className="activity-hdr-note" role="status">
                     <BellSimpleSlash size={12} />
                     <span>
                       {availability?.message
@@ -470,7 +436,7 @@ export function HeaderAttentionControl({
                 ) : null}
 
                 {notchNeedsAttention ? (
-                  <div className="attn-hdr-note attn-hdr-notch-health" role="status">
+                  <div className="activity-hdr-note activity-hdr-notch-health" role="status">
                     <WarningCircle size={12} weight="fill" />
                     <span>
                       <strong>{notchHealth.title}</strong>
@@ -484,7 +450,7 @@ export function HeaderAttentionControl({
                 ) : null}
 
                 {summary.staleMachineCount > 0 ? (
-                  <div className="attn-hdr-note">
+                  <div className="activity-hdr-note">
                     <WifiSlash size={12} />
                     <span>
                       {summary.staleMachineCount} item
@@ -494,9 +460,9 @@ export function HeaderAttentionControl({
                   </div>
                 ) : null}
 
-                <div className="attn-hdr-body">
+                <div className="activity-hdr-body">
                   {signedOutEmpty ? (
-                    <div className="attn-hdr-empty">
+                    <div className="activity-hdr-empty">
                       <BellSimpleSlash size={22} weight="duotone" />
                       <strong>Signed out</strong>
                       <p>
@@ -504,37 +470,35 @@ export function HeaderAttentionControl({
                         machine on your account.
                       </p>
                     </div>
-                  ) : summary.buckets.length === 0 ? (
-                    <div className="attn-hdr-empty">
-                      <BellRinging size={22} weight="duotone" />
-                      <strong>All clear</strong>
+                  ) : populatedSections.length === 0 ? (
+                    <div className="activity-hdr-empty" data-activity-empty="all-clear">
+                      <span className="activity-hdr-calm-dot" aria-hidden />
+                      <strong>All agents idle</strong>
                       <p>
-                        {availability?.message
-                          ?? (syncStatus === "error"
-                          ? syncError ?? "Attention couldn’t sync, so this may be stale."
-                          : "Nothing is running, waiting on you, or newly finished.")}
+                        {syncStatus === "error"
+                          ? syncError ?? "Activity couldn’t sync, so this may be stale."
+                          : "Nothing needs you."}
                       </p>
                     </div>
                   ) : (
-                    summary.buckets.map((bucket) => (
-                      <AttentionHeaderSection
-                        key={bucket.id}
-                        bucket={bucket}
+                    populatedSections.map((section) => (
+                      <ActivityHeaderSection
+                        key={section.id}
+                        section={section}
+                        hideDetails={hideDetails}
                         onOpenItem={(item) => void openItem(item)}
-                        onOpenCenter={openCenter}
+                        onOpenPane={openPane}
                       />
                     ))
                   )}
                 </div>
 
-                <footer className="attn-hdr-panel-foot">
+                <footer className="activity-hdr-panel-foot">
                   <span>
-                    {summary.trackedCount} tracked
-                    {summary.liveCount > 0 && badgeCount > 0
-                      ? ` · ${summary.liveCount} live`
-                      : ""}
+                    {pluralize(summary.trackedCount, "session")}
+                    {machineLine ? ` · ${machineLine}` : ""}
                   </span>
-                  <button type="button" className="attn-hdr-open-all" onClick={openCenter}>
+                  <button type="button" className="activity-hdr-open-all" onClick={openPane}>
                     Open all
                     <ArrowRight size={12} weight="bold" />
                   </button>
@@ -548,4 +512,4 @@ export function HeaderAttentionControl({
   );
 }
 
-export default HeaderAttentionControl;
+export default HeaderActivityControl;

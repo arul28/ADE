@@ -416,7 +416,7 @@ describe("TopBar", () => {
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
-  it("carries account-wide Attention in the header and routes Open all to the center", () => {
+  it("carries account-wide Activity in the header and routes Open all to the center", () => {
     const needsYou = {
       contractVersion: ATTENTION_CONTRACT_VERSION,
       id: "needs-you",
@@ -459,10 +459,10 @@ describe("TopBar", () => {
 
     render(<TopBar onNavigate={onNavigate} />);
 
-    const trigger = screen.getByTestId("header-attention-trigger");
+    const trigger = screen.getByTestId("header-activity-trigger");
     // The item belongs to another machine and project entirely — the header is
     // account-wide, not scoped to whatever project this window has open.
-    expect(trigger.getAttribute("aria-label")).toBe("Attention · 1 needs you");
+    expect(trigger.getAttribute("aria-label")).toBe("Activity · 1 needs you");
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("button", { name: /Open all/ }));

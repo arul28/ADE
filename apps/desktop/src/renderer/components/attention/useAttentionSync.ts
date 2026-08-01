@@ -256,11 +256,21 @@ async function refreshAttentionNotchSettings(
   ) return;
   const attentionApi = typeof window !== "undefined" ? window.ade?.attention : null;
   const notchApi = typeof window !== "undefined" ? window.ade?.attentionNotch : null;
-  if (!attentionApi || !notchApi) return;
-  const promise = attentionApi
-    .getPreferences(scope.ownerId)
+  // The notch is optional — it does not exist on the web client at all — but the
+  // preferences behind it are not: hide-details and the dock-badge scope govern
+  // the Activity surfaces on every platform, so the fetch must not be gated on
+  // the native helper being present.
+  if (typeof attentionApi?.getPreferences !== "function") return;
+  const ownerId = scope.ownerId;
+  // `Promise.resolve().then(…)` rather than a bare call: a host that answers
+  // synchronously (or with nothing at all) must land in this chain's own catch
+  // instead of throwing past it as an unhandled rejection.
+  const promise = Promise.resolve()
+    .then(() => attentionApi.getPreferences(ownerId))
     .then(async (preferences) => {
-      if (!isCurrentAccountScope(scope)) return;
+      if (!isCurrentAccountScope(scope) || !preferences) return;
+      attentionStore.getState().setPreferences(preferences);
+      if (!notchApi) return;
       await enqueueAttentionNotchSettingsUpdate(
         scope,
         attentionNotchSettingsFromPreferences(preferences),

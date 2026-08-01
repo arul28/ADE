@@ -97,3 +97,97 @@ export function activityHeadline(input: ActivityItemsInput, now = Date.now()): s
   if (done > 0) return `${done} done`;
   return "All clear";
 }
+
+/**
+ * The one hue per section, and the reason the badge can only ever be amber:
+ * amber means "your move" and nothing else, blue means work is happening,
+ * emerald means it finished cleanly. Same table as
+ * `shared/sessionStatusPresentation.ts` — see the one-hue-one-meaning rule there.
+ */
+export const ACTIVITY_SECTION_TONE = {
+  "needs-you": "amber",
+  working: "blue",
+  done: "emerald",
+} as const satisfies Record<ActivitySectionId, "amber" | "blue" | "emerald">;
+
+export type ActivitySummary = {
+  /** All three sections, always, in priority order. */
+  sections: ActivitySection[];
+  needsYouCount: number;
+  workingCount: number;
+  doneCount: number;
+  /** Every non-expired, non-dismissed item — what "Open all" leads to. */
+  trackedCount: number;
+  /** Filed items whose machine is offline, i.e. last-known state only. */
+  staleMachineCount: number;
+  machinesOnline: number;
+  machinesTotal: number;
+  tone: "amber" | "blue" | "emerald" | "neutral";
+  headline: string;
+};
+
+/**
+ * Everything the Activity header claims, derived once so the trigger, its
+ * accessible label, the sections, and the footer can never disagree.
+ */
+export function summarizeActivity(
+  input: ActivityItemsInput,
+  now = Date.now(),
+): ActivitySummary {
+  const sections = activitySections(input, now);
+  const machinesOnline = new Set<string>();
+  const machinesTotal = new Set<string>();
+  let trackedCount = 0;
+
+  for (const item of activityInputItems(input)) {
+    if (activityItemIsExpired(item, now)) continue;
+    machinesTotal.add(item.machine.machineKey);
+    if (item.machine.online) machinesOnline.add(item.machine.machineKey);
+    if (!item.dismissedAt) trackedCount += 1;
+  }
+
+  const needsYouCount = sections[0]?.items.length ?? 0;
+  const workingCount = sections[1]?.items.length ?? 0;
+  const doneCount = sections[2]?.items.length ?? 0;
+  // "Working" rows on an offline machine are the normal shape of a machine that
+  // went away mid-turn, so they count too: the whole point of the note is that
+  // the state on screen is remembered rather than observed.
+  const staleMachineCount = sections.reduce(
+    (total, section) =>
+      total + section.items.filter((item) => !item.machine.online).length,
+    0,
+  );
+
+  const tone = needsYouCount > 0
+    ? "amber"
+    : workingCount > 0
+      ? "blue"
+      : doneCount > 0
+        ? "emerald"
+        : "neutral";
+
+  return {
+    sections,
+    needsYouCount,
+    workingCount,
+    doneCount,
+    trackedCount,
+    staleMachineCount,
+    machinesOnline: machinesOnline.size,
+    machinesTotal: machinesTotal.size,
+    tone,
+    headline: activityHeadline(input, now),
+  };
+}
+
+/** Tooltip and accessible name for the Activity header trigger. */
+export function activityTriggerLabel(summary: ActivitySummary): string {
+  const parts: string[] = [];
+  if (summary.needsYouCount > 0) {
+    parts.push(`${summary.needsYouCount} need${summary.needsYouCount === 1 ? "s" : ""} you`);
+  }
+  if (summary.workingCount > 0) parts.push(`${summary.workingCount} working`);
+  if (summary.doneCount > 0) parts.push(`${summary.doneCount} done`);
+  if (parts.length === 0) return "Activity · all agents idle";
+  return `Activity · ${parts.join(" · ")}`;
+}

@@ -75,7 +75,7 @@ import {
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import { HeaderAttentionControl } from "../attention/HeaderAttentionControl";
+import { HeaderActivityControl } from "../attention/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -1586,8 +1586,10 @@ export function TopBar({
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  // Attention is account-wide, so it never depends on a project being open.
-  const handleOpenAttentionCenter = useCallback(() => {
+  // Activity is account-wide, so it never depends on a project being open.
+  // P4: this becomes a shell-state flip that opens the Activity pane over the
+  // current tab; until that pane exists it still routes to the old center.
+  const handleOpenActivityPane = useCallback(() => {
     onNavigate?.("/attention");
   }, [onNavigate]);
 
@@ -2740,11 +2742,11 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: attention · status · updates · utility cluster */}
+      {/* Trailing controls: activity · status · updates · utility cluster */}
       <div className="flex shrink-0 items-center gap-2">
-        {/* Account-wide Attention — the one place every machine's work surfaces,
+        {/* Account-wide Activity — the one place every machine's work surfaces,
             reachable from every tab and project without a nav detour. */}
-        <HeaderAttentionControl onOpenCenter={handleOpenAttentionCenter} />
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />

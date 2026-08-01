@@ -33,6 +33,12 @@ import {
 } from "./attentionNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 import { navigateToAppTarget } from "../../lib/openExternal";
+// This component now has two mount points — the Attention center and the
+// Activity header popover — so it carries its own `.attention-settings-*`
+// styles instead of inheriting them from whichever parent happened to be
+// mounted first. The import moves with the component when the center's
+// stylesheet is retired.
+import "./AttentionCenter.css";
 
 const DESKTOP_FIRST_OPTIONS = [
   { value: 0, label: "Immediately" },

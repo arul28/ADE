@@ -1,11 +1,17 @@
 import { useEffect, useRef } from "react";
 import type { TerminalSessionSummary } from "../../shared/types";
+import { activityBadgeCount } from "../components/attention/activityPriority";
 import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
 import {
   invalidateSessionListCache,
   listSessionsCached,
 } from "../lib/sessionListCache";
 import { summarizeTerminalAttention } from "../lib/terminalAttention";
+import {
+  attentionStore,
+  selectDockBadgeScope,
+  useAttentionStore,
+} from "../state/attentionStore";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
 const EMPTY_TERMINAL_ATTENTION = {
@@ -16,6 +22,20 @@ const EMPTY_TERMINAL_ATTENTION = {
   byLaneId: {},
 };
 
+/**
+ * Account-scoped dock badge, or `null` when the account feed cannot answer.
+ *
+ * Null is not zero. A snapshot that has not landed, has gone degraded, or
+ * belongs to a signed-out window knows nothing about the other machines, and a
+ * badge of 0 in that state is a claim the data does not support — so the caller
+ * falls back to the local count instead.
+ */
+function accountDockBadgeCount(): number | null {
+  const state = attentionStore.getState();
+  if (state.availability?.state !== "ready") return null;
+  return activityBadgeCount(state.itemsById);
+}
+
 export function useAppWideSessionAttention(): void {
   const currentProjectRoot = useAppStore(selectActiveProjectRoot);
   const showWelcome = useAppStore((state) => state.showWelcome);
@@ -25,6 +45,9 @@ export function useAppWideSessionAttention(): void {
   // reach a minimized window. Kept in this hook so `setDockBadgeCount` keeps a
   // single writer.
   const ctoAwaitingInput = useAppStore((state) => state.ctoAttention.awaitingInput);
+  // Account scope is a synced preference, so it can flip from another device
+  // mid-session; the badge has to follow without a reload.
+  const dockBadgeScope = useAttentionStore(selectDockBadgeScope);
   const lastDockBadgeCountRef = useRef<number | null>(null);
   const trackedProjectRoot = showWelcome ? null : currentProjectRoot;
 
@@ -33,12 +56,26 @@ export function useAppWideSessionAttention(): void {
       setTerminalAttention(EMPTY_TERMINAL_ATTENTION);
       // The hook is app-wide, so route changes keep a project root and do not
       // enter this branch. Reaching it means the project was closed; clear the
-      // application-wide badge instead of leaking the previous project's count.
-      if (lastDockBadgeCountRef.current !== 0) {
-        lastDockBadgeCountRef.current = 0;
-        void window.ade?.app?.setDockBadgeCount?.(0)?.catch?.(() => {});
+      // application-wide badge instead of leaking the previous project's count
+      // — unless the badge is account-scoped, in which case the open project is
+      // irrelevant to what it counts.
+      const accountOnly = dockBadgeScope === "account" ? accountDockBadgeCount() : null;
+      const projectlessBadge = accountOnly == null
+        ? 0
+        : accountOnly + (ctoAwaitingInput ? 1 : 0);
+      if (lastDockBadgeCountRef.current !== projectlessBadge) {
+        lastDockBadgeCountRef.current = projectlessBadge;
+        void window.ade?.app?.setDockBadgeCount?.(projectlessBadge)?.catch?.(() => {});
       }
-      return;
+      if (dockBadgeScope !== "account") return;
+      // Keep following the account feed while no project is open.
+      return attentionStore.subscribe(() => {
+        const count = accountDockBadgeCount();
+        const next = count == null ? 0 : count + (ctoAwaitingInput ? 1 : 0);
+        if (lastDockBadgeCountRef.current === next) return;
+        lastDockBadgeCountRef.current = next;
+        void window.ade?.app?.setDockBadgeCount?.(next)?.catch?.(() => {});
+      });
     }
 
     let refreshTimer: number | null = null;
@@ -46,6 +83,26 @@ export function useAppWideSessionAttention(): void {
     let refreshInFlight = false;
     let refreshQueued = false;
     let cancelled = false;
+    let localNeedsAttention = 0;
+
+    /**
+     * The single dock-badge write. Account scope counts the whole account's
+     * needs-you tier; local scope counts this Mac's sessions. Either way the
+     * CTO thread is added on top, because it is hidden from both feeds.
+     */
+    const pushDockBadge = () => {
+      const account = dockBadgeScope === "account" ? accountDockBadgeCount() : null;
+      const badgeCount = (account ?? localNeedsAttention) + (ctoAwaitingInput ? 1 : 0);
+      // Push on change so a blocked agent reaches the user even with the
+      // window minimized.
+      if (lastDockBadgeCountRef.current === badgeCount) return;
+      lastDockBadgeCountRef.current = badgeCount;
+      void window.ade?.app?.setDockBadgeCount?.(badgeCount)?.catch?.(() => {});
+    };
+
+    const unsubscribeAttention = dockBadgeScope === "account"
+      ? attentionStore.subscribe(pushDockBadge)
+      : () => {};
 
     const refreshTerminalAttention = async () => {
       if (cancelled) return;
@@ -64,13 +121,9 @@ export function useAppWideSessionAttention(): void {
         if (cancelled) return;
         const attention = summarizeTerminalAttention(sessions);
         setTerminalAttention(attention);
-        const badgeCount = attention.needsAttentionCount + (ctoAwaitingInput ? 1 : 0);
-        // Dock badge mirrors the loud tier only; push on change so a blocked
-        // agent reaches the user even with the window minimized.
-        if (lastDockBadgeCountRef.current !== badgeCount) {
-          lastDockBadgeCountRef.current = badgeCount;
-          void window.ade?.app?.setDockBadgeCount?.(badgeCount)?.catch?.(() => {});
-        }
+        // Dock badge mirrors the loud tier only.
+        localNeedsAttention = attention.needsAttentionCount;
+        pushDockBadge();
       } catch {
         // best effort
       } finally {
@@ -129,6 +182,7 @@ export function useAppWideSessionAttention(): void {
 
     return () => {
       cancelled = true;
+      unsubscribeAttention();
       try {
         unsubscribeData();
         unsubscribeExit();
@@ -142,5 +196,5 @@ export function useAppWideSessionAttention(): void {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [trackedProjectRoot, setTerminalAttention, ctoAwaitingInput]);
+  }, [trackedProjectRoot, setTerminalAttention, ctoAwaitingInput, dockBadgeScope]);
 }
