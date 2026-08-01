@@ -149,6 +149,7 @@
 		D30000000000000000000012 /* AttentionDrawerButton.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000002 /* AttentionDrawerButton.swift */; };
 		D30000000000000000000013 /* AttentionDrawerSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000003 /* AttentionDrawerSheet.swift */; };
 		D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000005 /* AttentionDrawerModelTests.swift */; };
+		AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = AC7100000000000000000001 /* ActivityContractDecodingTests.swift */; };
 		D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */; };
 		D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */; };
 		D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D30000000000000000000008 /* PrMergeMergeStateTests.swift */; };
@@ -424,6 +425,7 @@
 		D30000000000000000000002 /* AttentionDrawerButton.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerButton.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerButton.swift; sourceTree = "<group>"; };
 		D30000000000000000000003 /* AttentionDrawerSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerSheet.swift; path = ADE/Views/AttentionDrawer/AttentionDrawerSheet.swift; sourceTree = "<group>"; };
 		D30000000000000000000005 /* AttentionDrawerModelTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = AttentionDrawerModelTests.swift; path = ADETests/AttentionDrawerModelTests.swift; sourceTree = "<group>"; };
+		AC7100000000000000000001 /* ActivityContractDecodingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ActivityContractDecodingTests.swift; path = ADETests/ActivityContractDecodingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SyncEnvelopeChunkAssemblerTests.swift; path = ADETests/SyncEnvelopeChunkAssemblerTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkMarkdownStreamingParsingTests.swift; path = ADETests/WorkMarkdownStreamingParsingTests.swift; sourceTree = "<group>"; };
 		D30000000000000000000008 /* PrMergeMergeStateTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PrMergeMergeStateTests.swift; path = ADETests/PrMergeMergeStateTests.swift; sourceTree = "<group>"; };
@@ -1059,6 +1061,7 @@
 				AF00000000000000000000A4 /* PairingAndDpopTests.swift */,
 				AC1000000000000000000008 /* ClipPairingHandoffTests.swift */,
 				D30000000000000000000005 /* AttentionDrawerModelTests.swift */,
+				AC7100000000000000000001 /* ActivityContractDecodingTests.swift */,
 				D30000000000000000000006 /* SyncEnvelopeChunkAssemblerTests.swift */,
 				D30000000000000000000007 /* WorkMarkdownStreamingParsingTests.swift */,
 				D30000000000000000000008 /* PrMergeMergeStateTests.swift */,
@@ -1560,6 +1563,7 @@
 				AF00000000000000000000C4 /* PairingAndDpopTests.swift in Sources */,
 				AC1100000000000000000008 /* ClipPairingHandoffTests.swift in Sources */,
 				D30000000000000000000015 /* AttentionDrawerModelTests.swift in Sources */,
+				AC7200000000000000000001 /* ActivityContractDecodingTests.swift in Sources */,
 				D30000000000000000000016 /* SyncEnvelopeChunkAssemblerTests.swift in Sources */,
 				D30000000000000000000017 /* WorkMarkdownStreamingParsingTests.swift in Sources */,
 				D30000000000000000000018 /* PrMergeMergeStateTests.swift in Sources */,

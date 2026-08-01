@@ -514,6 +514,7 @@ private struct LockScreenPriorityStatus {
         case .open, .stale: return 4
         case .completed, .merged: return 5
         case .closed: return 6
+        case .unrecognized: return 7
         }
     }
 
@@ -559,6 +560,8 @@ private struct LockScreenPriorityStatus {
             return (.idle, "arrow.triangle.merge", "MERGED", ADESharedTheme.statusSuccess)
         case .closed:
             return (.idle, "xmark.circle.fill", "CLOSED", ADESharedTheme.statusIdle)
+        case .unrecognized:
+            return (.idle, "questionmark.circle", "UNKNOWN", ADESharedTheme.statusIdle)
         }
     }
 }

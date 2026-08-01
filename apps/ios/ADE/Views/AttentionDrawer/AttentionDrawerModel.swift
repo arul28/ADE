@@ -672,6 +672,9 @@ public final class AttentionDrawerModel: ObservableObject {
         case .merged:
             kind = .merged
             collection = .recent
+        case .unrecognized:
+            kind = .open
+            collection = .recent
         }
 
         let destination = source.destination

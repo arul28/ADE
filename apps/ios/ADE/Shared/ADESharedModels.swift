@@ -253,26 +253,111 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
 /// model again.
 public let ADEAttentionContractVersion = 1
 
-public enum AccountAttentionItemKind: String, Codable, Hashable, Sendable {
+public enum AccountAttentionItemKind: RawRepresentable, Codable, Hashable, Sendable {
     case agent
-    case pullRequest = "pull_request"
+    case pullRequest
+    case unrecognized(String)
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "agent": self = .agent
+        case "pull_request": self = .pullRequest
+        default: self = .unrecognized(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .agent: return "agent"
+        case .pullRequest: return "pull_request"
+        case .unrecognized(let rawValue): return rawValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unrecognized(rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
-public enum AccountAttentionPhase: String, Codable, Hashable, Sendable {
+public enum AccountAttentionPhase: RawRepresentable, Codable, Hashable, Sendable {
     case starting
     case running
-    case needsYou = "needs_you"
+    case needsYou
     case blocked
     case failed
     case completed
     case stale
-    case checksFailing = "checks_failing"
-    case reviewRequested = "review_requested"
-    case changesRequested = "changes_requested"
-    case mergeReady = "merge_ready"
+    case checksFailing
+    case reviewRequested
+    case changesRequested
+    case mergeReady
     case open
     case merged
     case closed
+    case unrecognized(String)
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "starting": self = .starting
+        case "running": self = .running
+        case "needs_you": self = .needsYou
+        case "blocked": self = .blocked
+        case "failed": self = .failed
+        case "completed": self = .completed
+        case "stale": self = .stale
+        case "checks_failing": self = .checksFailing
+        case "review_requested": self = .reviewRequested
+        case "changes_requested": self = .changesRequested
+        case "merge_ready": self = .mergeReady
+        case "open": self = .open
+        case "merged": self = .merged
+        case "closed": self = .closed
+        default: self = .unrecognized(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .starting: return "starting"
+        case .running: return "running"
+        case .needsYou: return "needs_you"
+        case .blocked: return "blocked"
+        case .failed: return "failed"
+        case .completed: return "completed"
+        case .stale: return "stale"
+        case .checksFailing: return "checks_failing"
+        case .reviewRequested: return "review_requested"
+        case .changesRequested: return "changes_requested"
+        case .mergeReady: return "merge_ready"
+        case .open: return "open"
+        case .merged: return "merged"
+        case .closed: return "closed"
+        case .unrecognized(let rawValue): return rawValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unrecognized(rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
+
+    fileprivate var isRecognized: Bool {
+        if case .unrecognized = self { return false }
+        return true
+    }
 
     /// Row copy for the Attention Drawer. Same words as `AgentRunPhase.label`
     /// and the desktop sidebar — "Working", not "Running"; "Done", not
@@ -293,22 +378,69 @@ public enum AccountAttentionPhase: String, Codable, Hashable, Sendable {
         case .open: return "Open"
         case .merged: return "Merged"
         case .closed: return "Closed"
+        case .unrecognized: return "Unknown"
         }
     }
 }
 
-public enum AccountAttentionEventKind: String, Codable, Hashable, Sendable {
-    case agentRunning = "agent_running"
-    case agentNeedsYou = "agent_needs_you"
-    case agentFailed = "agent_failed"
-    case agentCompleted = "agent_completed"
-    case prChecksFailing = "pr_checks_failing"
-    case prReviewRequested = "pr_review_requested"
-    case prChangesRequested = "pr_changes_requested"
-    case prMergeReady = "pr_merge_ready"
-    case prMerged = "pr_merged"
-    case prOpened = "pr_opened"
-    case prClosed = "pr_closed"
+public enum AccountAttentionEventKind: RawRepresentable, Codable, Hashable, Sendable {
+    case agentRunning
+    case agentNeedsYou
+    case agentFailed
+    case agentCompleted
+    case prChecksFailing
+    case prReviewRequested
+    case prChangesRequested
+    case prMergeReady
+    case prMerged
+    case prOpened
+    case prClosed
+    case unrecognized(String)
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "agent_running": self = .agentRunning
+        case "agent_needs_you": self = .agentNeedsYou
+        case "agent_failed": self = .agentFailed
+        case "agent_completed": self = .agentCompleted
+        case "pr_checks_failing": self = .prChecksFailing
+        case "pr_review_requested": self = .prReviewRequested
+        case "pr_changes_requested": self = .prChangesRequested
+        case "pr_merge_ready": self = .prMergeReady
+        case "pr_merged": self = .prMerged
+        case "pr_opened": self = .prOpened
+        case "pr_closed": self = .prClosed
+        default: self = .unrecognized(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .agentRunning: return "agent_running"
+        case .agentNeedsYou: return "agent_needs_you"
+        case .agentFailed: return "agent_failed"
+        case .agentCompleted: return "agent_completed"
+        case .prChecksFailing: return "pr_checks_failing"
+        case .prReviewRequested: return "pr_review_requested"
+        case .prChangesRequested: return "pr_changes_requested"
+        case .prMergeReady: return "pr_merge_ready"
+        case .prMerged: return "pr_merged"
+        case .prOpened: return "pr_opened"
+        case .prClosed: return "pr_closed"
+        case .unrecognized(let rawValue): return rawValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unrecognized(rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public struct AccountAttentionMachine: Codable, Hashable, Sendable {
@@ -464,15 +596,55 @@ extension AccountAttentionDestination: Codable {
     }
 }
 
-public enum AccountAttentionActionKind: String, Codable, Hashable, Sendable {
+public enum AccountAttentionActionKind: RawRepresentable, Codable, Hashable, Sendable {
     case approve
     case deny
     case answer
     case restart
-    case rerunChecks = "rerun_checks"
-    case markSeen = "mark_seen"
+    case rerunChecks
+    case markSeen
     case dismiss
     case open
+    case unrecognized(String)
+
+    public init?(rawValue: String) {
+        switch rawValue {
+        case "approve": self = .approve
+        case "deny": self = .deny
+        case "answer": self = .answer
+        case "restart": self = .restart
+        case "rerun_checks": self = .rerunChecks
+        case "mark_seen": self = .markSeen
+        case "dismiss": self = .dismiss
+        case "open": self = .open
+        default: self = .unrecognized(rawValue)
+        }
+    }
+
+    public var rawValue: String {
+        switch self {
+        case .approve: return "approve"
+        case .deny: return "deny"
+        case .answer: return "answer"
+        case .restart: return "restart"
+        case .rerunChecks: return "rerun_checks"
+        case .markSeen: return "mark_seen"
+        case .dismiss: return "dismiss"
+        case .open: return "open"
+        case .unrecognized(let rawValue): return rawValue
+        }
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let rawValue = try container.decode(String.self)
+        self = Self(rawValue: rawValue) ?? .unrecognized(rawValue)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(rawValue)
+    }
 }
 
 public enum AccountAttentionPayloadValue: Codable, Hashable, Sendable {
@@ -543,6 +715,12 @@ public struct AccountAttentionPlanProgress: Codable, Hashable, Sendable {
     }
 }
 
+public enum AccountActivityTier: String, Codable, Hashable, Sendable {
+    case signal
+    case ambient
+    case idle
+}
+
 public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     public let contractVersion: Int
     public let id: String
@@ -551,6 +729,9 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
     public let kind: AccountAttentionItemKind
     public let eventKind: AccountAttentionEventKind
     public let phase: AccountAttentionPhase
+    /// Kept as an optional wire string so future tier values remain additive.
+    public let activityTier: String?
+    public let statusSince: Date?
     public private(set) var machine: AccountAttentionMachine
     public let project: AccountAttentionProject
     public let laneId: String?
@@ -579,6 +760,8 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         kind: AccountAttentionItemKind,
         eventKind: AccountAttentionEventKind,
         phase: AccountAttentionPhase,
+        activityTier: String? = nil,
+        statusSince: Date? = nil,
         machine: AccountAttentionMachine,
         project: AccountAttentionProject,
         laneId: String? = nil,
@@ -606,6 +789,8 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         self.kind = kind
         self.eventKind = eventKind
         self.phase = phase
+        self.activityTier = activityTier
+        self.statusSince = statusSince
         self.machine = machine
         self.project = project
         self.laneId = laneId
@@ -651,11 +836,29 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
             return true
         case .open, .completed, .merged, .closed:
             return false
+        case .unrecognized:
+            return false
+        }
+    }
+
+    public var tier: AccountActivityTier {
+        if let activityTier {
+            return AccountActivityTier(rawValue: activityTier) ?? .idle
+        }
+        switch phase {
+        case .needsYou, .failed:
+            return .signal
+        case .starting, .running, .completed:
+            return .ambient
+        case .blocked, .stale, .checksFailing, .reviewRequested,
+             .changesRequested, .mergeReady, .open, .merged, .closed,
+             .unrecognized:
+            return .idle
         }
     }
 
     public var needsInbox: Bool {
-        guard dismissedAt == nil else { return false }
+        guard tier != .idle, dismissedAt == nil else { return false }
         switch phase {
         case .needsYou, .failed, .checksFailing, .changesRequested,
              .reviewRequested, .mergeReady:
@@ -663,6 +866,8 @@ public struct AccountAttentionItem: Codable, Hashable, Identifiable, Sendable {
         case .completed, .merged:
             return seenAt == nil
         case .starting, .running, .blocked, .open, .stale, .closed:
+            return false
+        case .unrecognized:
             return false
         }
     }
@@ -678,6 +883,14 @@ public struct AccountAttentionTombstone: Codable, Hashable, Identifiable, Sendab
     public let deletedAt: Date
 }
 
+private struct FailableDecodable<Value: Decodable>: Decodable {
+    let value: Value?
+
+    init(from decoder: Decoder) throws {
+        value = try? Value(from: decoder)
+    }
+}
+
 public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
     public let contractVersion: Int
     /// Opaque account stream identity assigned by Relay. Older relays and
@@ -691,6 +904,18 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
     public let machines: [AccountAttentionMachine]?
     public let items: [AccountAttentionItem]
     public let tombstones: [AccountAttentionTombstone]?
+    public let itemsTruncated: Bool?
+
+    private enum CodingKeys: String, CodingKey {
+        case contractVersion
+        case streamId
+        case revision
+        case generatedAt
+        case machines
+        case items
+        case tombstones
+        case itemsTruncated
+    }
 
     public init(
         contractVersion: Int = ADEAttentionContractVersion,
@@ -699,7 +924,8 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
         generatedAt: Date,
         machines: [AccountAttentionMachine]? = nil,
         items: [AccountAttentionItem],
-        tombstones: [AccountAttentionTombstone]? = nil
+        tombstones: [AccountAttentionTombstone]? = nil,
+        itemsTruncated: Bool? = nil
     ) {
         self.contractVersion = contractVersion
         self.streamId = streamId
@@ -708,6 +934,42 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
         self.machines = machines
         self.items = items
         self.tombstones = tombstones
+        self.itemsTruncated = itemsTruncated
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        contractVersion = try container.decode(Int.self, forKey: .contractVersion)
+        streamId = try container.decodeIfPresent(String.self, forKey: .streamId)
+        revision = try container.decode(Int.self, forKey: .revision)
+        generatedAt = try container.decode(Date.self, forKey: .generatedAt)
+        machines = try container.decodeIfPresent([AccountAttentionMachine].self, forKey: .machines)
+        items = try container.decode(
+            [FailableDecodable<AccountAttentionItem>].self,
+            forKey: .items
+        )
+        .compactMap(\.value)
+        // Unknown phases cannot be categorized safely by an installed UI.
+        // The raw enum value still decodes losslessly, while this one row is
+        // omitted instead of invalidating the entire account snapshot.
+        .filter { $0.phase.isRecognized }
+        tombstones = try container.decodeIfPresent(
+            [AccountAttentionTombstone].self,
+            forKey: .tombstones
+        )
+        itemsTruncated = try container.decodeIfPresent(Bool.self, forKey: .itemsTruncated)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(contractVersion, forKey: .contractVersion)
+        try container.encodeIfPresent(streamId, forKey: .streamId)
+        try container.encode(revision, forKey: .revision)
+        try container.encode(generatedAt, forKey: .generatedAt)
+        try container.encodeIfPresent(machines, forKey: .machines)
+        try container.encode(items, forKey: .items)
+        try container.encodeIfPresent(tombstones, forKey: .tombstones)
+        try container.encodeIfPresent(itemsTruncated, forKey: .itemsTruncated)
     }
 
     /// Apply an incremental relay response to the last full snapshot. Relay
@@ -748,7 +1010,8 @@ public struct AccountAttentionSnapshot: Codable, Hashable, Sendable {
             generatedAt: delta.generatedAt,
             machines: delta.machines ?? machines,
             items: Array(byId.values),
-            tombstones: delta.tombstones
+            tombstones: delta.tombstones,
+            itemsTruncated: delta.itemsTruncated ?? itemsTruncated
         ))
     }
 }
@@ -775,7 +1038,8 @@ private func normalizedAccountAttentionSnapshot(
         generatedAt: snapshot.generatedAt,
         machines: snapshot.machines,
         items: Array(itemsById.values),
-        tombstones: snapshot.tombstones
+        tombstones: snapshot.tombstones,
+        itemsTruncated: snapshot.itemsTruncated
     )
 }
 
