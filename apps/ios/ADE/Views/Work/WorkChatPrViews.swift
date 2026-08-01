@@ -5,6 +5,8 @@ struct WorkChatPrBadgeModel: Equatable {
   let title: String
   let state: String
   let checksStatus: String?
+  /// Host-supplied explanation for a non-obvious checks rollup (ADE-135).
+  let checksReason: String?
   let reviewStatus: String?
   let updatedAt: String
   let stack: GitHubPrStackMembership?
@@ -17,6 +19,7 @@ func workChatPrBadgeModel(tag: LanePrTag?, pr: PullRequestListItem?, summary: Pr
     title: tag.title,
     state: tag.state,
     checksStatus: pr?.checksStatus ?? summary?.checksStatus,
+    checksReason: pr?.checksReason ?? summary?.checksReason,
     reviewStatus: pr?.reviewStatus ?? summary?.reviewStatus,
     updatedAt: tag.updatedAt,
     stack: tag.stack ?? pr?.stack ?? summary?.stack
@@ -31,14 +34,23 @@ struct WorkChatPrActivePopup: View {
     lanePullRequestTint(badge.state)
   }
 
-  private var ciSymbol: String? {
+  /// ADE-135: `notRun` draws a hollow dashed ring rather than a symbol, so an
+  /// absent CI result never borrows the vocabulary of a pass or a failure.
+  private enum CiGlyph: Equatable {
+    case symbol(String)
+    case notRun
+  }
+
+  private var ciGlyph: CiGlyph? {
     switch badge.checksStatus {
     case "passing":
-      return "checkmark.circle.fill"
+      return .symbol("checkmark.circle.fill")
     case "failing":
-      return "xmark.circle.fill"
+      return .symbol("xmark.circle.fill")
     case "pending":
-      return "clock.fill"
+      return .symbol("clock.fill")
+    case "not_run":
+      return .notRun
     default:
       return nil
     }
@@ -46,7 +58,9 @@ struct WorkChatPrActivePopup: View {
 
   private var accessibilityText: String {
     var parts = [badge.label, lanePrStateLabel(badge.state)]
-    if let checksStatus = badge.checksStatus, !checksStatus.isEmpty {
+    if badge.checksStatus == "not_run" {
+      parts.append(badge.checksReason ?? "No CI has run on this commit.")
+    } else if let checksStatus = badge.checksStatus, !checksStatus.isEmpty {
       parts.append("checks \(checksStatus)")
     }
     if let reviewStatus = badge.reviewStatus, !reviewStatus.isEmpty, reviewStatus != "none" {
@@ -73,9 +87,19 @@ struct WorkChatPrActivePopup: View {
       if let stack = badge.stack {
         GitHubStackPositionBadge(stack: stack, compact: true)
       }
-      if let ciSymbol {
-        Image(systemName: ciSymbol)
-          .font(.system(size: 10, weight: .bold))
+      if let ciGlyph {
+        switch ciGlyph {
+        case let .symbol(name):
+          Image(systemName: name)
+            .font(.system(size: 10, weight: .bold))
+        case .notRun:
+          Circle()
+            .strokeBorder(
+              ADEColor.textSecondary,
+              style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2.0, 2.4])
+            )
+            .frame(width: 11, height: 11)
+        }
       }
     }
   }
@@ -107,6 +131,10 @@ struct WorkChatPrDetailsSheet: View {
 
   private var checksStatus: String? {
     snapshot?.status?.checksStatus ?? pr?.checksStatus ?? summary?.checksStatus
+  }
+
+  private var checksReason: String? {
+    snapshot?.status?.checksReason ?? pr?.checksReason ?? summary?.checksReason
   }
 
   private var additions: Int {
@@ -199,7 +227,7 @@ struct WorkChatPrDetailsSheet: View {
 
       HStack(spacing: 10) {
         WorkChatPrChangesMetricCard(additions: additions, deletions: deletions)
-        WorkChatPrChecksMetricCard(status: checksStatus)
+        WorkChatPrChecksMetricCard(status: checksStatus, reason: checksReason)
       }
 
       if let errorMessage, !errorMessage.isEmpty {
@@ -384,6 +412,7 @@ private struct WorkChatPrChangesMetricCard: View {
 
 private struct WorkChatPrChecksMetricCard: View {
   let status: String?
+  let reason: String?
 
   private var normalized: String {
     status?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
@@ -391,6 +420,13 @@ private struct WorkChatPrChecksMetricCard: View {
 
   private var tint: Color {
     workChatPrChecksTint(normalized)
+  }
+
+  /// "Not run" alone invites the reader to assume a transient state, so ADE-135
+  /// carries the host's one-line explanation with it.
+  private var detail: String? {
+    guard normalized == "not_run" else { return nil }
+    return reason ?? "No CI has run on this commit."
   }
 
   var body: some View {
@@ -404,6 +440,13 @@ private struct WorkChatPrChecksMetricCard: View {
         .foregroundStyle(tint)
         .lineLimit(1)
         .minimumScaleFactor(0.78)
+
+      if let detail {
+        Text(detail)
+          .font(.system(size: 10.5))
+          .foregroundStyle(ADEColor.textMuted)
+          .fixedSize(horizontal: false, vertical: true)
+      }
     }
     .frame(maxWidth: .infinity, minHeight: 70, alignment: .leading)
     .padding(12)
@@ -498,6 +541,10 @@ private func workChatPrChecksSymbol(_ status: String) -> String {
     return "xmark.circle.fill"
   case "pending", "queued", "running", "in_progress":
     return "clock.fill"
+  // ADE-135: dashed circle, matching the hollow ring the PR row draws. Nothing
+  // verified the commit, so the slot reads as empty rather than as a verdict.
+  case "not_run":
+    return "circle.dashed"
   default:
     return "circle"
   }
@@ -511,6 +558,9 @@ private func workChatPrChecksTint(_ status: String) -> Color {
     return ADEColor.danger
   case "pending", "queued", "running", "in_progress":
     return ADEColor.warning
+  // Muted, never danger red: an absent result is a gap, not a red build.
+  case "not_run":
+    return ADEColor.textSecondary
   default:
     return ADEColor.textSecondary
   }
@@ -520,6 +570,8 @@ private func workChatPrChecksLabel(_ status: String) -> String {
   switch status {
   case "", "none", "unknown":
     return "None"
+  case "not_run":
+    return "Not run"
   case "passing", "passed", "success":
     return "Passing"
   case "failing", "failed", "failure", "error":

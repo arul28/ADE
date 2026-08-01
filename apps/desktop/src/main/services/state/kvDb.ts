@@ -2419,6 +2419,12 @@ function migrate(db: MigrationDb, rawDb: DatabaseSyncType) {
   // Denormalized so the merged view survives the snapshot purge on detach.
   safeAddColumn(db, "alter table pull_requests add column commit_count integer");
   safeAddColumn(db, "alter table pull_requests add column changed_files integer");
+  // ADE-135: one sentence explaining a non-obvious checks rollup, so every
+  // surface can say *why* CI is not green without re-deriving the logic.
+  safeAddColumn(db, "alter table pull_requests add column checks_reason text");
+  // Required contexts observed to have never reported, JSON-encoded, used to
+  // render ghost rows in the PR detail check list.
+  safeAddColumn(db, "alter table pull_requests add column checks_missing_required text");
 
   db.run("drop table if exists github_pr_cache");
 

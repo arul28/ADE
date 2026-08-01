@@ -1285,8 +1285,15 @@ const NORMAL_PRS: any[] = [
     153,
     "Onboarding wizard with step-by-step project setup",
     {
+      // ADE-135 fixture: the only PR here whose CI never ran. Three
+      // third-party apps reported success (see MOCK_CHECKS_BY_PR["pr-5"]) and
+      // GitHub Actions registered nothing, which is exactly the shape that
+      // used to render "CI passed · 3 jobs".
       state: "open",
-      checksStatus: "passing",
+      checksStatus: "not_run",
+      checksReason:
+        "3 checks reported, none from a CI provider. CI has not run on this commit.",
+      checksMissingRequired: ["ci / build"],
       reviewStatus: "none",
       additions: 620,
       deletions: 80,
@@ -1623,9 +1630,11 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       completedAt: now,
     },
   ],
+  // Three green rows, zero CI: a review bot, a preview deploy, and a comment
+  // bot. The rollup calls this "not_run" — the rows are real, the pass is not.
   "pr-5": [
     {
-      name: "CI / Build",
+      name: "CodeRabbit",
       status: "completed",
       conclusion: "success",
       detailsUrl: "#",
@@ -1633,7 +1642,7 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       completedAt: now,
     },
     {
-      name: "CI / Lint",
+      name: "Vercel — Preview",
       status: "completed",
       conclusion: "success",
       detailsUrl: "#",
@@ -1641,7 +1650,7 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       completedAt: now,
     },
     {
-      name: "CI / Unit Tests",
+      name: "changeset-bot",
       status: "completed",
       conclusion: "success",
       detailsUrl: "#",
@@ -1823,7 +1832,10 @@ const MOCK_STATUS_BY_PR: Record<string, any> = {
   "pr-5": {
     prId: "pr-5",
     state: "open",
-    checksStatus: "passing",
+    checksStatus: "not_run",
+    checksReason:
+      "3 checks reported, none from a CI provider. CI has not run on this commit.",
+    checksMissingRequired: ["ci / build"],
     reviewStatus: "none",
     isMergeable: true,
     mergeConflicts: false,

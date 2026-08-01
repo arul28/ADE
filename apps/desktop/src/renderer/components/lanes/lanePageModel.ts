@@ -38,6 +38,8 @@ export type LaneTabPrTag = {
   baseBranch?: string | null;
   headBranch?: string | null;
   checksStatus?: PrChecksStatus;
+  /** Why the rollup landed where it did; only set for non-obvious states. */
+  checksReason?: string | null;
   reviewStatus?: PrReviewStatus;
   additions?: number;
   deletions?: number;
@@ -286,6 +288,7 @@ function toLaneTabPrTagFromPrSummary(pr: PrSummary): LaneTabPrTag {
     baseBranch: pr.baseBranch,
     headBranch: pr.headBranch,
     checksStatus: pr.checksStatus,
+    checksReason: pr.checksReason ?? null,
     reviewStatus: pr.reviewStatus,
     additions: pr.additions,
     deletions: pr.deletions,
@@ -328,6 +331,7 @@ function mergeLaneTabPrTags(base: LaneTabPrTag, secondary: LaneTabPrTag | null):
     baseBranch: base.baseBranch ?? secondary.baseBranch,
     headBranch: base.headBranch ?? secondary.headBranch,
     checksStatus: base.checksStatus ?? secondary.checksStatus,
+    checksReason: base.checksReason ?? secondary.checksReason ?? null,
     reviewStatus: base.reviewStatus ?? secondary.reviewStatus,
     additions: base.additions ?? secondary.additions,
     deletions: base.deletions ?? secondary.deletions,

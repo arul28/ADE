@@ -3,6 +3,7 @@ import {
   ArrowClockwise,
   ArrowSquareOut,
   CheckCircle,
+  CircleDashed,
   CircleNotch,
   MinusCircle,
   XCircle,
@@ -34,6 +35,13 @@ export type PrChecksCardProps = {
    * done by `buildUnifiedChecks`).
    */
   fill?: boolean;
+  /**
+   * ADE-135: required contexts that never reported on this commit, in the order
+   * GitHub declared them. Rendered as dimmed placeholder rows in the same list
+   * as the real checks so a job that is simply absent reads as an unfilled slot
+   * rather than as nothing at all.
+   */
+  missingRequired?: readonly string[] | null;
 };
 
 type Bucket = "pass" | "fail" | "pending" | "skip";
@@ -91,7 +99,10 @@ export const PrChecksCard = memo(function PrChecksCard({
   onRerunChecks,
   actionBusy = false,
   fill = false,
+  missingRequired,
 }: PrChecksCardProps) {
+  // Order is meaningful (GitHub's declaration order), so this is never sorted.
+  const ghosts = missingRequired ?? [];
   const items = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
 
   const { passing, failing, pending, total } = useMemo(() => {
@@ -145,12 +156,36 @@ export const PrChecksCard = memo(function PrChecksCard({
         ) : null}
       </div>
 
-      {attention.length > 0 ? (
+      {attention.length > 0 || ghosts.length > 0 ? (
         <div
           className={fill ? "min-h-0 flex-1 overflow-y-auto" : undefined}
           style={{ borderTop: `1px solid ${COLORS.border}` }}
           data-testid="pr-checks-card-list"
         >
+          {/* Ghosts lead the list: a slot that was never filled outranks the
+              results that did arrive. */}
+          {ghosts.map((context) => (
+            <div
+              key={`missing:${context}`}
+              className="flex items-center gap-2 px-3 py-1.5"
+              data-testid="pr-checks-card-ghost-row"
+            >
+              <CircleDashed size={14} weight="bold" style={{ color: COLORS.textDim, flexShrink: 0 }} />
+              <span
+                className="min-w-0 flex-1 truncate text-[11px]"
+                style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
+                title={`${context} is required but has not reported on this commit`}
+              >
+                {context}
+              </span>
+              <span
+                className="text-[10px]"
+                style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
+              >
+                required · not reported
+              </span>
+            </div>
+          ))}
           {attention.map((item) => {
             const bucket = bucketOf(item);
             const rerunTarget: PrRerunChecksTarget | null = item.source === "actions_job" && item.jobId != null

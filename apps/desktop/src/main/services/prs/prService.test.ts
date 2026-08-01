@@ -3336,7 +3336,10 @@ describe("prService.refresh", () => {
     const initialUpsert = db.run.mock.calls.find(([sql]: [unknown]) =>
       String(sql).includes("update pull_requests") && String(sql).includes("created_at = ?")
     );
-    expect(initialUpsert?.[1]?.[15]).toBe(githubCreatedAt);
+    // Positional, so it moves whenever upsertRow gains a column. The four
+    // ADE-135 checks_reason/checks_missing_required params sit between
+    // checks_status and review_status, pushing created_at from 15 to 19.
+    expect(initialUpsert?.[1]?.[19]).toBe(githubCreatedAt);
 
     db.run.mockClear();
     merged = true;

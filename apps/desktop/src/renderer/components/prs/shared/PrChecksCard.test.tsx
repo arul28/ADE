@@ -153,4 +153,28 @@ describe("PrChecksCard summary + bucketing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Re-run CI / e2e" }));
     expect(onRerunChecks).toHaveBeenCalledWith({ actionJobIds: [77] });
   });
+
+  // ADE-135: a required job that never reported is the finding. It has to be
+  // visible in the same list as the results that did arrive, in GitHub's order.
+  it("renders missing required contexts as ghost rows ahead of real checks", () => {
+    render(
+      <PrChecksCard
+        checks={[check({ name: "e2e", conclusion: "failure" })]}
+        actionRuns={[]}
+        missingRequired={["CI / build", "CI / lint"]}
+      />,
+    );
+
+    const ghosts = screen.getAllByTestId("pr-checks-card-ghost-row");
+    expect(ghosts.map((row) => (row.textContent ?? "").trim())).toEqual([
+      "CI / buildrequired · not reported",
+      "CI / lintrequired · not reported",
+    ]);
+    expect(rowNames()).toEqual(["e2e"]);
+  });
+
+  it("renders ghost rows even when nothing at all reported", () => {
+    render(<PrChecksCard checks={[]} actionRuns={[]} missingRequired={["CI / build"]} />);
+    expect(screen.getAllByTestId("pr-checks-card-ghost-row")).toHaveLength(1);
+  });
 });

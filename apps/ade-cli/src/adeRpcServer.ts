@@ -1860,12 +1860,16 @@ function requirePrService(runtime: AdeRuntime): NonNullable<AdeRuntime["prServic
   return runtime.prService;
 }
 
-function summarizePrChecks(checks: PrCheck[]): { overall: "failing" | "pending" | "passing"; counts: { passing: number; failing: number; pending: number; total: number } } {
+function summarizePrChecks(checks: PrCheck[]): { overall: "failing" | "pending" | "passing" | "not_run"; counts: { passing: number; failing: number; pending: number; total: number } } {
   const passing = checks.filter((check) => check.conclusion === "success").length;
   const failing = checks.filter((check) => check.conclusion === "failure").length;
   const pending = checks.filter((check) => check.status !== "completed").length;
 
-  let overall: "failing" | "pending" | "passing" = "passing";
+  // ADE-135: this started at "passing" and only moved off it for a failure or
+  // an in-flight run, so zero checks — or a suite that was entirely skipped —
+  // reported green. Nothing succeeding means nothing was verified, which is
+  // "not_run", not a pass.
+  let overall: "failing" | "pending" | "passing" | "not_run" = passing > 0 ? "passing" : "not_run";
   if (failing > 0) overall = "failing";
   else if (pending > 0) overall = "pending";
 

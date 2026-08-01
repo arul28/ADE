@@ -30,6 +30,10 @@ func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> Pr
     return .init(fail: 0, pending: 1, pass: 0, total: 1)
   case "passing", "success", "passed":
     return .init(fail: 0, pending: 0, pass: 1, total: 1)
+  // ADE-135: nothing verified the commit, so there is no synthetic row to invent
+  // in any bucket — least of all pass.
+  case "not_run":
+    return .init(fail: 0, pending: 0, pass: 0, total: 0)
   default:
     return .init(fail: 0, pending: 0, pass: 0, total: 0)
   }
@@ -40,8 +44,18 @@ func prChecksHasFailedSignal(checks: [PrCheck], overallChecksStatus: String?) ->
     || prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus).fail > 0
 }
 
-func prChecksEmptyStateCopy(overallChecksStatus: String?) -> (title: String, message: String) {
+func prChecksEmptyStateCopy(
+  overallChecksStatus: String?,
+  checksReason: String? = nil
+) -> (title: String, message: String) {
   switch overallChecksStatus?.lowercased() {
+  // ADE-135. Distinct from the default "No CI checks": there nothing was
+  // expected, here something was and it never arrived.
+  case "not_run":
+    return (
+      "No CI ran on this commit",
+      checksReason ?? "No CI has run on this commit."
+    )
   case "failing", "failure", "failed":
     return (
       "Checks failing",
@@ -68,6 +82,11 @@ func prChecksEmptyStateCopy(overallChecksStatus: String?) -> (title: String, mes
 struct PrChecksTab: View {
   let checks: [PrCheck]
   let overallChecksStatus: String?
+  /// Host-supplied explanation for a non-obvious rollup, e.g. "3 checks reported,
+  /// none from a CI provider."
+  let checksReason: String?
+  /// Required contexts that never reported, in the order GitHub declared them.
+  let missingRequired: [String]
   let actionRuns: [PrActionRun]
   let deployments: [PrDeployment]
   let canRerunChecks: Bool
@@ -77,6 +96,8 @@ struct PrChecksTab: View {
   init(
     checks: [PrCheck],
     overallChecksStatus: String? = nil,
+    checksReason: String? = nil,
+    missingRequired: [String] = [],
     actionRuns: [PrActionRun],
     deployments: [PrDeployment] = [],
     canRerunChecks: Bool,
@@ -85,6 +106,8 @@ struct PrChecksTab: View {
   ) {
     self.checks = checks
     self.overallChecksStatus = overallChecksStatus
+    self.checksReason = checksReason
+    self.missingRequired = missingRequired
     self.actionRuns = actionRuns
     self.deployments = deployments
     self.canRerunChecks = canRerunChecks
@@ -105,7 +128,13 @@ struct PrChecksTab: View {
   }
 
   private var emptyStateCopy: (title: String, message: String) {
-    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus)
+    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus, checksReason: checksReason)
+  }
+
+  /// True when the rollup itself is the finding: nothing verified the commit, so
+  /// the reason banner leads even if unrelated check rows did sync.
+  private var showsNotRunBanner: Bool {
+    overallChecksStatus?.lowercased() == "not_run" && !checks.isEmpty
   }
 
   var body: some View {
@@ -114,6 +143,10 @@ struct PrChecksTab: View {
         PrChecksProgressBar(stats: stats)
       }
       PrChecksStatStrip(stats: stats)
+
+      if showsNotRunBanner {
+        PrChecksNotRunBanner(reason: checksReason ?? "No CI has run on this commit.")
+      }
 
       if checks.isEmpty {
         ADEEmptyStateView(
@@ -125,6 +158,10 @@ struct PrChecksTab: View {
         ForEach(groups, id: \.kind) { group in
           PrChecksGroupCard(group: group)
         }
+      }
+
+      if !missingRequired.isEmpty {
+        PrChecksMissingRequiredCard(contexts: missingRequired)
       }
 
       // Outline rerun button.
@@ -269,6 +306,128 @@ private struct PrChecksStatTile: View {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .strokeBorder(tint.opacity(0.38), lineWidth: 0.75)
     )
+  }
+}
+
+// MARK: - Not-run banner
+
+/// ADE-135. Shown when checks synced but none of them verified the commit — the
+/// case that used to render as "CI passed". Muted, not red: this is a gap in what
+/// we know, not a failing build.
+private struct PrChecksNotRunBanner: View {
+  let reason: String
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Circle()
+        .strokeBorder(
+          ADEColor.textSecondary,
+          style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6])
+        )
+        .frame(width: 15, height: 15)
+        .padding(.top, 1)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text("No CI ran on this commit")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(reason)
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 11)
+    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .combine)
+  }
+}
+
+// MARK: - Missing required contexts
+
+/// Required contexts GitHub declared that never reported. Rendered as dimmed
+/// ghost rows in the order the API gave them (no sorting — that order is how the
+/// ruleset reads), so a job that never ran is visible as an empty slot rather
+/// than as nothing at all.
+private struct PrChecksMissingRequiredCard: View {
+  let contexts: [String]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text("REQUIRED · NOT REPORTED")
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .tracking(1.2)
+          .foregroundColor(ADEColor.textSecondary)
+        Spacer(minLength: 12)
+        Text("\(contexts.count) missing")
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 4)
+      .padding(.vertical, 4)
+
+      VStack(spacing: 0) {
+        ForEach(Array(contexts.enumerated()), id: \.offset) { index, context in
+          if index > 0 {
+            Divider().overlay(ADEColor.glassBorder)
+          }
+          PrChecksMissingRequiredRow(context: context)
+        }
+      }
+      .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+    }
+  }
+}
+
+private struct PrChecksMissingRequiredRow: View {
+  let context: String
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      // Same hollow dashed ring as the PR row card: an empty slot where a result
+      // should be.
+      ZStack {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(ADEColor.textSecondary.opacity(0.08))
+        Circle()
+          .strokeBorder(
+            ADEColor.textSecondary,
+            style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2.0, 2.4])
+          )
+          .frame(width: 12, height: 12)
+      }
+      .frame(width: 22, height: 22)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(context)
+          .font(.system(.footnote, design: .monospaced).weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+        Text("required · not reported")
+          .font(.system(size: 10, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .opacity(0.72)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(context), required, not reported")
   }
 }
 

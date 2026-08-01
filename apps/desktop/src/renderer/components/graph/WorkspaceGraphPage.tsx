@@ -100,7 +100,8 @@ import {
   nodeDimensions,
   branchNameFromRef,
   globToRegExp,
-  collectDescendants
+  collectDescendants,
+  prChecksLabel
 } from "./graphHelpers";
 import {
   buildDefaultFilter,
@@ -2092,6 +2093,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
         url: pr.githubUrl,
         state: pr.state,
         checksStatus: pr.checksStatus,
+        checksReason: pr.checksReason ?? null,
         reviewStatus: pr.reviewStatus,
         lastSyncedAt: pr.lastSyncedAt ?? null,
         lastActivityAt: pr.updatedAt,
@@ -3291,7 +3293,12 @@ function GraphInner({ active = true }: { active?: boolean }) {
             const pr = data?.pr ?? null;
             const prLines = pr
               ? [
-                  `PR #${pr.number} · ${pr.state} · checks: ${pr.checksStatus} · reviews: ${pr.reviewStatus}`,
+                  `PR #${pr.number} · ${pr.state} · checks: ${prChecksLabel(pr.checksStatus)} · reviews: ${pr.reviewStatus}`,
+                  // Only shown when the rollup has something to explain, which
+                  // in practice means a not-run or a held-back pending.
+                  pr.checksStatus === "not_run"
+                    ? pr.checksReason ?? "No CI has run on this commit."
+                    : null,
                   `${pr.reviewCount} reviews · ${pr.commentCount} comments${pr.behindBaseBy != null ? ` · behind ${pr.behindBaseBy}` : ""}`,
                   pr.title ? pr.title : null,
                   pr.lastActivityAt ? `activity ${toRelativeTime(pr.lastActivityAt)}` : null,

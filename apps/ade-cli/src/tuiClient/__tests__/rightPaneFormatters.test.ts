@@ -206,6 +206,31 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("WAIT lint");
   });
 
+  // ADE-135: three third-party successes and no CI producer used to summarize
+  // as "3 passing". The rollup's verdict outranks the row count.
+  it("renders a not-run rollup honestly even when every row is green", () => {
+    const body = formatPrChecks({
+      checksStatus: "not_run",
+      checksReason: "3 checks reported, none from a CI provider. CI has not run on this commit.",
+      checks: [
+        { name: "CodeRabbit", status: "completed", conclusion: "success" },
+        { name: "Vercel — Preview", status: "completed", conclusion: "success" },
+        { name: "changeset-bot", status: "completed", conclusion: "success" },
+      ],
+    });
+
+    expect(body).toContain("CI: not run");
+    expect(body).not.toContain("3 passing");
+  });
+
+  it("reports a fully skipped suite as not run", () => {
+    const body = formatPrChecks([
+      { name: "ci / unit", status: "completed", conclusion: "skipped" },
+    ]);
+
+    expect(body).toContain("CI: not run");
+  });
+
   it("summarizes PR review comments and threads", () => {
     const body = formatPrComments({
       summary: { checksStatus: "passing", actionableComments: 2 },
@@ -222,6 +247,9 @@ describe("rightPaneFormatters", () => {
     });
 
     expect(body).toContain("PR comments · passing · 2 actionable");
+    expect(
+      formatPrComments({ summary: { checksStatus: "not_run", actionableComments: 0 } }),
+    ).toContain("CI: not run");
     expect(body).toContain("open src/index.ts:12");
     expect(body).toContain("reviewer: Please handle the loading state.");
     expect(body).not.toContain("\"reviewThreads\"");

@@ -6,6 +6,7 @@ import {
   CheckCircle,
   XCircle,
   Clock,
+  MinusCircle,
   CaretRight,
   GithubLogo,
   Copy,
@@ -55,6 +56,11 @@ function checksIcon(status: PrSummary["checksStatus"], state: PrSummary["state"]
       return <XCircle size={10} weight="fill" className="text-red-400/80" />;
     case "pending":
       return <Clock size={10} weight="fill" className="text-amber-400/80 animate-pulse" />;
+    // ADE-135: rendered, but muted and never green — nothing verified this
+    // commit. Returning null here (the old `default`) hid the finding entirely
+    // and left the pill looking identical to a repo with no CI.
+    case "not_run":
+      return <MinusCircle size={10} weight="fill" className="text-fg/40" />;
     default:
       return null;
   }
@@ -92,10 +98,16 @@ function formatRelativeTime(iso: string | null | undefined): string | null {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
-function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; running: number; total: number } {
+function summarizeChecks(
+  checks: PrCheck[],
+): { passed: number; failed: number; running: number; skipped: number; total: number } {
   let passed = 0;
   let failed = 0;
   let running = 0;
+  // ADE-135: `skipped` used to be counted as `passed`, so a PR whose whole
+  // suite was skipped rendered a green "3" here. A skipped job verified
+  // nothing; it gets its own bucket and never colours the pill green.
+  let skipped = 0;
   for (const c of checks) {
     switch (pipelineStateOf(c)) {
       case "running":
@@ -103,15 +115,17 @@ function summarizeChecks(checks: PrCheck[]): { passed: number; failed: number; r
         running += 1;
         break;
       case "passed":
-      case "skipped":
         passed += 1;
+        break;
+      case "skipped":
+        skipped += 1;
         break;
       case "failed":
         failed += 1;
         break;
     }
   }
-  return { passed, failed, running, total: checks.length };
+  return { passed, failed, running, skipped, total: checks.length };
 }
 
 // ---------------------------------------------------------------------------
@@ -461,7 +475,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                 </span>
               ) : null}
               {summary.passed === 0 && summary.failed === 0 && summary.running === 0 ? (
-                <span className="text-fg/35">{summary.total} check{summary.total === 1 ? "" : "s"}</span>
+                // Every row settled without verifying anything (all skipped or
+                // neutral). Name that instead of a bare count that reads neutral.
+                <span className="text-fg/35" title="No CI has run on this commit.">
+                  {summary.skipped === summary.total ? "not run" : `${summary.total} check${summary.total === 1 ? "" : "s"}`}
+                </span>
               ) : null}
             </span>
           ) : (

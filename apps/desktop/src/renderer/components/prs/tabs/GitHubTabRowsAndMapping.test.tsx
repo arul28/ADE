@@ -8,6 +8,7 @@ import type {
   CreateLaneFromPrBranchResult,
   CreateLaneFromPrBranchPreflightResult,
   GitHubPrSnapshot,
+  PrSummary,
 } from "../../../../shared/types";
 
 vi.mock("react-resizable-panels", async () => {
@@ -81,6 +82,34 @@ describe("GitHubTab rows and mapping", () => {
     await user.click(githubButton);
     expect(window.ade.app.openExternal).toHaveBeenCalledWith(item.githubUrl);
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  // ADE-135: `not_run` means nothing verified the commit. The row must show the
+  // hollow ring and say why, rather than rendering nothing (which is how three
+  // bot successes came to read as "CI passed").
+  it("shows a hollow ring carrying the rollup reason when no CI ran", () => {
+    const item = makeGitHubPr({});
+    const linkedPr = {
+      checksStatus: "not_run",
+      checksReason: "No CI has run on this commit — 3 apps reported, none of them CI.",
+      reviewStatus: "approved",
+    } as unknown as PrSummary;
+
+    render(<GitHubTabPrRow item={item} selected={false} linkedPr={linkedPr} onSelect={vi.fn()} />);
+
+    expect(screen.getByLabelText("No CI has run").title).toBe(
+      "No CI has run on this commit — 3 apps reported, none of them CI.",
+    );
+  });
+
+  it("falls back to generic copy when the rollup gave no reason", () => {
+    const linkedPr = { checksStatus: "not_run", checksReason: null } as unknown as PrSummary;
+
+    render(
+      <GitHubTabPrRow item={makeGitHubPr({})} selected={false} linkedPr={linkedPr} onSelect={vi.fn()} />,
+    );
+
+    expect(screen.getByLabelText("No CI has run").title).toBe("No CI has run on this commit.");
   });
 
   it("shows a running CI indicator for PR cards with pending checks", async () => {

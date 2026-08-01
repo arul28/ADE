@@ -38,6 +38,16 @@ describe("getPrToastTone", () => {
     expect(getPrToastTone("merge_ready")).toBe("success");
   });
 
+  // ADE-135: a green "ready to merge" toast is what a human — or a /ship loop —
+  // reads as "the suite is fine". It must not fire when nothing ran.
+  it("does not celebrate merge_ready when no CI ran on the commit", () => {
+    expect(getPrToastTone("merge_ready", "not_run")).toBe("info");
+  });
+
+  it("keeps merge_ready green when checks actually passed", () => {
+    expect(getPrToastTone("merge_ready", "passing")).toBe("success");
+  });
+
   it("returns info for unknown kinds", () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     expect(getPrToastTone("some_future_kind" as any)).toBe("info");
@@ -78,6 +88,11 @@ describe("getPrToastHeadline", () => {
 describe("getPrToastSummary", () => {
   it("returns informative summary text", () => {
     expect(getPrToastSummary(baseEvent)).toBe("One or more required CI checks failed on this pull request.");
+  });
+
+  it("names the missing CI in a merge-ready summary", () => {
+    const event = { ...baseEvent, kind: "merge_ready" as const, checksStatus: "not_run" as const, message: "Ready to merge." };
+    expect(getPrToastSummary(event)).toBe("Ready to merge. No CI has run on this commit.");
   });
 
   it("falls back to default text when message is empty", () => {

@@ -1457,7 +1457,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
                 const toastLane = lanes.find((lane) => lane.id === toast.event.laneId) ?? null;
                 const laneName = toastLane?.name ?? toast.event.laneId;
                 const laneColor = toastLane?.color ?? null;
-                const tone = getPrToastTone(toast.event.kind);
+                const tone = getPrToastTone(toast.event.kind, toast.event.checksStatus);
                 const toneClasses = getPrToastToneClasses(tone);
                 const Icon = getPrToastIcon(toast.event.kind);
                 const headline = getPrToastHeadline(toast.event);

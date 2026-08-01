@@ -15,6 +15,7 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { isCiProducerCheck } from "../../../shared/prChecksRollup";
 import { latestRunsByWorkflow } from "./workflowGraph";
 
 export type PrCardChange = {
@@ -95,50 +96,80 @@ function compactCardText(value: string, maxChars = 480): string {
   return compact.length <= maxChars ? compact : `${compact.slice(0, maxChars - 1).trimEnd()}…`;
 }
 
-/** Rows a CI card shows before it starts counting. Kept small; the rest is `+N more`. */
+/** Rows the CI group shows before it starts counting. The rest is `+N more`. */
 const CI_ROW_CAP = 3;
+/** The non-CI group is context, not the headline, so it gets fewer rows. */
+const OTHER_ROW_CAP = 2;
+/** Required contexts named inline before the list collapses into `+N more`. */
+const MISSING_REQUIRED_CAP = 3;
 
-function ciRows(runs: PrActionRun[], checks: PrCheck[]): {
-  rows: AdeCardRow[];
-  progress: AdeCardProgress;
-  other: number;
-  truncated: number;
-} {
-  const jobs = runs.flatMap((run) => run.jobs);
-  const items: Array<PrActionJob | PrCheck> = jobs.length > 0 ? jobs : checks;
-  const progress: AdeCardProgress = {
-    passed: 0,
-    failed: 0,
-    running: 0,
-    queued: 0,
-  };
+type RankedItem = { item: PrActionJob | PrCheck; bucket: JobBucket };
 
-  const ranked = items
+function rankItems(items: Array<PrActionJob | PrCheck>): RankedItem[] {
+  return items
     .map((item) => ({ item, bucket: itemBucket(item) }))
     .sort((left, right) => (
       jobPriority(left.bucket) - jobPriority(right.bucket)
       || left.item.name.localeCompare(right.item.name)
     ));
-  for (const entry of ranked) {
+}
+
+function rowTone(bucket: JobBucket): AdeCardRow["tone"] {
+  if (bucket === "failed") return "warning";
+  if (bucket === "passed") return "success";
+  if (bucket === "running" || bucket === "queued") return "accent";
+  return "neutral";
+}
+
+function toRows(entries: RankedItem[], group: "CI" | "Other"): AdeCardRow[] {
+  return entries.map(({ item, bucket }) => ({
+    icon: jobIcon(bucket),
+    text: item.name,
+    // The group name travels in `detail` so every surface — desktop, TUI, iOS —
+    // shows the split without needing a new payload field to render headers.
+    detail: `${group} · ${bucket}`,
+    tone: rowTone(bucket),
+  }));
+}
+
+function countBuckets(entries: RankedItem[]): { progress: AdeCardProgress; other: number } {
+  const progress: AdeCardProgress = { passed: 0, failed: 0, running: 0, queued: 0 };
+  for (const entry of entries) {
     if (entry.bucket in progress) progress[entry.bucket as keyof AdeCardProgress] += 1;
   }
   return {
     progress,
-    other: ranked.filter((entry) => entry.bucket === "skipped" || entry.bucket === "unknown").length,
-    truncated: Math.max(0, ranked.length - CI_ROW_CAP),
-    rows: ranked.slice(0, CI_ROW_CAP).map(({ item, bucket }) => ({
-      icon: jobIcon(bucket),
-      text: item.name,
-      detail: bucket,
-      tone: bucket === "failed"
-        ? "warning"
-        : bucket === "passed"
-          ? "success"
-          : bucket === "running" || bucket === "queued"
-            ? "accent"
-            : "neutral",
-    })),
+    other: entries.filter((entry) => entry.bucket === "skipped" || entry.bucket === "unknown").length,
   };
+}
+
+/**
+ * Split everything we fetched into the CI group and the everything-else group.
+ *
+ * Actions jobs are CI by construction — they only exist because a workflow run
+ * produced them. Check rows are classified by `isCiProducerCheck`, the same
+ * predicate the rollup uses, so the headline and the rows can never go back to
+ * disagreeing about what counts as CI. A check with no `appSlug` (older row, or
+ * a producer GitHub did not name) lands in "Other": an unattributable success
+ * is not evidence that CI ran. Any check whose name a job already covers is
+ * dropped so the same work is not counted twice once both endpoints answered.
+ */
+function groupCheckItems(runs: PrActionRun[], checks: PrCheck[]): {
+  ci: RankedItem[];
+  other: RankedItem[];
+} {
+  const jobs = runs.flatMap((run) => run.jobs);
+  const jobNames = new Set(jobs.map((job) => job.name));
+  const remaining = checks.filter((check) => !jobNames.has(check.name));
+  return {
+    ci: rankItems([...jobs, ...remaining.filter((check) => isCiProducerCheck(check.appSlug))]),
+    other: rankItems(remaining.filter((check) => !isCiProducerCheck(check.appSlug))),
+  };
+}
+
+function formatContextList(contexts: readonly string[], limit = MISSING_REQUIRED_CAP): string {
+  if (contexts.length <= limit) return contexts.join(", ");
+  return `${contexts.slice(0, limit).join(", ")}, +${contexts.length - limit} more`;
 }
 
 export function selectPrCardSession(
@@ -176,40 +207,97 @@ export function buildPrCiCard(args: {
     || run?.headSha?.trim()
     || `${pr.githubPrNumber}:unknown-head`;
   const episode = `${episodeHead}:${attempt}`;
-  const { rows, progress, other, truncated } = ciRows(latestRuns, checks);
+  const groups = groupCheckItems(latestRuns, checks);
+  // The headline is the CI group's story. `progress` follows it for the same
+  // reason: mixing producers is what let three third-party successes render as
+  // "CI passed · 3 jobs" on PR #988 while GitHub Actions never ran.
+  const { progress, other } = countBuckets(groups.ci);
+  const ciTotal = groups.ci.length;
+  const otherTotal = groups.other.length;
   const state = pr.checksStatus === "pending" ? "live" : "terminal";
   const title = pr.checksStatus === "passing"
     ? "CI passed"
     : pr.checksStatus === "failing"
       ? "CI failed"
-      : "CI is running";
+      : pr.checksStatus === "pending"
+        ? "CI is running"
+        : pr.checksStatus === "not_run"
+          // Checks exist or are expected, but nothing verified this commit. The
+          // old fallback said "CI is running" here, which was its own lie.
+          ? "CI has not run"
+          : "No checks reported";
+  // `not_run`/`none` are neutral on purpose: the card reports an absence, and
+  // an absence is not an alarm. Only a real red job earns the amber treatment.
   const tone = pr.checksStatus === "failing"
     ? "warning"
     : pr.checksStatus === "passing"
       ? "success"
-      : "accent";
-  const total = progress.passed + progress.failed + progress.running + progress.queued + other;
+      : pr.checksStatus === "pending"
+        ? "accent"
+        : "neutral";
+  const reason = pr.checksReason?.trim() || null;
+  const missingRequired = (pr.checksMissingRequired ?? []).map((c) => c.trim()).filter(Boolean);
   // A partial response is still degraded: the surviving endpoint's rows remain
   // useful, but they are not the complete job inventory. Keep the warning and
   // Retry action alongside those rows instead of presenting them as complete.
   const degraded = fetchError != null;
+
+  const rows: AdeCardRow[] = [
+    ...(missingRequired.length > 0
+      ? [{
+          icon: "queued" as const,
+          text: `${missingRequired.length === 1 ? "Required check" : "Required checks"} with no result: ${formatContextList(missingRequired)}`,
+          detail: "required",
+          tone: "neutral" as const,
+        }]
+      : []),
+    ...toRows(groups.ci.slice(0, CI_ROW_CAP), "CI"),
+    // Say the quiet part out loud when the other group is carrying the card:
+    // without this row, three green third-party rows read as three green CI rows.
+    ...(ciTotal === 0 && !degraded && (otherTotal > 0 || pr.checksStatus === "not_run")
+      ? [{
+          icon: "info" as const,
+          text: "No CI checks reported on this commit",
+          detail: "CI",
+          tone: "neutral" as const,
+        }]
+      : []),
+    ...toRows(groups.other.slice(0, OTHER_ROW_CAP), "Other"),
+  ];
+  const truncated = Math.max(0, ciTotal - CI_ROW_CAP) + Math.max(0, otherTotal - OTHER_ROW_CAP);
+
+  const metrics: AdeCardPayload["metrics"] = degraded && ciTotal === 0 && otherTotal === 0
+    ? []
+    : ciTotal > 0
+      ? [
+          { label: "passed", value: String(progress.passed), tone: "success" },
+          { label: "failed", value: String(progress.failed), tone: "warning" },
+          { label: "active", value: String(progress.running + progress.queued), tone: "accent" },
+          ...(other > 0 ? [{ label: "other", value: String(other), tone: "neutral" as const }] : []),
+          ...(otherTotal > 0
+            ? [{ label: "other checks", value: String(otherTotal), tone: "neutral" as const }]
+            : []),
+        ]
+      : otherTotal > 0
+        // The whole point of the split: "CI 0 / other checks 3" is the honest
+        // reading of a PR that only preview and review apps reported on.
+        ? [
+            { label: "CI checks", value: "0", tone: "neutral" as const },
+            { label: "other checks", value: String(otherTotal), tone: "neutral" as const },
+          ]
+        : [{ label: "status", value: pr.checksStatus, tone }];
 
   return {
     cardId: `pr-ci:${pr.id}:${episode}`,
     variant: "pr_ci",
     state,
     title,
-    subtitle: `PR #${pr.githubPrNumber}${run?.name ? ` · ${run.name}` : ""}`,
-    metrics: total > 0
-      ? [
-          { label: "passed", value: String(progress.passed), tone: "success" },
-          { label: "failed", value: String(progress.failed), tone: "warning" },
-          { label: "active", value: String(progress.running + progress.queued), tone: "accent" },
-          ...(other > 0 ? [{ label: "other", value: String(other), tone: "neutral" as const }] : []),
-        ]
-      : degraded
-        ? []
-        : [{ label: "status", value: pr.checksStatus, tone }],
+    // The reason explains the headline, so it outranks the run name for the one
+    // line of subtitle the card gets.
+    subtitle: reason
+      ? `PR #${pr.githubPrNumber} · ${compactCardText(reason, 160)}`
+      : `PR #${pr.githubPrNumber}${run?.name ? ` · ${run.name}` : ""}`,
+    metrics,
     rows,
     progress,
     ...(truncated > 0 ? { rowsTruncated: truncated } : {}),
@@ -222,7 +310,7 @@ export function buildPrCiCard(args: {
     navTarget: prNavTarget(pr, "checks"),
     fallbackText: degraded
       ? `PR #${pr.githubPrNumber} checks are ${pr.checksStatus}; job detail unavailable in part (${fetchError}).`
-      : `PR #${pr.githubPrNumber} ${title.toLowerCase()}.`,
+      : `PR #${pr.githubPrNumber} ${title.toLowerCase()}.${reason ? ` ${compactCardText(reason, 160)}` : ""}`,
   };
 }
 

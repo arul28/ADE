@@ -57,6 +57,10 @@ export function buildGraphPrOverlay(args: {
     url: pr.githubUrl,
     state: liveStatus?.state ?? pr.state,
     checksStatus: liveStatus?.checksStatus ?? pr.checksStatus,
+    // Reason travels with the status it explains: taking one from the live
+    // status and the other from the stored summary would caption a `not_run`
+    // with a stale sentence about a state it no longer is.
+    checksReason: (liveStatus ? liveStatus.checksReason : pr.checksReason) ?? null,
     reviewStatus: liveStatus?.reviewStatus ?? pr.reviewStatus,
     lastSyncedAt: pr.lastSyncedAt ?? null,
     lastActivityAt,

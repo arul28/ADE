@@ -112,6 +112,16 @@ function statusWord(status: unknown, conclusion?: unknown): "OK" | "FAIL" | "WAI
   return raw.toUpperCase();
 }
 
+/**
+ * Human rendering of a `PrChecksStatus` in a header line. Only `not_run` is
+ * rewritten: it is the one value a reader would otherwise see as a raw enum,
+ * and "not run" is the whole point — nothing verified the commit (ADE-135).
+ */
+function checksStatusWord(status: string | null): string | null {
+  if (!status) return null;
+  return status === "not_run" ? "CI: not run" : status;
+}
+
 function formatCount(noun: string, count: number): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -328,8 +338,15 @@ export function formatPrMergeState(value: unknown): string {
 }
 
 export function formatPrChecks(value: unknown): string {
+  const root = unwrapStructured(value);
+  const rollup = isRecord(root) ? pickString(root, ["checksStatus"]) : null;
+  const reason = isRecord(root) ? pickString(root, ["checksReason"]) : null;
   const checks = firstRecordArray(value, ["checks", "items", "results"]);
-  if (!checks.length) return "No PR checks.";
+  if (!checks.length) {
+    return rollup === "not_run"
+      ? `CI: not run — ${reason ?? "No CI has run on this commit."}`
+      : "No PR checks.";
+  }
   let ok = 0;
   let fail = 0;
   let wait = 0;
@@ -339,9 +356,15 @@ export function formatPrChecks(value: unknown): string {
     else if (status === "FAIL") fail += 1;
     else if (status === "WAIT") wait += 1;
   }
-  const summary = [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]
-    .filter(Boolean)
-    .join(" · ") || `${checks.length} check${checks.length === 1 ? "" : "s"}`;
+  // ADE-135: rows can all be green and still verify nothing (third-party apps
+  // only, or an all-skipped suite). The rollup is the authority when it says
+  // so; otherwise fall back to "nothing passed" as the same signal.
+  const notRun = rollup === "not_run" || (ok === 0 && fail === 0 && wait === 0);
+  const summary = notRun
+    ? `CI: not run${reason ? ` — ${reason}` : ""}`
+    : [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]
+      .filter(Boolean)
+      .join(" · ") || `${checks.length} check${checks.length === 1 ? "" : "s"}`;
   return [
     `PR checks · ${summary}`,
     "",
@@ -396,7 +419,7 @@ export function formatPrComments(value: unknown): string {
   const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
   const comments = firstRecordArray(root, ["comments", "issueComments"]);
   const headerParts = [
-    summary ? pickString(summary, ["checksStatus"]) : null,
+    summary ? checksStatusWord(pickString(summary, ["checksStatus"])) : null,
     summary ? `${asString(summary.actionableComments) ?? "0"} actionable` : null,
   ].filter(Boolean);
   const lines = [`PR comments${headerParts.length ? ` · ${headerParts.join(" · ")}` : ""}`];
