@@ -229,7 +229,8 @@ async function runGitOnce(args: string[], opts: GitRunOptions): Promise<GitRunRe
     const child = spawn(executable, args, {
       cwd: opts.cwd,
       env: { ...process.env, ...(opts.env ?? {}) },
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     if (typeof child.pid === "number" && child.pid > 0) {
       activeGitPids.add(child.pid);

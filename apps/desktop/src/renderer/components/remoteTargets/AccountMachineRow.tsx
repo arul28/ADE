@@ -48,10 +48,10 @@ function accountMachineStatusLabel(
   connectionState: ReturnType<typeof accountMachineConnectionState>,
 ): string {
   if (connectionState === "unreachable") {
-    return "Can't reach this Mac right now — make sure it's online and up to date.";
+    return "Can't reach this computer right now — make sure it's online and up to date.";
   }
   if (machine.online) return "Ready to connect";
-  return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that Mac`;
+  return `${relativeLastSeen(machine.lastSeenAt)} · Open ADE on that computer`;
 }
 
 export function AccountMachineRow({
@@ -95,7 +95,7 @@ export function AccountMachineRow({
       setRenaming(false);
       onRenamed?.();
     } catch (error) {
-      setRenameError(error instanceof Error ? error.message : "Couldn't rename this Mac.");
+      setRenameError(error instanceof Error ? error.message : "Couldn't rename this computer.");
     } finally {
       setRenameBusy(false);
     }
@@ -275,12 +275,12 @@ export function AccountMachineRow({
       {canExplain && detailOpen ? (
         <div id={`account-machine-detail-${row.id}`} style={inlineDetailStyle}>
           <div style={{ color: COLORS.textPrimary, fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600 }}>
-            {needsSetup ? "Finish setup on the other Mac" : relativeLastSeen(machine.lastSeenAt)}
+            {needsSetup ? "Finish setup on the other computer" : relativeLastSeen(machine.lastSeenAt)}
           </div>
           <div style={helperTextStyle}>
             {needsSetup
-              ? "On that Mac, open ADE and sign in to this same ADE account. Once it's online and up to date, it appears here automatically."
-              : "This Mac hasn't checked in recently. Open ADE on it, then try again."}
+              ? "On that computer, open ADE and sign in to this same ADE account. Once it's online and up to date, it appears here automatically."
+              : "This computer hasn't checked in recently. Open ADE on it, then try again."}
           </div>
           {!needsSetup && machine.reachableEndpoints.length > 0 ? (
             <div style={{ display: "grid", gap: 4 }}>

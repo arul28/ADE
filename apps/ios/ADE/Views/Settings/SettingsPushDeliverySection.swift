@@ -117,7 +117,7 @@ struct SettingsPushDeliverySection: View {
         if !snapshot.canEnableNotifications {
             VStack(alignment: .leading, spacing: 6) {
                 enableNotificationsButton(label: "Enable notifications", enabled: false, action: {})
-                Text("Sign in or pair a Mac to enable notifications")
+                Text("Sign in or pair a computer to enable notifications")
                     .font(.caption)
                     .foregroundStyle(ADEColor.textMuted)
                     .padding(.horizontal, 4)
@@ -437,7 +437,7 @@ struct SettingsPushDeliverySection: View {
 
     private var refreshButtonLabel: String {
         if pushService.isRefreshingStatus { return "Checking relay…" }
-        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect a Mac to refresh"
+        return snapshot.canRefreshRelayStatus ? "Refresh status" : "Connect a computer to refresh"
     }
 
     private var inlineStatusMessage: String? {

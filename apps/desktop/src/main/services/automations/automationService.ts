@@ -2419,7 +2419,8 @@ export function createAutomationService({
     const child = spawn(shellFile, shellArgs, {
       cwd: args.cwd,
       env: process.env,
-      stdio: ["ignore", "pipe", "pipe"]
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
     });
     let stdout = "";
     let stderr = "";

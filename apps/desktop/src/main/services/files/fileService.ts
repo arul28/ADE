@@ -372,7 +372,8 @@ async function runGitCheckIgnoreBatch(args: { cwd: string; paths: string[]; time
   return await new Promise<Set<string>>((resolve) => {
     const child = spawn("git", ["check-ignore", "--stdin"], {
       cwd: args.cwd,
-      stdio: ["pipe", "pipe", "ignore"]
+      stdio: ["pipe", "pipe", "ignore"],
+      windowsHide: true,
     });
 
     let settled = false;

@@ -6878,7 +6878,7 @@ describe("per-chat runtime routing", () => {
     });
   });
 
-  it("routes pinned lane and session lists to This Mac without rebinding the window", async () => {
+  it("routes pinned lane and session lists to This computer without rebinding the window", async () => {
     const { bridge, invoke } = await mountBridge();
 
     await bridge.lanes.list({ includeStatus: true }, machineA);
@@ -6982,7 +6982,7 @@ describe("per-chat runtime routing", () => {
     );
   });
 
-  it("streams a pinned This Mac chat while the window is remote-bound", async () => {
+  it("streams a pinned This computer chat while the window is remote-bound", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-27T18:02:00.500Z"));
     try {
@@ -6991,7 +6991,7 @@ describe("per-chat runtime routing", () => {
       const envelope = {
         sessionId: "chat-on-a",
         timestamp: "2026-07-27T18:02:00.000Z",
-        event: { type: "text", text: "from This Mac" },
+        event: { type: "text", text: "from This computer" },
       };
       invoke.mockImplementation(async (channel: string, arg?: unknown) => {
         if (channel === IPC.localRuntimeCallAction) {

@@ -50,11 +50,11 @@ const REOPEN_DELAY_MS = 700;
  */
 const FALLBACK_COPY: Record<AdeRecoveryErrorCode, { headline: string; body: string }> = {
   disk_full: {
-    headline: "Your Mac is out of storage",
+    headline: "Your computer is out of storage",
     body: "ADE needs a little free space to open this project safely. Free up some space, then run the repair.",
   },
   insufficient_headroom: {
-    headline: "Your Mac is very low on storage",
+    headline: "Your computer is very low on storage",
     body: "ADE keeps a small safety margin so your work is never lost. Free up some space, then run the repair.",
   },
   db_integrity: {

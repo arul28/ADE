@@ -156,11 +156,11 @@ describe("deriveLaneMachineOptions", () => {
     expect(studio?.repoMatch).toBe("matched");
     expect(studio?.project?.rootPath).toBe("/Users/x/ADE");
     expect(defaultLaneMachineId(options)).toBe("studio");
-    // This Mac is no longer the bound machine, and nothing proves the repo is here.
+    // This computer is no longer the bound machine, and nothing proves the repo is here.
     expect(options[0]?.repoMatch).toBe("unknown");
   });
 
-  it("resolves this Mac's checkout from open local project tabs", () => {
+  it("resolves this computer's checkout from open local project tabs", () => {
     const options = deriveLaneMachineOptions({
       connections: [connection({ id: "studio" })],
       boundTargetId: "studio",
@@ -263,7 +263,7 @@ describe("deriveLaneMachineOptions", () => {
     expect(studio?.repoMatch).not.toBe("matched");
   });
 
-  it("says the repo is missing from this Mac only when the local tabs are known", () => {
+  it("says the repo is missing from this computer only when the local tabs are known", () => {
     const withTabs = deriveLaneMachineOptions({
       connections: [connection({ id: "studio" })],
       boundTargetId: "studio",

@@ -62,7 +62,7 @@ describe("hosted Connections pane", () => {
         </MemoryRouter>,
       );
 
-      expect(await screen.findByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
+      expect(await screen.findByText("No computers yet. Choose Add machine to connect one.")).toBeTruthy();
       await expect(window.ade.remoteRuntime.getConnectionSnapshot()).resolves.toEqual({
         connections: [],
         connectedCount: 0,

@@ -234,7 +234,6 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import {
-  buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
   type WorkPtyLaunchArgs,
@@ -9091,25 +9090,6 @@ export function AgentChatPane({
     });
     if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
     const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-    const launch = buildTrackedCliLaunchCommand({
-      provider,
-      permissionMode,
-      ...(cliSessionId ? { sessionId: cliSessionId } : {}),
-      model: launchModel,
-      reasoningEffort: prepared.reasoningEffort,
-      ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
-        ? { fastMode: launchFastMode }
-        : {}),
-      initialPrompt: cliPrompt,
-      laneWorktreePath: targetLane.worktreePath ?? projectRoot,
-    });
-    const codexUsesPromptArg = provider === "codex" && runtimeModel === "gpt-5.3-codex";
-    const initialInput = launch.initialInput ?? (
-      provider === "codex" && !codexUsesPromptArg ? cliPrompt : undefined
-    );
-    const initialInputDelayMs = launch.initialInputDelayMs ?? (
-      initialInput && provider === "codex" && !codexUsesPromptArg ? 750 : undefined
-    );
     // Final checkpoint before the PTY/session is spawned: abort if the launch
     // timed out while building the launch command.
     assertActive?.();
@@ -9117,13 +9097,18 @@ export function AgentChatPane({
       laneId: targetLane.laneId,
       profile: provider,
       title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
-      startupCommand: launch.startupCommand,
       startupDelayMs: workCliStartupDelayMs,
-      ...(launch.command !== undefined ? { command: launch.command } : {}),
-      ...(launch.args !== undefined ? { args: launch.args } : {}),
-      ...(initialInput !== undefined ? { initialInput } : {}),
-      ...(initialInputDelayMs !== undefined ? { initialInputDelayMs } : {}),
-      ...(launch.env ? { env: launch.env } : {}),
+      runtimeCliLaunch: {
+        provider,
+        permissionMode,
+        ...(cliSessionId ? { sessionId: cliSessionId } : {}),
+        model: launchModel,
+        reasoningEffort: prepared.reasoningEffort,
+        ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
+          ? { fastMode: launchFastMode }
+          : {}),
+        initialPrompt: cliPrompt,
+      },
       tracked: true,
       disposition: mode,
       pin,

@@ -54,7 +54,7 @@ struct MobileAccessGateView: View {
                       Text("Checking account…")
                     }
                   } else {
-                    Text(accountSignedIn ? "View your Macs" : "Sign in")
+                    Text(accountSignedIn ? "View your computers" : "Sign in")
                   }
                 }
                 .font(.headline)
@@ -179,7 +179,7 @@ struct MobileAccessGateView: View {
     Task { @MainActor in
       accountConnectionError = nil
       guard let authorization = AccountService.shared.currentPairingAuthorization else {
-        accountConnectionError = "Your account session ended. Sign in again, then choose your Mac."
+        accountConnectionError = "Your account session ended. Sign in again, then choose your computer."
         return
       }
       let connected = await syncService.pairWithAccountMachine(
@@ -190,7 +190,7 @@ struct MobileAccessGateView: View {
         ADEHaptics.medium()
         onContinue()
       } else {
-        accountConnectionError = syncService.lastError ?? "ADE could not connect to that Mac. Try again."
+        accountConnectionError = syncService.lastError ?? "ADE could not connect to that computer. Try again."
       }
     }
   }

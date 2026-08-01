@@ -176,7 +176,11 @@ private struct LockScreenPriorityStatus {
         let metrics = [
             needsYou.isEmpty ? nil : Metric(id: "needs", label: "\(needsYou.count) need", symbol: "bell.fill"),
             live.isEmpty ? nil : Metric(id: "live", label: "\(live.count) live", symbol: "waveform.path.ecg"),
-            machines.isEmpty ? nil : Metric(id: "machines", label: "\(machines.count) Mac", symbol: "desktopcomputer"),
+            machines.isEmpty ? nil : Metric(
+                id: "machines",
+                label: machines.count == 1 ? "1 computer" : "\(machines.count) computers",
+                symbol: "desktopcomputer"
+            ),
         ].compactMap { $0 }
 
         guard let focus = ordered.first else {
@@ -199,8 +203,8 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .offline,
                 title: hideDetails
-                    ? "Mac offline"
-                    : (machines.count == 1 ? "\(focus.machine.name) offline" : "\(machines.count) Macs offline"),
+                    ? "Computer offline"
+                    : (machines.count == 1 ? "\(focus.machine.name) offline" : "\(machines.count) computers offline"),
                 detail: hideDetails ? "Open ADE for details" : "Last known work · \(focus.project.name)",
                 inlineText: "ADE · offline",
                 count: 0,
@@ -280,8 +284,8 @@ private struct LockScreenPriorityStatus {
             self = .init(
                 kind: .offline,
                 title: hideDetails
-                    ? "Mac offline"
-                    : "\((machine?.isEmpty == false ? machine : nil) ?? "Mac") offline",
+                    ? "Computer offline"
+                    : "\((machine?.isEmpty == false ? machine : nil) ?? "Computer") offline",
                 detail: minutes == 1 ? "Last update 1 minute ago" : "Last update \(minutes) minutes ago",
                 inlineText: "ADE · offline \(minutes)m",
                 count: 0,
@@ -408,7 +412,7 @@ private struct LockScreenPriorityStatus {
         } else if snapshot.connection.lowercased() == "disconnected" {
             self = .init(
                 kind: .offline,
-                title: "Mac offline",
+                title: "Computer offline",
                 detail: "Reconnect to update agents and PRs",
                 inlineText: "ADE · offline",
                 count: 0,

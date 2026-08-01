@@ -36,7 +36,7 @@ describe("ProjectTransitionErrorAlert", () => {
     useAppStore.setState({
       projectTransitionError: {
         code: "disk_full",
-        message: "Your Mac ran out of storage.",
+        message: "Your computer ran out of storage.",
         rootPath: "/tmp/recover-me",
       },
     });
@@ -51,13 +51,13 @@ describe("ProjectTransitionErrorAlert", () => {
     useAppStore.setState({
       projectTransitionError: {
         code: "disk_full",
-        message: "Your Mac ran out of storage.",
+        message: "Your computer ran out of storage.",
       },
     });
 
     render(<ProjectTransitionErrorAlert />);
 
-    expect(screen.getByRole("alert").textContent).toContain("Your Mac ran out of storage.");
+    expect(screen.getByRole("alert").textContent).toContain("Your computer ran out of storage.");
     expect(screen.getByRole("button", { name: "Dismiss project error" })).toBeTruthy();
   });
 });

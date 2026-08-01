@@ -203,15 +203,15 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByText(/you're in/i)).toBeNull();
   });
 
-  it("pins this Mac first with a badge and hides its removal menu", async () => {
+  it("pins this computer first with a badge and hides its removal menu", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");
 
     const rows = screen.getAllByText(/MacBook Pro|Studio/);
     expect(rows[0].textContent).toBe("MacBook Pro");
-    expect(screen.getByText("This Mac")).toBeTruthy();
+    expect(screen.getByText("This computer")).toBeTruthy();
 
-    // Only the other Mac exposes an options (removal) menu.
+    // Only the other computer exposes an options (removal) menu.
     expect(screen.queryByRole("button", { name: /Options for MacBook Pro/ })).toBeNull();
     expect(screen.getByRole("button", { name: /Options for Studio/ })).toBeTruthy();
   });
@@ -233,7 +233,7 @@ describe("AccountPage signed-in", () => {
     await waitFor(() => expect(document.activeElement).toBe(trigger));
   });
 
-  it("removes another Mac only after confirmation", async () => {
+  it("removes another computer only after confirmation", async () => {
     renderPage();
     await screen.findByText("Studio");
 
@@ -241,7 +241,7 @@ describe("AccountPage signed-in", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
 
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText(/Remove this Mac from your account\?/)).toBeTruthy();
+    expect(within(dialog).getByText(/Remove this computer from your account\?/)).toBeTruthy();
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));
@@ -251,13 +251,13 @@ describe("AccountPage signed-in", () => {
     renderPage();
     await screen.findByText("MacBook Pro");
 
-    expect(screen.getByText("Signed in on this Mac")).toBeTruthy();
+    expect(screen.getByText("Signed in on this computer")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Sign out" }));
 
     const dialog = screen.getByRole("dialog");
     expect(
       within(dialog).getByText(
-        "Signing out removes this Mac's access to your account and its account-connected machines. Devices paired directly with a code stay connected.",
+        "Signing out removes this computer's access to your account and its account-connected machines. Devices paired directly with a code stay connected.",
       ),
     ).toBeTruthy();
 
@@ -325,7 +325,7 @@ describe("AccountPage signed-in", () => {
 
     renderPage();
 
-    expect(await screen.findByText("Use the machine menu above to switch Macs.")).toBeTruthy();
+    expect(await screen.findByText("Use the machine menu above to switch computers.")).toBeTruthy();
     expect(screen.queryByText(/still connect from Connections/)).toBeNull();
   });
 });

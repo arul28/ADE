@@ -6986,6 +6986,7 @@ export function createPrService({
         cwd: opts.cwd,
         env: ghToken ? { ...process.env, GH_TOKEN: ghToken, GITHUB_TOKEN: ghToken } : process.env,
         stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
       });
 
       const finish = (code: number) => {

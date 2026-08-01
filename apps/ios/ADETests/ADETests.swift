@@ -407,7 +407,7 @@ final class ADETests: XCTestCase {
     ]
     XCTAssertTrue(syncProtocolMismatchMessage(
       versions.merging(["updateTarget": "host"]) { _, right in right }
-    ).contains("Update ADE on your Mac"))
+    ).contains("Update ADE on your computer"))
     XCTAssertTrue(syncProtocolMismatchMessage(
       versions.merging(["updateTarget": "client"]) { _, right in right }
     ).contains("Update ADE on this iPhone"))
@@ -1877,7 +1877,7 @@ final class ADETests: XCTestCase {
         load: .normal,
         lastFailureMessage: "timeout"
       )),
-      "Can't reach this Mac"
+      "Can't reach this computer"
     )
     XCTAssertEqual(
       SettingsConnectionPresentation.statusLabel(for: SyncConnectionHealth(
@@ -3908,7 +3908,7 @@ final class ADETests: XCTestCase {
   }
 
   // A host naming a cipher this build does not implement is a version gap, not
-  // evidence the Mac is an impostor: it must cost that route, not the attempt.
+  // evidence the computer is an impostor: it must cost that route, not the attempt.
   func testUnsupportedAdoptionCipherFailsOneRouteRatherThanTheWholeAttempt() {
     let compatibility = AccountAdoptionRouteCompatibilityError(machineName: "Arul's Mac")
     XCTAssertFalse(syncAccountAdoptionFailureIsFatal(compatibility))
@@ -4166,7 +4166,7 @@ final class ADETests: XCTestCase {
       code: 2,
       userInfo: [NSLocalizedDescriptionKey: "The host is offline."]
     )
-    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "Can’t reach this Mac right now.")
+    XCTAssertEqual(SyncUserFacingError.message(for: offlineError), "Can’t reach this computer right now.")
 
     let authError = NSError(
       domain: "ADE",
@@ -23895,8 +23895,8 @@ final class TerminalLiveTailPinningTests: XCTestCase {
 final class TerminalSessionInputStatusTests: XCTestCase {
   func testSuccessfulInputAcceptanceClearsStaleFailureWithoutMaskingRejection() {
     let controller = TerminalSessionController()
-    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
-    XCTAssertEqual(controller.inputStatusMessage, "The Mac did not confirm input.")
+    controller.handleStreamEventForTesting(.inputFailure(message: "The computer did not confirm input."))
+    XCTAssertEqual(controller.inputStatusMessage, "The computer did not confirm input.")
 
     controller.handleInputSubmissionForTesting(.queuedUntilReady(inputId: "stable-input-id"))
     XCTAssertNil(controller.inputStatusMessage)
@@ -23907,7 +23907,7 @@ final class TerminalSessionInputStatusTests: XCTestCase {
 
   func testStreamRehydrationClearsStaleInputFailure() {
     let controller = TerminalSessionController()
-    controller.handleStreamEventForTesting(.inputFailure(message: "The Mac did not confirm input."))
+    controller.handleStreamEventForTesting(.inputFailure(message: "The computer did not confirm input."))
 
     controller.handleStreamEventForTesting(.hydrate(
       text: "Mac% ",

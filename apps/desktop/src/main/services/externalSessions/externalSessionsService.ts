@@ -432,6 +432,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         timeout: 1500,
         encoding: "utf8",
         env: args.env ?? process.env,
+        windowsHide: true,
       }, (_error, stdout, stderr) => {
         droidForkProbe = /(^|\s)--fork\b/u.test(`${stdout ?? ""}\n${stderr ?? ""}`);
         resolve(droidForkProbe);

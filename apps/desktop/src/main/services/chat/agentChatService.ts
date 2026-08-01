@@ -26485,6 +26485,7 @@ export function createAgentChatService(args: {
       stdio: ["pipe", "pipe", "pipe"],
       detached: process.platform !== "win32",
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      windowsHide: true,
     });
 
     const reader = readline.createInterface({ input: proc.stdout });

@@ -79,7 +79,7 @@ const FULL_INVALIDATION_TABLES = [
   "rebase",
 ] as const;
 export const INVALIDATION_ONLY_V1_HOST_UPDATE_MESSAGE =
-  "Update ADE on this Mac via Settings > General > Check for Updates, then retry.";
+  "Update ADE on this computer via Settings > General > Check for Updates, then retry.";
 
 function invalidationTables(payload: SyncInvalidationBatchPayload): Set<string> {
   if (!payload || typeof payload !== "object") return new Set(FULL_INVALIDATION_TABLES);
@@ -215,9 +215,9 @@ function protocolVersionMismatchMessage(
   payload: Extract<SyncHelloErrorPayload, { code: "protocol_version_mismatch" }>,
 ): string {
   if (payload.updateTarget === "host") {
-    return "Update ADE on your Mac to connect to this browser.";
+    return "Update ADE on your computer to connect to this browser.";
   }
-  return "Update ADE in this browser to connect to your Mac.";
+  return "Update ADE in this browser to connect to your computer.";
 }
 
 function hostAcceptedInvalidationOnlyV1(payload: SyncHelloOkPayload): boolean {
@@ -1441,9 +1441,9 @@ export class SyncConnection {
   private errorForClose(event: Pick<CloseEvent, "code" | "reason">): SyncConnectionError {
     switch (event.code) {
       case 4501:
-        return new SyncConnectionError("Can't reach this Mac. Retrying…", "relay_host_offline");
+        return new SyncConnectionError("Can't reach this computer. Retrying…", "relay_host_offline");
       case 4507:
-        return new SyncConnectionError("Your Mac couldn't accept the connection. Retrying…", "relay_bridge_rejected");
+        return new SyncConnectionError("Your computer couldn't accept the connection. Retrying…", "relay_bridge_rejected");
       case 4508:
         return new SyncConnectionError("Connection setup expired. Reconnecting.", "relay_stale_pipe");
       case 4509:
@@ -1451,7 +1451,7 @@ export class SyncConnection {
       case 4510:
         return new SyncConnectionError("Connection was not ready. Reconnecting.", "relay_not_ready");
       case 4503:
-        return new SyncConnectionError("Too many active connections to this Mac", "relay_capacity");
+        return new SyncConnectionError("Too many active connections to this computer", "relay_capacity");
       case 4502:
         return new SyncConnectionError("Connection lost. Reconnecting.", "relay_idle");
       case 4505:

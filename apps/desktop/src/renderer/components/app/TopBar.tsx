@@ -2245,7 +2245,7 @@ export function TopBar({
               const machineMenuOpen = machineMenu?.groupId === group.id;
               // The machine is a dimension inside the repo's tab, so it only
               // earns inline space when it is ambiguous: more than one machine
-              // in the group, or a checkout that is not on This Mac.
+              // in the group, or a checkout that is not on This computer.
               const machineLabel =
                 multiMachine || !machine.isLocal ? (
                   <span

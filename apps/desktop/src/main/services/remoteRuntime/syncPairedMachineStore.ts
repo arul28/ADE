@@ -97,7 +97,7 @@ class AccountPairingAuthorizationError extends Error {
 const HOST_IDENTITY_VERIFICATION_ERROR =
   "Host identity verification failed — the machine may be running an older ADE.";
 const ADOPT_CHANNEL_UPDATE_REQUIRED_ERROR =
-  "The other Mac is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.";
+  "The other computer is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.";
 
 export class AccountHostIdentityVerificationError extends Error {
   readonly code = "account_host_identity_verification_failed";
