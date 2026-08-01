@@ -264,8 +264,8 @@ export type TerminalSessionSummary = {
    * Spawn lineage for chat- and tracked CLI-backed sessions, projected from the
    * chat record or CLI resume metadata (independent of any orchestration run).
    * `orchestrationParentSessionId` marks work spawned by another chat; `spawnKind`
-   * is the spawner-declared cosmetic relationship (subagent/peer/none) the sidebar
-   * renders as a pill and uses to count a spawner's live children. Both optional
+   * is the spawner-declared relationship (subagent/peer) the sidebar renders as
+   * a pill and uses to count a spawner's live children. Both optional
    * for migration tolerance.
    */
   orchestrationParentSessionId?: string;

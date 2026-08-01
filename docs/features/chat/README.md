@@ -792,17 +792,20 @@ happen to begin with `User request:`.
    `ade chat message --kind ...` exposes the explicit primitive. Provider
    dispatch and event streaming continue asynchronously after acceptance.
    `ade chat create --prompt` uses this same follow-up send after the session is
-   created, and `ade chat read <session>` calls `chat.readTranscript` to inspect
-   recent transcript messages for chat sessions only; shell/terminal transcript
+   created, and `ade chat read <session>` calls bounded
+   `chat.readTranscript` / `chat.readTranscriptPage` actions to inspect any
+   project-backed chat registered with the machine brain. Reads are silent,
+   default to a small recent window, and page older content with a byte cursor;
+   personal/no-project chats remain outside this route. Shell/terminal transcript
    reads stay on the terminal/session surfaces. When invoked through the generic
-   ADE action bridge by a session-bound agent, the low-level
-   `chat.sendMessage` and `chat.readTranscript` actions are scoped to that
-   caller's own chat session; `chat.messageSession` is the reviewed peer-control
-   primitive for deliberately messaging another ADE chat through ADE's routing
-   contract. The same self-session rule covers the other trusted bound-agent
-   chat/session reads and writes (history, scheduling, attention, status, and
-   lifecycle); a plain unbound human/dev CLI retains its wider read surface.
-   A cross-session target fails with JSON-RPC `policyDenied` and structured
+   ADE action bridge by a session-bound agent, low-level `chat.sendMessage`
+   remains scoped to the caller's own chat; `chat.messageSession` is the reviewed
+   peer-control primitive for deliberately messaging another ADE chat through
+   ADE's routing contract. For still-scoped actions, the same self-session rule
+   covers other trusted bound-agent chat/session history, scheduling, attention,
+   status, and lifecycle calls; a plain unbound human/dev CLI retains its wider
+   read surface. A cross-session target for one of those actions fails with
+   JSON-RPC `policyDenied` and structured
    `session_scope_denied` data rather than `methodNotFound` or an
    `Unsupported chat method` message. The structured payload names the method,
    caller session, requested session, and `chat.messageSession` alternative, so
@@ -1006,23 +1009,25 @@ renders one compact details line.
 
 ## Spawn types and completion reporting
 
-A chat can spawn another chat. The relationship is captured by
-`AgentChatSpawnKind = "subagent" | "peer" | "none"` on the session
+A chat can spawn another chat. New relationships use `spawnKind = "subagent" |
+"peer"` on the session
 (`apps/desktop/src/shared/types/chat.ts`), which rides the same session
 lineage field bag as `orchestrationParentSessionId` (persisted, hydrated,
 and projected onto summaries through `ORCHESTRATION_SESSION_FIELD_NAMES` in
-`agentChatService.ts`, validated against a small allowlist on hydration).
+`agentChatService.ts`). Hydration ignores legacy `none` values, and every new
+parented session rejects missing or `none` types.
 
-`spawnKind` is **cosmetic to capabilities** — a typed agent is a full ADE
-agent with the same runtime, permissions, and tools as any other chat. The
-only thing the type decides is the completion-report policy when the child
-finishes.
+The child remains a full ADE agent with normal runtime, permissions, and tools.
+The type is a coordination contract: use `subagent` whenever the parent will
+need, join, read, or review the result (including parallel fan-out); use `peer`
+only for fire-and-forget work the parent does not expect to consume.
 
 Where it is set:
 
-- `ade new chat --mode chat|cli --type subagent|peer|none` (alias
-  `--spawn-type`). Both modes default `orchestrationParentSessionId` from
-  `ADE_CHAT_SESSION_ID`; `--parent` overrides it and `--no-parent` opts out.
+- `ade new chat --mode chat|cli --type subagent|peer` (alias `--spawn-type`).
+  Both modes default `orchestrationParentSessionId` from `ADE_CHAT_SESSION_ID`;
+  `--parent` overrides it and `--no-parent` creates a genuinely independent
+  top-level session. A parent without a type is a hard CLI/RPC/service error.
   Chat mode stores the fields on the child chat and uses `spawnKind` for the
   completion policy below. Agent-provider CLI mode sends the same fields to
   `start_cli_session`, which stores them in `TerminalResumeMetadata` for
@@ -1036,11 +1041,11 @@ Where it is set:
 
 ### Type-decided completion reporting
 
-When any spawned chat child reaches a terminal turn, `reportChildSpawnEnded` in
-`agentChatService.ts` reports to the spawner based on the child's
-`spawnKind`:
+When any spawned chat child completes a turn, `reportChildSpawnEnded` in
+`agentChatService.ts` derives the parent from persisted lineage and reports
+based on the child's type and the turn's dispatch provenance:
 
-- **`subagent`** — ADE reports the completion through its trusted
+- **Parent-dispatched `subagent` turn** — ADE reports completion through its trusted
   `messageSession({ kind: "wake", metadata: { spawnCompletion } })` path.
   If the parent is active, Claude receives the completion inline as SDK
   `priority: "next"` and Codex receives `turn/steer`; the delivery is allowed
@@ -1048,25 +1053,27 @@ When any spawned chat child reaches a terminal turn, `reportChildSpawnEnded` in
   provider-normalized `steer()` fallback, which may queue at their safe
   boundary; an idle parent uses the normal message path. The message carries a
   typed `AgentChatSpawnCompletion` (`childSessionId`, `childTitle`,
-  `spawnKind`, `status`, `summary`), and the renderer derives a navigable
+  `childTurnId`, `spawnKind`, `status`, and the latest bounded assistant
+  `summary`), and the renderer derives a navigable
   `spawn_wake_divider` labeled **Subagent returned** whether the completion
   joined an active turn or started idle work. This is intentionally distinct
   from scheduled wakes, which remain deferred to a safe turn boundary.
+- **Human-dispatched `subagent` turn** — leaves the same quiet completion note
+  as a peer turn because the human already owns that interaction; it does not
+  start an unsolicited parent turn.
 - **`peer`** — a quiet `system_notice` with `status: "spawn_completed"`
   carrying the same `spawnCompletion` in its detail. Rendered as a compact
   navigable chip; the parent is not woken.
-- **`none` / undefined (the default for an untyped spawn)** — silent. No
-  report is delivered. Completion reporting is opt-in.
+There is no new silent spawn type. Delivery retries three times. A final failure
+is logged as `agent_chat.spawn_completion_delivery_failed` and emits a visible
+warning in the child with the direct-report recovery command. Per-turn dedupe
+uses the child turn id found in the persisted parent transcript, so brain
+restarts do not sever the completion channel or replay the same report.
 
-Delivery is best-effort: a failed wake or notice is logged
-(`agent_chat.spawn_completion_delivery_failed`) and never breaks child
-cleanup.
-
-Two enrichments accompany a `subagent` child: the agent runtime env gets
+Both child types receive lineage env:
 `ADE_PARENT_CHAT_SESSION_ID` (the parent session id) plus `ADE_SPAWN_KIND`,
-and the injected ADE guidance appends a self-report line telling the
-subagent it can optionally post a one-paragraph summary to its spawner via
-`chat.messageSession` — enrichment, since ADE already reports automatically.
+and injected ADE guidance explains the type contract and direct-report recovery
+through `chat.messageSession`.
 
 ### Inline card vs. quiet pill
 
@@ -1090,7 +1097,7 @@ merge with the existing metadata so these fields survive continuation. The
 Work sidebar can therefore render, without any extra fetch:
 
 - a type pill on the spawner-declared child (`SessionCard` — violet for
-  `subagent`, slate for `peer`, hidden for `none`), and
+  `subagent`, slate for `peer`; legacy invalid values are ignored), and
 - a live-children badge (`▸N`) counting a spawner's still-`running`
   children, derived in `SessionListPane` from the already-loaded session
   list, and

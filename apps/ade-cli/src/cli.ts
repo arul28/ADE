@@ -595,7 +595,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade machines list                             List machines from the ADE account directory
     $ ade machines connect <id|name>                Connect ADE Code to an account machine
     $ ade code                                      Open ADE Work chat in the terminal
-    $ ade new chat --mode chat|cli --prompt "fix"   Start an ADE Work chat or tracked CLI session
+    $ ade new chat --mode chat|cli --no-parent --prompt "fix"   Start an independent ADE Work chat or tracked CLI session
     $ ade desktop                                   Launch the installed desktop app
     $ ade open <url>                                Open an ade:// or ade-app.dev deeplink via the OS
     $ ade link lane | session | file | commit | artifact | branch | pr | linear-issue
@@ -671,8 +671,8 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade --socket browser open http://localhost:5173 --new-tab --text
     $ ade terminal read --chat-session <owner-session-id> --text
     $ ade terminal read --pty <pty-id> --text
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
 
   Generic ADE action JSON contract:
     Object-shaped call:
@@ -1146,10 +1146,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
   search: `${ADE_BANNER}
   ADE Search
 
-  Search across everything ADE indexes — chat transcripts, terminal scrollback,
-  CLI sessions, PRs, commits, branches, lanes, files, Linear issues, and proof
-  artifacts — from one deterministic full-text index. Returns ranked matches
-  with a deep link per result. Prefer this over grepping .ade/ internals.
+  Search project-backed chat transcripts across every project registered with
+  the machine brain. Terminal scrollback, CLI sessions, PRs, commits, branches,
+  lanes, files, Linear issues, and proof artifacts come from the active project.
+  Personal/no-project chats are excluded. Returns ranked matches with a deep
+  link per result. Prefer this over grepping .ade/ internals.
 
     $ ade search "login redirect" --text
     $ ade search "flaky test" --kind chat,terminal --text
@@ -1176,7 +1177,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --actions               List the raw search service actions exposed via ADE actions.
     --status                Show index doc counts, backfill state, and index path.
     --rebuild               Rebuild the whole index from scratch (CTO-only).
-    --text                  Aligned KIND/TITLE/SNIPPET/ID rows plus a count summary.
+    --text                  Aligned rows (including PROJECT when routed across
+                            projects) plus a count summary.
     --json                  Full SearchQueryResult payload (default).
 
   Exit codes:
@@ -1411,10 +1413,10 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Start either a persistent ADE Work chat or a tracked provider CLI session
   with one command. This mirrors the desktop New Chat mode toggle.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --auto-create-lane --prompt "Fix login"
-    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --prompt "Review the diff"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode chat --auto-create-lane --no-parent --prompt "Fix login"
+    $ ade new cli --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --no-parent --prompt "Review the diff"
 
   Flags:
     --mode <chat|cli>      Select a persistent ADE chat or tracked provider CLI session.
@@ -1422,8 +1424,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --auto-create-lane     Create a new lane first, then launch there.
     --lane-name <name>     Explicit name for an auto-created lane.
     --base <branch>        Optional base branch for an auto-created lane.
-    --type <subagent|peer|none>
-                           Cosmetic relationship + completion-report policy; a typed agent is a full agent. subagent = completion context steers an active parent or wakes an idle parent; peer = quiet note; none (default) = no report.
+    --type <subagent|peer>  Required for a parented agent spawn. Use subagent
+                           whenever you will need, join, or review the result;
+                           use peer only for fire-and-forget work.
     --provider <name>      claude | codex | cursor | droid | opencode. CLI mode also accepts shell.
     --model <id>           Runtime model id.
     --reasoning-effort <v> Reasoning tier. Alias: --effort.
@@ -1450,13 +1453,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --mode chat creates a persistent ADE Work chat.
     --mode cli starts a tracked provider CLI terminal.
 
-    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --prompt "Fix the tests"
-    $ ade new chat --mode chat --lane auto --lane-name fix-login --prompt "Fix login"
+    $ ade new chat --mode chat --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --permissions full-auto --no-fast --no-parent --prompt "Fix the tests"
+    $ ade new chat --mode chat --lane auto --lane-name fix-login --no-parent --prompt "Fix login"
 
   The command defaults to the current ADE lane when ADE_LANE_ID is set. Use
   --auto-create-lane or --lane auto to create a lane before launching.
-  --type <subagent|peer|none> sets only the cosmetic relationship and completion-report policy; a typed agent is a full agent. subagent completion context steers an active parent or wakes an idle parent, peer leaves a quiet note, and none (default) sends no report.
+  --type <subagent|peer> is required when the new agent has a parent. Use
+  subagent whenever the parent will need, join, or review the result (including
+  parallel work); use peer only for fire-and-forget work. Use --no-parent for
+  an independent top-level session.
 
   Spawn lineage: when run from a tracked agent shell (ADE_CHAT_SESSION_ID set),
   the new session links back to the spawning chat. In CLI mode, the terminal
@@ -1483,8 +1489,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Link an existing lane to a Linear issue (alias: attach-linear-issue)
     $ ade lanes detach-linear-issue <lane> [--issue-id ENG-431]
                                                     Unlink one issue (or all non-primary links) from a lane
-    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --provider codex --model <m>]
+    $ ade lanes create-from-linear --linear-issue-json '{...}' [--start-chat --type subagent --provider codex --model <m>]
                                                     Create a lane from an issue, optionally auto-launching an agent
+                                                    Spawn flags: --type subagent|peer, --chat-parent <session>, --no-parent
     $ ade lanes batch-create-from-linear --linear-issues-json '[{...},{...}]'
                                                     Create one lane per issue (partial success, no orphans)
     $ ade lanes create --base <ref>                 Override the base ref (omit to use the configured new-lane base, remote-first by default)
@@ -1622,9 +1629,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
     $ ade shell start --lane <lane> -- npm test     Start a tracked shell session
     $ ade shell start --lane <lane> -c "npm test"   Start with a command string
-    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --prompt "fix tests"
-    $ ade shell start-cli codex --lane <lane> --permission-mode edit
-    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --prompt "fix tests"
+    $ ade new chat --mode cli --lane <lane> --provider codex --permission-mode edit --no-parent --prompt "fix tests"
+    $ ade shell start-cli codex --lane <lane> --permission-mode edit --no-parent
+    $ ade shell start-cli claude --lane <lane> --reasoning-effort ultracode --no-parent --prompt "fix tests"
     $ ade shell start --provider claude --lane <lane> --message "fix tests"
     $ ade shell start --lane <lane> --chat-session <owner-session-id> -c "npm test"
     $ ade shell write <pty-id> --data "q"           Write data to a PTY
@@ -1702,21 +1709,21 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Chat commands use ADE agent chat sessions. Live provider-backed chat normally
   requires an attached runtime because it owns provider/session state.
 
-  Session scope: when you are an ADE-launched agent (ADE_CHAT_SESSION_ID is set),
-  reads are limited to your OWN chat — "ade chat read <other-session>" is denied
-  by design, because transcripts are not shared across workers. Sending is not
-  restricted: "ade chat send <session>" reaches any session, which is how a
-  subagent reports back to its spawner.
+  Transcript reads are silent and may target any project-backed ADE chat on
+  this machine, including chats in other projects. Personal/no-project chats
+  stay on the separate --personal surface. Reads are bounded by message and
+  character limits; use --page and --cursor to walk older content.
 
     $ ade chat list --lane <lane> --text            List chat sessions
     $ ade chat list --personal --text               List machine personal chats (no project required)
     $ ade chat actions --personal --text            List machine personal-chat actions
     $ ade chat action --personal models --input-json '{"provider":"codex"}'
     $ ade chat list --include-automation --no-archived --text
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --no-parent --reasoning-effort xhigh --no-fast --permissions full-auto
     $ ade chat create --personal --provider codex --model openai/gpt-5.6-sol --prompt "Plan my trip"
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --prompt "fix the tests"
-    $ ade chat create --from-linear-issue ENG-431   Start a chat with an attached issue + kickoff (alias: --linear-issue-json)
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --no-parent --prompt "fix the tests"
+    $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
+                                                    Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
     $ ade chat note "testing desktop auth fallback" # Update the Work status line (3–6 words, max 72 characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
@@ -1738,7 +1745,9 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat resolve-unprocessed <session> --steer <steer-id> --action run-next
                                                     Run an accepted-but-unprocessed follow-up next, or dismiss it
     $ ade chat models --provider codex --json       List models and supported reasoning tiers
-    $ ade chat read <session> --limit 20 --text     Read recent chat messages
+    $ ade chat read <session> --limit 20 --max-chars 8000 --text
+                                                    Read a bounded recent window
+    $ ade chat read <session> --page --cursor <n>  Page older transcript content
     $ ade chat goal <session> --objective "Ship it" Set or inspect a Codex goal
     $ ade chat goal <session> --status paused       Update a Codex goal status
     $ ade chat handoff <session> --model openai/gpt-5.6-sol --note "focus on tests"
@@ -1761,7 +1770,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
                                                     Cron uses the brain machine's local timezone
                                                     Optional: --reason "<text>" --session <id>
     $ ade chat scheduled-work cancel <session> <id>  Cancel one job; Claude crons also request CronDelete
-    $ ade new chat --mode cli --lane <lane> --provider claude --reasoning-effort ultracode --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --provider claude --parent <session> --type subagent --reasoning-effort ultracode --prompt "fix"
                                                     Start a tracked provider CLI session
     $ ade chat attach-linear-issue <session> --issue-id ENG-431
                                                     Attach a Linear issue to a chat/CLI session
@@ -1772,7 +1781,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat interrupt <session> --keep-queue     Stop the turn but preserve queued messages
     $ ade chat restore-queue <session> <recovery>   Restore a recently cleared queue during its undo window
     $ ade chat slash <session> --text               List slash commands for a session
-    $ ade new chat --mode cli --lane <lane> --prompt "fix"
+    $ ade new chat --mode cli --lane <lane> --parent <session> --type subagent --prompt "fix"
                                                     Start a tracked provider CLI session
 
   Create flags:
@@ -1790,6 +1799,16 @@ const HELP_BY_COMMAND: Record<string, string> = {
     --parent <sessionId>    Link the new chat as a child of that session.
                             Defaults to $ADE_CHAT_SESSION_ID in tracked agent shells.
     --no-parent             Create the chat without a parent link.
+    --type <subagent|peer>  Required with a parent. subagent wakes the parent
+                            after parent-requested turns; peer leaves quiet notes.
+
+  Transcript read flags:
+    --limit <n>             Messages per bounded window (default 50, max 100).
+    --max-chars <n>         Character budget (default 8000, max 120000).
+    --page                  Use byte-cursor paging for older content.
+    --cursor <offset>       Continue before a prior page's nextCursor.
+    --since <iso>           Filter the recent window by timestamp; do not combine
+                            with --page/--cursor.
 
   Permission notes:
     full-auto maps Codex to sandbox=danger-full-access and approval=never.
@@ -1808,11 +1827,11 @@ const HELP_BY_COMMAND: Record<string, string> = {
 
   Create a persistent ADE Work chat session with provider/model/runtime settings.
 
-    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan
-    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --prompt "fix"
-    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --print-config --json
-    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --prompt "Work this issue"
+    $ ade chat create --lane <lane> --provider codex --model openai/gpt-5.6-sol --reasoning-effort xhigh --no-fast --permissions full-auto --no-parent
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort high --permissions plan --no-parent
+    $ ade chat create --lane <lane> --provider claude --model anthropic/claude-opus-5 --effort max --no-parent --prompt "fix"
+    $ ade chat create --lane <lane> --provider cursor --model cursor/<model> --standard --no-parent --print-config --json
+    $ ade chat create --from-linear-issue ENG-431 --provider codex --model openai/gpt-5.6-sol --no-parent --prompt "Work this issue"
 
   Flags:
     --personal              Use machine-owned chats instead of a project/lane chat.
@@ -1835,6 +1854,8 @@ const HELP_BY_COMMAND: Record<string, string> = {
                             Defaults to $ADE_CHAT_SESSION_ID when run from a
                             tracked agent shell (the spawning chat).
     --no-parent             Create the chat without a parent link.
+    --type <subagent|peer>  Required with a parent. subagent wakes the parent
+                            after parent-requested turns; peer leaves quiet notes.
 
   Permission mapping highlights:
     codex full-auto   -> codexSandbox=danger-full-access, codexApprovalPolicy=never.
@@ -1889,7 +1910,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   Agent sessions
 
   Compatibility path for older agent launches. Prefer:
-    $ ade new chat --mode cli --lane <lane> --provider codex --prompt "Fix the failing test"
+    $ ade new chat --mode cli --lane <lane> --provider codex --no-parent --prompt "Fix the failing test"
 
     $ ade agent spawn --lane <lane> --prompt "Fix the failing test"
     $ ade agent spawn --lane <lane> --provider codex --model openai/gpt-5.6-sol --permissions full-auto
@@ -2756,8 +2777,11 @@ function readChatStopMode(args: string[]): "stop_and_clear" | "stop_only" {
  * `--no-parent` opts out entirely. CLI callers keep chatSessionId separate
  * because that field represents attached-terminal ownership, not lineage.
  */
-function readParentSessionId(args: string[]): string | undefined {
-  const override = readValue(args, ["--parent", "--parent-session", "--parent-session-id"]);
+function readParentSessionId(
+  args: string[],
+  overrideFlags: string[] = ["--parent", "--parent-session", "--parent-session-id"],
+): string | undefined {
+  const override = readValue(args, overrideFlags);
   const noParent = readFlag(args, ["--no-parent"]);
   if (override && noParent) {
     throw new CliUsageError("--parent cannot be combined with --no-parent.");
@@ -2767,6 +2791,53 @@ function readParentSessionId(args: string[]): string | undefined {
   if (explicit) return explicit;
   const env = process.env.ADE_CHAT_SESSION_ID?.trim();
   return env?.length ? env : undefined;
+}
+
+type CliAgentSpawnKind = "subagent" | "peer";
+
+function readAgentSpawnLineage(
+  args: string[],
+  options: {
+    parentFlags?: string[];
+    missingParentMessage?: string;
+    allowSpawnType?: boolean;
+  } = {},
+): {
+  orchestrationParentSessionId: string | undefined;
+  spawnKind: CliAgentSpawnKind | undefined;
+} {
+  const parentFlags = options.parentFlags ?? ["--parent", "--parent-session", "--parent-session-id"];
+  const hasExplicitParentSessionId = args.some((token) =>
+    parentFlags.some((flag) => token === flag || token.startsWith(`${flag}=`)),
+  );
+  const orchestrationParentSessionId = readParentSessionId(args, parentFlags);
+  const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
+  const normalizedSpawnKind = spawnTypeArg?.trim().toLowerCase();
+  if (normalizedSpawnKind && normalizedSpawnKind !== "subagent" && normalizedSpawnKind !== "peer") {
+    throw new CliUsageError("--type must be subagent or peer; silent spawn type 'none' is no longer supported.");
+  }
+  const spawnKind = normalizedSpawnKind as CliAgentSpawnKind | undefined;
+  if (options.allowSpawnType === false && spawnKind) {
+    throw new CliUsageError("--type applies only to agent providers; plain shell terminals do not record spawn lineage.");
+  }
+  if (options.allowSpawnType === false && hasExplicitParentSessionId) {
+    throw new CliUsageError("--parent applies only to agent providers; plain shell terminals do not record spawn lineage.");
+  }
+  if (options.allowSpawnType === false) {
+    return { orchestrationParentSessionId: undefined, spawnKind: undefined };
+  }
+  if (orchestrationParentSessionId && !spawnKind) {
+    throw new CliUsageError(
+      "--type is required for a parented agent spawn. Use --type subagent when you will need, join, or review the result (including parallel work); use --type peer only for fire-and-forget work. Use --no-parent only for an independent top-level session.",
+    );
+  }
+  if (!orchestrationParentSessionId && spawnKind) {
+    throw new CliUsageError(
+      options.missingParentMessage
+        ?? "--type requires a parent session. Remove --no-parent or omit --type for an independent top-level session.",
+    );
+  }
+  return { orchestrationParentSessionId, spawnKind };
 }
 
 type LaneNudgeGitResult = {
@@ -4525,8 +4596,6 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   const modelArg = readValue(args, ["--model", "--model-id"]);
   const reasoningEffort = readValue(args, ["--reasoning-effort", "--effort", "--reasoning"]);
   const permissionMode = readValue(args, ["--permission-mode", "--permissions"]);
-  const spawnTypeArg = readValue(args, ["--type", "--spawn-type"]);
-  const spawnKind = spawnTypeArg?.trim().toLowerCase();
   const fastMode = readFastModeFlag(args);
   const title = readValue(args, ["--title"]);
   const printConfig = readFlag(args, ["--print-config", "--dry-run"]);
@@ -4536,9 +4605,6 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   }
   if (mode === "chat" && provider === "shell") {
     throw new CliUsageError("Chat mode provider must be claude, codex, cursor, droid, or opencode.");
-  }
-  if (spawnKind && spawnKind !== "subagent" && spawnKind !== "peer" && spawnKind !== "none") {
-    throw new CliUsageError("--type must be subagent, peer, or none.");
   }
   if (mode === "cli") {
     const effectivePermissionMode = permissionMode ?? "default";
@@ -4562,8 +4628,9 @@ function buildNewChatPlan(args: string[], defaultMode: "chat" | "cli"): CliPlan 
   // Consume the flags in both modes so they never leak into the generic arg
   // bag. Both chat and CLI modes record the same spawn lineage fields; CLI
   // sessions keep chatSessionId free for true attached-terminal ownership.
-  const parentSessionId = readParentSessionId(args);
-  const orchestrationParentSessionId = parentSessionId;
+  const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args, {
+    allowSpawnType: provider !== "shell",
+  });
   const launchArgs = mode === "chat"
     ? collectGenericObjectArgs(args, {
         provider,
@@ -4867,6 +4934,12 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
   // args so `--provider`/`--model`/`--fast` go to the chat, not the lane.
   const launchConfig = startChat ? readChatLaunchConfig(args) : {};
   const surface = startChat ? readValue(args, ["--surface"]) ?? "work" : null;
+  const { orchestrationParentSessionId, spawnKind } = startChat
+    ? readAgentSpawnLineage(args, {
+        parentFlags: ["--chat-parent", "--parent-session", "--parent-session-id"],
+        missingParentMessage: "--type requires a parent session. Use --chat-parent <session>, remove --no-parent, or omit --type for an independent top-level session.",
+      })
+    : { orchestrationParentSessionId: undefined, spawnKind: undefined };
 
   const steps: InvocationStep[] = [
     actionCallStep("lane", "create_lane", collectGenericObjectArgs(args, createInput)),
@@ -4886,7 +4959,13 @@ function buildCreateLaneFromLinearPlan(args: string[], issue: JsonObject): CliPl
           arguments: {
             domain: "chat",
             action: "createSession",
-            args: { laneId, surface, ...launchConfig },
+            args: {
+              laneId,
+              surface,
+              ...launchConfig,
+              ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+              ...(spawnKind ? { spawnKind } : {}),
+            },
           },
         };
       },
@@ -6447,6 +6526,9 @@ function buildCliSessionStartPlan(
     );
   }
   validateLaunchProfilePermissionMode(provider, permissionMode);
+  const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args, {
+    allowSpawnType: provider !== "shell",
+  });
 
   const input = collectGenericObjectArgs(args, {
     laneId,
@@ -6465,6 +6547,8 @@ function buildCliSessionStartPlan(
     rows: readIntOption(args, ["--rows"], 36),
     cwd: readValue(args, ["--cwd"]),
     chatSessionId: readValue(args, ["--chat-session", "--chat-session-id"]),
+    ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+    ...(spawnKind ? { spawnKind } : {}),
     tracked: !readFlag(args, ["--untracked"]),
   });
 
@@ -7065,7 +7149,13 @@ function buildChatPlan(args: string[]): CliPlan {
   if (sub === "read" || sub === "messages" || sub === "transcript") {
     const targetSession = requireValue(sessionId, "sessionId");
     const limit = readIntOption(args, ["--limit"], 50);
+    const maxChars = readIntOption(args, ["--max-chars"], 8_000);
+    const beforeOffset = readIntOption(args, ["--cursor", "--before-offset"], undefined);
+    const page = readFlag(args, ["--page"]) || beforeOffset !== undefined;
     const since = readValue(args, ["--since"]);
+    if (page && since) {
+      throw new CliUsageError("Use either --page/--cursor for transcript paging or --since for timestamp filtering, not both.");
+    }
     return {
       kind: "execute",
       label: "chat read",
@@ -7074,10 +7164,12 @@ function buildChatPlan(args: string[]): CliPlan {
         actionStep(
           "result",
           "chat",
-          "readTranscript",
+          page ? "readTranscriptPage" : "readTranscript",
           collectGenericObjectArgs(args, {
             sessionId: targetSession,
             ...(limit !== undefined ? { limit } : {}),
+            ...(maxChars !== undefined ? { maxChars } : {}),
+            ...(page && beforeOffset !== undefined ? { beforeOffset } : {}),
             ...(since ? { since } : {}),
           }),
         ),
@@ -7199,7 +7291,7 @@ function buildChatPlan(args: string[]): CliPlan {
       throw new CliUsageError("--no-kickoff cannot be used with --prompt/--kickoff.");
     }
     const attachmentFlags = linearIssue ? readLinearAttachmentFlags(args) : {};
-    const orchestrationParentSessionId = readParentSessionId(args);
+    const { orchestrationParentSessionId, spawnKind } = readAgentSpawnLineage(args);
     const createStep = actionStep(
       "result",
       "chat",
@@ -7207,6 +7299,7 @@ function buildChatPlan(args: string[]): CliPlan {
       collectGenericObjectArgs(args, {
         laneId: readLaneId(args),
         ...(orchestrationParentSessionId ? { orchestrationParentSessionId } : {}),
+        ...(spawnKind ? { spawnKind } : {}),
         provider: readValue(args, ["--provider"]),
         model: modelArg,
         modelId: modelArg,
@@ -17731,41 +17824,59 @@ function formatDiffSummary(value: unknown): string {
 function formatSearchResults(value: unknown): string {
   const record = isRecord(value) ? value : {};
   const results = firstArray(value, ["results", "items"]);
-  if (results.length === 0) return "ADE search\n(no results)";
   const rows = results.map((item) => ({
     kind: truncateCell(asString(item.kind) ?? "", 10),
+    project: truncateCell(asString(item.projectName) ?? "", 24),
     title: truncateCell(asString(item.title) ?? "", 40),
     snippet: truncateCell(asString(item.snippet) ?? "", 60),
     id: truncateCell(asString(item.id) ?? "", 60),
   }));
   const kindWidth = Math.max(4, ...rows.map((row) => row.kind.length));
+  const hasProjects = rows.some((row) => row.project.length > 0);
+  const projectWidth = hasProjects ? Math.max(7, ...rows.map((row) => row.project.length)) : 0;
   const titleWidth = Math.max(5, ...rows.map((row) => row.title.length));
   const snippetWidth = Math.max(7, ...rows.map((row) => row.snippet.length));
-  const renderRow = (kind: string, title: string, snippet: string, id: string) =>
+  const renderRow = (kind: string, project: string, title: string, snippet: string, id: string) =>
     [
       kind.padEnd(kindWidth),
+      ...(hasProjects ? [project.padEnd(projectWidth)] : []),
       title.padEnd(titleWidth),
       snippet.padEnd(snippetWidth),
       id,
     ]
       .join("  ")
       .trimEnd();
-  const lines = [
-    "ADE search",
-    renderRow("KIND", "TITLE", "SNIPPET", "ID"),
-    ...rows.map((row) => renderRow(row.kind, row.title, row.snippet, row.id)),
-  ];
+  const lines = results.length > 0
+    ? [
+        "ADE search",
+        renderRow("KIND", "PROJECT", "TITLE", "SNIPPET", "ID"),
+        ...rows.map((row) => renderRow(row.kind, row.project, row.title, row.snippet, row.id)),
+      ]
+    : ["ADE search", "(no results)"];
   const totalByKind = isRecord(record.totalByKind) ? record.totalByKind : {};
   const breakdown = Object.entries(totalByKind)
     .filter(([, count]) => typeof count === "number" && count > 0)
     .map(([kind, count]) => `${kind} ${count}`)
     .join(", ");
-  const summary = `${results.length} result${results.length === 1 ? "" : "s"}${
-    breakdown ? ` (${breakdown})` : ""
-  }`;
-  lines.push("", summary);
+  if (results.length > 0 || breakdown) {
+    const summary = `${results.length} result${results.length === 1 ? "" : "s"}${
+      breakdown ? ` (${breakdown})` : ""
+    }`;
+    lines.push("", summary);
+  }
+  const projectsSearched = typeof record.projectsSearched === "number"
+    ? Math.max(0, Math.floor(record.projectsSearched))
+    : null;
+  const projectsUnavailable = Array.isArray(record.projectsUnavailable)
+    ? record.projectsUnavailable.filter((project): project is string => typeof project === "string" && project.trim().length > 0)
+    : [];
+  if (projectsSearched != null) lines.push(`coverage: ${projectsSearched} project${projectsSearched === 1 ? "" : "s"} searched`);
+  if (projectsUnavailable.length) lines.push(`unavailable projects: ${projectsUnavailable.join(", ")}`);
   const nextCursor = asString(record.nextCursor);
   if (nextCursor) lines.push(`more: --cursor ${nextCursor}`);
+  if (record.resultsTruncated === true) {
+    lines.push("bounded: a project has more than 200 matches; narrow the query to inspect the omitted tail");
+  }
   return lines.join("\n");
 }
 
@@ -17905,11 +18016,12 @@ function formatLaneDrift(value: unknown): string {
 }
 
 function formatChatRead(value: unknown): string {
+  const record = isRecord(value) ? value : {};
   const entries = Array.isArray(value)
     ? value.filter(isRecord)
     : firstArray(value, ["entries", "messages", "items"]);
-  if (!entries.length) return "ADE chat transcript\n(no messages)";
   const lines = ["ADE chat transcript"];
+  if (!entries.length) lines.push("(no messages in this physical page)");
   for (const entry of entries) {
     const role = asString(entry.role) ?? "message";
     const timestamp = asString(entry.timestamp);
@@ -17917,6 +18029,10 @@ function formatChatRead(value: unknown): string {
     lines.push("");
     lines.push(timestamp ? `${role} ${timestamp}` : role);
     lines.push(text.length ? text : "(empty)");
+  }
+  if (record.truncated === true) lines.push("", "(bounded transcript window; more content exists)");
+  if (typeof record.nextCursor === "number") {
+    lines.push(`more: --page --cursor ${record.nextCursor}`);
   }
   return lines.join("\n");
 }

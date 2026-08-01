@@ -299,7 +299,7 @@ describe("SessionCard lineage", () => {
         {...props}
         session={makeSession({
           orchestrationParentSessionId: "parent-1",
-          spawnKind: "none",
+          spawnKind: undefined,
           orchestrationRole: "validator",
         })}
       />,

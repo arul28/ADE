@@ -4081,7 +4081,7 @@ function renderEvent(
       // notice (no inline card) — keep a compact deep-link chip for those.
       const detail = (event.detail && typeof event.detail === "object" ? event.detail : {}) as {
         hasInlineCard?: boolean;
-        spawnKind?: "subagent" | "peer" | "none";
+        spawnKind?: "subagent" | "peer";
         spawnedSession?: { sessionId?: string; laneId?: string | null; title?: string };
       };
       if (detail.hasInlineCard) return null;

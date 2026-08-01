@@ -2405,6 +2405,32 @@ describe("adeRpcServer", () => {
     }));
   });
 
+  it("requires subagent or peer for every parented agent CLI session", async () => {
+    const fixture = createRuntime();
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { role: "orchestrator" });
+
+    const missingType = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "parent-session-1",
+    });
+    expect(missingType.isError).toBe(true);
+    expect(JSON.stringify(missingType.error ?? missingType.structuredContent ?? {}))
+      .toContain("spawnKind is required for a parented agent session");
+
+    const legacyNone = await callTool(handler, "start_cli_session", {
+      laneId: "lane-1",
+      provider: "codex",
+      orchestrationParentSessionId: "parent-session-1",
+      spawnKind: "none",
+    });
+    expect(legacyNone.isError).toBe(true);
+    expect(JSON.stringify(legacyNone.error ?? legacyNone.structuredContent ?? {}))
+      .toContain("spawnKind");
+    expect(fixture.runtime.ptyService.create).not.toHaveBeenCalled();
+  });
+
   it("preserves wide start_cli_session terminal dimensions", async () => {
     const fixture = createRuntime();
     fixture.runtime.sessionService.get.mockReturnValue({
@@ -4022,32 +4048,17 @@ describe("adeRpcServer", () => {
       chatSessionId: "chat-1",
     });
 
-    const deniedChatRead = await callTool(handler, "run_ade_action", {
+    const crossChatRead = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "readTranscript",
       args: { sessionId: "chat-2", limit: 10 },
     });
-    expect(deniedChatRead.isError).toBe(true);
-    expect(fixture.runtime.agentChatService.getChatTranscript).not.toHaveBeenCalled();
-    // The denial must read as "you may not aim this at that session", not as
-    // "this host cannot do that": `adeApi` matches the "Unsupported chat
-    // method" wording to detect an OLD host and silently falls back to a legacy
-    // path, so reusing it here makes a permission error trigger version-skew
-    // handling. It must also name both sessions and the unscoped alternative,
-    // so the caller can correct the target instead of giving up.
-    expect(deniedChatRead.error?.code).toBe(JsonRpcErrorCode.policyDenied);
-    expect(deniedChatRead.error?.data).toEqual({
-      kind: "session_scope_denied",
-      method: "run_ade_action:chat.readTranscript",
-      callerSessionId: "chat-1",
-      requestedSessionId: "chat-2",
-      alternativeAction: "chat.messageSession",
+    expect(crossChatRead?.isError).toBeUndefined();
+    expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-2",
+      limit: 10,
+      maxChars: 8_000,
     });
-    expect(deniedChatRead.error?.message).not.toContain("Unsupported chat method");
-    expect(deniedChatRead.error?.message).toContain("is not permitted for this caller");
-    expect(deniedChatRead.error?.message).toContain("chat-1");
-    expect(deniedChatRead.error?.message).toContain("chat-2");
-    expect(deniedChatRead.error?.message).toContain("chat.messageSession");
 
     const deniedChatHistory = await callTool(handler, "run_ade_action", {
       domain: "chat",
@@ -4076,6 +4087,12 @@ describe("adeRpcServer", () => {
       sessionId: "chat-2",
       text: "fresh child kickoff",
       kind: "auto",
+      metadata: {
+        spawnDispatch: {
+          parentSessionId: "chat-1",
+          dispatchedAt: expect.any(String),
+        },
+      },
     });
 
     const deniedArbitraryChatSend = await callTool(handler, "run_ade_action", {
@@ -4105,6 +4122,7 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
       sessionId: "chat-1",
       limit: 10,
+      maxChars: 8_000,
     });
 
     const ownChatHistory = await callTool(handler, "run_ade_action", {
@@ -4299,13 +4317,31 @@ describe("adeRpcServer", () => {
     const peerMessage = await callTool(handler, "run_ade_action", {
       domain: "chat",
       action: "messageSession",
-      args: { sessionId: "chat-2", kind: "auto", text: "peer context" },
+      args: {
+        sessionId: "chat-2",
+        kind: "auto",
+        text: "peer context",
+        metadata: {
+          requestId: "request-1",
+          spawnDispatch: {
+            parentSessionId: "spoofed-parent",
+            dispatchedAt: "2020-01-01T00:00:00.000Z",
+          },
+        },
+      },
     });
     expect(peerMessage?.isError).toBeUndefined();
     expect(fixture.runtime.agentChatService.messageSession).toHaveBeenCalledWith({
       sessionId: "chat-2",
       kind: "auto",
       text: "peer context",
+      metadata: {
+        requestId: "request-1",
+        spawnDispatch: {
+          parentSessionId: "chat-1",
+          dispatchedAt: expect.any(String),
+        },
+      },
     });
   });
 
@@ -4851,6 +4887,7 @@ describe("adeRpcServer", () => {
     expect(fixture.runtime.agentChatService.getChatTranscript).toHaveBeenCalledWith({
       sessionId: "chat-2",
       limit: 10,
+      maxChars: 8_000,
     });
 
     const send = await callTool(handler, "run_ade_action", {
@@ -6031,14 +6068,14 @@ describe("adeRpcServer", () => {
   });
 });
 
-describe("run_ade_action search scoping", () => {
+describe("run_ade_action search scope", () => {
   const searchServiceMock = () => ({
     query: vi.fn(async (args: unknown) => ({ results: [], totalByKind: {}, nextCursor: null, receivedArgs: args })),
     indexStatus: vi.fn(() => ({ ready: true })),
     rebuildIndex: vi.fn(() => ({ started: true })),
   });
 
-  it("injects the caller's own session scope for a session-bound agent", async () => {
+  it("removes caller-supplied scope for a session-bound agent", async () => {
     const fixture = createRuntime();
     const search = searchServiceMock();
     (fixture.runtime as Record<string, unknown>).searchService = search;
@@ -6054,8 +6091,7 @@ describe("run_ade_action search scoping", () => {
     expect(search.query).toHaveBeenCalledTimes(1);
     const args = search.query.mock.calls[0]![0] as { query: string; callerScope?: Record<string, unknown> };
     expect(args.query).toBe("kind:chat secrets");
-    // The gate overwrites any caller-supplied scope with the bound session.
-    expect(args.callerScope).toEqual({ chatSessionId: "session-1" });
+    expect(args.callerScope).toBeUndefined();
   });
 
   it("keeps an unbound agent-role caller unscoped (plain `ade` CLI defaults to role agent)", async () => {

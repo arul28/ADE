@@ -744,7 +744,7 @@ function ChatRow({
   const tagReserve = tag ? tag.length + 1 : 0;
   // Spawn lineage shares the established trailing-marker slot with chat tags
   // and durable wakes. Keep the labels compact in the narrow drawer while
-  // still distinguishing subagents from peers; untyped (`none`) work stays
+  // still distinguishing subagents from peers. Legacy untyped metadata stays
   // visually quiet, matching the desktop session card.
   const spawnKind = session.spawnKind === "subagent" || session.spawnKind === "peer"
     ? session.spawnKind

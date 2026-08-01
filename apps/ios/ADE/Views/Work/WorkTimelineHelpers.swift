@@ -80,6 +80,7 @@ private func workChatTimelineSnapshotSignature(
     hasher.combine(envelope.sequence ?? Int.min)
     combineOptional(envelope.subagentTaskType, into: &hasher)
     combineOptional(envelope.subagentCommand, into: &hasher)
+    combineOptional(envelope.subagentSpawnKind.map { String(describing: $0) }, into: &hasher)
     combineWorkChatEventSignature(envelope.event, into: &hasher)
   }
 
@@ -805,7 +806,8 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
-        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
       ), order: resolved.order)
     case .subagentProgress(let taskId, let agentId, let agentType, let parentToolUseId, let description, let summary, let toolName, let label, let model, let reasoningEffort, let turnId):
       let resolved = resolve(taskId: taskId, agentId: agentId, parentToolUseId: parentToolUseId)
@@ -827,7 +829,8 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
-        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
       ), order: resolved.order)
     case .subagentResult(let taskId, let agentId, let agentType, let parentToolUseId, let status, let summary, let label, let model, let reasoningEffort, let turnId):
       let normalized = workSubagentStatus(from: status)
@@ -850,7 +853,8 @@ func buildWorkSubagentSnapshots(from transcript: [WorkChatEnvelope]) -> [WorkSub
         startedAt: existing?.startedAt ?? envelope.timestamp,
         updatedAt: envelope.timestamp,
         taskType: trimmedWorkSubagentText(envelope.subagentTaskType) ?? existing?.taskType,
-        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand)
+        command: longerWorkSubagentText(existing?.command, envelope.subagentCommand),
+        spawnKind: envelope.subagentSpawnKind ?? existing?.spawnKind
       ), order: resolved.order)
     default:
       break
@@ -1431,7 +1435,8 @@ private func mergedWorkSubagentSnapshot(
     startedAt: remote.startedAt ?? local.startedAt,
     updatedAt: latestWorkSubagentTimestamp(remote.updatedAt, local.updatedAt),
     taskType: local.taskType ?? remote.taskType,
-    command: longerWorkSubagentText(remote.command, local.command)
+    command: longerWorkSubagentText(remote.command, local.command),
+    spawnKind: local.spawnKind ?? remote.spawnKind
   )
 }
 

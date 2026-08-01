@@ -764,7 +764,7 @@ export const SessionCard = React.memo(function SessionCard({
       value: orchestrationLabel,
     });
   }
-  if (session.spawnKind && session.spawnKind !== "none") {
+  if (session.spawnKind) {
     hoverRows.push({
       id: "spawn",
       icon: <TreeStructure size={13} className="text-muted-fg/60" />,

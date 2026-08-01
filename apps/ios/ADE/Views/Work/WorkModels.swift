@@ -825,6 +825,7 @@ struct WorkSubagentSnapshot: Identifiable, Equatable {
   /// from real background agents. Defaults preserve older roster payloads.
   var taskType: String? = nil
   var command: String? = nil
+  var spawnKind: AgentChatSpawnKind? = nil
 
   var id: String { taskId }
 }
@@ -1114,6 +1115,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
   /// subagent classification.
   let subagentTaskType: String?
   let subagentCommand: String?
+  let subagentSpawnKind: AgentChatSpawnKind?
 
   init(
     sessionId: String,
@@ -1121,7 +1123,8 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     sequence: Int?,
     event: WorkChatEvent,
     subagentTaskType: String? = nil,
-    subagentCommand: String? = nil
+    subagentCommand: String? = nil,
+    subagentSpawnKind: AgentChatSpawnKind? = nil
   ) {
     self.sessionId = sessionId
     self.timestamp = timestamp
@@ -1129,6 +1132,7 @@ struct WorkChatEnvelope: Identifiable, Equatable {
     self.event = event
     self.subagentTaskType = subagentTaskType
     self.subagentCommand = subagentCommand
+    self.subagentSpawnKind = subagentSpawnKind
   }
 }
 

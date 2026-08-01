@@ -4405,6 +4405,69 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(userText, "ADE coordinator tick: review agent state and route the next action.")
     XCTAssertEqual(userTurnId, "turn-1")
 
+    let spawnCompletionJSON = """
+    {
+      "sessionId": "session-parent",
+      "timestamp": "2026-08-01T00:00:00.000Z",
+      "event": {
+        "type": "user_message",
+        "text": "Your subagent finished a turn",
+        "metadata": {
+          "spawnCompletion": {
+            "childSessionId": "session-child",
+            "childTitle": "Review tests",
+            "spawnKind": "subagent",
+            "childTurnId": "child-turn-2",
+            "status": "completed",
+            "summary": "Tests pass."
+          }
+        }
+      }
+    }
+    """
+    let spawnCompletionEnvelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: Data(spawnCompletionJSON.utf8)
+    )
+    guard case .subagentResult(
+      let taskId,
+      let agentId,
+      _, _, _,
+      let status,
+      let summary,
+      _, let label, _, _,
+      let completionTurnId
+    ) = spawnCompletionEnvelope.event else {
+      return XCTFail("Expected typed subagent completion event.")
+    }
+    XCTAssertEqual(taskId, "chat:session-child")
+    XCTAssertEqual(agentId, "session-child")
+    XCTAssertEqual(status, .completed)
+    XCTAssertEqual(summary, "Tests pass.")
+    XCTAssertEqual(label, "Review tests")
+    XCTAssertEqual(completionTurnId, "child-turn-2")
+
+    let peerStartedJSON = """
+    {
+      "sessionId": "session-parent",
+      "timestamp": "2026-08-01T00:01:00.000Z",
+      "event": {
+        "type": "subagent_started",
+        "taskId": "chat:session-peer",
+        "agentId": "session-peer",
+        "description": "Fire-and-forget review",
+        "spawnKind": "peer"
+      }
+    }
+    """
+    let peerStartedEnvelope = try JSONDecoder().decode(
+      AgentChatEventEnvelope.self,
+      from: Data(peerStartedJSON.utf8)
+    )
+    XCTAssertEqual(peerStartedEnvelope.subagentSpawnKind, .peer)
+    let peerSnapshots = buildWorkSubagentSnapshots(from: makeWorkChatTranscript(from: [peerStartedEnvelope]))
+    XCTAssertEqual(peerSnapshots.first?.spawnKind, .peer)
+
     let resolvedJSON = """
     {
       "sessionId": "session-3",
@@ -23099,6 +23162,7 @@ final class ADETests: XCTestCase {
       "orchestrationRunId": "run-abc",
       "orchestrationRole": "worker",
       "orchestrationParentSessionId": "sess-lead-1",
+      "spawnKind": "subagent",
       "orchestrationTag": "impl-auth",
       "orchestrationStepId": "step-2",
       "orchestrationBundlePath": "/tmp/.ade/orchestration/run-abc"
@@ -23108,6 +23172,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(summary.orchestrationRunId, "run-abc")
     XCTAssertEqual(summary.orchestrationRole, "worker")
     XCTAssertEqual(summary.orchestrationParentSessionId, "sess-lead-1")
+    XCTAssertEqual(summary.spawnKind, .subagent)
     XCTAssertEqual(summary.orchestrationTag, "impl-auth")
     XCTAssertEqual(summary.orchestrationStepId, "step-2")
     XCTAssertEqual(summary.orchestrationBundlePath, "/tmp/.ade/orchestration/run-abc")
@@ -23129,6 +23194,7 @@ final class ADETests: XCTestCase {
     XCTAssertNil(summary.orchestrationRunId)
     XCTAssertNil(summary.orchestrationRole)
     XCTAssertNil(summary.orchestrationParentSessionId)
+    XCTAssertNil(summary.spawnKind)
     XCTAssertNil(summary.orchestrationTag)
     XCTAssertNil(summary.orchestrationStepId)
     XCTAssertNil(summary.orchestrationBundlePath)
@@ -23170,12 +23236,14 @@ final class ADETests: XCTestCase {
       "lastActivityAt": "2026-05-25T00:02:00.000Z",
       "orchestrationRunId": "run-full",
       "orchestrationRole": "lead",
+      "spawnKind": "none",
       "orchestrationTag": "coordinator"
     }
     """.data(using: .utf8)!
     let session = try JSONDecoder().decode(AgentChatSession.self, from: json)
     XCTAssertEqual(session.orchestrationRunId, "run-full")
     XCTAssertEqual(session.orchestrationRole, "lead")
+    XCTAssertEqual(session.spawnKind, .legacyUntyped)
     XCTAssertEqual(session.orchestrationTag, "coordinator")
     XCTAssertNil(session.orchestrationParentSessionId)
     XCTAssertNil(session.orchestrationStepId)

@@ -131,11 +131,13 @@ describe("isAllowedAdeAction", () => {
     expect(isAllowedAdeAction("chat", "getMainTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "getSubagentTranscript")).toBe(true);
     expect(isAllowedAdeAction("chat", "readTranscript")).toBe(true);
+    expect(isAllowedAdeAction("chat", "readTranscriptPage")).toBe(true);
     expect(isAllowedAdeAction("chat", "sendMessage")).toBe(true);
     expect(isAllowedAdeAction("chat", "messageSession")).toBe(true);
     expect(isCtoOnlyAdeAction("chat", "getMainTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "getSubagentTranscript")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "readTranscript")).toBe(false);
+    expect(isCtoOnlyAdeAction("chat", "readTranscriptPage")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "sendMessage")).toBe(false);
     expect(isCtoOnlyAdeAction("chat", "messageSession")).toBe(false);
   });
@@ -978,10 +980,50 @@ describe("ADE_ACTION_ALLOWLIST shape", () => {
       sessionId: " chat-1 ",
       limit: "25",
       since: "2026-06-29T00:00:00.000Z",
-    })).resolves.toEqual([
-      { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
-    ]);
-    expect(getChatTranscript).toHaveBeenCalledWith({ sessionId: "chat-1", limit: 25 });
+    })).resolves.toEqual({
+      sessionId: "chat-1",
+      entries: [
+        { role: "assistant", text: "new", timestamp: "2026-06-29T00:00:00.000Z" },
+      ],
+      totalEntries: 2,
+      truncated: false,
+    });
+    expect(getChatTranscript).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      limit: 25,
+      maxChars: 8_000,
+    });
+  });
+
+  it("passes bounded transcript page controls through to the chat service", async () => {
+    const page = {
+      sessionId: "chat-1",
+      entries: [{ role: "assistant", text: "older" }],
+      totalEntries: 1,
+      truncated: false,
+      nextCursor: 2048,
+      cursorKind: "byte",
+    };
+    const getChatTranscriptPage = vi.fn(async () => page);
+    const runtime = {
+      agentChatService: { getChatTranscriptPage },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const chat = getAdeActionDomainServices(runtime).chat as {
+      readTranscriptPage?: (args?: unknown) => Promise<unknown>;
+    };
+
+    await expect(chat.readTranscriptPage?.({
+      sessionId: " chat-1 ",
+      beforeOffset: "4096",
+      limit: "12",
+      maxChars: "6000",
+    })).resolves.toEqual(page);
+    expect(getChatTranscriptPage).toHaveBeenCalledWith({
+      sessionId: "chat-1",
+      beforeOffset: 4096,
+      limit: 12,
+      maxChars: 6000,
+    });
   });
 
   it("unwraps chat.listSessions action args before calling the positional chat service API", async () => {

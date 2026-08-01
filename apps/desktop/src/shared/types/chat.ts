@@ -173,7 +173,7 @@ export type AgentChatOpenCodePermissionMode = "plan" | "edit" | "full-auto" | "c
 export type AgentChatDroidPermissionMode = "read-only" | "auto-low" | "auto-medium" | "auto-high" | "agi";
 
 export type AgentChatResumeFailureKind = "thread_missing" | "provider_environment" | "transient" | "unknown";
-export type AgentChatSpawnKind = "subagent" | "peer" | "none";
+export type AgentChatSpawnKind = "subagent" | "peer";
 
 /**
  * Terminal outcome of a spawned child chat, delivered to the spawner. Rides the
@@ -184,8 +184,16 @@ export type AgentChatSpawnCompletion = {
   childSessionId: string;
   childTitle: string;
   spawnKind: AgentChatSpawnKind;
+  /** Child turn whose completion produced this delivery. Enables durable dedupe. */
+  childTurnId?: string;
   status: "completed" | "failed" | "stopped";
   summary?: string;
+};
+
+export type AgentChatSpawnDispatchMetadata = {
+  /** Trusted caller session that dispatched this turn to its direct child. */
+  parentSessionId: string;
+  dispatchedAt: string;
 };
 
 export type AgentChatContinuityRecovery = {
@@ -250,6 +258,11 @@ export type AgentChatNoticeDetail = {
    */
   hasInlineCard?: boolean;
   spawnCompletion?: AgentChatSpawnCompletion;
+  spawnCompletionDeliveryFailure?: {
+    childTurnId: string;
+    parentSessionId: string;
+    error: string;
+  };
   crossMachineHandoff?: {
     handoffId: string;
     targetMachineName: string;
@@ -489,6 +502,8 @@ export type AgentChatEventMetadata = Record<string, unknown> & {
   /** Rides a `subagent` completion delivery so the renderer can render its
    * typed completion divider whether it steers an active turn or wakes an idle chat. */
   spawnCompletion?: AgentChatSpawnCompletion;
+  /** Marks a child turn as parent-dispatched so completion may wake the parent. */
+  spawnDispatch?: AgentChatSpawnDispatchMetadata;
   /** Provenance on the replacement message created by Run next. */
   replayedFromUnprocessedSteer?: AgentChatUnprocessedReplayMetadata;
   /** Renderer-folded terminal state for the original unprocessed bubble. */

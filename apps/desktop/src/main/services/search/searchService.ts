@@ -1096,15 +1096,13 @@ export function createSearchService(deps: SearchServiceDeps) {
       filterParams.push(sessionId, sessionId);
     }
     if (excludeSessionContent) {
-      // Unbound non-external agent roles get no session content at all
-      // (chat.readTranscript denies these callers outright).
+      // Internal callers may explicitly request a metadata-only view.
       filters.push("d.kind NOT IN ('chat', 'terminal')");
     } else if (scopeChatSessionId) {
-      // Session-bound non-CTO callers may only see their own session's chat
-      // and terminal content (mirrors scopeChatAdeActionArgs /
-      // scopeTerminalAdeActionArgs on the direct read paths). Terminals owned
-      // by the caller's chat (attached shells) match via owner_session_id,
-      // the same owner path direct terminal reads authorize.
+      // Internal callers may deliberately request a one-session view. Public
+      // ADE RPC/search routes strip this optional filter so bound agents and
+      // unbound shells receive the same project-backed chat results. Terminals
+      // owned by the selected chat match via owner_session_id.
       filters.push(
         "(d.kind NOT IN ('chat', 'terminal') OR d.session_id = ? OR d.owner_session_id = ?)"
       );

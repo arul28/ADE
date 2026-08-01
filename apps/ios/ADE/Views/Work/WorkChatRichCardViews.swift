@@ -3065,6 +3065,9 @@ private struct WorkChatInfoSubagentRow: View {
           if snapshot.background {
             WorkSubagentTinyChip(text: "background", tint: ADEColor.textMuted)
           }
+          if snapshot.spawnKind == .peer {
+            WorkSubagentTinyChip(text: "peer", tint: ADEColor.textMuted)
+          }
           Spacer(minLength: 0)
           HStack(spacing: 8) {
             if probing {
