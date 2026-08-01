@@ -4,13 +4,17 @@ type DbLike = {
 
 /**
  * Reads are only needed by the detach path, which must count before rows vanish.
- * Signature mirrors `AdeDb.get` so the concrete db satisfies it structurally.
+ * Signature mirrors `AdeDb.get`/`AdeDb.all` so the concrete db satisfies it structurally.
  */
 type ReadableDbLike = DbLike & {
   get<T extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
-    params?: any[],
+    params?: unknown[],
   ): T | null;
+  all<T extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params?: unknown[],
+  ): T[];
 };
 
 /**
@@ -114,21 +118,29 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
  * than the retained row costs. `commit_count` / `changed_files` are lifted onto the row
  * first so the merged view survives the purge.
  */
+/**
+ * Apply the detach mutation to an explicit set of PR ids.
+ *
+ * Taking ids rather than a SQL predicate keeps one parameter list for all four
+ * statements below; an earlier version threaded a predicate string plus a params array
+ * that every statement had to agree with positionally, which is a bug waiting to happen
+ * for no benefit.
+ */
 function detachRows(
   db: ReadableDbLike,
   args: {
     projectId: string;
-    /** SQL predicate over `pull_requests`, e.g. `lane_id = ? and project_id = ?`. */
-    predicate: string;
-    predicateParams: unknown[];
+    prIds: string[];
     laneName: string | null;
     laneColor: string | null;
     detachedAt: string;
     provenance: DetachedLaneProvenance;
   },
 ): void {
-  const { projectId, predicate, predicateParams, laneName, laneColor, detachedAt, provenance } = args;
-  const prSelect = `select id from pull_requests where ${predicate}`;
+  const { projectId, prIds, laneName, laneColor, detachedAt, provenance } = args;
+  if (prIds.length === 0) return;
+  const placeholders = prIds.map(() => "?").join(", ");
+  const scope = [projectId, ...prIds];
 
   // Lift counts off the snapshot before nulling it, so the merged row can still say
   // "12 commits · 9 files" once the JSON is gone.
@@ -147,9 +159,9 @@ function detachRows(
              from pull_request_snapshots s
              where s.pr_id = pull_requests.id and json_valid(s.files_json))
           )
-      where ${predicate}
+      where project_id = ? and id in (${placeholders})
     `,
-    predicateParams,
+    scope,
   );
 
   // `detached_at is null` keeps the first detach authoritative: re-detaching an already
@@ -161,9 +173,9 @@ function detachRows(
           detached_lane_name = ?,
           detached_lane_color = ?,
           detached_provenance = ?
-      where ${predicate} and detached_at is null
+      where project_id = ? and id in (${placeholders}) and detached_at is null
     `,
-    [detachedAt, laneName, laneColor, JSON.stringify(provenance), ...predicateParams],
+    [detachedAt, laneName, laneColor, JSON.stringify(provenance), ...scope],
   );
 
   // Keep detail/status/commits (small, and what the merged view reads); drop the bulky
@@ -175,13 +187,13 @@ function detachRows(
           checks_json = null,
           comments_json = null,
           reviews_json = null
-      where pr_id in (${prSelect})
+      where pr_id in (${placeholders})
     `,
-    predicateParams,
+    prIds,
   );
 
   // Group membership is lane-scoped work-in-progress, not history — it goes.
-  db.run(`delete from pr_group_members where pr_id in (${prSelect})`, predicateParams);
+  db.run(`delete from pr_group_members where pr_id in (${placeholders})`, prIds);
   pruneEmptyPrGroups(db, projectId);
 }
 
@@ -190,15 +202,19 @@ export function detachPullRequestRowsForLane(
   args: DetachPullRequestRowsArgs,
 ): void {
   const { projectId, laneId, laneName, laneColor, detachedAt } = args;
+  const prIds = db
+    .all<{ id: string }>("select id from pull_requests where lane_id = ? and project_id = ?", [laneId, projectId])
+    .map((row) => String(row.id));
   detachRows(db, {
     projectId,
-    predicate: "lane_id = ? and project_id = ?",
-    predicateParams: [laneId, projectId],
+    prIds,
     laneName,
     laneColor,
     detachedAt,
     provenance: countLaneProvenance(db, projectId, laneId),
   });
+  // Lane-scoped membership survives the id lookup above (a group member can outlive its
+  // PR row), so clear it explicitly and prune once.
   db.run("delete from pr_group_members where lane_id = ?", [laneId]);
   pruneEmptyPrGroups(db, projectId);
 }
@@ -214,17 +230,12 @@ export function detachPullRequestRowsByIds(
   args: DetachPullRequestRowsArgs & { prIds: string[] },
 ): void {
   const { projectId, laneId, laneName, laneColor, detachedAt } = args;
-  const ids = uniqueIds(args.prIds);
-  if (ids.length === 0) return;
-  const placeholders = ids.map(() => "?").join(", ");
   detachRows(db, {
     projectId,
-    predicate: `project_id = ? and id in (${placeholders})`,
-    predicateParams: [projectId, ...ids],
+    prIds: uniqueIds(args.prIds),
     laneName,
     laneColor,
     detachedAt,
     provenance: countLaneProvenance(db, projectId, laneId),
   });
 }
-

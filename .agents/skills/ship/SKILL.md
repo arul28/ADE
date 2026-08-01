@@ -38,6 +38,23 @@ The playbook's Phase 0 is **commit → push → open PR** only. Test generation 
 the local-CI gate are NOT part of ship — that's `/test` (and optionally
 `/finalize`) before you reach this skill.
 
+## Precondition: the `/quality` gate must be empty
+
+Before Phase 0, and again before the Phase 3c merge, check for an open
+`/quality` gate. A non-empty gate **blocks the merge** — every row in it is a
+finding that was verified as real and left unfixed, and by `/quality`'s contract
+the only two things that may be there are a product decision the author owes, or
+a behavior change this branch was not asked to make. Both need the author.
+
+- Gate rows exist → do not merge. Surface them, state the decision needed, and
+  stop with `blocked`. Do not merge and mention them afterwards.
+- If `/quality` was never run on this lane, say so plainly rather than assuming
+  the gate is empty.
+
+Severity is irrelevant here: a Medium in the gate blocks exactly as hard as a
+Blocker, because presence in the gate means it needed a human, not that it was
+minor.
+
 ---
 
 ## Execution Mode: Autonomous
@@ -184,7 +201,7 @@ self-resume signal. Either:
 |--------|---------|
 | `done-clean` | PR merged on main |
 | `done-max` | 5 normal + 1 force-finalize exhausted, merge genuinely blocked |
-| `blocked` | Unrecoverable conflict, gate failure, API error, or force-finalize CI failed |
+| `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, or a non-empty `/quality` gate awaiting an author decision |
 
 Always print the final summary (PR, branch, iterations, status, reason,
 per-iteration log, unaddressed items) on exit. Do NOT schedule a wake when

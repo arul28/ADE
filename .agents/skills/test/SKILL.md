@@ -17,7 +17,7 @@ The suite has bloated for three reasons. You exist to fight all three:
 
 Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. You may finish at any pass — adding is optional.
 
-**Consume the `/quality` gate.** If `/quality` ran on this lane, take its Summary's **Gate** section — every Blocker/High it surfaced but did not auto-fix. Each is a named regression-test target for the ADD pass: a test that fails on the bug and passes once it's fixed. A finding isn't "handled" until a test pins it. No gate available → derive the same targets from the diff.
+**Consume the `/quality` gate.** If `/quality` ran on this lane, take its Summary's **Gate** section — every finding it surfaced but did not fix, at any severity (a Medium in the gate got there because it needed a human, not because it was minor). Each is a named regression-test target for the ADD pass: a test that fails on the bug and passes once it's fixed. A finding isn't "handled" until a test pins it. No gate available → derive the same targets from the diff.
 
 **Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
 

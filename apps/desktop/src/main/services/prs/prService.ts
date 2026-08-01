@@ -1078,6 +1078,46 @@ function normalizeMergeMethod(value: unknown): MergeMethod | null {
   return value === "squash" || value === "merge" || value === "rebase" ? value : null;
 }
 
+/**
+ * Resolve the lane columns of a list row.
+ *
+ * A detached row reports NO live lane (`linkedLaneId`/`linkedLaneName` stay null) and
+ * carries `detached` instead, so the renderer shows it as history rather than as a
+ * mapping it could act on. A missing lane row yields a null name, never the raw lane
+ * UUID — a bare id in the list is worse than no chip at all.
+ */
+function deriveGithubSnapshotLaneLink(
+  linked: PullRequestRow | null,
+  laneById: Map<string, LaneSummary> | undefined,
+): Pick<GitHubPrListItem, "linkedLaneId" | "linkedLaneName" | "detached"> {
+  if (!linked) return { linkedLaneId: null, linkedLaneName: null, detached: null };
+  const detached = rowDetachedLane(linked);
+  if (detached) return { linkedLaneId: null, linkedLaneName: null, detached };
+  return {
+    linkedLaneId: linked.lane_id,
+    linkedLaneName: laneById?.get(linked.lane_id)?.name ?? null,
+    detached: null,
+  };
+}
+
+/** Merge outcome + size, so a merged row can describe itself without a GitHub call. */
+function deriveGithubSnapshotMergeFacts(
+  linked: PullRequestRow | null,
+): Pick<
+  GitHubPrListItem,
+  "mergedAt" | "mergedBy" | "mergeMethod" | "additions" | "deletions" | "commitCount" | "changedFiles"
+> {
+  return {
+    mergedAt: linked?.merged_at ?? null,
+    mergedBy: linked ? rowMergedBy(linked) : null,
+    mergeMethod: normalizeMergeMethod(linked?.merge_method),
+    additions: normalizeCount(linked?.additions),
+    deletions: normalizeCount(linked?.deletions),
+    commitCount: normalizeCount(linked?.commit_count),
+    changedFiles: normalizeCount(linked?.changed_files),
+  };
+}
+
 function rowMergedBy(row: PullRequestRow): PrMergedBy | null {
   const login = String(row.merged_by_login ?? "").trim();
   if (!login) return null;
@@ -8622,54 +8662,6 @@ export function createPrService({
       groupByPrId,
       workflowByPrId,
       stackByPrKey: githubStackStore.membershipsByPr(activeGithubRepo),
-    };
-  };
-
-  /**
-   * Resolve the lane columns of a list row.
-   *
-   * A detached row reports NO live lane (`linkedLaneId`/`linkedLaneName` stay null) and
-   * carries `detached` instead, so the renderer shows it as history rather than as a
-   * mapping it could act on. Previously the lane name fell back to the raw lane UUID
-   * when the lane row was missing, which surfaced a bare id in the list.
-   */
-  const deriveGithubSnapshotLaneLink = (
-    linked: PullRequestRow | null,
-    laneById: Map<string, LaneSummary> | undefined,
-  ): Pick<GitHubPrListItem, "linkedLaneId" | "linkedLaneName" | "detached"> => {
-    if (!linked) return { linkedLaneId: null, linkedLaneName: null, detached: null };
-    const detached = rowDetachedLane(linked);
-    if (detached) return { linkedLaneId: null, linkedLaneName: null, detached };
-    const laneName = laneById?.get(linked.lane_id)?.name ?? null;
-    return { linkedLaneId: linked.lane_id, linkedLaneName: laneName, detached: null };
-  };
-
-  /** Merge outcome + size, so a merged row can describe itself without a GitHub call. */
-  const deriveGithubSnapshotMergeFacts = (
-    linked: PullRequestRow | null,
-  ): Pick<
-    GitHubPrListItem,
-    "mergedAt" | "mergedBy" | "mergeMethod" | "additions" | "deletions" | "commitCount" | "changedFiles"
-  > => {
-    if (!linked) {
-      return {
-        mergedAt: null,
-        mergedBy: null,
-        mergeMethod: null,
-        additions: null,
-        deletions: null,
-        commitCount: null,
-        changedFiles: null,
-      };
-    }
-    return {
-      mergedAt: linked.merged_at ?? null,
-      mergedBy: rowMergedBy(linked),
-      mergeMethod: normalizeMergeMethod(linked.merge_method),
-      additions: normalizeCount(linked.additions),
-      deletions: normalizeCount(linked.deletions),
-      commitCount: normalizeCount(linked.commit_count),
-      changedFiles: normalizeCount(linked.changed_files),
     };
   };
 
