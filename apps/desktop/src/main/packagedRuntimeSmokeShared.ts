@@ -36,6 +36,42 @@ export type ClaudeStartupProbeResult =
   | { state: "binary-missing"; message: string }
   | { state: "runtime-failed"; message: string };
 
+export type CrsqliteProbeResult = {
+  ok: true;
+  changeRows: number;
+};
+
+export function probeCrsqliteExtension(extensionPath: string): CrsqliteProbeResult {
+  // Keep node:sqlite lazy and opaque to esbuild. With the desktop bundle's
+  // Node 18 target, a top-level literal require("node:sqlite") is rewritten
+  // to require("sqlite"), which crashes Electron before the smoke probe runs.
+  const nodeSqliteSpecifier = ["node", "sqlite"].join(":");
+  const { DatabaseSync } = require(nodeSqliteSpecifier) as {
+    DatabaseSync: new (
+      path: string,
+      options?: { allowExtension?: boolean },
+    ) => import("node:sqlite").DatabaseSync;
+  };
+  const db = new DatabaseSync(":memory:", { allowExtension: true });
+  try {
+    db.enableLoadExtension(true);
+    db.loadExtension(extensionPath);
+    db.exec("create table ade_packaged_crr_probe (id text primary key not null, value text)");
+    db.prepare("select crsql_as_crr(?)").get("ade_packaged_crr_probe");
+    db.prepare("insert into ade_packaged_crr_probe (id, value) values (?, ?)").run("probe", "ready");
+    const row = db.prepare(
+      "select count(*) as count from crsql_changes where [table] = ?",
+    ).get<{ count: number | bigint }>("ade_packaged_crr_probe");
+    const changeRows = Number(row?.count ?? 0);
+    if (changeRows < 1) {
+      throw new Error("CR-SQLite loaded but did not record the packaged-runtime probe change.");
+    }
+    return { ok: true, changeRows };
+  } finally {
+    db.close();
+  }
+}
+
 export function getClaudeNativeBinaryPackageName(
   platform: NodeJS.Platform = process.platform,
   arch: string = process.arch,

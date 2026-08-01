@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
+import { createAuthenticodeProbe } from "./windows-authenticode.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
@@ -20,12 +21,15 @@ const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
 // ONNX payloads. The afterPack step now also materializes the bundled ADE
-// runtime's own OpenCode packages (opencode-ai + the platform native package,
-// ~150MB) into app.asar.unpacked so the packaged runtime can launch OpenCode,
-// which raises the legitimate unpacked size. Keep a ceiling to catch runaway
-// bloat, but size it to the current required toolset.
+// runtime's platform-native OpenCode package into app.asar.unpacked so the
+// packaged runtime can launch OpenCode. Keep a ceiling to catch runaway bloat,
+// but size it to the current required toolset.
 const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const isLocalWindowsTestBuild =
+  process.platform === "win32" &&
+  process.env.ADE_WINDOWS_TEST_BUILD === "1" &&
+  process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -71,6 +75,25 @@ function hasFlag(name) {
 
 function shouldRequireSignedArtifacts() {
   return hasFlag("--require-signed") || process.env.ADE_REQUIRE_WIN_SIGNING === "1";
+}
+
+function normalizeCertificateThumbprint(value) {
+  return value?.replace(/\s+/g, "").toUpperCase() ?? "";
+}
+
+function expectedWindowsSigningIdentity() {
+  if (!shouldRequireSignedArtifacts()) return null;
+  const subject = process.env.ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT?.trim() ?? "";
+  const thumbprint = normalizeCertificateThumbprint(
+    process.env.ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT,
+  );
+  if (!subject && !thumbprint) {
+    fail(
+      "Signed Windows validation requires ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT " +
+        "or ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT so the release cannot be signed by an unexpected publisher.",
+    );
+  }
+  return { subject, thumbprint };
 }
 
 function resolveAbsolute(input) {
@@ -210,10 +233,31 @@ function parseWinTargets() {
   });
 }
 
+function resolveExpectedReleaseRepository() {
+  const configured = (
+    process.env.ADE_RELEASE_REPOSITORY?.trim()
+    || `${pkg.build?.publish?.owner ?? ""}/${pkg.build?.publish?.repo ?? ""}`
+  ).replace(/^\/+|\/+$/g, "");
+  const match = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(configured);
+  if (!match) {
+    fail(`Expected ADE_RELEASE_REPOSITORY to be owner/repo, received: ${configured || "empty"}`);
+  }
+  return { owner: match[1], repo: match[2] };
+}
+
+function runtimeResourceFilter() {
+  return [
+    ...(Array.isArray(pkg.build?.extraResources) ? pkg.build.extraResources : []),
+    ...(Array.isArray(pkg.build?.win?.extraResources) ? pkg.build.win.extraResources : []),
+  ].filter((entry) => entry?.to === "runtime")
+    .flatMap((entry) => Array.isArray(entry?.filter) ? entry.filter : []);
+}
 function validatePreflight() {
   requireFile("build/icon.ico", "Windows app icon");
   requireFile("scripts/ade-cli-windows-wrapper.cmd", "Windows ADE CLI wrapper");
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
+  requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
+  requireFile("build/installer.nsh", "Windows NSIS customization");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 
   assertRequiredBundledAdeCliFiles(resolveBundledAdeCliFiles({ allowMissingSources: true }));
@@ -238,11 +282,26 @@ function validatePreflight() {
     fail("package.json build.win.target must pin NSIS to x64 until a Windows ARM64 cr-sqlite binary is bundled");
   }
 
-  if (typeof pkg.scripts?.["dist:win"] !== "string" || !/\s--x64(?:\s|$)/.test(pkg.scripts["dist:win"])) {
-    fail("package.json scripts.dist:win must pass --x64 until a Windows ARM64 cr-sqlite binary is bundled");
+  if (typeof pkg.scripts?.["package:win"] !== "string" || !/\s--x64(?:\s|$)/.test(pkg.scripts["package:win"])) {
+    fail("package.json scripts.package:win must pass --x64 until a Windows ARM64 cr-sqlite binary is bundled");
   }
   if (typeof pkg.scripts?.["dist:win"] !== "string" || !pkg.scripts["dist:win"].includes("validate:win:release")) {
     fail("package.json scripts.dist:win must validate the packaged Windows release output");
+  }
+
+  const runtimeFilter = new Set(runtimeResourceFilter());
+  for (const target of REMOTE_RUNTIME_TARGETS) {
+    for (const suffix of ["", ".native.tar.gz"]) {
+      const fileName = `ade-${target}${suffix}`;
+      if (!runtimeFilter.has(fileName)) {
+        fail(`package.json build.extraResources runtime filter must include ${fileName}`);
+      }
+    }
+  }
+
+  const staticUpdateResource = pkg.build?.extraResources?.find((entry) => entry?.to === "app-update.yml");
+  if (staticUpdateResource) {
+    fail("app-update.yml must be generated from electron-builder publish configuration, not copied as a static extraResource");
   }
 
   console.log("[validate-win-artifacts] Windows package inputs are present.");
@@ -476,16 +535,19 @@ async function validatePackageHygiene(resourcesPath) {
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@openai", "codex-linux-x64"), "Codex Linux x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-arm64"), "Cursor macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "@cursor", "sdk-darwin-x64"), "Cursor macOS x64 payload in Windows package");
+  await assertPathExists(path.join(unpackedPath, "node_modules", "@cursor", "sdk-win32-x64", "bin", "rg.exe"), "Cursor Windows x64 ripgrep helper");
+  await assertPathExists(path.join(unpackedPath, "node_modules", "@cursor", "sdk-win32-x64", "bin", "cursorsandbox.exe"), "Cursor Windows x64 sandbox helper");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "node-pty", "build", "Release", "conpty"), "duplicate node-pty build conpty payload in Windows package");
   await assertPathMissing(
     path.join(unpackedPath, "node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
   // The afterPack step (ensureOpenCodeRuntimePackages) now deliberately bundles
-  // the on-target OpenCode native package into app.asar.unpacked so opencode-ai
-  // can resolve its sibling `opencode.exe` at runtime. Require it present; the
-  // off-target / baseline / arm64 variants below must still be absent.
+  // the on-target OpenCode native package into app.asar.unpacked. Require it
+  // present; the duplicate opencode-ai install shim and all off-target variants
+  // must be absent.
   await assertPathExists(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "bundled OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "duplicate OpenCode Windows executable");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
@@ -498,6 +560,22 @@ async function validatePackageHygiene(resourcesPath) {
   console.log("[validate-win-artifacts] Package hygiene passed.");
 }
 
+async function validatePackagedUpdateAuthority(resourcesPath) {
+  const appUpdatePath = path.join(resourcesPath, "app-update.yml");
+  await assertPathExists(appUpdatePath, "electron-builder app-update.yml");
+  const updateConfig = parseYaml(await fsp.readFile(appUpdatePath, "utf8"));
+  const expected = resolveExpectedReleaseRepository();
+  if (
+    updateConfig?.provider !== "github"
+    || updateConfig?.owner !== expected.owner
+    || updateConfig?.repo !== expected.repo
+  ) {
+    fail(
+      `Packaged update authority must be github:${expected.owner}/${expected.repo}, got `
+      + `${String(updateConfig?.provider)}:${String(updateConfig?.owner)}/${String(updateConfig?.repo)}`,
+    );
+  }
+}
 async function validatePackagedRuntime(appDir) {
   const appExe = path.join(appDir, `${productName}.exe`);
   const resourcesPath = path.join(appDir, "resources");
@@ -505,6 +583,7 @@ async function validatePackagedRuntime(appDir) {
   const unpackedPath = path.join(resourcesPath, "app.asar.unpacked");
   const adeCliBinPath = path.join(resourcesPath, "ade-cli", "bin", "ade.cmd");
   const adeCliInstallerPath = path.join(resourcesPath, "ade-cli", "install-path.cmd");
+  const uninstallCleanupPath = path.join(resourcesPath, "ade-cli", "windows-uninstall-cleanup.ps1");
   const adeCliTuiPath = path.join(resourcesPath, "ade-cli", "tuiClient", "cli.mjs");
   const bundledAgentSkillsRoot = path.join(resourcesPath, "agent-skills");
   const nodeModulesPath = path.join(unpackedPath, "node_modules");
@@ -518,6 +597,7 @@ async function validatePackagedRuntime(appDir) {
   await assertPathExists(appExe, "packaged Windows app executable");
   await assertPathExists(appAsarPath, "app.asar payload");
   await assertPathExists(unpackedPath, "app.asar.unpacked runtime payload");
+  await assertPathExists(uninstallCleanupPath, "packaged Windows uninstall cleanup script");
   for (const resource of bundledAdeCliFiles) {
     await assertPathExists(
       path.join(resourcesPath, resource.to),
@@ -535,7 +615,14 @@ async function validatePackagedRuntime(appDir) {
       fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
     }
   }
-  await assertRemoteRuntimeBundle(resourcesPath);
+  if (isLocalWindowsTestBuild) {
+    console.warn(
+      "[validate-win-artifacts] Local test build: skipping macOS/Linux remote runtime sidecars.",
+    );
+  } else {
+    await assertRemoteRuntimeBundle(resourcesPath);
+  }
+  await validatePackagedUpdateAuthority(resourcesPath);
   await validatePackageHygiene(resourcesPath);
 
   const nodePtyAddon = await findNodePtyAddon(nodePtyModulePath);
@@ -569,28 +656,57 @@ async function validatePackagedRuntime(appDir) {
   if (!payload?.ptyProbe?.ok) {
     fail("Packaged smoke failed to execute a PTY probe");
   }
+  if (!payload?.crsqliteProbe?.ok || Number(payload.crsqliteProbe.changeRows) < 1) {
+    fail("Packaged smoke failed to load crsqlite.dll and record a CRR change");
+  }
   if (payload?.claudeQuery !== "function") {
     fail(`Packaged smoke expected Claude SDK query() to be available, got ${String(payload?.claudeQuery)}`);
   }
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     fail("Packaged smoke did not report a Claude executable path");
   }
+  if (payload?.claudeExecutableSource !== "bundled") {
+    fail(`Claude executable source must be bundled, got ${String(payload?.claudeExecutableSource)} at ${String(payload?.claudeExecutablePath)}`);
+  }
+  await assertPathExists(payload.claudeExecutablePath, "bundled Claude executable");
   if (!payload?.claudeStartup || typeof payload.claudeStartup !== "object") {
     fail("Packaged smoke did not report a Claude startup result");
   }
   if (payload.claudeStartup.state === "binary-missing") {
-    console.warn("[validate-win-artifacts] Claude CLI is not installed on this machine; skipping live Claude startup check.");
+    fail(`Packaged Claude executable could not start: ${String(payload.claudeStartup.message || "binary missing")}`);
   } else if (payload.claudeStartup.state === "runtime-failed") {
     fail(`Packaged smoke could not start Claude from the packaged app: ${String(payload.claudeStartup.message || "unknown error")}`);
   }
   if (payload?.codexExecutable !== "function") {
     fail(`Packaged smoke expected Codex executable resolver to be available, got ${String(payload?.codexExecutable)}`);
   }
+  if (payload?.codexExecutableSource !== "bundled") {
+    fail(`Codex executable source must be bundled, got ${String(payload?.codexExecutableSource)} at ${String(payload?.codexExecutablePath)}`);
+  }
+  await assertPathExists(payload.codexExecutablePath, "bundled Codex executable");
+  await runCommand(payload.codexExecutablePath, ["--version"], { timeoutMs: 20_000 });
   if (payload?.openCodeExecutable !== "function") {
     fail(`Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
   if (payload?.openCodeExecutableSource !== "bundled") {
     fail(`Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`);
+  }
+  await assertPathExists(payload.openCodeExecutablePath, "bundled OpenCode executable");
+  await runCommand(payload.openCodeExecutablePath, ["--version"], { timeoutMs: 20_000 });
+  if (payload?.cursorSdkCreateAgentPlatform !== "function") {
+    fail(`Packaged smoke expected Cursor SDK createAgentPlatform() to be available, got ${String(payload?.cursorSdkCreateAgentPlatform)}`);
+  }
+  await assertPathExists(payload.cursorNativeRgPath, "packaged Cursor ripgrep helper");
+  await assertPathExists(payload.cursorNativeSandboxPath, "packaged Cursor sandbox helper");
+  await runCommand(payload.cursorNativeRgPath, ["--version"], { timeoutMs: 20_000 });
+  if (payload?.droidSdkCreateSession !== "function") {
+    fail(`Packaged smoke expected Droid SDK createSession() to be available, got ${String(payload?.droidSdkCreateSession)}`);
+  }
+  if (payload?.droidExecutableSource !== "fallback-command") {
+    await assertPathExists(payload.droidExecutablePath, "resolved user-installed Droid executable");
+    await runCommand(payload.droidExecutablePath, ["--version"], { timeoutMs: 20_000 });
+  } else {
+    console.log("[validate-win-artifacts] Droid SDK loaded; the optional user-managed Droid CLI is not installed on this package host.");
   }
 
   const defaultHelp = await runCommand(adeCliBinPath, ["--help"], {
@@ -668,28 +784,18 @@ async function validatePackagedRuntime(appDir) {
   console.log(`[validate-win-artifacts] Windows packaged runtime smoke passed: ${path.relative(appDir, nodePtyAddon)}`);
 }
 
-async function validateAuthenticodeSignature(filePath, description) {
-  if (!shouldRequireSignedArtifacts()) return;
+async function validateAuthenticodeSignature(filePath, description, expectedIdentity) {
+  if (!shouldRequireSignedArtifacts()) return null;
   if (process.platform !== "win32") {
     fail(`Cannot verify Authenticode signature for ${description} on ${process.platform}; run signed Windows validation on Windows.`);
   }
 
-  const script = [
-    "$sig = Get-AuthenticodeSignature -LiteralPath $args[0]",
-    "[pscustomobject]@{",
-    "  Status = [string]$sig.Status;",
-    "  StatusMessage = [string]$sig.StatusMessage;",
-    "  Subject = if ($sig.SignerCertificate) { [string]$sig.SignerCertificate.Subject } else { $null }",
-    "} | ConvertTo-Json -Compress",
-  ].join("\n");
-  const { stdout } = await runCommand("powershell.exe", [
-    "-NoProfile",
-    "-ExecutionPolicy",
-    "Bypass",
-    "-Command",
-    script,
-    filePath,
-  ]);
+  // powershell.exe joins every token after -Command into the command text.
+  // Passing filePath as a trailing argv value therefore turns it into source
+  // code instead of $args[0]. Carry it in the child environment so paths with
+  // spaces and PowerShell metacharacters remain data.
+  const probe = createAuthenticodeProbe(filePath);
+  const { stdout } = await runCommand(probe.command, probe.args, { env: probe.env });
 
   let payload;
   try {
@@ -704,6 +810,32 @@ async function validateAuthenticodeSignature(filePath, description) {
         `${payload?.Status ?? "unknown"} ${payload?.StatusMessage ?? ""}`.trim(),
     );
   }
+  if (!payload?.TimestampSubject) {
+    fail(`${description} has no trusted Authenticode timestamp`);
+  }
+  const identity = {
+    subject: String(payload?.Subject ?? "").trim(),
+    thumbprint: normalizeCertificateThumbprint(String(payload?.Thumbprint ?? "")),
+  };
+  if (!identity.subject || !identity.thumbprint) {
+    fail(`${description} has no readable Authenticode signer identity`);
+  }
+  if (
+    expectedIdentity.subject
+    && identity.subject.toLocaleLowerCase("en-US") !== expectedIdentity.subject.toLocaleLowerCase("en-US")
+  ) {
+    fail(
+      `${description} was signed by an unexpected publisher. ` +
+        `Expected "${expectedIdentity.subject}", received "${identity.subject}".`,
+    );
+  }
+  if (expectedIdentity.thumbprint && identity.thumbprint !== expectedIdentity.thumbprint) {
+    fail(
+      `${description} was signed by an unexpected certificate thumbprint. ` +
+        `Expected ${expectedIdentity.thumbprint}, received ${identity.thumbprint}.`,
+    );
+  }
+  return identity;
 }
 
 async function validateReleaseArtifacts() {
@@ -722,8 +854,27 @@ async function validateReleaseArtifacts() {
   await assertPathExists(appDir, "win-unpacked app directory");
   await validateLatestYaml(latestPath, installerPath);
   await validatePackagedRuntime(appDir);
-  await validateAuthenticodeSignature(installerPath, "Windows installer");
-  await validateAuthenticodeSignature(path.join(appDir, `${productName}.exe`), "packaged Windows app executable");
+  const expectedIdentity = expectedWindowsSigningIdentity();
+  const installerIdentity = await validateAuthenticodeSignature(
+    installerPath,
+    "Windows installer",
+    expectedIdentity,
+  );
+  const appIdentity = await validateAuthenticodeSignature(
+    path.join(appDir, `${productName}.exe`),
+    "packaged Windows app executable",
+    expectedIdentity,
+  );
+  if (
+    installerIdentity
+    && appIdentity
+    && installerIdentity.thumbprint !== appIdentity.thumbprint
+  ) {
+    fail(
+      "Windows installer and packaged executable were signed by different certificates: " +
+        `${installerIdentity.thumbprint} versus ${appIdentity.thumbprint}.`,
+    );
+  }
 
   console.log("[validate-win-artifacts] Windows release artifacts passed updater and packaged-runtime checks.");
 }

@@ -56,8 +56,13 @@ if "%ADE_SKIP_USER_PATH_UPDATE%"=="1" (
 exit /b 0
 
 :ensure_user_path
+setlocal DisableDelayedExpansion
 set "PATH_DIR=%~1"
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($args[0]).TrimEnd('\'); $current=[Environment]::GetEnvironmentVariable('Path','User'); $entries=if ([string]::IsNullOrWhiteSpace($current)) { @() } else { $current -split ';' | Where-Object { $_.Trim().Length -gt 0 } }; foreach ($entry in $entries) { try { if ([System.IO.Path]::GetFullPath($entry).TrimEnd('\').ToLowerInvariant() -eq $target.ToLowerInvariant()) { exit 0 } } catch {} }; $next=if ([string]::IsNullOrWhiteSpace($current)) { $target } else { $target + ';' + $current }; [Environment]::SetEnvironmentVariable('Path',$next,'User')" "%PATH_DIR%" >nul 2>nul
+rem powershell.exe appends tokens after -Command to the command text instead of
+rem exposing them through $args. Carry the path in the child environment so
+rem spaces and PowerShell metacharacters remain data.
+set "ADE_CLI_PATH_TARGET=%PATH_DIR%"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$target=[System.IO.Path]::GetFullPath($env:ADE_CLI_PATH_TARGET).TrimEnd('\'); $current=[Environment]::GetEnvironmentVariable('Path','User'); $entries=if ([string]::IsNullOrWhiteSpace($current)) { @() } else { $current -split ';' | Where-Object { $_.Trim().Length -gt 0 } }; foreach ($entry in $entries) { try { if ([System.IO.Path]::GetFullPath($entry).TrimEnd('\').ToLowerInvariant() -eq $target.ToLowerInvariant()) { exit 0 } } catch {} }; $next=if ([string]::IsNullOrWhiteSpace($current)) { $target } else { $target + ';' + $current }; [Environment]::SetEnvironmentVariable('Path',$next,'User')" >nul 2>nul
 if errorlevel 1 (
   echo ade install: failed to update the user PATH. Add %PATH_DIR% manually. 1>&2
   exit /b 1

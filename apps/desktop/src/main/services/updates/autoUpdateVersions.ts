@@ -1,4 +1,5 @@
 export const DEFAULT_RELEASE_NOTES_BASE_URL = "https://www.ade-app.dev";
+export const DEFAULT_RELEASE_REPOSITORY = "arul28/ADE";
 
 function parseVersion(version: string): {
   core: number[];
@@ -61,11 +62,17 @@ export function buildReleaseNotesUrl(
   return `${normalizedBaseUrl}/docs/changelog/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
 
-// Deterministic GitHub release page for a version tag, e.g.
-// https://github.com/arul28/ADE/releases/tag/v1.2.18 — the same repo the
-// updater feed targets.
-export function buildGithubReleaseUrl(version: string): string | null {
+// Deterministic GitHub release page for a version tag in the same repository
+// that electron-builder targets for packaged updates.
+export function buildGithubReleaseUrl(
+  version: string,
+  repository = DEFAULT_RELEASE_REPOSITORY,
+): string | null {
   const normalizedVersion = version.trim().replace(/^v/i, "");
-  if (!normalizedVersion) return null;
-  return `https://github.com/arul28/ADE/releases/tag/${encodeURIComponent(`v${normalizedVersion}`)}`;
+  const normalizedRepository = repository.trim().replace(/^\/+|\/+$/g, "");
+  if (
+    !normalizedVersion
+    || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalizedRepository)
+  ) return null;
+  return `https://github.com/${normalizedRepository}/releases/tag/${encodeURIComponent(`v${normalizedVersion}`)}`;
 }
