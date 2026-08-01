@@ -3852,6 +3852,7 @@ final class SyncService: ObservableObject {
   @Published private(set) var ctoAttention: CtoAttention = .idle
 
   private var ctoAttentionTask: Task<Void, Never>?
+  private var ctoAttentionGeneration: UInt64 = 0
   private var lastCtoAttentionFetchAt: Date?
 
   /// 2s debounce task shared by all writers of the App Group workspace
@@ -4824,6 +4825,7 @@ final class SyncService: ObservableObject {
         }
     let scopeChanged = previousProjectId != nextProjectId || previousRootPath != nextRootPath
     if scopeChanged {
+      resetCtoAttentionForProjectScopeChange()
       cancelAllTerminalSnapshotRecovery()
       terminalSnapshotRequestTokens.removeAll()
       prepareOutboundStateForProjectScopeChange()
@@ -4919,6 +4921,14 @@ final class SyncService: ObservableObject {
       setActiveProjectId(onlyProject.id, rootPath: onlyProject.rootPath)
       projectHubPresented = false
     }
+  }
+
+  private func resetCtoAttentionForProjectScopeChange() {
+    ctoAttentionGeneration &+= 1
+    ctoAttentionTask?.cancel()
+    ctoAttentionTask = nil
+    lastCtoAttentionFetchAt = nil
+    ctoAttention = .idle
   }
 
   private func normalizedProjectRoot(_ rootPath: String?) -> String? {
@@ -15650,6 +15660,10 @@ final class SyncService: ObservableObject {
     resetOutboundCursorStateForActiveProject()
   }
 
+  func setCtoAttentionForTesting(_ attention: CtoAttention) {
+    ctoAttention = attention
+  }
+
   func ensureActiveProjectCacheRowForTesting() throws {
     try ensureActiveProjectCacheRowForHydration()
   }
@@ -19297,11 +19311,17 @@ extension SyncService {
     guard ctoAttentionTask == nil else { return }
     if !force, let last = lastCtoAttentionFetchAt, Date().timeIntervalSince(last) < 5 { return }
     lastCtoAttentionFetchAt = Date()
+    let generation = ctoAttentionGeneration
     ctoAttentionTask = Task { [weak self] in
       guard let self else { return }
-      defer { self.ctoAttentionTask = nil }
+      defer {
+        if self.ctoAttentionGeneration == generation {
+          self.ctoAttentionTask = nil
+        }
+      }
       do {
         let next = try await self.fetchCtoAttention()
+        guard self.ctoAttentionGeneration == generation else { return }
         self.ctoAttention = self.ctoAttention.updating(with: next)
       } catch {
         // Keep the last known state on a transport failure. Host-side probe

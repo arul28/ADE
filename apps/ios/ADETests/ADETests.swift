@@ -16947,6 +16947,21 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(idle.updating(with: waiting), waiting)
   }
 
+  @MainActor
+  func testCtoAttentionResetsWhenActiveProjectChanges() {
+    let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
+    service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/project-a")
+    service.setCtoAttentionForTesting(CtoAttention(
+      status: .awaitingInput,
+      awaitingInput: true,
+      since: "2026-07-31T00:00:00Z"
+    ))
+
+    service.setActiveProjectForTesting(projectId: "project-b", rootPath: "/tmp/project-b")
+
+    XCTAssertEqual(service.ctoAttention, .idle)
+  }
+
   func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {
     func identity(_ state: CtoOnboardingState?) -> CtoIdentity {
       CtoIdentity(
