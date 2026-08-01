@@ -1050,7 +1050,7 @@ describe("CommandPalette", () => {
     render(
       <MemoryRouter>
         <LocationProbe />
-        <CommandPalette open intent="command" onOpenChange={vi.fn()} />
+        <CommandPalette open intent="default" onOpenChange={vi.fn()} />
       </MemoryRouter>,
     );
 
@@ -1074,7 +1074,7 @@ describe("CommandPalette", () => {
     seedStore();
     render(
       <MemoryRouter>
-        <CommandPalette open intent="command" onOpenChange={vi.fn()} />
+        <CommandPalette open intent="default" onOpenChange={vi.fn()} />
       </MemoryRouter>,
     );
 
