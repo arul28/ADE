@@ -134,10 +134,10 @@ describe("AgentCliAuthCard", () => {
     expect(screen.getByText(/Install the CLI on Mac Studio/i)).toBeTruthy();
   });
 
-  it("names This Mac absolutely when no runtime name is supplied", () => {
+  it("names This computer absolutely when no runtime name is supplied", () => {
     render(<AgentCliAuthCard agentCli={missingCli} />);
 
-    expect(screen.getByText(/Install the CLI on This Mac/)).toBeTruthy();
+    expect(screen.getByText(/Install the CLI on This computer/)).toBeTruthy();
     expect(screen.queryByText(/this machine/i)).toBeNull();
   });
 

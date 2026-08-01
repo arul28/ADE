@@ -15,6 +15,11 @@ import { JsonRpcClient } from "../jsonRpcClient";
 import { startTuiHeartbeat, type TuiHeartbeat } from "../heartbeat";
 import { ProcessJsonRpcClient } from "../remoteBridge";
 import {
+  socketSpawnLockPath,
+  withSocketSpawnLock,
+} from "../../services/runtime/socketSpawnLock";
+import { resolveMachineAdeLayout } from "../../services/projects/machineLayout";
+import {
   appendDedupedTuiEvent,
   appendReservedTuiEvent,
   dedupeTuiEvents,
@@ -123,7 +128,15 @@ function useMissingMachineSocket(): string {
   const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-machine-"));
   process.env.ADE_HOME = adeHome;
   delete process.env.ADE_RPC_SOCKET_PATH;
-  return path.join(adeHome, "sock", "ade.sock");
+  return resolveMachineAdeLayout().socketPath;
+}
+
+let nextTestPipeId = 1;
+
+function localTestSocketPath(tmpDir: string, fileName: string): string {
+  if (process.platform !== "win32") return path.join(tmpDir, fileName);
+  const stem = fileName.replace(/[^a-zA-Z0-9_-]+/g, "-");
+  return `\\\\.\\pipe\\ade-code-${process.pid}-${nextTestPipeId++}-${stem}`;
 }
 
 function mockAttachedClient(): {
@@ -255,7 +268,7 @@ describe("connectToAde embedded mode", () => {
 
   it("does not silently fall back to embedded mode when socket attach fails", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-missing-socket-"));
-    const socketPath = path.join(tmpDir, "missing.sock");
+    const socketPath = localTestSocketPath(tmpDir, "missing.sock");
 
     await expect(connectToAde({
       project,
@@ -267,7 +280,7 @@ describe("connectToAde embedded mode", () => {
 
   it("explains remote bridge failures without exposing its temporary socket path", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-bridge-"));
-    const socketPath = path.join(tmpDir, "bridge.sock");
+    const socketPath = localTestSocketPath(tmpDir, "bridge.sock");
 
     try {
       await expect(connectToAde({
@@ -298,7 +311,7 @@ describe("connectToAde embedded mode", () => {
 
   it("rejects a direct socket whose runtime role is stale", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-stale-role-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const requests: string[] = [];
     const server = net.createServer((socket) => {
       let buffer = "";
@@ -333,7 +346,7 @@ describe("connectToAde embedded mode", () => {
 
   it("allows remote sockets to differ by build hash and project root", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-remote-socket-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const requests: string[] = [];
     const server = net.createServer((socket) => {
       let buffer = "";
@@ -377,7 +390,7 @@ describe("connectToAde embedded mode", () => {
 
   it("registers the project and injects projectId when attached to the machine daemon", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const server = net.createServer((socket) => {
       let buffer = "";
@@ -455,7 +468,7 @@ describe("connectToAde embedded mode", () => {
 
   it("promotes the project to a recent catalog row for an interactive launch", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const server = net.createServer((socket) => {
       let buffer = "";
@@ -512,7 +525,7 @@ describe("connectToAde embedded mode", () => {
 
   it("adapts multi-project runtime chat events into the TUI chat stream", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const serverSocketRef: { current: net.Socket | null } = { current: null };
     const requests: Array<{ method: string; params?: Record<string, unknown> }> = [];
     const server = net.createServer((socket) => {
@@ -599,7 +612,7 @@ describe("connectToAde embedded mode", () => {
 
   it("surfaces runtime event replay gaps to subscribers", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-connection-gap-"));
-    const socketPath = path.join(tmpDir, "ade.sock");
+    const socketPath = localTestSocketPath(tmpDir, "ade.sock");
     const server = net.createServer((socket) => {
       let buffer = "";
       socket.on("error", () => {});
@@ -706,7 +719,7 @@ describe("connectToAde embedded mode", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
   });
 
-  it("rechecks the machine socket after taking the spawn lock", async () => {
+  it.skipIf(process.platform === "win32")("rechecks the machine socket after taking the spawn lock", async () => {
     const socketPath = useMissingMachineSocket();
     const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
     fs.mkdirSync(path.dirname(lockPath), { recursive: true });
@@ -727,6 +740,23 @@ describe("connectToAde embedded mode", () => {
 
     expect(childProcess.spawn).toHaveBeenCalledTimes(1);
     expect(client.request).toHaveBeenCalled();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
+  it("keeps Windows named-pipe spawn locks in the per-user ADE runtime directory", async () => {
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-pipe-lock-"));
+    process.env.ADE_HOME = adeHome;
+    const socketPath = `\\\\.\\pipe\\ade-runtime-stable-${process.pid}`;
+    const lockPath = socketSpawnLockPath(socketPath);
+    let ran = false;
+
+    await withSocketSpawnLock(socketPath, async () => {
+      ran = true;
+      expect(fs.existsSync(lockPath)).toBe(true);
+    });
+
+    expect(ran).toBe(true);
+    expect(path.dirname(lockPath)).toBe(path.join(adeHome, "runtime", "spawn-locks"));
     expect(fs.existsSync(lockPath)).toBe(false);
   });
 
@@ -765,7 +795,7 @@ describe("connectToAde embedded mode", () => {
     expect(childProcess.spawn).toHaveBeenCalledTimes(2);
   });
 
-  it("unlinks stale machine socket files before retrying daemon startup", async () => {
+  it.skipIf(process.platform === "win32")("unlinks stale machine socket files before retrying daemon startup", async () => {
     const socketPath = useMissingMachineSocket();
     fs.mkdirSync(path.dirname(socketPath), { recursive: true });
     fs.writeFileSync(socketPath, "");
@@ -945,7 +975,7 @@ function closeServer(server: net.Server): Promise<void> {
 describe("JsonRpcClient", () => {
   it("handles framed notifications before JSONL responses", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
@@ -986,7 +1016,7 @@ describe("JsonRpcClient", () => {
 
   it("honors byte-based Content-Length framing for unicode payloads", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
@@ -1025,7 +1055,7 @@ describe("JsonRpcClient", () => {
 
   it("matches responses whose ids are echoed as strings", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     const server = net.createServer((socket) => {
       let buffer = "";
       socket.on("data", (chunk) => {
@@ -1061,7 +1091,7 @@ describe("JsonRpcClient", () => {
 
   it("handles large Content-Length frames split across many chunks", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
@@ -1102,7 +1132,7 @@ describe("JsonRpcClient", () => {
 
   it("fires onClose when the socket drops unexpectedly", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
@@ -1124,7 +1154,7 @@ describe("JsonRpcClient", () => {
 
   it("does not fire onClose on an intentional close()", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     const server = net.createServer(() => {});
     await listenRpc(server, socketPath);
     const client = await JsonRpcClient.connect(socketPath);
@@ -1142,7 +1172,7 @@ describe("JsonRpcClient", () => {
 
   it("times out pending requests by tearing down the socket", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;
@@ -1170,7 +1200,7 @@ describe("JsonRpcClient", () => {
 
   it("fails the connection on parse garbage instead of continuing", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-jsonrpc-"));
-    const socketPath = path.join(tmpDir, "rpc.sock");
+    const socketPath = localTestSocketPath(tmpDir, "rpc.sock");
     let resolveServerSocket: (socket: net.Socket) => void = () => {};
     const serverSocketReady = new Promise<net.Socket>((resolve) => {
       resolveServerSocket = resolve;

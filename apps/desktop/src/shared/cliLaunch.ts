@@ -549,7 +549,7 @@ export function buildTrackedCliLaunchCommand(args: {
     return {
       command: "claude",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["claude", ...shellArgs]),
+      startupCommand: commandArrayToLine(["claude", ...shellArgs], { platform: "linux" }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -570,7 +570,7 @@ export function buildTrackedCliLaunchCommand(args: {
     return {
       command: "codex",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["codex", ...commandArgs]),
+      startupCommand: commandArrayToLine(["codex", ...commandArgs], { platform: "linux" }),
       ...(usePromptArg ? {} : { initialInput, initialInputDelayMs: 750 }),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -586,7 +586,7 @@ export function buildTrackedCliLaunchCommand(args: {
     return {
       command: "cursor-agent",
       args: commandArgs,
-      startupCommand: commandArrayToLine(["cursor-agent", ...commandArgs]),
+      startupCommand: commandArrayToLine(["cursor-agent", ...commandArgs], { platform: "linux" }),
       ...(initialInput ? { initialInput, initialInputDelayMs: 750 } : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
@@ -826,7 +826,7 @@ function droidPowerShellCommand(args: {
   ].join(" ");
   return [
     "$env:ADE_DROID_SETTINGS = [System.IO.Path]::Combine([System.IO.Path]::GetTempPath(), [System.IO.Path]::GetRandomFileName() + '.json')",
-    `Set-Content -LiteralPath $env:ADE_DROID_SETTINGS -NoNewline -Value ${quotePowerShellArg(settingsJson)}`,
+    `[System.IO.File]::WriteAllText($env:ADE_DROID_SETTINGS, ${quotePowerShellArg(settingsJson)}, [System.Text.UTF8Encoding]::new($false))`,
     `& ${argv}`,
     "$ADE_DROID_STATUS = $LASTEXITCODE",
     "Remove-Item -LiteralPath $env:ADE_DROID_SETTINGS -ErrorAction SilentlyContinue",
@@ -848,11 +848,14 @@ function buildDroidCommandLine(args: {
     if (args.resumeTarget) droidArgs.push(args.resumeTarget);
   }
   if (args.prompt) droidArgs.push(args.prompt);
-  const droidCommand = commandArrayToLine(droidArgs)
-    .replace(quoteShellArg("$ADE_DROID_SETTINGS"), "\"$ADE_DROID_SETTINGS\"");
+  const droidCommand = commandArrayToLine(droidArgs, { platform: "linux" })
+    .replace(
+      quoteShellArg("$ADE_DROID_SETTINGS", { platform: "linux" }),
+      "\"$ADE_DROID_SETTINGS\"",
+    );
   return [
     "ADE_DROID_SETTINGS=\"$(mktemp \"${TMPDIR:-/tmp}/ade-droid-settings.XXXXXX.json\")\"",
-    `printf %s ${quoteShellArg(settingsJson)} > "$ADE_DROID_SETTINGS"`,
+    `printf %s ${quoteShellArg(settingsJson, { platform: "linux" })} > "$ADE_DROID_SETTINGS"`,
     `${droidCommand}; ADE_DROID_STATUS=$?; rm -f "$ADE_DROID_SETTINGS"; exit $ADE_DROID_STATUS`,
   ].join(" && ");
 }
@@ -875,7 +878,7 @@ function openCodeConfigEnv(permissionMode: AgentChatPermissionMode | null | unde
 
 function openCodeEnvAssignment(permissionMode: AgentChatPermissionMode | null | undefined): string {
   const config = openCodeConfigEnv(permissionMode);
-  return config ? `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(config)} ` : "";
+  return config ? `${OPENCODE_INLINE_CONFIG_ENV}=${quoteShellArg(config, { platform: "linux" })} ` : "";
 }
 
 function permissionModeToOpenCodeArgs(permissionMode: AgentChatPermissionMode | null | undefined): string[] {
@@ -930,14 +933,14 @@ function buildOpenCodeCommandParts(args: {
   const config = openCodeConfigEnv(args.permissionMode);
   return {
     args: commandArgs,
-    startupCommand: `${openCodeEnvAssignment(args.permissionMode)}${commandArrayToLine(["opencode", ...commandArgs])}`,
+    startupCommand: `${openCodeEnvAssignment(args.permissionMode)}${commandArrayToLine(["opencode", ...commandArgs], { platform: "linux" })}`,
     ...(config ? { env: { [OPENCODE_INLINE_CONFIG_ENV]: config } } : {}),
   };
 }
 
 export const OPENCODE_RESUME_REPLAY_LIMIT = 40;
 
-export function buildOpenCodeReplayResumeCommand(args: {
+type OpenCodeReplayResumeArgs = {
   permissionMode: AgentChatPermissionMode | null | undefined;
   model?: string | null;
   reasoningEffort?: string | null;
@@ -946,10 +949,13 @@ export function buildOpenCodeReplayResumeCommand(args: {
   resumeTarget?: string | null;
   continueLast?: boolean;
   replayLimit?: number | null;
-}): string {
+};
+
+export function buildOpenCodeReplayResumeLaunchCommand(
+  args: OpenCodeReplayResumeArgs,
+): TrackedCliLaunchCommand {
   const variant = openCodeVariantForLaunch(args);
   const commandArgs = [
-    "opencode",
     "run",
     "--interactive",
     ...permissionModeToOpenCodeArgs(args.permissionMode),
@@ -966,23 +972,36 @@ export function buildOpenCodeReplayResumeCommand(args: {
     ? Math.max(1, Math.floor(Number(args.replayLimit)))
     : OPENCODE_RESUME_REPLAY_LIMIT;
   commandArgs.push("--replay-limit", String(replayLimit), "--", args.prompt);
-  return `${openCodeEnvAssignment(args.permissionMode)}${commandArrayToLine(commandArgs)}`;
+  const config = openCodeConfigEnv(args.permissionMode);
+  return {
+    command: "opencode",
+    args: commandArgs,
+    startupCommand: `${openCodeEnvAssignment(args.permissionMode)}${commandArrayToLine(["opencode", ...commandArgs], { platform: "linux" })}`,
+    ...(config ? { env: { [OPENCODE_INLINE_CONFIG_ENV]: config } } : {}),
+  };
 }
 
-export function buildTrackedCliResumeCommand(
+export function buildOpenCodeReplayResumeCommand(args: OpenCodeReplayResumeArgs): string {
+  return buildOpenCodeReplayResumeLaunchCommand(args).startupCommand;
+}
+
+export type TrackedCliResumeOverrides = {
+  model?: string | null;
+  reasoningEffort?: string | null;
+  fastMode?: boolean | null;
+  permissionMode?: AgentChatPermissionMode | null;
+  codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
+  codexSandbox?: AgentChatCodexSandbox | null;
+  codexConfigSource?: AgentChatCodexConfigSource | null;
+  prompt?: string | null;
+  codexComputerUse?: CodexComputerUseCliConfig | null;
+};
+
+export function buildTrackedCliResumeLaunchCommand(
   metadata: TerminalResumeMetadata,
-  overrides: {
-    model?: string | null;
-    reasoningEffort?: string | null;
-    fastMode?: boolean | null;
-    permissionMode?: AgentChatPermissionMode | null;
-    codexApprovalPolicy?: AgentChatCodexApprovalPolicy | null;
-    codexSandbox?: AgentChatCodexSandbox | null;
-    codexConfigSource?: AgentChatCodexConfigSource | null;
-    prompt?: string | null;
-    codexComputerUse?: CodexComputerUseCliConfig | null;
-  } = {},
-): string {
+  overrides: TrackedCliResumeOverrides = {},
+  options: { platform?: NodeJS.Platform } = {},
+): TrackedCliLaunchCommand {
   const permissionMode = overrides.permissionMode ?? metadata.launch.permissionMode;
   const hasPermissionModeOverride = overrides.permissionMode !== undefined;
   const codexApprovalPolicy = overrides.codexApprovalPolicy !== undefined
@@ -1020,7 +1039,11 @@ export function buildTrackedCliResumeCommand(
     parts.push("--resume");
     if (targetId) parts.push(targetId);
     if (prompt) parts.push(prompt);
-    return commandArrayToLine(parts);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+    };
   }
 
   if (metadata.provider === "codex") {
@@ -1041,7 +1064,11 @@ export function buildTrackedCliResumeCommand(
     parts.push("resume");
     if (targetId) parts.push(targetId);
     if (prompt) parts.push(prompt);
-    return commandArrayToLine(parts);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+    };
   }
 
   if (metadata.provider === "cursor") {
@@ -1059,7 +1086,11 @@ export function buildTrackedCliResumeCommand(
       parts.push("--continue");
     }
     if (prompt) parts.push(prompt);
-    return commandArrayToLine(parts);
+    return {
+      command: parts[0]!,
+      args: parts.slice(1),
+      startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+    };
   }
 
   if (metadata.provider === "droid") {
@@ -1068,15 +1099,33 @@ export function buildTrackedCliResumeCommand(
       if (targetId) parts.push("--resume", targetId);
       else parts.push("--resume");
       if (prompt) parts.push(prompt);
-      return commandArrayToLine(parts);
+      return {
+        command: parts[0]!,
+        args: parts.slice(1),
+        startupCommand: commandArrayToLine(parts, { platform: "linux" }),
+      };
     }
-    return buildDroidCommandLine({
+    const droidArgs = {
       permissionMode,
       model,
       reasoningEffort,
       ...(prompt ? { prompt } : {}),
       resumeTarget: targetId || null,
-    });
+    };
+    if ((options.platform ?? process.platform) === "win32") {
+      const startupCommand = droidPowerShellCommand(droidArgs);
+      return {
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", startupCommand],
+        startupCommand,
+      };
+    }
+    const startupCommand = buildDroidCommandLine(droidArgs);
+    return {
+      command: "/bin/bash",
+      args: ["-lc", startupCommand],
+      startupCommand,
+    };
   }
 
   const opencode = buildOpenCodeCommandParts({
@@ -1088,7 +1137,21 @@ export function buildTrackedCliResumeCommand(
     resumeTarget: targetId || null,
     continueLast: !targetId,
   });
-  return opencode.startupCommand;
+  return {
+    command: "opencode",
+    args: opencode.args,
+    startupCommand: opencode.startupCommand,
+    ...(opencode.env ? { env: opencode.env } : {}),
+  };
+}
+
+export function buildTrackedCliResumeCommand(
+  metadata: TerminalResumeMetadata,
+  overrides: TrackedCliResumeOverrides = {},
+): string {
+  // Persisted/display commands retain the established POSIX representation.
+  // The PTY resume path consumes the structured descriptor on Windows.
+  return buildTrackedCliResumeLaunchCommand(metadata, overrides, { platform: "linux" }).startupCommand;
 }
 
 export function resolveTrackedCliResumeCommand(session: Pick<TerminalSessionSummary, "resumeCommand" | "resumeMetadata">): string | null {

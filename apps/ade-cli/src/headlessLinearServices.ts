@@ -444,6 +444,7 @@ function runCommandAsync(
         encoding: "utf8",
         timeout: options.timeoutMs,
         maxBuffer: options.maxBuffer ?? 10 * 1024 * 1024,
+        windowsHide: true,
       },
       (error, stdout, stderr) => {
         resolve({
@@ -473,6 +474,7 @@ function ghAuthToken(): Pick<HeadlessGitHubTokenLookup, "token" | "ghCliPath" | 
     const result = spawnSync(ghCliPath, ["auth", "token"], {
       encoding: "utf8",
       timeout: 5_000,
+      windowsHide: true,
     });
     const token = result.status === 0 ? (result.stdout?.trim() ?? "") : "";
     if (token.length > 0) {

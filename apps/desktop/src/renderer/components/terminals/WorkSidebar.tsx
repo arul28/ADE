@@ -34,6 +34,7 @@ import {
   type WorkPtyContextInsertKind,
 } from "../../lib/workPtyContextEvents";
 import { formatToolTypeLabel } from "../../lib/sessions";
+import { isMacPlatform } from "../../lib/platform";
 import { ChatAppControlPanel } from "../chat/ChatAppControlPanel";
 import { ChatBuiltInBrowserPanel } from "../chat/ChatBuiltInBrowserPanel";
 import { ChatIosSimulatorPanel } from "../chat/ChatIosSimulatorPanel";
@@ -93,6 +94,14 @@ const REMOTE_WORK_SIDEBAR_TAB_IDS = new Set<WorkSidebarTab>(["terminal", "git", 
 
 function isRemoteWorkSidebarTab(tab: WorkSidebarTab): boolean {
   return REMOTE_WORK_SIDEBAR_TAB_IDS.has(tab);
+}
+
+function isAvailableWorkSidebarTab(
+  tab: WorkSidebarTab,
+  options: { isRemoteProject: boolean; supportsIosSimulator: boolean },
+): boolean {
+  if (options.isRemoteProject) return isRemoteWorkSidebarTab(tab);
+  return tab !== "ios" || options.supportsIosSimulator;
 }
 
 export type WorkSidebarContextTarget =
@@ -240,15 +249,20 @@ export function WorkSidebar({
   const [browserStatus, setBrowserStatus] = useState<BuiltInBrowserStatus | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = useAppStore((state) => state.projectBinding?.kind === "remote");
+  const supportsIosSimulator = isMacPlatform();
   const sidebarRef = useRef<HTMLElement | null>(null);
   const [compactTabs, setCompactTabs] = useState(false);
   const sidebarTabs = useMemo(
-    () => isRemoteProject
-      ? WORK_SIDEBAR_TABS.filter((item) => isRemoteWorkSidebarTab(item.id))
-      : WORK_SIDEBAR_TABS,
-    [isRemoteProject],
+    () => WORK_SIDEBAR_TABS.filter((item) => isAvailableWorkSidebarTab(item.id, {
+      isRemoteProject,
+      supportsIosSimulator,
+    })),
+    [isRemoteProject, supportsIosSimulator],
   );
-  const effectiveTab: WorkSidebarTab = isRemoteProject && !isRemoteWorkSidebarTab(tab) ? "git" : tab;
+  const effectiveTab: WorkSidebarTab = isAvailableWorkSidebarTab(tab, {
+    isRemoteProject,
+    supportsIosSimulator,
+  }) ? tab : "git";
 
   const activeLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -263,10 +277,13 @@ export function WorkSidebar({
   }, [laneId]);
 
   useEffect(() => {
-    if (isRemoteProject && !isRemoteWorkSidebarTab(tab)) {
+    if (!isAvailableWorkSidebarTab(tab, {
+      isRemoteProject,
+      supportsIosSimulator,
+    })) {
       onTabChange("git");
     }
-  }, [isRemoteProject, onTabChange, tab]);
+  }, [isRemoteProject, onTabChange, supportsIosSimulator, tab]);
 
   useEffect(() => {
     const el = sidebarRef.current;

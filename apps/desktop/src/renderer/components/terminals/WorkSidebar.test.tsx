@@ -16,6 +16,8 @@ import { ADE_WORK_PTY_CONTEXT_INSERTED_EVENT } from "../../lib/workPtyContextEve
 import { useAppStore, type WorkSidebarTab } from "../../state/appStore";
 import { WorkSidebar, type WorkSidebarContextTarget } from "./WorkSidebar";
 
+const originalNavigatorPlatform = Object.getOwnPropertyDescriptor(window.navigator, "platform");
+
 vi.mock("../chat/ChatIosSimulatorPanel", async () => {
   const React = await import("react");
   return {
@@ -358,6 +360,10 @@ function renderSidebar(args: {
 
 describe("WorkSidebar context targets", () => {
   beforeEach(() => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "MacIntel",
+    });
     installAdeMock();
   });
 
@@ -365,6 +371,9 @@ describe("WorkSidebar context targets", () => {
     cleanup();
     useAppStore.setState({ project: null, projectBinding: null } as any);
     delete (window as unknown as { ade?: unknown }).ade;
+    if (originalNavigatorPlatform) {
+      Object.defineProperty(window.navigator, "platform", originalNavigatorPlatform);
+    }
     vi.restoreAllMocks();
   });
 
@@ -653,5 +662,26 @@ describe("WorkSidebar context targets", () => {
     expect(window.ade.builtInBrowser.getStatus).not.toHaveBeenCalled();
     expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
     expect(window.ade.appControl.getStatus).not.toHaveBeenCalled();
+  });
+
+  it("hides the macOS-only iOS Simulator pane on Windows", async () => {
+    Object.defineProperty(window.navigator, "platform", {
+      configurable: true,
+      value: "Win32",
+    });
+    const onTabChange = vi.fn();
+
+    renderSidebar({
+      tab: "ios",
+      contextTarget: { kind: "chat", sessionId: "chat-1" },
+      onTabChange,
+    });
+
+    expect(screen.queryByRole("button", { name: "iOS Sim" })).toBeNull();
+    expect(screen.getByRole("button", { name: "App Control" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Browser" })).toBeTruthy();
+    expect(screen.queryByTestId("ios-panel")).toBeNull();
+    await waitFor(() => expect(onTabChange).toHaveBeenCalledWith("git"));
+    expect(window.ade.iosSimulator.getStatus).not.toHaveBeenCalled();
   });
 });

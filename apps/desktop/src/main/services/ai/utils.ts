@@ -3,10 +3,16 @@ import { spawnSync } from "node:child_process";
 export function commandExists(command: string): boolean {
   try {
     if (process.platform === "win32") {
-      const result = spawnSync("where", [command], { encoding: "utf8" });
+      const result = spawnSync("where", [command], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
       return result.status === 0;
     }
-    const result = spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], { encoding: "utf8" });
+    const result = spawnSync("sh", ["-lc", `command -v ${command} >/dev/null 2>&1`], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
     return result.status === 0;
   } catch {
     return false;

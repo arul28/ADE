@@ -1,4 +1,4 @@
-import { fork, spawn, type ChildProcess } from "node:child_process";
+import { fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -412,17 +412,21 @@ class SupervisedPtyHost {
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
       ADE_PTY_HOST: "1",
     };
+    // fork() forwards its options to spawn(), which supports windowsHide, but
+    // the installed @types/node ForkOptions declaration omits that property.
     const child = workerCommand
       ? spawn(workerCommand, [INTERNAL_PTY_HOST_WORKER_ARG], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           env: workerEnv,
+          windowsHide: true,
         })
       : fork(this.workerPath, [], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           execArgv: [],
           ...(workerNodePath ? { execPath: workerNodePath } : {}),
           env: workerEnv,
-        });
+          windowsHide: true,
+        } as ForkOptions & { windowsHide: boolean });
     const childState: HostChildState = {
       child,
       ptyIds: new Set([ptyId]),
