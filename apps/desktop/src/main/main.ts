@@ -99,6 +99,7 @@ import { createExternalSessionsService } from "./services/externalSessions/exter
 import { runGit } from "./services/git/git";
 import { createJobEngine } from "./services/jobs/jobEngine";
 import { createTranscriptionService } from "./services/transcription/transcriptionService";
+import { installEditableContextMenu } from "./editorContextMenu";
 import { createAiIntegrationService } from "./services/ai/aiIntegrationService";
 import { augmentProcessPathWithShellAndKnownCliDirs, setPathEnvValue } from "./services/ai/cliExecutableResolver";
 import { createAgentChatService, writeSessionLinearIssueContextFile } from "./services/chat/agentChatService";
@@ -633,6 +634,7 @@ async function createWindow(args: {
   });
 
   args.onCreated?.(win);
+  installEditableContextMenu(win);
 
   win.webContents.on("will-attach-webview", (event, webPreferences, params) => {
     const src = typeof params.src === "string" ? params.src : "";
