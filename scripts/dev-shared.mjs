@@ -9,11 +9,34 @@ import { fileURLToPath } from "node:url";
 const sharedPath = fileURLToPath(import.meta.url);
 
 export const repoRoot = path.resolve(path.dirname(sharedPath), "..");
-export const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
-export const defaultDevSocketPath = process.platform === "win32"
-  ? path.join(os.tmpdir(), "ade-runtime-dev.sock")
-  : "/tmp/ade-runtime-dev.sock";
+
+export function resolveDefaultDevSocketPath(
+  platform = process.platform,
+  env = process.env,
+) {
+  if (platform !== "win32") return "/tmp/ade-runtime-dev.sock";
+  const userIdentity = [
+    env.USERDOMAIN?.trim(),
+    env.USERNAME?.trim() || os.userInfo().username.trim(),
+  ].filter(Boolean).join("\\").toLowerCase();
+  const userHash = createHash("sha256")
+    .update(userIdentity || "unknown-user")
+    .digest("hex")
+    .slice(0, 12);
+  return `\\\\.\\pipe\\ade-runtime-dev-${userHash}`;
+}
+
+export const defaultDevSocketPath = resolveDefaultDevSocketPath();
 const validDefaultRoles = new Set(["cto", "orchestrator", "agent", "external", "evaluator"]);
+
+export function resolveDevRuntimeStartupTimeoutMs(
+  platform = process.platform,
+) {
+  // A freshly rebuilt CLI can spend more than ten seconds in Windows Defender
+  // inspection before Node reaches server.listen(). Do not kill a healthy
+  // runtime during that first-start window.
+  return platform === "win32" ? 30_000 : 10_000;
+}
 
 function normalizeDefaultRole(value, fallback = null) {
   const candidate = typeof value === "string" ? value.trim() : "";
@@ -24,7 +47,10 @@ export function resolveDevSocketPath(rawSocketPath = null) {
   const candidate = rawSocketPath?.trim()
     || process.env.ADE_DEV_RUNTIME_SOCKET_PATH?.trim()
     || defaultDevSocketPath;
-  return candidate.startsWith("tcp://") ? candidate : path.resolve(candidate);
+  const isWindowsNamedPipe = /^\\\\[.?]\\pipe\\/i.test(candidate);
+  return candidate.startsWith("tcp://") || isWindowsNamedPipe
+    ? candidate
+    : path.resolve(candidate);
 }
 
 export function resolvePrimaryProjectRoot(candidateRoot = repoRoot) {
@@ -148,12 +174,61 @@ function runtimeBuildEnv() {
   return buildHash ? { ADE_RUNTIME_BUILD_HASH: buildHash } : {};
 }
 
+function quoteWindowsCmdArg(value) {
+  let quoted = "\"";
+  let backslashes = 0;
+  for (const char of String(value).replace(/%/g, "%%")) {
+    if (char === "\\") {
+      backslashes += 1;
+      continue;
+    }
+    if (char === "\"") {
+      quoted += "\\".repeat(backslashes * 2);
+      quoted += "\"\"";
+    } else {
+      quoted += "\\".repeat(backslashes);
+      quoted += char;
+    }
+    backslashes = 0;
+  }
+  quoted += "\\".repeat(backslashes * 2);
+  quoted += "\"";
+  return quoted;
+}
+
+export function resolveDevSpawnInvocation(
+  command,
+  args,
+  env = process.env,
+  platform = process.platform,
+) {
+  const extension = platform === "win32"
+    ? path.win32.extname(command).toLowerCase()
+    : "";
+  if (platform !== "win32" || (extension !== ".cmd" && extension !== ".bat")) {
+    return { command, args, windowsVerbatimArguments: false };
+  }
+  return {
+    command: env.ComSpec?.trim() || "cmd.exe",
+    args: [
+      "/d",
+      "/s",
+      "/c",
+      `"${[command, ...args].map(quoteWindowsCmdArg).join(" ")}"`,
+    ],
+    windowsVerbatimArguments: true,
+  };
+}
+
 export function run(command, args, extraEnv = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, {
+    const env = { ...process.env, ...extraEnv };
+    const invocation = resolveDevSpawnInvocation(command, args, env);
+    const child = spawn(invocation.command, invocation.args, {
       cwd: repoRoot,
-      env: { ...process.env, ...extraEnv },
+      env,
       stdio: "inherit",
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
     });
     child.once("error", reject);
     child.once("exit", (code, signal) => {
@@ -170,10 +245,46 @@ export function run(command, args, extraEnv = {}) {
   });
 }
 
+export function resolveNpmInvocation(
+  args,
+  options = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const execPath = options.execPath ?? process.execPath;
+  const env = options.env ?? process.env;
+  const pathExists = options.pathExists ?? fs.existsSync;
+  if (platform !== "win32") {
+    return { command: "npm", args };
+  }
+
+  const candidates = [
+    env.npm_execpath?.trim(),
+    path.join(path.dirname(execPath), "node_modules", "npm", "bin", "npm-cli.js"),
+    path.join(path.dirname(execPath), "node_modules", "corepack", "dist", "npm.js"),
+  ].filter(Boolean);
+  const npmCliPath = candidates.find((candidate) => pathExists(candidate));
+  if (!npmCliPath) {
+    throw new Error(
+      `Unable to resolve npm's JavaScript entry point beside ${execPath}. Reinstall Node.js/npm or set npm_execpath.`,
+    );
+  }
+  return {
+    command: execPath,
+    args: [npmCliPath, ...args],
+  };
+}
+
+export function runNpm(args, extraEnv = {}) {
+  const invocation = resolveNpmInvocation(args, {
+    env: { ...process.env, ...extraEnv },
+  });
+  return run(invocation.command, invocation.args, extraEnv);
+}
+
 export async function buildRuntimeCli(skipRuntimeBuild = false) {
   if (skipRuntimeBuild) return;
   process.stdout.write("[ade] building runtime CLI\n");
-  await run(npmCommand, ["--prefix", "apps/ade-cli", "run", "build"], {
+  await runNpm(["--prefix", "apps/ade-cli", "run", "build"], {
     ADE_CLI_VERSION: resolveDevAppVersion(),
   });
 }
@@ -425,7 +536,7 @@ async function waitForSocketToClose(socketPath, timeoutMs = 5000) {
   throw new Error(`Timed out waiting for stale ADE dev runtime at ${socketPath} to stop.`);
 }
 
-async function shutdownRuntime(socketPath) {
+export async function shutdownRuntime(socketPath) {
   await jsonRpcRequestSequence(
     socketPath,
     [
@@ -464,17 +575,29 @@ export async function ensureRuntime(socketPath, projectRoot = null) {
   process.stdout.write(`[ade] starting dev runtime at ${socketPath}\n`);
   const child = spawn(process.execPath, [cliPath(), "serve", "--socket", socketPath], {
     cwd: repoRoot,
-    env: {
-      ...process.env,
-      ...devRuntimeEnv(socketPath, projectRoot),
-    },
+    env: detachedDevRuntimeEnv(socketPath, projectRoot),
     detached: true,
     stdio: "ignore",
+    windowsHide: process.platform === "win32",
   });
-  child.once("error", () => {});
+  const runtimeExitedBeforeReady = new Promise((_, reject) => {
+    child.once("error", (error) => {
+      reject(new Error(
+        `ADE dev runtime failed to start at ${socketPath}: ${error instanceof Error ? error.message : String(error)}`,
+      ));
+    });
+    child.once("exit", (code, signal) => {
+      reject(new Error(
+        `ADE dev runtime exited before opening ${socketPath} (code=${code ?? "null"}, signal=${signal ?? "null"}).`,
+      ));
+    });
+  });
   child.unref();
   try {
-    await waitForSocket(socketPath);
+    await Promise.race([
+      waitForSocket(socketPath, resolveDevRuntimeStartupTimeoutMs()),
+      runtimeExitedBeforeReady,
+    ]);
   } catch (error) {
     // The child is detached and unref'd, so a launcher that gives up here used
     // to walk away and leave an immortal brain behind — one per failed dev
@@ -525,4 +648,22 @@ export function devRuntimeEnv(socketPath, projectRoot) {
     ...(projectRoot ? { ADE_PROJECT_ROOT: projectRoot } : {}),
     ...runtimeBuildEnv(),
   };
+}
+
+export function detachedDevRuntimeEnv(
+  socketPath,
+  projectRoot,
+  parentEnv = process.env,
+) {
+  const env = {
+    ...parentEnv,
+    ...devRuntimeEnv(socketPath, projectRoot),
+  };
+  // A shared dev runtime outlives the terminal or Electron process that
+  // launched it. ADE-hosted shells can carry these lifecycle controls from a
+  // different runtime; inheriting them makes this detached server disappear
+  // as soon as that unrelated parent exits or its idle timer fires.
+  delete env.ADE_RUNTIME_PARENT_PID;
+  delete env.ADE_RUNTIME_IDLE_EXIT_MS;
+  return env;
 }

@@ -52,6 +52,7 @@ function owner(overrides: Partial<SyncHostSingletonOwner> = {}): SyncHostSinglet
     socketPath: path.join(os.homedir(), ".ade", "sock", "ade.sock"),
     projectRoot: "/Users/admin/Projects/ADE",
     commandLine: "/Applications/ADE.app/Contents/MacOS/ADE /Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
+    processStartedAt: "2026-06-09T00:00:00.000Z",
     quitCommand: `ADE_HOME='${path.join(os.homedir(), ".ade")}' '/Applications/ADE.app/Contents/Resources/ade-cli/bin/ade' brain stop --text`,
     createdAt: now,
     updatedAt: now,
@@ -78,6 +79,7 @@ describe("sync host singleton", () => {
       lockPath,
       pidAlive: (pid) => pid === lockOwner.pid,
       scanListeners: () => [],
+      platform: "darwin",
     });
 
     expect(conflict).toMatchObject({
@@ -255,6 +257,44 @@ describe("isSameChannelSyncHostOwner", () => {
 });
 
 describe("buildQuitCommand (launch-gate stop command)", () => {
+  it("uses a PowerShell-native process stop on Windows", () => {
+    const command = buildQuitCommand({
+      pid: 4242,
+      commandLine: "C:\\Program Files\\ADE\\ADE.exe cli.cjs serve",
+      appName: "ADE",
+      packageChannel: null,
+      adeHome: "C:\\Users\\example\\.ade",
+      platform: "win32",
+    });
+    expect(command).toBe(
+      "Stop-Process -Id 4242 -Force -ErrorAction SilentlyContinue",
+    );
+    expect(command).not.toContain("launchctl");
+    expect(command).not.toContain("/bin/kill");
+  });
+
+  it("clears a Windows lock when the PID was reused by another process", () => {
+    const lockPath = tempLockPath();
+    const lockOwner = owner({
+      pid: 21_556,
+      socketPath: "\\\\.\\pipe\\ade-runtime-dev-test",
+      commandLine:
+        "C:\\Program Files\\nodejs\\node.exe C:\\dev\\ADE\\apps\\ade-cli\\dist\\cli.cjs serve --socket \\\\.\\pipe\\ade-runtime-dev-test",
+    });
+    writeLock(lockPath, lockOwner);
+
+    const conflict = detectSyncHostSingletonConflict({
+      lockPath,
+      pidAlive: () => true,
+      processMatchesOwner: () => false,
+      scanListeners: () => [],
+      platform: "win32",
+    });
+
+    expect(conflict).toBeNull();
+    expect(fs.existsSync(lockPath)).toBe(false);
+  });
+
   it("stops a launchd-managed brain via launchctl bootout, not a hardcoded app path", () => {
     const command = buildQuitCommand({
       pid: 4242,
@@ -262,6 +302,7 @@ describe("buildQuitCommand (launch-gate stop command)", () => {
       appName: "ADE",
       packageChannel: null,
       adeHome: "/Users/example/.ade",
+      platform: "darwin",
     });
     expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime");
     expect(command).toContain("/bin/kill 4242");
@@ -273,10 +314,10 @@ describe("buildQuitCommand (launch-gate stop command)", () => {
 
   it("derives the per-channel launchd label", () => {
     expect(
-      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Beta", packageChannel: "beta", adeHome: null }),
+      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Beta", packageChannel: "beta", adeHome: null, platform: "darwin" }),
     ).toContain("com.ade.runtime.beta");
     expect(
-      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Alpha", packageChannel: "alpha", adeHome: null }),
+      buildQuitCommand({ pid: 1, commandLine: null, appName: "ADE Alpha", packageChannel: "alpha", adeHome: null, platform: "darwin" }),
     ).toContain("com.ade.runtime.alpha");
   });
 
@@ -288,6 +329,7 @@ describe("buildQuitCommand (launch-gate stop command)", () => {
       packageChannel: null,
       adeHome: null,
       serviceName: "com.ade.runtime.custom",
+      platform: "darwin",
     });
     expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime.custom");
   });
@@ -300,6 +342,7 @@ describe("buildQuitCommand (launch-gate stop command)", () => {
       appName: "ADE Alpha",
       packageChannel: null,
       adeHome: null,
+      platform: "darwin",
     });
     expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime.alpha");
     expect(command).not.toContain("/Applications/");

@@ -8,6 +8,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatCliLaunchProvider,
   AgentChatSpawnKind,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
@@ -318,6 +319,21 @@ export type PtyCreateArgs = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Fresh provider-launch intent that must be materialized by the runtime
+   * which owns the lane. This keeps shell choice, skill roots, home paths, and
+   * path-list delimiters native to a pinned remote host.
+   */
+  runtimeCliLaunch?: {
+    provider: AgentChatCliLaunchProvider;
+    permissionMode: AgentChatPermissionMode;
+    orchestrationRole?: OrchestrationRole | null;
+    sessionId?: string;
+    model?: string | null;
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
+    initialPrompt?: string | null;
+  };
   /** Optional provider continuation metadata to persist for externally imported sessions. */
   resumeMetadata?: TerminalResumeMetadata | null;
   /**

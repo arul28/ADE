@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 /**
  * Cross-process mutual exclusion for "spawn a brain for this socket".
@@ -88,9 +90,40 @@ function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null):
   }
 }
 
+function isWindowsNamedPipePath(socketPath: string): boolean {
+  return socketPath
+    .trim()
+    .replace(/\//g, "\\")
+    .toLowerCase()
+    .startsWith("\\\\.\\pipe\\");
+}
+
+export function socketSpawnLockPath(socketPath: string): string {
+  if (isWindowsNamedPipePath(socketPath)) {
+    // A named pipe is a kernel namespace, not a filesystem directory. Trying
+    // to create `\\.\pipe\<name>.spawn.lock` fails with ENOENT before a cold
+    // Windows runtime can be spawned. Keep the advisory lock in ADE's
+    // per-user runtime directory and hash the case-insensitive pipe identity.
+    const normalizedPipe = socketPath.trim().replace(/\//g, "\\").toLowerCase();
+    const key = createHash("sha256")
+      .update(normalizedPipe)
+      .digest("hex")
+      .slice(0, 32);
+    return path.join(
+      resolveMachineAdeLayout().runtimeDir,
+      "spawn-locks",
+      `${key}.lock`,
+    );
+  }
+  return path.join(
+    path.dirname(socketPath),
+    `${path.basename(socketPath)}.spawn.lock`,
+  );
+}
+
 export async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
   if (socketPath.startsWith("tcp://")) return await task();
-  const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+  const lockPath = socketSpawnLockPath(socketPath);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + 10_000;
   const owner = createSocketSpawnLockOwner();

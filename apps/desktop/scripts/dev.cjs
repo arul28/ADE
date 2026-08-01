@@ -7,7 +7,14 @@ const path = require("node:path");
 
 const projectRoot = path.resolve(__dirname, "..");
 const distMainFile = path.join(projectRoot, "dist", "main", "main.cjs");
-const npxCommand = "npx";
+const mainReadyMarker = path.join(
+  projectRoot,
+  "dist",
+  `.ade-dev-main-ready-${process.pid}`,
+);
+const viteCliPath = path.join(projectRoot, "node_modules", "vite", "bin", "vite.js");
+const tsupCliPath = path.join(projectRoot, "node_modules", "tsup", "dist", "cli-default.js");
+const electronCommand = require("electron");
 
 // ADE chat shells export ELECTRON_RUN_AS_NODE=1 so the `ade` shim can run
 // cli.cjs through the bundled Electron binary as Node. If that leaks into
@@ -104,35 +111,7 @@ async function waitForFile(filePath, timeoutMs) {
     // eslint-disable-next-line no-await-in-loop
     await sleep(150);
   }
-}
-
-async function waitForStableFile(filePath, timeoutMs, stableWindowMs = 300) {
-  const startedAt = Date.now();
-  let lastSignature = "";
-  let stableSince = 0;
-
-  while (true) {
-    try {
-      const stat = fs.statSync(filePath);
-      const signature = `${stat.size}:${stat.mtimeMs}`;
-      if (signature !== lastSignature) {
-        lastSignature = signature;
-        stableSince = Date.now();
-      } else if (Date.now() - stableSince >= stableWindowMs) {
-        return stat;
-      }
-    } catch {
-      lastSignature = "";
-      stableSince = 0;
-    }
-
-    if (Date.now() - startedAt > timeoutMs) {
-      throw new Error(`Timed out waiting for stable file: ${filePath}`);
-    }
-
-    // eslint-disable-next-line no-await-in-loop
-    await sleep(150);
-  }
+  return fs.statSync(filePath);
 }
 
 function quoteWindowsCmdArg(value) {
@@ -260,11 +239,13 @@ async function main() {
   let shuttingDown = false;
   let electron = null;
   let electronRestartPending = false;
+  fs.rmSync(mainReadyMarker, { force: true });
 
   const teardown = (signal = "SIGTERM") => {
     if (shuttingDown) return;
     shuttingDown = true;
-    fs.unwatchFile(distMainFile);
+    fs.unwatchFile(mainReadyMarker);
+    fs.rmSync(mainReadyMarker, { force: true });
     for (const child of children) {
       terminateChild(child, signal);
     }
@@ -274,10 +255,15 @@ async function main() {
   process.on("SIGTERM", () => teardown("SIGTERM"));
   process.on("exit", () => teardown("SIGTERM"));
 
-  const viteArgs = ["vite", "--port", String(devPort), "--strictPort"];
+  const viteArgs = [viteCliPath, "--port", String(devPort), "--strictPort"];
   if (forceViteOptimize) viteArgs.push("--force");
-  const vite = spawnProcess("renderer", npxCommand, viteArgs);
-  const main = spawnProcess("main", npxCommand, ["tsup", "--watch"]);
+  const vite = spawnProcess("renderer", process.execPath, viteArgs);
+  const main = spawnProcess(
+    "main",
+    process.execPath,
+    [tsupCliPath, "--watch"],
+    { ADE_DEV_MAIN_READY_MARKER: mainReadyMarker },
+  );
   children.add(vite);
   children.add(main);
 
@@ -293,23 +279,29 @@ async function main() {
   vite.on("exit", onUnexpectedExit(vite));
   main.on("exit", onUnexpectedExit(main));
 
-  const [, initialMainBundleStat] = await Promise.all([
+  const [, initialReadyMarkerStat] = await Promise.all([
     waitForPort(devPort, 30_000),
-    waitForStableFile(distMainFile, 30_000),
+    waitForFile(mainReadyMarker, 30_000),
   ]);
+  if (!fs.existsSync(distMainFile)) {
+    throw new Error(`Main build completed without producing ${distMainFile}`);
+  }
 
   const electronEnv = {
     VITE_DEV_SERVER_URL: devServerUrl,
   };
   const launchElectron = () => {
-    const electronArgs = ["electron", `--remote-debugging-port=${remoteDebugPort}`];
+    const electronArgs = [`--remote-debugging-port=${remoteDebugPort}`];
+    if (process.env.ADE_DISABLE_HARDWARE_ACCEL === "1") {
+      electronArgs.push("--disable-gpu");
+    }
     // Electron treats the first non-switch argument as the app path. Use the
     // absolute app root so macOS launches do not fall back to default_app.asar.
     electronArgs.push(projectRoot);
     if (process.platform === "darwin") {
       electronArgs.push("-ApplePersistenceIgnoreState", "YES");
     }
-    const child = spawnProcess("electron", npxCommand, electronArgs, electronEnv);
+    const child = spawnProcess("electron", electronCommand, electronArgs, electronEnv);
     electron = child;
     children.add(child);
     child.on("exit", (code, signal) => {
@@ -319,19 +311,8 @@ async function main() {
       electron = null;
       if (electronRestartPending) {
         electronRestartPending = false;
-        waitForStableFile(distMainFile, 30_000)
-          .then((stat) => {
-            lastMainBundleMtimeMs = stat.mtimeMs;
-            process.stdout.write("[ade] electron restarted with updated main bundle\n");
-            launchElectron();
-          })
-          .catch((error) => {
-            process.stderr.write(
-              `[ade] failed to restart electron after main bundle update: ${error instanceof Error ? error.message : String(error)}\n`
-            );
-            teardown("SIGTERM");
-            process.exit(1);
-          });
+        process.stdout.write("[ade] electron restarted after successful main build\n");
+        launchElectron();
         return;
       }
       process.stdout.write(
@@ -350,16 +331,16 @@ async function main() {
     terminateChild(electron, "SIGTERM");
   };
 
-  launchElectron();
-
-  let lastMainBundleMtimeMs = initialMainBundleStat.mtimeMs;
-  fs.watchFile(distMainFile, { interval: 250 }, (curr) => {
+  let lastReadyMarkerMtimeMs = initialReadyMarkerStat.mtimeMs;
+  fs.watchFile(mainReadyMarker, { interval: 250 }, (curr) => {
     if (shuttingDown) return;
     if (!curr || curr.nlink === 0) return;
-    if (!curr || curr.mtimeMs <= lastMainBundleMtimeMs) return;
-    lastMainBundleMtimeMs = curr.mtimeMs;
-    requestElectronRestart("main bundle updated");
+    if (curr.mtimeMs <= lastReadyMarkerMtimeMs) return;
+    lastReadyMarkerMtimeMs = curr.mtimeMs;
+    requestElectronRestart("main build completed");
   });
+
+  launchElectron();
 }
 
 main().catch((error) => {

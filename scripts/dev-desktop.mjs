@@ -7,10 +7,10 @@ import {
   canConnectToSocket,
   devRuntimeEnv,
   ensureRuntime,
-  npmCommand,
   resolveDevSocketPath,
   resolveProjectRoot,
-  run,
+  runNpm,
+  shutdownRuntime,
 } from "./dev-shared.mjs";
 
 function usage() {
@@ -100,17 +100,42 @@ async function main() {
     throw new Error(`No dev runtime is listening at ${options.socketPath}. Start it with npm run dev:runtime.`);
   }
   await buildRuntimeCliForDevClient(options.skipRuntimeBuild, options.socketPath);
-  if (options.mode === "attach") {
-    await assertRuntimeFresh(options.socketPath, options.projectRoot);
-  } else {
-    await ensureRuntime(options.socketPath, options.projectRoot);
+  let runtimeStartedByLauncher = false;
+  let runtimeStopPromise = null;
+  const stopOwnedRuntime = () => {
+    if (!runtimeStartedByLauncher) return Promise.resolve();
+    if (runtimeStopPromise) return runtimeStopPromise;
+    runtimeStopPromise = shutdownRuntime(options.socketPath)
+      .catch((error) => {
+        process.stderr.write(
+          `[ade] failed to stop owned dev runtime: ${error instanceof Error ? error.message : String(error)}\n`,
+        );
+      });
+    return runtimeStopPromise;
+  };
+  const handleSignal = () => {
+    // Ctrl+C is also delivered to the npm/Electron child. Keep this launcher
+    // alive just long enough to stop the detached runtime it created.
+    void stopOwnedRuntime();
+  };
+  process.once("SIGINT", handleSignal);
+  process.once("SIGTERM", handleSignal);
+  try {
+    if (options.mode === "attach") {
+      await assertRuntimeFresh(options.socketPath, options.projectRoot);
+    } else {
+      runtimeStartedByLauncher = await ensureRuntime(options.socketPath, options.projectRoot);
+    }
+    const desktopScript = options.clean ? "dev:clean" : "dev";
+    await runNpm(
+      ["--prefix", "apps/desktop", "run", desktopScript],
+      devRuntimeEnv(options.socketPath, options.projectRoot),
+    );
+  } finally {
+    process.off("SIGINT", handleSignal);
+    process.off("SIGTERM", handleSignal);
+    await stopOwnedRuntime();
   }
-  const desktopScript = options.clean ? "dev:clean" : "dev";
-  await run(
-    npmCommand,
-    ["--prefix", "apps/desktop", "run", desktopScript],
-    devRuntimeEnv(options.socketPath, options.projectRoot),
-  );
 }
 
 main().catch((error) => {

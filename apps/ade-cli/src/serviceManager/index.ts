@@ -3,7 +3,12 @@ import type { ServiceManagerResult, ServiceManagerStatusResult } from "./common"
 import { ADE_RUNTIME_SERVICE_NAME } from "./common";
 import { getLaunchdServiceMainPid, getLaunchdServiceStatus, installLaunchdService, uninstallLaunchdService } from "./installLaunchd";
 import { getSystemdServiceStatus, installSystemdService, uninstallSystemdService } from "./installSystemd";
-import { getWindowsServiceStatus, installWindowsService, uninstallWindowsService } from "./installWindows";
+import {
+  getWindowsServiceStatus,
+  installWindowsService,
+  readWindowsServicePidRecord,
+  uninstallWindowsService,
+} from "./installWindows";
 
 export type { ServiceManagerResult, ServiceManagerStatusResult } from "./common";
 
@@ -25,6 +30,8 @@ export function getRuntimeServiceMainPid(): number | null {
       const pid = Number(String(result.stdout ?? "").trim());
       return Number.isFinite(pid) && pid > 0 ? Math.floor(pid) : null;
     }
+    case "win32":
+      return readWindowsServicePidRecord()?.runtimePid ?? null;
     default:
       return null;
   }
