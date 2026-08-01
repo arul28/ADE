@@ -223,6 +223,13 @@ export type AgentChatNoticeDetail = {
   sections?: AgentChatNoticeDetailSection[];
   permissionModeTransition?: "entered_plan_mode" | "exited_plan_mode";
   /**
+   * Access mode in force after the transition. The renderer applies this
+   * directly instead of guessing: on exit it used to hardcode `default`,
+   * which silently demoted a session that had been in `bypassPermissions`
+   * or `acceptEdits` before it entered plan mode.
+   */
+  permissionModeAfterTransition?: AgentChatClaudePermissionMode;
+  /**
    * Deep-link to a child chat session spawned from this one (the
    * "Subagent spawned" chip on `status: "subagent_spawned"` notices).
    * Desktop navigates to the session; the TUI switches to it; iOS renders
@@ -1449,6 +1456,16 @@ export type AgentChatSession = {
   permissionMode?: AgentChatPermissionMode;
   interactionMode?: AgentChatInteractionMode | null;
   claudePermissionMode?: AgentChatClaudePermissionMode;
+  /**
+   * Access mode in force before the session entered plan mode, so leaving
+   * plan mode restores it.
+   *
+   * Entering plan mode sets `claudePermissionMode` to `"plan"`, which is not
+   * an access mode — `normalizeClaudeAccessMode` strips it. Without this
+   * stash, exiting plan mode would resolve through the fallback and silently
+   * demote a full-auto session to `default`.
+   */
+  claudePrePlanAccessMode?: Exclude<AgentChatClaudePermissionMode, "plan"> | null;
   claudeOutputStyle?: string | null;
   claudeBackgroundJobShort?: string | null;
   claudeBackgroundResumeSessionId?: string | null;

@@ -372,10 +372,28 @@ know about the abstract mode still work.
 
 `AgentChatInteractionMode` is `default | plan`. When `plan`, the agent
 operates in read-only planning mode and proposes changes via
-`ExitPlanMode`. Approving the plan transitions the session to `edit`
-permission mode automatically. In `bypassPermissions` or `full-auto`
-permission modes, plan approval auto-grants (no UI), since the user has
-opted out of permission gates.
+`ExitPlanMode`.
+
+Entering plan mode moves the **access** mode too, not just the interaction
+mode: `applyClaudePlanModeTransition` (`services/chat/claudePlanMode.ts`) sets
+`claudePermissionMode = "plan"` and stashes the suspended access mode in
+`claudePrePlanAccessMode`, restoring it on exit. That field is persisted and
+rehydrated with the rest of the session, so a restart mid-plan does not lose it.
+
+This matters because `claudePermissionMode` is both what the composer's mode
+chip renders and what the `ExitPlanMode` gate reads. While it stayed on the
+pre-plan value, a `bypassPermissions` session entering plan mode kept reading
+as bypass: the chip never left Bypass, nothing was actually restricted, and the
+gate auto-approved the plan without rendering an approval card. Plan mode was
+cosmetic in exactly the sessions where review matters most.
+
+A session that is genuinely in plan mode therefore never reads as
+`bypassPermissions` or `full-auto`, and always gets an approval card. The
+auto-approve branch in the `ExitPlanMode` interception remains only as a
+safety net for sessions persisted before this behavior existed, which can
+resume with `interactionMode: "plan"` and a stale access mode; it logs
+`agent_chat.plan_auto_approved_stale_session` when it fires. Do not widen it —
+entering plan mode is a request for review.
 
 When the user approves an `ExitPlanMode` call, the canUseTool handler
 returns `{ behavior: "allow", updatedInput: input }` so the SDK's native
