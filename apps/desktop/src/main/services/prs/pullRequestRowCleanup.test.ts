@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openKvDb } from "../state/kvDb";
 import {
   countLaneProvenance,
+  deletePullRequestRowsByIds,
   detachPullRequestRowsByIds,
   detachPullRequestRowsForLane,
 } from "./pullRequestRowCleanup";
@@ -14,14 +15,21 @@ function createLogger() {
 }
 
 const PROJECT_ID = "proj-1";
+const OTHER_PROJECT_ID = "proj-2";
 const LANE_ID = "lane-1";
 const DETACHED_AT = "2026-07-31T12:00:00.000Z";
+
+type PrOverrides = {
+  projectId?: string;
+  laneId?: string;
+  state?: string;
+};
 
 describe("pullRequestRowCleanup detach", () => {
   let dir: string;
   let db: Awaited<ReturnType<typeof openKvDb>>;
 
-  const insertPr = (id: string, overrides: Record<string, unknown> = {}) => {
+  const insertPr = (id: string, overrides: PrOverrides = {}) => {
     db.run(
       `insert into pull_requests
          (id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url,
@@ -30,9 +38,9 @@ describe("pullRequestRowCleanup detach", () => {
                ?, 'main', 'ade/feature', 412, 88, ?, ?)`,
       [
         id,
-        PROJECT_ID,
-        (overrides.lane_id as string) ?? LANE_ID,
-        (overrides.state as string) ?? "merged",
+        overrides.projectId ?? PROJECT_ID,
+        overrides.laneId ?? LANE_ID,
+        overrides.state ?? "merged",
         DETACHED_AT,
         DETACHED_AT,
       ],
@@ -173,6 +181,80 @@ describe("pullRequestRowCleanup detach", () => {
       db.get<{ detached_at: string | null }>("select detached_at from pull_requests where id = ?", ["pr-keep"])
         ?.detached_at,
     ).toBeNull();
+  });
+
+  it("does not purge snapshots or group membership for ids owned by another project", () => {
+    insertPr("pr-local");
+    insertPr("pr-foreign", { projectId: OTHER_PROJECT_ID, laneId: "lane-foreign" });
+    insertSnapshot("pr-local");
+    insertSnapshot("pr-foreign");
+    db.run(
+      "insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)",
+      ["group-local", PROJECT_ID, DETACHED_AT],
+    );
+    db.run(
+      "insert into pr_groups(id, project_id, group_type, created_at) values (?, ?, 'integration', ?)",
+      ["group-foreign", OTHER_PROJECT_ID, DETACHED_AT],
+    );
+    db.run(
+      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
+       values ('member-local', 'group-local', 'pr-local', ?, 0, 'source')`,
+      [LANE_ID],
+    );
+    db.run(
+      `insert into pr_group_members(id, group_id, pr_id, lane_id, position, role)
+       values ('member-foreign', 'group-foreign', 'pr-foreign', 'lane-foreign', 0, 'source')`,
+    );
+
+    detachPullRequestRowsByIds(db, {
+      projectId: PROJECT_ID,
+      laneId: LANE_ID,
+      laneName: "local-lane",
+      laneColor: null,
+      detachedAt: DETACHED_AT,
+      prIds: ["pr-local", "pr-foreign"],
+    });
+
+    expect(
+      db.get<{ checks_json: string | null }>("select checks_json from pull_request_snapshots where pr_id = ?", [
+        "pr-local",
+      ])?.checks_json,
+    ).toBeNull();
+    expect(
+      db.get<{ checks_json: string | null }>("select checks_json from pull_request_snapshots where pr_id = ?", [
+        "pr-foreign",
+      ])?.checks_json,
+    ).not.toBeNull();
+    expect(db.get("select id from pr_group_members where id = 'member-local'")).toBeNull();
+    expect(db.get("select id from pr_group_members where id = 'member-foreign'")).not.toBeNull();
+    expect(
+      db.get<{ detached_at: string | null }>("select detached_at from pull_requests where id = 'pr-foreign'")
+        ?.detached_at,
+    ).toBeNull();
+  });
+
+  it("keeps another project's child rows when hard-deleting a mixed id list", () => {
+    insertPr("pr-local");
+    insertPr("pr-foreign", { projectId: OTHER_PROJECT_ID, laneId: "lane-foreign" });
+    insertSnapshot("pr-local");
+    insertSnapshot("pr-foreign");
+    db.run(
+      "insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, 'head', '{}', ?)",
+      ["pr-local", DETACHED_AT],
+    );
+    db.run(
+      "insert into pull_request_ai_summaries(pr_id, head_sha, summary_json, generated_at) values (?, 'head', '{}', ?)",
+      ["pr-foreign", DETACHED_AT],
+    );
+
+    deletePullRequestRowsByIds(db, PROJECT_ID, ["pr-local", "pr-foreign"]);
+
+    expect(db.get("select id from pull_requests where id = 'pr-local'")).toBeNull();
+    expect(db.get("select pr_id from pull_request_snapshots where pr_id = 'pr-local'")).toBeNull();
+    expect(db.get("select pr_id from pull_request_ai_summaries where pr_id = 'pr-local'")).toBeNull();
+    expect(db.get("select id from pull_requests where id = 'pr-foreign'")).not.toBeNull();
+    expect(db.get("select pr_id from pull_request_snapshots where pr_id = 'pr-foreign'")).not.toBeNull();
+    expect(db.get("select pr_id from pull_request_ai_summaries where pr_id = 'pr-foreign'")).not.toBeNull();
   });
 
   it("counts zero provenance for a lane with no recorded activity", () => {

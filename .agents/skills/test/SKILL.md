@@ -20,12 +20,24 @@ Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. Yo
 **Consume the `/quality` result.** A non-empty `/quality` gate blocks this skill:
 the branch still contains a verified finding awaiting an author decision, and
 committing a knowingly failing test is not a substitute for fixing it. Resume
-after the decision and the corresponding `/quality` fix. From the completed
-quality summary, turn accepted correctness findings into named regression-test
-targets when a test can pin the public contract. Structural maintainability
-findings do not require artificial tests when existing coverage already proves
-the behavior-preserving move. No quality result available → derive the same
-targets from the diff and state that quality evidence was unavailable.
+after the decision and the corresponding `/quality` fix.
+
+Build a correctness inventory from the completed quality summary. Itemize
+**every accepted correctness finding** by a stable finding name and original
+`file:line`; aggregate counts such as "5 findings covered" are not sufficient.
+For each item, provide exactly one of:
+
+- a named regression test that pins the public contract and would fail on the
+  pre-fix behavior, or
+- an explicit alternate verification: the exact command/check, the observed
+  evidence, and why a regression test is not appropriate.
+
+Existing coverage counts only when you name the specific test and confirm that
+it exercises the finding's failure mode. Structural maintainability findings do
+not require artificial tests when existing coverage already proves the
+behavior-preserving move. No quality result available → derive the same
+itemized correctness inventory from the diff and state that quality evidence
+was unavailable.
 
 **Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
 
@@ -579,6 +591,11 @@ Added:
 - <new file or extended file> — <N tests covering: contract A, contract B>
 - Or "none — feature was visual / fully covered by consolidation"
 
+Quality correctness findings:
+- <stable finding name> (`file:line`) — regression: `<test file> :: <test name>`
+- <stable finding name> (`file:line`) — alternate verification: `<exact command/check>` → `<observed evidence>`; no regression test because <specific reason>
+- Or "none — /quality accepted no correctness findings"
+
 Parity:
 - Logging/PostHog: <instrumentation/docs/dashboard changes, or explicit not-applicable reason> — privacy + cost gate PASS / blocked
 - Docs: <files updated, or "none required"> — validation PASS / blocked
@@ -612,3 +629,5 @@ Mark **completed** only if all of:
 5. Every new test file matches a vitest workspace glob.
 6. The summary is the *only* thing you output.
 7. `docs/logging.md` exists, was read, and every analytics-applicable change is covered or has an explicit not-applicable rationale.
+8. Every accepted correctness finding from `/quality` appears individually in
+   the summary with a named regression test or explicit alternate verification.

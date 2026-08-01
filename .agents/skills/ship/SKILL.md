@@ -4,8 +4,10 @@ description: >-
   Autonomous PR-to-merge loop. Polls CI and review bots, fixes failures, rebases
   only on real conflicts, and lands the PR on main. Soft cap of 5 normal
   iterations plus one force-finalize iteration that bypasses review and fixes
-  only CI. Pure loop — it does NOT run /quality or /test; run those first. Full
-  phase logic lives in docs/playbooks/ship-lane.md.
+  only CI. Pure loop — it does not replace the baseline /quality or /test runs;
+  run those first. It does revalidate quality after any ship-loop mutation so
+  the final result is bound to the exact commit merged. Full phase logic lives
+  in docs/playbooks/ship-lane.md.
 ---
 
 # Ship Skill — Autonomous Merge Loop
@@ -38,18 +40,31 @@ The playbook's Phase 0 is **commit → push → open PR** only. Test generation 
 the local-CI gate are NOT part of ship — that's `/test` (and optionally
 `/finalize`) before you reach this skill.
 
-## Precondition: the `/quality` gate must be empty
+## Precondition: `/quality` must be empty and bound to the merge commit
 
-Before Phase 0, and again before the Phase 3c merge, check for an open
-`/quality` gate. A non-empty gate **blocks the merge** — every row in it is a
-finding that was verified as real and left unfixed, and by `/quality`'s contract
-the only two things that may be there are a product decision the author owes, or
-a behavior change this branch was not asked to make. Both need the author.
+Before Phase 0, require a completed `/quality` result with an empty gate. Before
+Phase 3c, also require `qualityValidatedSha` in the ship state to equal both
+`git rev-parse HEAD` and the PR's current `headRefOid`. The result is valid only
+for that exact commit; green CI on a later commit does not preserve it.
+
+A non-empty gate **blocks the merge** — every row in it is a finding that was
+verified as real and left unfixed, and by `/quality`'s contract the only two
+things that may be there are a product decision the author owes, or a behavior
+change this branch was not asked to make. Both need the author.
 
 - Gate rows exist → do not merge. Surface them, state the decision needed, and
   stop with `blocked`. Do not merge and mention them afterwards.
 - If `/quality` was never run on this lane, or its final gate result is not
   available in the lane handoff, stop with `blocked`; unknown is not empty.
+- Any rebase, conflict resolution, Phase 3b edit, or force-finalize edit clears
+  `qualityValidatedSha`. Run the playbook's single canonical **Commit-bound
+  quality revalidation** procedure before pushing that mutation.
+- Never enter Phase 3c with a missing or mismatched binding. Revalidate first;
+  do not merge and disclose stale quality evidence afterwards.
+- Bind every normal or admin merge attempt with
+  `--match-head-commit "$QUALITY_VALIDATED_SHA"`. Persistent auto-merge is not
+  allowed because a later push can replace the validated head while it remains
+  armed.
 
 Severity is irrelevant here: a Medium in the gate blocks exactly as hard as a
 Blocker, because presence in the gate means it needed a human, not that it was
@@ -126,8 +141,11 @@ fix-iteration re-pushes → `@codex review`. For a >250-file diff, also ping
 expected review signals to settle before fixing. This is the playbook's Phase 4
 rule — defer to it for exact bodies.
 
-**Merge needs admin.** `main` is ruleset-guarded — `gh pr merge --squash` will
-show BLOCKED. Retry with `gh pr merge --admin --squash`; the ruleset's
+**Merge needs admin.** `main` is ruleset-guarded —
+`gh pr merge --squash --match-head-commit "$QUALITY_VALIDATED_SHA"` will show
+BLOCKED. Retry with
+`gh pr merge --admin --squash --match-head-commit "$QUALITY_VALIDATED_SHA"`;
+the ruleset's
 non-linear-history rule can still reject `--admin`, in which case fall back to a
 local merge + admin-bypass push (per AGENTS.md). Do NOT pass `--delete-branch`
 (it fails from a worktree); delete the head ref server-side via

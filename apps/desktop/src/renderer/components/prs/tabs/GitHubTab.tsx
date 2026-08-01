@@ -1,13 +1,7 @@
 import React from "react";
-import { CircleNotch, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import { Group, Panel } from "react-resizable-panels";
-import { useVirtualizer } from "@tanstack/react-virtual";
 import type {
-  CreateLaneFromPrBranchArgs,
-  CreateLaneFromPrBranchPreflight,
   CreateLaneFromPrBranchPreflightResult,
-  CreateLaneFromPrBranchResult,
   GitHubPrListItem,
   GitHubPrSnapshot,
   LaneSummary,
@@ -16,81 +10,54 @@ import type {
   PrSummary,
   PrWithConflicts,
 } from "../../../../shared/types";
-import { syntheticGithubPrId } from "../../../../shared/types/prs";
-import { EmptyState } from "../../ui/EmptyState";
-import { ResizeGutter } from "../../ui/ResizeGutter";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
-import { PrDetailPane, type UnmappedAffordance } from "../detail/PrDetailPane";
+import type { UnmappedAffordance } from "../detail/PrDetailPane";
 import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
-import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
-import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
-import { GitHubStackInspector } from "../shared/GitHubStackInspector";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
-import { isTerminalPrState } from "../../../lib/prState";
-import { GitHubTabPrRow, PrListGroupHeaderRow } from "../shared/GitHubTabPrRow";
-import { branchNameFromRef } from "./githubPrBranch";
 import {
-  buildPrListRows,
-  prListHeaderIndices,
-  type PrListRow,
-} from "../shared/prListGrouping";
+  GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT,
+  GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
+  GITHUB_TAB_HISTORY_PAGE_INCREMENT,
+  GITHUB_TAB_HOT_REFRESH_DELAY_MS,
+  GITHUB_TAB_REVISIT_CACHE_TTL_MS,
+  GITHUB_TAB_SNAPSHOT_FRESH_MS,
+  LINKED_HYDRATION_LIMIT,
+  buildSyntheticUnmappedPr,
+  bucketForState,
+  formatGitHubSnapshotError,
+  initialGitHubFilterSelections,
+  matchesFilter,
+  normalizeGitHubFilter,
+  normalizeHistoryPageLimit,
+  readGitHubTabWarmCache,
+  snapshotRequestKey,
+  snapshotRequestSatisfies,
+  syntheticUnmappedPrId,
+  writeGitHubTabWarmCache,
+  type GitHubFilter,
+  type GitHubFilterSelectionMap,
+  type GitHubSnapshotRequestKey,
+  type GitHubTabWarmCache,
+} from "./githubTabModel";
+import {
+  CreateLaneFromPrBranchDialog,
+  canCreateLaneFromPrBranch,
+  createLaneFromPrBranchApi,
+  createLaneFromPrBranchArgs,
+  createLaneFromPrBranchRequestKey,
+  createLaneMappedLaneId,
+  createLaneMappedLaneName,
+  createLaneMappedPrId,
+  formatActionError,
+  patchSnapshotWithMappedPr,
+  upsertLaneSummary,
+} from "./GitHubTabCreateLaneDialog";
+import { GitHubTabView } from "./GitHubTabView";
+import { branchNameFromRef } from "./githubPrBranch";
+import { useGitHubTabListModel } from "./useGitHubTabListModel";
 
-/* -- Filter button styles -- */
-const FILTER_COLORS: Record<GitHubFilter, { active: { bg: string; border: string; text: string; shadow: string }; inactive: { text: string } }> = {
-  open: {
-    active: { bg: "linear-gradient(135deg, rgba(59,130,246,0.16) 0%, rgba(37,99,235,0.08) 100%)", border: "rgba(59,130,246,0.30)", text: "#60A5FA", shadow: "0 0 10px rgba(59,130,246,0.12)" },
-    inactive: { text: "#60A5FA" },
-  },
-  closed: {
-    active: { bg: "linear-gradient(135deg, rgba(161,161,170,0.14) 0%, rgba(113,113,122,0.06) 100%)", border: "rgba(161,161,170,0.25)", text: "#A1A1AA", shadow: "0 0 10px rgba(161,161,170,0.08)" },
-    inactive: { text: "#71717A" },
-  },
-  merged: {
-    active: { bg: "linear-gradient(135deg, rgba(34,197,94,0.14) 0%, rgba(22,163,74,0.06) 100%)", border: "rgba(34,197,94,0.28)", text: "#4ADE80", shadow: "0 0 10px rgba(34,197,94,0.10)" },
-    inactive: { text: "#4ADE80" },
-  },
-};
-
-const VIRTUALIZE_AT = 50;
-const LINKED_HYDRATION_LIMIT = 8;
-const GITHUB_TAB_REVISIT_CACHE_TTL_MS = 60_000;
-const GITHUB_TAB_SNAPSHOT_FRESH_MS = 30_000;
-const GITHUB_TAB_HOT_REFRESH_DELAY_MS = 30_000;
-const GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT = 2;
-const GITHUB_TAB_HISTORY_PAGE_INCREMENT = 2;
-const GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT = 10;
-const GITHUB_TAB_CACHE_DISABLED = import.meta.env.MODE === "test";
-const GITHUB_PR_LIST_WIDTH_KEY = "ade.prs.githubListWidth";
-const GITHUB_PR_LIST_MIN_PX = 260;
-const GITHUB_PR_LIST_MAX_PX = 560;
-const GITHUB_PR_LIST_DEFAULT_PX = 380;
-
-function readPersistedGithubPrListPx(): number {
-  try {
-    const raw = localStorage.getItem(GITHUB_PR_LIST_WIDTH_KEY);
-    if (raw) {
-      const value = Number(raw);
-      if (Number.isFinite(value) && value >= GITHUB_PR_LIST_MIN_PX && value <= GITHUB_PR_LIST_MAX_PX) {
-        return value;
-      }
-    }
-  } catch {
-    /* ignore */
-  }
-  return GITHUB_PR_LIST_DEFAULT_PX;
-}
-
-function persistGithubPrListPx(px: number): void {
-  try {
-    localStorage.setItem(GITHUB_PR_LIST_WIDTH_KEY, String(Math.round(px)));
-  } catch {
-    /* ignore */
-  }
-}
-
-type GitHubTabProps = {
+export type GitHubTabProps = {
   lanes: LaneSummary[];
   mergeMethod: MergeMethod;
   selectedPrId: string | null;
@@ -111,501 +78,6 @@ export type GitHubHeaderChromeState = {
   searchQuery: string;
   onSearchQueryChange: (value: string) => void;
 };
-
-type GitHubFilter = "open" | "closed" | "merged";
-type GitHubFilterSelectionMap = Partial<Record<GitHubFilter, string | null>>;
-
-type GitHubTabWarmCache = {
-  projectRoot: string;
-  snapshot: GitHubPrSnapshot | null;
-  filter: GitHubFilter;
-  selectedItemId: string | null;
-  selectedItemIdsByFilter?: GitHubFilterSelectionMap;
-  searchQuery: string;
-  externalHistoryLoaded: boolean;
-  cachedAt: number;
-};
-
-type GitHubSnapshotRequestKey = {
-  includeExternalClosed: boolean;
-  historyPageLimit: number;
-};
-
-type CreateLaneFromPrBranchApi = {
-  preflightCreateLaneFromPrBranch: (
-    args: CreateLaneFromPrBranchArgs,
-  ) => Promise<CreateLaneFromPrBranchPreflightResult>;
-  createLaneFromPrBranch: (
-    args: CreateLaneFromPrBranchArgs,
-  ) => Promise<CreateLaneFromPrBranchResult>;
-};
-
-let githubTabWarmCache: GitHubTabWarmCache | null = null;
-
-function normalizeGitHubFilter(value: unknown): GitHubFilter {
-  return value === "open" || value === "closed" || value === "merged" ? value : "open";
-}
-
-function initialGitHubFilterSelections(cache: GitHubTabWarmCache | null): GitHubFilterSelectionMap {
-  const selections: GitHubFilterSelectionMap = { ...(cache?.selectedItemIdsByFilter ?? {}) };
-  if (cache?.selectedItemId) {
-    selections[normalizeGitHubFilter(cache.filter)] = cache.selectedItemId;
-  }
-  return selections;
-}
-
-function normalizeHistoryPageLimit(value: unknown): number {
-  const numeric = Number(value);
-  if (!Number.isFinite(numeric) || numeric <= 0) {
-    return GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT;
-  }
-  return Math.min(
-    GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT,
-    Math.max(GITHUB_TAB_HISTORY_INITIAL_PAGE_LIMIT, Math.floor(numeric)),
-  );
-}
-
-function snapshotRequestKey(options?: {
-  includeExternalClosed?: boolean;
-  historyPageLimit?: number;
-}): GitHubSnapshotRequestKey {
-  const includeExternalClosed = options?.includeExternalClosed === true;
-  return {
-    includeExternalClosed,
-    historyPageLimit: includeExternalClosed ? normalizeHistoryPageLimit(options?.historyPageLimit) : 0,
-  };
-}
-
-function snapshotRequestSatisfies(
-  current: GitHubSnapshotRequestKey | null,
-  requested: GitHubSnapshotRequestKey,
-): boolean {
-  if (!current) return false;
-  if (!requested.includeExternalClosed) return true;
-  return current.includeExternalClosed && current.historyPageLimit >= requested.historyPageLimit;
-}
-
-function readGitHubTabWarmCache(projectRoot: string | null): GitHubTabWarmCache | null {
-  if (GITHUB_TAB_CACHE_DISABLED) return null;
-  if (!projectRoot) return null;
-  if (githubTabWarmCache?.projectRoot !== projectRoot) return null;
-  const filter = normalizeGitHubFilter((githubTabWarmCache as { filter?: unknown }).filter);
-  return filter === githubTabWarmCache.filter ? githubTabWarmCache : { ...githubTabWarmCache, filter };
-}
-
-function writeGitHubTabWarmCache(cache: GitHubTabWarmCache): void {
-  if (GITHUB_TAB_CACHE_DISABLED) return;
-  if (!cache.projectRoot) return;
-  githubTabWarmCache = cache;
-}
-
-function formatGitHubSnapshotError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? "");
-  const message = raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim();
-  if (/github (token|auth) missing/i.test(message)) {
-    return "Connect GitHub in Settings with gh auth or a PAT to sync pull requests.";
-  }
-  return message || "Unable to sync pull requests.";
-}
-
-function formatActionError(err: unknown): string {
-  const raw = err instanceof Error ? err.message : String(err ?? "");
-  return raw
-    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
-    .replace(/^Error:\s*/i, "")
-    .trim() || "Action failed.";
-}
-
-function createLaneFromPrBranchApi(): CreateLaneFromPrBranchApi {
-  return window.ade.prs as typeof window.ade.prs & CreateLaneFromPrBranchApi;
-}
-
-function createLaneFromPrBranchArgs(item: GitHubPrListItem): CreateLaneFromPrBranchArgs {
-  return {
-    repoOwner: item.repoOwner,
-    repoName: item.repoName,
-    githubPrNumber: item.githubPrNumber,
-  };
-}
-
-function createLaneFromPrBranchRequestKey(item: GitHubPrListItem): string {
-  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
-}
-
-function preflightText(value: unknown): string | null {
-  if (value == null) return null;
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed || null;
-  }
-  if (typeof value === "number" || typeof value === "boolean") return String(value);
-  if (typeof value === "object") {
-    const record = value as Record<string, unknown>;
-    const message = preflightText(record.message) ?? preflightText(record.reason) ?? preflightText(record.summary);
-    if (message) return message;
-    try {
-      return JSON.stringify(value);
-    } catch {
-      return "Conflict details unavailable.";
-    }
-  }
-  return String(value);
-}
-
-function preflightPrNumber(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): number {
-  return Number(preflight?.githubPrNumber ?? item.githubPrNumber);
-}
-
-function preflightTitle(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
-  return preflightText(preflight?.title) ?? item.title;
-}
-
-function preflightRemoteBranch(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
-  return preflightText(preflight?.remoteBranch) ?? preflightText(preflight?.headBranch) ?? item.headBranch ?? "---";
-}
-
-function preflightImportRef(preflight: CreateLaneFromPrBranchPreflight | null): string | null {
-  return preflightText(preflight?.importBranchRef);
-}
-
-function preflightTargetLaneName(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
-  const remoteBranch = preflightRemoteBranch(preflight, item);
-  const fallback = branchNameFromRef(remoteBranch);
-  return preflightText(preflight?.targetLaneName) ?? (fallback || "New lane");
-}
-
-function preflightBaseBranch(preflight: CreateLaneFromPrBranchPreflight | null, item: GitHubPrListItem): string {
-  return preflightText(preflight?.baseBranch) ?? item.baseBranch ?? "---";
-}
-
-function preflightBlockingConflict(preflight: CreateLaneFromPrBranchPreflight | null): string | null {
-  return preflightText(preflight?.blockingConflict);
-}
-
-function createLaneMappedPrId(result: CreateLaneFromPrBranchResult): string | null {
-  return preflightText(result.pr?.id);
-}
-
-function createLaneMappedLaneId(result: CreateLaneFromPrBranchResult): string | null {
-  return preflightText(result.pr?.laneId) ?? preflightText(result.lane?.id);
-}
-
-function createLaneMappedLaneName(result: CreateLaneFromPrBranchResult): string | null {
-  return preflightText(result.lane?.name);
-}
-
-function upsertLaneSummary(lanes: LaneSummary[], lane: LaneSummary): LaneSummary[] {
-  const index = lanes.findIndex((entry) => entry.id === lane.id);
-  if (index === -1) return [lane, ...lanes];
-  const next = lanes.slice();
-  next[index] = lane;
-  return next;
-}
-
-function isKnownPrState(value: unknown): value is PrSummary["state"] {
-  return value === "draft" || value === "open" || value === "merged" || value === "closed";
-}
-
-function reconcileLinkedPrState(item: GitHubPrListItem, linkedPr: PrSummary | null | undefined): GitHubPrListItem {
-  if (!isKnownPrState(linkedPr?.state)) return item;
-  if (!isTerminalPrState(linkedPr.state) || isTerminalPrState(item.state)) return item;
-  return {
-    ...item,
-    state: linkedPr.state,
-    isDraft: false,
-    title: linkedPr.title || item.title,
-    updatedAt: linkedPr.updatedAt || item.updatedAt,
-  };
-}
-
-function matchesFilter(item: GitHubPrListItem, filter: GitHubFilter): boolean {
-  if (filter === "open") return item.state === "open" || item.state === "draft";
-  return item.state === filter;
-}
-
-/** The filter bucket a PR row belongs in based on its (reconciled) state. */
-function bucketForState(state: GitHubPrListItem["state"]): GitHubFilter {
-  return state === "merged" ? "merged" : state === "closed" ? "closed" : "open";
-}
-
-/** Stable repo/owner/number coordinate key, shared by the terminal-row overlay. */
-function githubCoordKey(item: { repoOwner: string; repoName: string; githubPrNumber: number }): string {
-  return `${item.repoOwner}/${item.repoName}#${Number(item.githubPrNumber)}`;
-}
-
-/**
- * Build a terminal-bucket overlay row for a linked PR that has dropped out of an
- * open-only GitHub snapshot. Reuses the last-seen row (its lane info, labels, and
- * — crucially — its `id`, so the current selection stays attached) and stamps the
- * authoritative terminal state from the linked ADE PR.
- */
-function buildOverlayRowFromLastSeen(lastSeen: GitHubPrListItem, linkedPr: PrSummary): GitHubPrListItem {
-  return {
-    ...lastSeen,
-    state: linkedPr.state,
-    isDraft: false,
-    title: linkedPr.title || lastSeen.title,
-    updatedAt: linkedPr.updatedAt || lastSeen.updatedAt,
-    linkedPrId: linkedPr.id,
-  };
-}
-
-/**
- * Terminal-bucket overlay rows: linked ADE PRs that have gone merged/closed but
- * have dropped out of the open-only GitHub snapshot. We keep their last-seen row
- * visible under the terminal bucket until a full-history fetch reintroduces the
- * authoritative row (at which point it is `present` and produces no overlay).
- * Reopened PRs (linked state back to open) are non-terminal, so they produce no
- * overlay and naturally drop. Rows never previously displayed are skipped — we
- * have no lane/label info to synthesize from.
- */
-function computeTerminalOverlayItems(
-  reconciledItems: GitHubPrListItem[],
-  prsById: Map<string, PrSummary>,
-  lastSeenByCoord: Map<string, GitHubPrListItem>,
-): GitHubPrListItem[] {
-  if (prsById.size === 0) return [];
-  const presentCoords = new Set(reconciledItems.map((item) => githubCoordKey(item)));
-  const overlays: GitHubPrListItem[] = [];
-  const usedLinkedIds = new Set<string>();
-  for (const pr of prsById.values()) {
-    if (!isTerminalPrState(pr.state)) continue;
-    if (usedLinkedIds.has(pr.id)) continue;
-    const key = githubCoordKey(pr);
-    if (presentCoords.has(key)) continue;
-    const lastSeen = lastSeenByCoord.get(key);
-    if (!lastSeen) continue;
-    usedLinkedIds.add(pr.id);
-    overlays.push(buildOverlayRowFromLastSeen(lastSeen, pr));
-  }
-  return overlays;
-}
-
-function mergeGitHubListItems(snapshot: GitHubPrSnapshot): GitHubPrListItem[] {
-  const combined = [...snapshot.repoPullRequests, ...snapshot.externalPullRequests];
-  const seen = new Set<string>();
-  return combined.filter((item) => {
-    const key = `${item.scope}:${item.repoOwner}/${item.repoName}#${item.githubPrNumber}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
-  });
-}
-
-type GitHubFilterCounts = Record<GitHubFilter, number>;
-
-function countGitHubItemsByState(items: GitHubPrListItem[]): GitHubFilterCounts {
-  return {
-    open: items.filter((item) => item.state === "open" || item.state === "draft").length,
-    closed: items.filter((item) => item.state === "closed").length,
-    merged: items.filter((item) => item.state === "merged").length,
-  };
-}
-
-
-
-function canCreateLaneFromPrBranch(item: GitHubPrListItem, lanes: LaneSummary[]): boolean {
-  if (item.linkedPrId || item.scope !== "repo") return false;
-  if (item.state !== "open" && item.state !== "draft") return false;
-  const headBranch = branchNameFromRef(item.headBranch);
-  if (!headBranch) return false;
-  return !lanes.some((lane) => !lane.archivedAt && branchNameFromRef(lane.branchRef) === headBranch);
-}
-
-function sameGitHubPr(left: GitHubPrListItem, right: GitHubPrListItem): boolean {
-  return left.repoOwner === right.repoOwner
-    && left.repoName === right.repoName
-    && Number(left.githubPrNumber) === Number(right.githubPrNumber);
-}
-
-/**
- * Stable synthetic PR id for an unmapped GitHub PR (no ADE lane / DB row).
- * Must be deterministic across renders — it keys both per-id effects in the
- * pane and the React `key`.
- */
-function syntheticUnmappedPrId(item: GitHubPrListItem): string {
-  return syntheticGithubPrId(item);
-}
-
-/**
- * Build a referentially-stable synthetic `PrWithConflicts` for an unmapped
- * GitHub PR so it can flow through the full `PrDetailPane`. `laneId` is empty
- * (no lane) and the id is derived deterministically from the GitHub item.
- */
-function buildSyntheticUnmappedPr(item: GitHubPrListItem, projectId: string): PrWithConflicts {
-  return {
-    id: syntheticUnmappedPrId(item),
-    laneId: "",
-    projectId,
-    repoOwner: item.repoOwner,
-    repoName: item.repoName,
-    githubPrNumber: item.githubPrNumber,
-    githubUrl: item.githubUrl,
-    githubNodeId: null,
-    title: item.title,
-    state: item.state,
-    baseBranch: item.baseBranch ?? "",
-    headBranch: item.headBranch ?? "",
-    checksStatus: "none",
-    reviewStatus: "none",
-    additions: 0,
-    deletions: 0,
-    lastSyncedAt: null,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt,
-    stack: item.stack ?? null,
-    conflictAnalysis: null,
-  };
-}
-
-function patchSnapshotWithMappedPr(
-  snapshot: GitHubPrSnapshot,
-  item: GitHubPrListItem,
-  args: {
-    mappedPrId: string;
-    laneId: string | null;
-    laneName: string | null;
-  },
-): GitHubPrSnapshot {
-  const patchItems = (items: GitHubPrListItem[]) => items.map((candidate) => {
-    if (candidate.id !== item.id && !sameGitHubPr(candidate, item)) return candidate;
-    return {
-      ...candidate,
-      linkedPrId: args.mappedPrId,
-      linkedLaneId: args.laneId ?? candidate.linkedLaneId,
-      linkedLaneName: args.laneName ?? candidate.linkedLaneName,
-      adeKind: candidate.adeKind ?? "single",
-    };
-  });
-  return {
-    ...snapshot,
-    repoPullRequests: patchItems(snapshot.repoPullRequests),
-    externalPullRequests: patchItems(snapshot.externalPullRequests),
-  };
-}
-
-function CreateLaneFromPrBranchDialog({
-  item,
-  preflight,
-  loading,
-  busy,
-  error,
-  onCancel,
-  onConfirm,
-}: {
-  item: GitHubPrListItem;
-  preflight: CreateLaneFromPrBranchPreflight | null;
-  loading: boolean;
-  busy: boolean;
-  error: string | null;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  const blockingConflict = preflightBlockingConflict(preflight);
-  const canConfirm = Boolean(preflight?.canCreate) && !loading && !busy;
-  const sourceBranch = preflightRemoteBranch(preflight, item);
-  const importRef = preflightImportRef(preflight);
-  const rows = [
-    ["PR", `#${preflightPrNumber(preflight, item)} ${preflightTitle(preflight, item)}`],
-    ["Source branch", sourceBranch],
-    ...(importRef && importRef !== sourceBranch ? [["Import ref", importRef] as const] : []),
-    ["Target lane", preflightTargetLaneName(preflight, item)],
-    ["Base branch", preflightBaseBranch(preflight, item)],
-  ] as const;
-
-  return (
-    <div
-      role="presentation"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 100,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "rgba(0,0,0,0.52)",
-        backdropFilter: "blur(10px)",
-        padding: 20,
-      }}
-    >
-      <div
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="create-lane-from-pr-title"
-        style={{
-          width: "min(560px, 100%)",
-          borderRadius: 12,
-          border: `1px solid ${COLORS.border}`,
-          background: COLORS.cardBgSolid,
-          boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
-          overflow: "hidden",
-        }}
-      >
-        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div id="create-lane-from-pr-title" style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}>
-            Create lane from PR branch
-          </div>
-        </div>
-        <div style={{ padding: 20, display: "grid", gap: 14 }}>
-          {loading ? (
-            <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textSecondary }}>
-              Checking branch ownership and PR head availability...
-            </div>
-          ) : (
-            <div style={{ display: "grid", gap: 10 }}>
-              {rows.map(([label, value]) => (
-                <div key={label} style={{ display: "grid", gridTemplateColumns: "120px minmax(0, 1fr)", gap: 12, alignItems: "baseline" }}>
-                  <div style={LABEL_STYLE}>{label}</div>
-                  <div style={{ fontFamily: label === "PR" ? SANS_FONT : MONO_FONT, fontSize: 12, color: COLORS.textSecondary, minWidth: 0, overflowWrap: "anywhere" }}>
-                    {value}
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {blockingConflict ? (
-            <div style={{
-              display: "flex",
-              gap: 10,
-              padding: "10px 12px",
-              borderRadius: 9,
-              background: "rgba(239,68,68,0.08)",
-              border: "1px solid rgba(239,68,68,0.18)",
-              color: COLORS.danger,
-              fontFamily: SANS_FONT,
-              fontSize: 12,
-              lineHeight: 1.5,
-            }}>
-              <Warning size={15} weight="fill" style={{ marginTop: 2, flexShrink: 0 }} />
-              <span>{blockingConflict}</span>
-            </div>
-          ) : null}
-          {error ? (
-            <div style={{ color: COLORS.danger, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.5 }}>
-              {error}
-            </div>
-          ) : null}
-        </div>
-        <div style={{ padding: "14px 20px", display: "flex", justifyContent: "flex-end", gap: 10, borderTop: `1px solid ${COLORS.border}` }}>
-          <button type="button" onClick={onCancel} disabled={busy} style={outlineButton({ height: 34, opacity: busy ? 0.6 : 1 })}>
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={onConfirm}
-            disabled={!canConfirm}
-            style={primaryButton({ height: 34, opacity: canConfirm ? 1 : 0.5 })}
-          >
-            <GitBranch size={14} /> {busy ? "Creating..." : "Create lane"}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
 
 export function GitHubTab({
   lanes,
@@ -687,7 +159,6 @@ export function GitHubTab({
   const externalHistoryLoadedRef = React.useRef(externalHistoryLoaded);
   const projectRootRef = React.useRef(projectRoot);
   const listRef = React.useRef<HTMLDivElement | null>(null);
-  const defaultListPx = React.useMemo(() => readPersistedGithubPrListPx(), []);
   snapshotRef.current = snapshot;
   filterRef.current = filter;
   externalHistoryLoadedRef.current = externalHistoryLoaded;
@@ -903,87 +374,22 @@ export function GitHubTab({
     });
   }, [currentHistoryPageLimit, loadSnapshot, prs, prsContextLoading, startHotRefreshWindow]);
 
-  const matchesSearch = React.useCallback((item: GitHubPrListItem) => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.trim().toLowerCase();
-    return (
-      item.title.toLowerCase().includes(q) ||
-      (item.author?.toLowerCase().includes(q) ?? false) ||
-      (item.headBranch?.toLowerCase().includes(q) ?? false) ||
-      String(item.githubPrNumber).includes(q)
-    );
-  }, [searchQuery]);
-
-  const allItems = React.useMemo(
-    () => (snapshot ? mergeGitHubListItems(snapshot) : []),
-    [snapshot],
-  );
-  const reconciledItems = React.useMemo(
-    () => allItems.map((item) =>
-      reconcileLinkedPrState(item, item.linkedPrId ? prsByIdMap.get(item.linkedPrId) : null)
-    ),
-    [allItems, prsByIdMap],
-  );
-
-  // Remember every row we have actually shown so the terminal-row overlay can
-  // resurrect one that later drops out of an open-only snapshot. The map only
-  // grows within a session (PR counts are small), and is read during render by
-  // the overlay memo below — recorded after commit so the overlay memo still
-  // sees the prior row on the render where a PR first disappears.
-  React.useEffect(() => {
-    const map = lastSeenRowByCoordRef.current;
-    for (const item of allItems) {
-      map.set(githubCoordKey(item), item);
-    }
-  }, [allItems]);
-
-  const overlayItems = React.useMemo(
-    () => computeTerminalOverlayItems(reconciledItems, prsByIdMap, lastSeenRowByCoordRef.current),
-    [reconciledItems, prsByIdMap],
-  );
-
-  const displayedItems = React.useMemo(
-    () => (overlayItems.length === 0 ? reconciledItems : [...reconciledItems, ...overlayItems]),
-    [reconciledItems, overlayItems],
-  );
-
-  const filteredItems = React.useMemo(
-    () => displayedItems
-      .filter((item) => matchesFilter(item, filter) && matchesSearch(item))
-      .sort((a, b) =>
-        new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime(),
-      ),
-    [displayedItems, filter, matchesSearch],
-  );
-  const hydrationItems = filteredItems.length > VIRTUALIZE_AT ? renderedHydrationItems : filteredItems;
-
-  // Period headers only in the terminal buckets. `filteredItems` stays a pure item
-  // array so selection, hydration and sorting keep operating on rows alone.
-  const listRows = React.useMemo(
-    () => buildPrListRows(filteredItems, { grouped: filter === "merged" || filter === "closed" }),
-    [filteredItems, filter],
-  );
-
-  const filterCounts = React.useMemo(() => {
-    const listedCounts = countGitHubItemsByState(displayedItems);
-    const snapshotCounts = snapshot?.history?.repoPullRequestCounts;
-    // Snapshot totals were computed server-side from the raw snapshot, so a
-    // row that reconciliation moved between states (stale open → merged)
-    // must move in the badge totals too — otherwise the item changes tabs
-    // while the counts still bucket it under its stale state.
-    const rawCounts = countGitHubItemsByState(allItems);
-    const withReconcileDelta = (base: number | null | undefined, key: keyof GitHubFilterCounts, fallback: number): number =>
-      base == null ? fallback : Math.max(0, base + listedCounts[key] - rawCounts[key]);
-    return {
-      open: withReconcileDelta(snapshotCounts?.open, "open", listedCounts.open),
-      closed: withReconcileDelta(snapshotCounts?.closed, "closed", listedCounts.closed),
-      merged: withReconcileDelta(snapshotCounts?.merged, "merged", listedCounts.merged),
-    };
-  }, [allItems, displayedItems, snapshot?.history?.repoPullRequestCounts]);
-  const canLoadOlderHistory =
-    filter !== "open"
-    && Boolean(snapshot?.history?.repoPullRequestsMayHaveMore)
-    && currentHistoryPageLimit() < GITHUB_TAB_HISTORY_MAX_PAGE_LIMIT;
+  const {
+    displayedItems,
+    filteredItems,
+    hydrationItems,
+    listRows,
+    filterCounts,
+    canLoadOlderHistory,
+  } = useGitHubTabListModel({
+    snapshot,
+    searchQuery,
+    prsByIdMap,
+    filter,
+    renderedHydrationItems,
+    lastSeenRowByCoordRef,
+    currentHistoryPageLimit,
+  });
   const showListLoadingIndicator = loading || syncing || loadingFilter !== null;
 
   React.useEffect(() => {
@@ -1493,296 +899,80 @@ export function GitHubTab({
     selectedItem,
   ]);
 
-  if (error && !snapshot) {
-    return (
-      <EmptyState title="GitHub" description={error}>
-        <button
-          type="button"
-          onClick={() => navigate("/settings?tab=general#github-connection")}
-          style={primaryButton({ marginTop: 16 })}
-        >
-          <GithubLogo size={14} weight="fill" />
-          Connect GitHub
-        </button>
-      </EmptyState>
-    );
-  }
+  const detailPaneProps = selectedItem && selectedDisplayPr ? {
+    pr: selectedDisplayPr,
+    status: selectedLinkedPr ? detailStatus : null,
+    checks: selectedLinkedPr ? detailChecks : [],
+    reviews: selectedLinkedPr ? detailReviews : [],
+    comments: selectedLinkedPr ? detailComments : [],
+    snapshotHydration: selectedLinkedPr
+      ? (detailSnapshot?.prId === selectedDisplayPr.id
+          ? detailSnapshot
+          : detailSnapshotsByPrId[selectedDisplayPr.id] ?? null)
+      : null,
+    snapshotHydrationOwnedByContext: Boolean(selectedLinkedPr),
+    liveDetailReady: Boolean(selectedLinkedPr) && detailLiveDataPrId === selectedDisplayPr.id,
+    detailBusy,
+    lanes,
+    mergeMethod,
+    onRefresh: handleSync,
+    onNavigate: navigate,
+    onOpenRebaseTab,
+    initialDetailTab: selectedDetailTab,
+    onDetailTabChange,
+    onUnmap: selectedItem.linkedPrId ? () => handleUnlink(selectedItem) : undefined,
+    unmapBusy: Boolean(selectedItem.linkedPrId) && unlinkingPrId === selectedItem.linkedPrId,
+    unmapped: !selectedItem.linkedPrId,
+    githubCoords: selectedItem.linkedPrId ? null : selectedGithubCoords,
+    unmappedAffordance: selectedItem.linkedPrId ? null : unmappedAffordance,
+  } : null;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-      {/* Search / sync chrome only renders inline when it hasn't been hoisted to
-          the shared PRs header. The Open/Merged/Closed tabs now live at the top of
-          the list column (below) so the detail pane can rise to sit level with them. */}
-      {!relocateHeaderChrome ? (
-        <div style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 10,
-          padding: "8px 16px",
-          borderBottom: "1px solid rgba(255,255,255,0.06)",
-          background: "rgba(255,255,255,0.01)",
-        }}>
-          <GitHubPrSearchInput value={searchQuery} onChange={setSearchQuery} />
-          <GitHubRepoSyncBar
-            repoLabel={repoLabel}
-            syncing={syncing}
-            syncedAt={snapshot?.syncedAt ?? null}
-            onSync={() => {
-              void handleSync();
-            }}
-          />
-        </div>
-      ) : null}
-
-      {error ? (
-        <div style={{
-          padding: "10px 16px",
-          borderBottom: "1px solid rgba(239,68,68,0.2)",
-          background: "rgba(239,68,68,0.06)",
-          color: COLORS.danger,
-          fontFamily: SANS_FONT,
-          fontSize: 12,
-          borderRadius: 0,
-        }}>
-          {error}
-        </div>
-      ) : null}
-
-      <div style={{ display: "flex", minHeight: 0, flex: 1 }}>
-        <Group id="github-pr-layout" orientation="horizontal" className="flex h-full min-h-0 w-full">
-          <Panel
-            id="github-pr-list"
-            data-tour="prs.list"
-            defaultSize={defaultListPx}
-            minSize={GITHUB_PR_LIST_MIN_PX}
-            maxSize={GITHUB_PR_LIST_MAX_PX}
-            onResize={(size) => persistGithubPrListPx(size.inPixels)}
-            className="min-h-0 min-w-0"
-            style={{ overflow: "hidden", borderRight: "1px solid rgba(255,255,255,0.06)" }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-              {/* Filter tabs (Open / Merged / Closed) — fixed header capping the
-                  list column. The detail pane to the right rises to sit level with
-                  these; the list min width keeps the right edge of "Closed" aligned
-                  with the list/detail divider. */}
-              <div style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 0,
-                padding: "0 16px",
-                flexShrink: 0,
-                borderBottom: "1px solid rgba(255,255,255,0.06)",
-                background: "rgba(255,255,255,0.01)",
-              }}>
-                {(["open", "merged", "closed"] as GitHubFilter[]).map((state) => {
-                  const active = filter === state;
-                  const fc = FILTER_COLORS[state];
-                  const count = filterCounts[state];
-                  const icon = state === "merged" ? <GitMerge size={12} weight="bold" /> : null;
-                  const tabLoading = active && (loading || syncing || loadingFilter === state || loadingOlderHistory);
-                  return (
-                    <button
-                      key={state}
-                      type="button"
-                      onClick={() => handleFilterChange(state)}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        gap: 5,
-                        height: 36,
-                        padding: "0 14px",
-                        fontSize: 12,
-                        fontWeight: active ? 600 : 400,
-                        fontFamily: SANS_FONT,
-                        color: active ? fc.active.text : COLORS.textMuted,
-                        background: "transparent",
-                        border: "none",
-                        borderBottom: active ? `2px solid ${fc.active.text}` : "2px solid transparent",
-                        cursor: "pointer",
-                        textTransform: "capitalize",
-                        transition: "all 150ms ease",
-                      }}
-                    >
-                      {icon}
-                      {state}
-                      {tabLoading ? (
-                        <CircleNotch
-                          size={12}
-                          className="animate-spin"
-                          weight="bold"
-                          aria-label={`Loading ${state} pull requests`}
-                          style={{ color: active ? fc.active.text : COLORS.accent, opacity: 0.9 }}
-                        />
-                      ) : (
-                        <span style={{
-                          fontFamily: MONO_FONT,
-                          fontSize: 10,
-                          fontWeight: 600,
-                          color: active ? fc.active.text : COLORS.textDim,
-                          opacity: active ? 0.8 : 0.6,
-                        }}>
-                          {count}
-                        </span>
-                      )}
-                    </button>
-                  );
-                })}
-                <div style={{ flex: 1 }} />
-                {showListLoadingIndicator ? (
-                  <span
-                    role="status"
-                    aria-label="Loading pull requests"
-                    title="Loading pull requests"
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      width: 24,
-                      height: 24,
-                      color: COLORS.accent,
-                      opacity: 0.9,
-                    }}
-                  >
-                    <CircleNotch size={14} className="animate-spin" weight="bold" />
-                  </span>
-                ) : null}
-              </div>
-              <div ref={listRef} style={{ flex: 1, minHeight: 0, overflow: "auto" }}>
-                {filteredItems.length === 0 ? (
-                <div style={{ padding: 20 }}>
-                  <EmptyState
-                    title={loading && !snapshot ? "Preparing pull requests" : "No pull requests"}
-                    description={loading && !snapshot ? "ADE is syncing GitHub in the background." : "No pull requests match the current filters."}
-                  />
-                </div>
-              ) : filteredItems.length > VIRTUALIZE_AT ? (
-                <GitHubTabVirtualList
-                  parentRef={listRef}
-                  rows={listRows}
-                  selectedItemId={selectedItemId}
-                  prsByIdMap={prsByIdMap}
-                  onSelect={handleSelectItem}
-                  onHydrationItemsChange={handleHydrationItemsChange}
-                />
-              ) : (
-                listRows.map((row) => (
-                  row.kind === "header" ? (
-                    <PrListGroupHeaderRow key={`header-${row.id}`} header={row} />
-                  ) : (
-                    <GitHubTabPrRow
-                      key={row.item.id}
-                      item={row.item}
-                      selected={row.item.id === selectedItemId}
-                      linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
-                      onSelect={handleSelectItem}
-                    />
-                  )
-                ))
-              )}
-              {canLoadOlderHistory ? (
-                <div style={{ padding: "12px 14px 16px", borderTop: "1px solid rgba(255,255,255,0.04)" }}>
-                  <button
-                    type="button"
-                    aria-label="Load older pull requests"
-                    disabled={loadingOlderHistory}
-                    onClick={() => { void handleLoadOlderHistory(); }}
-                    style={{
-                      ...outlineButton({ height: 32, width: "100%", opacity: loadingOlderHistory ? 0.6 : 1 }),
-                      justifyContent: "center",
-                    }}
-                  >
-                    {loadingOlderHistory ? "Loading older..." : "Load older PRs"}
-                  </button>
-                </div>
-              ) : null}
-              </div>
-            </div>
-          </Panel>
-          <ResizeGutter orientation="vertical" thin narrow />
-          <Panel
-            id="github-pr-detail"
-            data-tour="prs.detailDrawer"
-            minSize="30%"
-            className="min-h-0 min-w-0"
-            style={{ overflow: "hidden" }}
-          >
-            {selectedItem && selectedDisplayPr ? (
-              <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
-                {selectedBucketMismatch ? (
-                  <div style={{ padding: "10px 12px 0", flexShrink: 0 }}>
-                    <PrBucketTransitionBanner
-                      state={selectedItem.state}
-                      onShow={() => handleFilterChange(bucketForState(selectedItem.state))}
-                    />
-                  </div>
-                ) : null}
-                {selectedStack ? (
-                  <GitHubStackInspector
-                    stack={selectedStack}
-                    items={displayedItems.filter(
-                      (item) => item.repoOwner === selectedStack.repoOwner
-                        && item.repoName === selectedStack.repoName,
-                    )}
-                    selectedPrNumber={selectedItem.githubPrNumber}
-                    syncing={syncing}
-                    onSelectPr={handleSelectItem}
-                    onOpenGitHub={() => {
-                      void window.ade.app.openExternal(selectedItem.githubUrl);
-                    }}
-                    onSync={() => {
-                      void handleSync();
-                    }}
-                    onAddPullRequests={handleAddStackPullRequests}
-                    onUnstack={handleUnstack}
-                  />
-                ) : null}
-                <div style={{ flex: 1, minHeight: 0, overflow: "hidden" }}>
-              <PrDetailPane
-                key={selectedDisplayPr.id}
-                pr={selectedDisplayPr}
-                status={selectedLinkedPr ? detailStatus : null}
-                checks={selectedLinkedPr ? detailChecks : []}
-                reviews={selectedLinkedPr ? detailReviews : []}
-                comments={selectedLinkedPr ? detailComments : []}
-                snapshotHydration={
-                  selectedLinkedPr
-                    ? (detailSnapshot?.prId === selectedDisplayPr.id
-                        ? detailSnapshot
-                        : detailSnapshotsByPrId[selectedDisplayPr.id] ?? null)
-                    : null
-                }
-                snapshotHydrationOwnedByContext={Boolean(selectedLinkedPr)}
-                liveDetailReady={Boolean(selectedLinkedPr) && detailLiveDataPrId === selectedDisplayPr.id}
-                detailBusy={detailBusy}
-                lanes={lanes}
-                mergeMethod={mergeMethod}
-                onRefresh={handleSync}
-                onNavigate={navigate}
-                onOpenRebaseTab={onOpenRebaseTab}
-                initialDetailTab={selectedDetailTab}
-                onDetailTabChange={onDetailTabChange}
-                onUnmap={selectedItem.linkedPrId ? () => handleUnlink(selectedItem) : undefined}
-                unmapBusy={Boolean(selectedItem.linkedPrId) && unlinkingPrId === selectedItem.linkedPrId}
-                unmapped={!selectedItem.linkedPrId}
-                githubCoords={selectedItem.linkedPrId ? null : selectedGithubCoords}
-                unmappedAffordance={selectedItem.linkedPrId ? null : unmappedAffordance}
-              />
-                </div>
-              </div>
-            ) : (
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%" }}>
-                <EmptyState
-                  icon={GithubLogo}
-                  iconSize={64}
-                  title="No pull request selected"
-                  description="Choose a GitHub pull request to inspect details."
-                />
-              </div>
-            )}
-          </Panel>
-        </Group>
-      </div>
+    <>
+      <GitHubTabView
+        chrome={{
+          relocated: relocateHeaderChrome,
+          searchQuery,
+          onSearchQueryChange: setSearchQuery,
+          repoLabel,
+          syncing,
+          syncedAt: snapshot?.syncedAt ?? null,
+          onSync: () => { void handleSync(); },
+          error,
+          onConnectGitHub: () => navigate("/settings?tab=general#github-connection"),
+        }}
+        list={{
+          parentRef: listRef,
+          filter,
+          filterCounts,
+          loading,
+          loadingFilter,
+          loadingOlderHistory,
+          showLoadingIndicator: showListLoadingIndicator,
+          hasSnapshot: Boolean(snapshot),
+          filteredItems,
+          rows: listRows,
+          selectedItemId,
+          prsByIdMap,
+          canLoadOlderHistory,
+          onFilterChange: handleFilterChange,
+          onSelect: handleSelectItem,
+          onHydrationItemsChange: handleHydrationItemsChange,
+          onLoadOlderHistory: () => { void handleLoadOlderHistory(); },
+        }}
+        detail={{
+          selectedItem,
+          selectedBucketMismatch,
+          selectedStack,
+          displayedItems,
+          paneProps: detailPaneProps,
+          onSelect: handleSelectItem,
+          onSync: () => { void handleSync(); },
+          onAddStackPullRequests: handleAddStackPullRequests,
+          onUnstack: handleUnstack,
+          onFilterChange: handleFilterChange,
+        }}
+      />
       {createLaneItem ? (
         <CreateLaneFromPrBranchDialog
           item={createLaneItem}
@@ -1794,159 +984,6 @@ export function GitHubTab({
           onConfirm={handleConfirmCreateLaneFromPrBranch}
         />
       ) : null}
-    </div>
+    </>
   );
-}
-
-/**
- * Slim banner shown at the top of the detail pane when the selected PR's state
- * has moved out of the active filter's bucket (transiently, or after a manual
- * filter change). Matches the neighboring lane/rebase banner idiom — no new
- * colors or gradients.
- */
-function PrBucketTransitionBanner({
-  state,
-  onShow,
-}: {
-  state: GitHubPrListItem["state"];
-  onShow: () => void;
-}) {
-  const isMerged = state === "merged";
-  const label = isMerged ? "Merged" : "Closed";
-  const accent = isMerged ? COLORS.success : COLORS.danger;
-  return (
-    <div style={{ ...cardStyle({ padding: 0, overflow: "hidden" }), flexShrink: 0, borderColor: `color-mix(in srgb, ${accent} 30%, transparent)` }}>
-      <div style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "space-between",
-        gap: 10,
-        padding: "8px 12px",
-        background: `color-mix(in srgb, ${accent} 7%, transparent)`,
-      }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-          {isMerged ? (
-            <GitMerge size={14} weight="bold" style={{ color: accent, flexShrink: 0 }} />
-          ) : (
-            <XCircle size={14} weight="fill" style={{ color: accent, flexShrink: 0 }} />
-          )}
-          <span style={{ fontFamily: SANS_FONT, fontSize: 12, fontWeight: 600, color: COLORS.textPrimary }}>
-            This PR is now {label}
-          </span>
-        </div>
-        <button
-          type="button"
-          onClick={onShow}
-          style={{ ...outlineButton({ height: 24, padding: "0 10px", fontSize: 11 }), color: COLORS.textMuted, flexShrink: 0 }}
-        >
-          Show in {label}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-/* ---- Virtual list for GitHub PR sidebar (activated above VIRTUALIZE_AT) ---- */
-function GitHubTabVirtualList({
-  parentRef,
-  rows,
-  selectedItemId,
-  prsByIdMap,
-  onSelect,
-  onHydrationItemsChange,
-}: {
-  parentRef: React.RefObject<HTMLDivElement | null>;
-  rows: PrListRow[];
-  selectedItemId: string | null;
-  prsByIdMap: Map<string, PrSummary>;
-  onSelect: (item: GitHubPrListItem) => void;
-  onHydrationItemsChange: (items: GitHubPrListItem[]) => void;
-}) {
-  const headerIndices = React.useMemo(() => prListHeaderIndices(rows), [rows]);
-
-  const virtualizer = useVirtualizer({
-    count: rows.length,
-    getScrollElement: () => parentRef.current,
-    // Headers are much shorter than rows; a bad estimate here makes the scrollbar jump.
-    estimateSize: (index) => (rows[index]?.kind === "header" ? 30 : 108),
-    overscan: 6,
-    rangeExtractor: React.useCallback(
-      (range: { startIndex: number; endIndex: number; overscan: number; count: number }) => {
-        // Keep the governing header rendered even once it has scrolled out of range,
-        // so it can be pinned to the top of the viewport.
-        const pinned = activeHeaderFor(headerIndices, range.startIndex);
-        const start = Math.max(0, range.startIndex - range.overscan);
-        const end = Math.min(range.count - 1, range.endIndex + range.overscan);
-        const indices = new Set<number>();
-        if (pinned != null) indices.add(pinned);
-        for (let index = start; index <= end; index += 1) indices.add(index);
-        return [...indices].sort((a, b) => a - b);
-      },
-      [headerIndices],
-    ),
-  });
-
-  const virtualItems = virtualizer.getVirtualItems();
-  // Derived during render from the range we are about to draw. An earlier version
-  // round-tripped this through a ref and a state-setting effect, which re-rendered the
-  // whole list on every scroll frame to compute something already in hand.
-  const activeHeaderIndex = activeHeaderFor(headerIndices, virtualItems[0]?.index ?? 0);
-
-  React.useEffect(() => {
-    // Only PR rows may be hydrated — a header has nothing to fetch.
-    onHydrationItemsChange(
-      virtualItems
-        .map((virtualRow) => rows[virtualRow.index])
-        .filter((row): row is Extract<PrListRow, { kind: "item" }> => row?.kind === "item")
-        .map((row) => row.item),
-    );
-  }, [rows, onHydrationItemsChange, virtualItems]);
-
-  return (
-    <div
-      data-testid="pr-github-list-virtual"
-      style={{ height: virtualizer.getTotalSize(), position: "relative" }}
-    >
-      {virtualItems.map((virtualRow) => {
-        const row = rows[virtualRow.index]!;
-        const pinned = row.kind === "header" && virtualRow.index === activeHeaderIndex;
-        return (
-          <div
-            key={row.kind === "header" ? `header-${row.id}` : row.item.id}
-            data-index={virtualRow.index}
-            ref={virtualizer.measureElement}
-            style={{
-              position: pinned ? "sticky" : "absolute",
-              top: 0,
-              left: 0,
-              width: "100%",
-              zIndex: pinned ? 2 : undefined,
-              ...(pinned ? {} : { transform: `translateY(${virtualRow.start}px)` }),
-            }}
-          >
-            {row.kind === "header" ? (
-              <PrListGroupHeaderRow header={row} />
-            ) : (
-              <GitHubTabPrRow
-                item={row.item}
-                selected={row.item.id === selectedItemId}
-                linkedPr={row.item.linkedPrId ? prsByIdMap.get(row.item.linkedPrId) ?? null : null}
-                onSelect={onSelect}
-              />
-            )}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-/** The last header at or above `startIndex` — the one governing that scroll position. */
-function activeHeaderFor(headerIndices: number[], startIndex: number): number | null {
-  let active: number | null = null;
-  for (const index of headerIndices) {
-    if (index > startIndex) break;
-    active = index;
-  }
-  return active;
 }

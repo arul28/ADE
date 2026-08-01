@@ -73,6 +73,19 @@ function uniqueIds(ids: string[]): string[] {
   return [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
 }
 
+function projectPrScope(projectId: string, prIds: string[]): {
+  params: unknown[];
+  selectSql: string;
+} | null {
+  const ids = uniqueIds(prIds);
+  if (ids.length === 0) return null;
+  const placeholders = ids.map(() => "?").join(", ");
+  return {
+    params: [projectId, ...ids],
+    selectSql: `select id from pull_requests where project_id = ? and id in (${placeholders})`,
+  };
+}
+
 function pruneEmptyPrGroups(db: DbLike, projectId: string): void {
   db.run(
     `
@@ -92,14 +105,25 @@ function pruneEmptyPrGroups(db: DbLike, projectId: string): void {
 }
 
 export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds: string[]): void {
-  const ids = uniqueIds(prIds);
-  if (ids.length === 0) return;
-  const placeholders = ids.map(() => "?").join(", ");
+  const scope = projectPrScope(projectId, prIds);
+  if (!scope) return;
 
-  db.run(`delete from pr_group_members where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pull_request_ai_summaries where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pull_request_snapshots where pr_id in (${placeholders})`, ids);
-  db.run(`delete from pull_requests where project_id = ? and id in (${placeholders})`, [projectId, ...ids]);
+  db.run(
+    `delete from pr_group_members
+     where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  db.run(
+    `delete from pull_request_ai_summaries
+     where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  db.run(
+    `delete from pull_request_snapshots
+     where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
+  db.run(`delete from pull_requests where id in (${scope.selectSql})`, scope.params);
   pruneEmptyPrGroups(db, projectId);
 }
 
@@ -133,9 +157,8 @@ function detachRows(
   },
 ): void {
   const { projectId, prIds, laneName, laneColor, detachedAt, provenance } = args;
-  if (prIds.length === 0) return;
-  const placeholders = prIds.map(() => "?").join(", ");
-  const scope = [projectId, ...prIds];
+  const scope = projectPrScope(projectId, prIds);
+  if (!scope) return;
 
   // Lift counts off the snapshot before nulling it, so the merged row can still say
   // "12 commits · 9 files" once the JSON is gone.
@@ -154,9 +177,9 @@ function detachRows(
              from pull_request_snapshots s
              where s.pr_id = pull_requests.id and json_valid(s.files_json))
           )
-      where project_id = ? and id in (${placeholders})
+      where id in (${scope.selectSql})
     `,
-    scope,
+    scope.params,
   );
 
   // `detached_at is null` keeps the first detach authoritative: re-detaching an already
@@ -168,9 +191,9 @@ function detachRows(
           detached_lane_name = ?,
           detached_lane_color = ?,
           detached_provenance = ?
-      where project_id = ? and id in (${placeholders}) and detached_at is null
+      where id in (${scope.selectSql}) and detached_at is null
     `,
-    [detachedAt, laneName, laneColor, JSON.stringify(provenance), ...scope],
+    [detachedAt, laneName, laneColor, JSON.stringify(provenance), ...scope.params],
   );
 
   // Keep detail/status/commits (small, and what the merged view reads); drop the bulky
@@ -182,13 +205,17 @@ function detachRows(
           checks_json = null,
           comments_json = null,
           reviews_json = null
-      where pr_id in (${placeholders})
+      where pr_id in (${scope.selectSql})
     `,
-    prIds,
+    scope.params,
   );
 
   // Group membership is lane-scoped work-in-progress, not history — it goes.
-  db.run(`delete from pr_group_members where pr_id in (${placeholders})`, prIds);
+  db.run(
+    `delete from pr_group_members
+     where pr_id in (${scope.selectSql})`,
+    scope.params,
+  );
   pruneEmptyPrGroups(db, projectId);
 }
 
@@ -210,7 +237,12 @@ export function detachPullRequestRowsForLane(
   });
   // Lane-scoped membership survives the id lookup above (a group member can outlive its
   // PR row), so clear it explicitly and prune once.
-  db.run("delete from pr_group_members where lane_id = ?", [laneId]);
+  db.run(
+    `delete from pr_group_members
+     where lane_id = ?
+       and group_id in (select id from pr_groups where project_id = ?)`,
+    [laneId, projectId],
+  );
   pruneEmptyPrGroups(db, projectId);
 }
 

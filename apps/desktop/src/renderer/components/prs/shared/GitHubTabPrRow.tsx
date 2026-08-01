@@ -50,16 +50,26 @@ function stateBadgeStyle(item: GitHubPrListItem): React.CSSProperties {
   };
 }
 
-/* -- CI status dot color -- */
-function ciDotColor(linkedPr: PrSummary | null): { color: string; title: string } | null {
-  if (!linkedPr) return null;
-  switch (linkedPr.checksStatus) {
+function PrRowCiStatus({ status }: { status: PrSummary["checksStatus"] | null }) {
+  switch (status) {
     case "passing":
-      return { color: COLORS.success, title: "CI passing" };
+      return (
+        <span title="CI passing" style={{ display: "inline-flex", flexShrink: 0 }}>
+          <CheckCircle size={14} weight="fill" style={{ color: COLORS.success }} />
+        </span>
+      );
     case "failing":
-      return { color: COLORS.danger, title: "CI failing" };
+      return (
+        <span title="CI failing" style={{ display: "inline-flex", flexShrink: 0 }}>
+          <XCircle size={14} weight="fill" style={{ color: COLORS.danger }} />
+        </span>
+      );
     case "pending":
-      return { color: COLORS.warning, title: "CI pending" };
+      return (
+        <span title="CI pending" style={{ display: "inline-flex", flexShrink: 0 }}>
+          <PrCiRunningIndicator color={COLORS.warning} size={14} />
+        </span>
+      );
     default:
       return null;
   }
@@ -157,7 +167,7 @@ function PrRowLaneChip({
   linkedLaneColor: string | null;
   mappable: boolean;
 }) {
-  if (item.linkedLaneName || item.linkedLaneId) {
+  if (item.linkedLaneName) {
     return (
       <span
         style={{
@@ -172,12 +182,17 @@ function PrRowLaneChip({
         }}
       >
         {linkedLaneColor ? <LaneAccentDot lane={{ color: linkedLaneColor }} size={6} /> : null}
-        {item.linkedLaneName ?? item.linkedLaneId}
+        {item.linkedLaneName}
       </span>
     );
   }
 
   if (item.detached) return <PrRowGhostLaneChip detached={item.detached} />;
+
+  // A linked id is internal identity, not user-facing copy. If the lane metadata is
+  // temporarily unavailable, omit the chip instead of leaking a UUID or claiming the
+  // PR is unmapped.
+  if (item.linkedLaneId) return null;
 
   // Terminal PRs have no mapping story worth telling — the lane is gone and mapping one
   // now would do nothing. Showing a badge here is what made Merged a wall of warnings.
@@ -284,8 +299,6 @@ export function GitHubTabPrRow({
   // state badge are all answered by the fact that it merged. Dropping them is what lets
   // the row collapse to two lines and stops the list reading as a wall of signals.
   const terminal = isTerminalPrState(item.state);
-  const ci = terminal ? null : ciDotColor(linkedPr);
-  const ciRunning = linkedPr?.checksStatus === "pending";
   const review = terminal ? null : reviewIndicator(linkedPr);
   // Open rows are about how long something has been waiting; merged rows are about
   // when it shipped.
@@ -296,29 +309,30 @@ export function GitHubTabPrRow({
   const rowLinkedLaneColor = useLaneColorById(item.linkedLaneId ?? null);
   const mappable = isPrRowMappable(item);
   return (
-    <button
-      type="button"
-      data-tour="prs.listRow"
-      onClick={() => onSelect(item)}
-      style={{
-        display: "flex",
-        width: "100%",
-        flexDirection: "column",
-        gap: 6,
-        padding: "11px 14px",
-        textAlign: "left",
-        border: "none",
-        borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
-        borderBottom: "1px solid rgba(255,255,255,0.04)",
-        background: selected
-          ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
-          : "transparent",
-        cursor: "pointer",
-        transition: "background 150ms ease",
-      }}
-      onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
-      onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
-    >
+    <div style={{ position: "relative" }}>
+      <button
+        type="button"
+        data-tour="prs.listRow"
+        onClick={() => onSelect(item)}
+        style={{
+          display: "flex",
+          width: "100%",
+          flexDirection: "column",
+          gap: 6,
+          padding: "11px 42px 11px 14px",
+          textAlign: "left",
+          border: "none",
+          borderLeft: selected ? `3px solid ${sc.text}` : "3px solid transparent",
+          borderBottom: "1px solid rgba(255,255,255,0.04)",
+          background: selected
+            ? `linear-gradient(90deg, ${sc.bg} 0%, rgba(255,255,255,0.02) 100%)`
+            : "transparent",
+          cursor: "pointer",
+          transition: "background 150ms ease",
+        }}
+        onMouseEnter={(e) => { if (!selected) e.currentTarget.style.background = "rgba(255,255,255,0.025)"; }}
+        onMouseLeave={(e) => { if (!selected) e.currentTarget.style.background = "transparent"; }}
+      >
       {/* Row 1: avatar, bot badge, PR number, title, CI icon, time, comments */}
       <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
         {item.author ? (
@@ -377,17 +391,7 @@ export function GitHubTabPrRow({
         }}>
           {item.title}
         </span>
-        {ci ? (
-          <span title={ci.title} style={{ display: "inline-flex", flexShrink: 0 }}>
-            {linkedPr?.checksStatus === "passing" ? (
-              <CheckCircle size={14} weight="fill" style={{ color: "#4ADE80" }} />
-            ) : linkedPr?.checksStatus === "failing" ? (
-              <XCircle size={14} weight="fill" style={{ color: "#EF4444" }} />
-            ) : ciRunning ? (
-              <PrCiRunningIndicator color="#FBBF24" size={14} />
-            ) : null}
-          </span>
-        ) : null}
+        {terminal ? null : <PrRowCiStatus status={linkedPr?.checksStatus ?? null} />}
         {ago ? (
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
             {ago}
@@ -479,20 +483,36 @@ export function GitHubTabPrRow({
             branch
           </span>
         ) : null}
-        <span
-          role="link"
-          tabIndex={0}
-          onClick={(e) => { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); }}
-          onKeyDown={(e) => { if (e.key === "Enter") { e.stopPropagation(); void window.ade.app.openExternal(item.githubUrl); } }}
-          style={{ display: "inline-flex", alignItems: "center", marginLeft: "auto", padding: 0, cursor: "pointer", color: COLORS.textDim, transition: "color 100ms ease" }}
-          title="Open on GitHub"
-          onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
-          onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
-        >
-          <ArrowSquareOut size={13} />
-        </span>
       </div>
-    </button>
+      </button>
+      <button
+        type="button"
+        aria-label="View on GitHub"
+        onClick={() => { void window.ade.app.openExternal(item.githubUrl); }}
+        style={{
+          position: "absolute",
+          right: 14,
+          bottom: 11,
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 20,
+          height: 20,
+          padding: 0,
+          border: "none",
+          borderRadius: 4,
+          background: "transparent",
+          cursor: "pointer",
+          color: COLORS.textDim,
+          transition: "color 100ms ease",
+        }}
+        title="Open on GitHub"
+        onMouseEnter={(e) => { e.currentTarget.style.color = COLORS.textSecondary; }}
+        onMouseLeave={(e) => { e.currentTarget.style.color = COLORS.textDim; }}
+      >
+        <ArrowSquareOut size={13} />
+      </button>
+    </div>
   );
 }
 
