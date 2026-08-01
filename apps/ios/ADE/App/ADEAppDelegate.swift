@@ -77,9 +77,14 @@ final class ADEAppDelegate: NSObject, UIApplicationDelegate {
         didReceiveRemoteNotification userInfo: [AnyHashable: Any]
     ) async -> UIBackgroundFetchResult {
         await MainActor.run { PushNotificationService.shared.notePushReceived() }
-        // This callback only records push diagnostics; it fetches/syncs nothing,
-        // so claiming `.newData` would skew iOS's background-fetch budget.
-        return .noData
+        let previousRevision = await MainActor.run {
+            AccountService.shared.attentionSnapshotRevision
+        }
+        await AccountService.shared.refreshAttentionSnapshot()
+        let refreshedRevision = await MainActor.run {
+            AccountService.shared.attentionSnapshotRevision
+        }
+        return refreshedRevision != previousRevision ? .newData : .noData
     }
 }
 
@@ -94,6 +99,9 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         willPresent notification: UNNotification
     ) async -> UNNotificationPresentationOptions {
         let userInfo = notification.request.content.userInfo
+        Task { @MainActor in
+            await AccountService.shared.refreshAttentionSnapshot()
+        }
         return await MainActor.run {
             PushNotificationService.shared.notePushReceived()
             if let sessionId = ADEAppDelegate.sessionId(from: userInfo),
@@ -114,6 +122,9 @@ extension ADEAppDelegate: UNUserNotificationCenterDelegate {
         let userInfo = response.notification.request.content.userInfo
         let sessionId = (userInfo["sessionId"] as? String) ?? ""
         let itemId = (userInfo["itemId"] as? String) ?? ""
+        Task { @MainActor in
+            await AccountService.shared.refreshAttentionSnapshot()
+        }
 
         // Both ids are required to target the pending approval — a payload
         // missing either (older host, malformed push) falls through to the

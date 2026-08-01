@@ -496,14 +496,14 @@ public final class AttentionDrawerModel: ObservableObject {
 
         let visibleIds = Set(visible.map(\.id))
         dismissedItemIDs.formUnion(visibleIds)
-        let accountIds = accountBackedItemIDs.intersection(visibleIds)
         persistDismissedItems()
         items.removeAll { visibleIds.contains($0.id) }
         validateSelectedProject()
         recomputeUnreadCount()
-        if !accountIds.isEmpty {
-            Task { await AccountService.shared.acknowledgeAttentionItems(Array(accountIds), dismiss: true) }
-        }
+        // Account rows may arrive after a machine-local card is dismissed.
+        // AccountService persists unbacked ids and applies them when the relay
+        // snapshot catches up instead of dropping that user intent here.
+        Task { await AccountService.shared.acknowledgeAttentionItems(Array(visibleIds), dismiss: true) }
     }
 
     // MARK: - Bell affordance

@@ -51,6 +51,7 @@ public enum ADESharedContainer {
     /// calls `WidgetCenter.shared.reloadAllTimelines()` on change.
     public static let workspaceSnapshotKey = "ade.workspaceSnapshot"
     public static let attentionSnapshotKey = "ade.attentionSnapshot.v1"
+    public static let attentionPendingAcksKey = "ade.attentionPendingAcks.v1"
     public static let pushPreferencesKey = "ade.push.prefs"
     public static let pendingAccountDeviceRevocationKey =
         "ade.attention.pending-account-device-revocation.v1"

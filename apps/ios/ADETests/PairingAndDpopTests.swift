@@ -314,13 +314,23 @@ final class PairingAndDpopTests: XCTestCase {
       XCTAssertEqual(payload["itemIds"] as? [String], ["item-a", "item-b"])
       XCTAssertNotNil(payload["seenAt"] as? String)
       XCTAssertNotNil(payload["dismissedAt"] as? String)
+      XCTAssertEqual(
+        payload["sourceRevisions"] as? [String: Int],
+        ["item-a": 7, "item-b": 11]
+      )
+      XCTAssertEqual(payload["expectedAccountOwnerId"] as? String, "account-a")
       let response = try XCTUnwrap(HTTPURLResponse(
         url: request.url ?? URL(string: "https://relay.example")!,
         statusCode: 200,
         httpVersion: nil,
         headerFields: ["Content-Type": "application/json"]
       ))
-      return (response, Data(#"{"ok":true,"revision":9}"#.utf8))
+      return (
+        response,
+        Data(
+          #"{"ok":true,"revision":9,"applied":["item-a"],"stale":["item-b"]}"#.utf8
+        )
+      )
     }
     defer { AccountDirectoryURLProtocolStub.reset() }
 
@@ -330,12 +340,17 @@ final class PairingAndDpopTests: XCTestCase {
       session: URLSession(configuration: configuration)
     )
 
-    try await client.acknowledge(
+    let result = try await client.acknowledge(
       baseURL: try XCTUnwrap(URL(string: "https://relay.example")),
       token: "clerk-token",
       itemIds: ["item-a", "item-b"],
-      dismiss: true
+      seenAt: Date(timeIntervalSince1970: 100),
+      dismissedAt: Date(timeIntervalSince1970: 101),
+      sourceRevisions: ["item-a": 7, "item-b": 11],
+      expectedAccountOwnerId: "account-a"
     )
+    XCTAssertEqual(result.applied, ["item-a"])
+    XCTAssertEqual(result.stale, ["item-b"])
   }
 
   func testAccountAttentionDevicePreferencesUseScopedPatch() async throws {
