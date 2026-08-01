@@ -1391,18 +1391,29 @@ export function registerRuntimeBridge({
       event,
       arg: RuntimeEventsReleaseRequest,
     ): Promise<RuntimeEventsReleaseResult> => {
+      // Enforce the contract's exclusive union at runtime: exactly one complete
+      // binding shape — remote `{id, projectId}` XOR local `{rootPath}`. A
+      // mixed or partial payload is rejected outright instead of being
+      // ambiguously interpreted (e.g. `{id, rootPath}` silently going local).
       const id = typeof arg?.id === "string" ? arg.id.trim() : "";
       const projectId =
         typeof arg?.projectId === "string" ? arg.projectId.trim() : "";
+      const rawRootPath =
+        typeof arg?.rootPath === "string" ? arg.rootPath.trim() : "";
+      const remoteShape = Boolean(id && projectId);
+      const localShape = Boolean(rawRootPath);
+      if (remoteShape === localShape || Boolean(id) !== Boolean(projectId)) {
+        return { released: 0 };
+      }
       let bindingKey: string | null = null;
-      if (id && projectId) {
+      if (remoteShape) {
         bindingKey = remoteProjectBindingKey(id, projectId);
       } else {
         const windowId = BrowserWindow.fromWebContents(event.sender)?.id ?? null;
         const session = getWindowSession ? getWindowSession(windowId) : null;
         const rootPath = resolveAuthorizedLocalRuntimeRootPath(
           session,
-          arg?.rootPath,
+          rawRootPath,
           authorizeLocalRuntimeRoot,
         );
         if (rootPath) {

@@ -21,6 +21,7 @@ import {
   type SessionLifecyclePatch,
 } from "./sessionLifecycleOverlay";
 import { SessionLifecycleUnavailableError } from "./sessionLifecycleSupport";
+import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
 
 // Full snapshots replace xterm state, so they must be at least as complete as
 // TerminalView's initial hydration. The host caps this at the same 2 MB.
@@ -391,7 +392,7 @@ export function createSessionsPtyNamespaces(infra: AdapterInfra): SessionsPtyNam
   };
 
   // Contract gap: these Electron-shaped namespaces target one web host and do
-  // not accept runtime pins. The shared guard below covers every pty/terminal
+  // not accept runtime pins. The shared guard (./runtimePinGuard) covers every pty/terminal
   // shim, sessions.list/get/readTranscriptTail, lanes.list, and the draft
   // attachment shim in agentChat.ts — the surfaces cross-machine reads actually
   // reach today. The wider lanes/sessions pin params in the Electron contract
@@ -634,13 +635,6 @@ function asRecord(args: unknown): Record<string, unknown> {
   return args && typeof args === "object" ? (args as Record<string, unknown>) : {};
 }
 
-export function assertWebRuntimePinUnsupported(operation: string, pin: unknown): void {
-  if (pin == null) return;
-  const key = stringField(asRecord(pin), "key") || "unknown binding";
-  throw new Error(
-    `ADE Web cannot route ${operation} to pinned runtime ${key}; cross-machine web routing is not implemented.`,
-  );
-}
 
 function stringField(record: Record<string, unknown>, key: string): string {
   const value = record[key];

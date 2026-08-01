@@ -15,7 +15,7 @@ import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
-import { assertWebRuntimePinUnsupported } from "./sessionsPty";
+import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
 
 // The browser gets authoritative ordered history through
 // chat.getChatEventHistory. chat_subscribe snapshots still matter as bounded

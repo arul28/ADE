@@ -6,7 +6,7 @@ import type {
   RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { assertWebRuntimePinUnsupported } from "./sessionsPty";
+import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
