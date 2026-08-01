@@ -422,7 +422,7 @@ final class NotchProtocolTests: XCTestCase {
         XCTAssertTrue(hostAuthored.isProblem)
         XCTAssertEqual(hostAuthored.title, "Signed out")
         XCTAssertEqual(hostAuthored.message, "Your ADE session expired.")
-        XCTAssertEqual(hostAuthored.hint, "Sign in to ADE to restore account attention.")
+        XCTAssertEqual(hostAuthored.hint, "Sign in to ADE to restore account Activity.")
 
         let blankCopy = try XCTUnwrap(notchStatusPresentation(
             availability: AttentionAvailability(state: .incompatible, recovery: .updateHost, hostName: "Studio"),
