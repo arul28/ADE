@@ -367,8 +367,11 @@ struct SettingsConnectionSnapshot: Equatable {
   var health: SyncConnectionHealth
   var connectionState: RemoteConnectionState
   var routeKind: SyncConnectionRouteKind?
+  /// The machine this phone is attached to, or was last attached to.
   var hostDisplayName: String?
-  var pendingHostName: String?
+  /// The machine the in-flight or just-failed attempt is aimed at. Kept apart
+  /// from `hostDisplayName` because these are only the same Mac by coincidence.
+  var connectAttemptHostName: String?
   var canReconnectToSavedHost: Bool
   var errorMessage: String?
   var accountConnectStageLabel: String?
@@ -401,7 +404,7 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
     connectionState: .disconnected,
     routeKind: nil,
     hostDisplayName: nil,
-    pendingHostName: nil,
+    connectAttemptHostName: nil,
     canReconnectToSavedHost: false,
     errorMessage: nil
   )
@@ -459,6 +462,15 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
       fallback: Self.trimmedNonEmpty(syncService.hostName) ?? Self.trimmedNonEmpty(activeProfile?.hostName),
       machines: AccountService.shared.machines
     )
+    // Resolved through the directory too, so a machine the user renamed reads
+    // the same while you're reaching for it as it does once you're on it.
+    let attemptHostName = syncService.connectAttemptTarget.flatMap { target in
+      accountMachinePresentationName(
+        hostIdentity: target.machineIdentity,
+        fallback: target.machineName,
+        machines: AccountService.shared.machines
+      )
+    }
     let address = Self.trimmedNonEmpty(syncService.currentAddress) ?? Self.trimmedNonEmpty(activeProfile?.lastSuccessfulAddress)
     let displayedDiscovery = syncDiscoveredHostsForDisplay(
       savedHosts: syncService.savedReconnectHosts,
@@ -472,7 +484,13 @@ private final class SettingsConnectionPresentationModel: ObservableObject {
         connectionState: syncService.connectionState,
         routeKind: health.transport.isConnected ? syncService.lastConnectedRouteKind : nil,
         hostDisplayName: hostDisplayName,
-        pendingHostName: health.transport == .connecting || health.transport == .unreachable ? hostDisplayName : nil,
+        connectAttemptHostName: health.transport == .connecting || health.transport == .unreachable
+          ? syncConnectionSubjectMachineName(
+            transport: health.transport,
+            attemptMachineName: attemptHostName,
+            hostDisplayName: hostDisplayName
+          )
+          : nil,
         canReconnectToSavedHost: syncService.canReconnectToSavedHost,
         errorMessage: health.transport == .unreachable ? health.lastFailureMessage : nil,
         accountConnectStageLabel: syncService.accountConnectStageLabel,
@@ -800,6 +818,42 @@ private func mobileUsageSettingsResetLabel(_ iso: String) -> String {
 
 // MARK: - Machines section (M5 / M14)
 
+/// The message a failed row should carry.
+///
+/// `lastError` describes the CONNECTION, and after a failed switch the
+/// connection is fine — it is the previous machine's, restored — so `lastError`
+/// is nil exactly when the user most needs to be told why the machine they
+/// picked would not answer. `lastConnectAttemptFailure` outlives that restore
+/// and is the only source that still knows.
+func settingsMachineRowErrorMessage(
+  attemptFailure: SyncConnectAttemptFailure?,
+  lastError: String?,
+  fallback: String
+) -> String {
+  func nonEmpty(_ value: String?) -> String? {
+    guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+          !trimmed.isEmpty else { return nil }
+    return trimmed
+  }
+  return nonEmpty(attemptFailure?.message) ?? nonEmpty(lastError) ?? fallback
+}
+
+/// A row failure describes one attempt against one machine, so it survives
+/// exactly as long as it stays true: attaching to a machine disproves that
+/// machine's failure. Failures against OTHER machines are left alone
+/// deliberately — a failed switch restores the connection it interrupted, so
+/// "connected to the Studio, MacBook row explaining why it would not answer" is
+/// the honest steady state rather than the contradiction it used to be.
+func settingsMachineRowErrorsRetiring(
+  _ existing: [String: String],
+  attachedEntryId: String?
+) -> [String: String] {
+  guard let attachedEntryId else { return existing }
+  var remaining = existing
+  remaining.removeValue(forKey: attachedEntryId)
+  return remaining
+}
+
 /// The CONNECTIONS machine list: a unified, deduplicated roster of the Macs a
 /// phone can reach — machines on the signed-in account plus previously-paired
 /// machines — ranked current → online → offline. Shows the top three inline
@@ -831,6 +885,12 @@ struct SettingsMachinesSection: View {
 
   private var isConnected: Bool {
     syncService.connectionState == .connected || syncService.connectionState == .syncing
+  }
+
+  /// Row id of the machine currently attached, so its stale failure — and only
+  /// its — can be retired the moment it is disproven.
+  private var currentEntryId: String? {
+    entries.first(where: \.isCurrent)?.id
   }
 
   private var currentIdentity: String? {
@@ -959,6 +1019,9 @@ struct SettingsMachinesSection: View {
       }
     }
     .task { await account.loadMachines() }
+    .onChange(of: currentEntryId) { _, entryId in
+      rowErrors = settingsMachineRowErrorsRetiring(rowErrors, attachedEntryId: entryId)
+    }
     .sheet(isPresented: $seeAllPresented) {
       allMachinesSheet
     }
@@ -1096,7 +1159,7 @@ struct SettingsMachinesSection: View {
   private func connect(_ entry: Entry) {
     guard !entry.isCurrent, connectingId == nil else { return }
     connectingId = entry.id
-    rowErrors[entry.id] = nil
+    rowErrors = [:]
     Task { @MainActor in
       switch entry.kind {
       case .account(let machine):
@@ -1114,17 +1177,28 @@ struct SettingsMachinesSection: View {
           ADEHaptics.success()
         } else {
           ADEHaptics.error()
-          rowErrors[entry.id] = syncService.lastError ?? "ADE could not connect to that Mac. Try again."
+          rowErrors[entry.id] = settingsMachineRowErrorMessage(
+            attemptFailure: syncService.lastConnectAttemptFailure,
+            lastError: syncService.lastError,
+            fallback: "ADE could not connect to that Mac. Try again."
+          )
         }
 
       case .saved(let host):
-        await syncService.reconnect(toSavedHost: host)
+        // Ask the call what happened. `connectionState` can be attached here
+        // because a failed attempt restored the PREVIOUS machine, which is not
+        // the same thing as this row succeeding.
+        let reconnected = await syncService.reconnect(toSavedHost: host)
         connectingId = nil
-        if syncService.connectionState == .connected || syncService.connectionState == .syncing {
+        if reconnected {
           ADEHaptics.success()
         } else {
           ADEHaptics.error()
-          rowErrors[entry.id] = syncService.lastError ?? "ADE could not reconnect to \(host.hostName)."
+          rowErrors[entry.id] = settingsMachineRowErrorMessage(
+            attemptFailure: syncService.lastConnectAttemptFailure,
+            lastError: syncService.lastError,
+            fallback: "ADE could not reconnect to \(host.hostName)."
+          )
         }
       }
     }

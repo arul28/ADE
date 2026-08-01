@@ -31,6 +31,32 @@ func settingsConnectedRouteChipText(
   return "Connected in \(durationLabel)s"
 }
 
+/// Which machine a connection line should name. While connected the attached
+/// host is the only truth, but during an attempt — and after it fails — the
+/// machine the user aimed at is: an account can hold several Macs, and naming
+/// the last-connected one blames a machine that took no part in the failure.
+func syncConnectionSubjectMachineName(
+  transport: SyncTransportHealth,
+  attemptMachineName: String?,
+  hostDisplayName: String?
+) -> String? {
+  let host = syncTrimmedMachineName(hostDisplayName)
+  switch transport {
+  case .connecting, .unreachable:
+    return syncTrimmedMachineName(attemptMachineName) ?? host
+  case .connected, .disconnected:
+    return host
+  }
+}
+
+private func syncTrimmedMachineName(_ value: String?) -> String? {
+  guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+        !trimmed.isEmpty else {
+    return nil
+  }
+  return trimmed
+}
+
 struct SettingsConnectionHeader: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
@@ -181,7 +207,7 @@ struct SettingsConnectionHeader: View {
   }
 
   private var pendingHostName: String? {
-    snapshot.pendingHostName
+    snapshot.connectAttemptHostName
   }
 
   private var compatibilityMessage: String? {
@@ -208,7 +234,9 @@ struct SettingsConnectionHeader: View {
       // Name the machine you're attached to, right under the status word.
       return snapshot.hostDisplayName
     case .connecting:
-      return snapshot.accountConnectStageLabel ?? "Connecting to saved machine"
+      // Never claim the target is a *saved* machine — an account adoption can
+      // be reaching a Mac this phone has never paired with.
+      return snapshot.accountConnectStageLabel ?? "Connecting to your machine"
     case .unreachable:
       return "Unable to reach your machine"
     case .disconnected:

@@ -50,6 +50,21 @@ returned per-device secret and DPoP key for direct reconnects, and adds a fresh
 in-memory account token to every later Relay hello. The account token is never
 saved with the machine.
 
+An account `hello_ok` does not reissue a credential every time, so the phone
+resolves which secret it is left holding through
+`syncResolveAccountHelloPairedSecret`, the iOS mirror of the web client's
+`resolveAccountHelloPairing` (`apps/desktop/src/shared/accountDirectory.ts`).
+A host that **omits** `accountPairing` means "keep the credential you already
+have", and the phone falls back to the secret it holds for that machine
+identity — found through the saved profile or, when no profile survives,
+directly from Keychain under `machine:<identity>`. That fallback is what makes a
+signed-in phone recoverable over the network instead of only at the Mac; the
+host side of the same contract is *Adopting a manual pairing into an account* in
+[the sync README](./README.md). An `accountPairing` that is **present** but
+carries another device's id, a missing secret, or an explicit null is still
+rejected outright, so a partial or mismatched host response can never pass as
+success.
+
 For that sealed adoption, iOS advertises the AEADs its CryptoKit runtime
 supports (`chacha20-poly1305` and `aes-256-gcm`). The host selects the first
 mutual option, echoes it in `account_challenge_ok`, and signs the selected AEAD
@@ -563,6 +578,15 @@ With a saved machine the primary action is **Reconnect** (calls
 "Connection settings" link; unpaired phones keep the single
 "Connect Machine" button into Settings.
 
+Every machine name in these lines is chosen by `syncConnectionSubjectMachineName`
+rather than being read off the active profile: while connecting or unreachable
+it names the machine the current attempt targets, and only while connected or
+disconnected does it name the attached host. With several Macs on one account,
+deriving the name from the last-connected profile blamed a machine that took no
+part in the failure. Settings passes the same value through the snapshot's
+`connectAttemptHostName` (populated only in the connecting/unreachable states),
+which is deliberately separate from `hostDisplayName`.
+
 The connected Hub top bar uses the same health value. `HubConnectionPill`
 renders the account custom name when available and, only after an authenticated
 connection, a compact observed-route line: `via LAN`, `via Tailscale`, or
@@ -905,10 +929,21 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    later therefore reconnects without navigation or a user tap. A successful
    hello restores the active project, chat and terminal subscriptions, tracked
    lane presence, and pending safe operations without rebuilding the current
-   navigation stack. A user-initiated machine transition from Settings first
-   presents the Hub, then disconnects, reconnects, pairs, or adopts the selected
-   machine. The cached active project can remain available for recovery, but no
-   in-project screen keeps rendering state owned by the previous machine.
+   navigation stack. A user-initiated machine transition from Settings
+   disconnects, reconnects, pairs, or adopts the selected machine, and returns
+   the UI to the Hub when — and only when — a `hello_ok` actually lands from a
+   machine other than the one the active project belongs to. Merely tapping a
+   machine does not eject the user from their project, because the tap does not
+   yet know whether the new machine will answer. `prepareForUserConnectionChange`
+   captures the identity being left *before* `saveProfile` retargets the active
+   machine, and `syncHubTransitionIsOwed` compares the landing hello against that
+   baseline; comparing against `activeProjectHostIdentity` alone would compare
+   the target to itself and strand the user inside a project the new host has
+   never heard of. An explicit disconnect has no later hello, so it presents the
+   Hub immediately. The cached active project can remain available for recovery,
+   but no in-project screen keeps rendering state owned by the previous machine:
+   a machine change also resets terminal **and** chat subscription state and
+   history, on every switch path rather than only the account/PIN ones.
    Disconnects (including the connecting-state Cancel button) also cancel
    scheduled reconnect work and leave the phone disconnected until the user
    reconnects or pairs again. Ordinary transport recovery does not force Hub
@@ -922,6 +957,57 @@ Sources: `apps/ios/ADE/Services/SyncService.swift` and
    `LaneSummary.devicesOpen` for other controllers; the phone calls
    `lanes.presence.release` when the user leaves a lane surface and
    re-announces on a 30 s heartbeat (runtime-side TTL is 60 s).
+
+### Switching machines, and what a failed switch costs
+
+An account can hold several Macs, so "the machine we are attached to" and "the
+machine this attempt is aimed at" are different facts and the service keeps them
+apart. `SyncConnectAttemptTarget` names the machine a user-initiated connect
+targets, is set the moment the attempt starts, survives the failure so the
+failure can say which machine failed, and is cleared on success (when the state
+reaches an attached state), on the next attempt, and on disconnect. Every
+connection line resolves its subject through
+`syncConnectionSubjectMachineName`: while `connecting` or `unreachable` the
+attempt target wins, and while `connected` or `disconnected` the attached host
+does. The attempt name is resolved through the account directory like any other,
+so a renamed machine reads the same while you are reaching for it as it does
+once you are on it. The Hub pill, the Hub "Cannot reach ⟨machine⟩" capsule, and
+the Settings connection header all read from that one helper.
+
+Choosing a machine that does not answer must not cost the user the machine they
+were already on. The old socket is still surrendered before the race — holding
+it open through `beginConnectAttempt()` leaves its heartbeat loop, post-hello
+restoration, and blip recovery half-alive, which is worse than an honest close —
+so recovery is explicit instead: on failure the phone reconnects to the profile
+it interrupted (`restorePreviousConnection`), re-points the attempt name at the
+machine it is now dialling, and re-enables auto-reconnect. When there was no live
+connection to restore, the saved profile is still retargeted back, or every later
+automatic reconnect would aim at the machine that just proved unreachable. The
+same protection covers the saved-host, account-machine, and sealed-adoption
+paths. Attempting to connect to the machine already attached returns early
+rather than tearing down a healthy connection to rebuild it (which, over Relay,
+would also race the phone's own live tunnel for the same Durable Object); it
+still applies that path's account-owner check and still learns newly advertised
+routes.
+
+Because a failed switch ends with the phone attached again, callers must not
+read success off `connectionState`: `reconnect(toSavedHost:)` returns whether
+*that* host was reached, and the account path checks the attached profile's key
+against the target's. Likewise, `lastError` describes the current connection, and
+the restore's own `hello_ok` clears it — so `lastConnectAttemptFailure` carries
+the explanation for the attempt instead, and Settings machine rows prefer it
+(`settingsMachineRowErrorMessage`). A row failure is retired only when it is
+disproven, i.e. when the phone attaches to that same machine
+(`settingsMachineRowErrorsRetiring`); "connected to one Mac, with another Mac's
+row explaining why it would not answer" is the honest steady state. A blocked
+Attention/notification navigation records its reason the same way, so a tap that
+cannot proceed explains itself rather than silently doing nothing.
+
+`SyncService.isAttached` treats `.syncing` as attached, because that is what
+every connect path settles into before reaching `.connected`. The same rule
+applies in `syncAccountMachineNavigationIsCurrent`, so a deeplink tapped
+mid-hydration does not conclude it is on the wrong machine and re-pair to the
+machine it is already talking to.
 
 ### Route ranking, route memory, and roaming
 
@@ -2121,6 +2207,9 @@ different machine's cached limits.
 | QR pairing payload (v3 smart URL) + camera scanner (`SettingsPairingScannerSheet`) | Implemented |
 | Account launch gate + account machine directory | Implemented; sign-in is the primary PIN-less path, while signed-out launches can continue with QR + PIN, Nearby + PIN, or advanced SSH pairing |
 | Account discovery + device-bound direct trust | Implemented; signed directory adoption, exact session-generation commit checks, direct trust retained across sign-out, fresh Relay proof per connection |
+| Account `hello_ok` credential resolution (`syncResolveAccountHelloPairedSecret`) | Implemented; an omitted `accountPairing` keeps the stored secret (profile or Keychain), a present-but-mismatched one is rejected |
+| Machine-switch recovery | Implemented; a failed switch restores the interrupted connection, retargets the saved profile back, and keeps the attempt's failure message (`lastConnectAttemptFailure`) after the restore clears `lastError` |
+| Attempt-scoped connection copy | Implemented (`SyncConnectAttemptTarget` + `syncConnectionSubjectMachineName`); connecting/unreachable lines name the machine being dialed, not the last-connected one |
 | SSH one-time pairing bootstrap | Implemented; explicit host fingerprint trust, JSON-stdin device grant, optional Keychain recovery credentials |
 | One-time mobile machine-trust reset | Implemented; clears connection tokens/profiles after update while preserving account and stable device/DPoP identity |
 | Device-bound pairing (DPoP, Secure Enclave P-256) | Implemented (`DpopKeyService`; signed proof on every paired hello) |

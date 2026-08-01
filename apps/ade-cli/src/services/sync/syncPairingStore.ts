@@ -29,6 +29,15 @@ export type SyncPairingRecord = {
    */
   accountOwnerUserId?: string | null;
   /**
+   * This pairing was established by QR/PIN/SSH and only later adopted into an
+   * account. Ownership lets the account gate re-use it; this flag records that
+   * the underlying trust is still the user's own physical act at the Mac, so
+   * `revokeAccountOwnedExcept` must not delete it when the Mac signs out or
+   * switches accounts. Signing in must never retroactively destroy a machine
+   * the user paired by hand.
+   */
+  localTrustOrigin?: boolean;
+  /**
    * A PIN re-pair that the device has not proven it received. See
    * `writeNewPairingRecord`: the fields above stay live and authoritative until
    * a legacy hello promotes the staged secret or a commit-capable client
@@ -222,15 +231,31 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
     const existing = records[peer.deviceId] ?? null;
     const existingAccountOwnerUserId = normalizeAccountOwnerUserId(existing?.accountOwnerUserId);
     let accountOwnerUserId: string | null = null;
+    // Sticky once set: a later re-pair or account switch never erases the fact
+    // that this trust started at the Mac.
+    let localTrustOrigin = existing?.localTrustOrigin === true;
     if (trust.kind === "account") {
       const requestedOwnerUserId = trust.userId.trim();
       if (!requestedOwnerUserId) {
         throw pairingError("account_not_verified", "Account identity is required.");
       }
-      if (existing && !existingAccountOwnerUserId) {
+      // Adopting a legacy manual (QR/PIN/SSH) record into the account. This
+      // used to throw outright, which stranded any signed-in device that had
+      // lost its stored secret: the record on the Mac stayed local forever and
+      // the only escape was walking back to the Mac. Adoption is safe because
+      // the caller has already verified a DPoP proof against the key pinned on
+      // THIS record — that pinned key is the sole evidence that the signing-in
+      // device is the same physical device that paired manually. A record with
+      // no pinned key carries no such evidence, so it is still refused here
+      // (the sync host refuses it earlier too; this is the store-level backstop
+      // for any other caller).
+      // Validity, not truthiness — a whitespace-only field is not a pinned key,
+      // and treating it as one would let the DPoP check fall back to TOFU
+      // against a caller-supplied key. Matches the host-side guard.
+      if (existing && !existingAccountOwnerUserId && !isValidDpopPublicKey(existing.dpopPublicKey ?? "")) {
         throw pairingError(
           "account_not_verified",
-          "A local pairing cannot be replaced through account sign-in.",
+          "A local pairing without a device key cannot be adopted through account sign-in.",
         );
       }
       if (existingAccountOwnerUserId && existingAccountOwnerUserId !== requestedOwnerUserId) {
@@ -240,6 +265,14 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
         );
       }
       accountOwnerUserId = requestedOwnerUserId;
+      // Adoption grants the account a way to USE this pairing; it does not
+      // convert who created it. Without this the record would join the set
+      // `revokeAccountOwnedExcept` deletes on sign-out, so one account hello
+      // would silently make a hand-paired machine destructible — the exact
+      // failure this whole change exists to remove.
+      if (existing && !existingAccountOwnerUserId) {
+        localTrustOrigin = true;
+      }
     }
     const runtimeHostGranted = peer.deviceType === "desktop"
       && (
@@ -263,6 +296,7 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       peerPlatform: peer.platform,
       peerDeviceType: peer.deviceType,
       runtimeHostGranted,
+      localTrustOrigin,
       // A gated re-pair may introduce or rotate the key when its caller allows
       // that. Omitting a key preserves the existing binding without downgrade.
       dpopPublicKey,
@@ -353,6 +387,11 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       return writeNewPairingRecord(peer, options, { kind: "pin" }, true);
     },
 
+    /**
+     * Mints (or rotates) a pairing from a verified same-account attestation.
+     * This also ADOPTS a legacy manual record for the same deviceId — see
+     * `writeNewPairingRecord` for why that is safe and what it still refuses.
+     */
     pairPeerViaAccount(
       peer: SyncPeerMetadata,
       attestation: VerifiedAccountAttestation,
@@ -556,14 +595,30 @@ export function createSyncPairingStore(args: SyncPairingStoreArgs) {
       const currentOwner = currentOwnerUserId?.trim() || null;
       const records = readRecords();
       const removed: string[] = [];
+      let demoted = false;
       for (const [deviceId, record] of Object.entries(records)) {
         const owner = normalizeAccountOwnerUserId(record?.accountOwnerUserId);
         // Missing/null provenance is legacy or explicitly local trust.
         if (!owner || owner === currentOwner) continue;
+        // Adopted-from-manual pairings must survive, but SURVIVING IS NOT
+        // ENOUGH: every reconnect path rejects a record whose owner no longer
+        // matches the signed-in account, so merely skipping the delete would
+        // leave it intact and permanently unusable — the same dead end, moved.
+        // Demote it back to the pure local trust it came from. The owner gate
+        // then has nothing to reject, and a later account hello re-adopts it.
+        if (record?.localTrustOrigin === true) {
+          if (records[deviceId]) {
+            records[deviceId] = { ...records[deviceId], accountOwnerUserId: null };
+            demoted = true;
+          }
+          continue;
+        }
         delete records[deviceId];
         removed.push(deviceId);
       }
-      if (removed.length > 0) writeRecords(records);
+      // A demotion is a real mutation even when nothing was deleted, so the
+      // write cannot be gated on `removed` alone.
+      if (removed.length > 0 || demoted) writeRecords(records);
       return removed;
     },
   };

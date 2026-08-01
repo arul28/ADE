@@ -3497,6 +3497,341 @@ describe("sync host account authentication", () => {
     }
   });
 
+  // A phone that paired by QR/PIN and later lost its stored secret (an iOS
+  // security migration wipes saved profiles but keeps the Secure Enclave DPoP
+  // key) can only come back through account sign-in. The host used to answer
+  // that hello with hello_ok and NO `accountPairing`, so the client failed with
+  // "The Mac did not return saved connection details" and the only remedy was
+  // physically walking to the Mac.
+  describe("legacy manual pairing adoption", () => {
+    const legacyPeer = {
+      deviceId: "legacy-manual-phone",
+      deviceName: "iPhone",
+      platform: "iOS",
+      deviceType: "phone",
+      siteId: "legacy-manual-phone-site",
+      dbVersion: 0,
+    } satisfies SyncPeerMetadata;
+
+    function createLegacyHarness(options?: { pin?: string }) {
+      const { projectRoot, cleanup } = createTempProjectRoot();
+      const secretsDir = path.join(projectRoot, ".ade", "secrets");
+      const pinStore = createSyncPinStore({ filePath: path.join(secretsDir, "sync-pin.json") });
+      pinStore.setPin(options?.pin ?? "428193");
+      const pairingSecretsPath = path.join(secretsDir, "sync-paired-devices.json");
+      const pairingStore = createSyncPairingStore({ filePath: pairingSecretsPath, pinStore });
+      const baseArgs = createHostArgs(projectRoot, []);
+      const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
+      const host = createSyncHostService({
+        ...baseArgs,
+        ...accountDependencies(),
+        pinStore,
+        pairingSecretsPath,
+        sharedListener: listener,
+        discoveryEnabled: false,
+        deviceRegistryService: {
+          ...baseArgs.deviceRegistryService,
+          upsertPeerMetadata: vi.fn(),
+        },
+      } as unknown as Parameters<typeof createSyncHostService>[0]);
+      const clients: Array<Awaited<ReturnType<typeof openAccountClient>>> = [];
+      return {
+        baseArgs,
+        pairingStore,
+        pairingSecretsPath,
+        host,
+        listener,
+        clients,
+        cleanup: async () => {
+          for (const client of clients) client.ws.close();
+          await host.dispose();
+          await listener.close();
+          cleanup();
+        },
+      };
+    }
+
+    /** Strips the field entirely, which is the true on-disk legacy shape. */
+    function dropAccountOwnerField(pairingSecretsPath: string, deviceId: string): void {
+      const records = JSON.parse(fs.readFileSync(pairingSecretsPath, "utf8")) as Record<
+        string,
+        Record<string, unknown>
+      >;
+      delete records[deviceId]?.accountOwnerUserId;
+      fs.writeFileSync(pairingSecretsPath, `${JSON.stringify(records, null, 2)}\n`);
+    }
+
+    // The deferral is the one remaining path that answers hello_ok WITHOUT
+    // `accountPairing`, so it is also the only end-to-end exercise of the iOS
+    // stored-secret fallback. Adoption writes through, which would drop a PIN
+    // re-pair the device has not acknowledged yet and leave its
+    // `pairing_commit` with nothing to promote.
+    it("defers adoption while a PIN re-pair is still staged", async () => {
+      const harness = createLegacyHarness();
+      const deviceKey = makeDpopKeyPair();
+      harness.pairingStore.pairPeer(legacyPeer, "428193", {
+        dpopPublicKey: deviceKey.publicKeyX963,
+      });
+      dropAccountOwnerField(harness.pairingSecretsPath, legacyPeer.deviceId);
+      // A second PIN pair stages a rotation the device has not proven it got.
+      const staged = harness.pairingStore.pairPeer(legacyPeer, "428193", {
+        dpopPublicKey: deviceKey.publicKeyX963,
+      });
+      expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(true);
+      try {
+        const port = await harness.host.waitUntilListening();
+        const accountToken = await mintAccountToken();
+        const relayClient = await openAccountClient(port, harness.listener.getRelayBridgeProof());
+        harness.clients.push(relayClient);
+        sendAccountHello({
+          ws: relayClient.ws,
+          peer: legacyPeer,
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: deviceKey.privateKey,
+            publicKeyX963: deviceKey.publicKeyX963,
+            deviceId: legacyPeer.deviceId,
+            accountToken,
+          }),
+        });
+        const helloOk = await waitForValue(
+          () => relayClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+          "deferred adoption hello_ok",
+        );
+        // Authenticated, but deliberately no new credential.
+        expect((helloOk.payload as { accountPairing?: unknown }).accountPairing).toBeUndefined();
+        // The staged re-pair is untouched and still promotable.
+        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(true);
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, staged.secret)).toBe("pending");
+        expect(harness.baseArgs.logger.info).toHaveBeenCalledWith(
+          "sync_host.account_adoption_deferred_pending_rotation",
+          { deviceId: legacyPeer.deviceId },
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("adopts a keyed legacy pairing on an account hello and returns a usable secret", async () => {
+      const harness = createLegacyHarness();
+      const deviceKey = makeDpopKeyPair();
+      const legacyPairing = harness.pairingStore.pairPeer(legacyPeer, "428193", {
+        dpopPublicKey: deviceKey.publicKeyX963,
+      });
+      dropAccountOwnerField(harness.pairingSecretsPath, legacyPeer.deviceId);
+      const legacyRecord = harness.pairingStore.getPairingRecord(legacyPeer.deviceId);
+      expect(legacyRecord?.accountOwnerUserId ?? null).toBeNull();
+      expect(legacyRecord?.dpopPublicKey).toBe(deviceKey.publicKeyX963);
+      try {
+        const port = await harness.host.waitUntilListening();
+        const accountToken = await mintAccountToken();
+        const relayClient = await openAccountClient(port, harness.listener.getRelayBridgeProof());
+        harness.clients.push(relayClient);
+        sendAccountHello({
+          ws: relayClient.ws,
+          peer: legacyPeer,
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: deviceKey.privateKey,
+            publicKeyX963: deviceKey.publicKeyX963,
+            deviceId: legacyPeer.deviceId,
+            accountToken,
+          }),
+        });
+        const helloOk = await waitForValue(
+          () => relayClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+          "legacy adoption hello_ok",
+        );
+        const adopted = (helloOk.payload as {
+          accountPairing?: { deviceId: string; secret: string };
+        }).accountPairing;
+        expect(adopted).toMatchObject({
+          deviceId: legacyPeer.deviceId,
+          secret: expect.stringMatching(/^[0-9a-f]{48}$/),
+        });
+        expect(adopted?.secret).not.toBe(legacyPairing.secret);
+
+        const upgraded = harness.pairingStore.getPairingRecord(legacyPeer.deviceId);
+        expect(upgraded?.accountOwnerUserId).toBe(ownerUserId);
+        // The pinned key is the identity proof; adoption must never swap it for
+        // the key the hello advertised inline.
+        expect(upgraded?.dpopPublicKey).toBe(deviceKey.publicKeyX963);
+        // `getPairingRecord` returns a committed view that strips
+        // `pendingRotation` unconditionally, so asserting its absence there
+        // proves nothing. `hasPendingRotation` reads the raw record.
+        expect(harness.pairingStore.hasPendingRotation(legacyPeer.deviceId)).toBe(false);
+        // Adoption must not hand the account power to delete a hand-made
+        // pairing when this Mac signs out.
+        expect(upgraded?.localTrustOrigin).toBe(true);
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, adopted!.secret)).toBe("committed");
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret)).toBeNull();
+        expect(harness.baseArgs.logger.info).toHaveBeenCalledWith(
+          "sync_host.account_legacy_pairing_upgraded",
+          { deviceId: legacyPeer.deviceId },
+        );
+
+        // The whole point: the phone reconnects on its own with what hello_ok
+        // handed it, without anyone touching the Mac.
+        const pairedClient = await openAccountClient(port);
+        harness.clients.push(pairedClient);
+        sendPairedHello({
+          ws: pairedClient.ws,
+          peer: legacyPeer,
+          secret: adopted!.secret,
+          dpop: signPairedDpop({
+            privateKey: deviceKey.privateKey,
+            publicKeyX963: deviceKey.publicKeyX963,
+            deviceId: legacyPeer.deviceId,
+            secret: adopted!.secret,
+          }),
+        });
+        await waitForValue(
+          () => pairedClient.envelopes.find((envelope) => envelope.type === "hello_ok"),
+          "adopted paired hello_ok",
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("still refuses a legacy pairing that has no device key on record", async () => {
+      const harness = createLegacyHarness();
+      const deviceKey = makeDpopKeyPair();
+      const legacyPairing = harness.pairingStore.pairPeer(legacyPeer, "428193");
+      dropAccountOwnerField(harness.pairingSecretsPath, legacyPeer.deviceId);
+      expect(harness.pairingStore.getPairingRecord(legacyPeer.deviceId)?.dpopPublicKey ?? null)
+        .toBeNull();
+      try {
+        const port = await harness.host.waitUntilListening();
+        const accountToken = await mintAccountToken();
+        const relayClient = await openAccountClient(port, harness.listener.getRelayBridgeProof());
+        harness.clients.push(relayClient);
+        sendAccountHello({
+          ws: relayClient.ws,
+          peer: legacyPeer,
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: deviceKey.privateKey,
+            publicKeyX963: deviceKey.publicKeyX963,
+            deviceId: legacyPeer.deviceId,
+            accountToken,
+          }),
+        });
+        const rejected = await waitForValue(
+          () => relayClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+          "keyless legacy adoption rejection",
+        );
+        expect(rejected.payload).toMatchObject({
+          code: "auth_failed",
+          message: expect.stringMatching(/predates device-key security/i),
+        });
+        const untouched = harness.pairingStore.getPairingRecord(legacyPeer.deviceId);
+        expect(untouched?.accountOwnerUserId ?? null).toBeNull();
+        expect(untouched?.dpopPublicKey ?? null).toBeNull();
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret))
+          .toBe("committed");
+        expect(harness.baseArgs.logger.info).not.toHaveBeenCalledWith(
+          "sync_host.account_legacy_pairing_upgraded",
+          expect.anything(),
+        );
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it("still refuses a pairing already owned by a different ADE account", async () => {
+      const harness = createLegacyHarness();
+      const deviceKey = makeDpopKeyPair();
+      const otherUserId = "user_someone_else";
+      const otherAttestation = await verifyClerkAccountAttestation({
+        token: await mintAccountToken(otherUserId),
+        expectedUserId: otherUserId,
+        config: { issuer, jwksUrl, oauthClientId },
+      });
+      const otherOwnerPairing = harness.pairingStore.pairPeerViaAccount(legacyPeer, otherAttestation, {
+        dpopPublicKey: deviceKey.publicKeyX963,
+      });
+      try {
+        const port = await harness.host.waitUntilListening();
+        const accountToken = await mintAccountToken();
+        const relayClient = await openAccountClient(port, harness.listener.getRelayBridgeProof());
+        harness.clients.push(relayClient);
+        sendAccountHello({
+          ws: relayClient.ws,
+          peer: legacyPeer,
+          accountToken,
+          dpop: signAccountDpop({
+            privateKey: deviceKey.privateKey,
+            publicKeyX963: deviceKey.publicKeyX963,
+            deviceId: legacyPeer.deviceId,
+            accountToken,
+          }),
+        });
+        const rejected = await waitForValue(
+          () => relayClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+          "cross-account adoption rejection",
+        );
+        expect(rejected.payload).toMatchObject({
+          code: "auth_failed",
+          message: expect.stringMatching(/already paired to this machine under a different ADE account/i),
+        });
+        expect(harness.pairingStore.getPairingRecord(legacyPeer.deviceId)?.accountOwnerUserId)
+          .toBe(otherUserId);
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, otherOwnerPairing.secret))
+          .toBe("committed");
+      } finally {
+        await harness.cleanup();
+      }
+    });
+
+    it.each([
+      { label: "a missing proof", useProof: false, message: /did not present its security key/i },
+      { label: "a wrong-key proof", useProof: true, message: /could not prove it holds the security key/i },
+    ])("still refuses to adopt a legacy pairing on $label", async ({ useProof, message }) => {
+      const harness = createLegacyHarness();
+      const deviceKey = makeDpopKeyPair();
+      const attackerKey = makeDpopKeyPair();
+      const legacyPairing = harness.pairingStore.pairPeer(legacyPeer, "428193", {
+        dpopPublicKey: deviceKey.publicKeyX963,
+      });
+      dropAccountOwnerField(harness.pairingSecretsPath, legacyPeer.deviceId);
+      try {
+        const port = await harness.host.waitUntilListening();
+        const accountToken = await mintAccountToken();
+        const relayClient = await openAccountClient(port, harness.listener.getRelayBridgeProof());
+        harness.clients.push(relayClient);
+        sendAccountHello({
+          ws: relayClient.ws,
+          peer: legacyPeer,
+          accountToken,
+          dpop: useProof
+            ? signAccountDpop({
+                privateKey: attackerKey.privateKey,
+                publicKeyX963: attackerKey.publicKeyX963,
+                deviceId: legacyPeer.deviceId,
+                accountToken,
+              })
+            : null,
+        });
+        const rejected = await waitForValue(
+          () => relayClient.envelopes.find((envelope) => envelope.type === "hello_error"),
+          "DPoP-failed legacy adoption rejection",
+        );
+        expect(rejected.payload).toMatchObject({
+          code: "auth_failed",
+          message: expect.stringMatching(message),
+        });
+        const untouched = harness.pairingStore.getPairingRecord(legacyPeer.deviceId);
+        expect(untouched?.accountOwnerUserId ?? null).toBeNull();
+        expect(untouched?.dpopPublicKey).toBe(deviceKey.publicKeyX963);
+        expect(harness.pairingStore.verifySecret(legacyPeer.deviceId, legacyPairing.secret))
+          .toBe("committed");
+      } finally {
+        await harness.cleanup();
+      }
+    });
+  });
+
   it("revokes account-owned trust and closes Relay plus account peers when the host lease expires", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, ".ade", "secrets");

@@ -24387,3 +24387,143 @@ final class WorkChatTranscriptLoadStateTests: XCTestCase {
     )
   }
 }
+
+final class SyncConnectionSubjectMachineNameTests: XCTestCase {
+  func testConnectedCopyNamesTheAttachedHostNotTheAttemptTarget() {
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .connected,
+        attemptMachineName: "MacBook Pro (97)",
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "Arul's Mac Studio"
+    )
+  }
+
+  func testPendingCopyNamesTheMachineTheAttemptTargets() {
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .connecting,
+        attemptMachineName: "MacBook Pro (97)",
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "MacBook Pro (97)"
+    )
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .unreachable,
+        attemptMachineName: "MacBook Pro (97)",
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "MacBook Pro (97)",
+      "A failed attempt must keep naming the machine it targeted"
+    )
+  }
+
+  func testPendingCopyFallsBackToTheSavedHostWithoutAnAttemptTarget() {
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .connecting,
+        attemptMachineName: nil,
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "Arul's Mac Studio"
+    )
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .unreachable,
+        attemptMachineName: "   ",
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "Arul's Mac Studio",
+      "A blank target name is no name at all"
+    )
+    XCTAssertNil(
+      syncConnectionSubjectMachineName(
+        transport: .connecting,
+        attemptMachineName: nil,
+        hostDisplayName: nil
+      )
+    )
+  }
+
+  func testDisconnectedCopyStillNamesWhereYouLeftOff() {
+    XCTAssertEqual(
+      syncConnectionSubjectMachineName(
+        transport: .disconnected,
+        attemptMachineName: "MacBook Pro (97)",
+        hostDisplayName: "Arul's Mac Studio"
+      ),
+      "Arul's Mac Studio",
+      "\"Last connected to\" is a fact about the previous host, not the next attempt"
+    )
+  }
+}
+
+final class SettingsMachineRowErrorLifetimeTests: XCTestCase {
+  private let errors = ["account-1": "The Mac did not return saved connection details."]
+
+  func testFailureSurvivesWhileNothingHasDisprovenIt() {
+    XCTAssertEqual(
+      settingsMachineRowErrorsRetiring(errors, attachedEntryId: nil),
+      errors
+    )
+  }
+
+  /// Attaching to a machine disproves that machine's failure.
+  func testAttachingToAMachineRetiresItsOwnFailure() {
+    XCTAssertTrue(
+      settingsMachineRowErrorsRetiring(errors, attachedEntryId: "account-1").isEmpty
+    )
+  }
+
+  /// The steady state after a failed switch: still attached to the machine that
+  /// works, with the machine that refused still explaining itself. Clearing
+  /// this on any connection would delete the only answer the user has.
+  func testFailureAgainstAnotherMachineSurvivesBeingConnectedElsewhere() {
+    XCTAssertEqual(
+      settingsMachineRowErrorsRetiring(errors, attachedEntryId: "account-2"),
+      errors
+    )
+  }
+}
+
+final class SettingsMachineRowErrorMessageTests: XCTestCase {
+  /// The regression this exists for: a failed switch restores the previous
+  /// connection, whose `hello_ok` clears `lastError`, so the row would have
+  /// fallen back to a generic "try again" and thrown away the real reason.
+  func testAttemptFailureIsPreferredOverAClearedLastError() {
+    XCTAssertEqual(
+      settingsMachineRowErrorMessage(
+        attemptFailure: SyncConnectAttemptFailure(
+          message: "This Mac would not hand back a connection for this iPhone."
+        ),
+        lastError: nil,
+        fallback: "ADE could not connect to that Mac. Try again."
+      ),
+      "This Mac would not hand back a connection for this iPhone."
+    )
+  }
+
+  func testLastErrorIsUsedWhenNoAttemptFailureWasRecorded() {
+    XCTAssertEqual(
+      settingsMachineRowErrorMessage(
+        attemptFailure: nil,
+        lastError: "Sign in again, then try connecting.",
+        fallback: "ADE could not connect to that Mac. Try again."
+      ),
+      "Sign in again, then try connecting."
+    )
+  }
+
+  func testFallbackIsUsedWhenNothingExplainsTheFailure() {
+    XCTAssertEqual(
+      settingsMachineRowErrorMessage(
+        attemptFailure: nil,
+        lastError: "   ",
+        fallback: "ADE could not connect to that Mac. Try again."
+      ),
+      "ADE could not connect to that Mac. Try again."
+    )
+  }
+}

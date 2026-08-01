@@ -101,13 +101,29 @@ struct HubConnectionPill: View {
     }
   }
 
+  /// The machine this pill should name: the one we're attached to, or — while
+  /// an attempt is in flight or has just failed — the one that attempt targeted.
+  private var machineName: String? {
+    syncConnectionSubjectMachineName(
+      transport: syncService.connectionHealth.transport,
+      attemptMachineName: syncService.connectAttemptTarget.flatMap {
+        accountMachinePresentationName(
+          hostIdentity: $0.machineIdentity,
+          fallback: $0.machineName,
+          machines: account.machines
+        )
+      },
+      hostDisplayName: accountMachinePresentationName(
+        hostIdentity: syncService.activeHostProfile?.hostIdentity,
+        fallback: syncService.hostName,
+        machines: account.machines
+      )
+    )
+  }
+
   private var label: String {
-    if let host = accountMachinePresentationName(
-      hostIdentity: syncService.activeHostProfile?.hostIdentity,
-      fallback: syncService.hostName,
-      machines: account.machines
-    ) {
-      return host
+    if let machineName {
+      return machineName
     }
     switch syncService.connectionHealth.transport {
     case .connected: return "Connected"
@@ -907,7 +923,12 @@ struct HubNoMachineState: View {
 
   private var statusText: String {
     if syncService.connectionState == .error {
-      return "Cannot reach \(machineDisplayName ?? "machine")"
+      let subject = syncConnectionSubjectMachineName(
+        transport: .unreachable,
+        attemptMachineName: syncService.connectAttemptTarget?.machineName,
+        hostDisplayName: machineDisplayName
+      )
+      return "Cannot reach \(subject ?? "machine")"
     }
     if hasSavedMachine {
       return "Disconnected from \(machineDisplayName ?? "saved machine")"
