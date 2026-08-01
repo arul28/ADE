@@ -932,26 +932,10 @@ describe("headlessLinearServices", () => {
   });
 
   it("falls back when headless GraphQL returns rate-limit errors with HTTP 200", async () => {
-    const previousAdeHome = process.env.ADE_HOME;
-    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
-    const previousGitHubToken = process.env.GITHUB_TOKEN;
-    const previousGhToken = process.env.GH_TOKEN;
-    const previousFetch = globalThis.fetch;
-    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-graphql-"));
-    delete process.env.ADE_GITHUB_TOKEN;
-    delete process.env.GITHUB_TOKEN;
-    delete process.env.GH_TOKEN;
-    const machineCredentialStore = new EncryptedFileCredentialStore();
-    machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_app_user_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      refreshToken: null,
-      refreshTokenExpiresAt: null,
-      userLogin: "octocat",
-      updatedAt: new Date().toISOString(),
-    }));
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-graphql-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
     const authorizations: string[] = [];
     const resetAt = Math.floor(Date.now() / 1_000) + 3600;
     globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -1001,15 +985,7 @@ describe("headlessLinearServices", () => {
         "Bearer gho_cli_token",
       ]);
     } finally {
-      globalThis.fetch = previousFetch;
-      if (previousAdeHome == null) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = previousAdeHome;
-      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
-      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
-      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previousGitHubToken;
-      if (previousGhToken == null) delete process.env.GH_TOKEN;
-      else process.env.GH_TOKEN = previousGhToken;
+      environment.restore();
     }
   });
 
@@ -1373,28 +1349,10 @@ describe("headlessLinearServices", () => {
   });
 
   it("keeps App reads connected without advertising an invalid GitHub CLI writer", async () => {
-    const previousAdeHome = process.env.ADE_HOME;
-    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
-    const previousGitHubToken = process.env.GITHUB_TOKEN;
-    const previousGhToken = process.env.GH_TOKEN;
-    const previousGhConfigDir = process.env.GH_CONFIG_DIR;
-    const previousFetch = globalThis.fetch;
-    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-app-only-"));
-    process.env.GH_CONFIG_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-gh-empty-"));
-    delete process.env.ADE_GITHUB_TOKEN;
-    delete process.env.GITHUB_TOKEN;
-    delete process.env.GH_TOKEN;
-    const machineCredentialStore = new EncryptedFileCredentialStore();
-    machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
-      accessToken: "ghu_app_user_token",
-      tokenType: "bearer",
-      scope: null,
-      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
-      refreshToken: null,
-      refreshTokenExpiresAt: null,
-      userLogin: "octocat",
-      updatedAt: new Date().toISOString(),
-    }));
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-only-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
     const authorizations: string[] = [];
     globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
       const authorization = new Headers(init?.headers).get("authorization") ?? "";
@@ -1433,17 +1391,7 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
       await expect(githubService.getGitTransportTokenOrThrowAsync()).rejects.toThrow("GitHub auth missing");
     } finally {
-      globalThis.fetch = previousFetch;
-      if (previousAdeHome == null) delete process.env.ADE_HOME;
-      else process.env.ADE_HOME = previousAdeHome;
-      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
-      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
-      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
-      else process.env.GITHUB_TOKEN = previousGitHubToken;
-      if (previousGhToken == null) delete process.env.GH_TOKEN;
-      else process.env.GH_TOKEN = previousGhToken;
-      if (previousGhConfigDir == null) delete process.env.GH_CONFIG_DIR;
-      else process.env.GH_CONFIG_DIR = previousGhConfigDir;
+      environment.restore();
     }
   });
 

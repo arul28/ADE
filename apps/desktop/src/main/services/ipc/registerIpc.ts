@@ -1642,6 +1642,7 @@ export function registerIpc({
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
+  let linearOAuthServiceTransition: Promise<void> | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   let fallbackAnalyticsEnabled = true;
@@ -1794,12 +1795,22 @@ export function registerIpc({
     throw error;
   };
 
-  const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
+  const getLinearOAuthBridge = async (ctx: AppContext): Promise<LinearOAuthService> => {
+    if (linearOAuthServiceTransition) await linearOAuthServiceTransition;
     if (!ctx.linearCredentialService) {
       throw new Error("Linear credential service is not available.");
     }
-    if (!linearOAuthService || linearOAuthServiceAdeDir !== ctx.adeDir) {
-      linearOAuthService?.dispose();
+    if (linearOAuthService && linearOAuthServiceAdeDir !== ctx.adeDir) {
+      const previousService = linearOAuthService;
+      linearOAuthService = null;
+      linearOAuthServiceAdeDir = null;
+      const transition = previousService.dispose().finally(() => {
+        if (linearOAuthServiceTransition === transition) linearOAuthServiceTransition = null;
+      });
+      linearOAuthServiceTransition = transition;
+      await transition;
+    }
+    if (!linearOAuthService) {
       linearOAuthService = createLinearOAuthService({
         credentials: ctx.linearCredentialService,
         logger: ctx.logger,
@@ -10422,14 +10433,14 @@ export function registerIpc({
 
   ipcMain.handle(IPC.ctoStartLinearOAuth, async (): Promise<CtoStartLinearOAuthResult> => {
     const ctx = getCtx();
-    return getLinearOAuthBridge(ctx).startSession();
+    return (await getLinearOAuthBridge(ctx)).startSession();
   });
 
   ipcMain.handle(
     IPC.ctoGetLinearOAuthSession,
     async (_event, arg: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> => {
       const ctx = getCtx();
-      const session = getLinearOAuthBridge(ctx).getSession(arg.sessionId);
+      const session = (await getLinearOAuthBridge(ctx)).getSession(arg.sessionId);
       if (session.status !== "completed") {
         return session;
       }

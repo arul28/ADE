@@ -1188,6 +1188,57 @@ describe("automationIngressService", () => {
     }));
   });
 
+  it("swallows a superseded account-auth lookup and runs the queued lifecycle poll", async () => {
+    let resolveFirstAccountLookup!: (token: string | null) => void;
+    const getAccountAccessToken = vi.fn()
+      .mockImplementationOnce(() => new Promise<string | null>((resolve) => {
+        resolveFirstAccountLookup = resolve;
+      }))
+      .mockResolvedValue(null);
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(JSON.stringify({ events: [], nextCursor: null, hasMore: false }), {
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      githubService: {
+        detectRepo: vi.fn(async () => ({ owner: "arul28", name: "ADE" })),
+        getAppUserTokenForRelay: vi.fn(async () => "ghu_app_user_token"),
+      },
+      getAccountAccessToken,
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+    });
+
+    const firstStart = service.start();
+    await vi.waitFor(() => expect(getAccountAccessToken).toHaveBeenCalledOnce());
+    service.stop();
+    const secondStart = service.start();
+    resolveFirstAccountLookup(null);
+
+    await expect(Promise.all([firstStart, secondStart])).resolves.toEqual([undefined, undefined]);
+    expect(getAccountAccessToken).toHaveBeenCalledTimes(2);
+    expect(fetchSpy).toHaveBeenCalledOnce();
+  });
+
+  it("propagates non-supersession errors raised before relay polling starts", async () => {
+    service = createAutomationIngressService({
+      logger: makeLogger() as never,
+      automationService: null,
+      secretService: { getSecret: () => null } as never,
+      getAccountAccessToken: () => {
+        throw new Error("account lookup exploded");
+      },
+      listRules: () => [],
+      ingressCursorStore: { get: () => null, set: () => {} },
+    });
+
+    await expect(service.pollNow()).rejects.toThrow("account lookup exploded");
+  });
+
   it("polls immediately for subscription wake-up frames", async () => {
     const webSockets = makeWebSocketHarness();
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async () =>

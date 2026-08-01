@@ -1119,7 +1119,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     pollInFlight = (async () => {
       do {
         pollRerunRequested = false;
-        await pollGithubRelay(relayPollGeneration);
+        try {
+          await pollGithubRelay(relayPollGeneration);
+        } catch (error) {
+          if (!(error instanceof GithubRelayPollSupersededError)) throw error;
+        }
       } while (pollRerunRequested && !stopped && Date.now() >= relayPollCooldownUntilMs);
     })().finally(() => {
       pollInFlight = null;

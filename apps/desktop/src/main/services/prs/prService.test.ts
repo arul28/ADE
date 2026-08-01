@@ -940,9 +940,10 @@ describe("prService repository-scoped GraphQL mutations", () => {
       }),
     });
     const { service } = buildService({ db, githubService });
+    const syntheticPrId = `gh:${REPO.owner}/${REPO.name}#${row.github_pr_number}`;
 
-    await service.replyToReviewThread({ prId: row.id, threadId: "thread-1", body: "reply" });
-    await service.resolveReviewThread({ prId: row.id, threadId: "thread-1" });
+    await service.replyToReviewThread({ prId: syntheticPrId, threadId: "thread-1", body: "reply" });
+    await service.resolveReviewThread({ prId: syntheticPrId, threadId: "thread-1" });
     await service.postReviewComment({ prId: row.id, threadId: "thread-1", body: "reply" });
     await service.setReviewThreadResolved({ prId: row.id, threadId: "thread-1", resolved: true });
     await service.reactToComment({ prId: row.id, commentId: "comment-1", content: "+1" });

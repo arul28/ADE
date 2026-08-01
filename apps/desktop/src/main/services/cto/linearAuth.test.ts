@@ -295,15 +295,7 @@ function createCredentialsMock(overrides?: {
   };
 }
 
-/**
- * HTTP GET that tolerates early server close.
- *
- * The OAuth service calls `server.close()` immediately after writing
- * its response in error paths. Node's http client may see a socket
- * hang-up before the response is fully consumed. We capture whatever
- * status code was received; if none, resolve with statusCode 0 so
- * tests can still assert on session state via `getSession`.
- */
+/** HTTP GET with an independent socket so callback-concurrency tests are real. */
 function httpGet(url: string): Promise<{ statusCode: number; body: string }> {
   return new Promise((resolve) => {
     const parsed = new URL(url);
@@ -317,6 +309,7 @@ function httpGet(url: string): Promise<{ statusCode: number; body: string }> {
         port: parsed.port,
         path: `${parsed.pathname}${parsed.search}`,
         method: "GET",
+        agent: false,
       },
       (res) => {
         statusCode = res.statusCode ?? 0;
@@ -363,11 +356,8 @@ async function waitForSessionStatus(
 }
 
 afterEach(async () => {
-  for (const svc of activeServices) {
-    svc.dispose();
-  }
+  await Promise.all(activeServices.map((service) => service.dispose()));
   activeServices.length = 0;
-  await waitMs(50);
 });
 
 describe("linearOAuthService", () => {
@@ -521,6 +511,95 @@ describe("linearOAuthService", () => {
     const session = service.getSession(sessionId);
     expect(session.status).toBe("completed");
     expect(session.error).toBeNull();
+
+    await expect(service.startSession()).resolves.toMatchObject({
+      redirectUri: expect.stringContaining(":19836/oauth/callback"),
+    });
+  });
+
+  it("ends concurrent callbacks after one completes the OAuth session", async () => {
+    const credentials = createCredentialsMock();
+    const exchangeResolvers: Array<(response: {
+      ok: boolean;
+      status: number;
+      json: () => Promise<{ access_token: string }>;
+    }) => void> = [];
+    const mockFetch = vi.fn(() => new Promise((resolve) => {
+      exchangeResolvers.push(resolve);
+    })) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const { authUrl, redirectUri } = await service.startSession();
+    const stateParam = new URL(authUrl).searchParams.get("state")!;
+    const callbackUrl = `${redirectUri}?code=test-code&state=${stateParam}`;
+    const firstCallback = httpGet(callbackUrl);
+    const secondCallback = httpGet(callbackUrl);
+    await vi.waitFor(() => expect(exchangeResolvers).toHaveLength(2));
+
+    for (const resolveExchange of exchangeResolvers) {
+      resolveExchange({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: "linear-access-token-123" }),
+      });
+    }
+
+    const responses = await Promise.race([
+      Promise.all([firstCallback, secondCallback]),
+      waitMs(1_000).then(() => {
+        throw new Error("Concurrent OAuth callbacks did not finish");
+      }),
+    ]);
+    expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+  });
+
+  it("ends an exchanging callback when a concurrent error callback finishes the session", async () => {
+    const credentials = createCredentialsMock();
+    let markExchangeStarted!: () => void;
+    const exchangeStarted = new Promise<void>((resolve) => {
+      markExchangeStarted = resolve;
+    });
+    let releaseExchange!: (response: {
+      ok: boolean;
+      status: number;
+      json: () => Promise<{ access_token: string }>;
+    }) => void;
+    const mockFetch = vi.fn(() => new Promise((resolve) => {
+      releaseExchange = resolve;
+      markExchangeStarted();
+    })) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const { sessionId, authUrl, redirectUri } = await service.startSession();
+    const stateParam = new URL(authUrl).searchParams.get("state")!;
+    const exchangingCallback = httpGet(`${redirectUri}?code=test-code&state=${stateParam}`);
+    await exchangeStarted;
+
+    const errorCallback = httpGet(
+      `${redirectUri}?error=access_denied&error_description=User+declined&state=${stateParam}`,
+    );
+    await expect(errorCallback).resolves.toMatchObject({ statusCode: 400 });
+
+    releaseExchange({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "linear-access-token-123" }),
+    });
+    await expect(exchangingCallback).resolves.toMatchObject({ statusCode: 409 });
+    expect(service.getSession(sessionId)).toMatchObject({
+      status: "failed",
+      error: "User declined",
+    });
   });
 
   it("handles OAuth callback with error parameter from Linear", async () => {
@@ -702,17 +781,45 @@ describe("linearOAuthService", () => {
   });
 
   it("does not bind a callback listener after disposal interrupts startup", async () => {
+    let markPortBound!: () => void;
+    const portBound = new Promise<void>((resolve) => {
+      markPortBound = resolve;
+    });
+    let releaseListeningCallback!: () => void;
+    const listeningCallbackReleased = new Promise<void>((resolve) => {
+      releaseListeningCallback = resolve;
+    });
+    const originalListen = http.Server.prototype.listen;
+    const listenSpy = vi.spyOn(http.Server.prototype, "listen").mockImplementation(function (
+      this: http.Server,
+      ...listenArgs: unknown[]
+    ) {
+      const callback = typeof listenArgs.at(-1) === "function"
+        ? listenArgs.pop() as () => void
+        : null;
+      return Reflect.apply(originalListen, this, [...listenArgs, () => {
+        markPortBound();
+        void listeningCallbackReleased.then(() => callback?.());
+      }]) as http.Server;
+    } as typeof originalListen);
     const service = createLinearOAuthService({
       credentials: createCredentialsMock() as any,
       logger: createLogger(),
     });
     activeServices.push(service);
 
-    const interruptedStart = service.startSession();
-    await Promise.resolve();
-    service.dispose();
+    try {
+      const interruptedStart = service.startSession();
+      await portBound;
+      const disposal = service.dispose();
+      releaseListeningCallback();
 
-    await expect(interruptedStart).rejects.toThrow("no longer active");
+      await expect(interruptedStart).rejects.toThrow("no longer active");
+      await disposal;
+    } finally {
+      releaseListeningCallback();
+      listenSpy.mockRestore();
+    }
 
     const replacement = createLinearOAuthService({
       credentials: createCredentialsMock() as any,
@@ -732,7 +839,7 @@ describe("linearOAuthService", () => {
     });
     const { sessionId } = await service.startSession();
 
-    service.dispose();
+    await service.dispose();
 
     const session = service.getSession(sessionId);
     expect(session.status).toBe("expired");

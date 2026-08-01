@@ -173,6 +173,8 @@ export async function requestGithubRawWithCredentialFallback(args: GithubRawRequ
         firstUnavailable.rateLimit,
       )
     : null;
+  // Preserve the most actionable exhausted result: a real rate limit includes
+  // retry timing, then prefer the latest attempted response, then local absence.
   const exhausted = firstRateLimitError
     ?? (unavailableError?.authFailure.kind === "rate_limited" ? unavailableError : null)
     ?? lastAttemptError

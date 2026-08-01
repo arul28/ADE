@@ -2098,7 +2098,7 @@ export function createPrService({
     if (uniquePrIds.length === 0) return;
     for (const prId of uniquePrIds) {
       // A poll result can itself report the PR as changed. Treating that as a
-      // brand-new hot window re-armed the 5-second loop indefinitely while CI
+      // brand-new hot window re-armed the 15-second loop indefinitely while CI
       // was active and could exhaust the user's shared GitHub REST quota.
       // Keep the original start time so every hot period is strictly bounded.
       if (!hotRefreshStartedAtByPrId.has(prId)) {
@@ -10883,12 +10883,7 @@ export function createPrService({
     },
 
     async replyToReviewThread(args: ReplyToPrReviewThreadArgs): Promise<PrReviewThreadComment> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
-      if (!threads.some((t) => t.id === args.threadId)) {
-        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
-      }
+      const { repo } = await assertThreadBelongsToPr(args.prId, args.threadId);
       const data = await graphqlRequest<{
         addPullRequestReviewThreadReply?: {
           comment?: {
@@ -10944,12 +10939,7 @@ export function createPrService({
     },
 
     async resolveReviewThread(args: ResolvePrReviewThreadArgs): Promise<void> {
-      const row = requireRow(args.prId);
-      const repo = repoFromRow(row);
-      const threads = await fetchReviewThreads(repo, Number(row.github_pr_number));
-      if (!threads.some((t) => t.id === args.threadId)) {
-        throw new Error(`Thread ${args.threadId} does not belong to PR ${args.prId}`);
-      }
+      const { repo } = await assertThreadBelongsToPr(args.prId, args.threadId);
       await graphqlRequest(
         `
           mutation AdeResolveReviewThread($threadId: ID!) {

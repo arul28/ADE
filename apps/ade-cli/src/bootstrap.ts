@@ -1981,7 +1981,7 @@ export async function createAdeRuntime(args: {
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
       swallow(() => builtInBrowserBridge?.dispose());
-      swallow(() => linearOAuthService.dispose());
+      void linearOAuthService.dispose().catch(() => {});
       swallow(() => headlessLinearServices.dispose());
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());
