@@ -28,6 +28,10 @@ struct HubTopBar: View {
       HubConnectionPill()
         .layoutPriority(1)
 
+      // The hub was the one root without a bell, which made the phone's home
+      // screen the only place you could not see that something needed you.
+      ActivityBellButton()
+
       HubCircularButton(systemImage: "plus", tint: ADEColor.accent, action: onAdd)
         .accessibilityLabel("Add project")
 
@@ -186,7 +190,14 @@ struct HubProjectPresentation: Equatable, Identifiable {
   let laneCount: Int
   let chatCount: Int
   let lanes: [HubLanePresentation]
+  /// Chats on this project awaiting input, and chats currently producing. Both
+  /// were computed by the roster and used only as a sort tiebreak until now.
+  let attentionCount: Int
+  let runningCount: Int
   let metaLine: String
+  /// "2 need you · 3 working", or nil when the project is quiet. Rendered
+  /// beside the lane/chat counts with a status dot per clause.
+  let statusLine: String?
   fileprivate let renderSignature: Int
 
   var id: String { project.id }
@@ -198,7 +209,9 @@ struct HubProjectPresentation: Equatable, Identifiable {
     isLoading: Bool,
     laneCount: Int,
     chatCount: Int,
-    lanes: [HubLanePresentation]
+    lanes: [HubLanePresentation],
+    attentionCount: Int = 0,
+    runningCount: Int = 0
   ) {
     self.project = project
     self.isActive = isActive
@@ -207,9 +220,15 @@ struct HubProjectPresentation: Equatable, Identifiable {
     self.laneCount = laneCount
     self.chatCount = chatCount
     self.lanes = lanes
+    self.attentionCount = attentionCount
+    self.runningCount = runningCount
     let lanePart = "\(laneCount) lane\(laneCount == 1 ? "" : "s")"
     let chatPart = "\(chatCount) chat\(chatCount == 1 ? "" : "s")"
     self.metaLine = "\(lanePart) · \(chatPart)"
+    self.statusLine = hubProjectStatusLine(
+      attentionCount: attentionCount,
+      runningCount: runningCount
+    )
     self.renderSignature = hubProjectRenderSignature(
       project: project,
       isActive: isActive,
@@ -217,7 +236,9 @@ struct HubProjectPresentation: Equatable, Identifiable {
       isLoading: isLoading,
       laneCount: laneCount,
       chatCount: chatCount,
-      lanes: lanes
+      lanes: lanes,
+      attentionCount: attentionCount,
+      runningCount: runningCount
     )
   }
 
@@ -320,9 +341,13 @@ private func hubProjectRenderSignature(
   isLoading: Bool,
   laneCount: Int,
   chatCount: Int,
-  lanes: [HubLanePresentation]
+  lanes: [HubLanePresentation],
+  attentionCount: Int,
+  runningCount: Int
 ) -> Int {
   var hasher = Hasher()
+  hasher.combine(attentionCount)
+  hasher.combine(runningCount)
   hasher.combine(project.id)
   hasher.combine(project.displayName)
   hasher.combine(hubProjectIconSignature(project.iconDataUrl))
@@ -335,6 +360,15 @@ private func hubProjectRenderSignature(
   hasher.combine(chatCount)
   hasher.combine(lanes.map(\.renderSignature))
   return hasher.finalize()
+}
+
+/// Sentence-case, count-first, and silent when there is nothing to report —
+/// "0 need you" is filler that trains people to stop reading the line.
+func hubProjectStatusLine(attentionCount: Int, runningCount: Int) -> String? {
+  var clauses: [String] = []
+  if attentionCount > 0 { clauses.append("\(attentionCount) need you") }
+  if runningCount > 0 { clauses.append("\(runningCount) working") }
+  return clauses.isEmpty ? nil : clauses.joined(separator: " · ")
 }
 
 private func hubProjectIconSignature(_ dataUrl: String?) -> String {
@@ -450,7 +484,9 @@ func buildHubProjectPresentation(
     isLoading: false,
     laneCount: roster.lanes.count,
     chatCount: chatCount,
-    lanes: lanes
+    lanes: lanes,
+    attentionCount: roster.attentionCount,
+    runningCount: roster.runningCount
   )
 }
 
@@ -543,12 +579,35 @@ struct HubProjectCard: View, Equatable {
       .buttonStyle(.plain)
 
       // Lane/chat counts live to the left of the open arrow now that the name
-      // owns the full leading run.
-      Text(presentation.metaLine)
-        .font(.system(.caption, design: .rounded))
-        .foregroundStyle(ADEColor.textMuted)
-        .lineLimit(1)
-        .fixedSize()
+      // owns the full leading run, with the live status stacked above them.
+      VStack(alignment: .trailing, spacing: 2) {
+        if presentation.attentionCount > 0 || presentation.runningCount > 0 {
+          HStack(spacing: 5) {
+            if presentation.attentionCount > 0 {
+              HubStatusDot(status: "awaiting-input")
+              Text("\(presentation.attentionCount) need you")
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.warning)
+            }
+            if presentation.runningCount > 0 {
+              HubStatusDot(status: "active")
+              Text("\(presentation.runningCount) working")
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .foregroundStyle(ADEColor.success)
+            }
+          }
+          .lineLimit(1)
+          .fixedSize()
+          .accessibilityElement(children: .combine)
+          .accessibilityLabel(presentation.statusLine ?? "")
+        }
+
+        Text(presentation.metaLine)
+          .font(.system(.caption, design: .rounded))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+          .fixedSize()
+      }
 
       if presentation.isSwitching {
         ProgressView().controlSize(.small)
@@ -706,17 +765,28 @@ struct HubChatRow: View, Equatable {
   let onDelete: () -> Void
 
   var body: some View {
-    // Deliberately minimal: provider logo, chat name, and the relative
-    // timestamp. Nothing else competes for the eye at the hub's glance level.
+    // Provider logo, a status dot, the chat name, and the relative timestamp.
+    // The status the roster already carried was never rendered here, so a row
+    // asking for input looked exactly like one that finished an hour ago.
     Button(action: onOpen) {
       HStack(spacing: 10) {
         WorkProviderBareLogo(provider: row.providerKey, fallbackSymbol: "terminal.fill", tint: ADEColor.textSecondary, size: compact ? 16 : 20)
+
+        HubStatusDot(status: row.statusString)
 
         Text(row.title)
           .font(.system(.footnote, design: .rounded).weight(.medium))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
           .frame(maxWidth: .infinity, alignment: .leading)
+
+        if let status = hubChatStatusLabel(row.statusString) {
+          Text(status)
+            .font(.system(.caption2, design: .rounded).weight(.semibold))
+            .foregroundStyle(workChatStatusTint(row.statusString))
+            .lineLimit(1)
+            .fixedSize()
+        }
 
         if let activity = row.activityLabel {
           Text(activity)
@@ -729,7 +799,9 @@ struct HubChatRow: View, Equatable {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .accessibilityLabel(row.title)
+    .accessibilityLabel(
+      hubChatStatusLabel(row.statusString).map { "\(row.title), \($0)" } ?? row.title
+    )
     .accessibilityHint(row.chat.isChatTool ? "Opens chat." : "Opens session.")
     // The hub uses a scrolling LazyVStack (not a List), where SwiftUI
     // `.swipeActions` are unavailable — so pin/archive/close are offered through
@@ -749,6 +821,16 @@ struct HubChatRow: View, Equatable {
 
   static func == (lhs: HubChatRow, rhs: HubChatRow) -> Bool {
     lhs.row == rhs.row && lhs.compact == rhs.compact
+  }
+}
+
+/// Row status in one word, and only when it says something. A resting chat
+/// gets its dot and nothing else — the timestamp already tells that story.
+func hubChatStatusLabel(_ status: String) -> String? {
+  switch status {
+  case "awaiting-input": return "Needs you"
+  case "active": return "Working"
+  default: return nil
   }
 }
 

@@ -679,6 +679,9 @@ final class AccountService: ObservableObject {
   /// Last relay acknowledgment failure. Optimistic local drawer state remains
   /// active while the durable queue waits for the next successful refresh.
   @Published private(set) var attentionAckFailure: String?
+  /// Last snapshot-refresh failure. Without it an unreachable relay and a
+  /// genuinely quiet account render the same empty drawer.
+  @Published private(set) var attentionRefreshFailure: String?
   /// Transient, user-facing error from the last sign-in attempt.
   @Published var lastError: String?
 
@@ -1297,6 +1300,7 @@ final class AccountService: ObservableObject {
         incoming: delta
       )
       guard ADESharedContainer.writeAttentionSnapshot(complete) else { return }
+      attentionRefreshFailure = nil
       attentionSnapshotRevision &+= 1
       WidgetReloadBridge.reloadAllTimelines()
 
@@ -1325,7 +1329,9 @@ final class AccountService: ObservableObject {
         attentionAckFailure = nil
       }
     } catch {
-      // Keep the last-known account snapshot and machine-local fallback.
+      // Keep the last-known account snapshot and machine-local fallback, but
+      // say so: an unreachable relay must not read as "nothing is happening".
+      attentionRefreshFailure = "Couldn't reach your machines. Showing the last known activity."
     }
   }
 

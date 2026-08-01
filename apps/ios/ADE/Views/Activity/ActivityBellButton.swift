@@ -1,18 +1,18 @@
 import SwiftUI
 import UIKit
 
-/// Bell affordance rendered next to the root toolbar connection and project controls.
+/// Bell affordance for the Activity drawer, mounted on every root's toolbar and
+/// (since this pass) on the hub's top bar too.
 ///
 /// Tapping flips `SyncService.attentionDrawerPresented` to `true`, which
-/// surfaces `AttentionDrawerSheet` (mounted once on the root `ContentView`).
+/// surfaces `ActivityDrawerSheet` (mounted once on the root `ContentView`).
 ///
-/// Visual spec: liquid-glass disc with an amber tint + glow when there are
-/// unread attention items; a red 16pt badge overlays the top-right corner
-/// when `unreadCount > 0` (count-capped at `9+`).
-@available(iOS 17.0, *)
-struct AttentionDrawerButton: View {
+/// Visual spec is unchanged: liquid-glass disc with an amber tint + glow when
+/// something needs the user, and a 16pt badge capped at `9+`. What changed is
+/// what the number counts — needs-you rows only, never ambient work in flight.
+struct ActivityBellButton: View {
     @EnvironmentObject private var syncService: SyncService
-    @EnvironmentObject private var drawer: AttentionDrawerModel
+    @EnvironmentObject private var drawer: ActivityDrawerModel
 
     private var hasUnread: Bool { drawer.unreadCount > 0 }
 
@@ -23,7 +23,7 @@ struct AttentionDrawerButton: View {
     var body: some View {
         Button(action: openDrawer) {
             Label {
-                Text("Attention")
+                Text("Activity")
             } icon: {
                 ZStack {
                     PrsGlassDisc(tint: tint, isAlive: hasUnread) {
@@ -45,8 +45,12 @@ struct AttentionDrawerButton: View {
         }
         .buttonStyle(.plain)
         .animation(.snappy(duration: 0.2), value: drawer.unreadCount)
-        .accessibilityLabel("Attention items: \(drawer.unreadCount)")
-        .accessibilityHint("Opens the attention drawer.")
+        .accessibilityLabel(
+            hasUnread
+                ? "Activity, \(drawer.unreadCount) need you"
+                : "Activity"
+        )
+        .accessibilityHint("Opens the Activity drawer.")
         .accessibilityShowsLargeContentViewer()
     }
 

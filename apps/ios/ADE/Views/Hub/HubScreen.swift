@@ -206,6 +206,10 @@ struct HubScreen: View {
       )
       ScrollView {
         LazyVStack(spacing: 12) {
+          // Everything running right now, across every machine on the account —
+          // not just the paired one. Hidden entirely when nothing is live.
+          HubLiveStrip()
+
           // Keep the project catalog mounted while a switch is in flight: only
           // fall back to the connecting card when there's nothing to show yet.
           // The switching row carries its own spinner and the others disable,

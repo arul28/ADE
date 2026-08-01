@@ -3743,16 +3743,15 @@ final class SyncService: ObservableObject {
   /// uses to observe `activeSessions` / workspace snapshot writes. Lazily
   /// initialised on first access so tests + previews that never touch the
   /// drawer don't allocate an extra `ObservableObject`.
-  private var attentionDrawerStorage: AttentionDrawerModel?
+  private var attentionDrawerStorage: ActivityDrawerModel?
   private var attentionDrawerCancellables: Set<AnyCancellable> = []
 
   /// Drawer surface injected into the root view via `.environmentObject`.
   /// Rebuilt from the App Group `WorkspaceSnapshot` each time the host
   /// state changes — no independent transport.
-  @available(iOS 17.0, *)
-  var attentionDrawer: AttentionDrawerModel {
+  var attentionDrawer: ActivityDrawerModel {
     if let existing = attentionDrawerStorage { return existing }
-    let fresh = AttentionDrawerModel()
+    let fresh = ActivityDrawerModel()
     attentionDrawerCancellables = fresh.bind(to: self)
     attentionDrawerStorage = fresh
     return fresh
