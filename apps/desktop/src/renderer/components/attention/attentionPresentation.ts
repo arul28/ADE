@@ -1,8 +1,14 @@
-import type { AttentionActionKind, AttentionPhase } from "../../../shared/types";
+import type {
+  AttentionActionKind,
+  AttentionItem,
+  AttentionPhase,
+} from "../../../shared/types";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import {
   sessionStatusPresentation,
+  type SessionStatusGlyph,
   type SessionStatusPresentation,
+  type SessionStatusTone,
 } from "../../../shared/sessionStatusPresentation";
 
 /**
@@ -146,7 +152,7 @@ const SESSION_DERIVED_PRESENTATION = Object.fromEntries(
  */
 const NON_SESSION_PRESENTATION: Record<
   Exclude<AttentionPhase, SessionDerivedAttentionPhase>,
-  AttentionPhasePresentation
+  AttentionPhasePresentation & { tone: SessionStatusTone }
 > = {
   blocked: { label: "Blocked", tone: "neutral", active: false },
   checks_failing: { label: "Checks failing", tone: "red", active: false },
@@ -165,6 +171,44 @@ const PHASE_PRESENTATION: Record<AttentionPhase, AttentionPhasePresentation> = {
 
 export function attentionPhasePresentation(phase: AttentionPhase): AttentionPhasePresentation {
   return PHASE_PRESENTATION[phase];
+}
+
+const NON_SESSION_STATUS_DETAILS: Record<
+  Exclude<AttentionPhase, SessionDerivedAttentionPhase>,
+  Pick<SessionStatusPresentation, "glyph" | "showsElapsed" | "prominent">
+> = {
+  blocked: { glyph: null, showsElapsed: false, prominent: false },
+  checks_failing: { glyph: "failed", showsElapsed: false, prominent: true },
+  review_requested: { glyph: null, showsElapsed: false, prominent: true },
+  changes_requested: { glyph: "failed", showsElapsed: false, prominent: true },
+  merge_ready: { glyph: "done", showsElapsed: false, prominent: true },
+  open: { glyph: null, showsElapsed: false, prominent: false },
+  merged: { glyph: "done", showsElapsed: false, prominent: true },
+  closed: { glyph: null, showsElapsed: false, prominent: false },
+};
+
+/**
+ * Projects every Activity item into the same full status vocabulary used by a
+ * Work session row. Session phases delegate directly; PR-only phases add only
+ * the glyph/elapsed/prominence fields that the older phase presentation did
+ * not need.
+ */
+export function activityItemPresentation(
+  item: AttentionItem,
+): SessionStatusPresentation | null {
+  if (attentionPhaseIsSessionDerived(item.phase)) {
+    return requireSessionPresentation(SESSION_PHASE_BY_ATTENTION_PHASE[item.phase]);
+  }
+  const presentation = NON_SESSION_PRESENTATION[item.phase];
+  const details = NON_SESSION_STATUS_DETAILS[item.phase];
+  const glyph: SessionStatusGlyph = details.glyph;
+  return {
+    label: presentation.label,
+    tone: presentation.tone,
+    glyph,
+    showsElapsed: details.showsElapsed,
+    prominent: details.prominent,
+  };
 }
 
 export function attentionPhaseIsSessionDerived(

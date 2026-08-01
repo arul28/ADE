@@ -126,6 +126,7 @@ export function normalizeAttentionPreferences(
       },
     },
     devices: preferences.devices ?? {},
+    machines: preferences.machines ?? {},
     projects: preferences.projects ?? {},
     mutedSessionIds: preferences.mutedSessionIds ?? [],
   };

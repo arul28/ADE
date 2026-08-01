@@ -71,6 +71,9 @@ describe("NotificationsSection", () => {
     // Other events must be untouched by a single-row edit.
     expect(saved.account.eventPolicies.agent_needs_you)
       .toBe(DEFAULT_ATTENTION_PREFERENCES.account.eventPolicies.agent_needs_you);
+
+    expect(screen.getByRole("radiogroup", { name: "PR opened" })).toBeTruthy();
+    expect(screen.getByRole("radiogroup", { name: "PR closed" })).toBeTruthy();
   });
 
   it("saves without a Save button", async () => {

@@ -1,12 +1,17 @@
 import { describe, expect, it } from "vitest";
 
-import { attentionPhasePriority, type AttentionPhase } from "../../../shared/types";
+import {
+  attentionPhasePriority,
+  type AttentionItem,
+  type AttentionPhase,
+} from "../../../shared/types";
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { sessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import {
   attentionPhaseIsSessionDerived,
   attentionPhasePresentation,
   attentionViewEmptyCopy,
+  activityItemPresentation,
   SESSION_DERIVED_ATTENTION_PHASES,
   type AttentionTone,
 } from "./attentionPresentation";
@@ -64,6 +69,35 @@ describe("attention phase presentation", () => {
       expect(canonical).not.toBeNull();
       expect(attention.label).toBe(canonical?.label);
       expect(attention.tone).toBe(canonical?.tone);
+    }
+  });
+
+  it("returns the complete canonical status presentation for every session-derived phase", () => {
+    const bridge: Record<string, CanonicalSessionPhase> = {
+      starting: "starting",
+      running: "running",
+      needs_you: "needs_you",
+      completed: "ready",
+      failed: "failed",
+      stale: "stale",
+    };
+
+    for (const [attentionPhase, canonicalPhase] of Object.entries(bridge)) {
+      expect(activityItemPresentation({ phase: attentionPhase } as AttentionItem))
+        .toEqual(sessionStatusPresentation(canonicalPhase));
+    }
+  });
+
+  it("returns a complete status presentation for every PR-only phase", () => {
+    for (const phase of ALL_ATTENTION_PHASES.filter(
+      (candidate) => !attentionPhaseIsSessionDerived(candidate),
+    )) {
+      const presentation = activityItemPresentation({ phase } as AttentionItem);
+      expect(presentation).toMatchObject({
+        label: attentionPhasePresentation(phase).label,
+        tone: attentionPhasePresentation(phase).tone,
+        showsElapsed: false,
+      });
     }
   });
 

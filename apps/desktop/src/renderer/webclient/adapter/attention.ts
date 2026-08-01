@@ -1,5 +1,7 @@
 import {
   ATTENTION_CONTRACT_VERSION,
+  ATTENTION_EVENT_KINDS,
+  ATTENTION_PHASES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
   type AttentionAction,
@@ -31,37 +33,6 @@ type RelayResult = {
   response: Response;
   body: unknown;
 };
-
-const ATTENTION_PHASES = new Set<AttentionPhase>([
-  "starting",
-  "running",
-  "needs_you",
-  "blocked",
-  "failed",
-  "completed",
-  "stale",
-  "checks_failing",
-  "review_requested",
-  "changes_requested",
-  "merge_ready",
-  "open",
-  "merged",
-  "closed",
-]);
-
-const ATTENTION_EVENT_KINDS = new Set<AttentionEventKind>([
-  "agent_running",
-  "agent_needs_you",
-  "agent_failed",
-  "agent_completed",
-  "pr_checks_failing",
-  "pr_review_requested",
-  "pr_changes_requested",
-  "pr_merge_ready",
-  "pr_merged",
-  "pr_opened",
-  "pr_closed",
-]);
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -179,8 +150,14 @@ function parseAttentionItem(value: unknown): AttentionItem | null {
     || !Number.isInteger(candidate.revision)
     || typeof candidate.fingerprint !== "string"
     || !["agent", "pull_request"].includes(String(candidate.kind))
-    || !ATTENTION_EVENT_KINDS.has(candidate.eventKind as AttentionEventKind)
-    || !ATTENTION_PHASES.has(candidate.phase as AttentionPhase)
+    || !ATTENTION_EVENT_KINDS.includes(candidate.eventKind as AttentionEventKind)
+    || !ATTENTION_PHASES.includes(candidate.phase as AttentionPhase)
+    || (
+      candidate.activityTier !== undefined
+      && !["signal", "ambient", "idle"].includes(String(candidate.activityTier))
+    )
+    || (candidate.contentFingerprint !== undefined && typeof candidate.contentFingerprint !== "string")
+    || (candidate.alertFingerprint !== undefined && typeof candidate.alertFingerprint !== "string")
     || !machine
     || !project
     || !destination
@@ -198,6 +175,7 @@ function parseAttentionItem(value: unknown): AttentionItem | null {
     || !progressValid
     || typeof candidate.occurredAt !== "string"
     || typeof candidate.updatedAt !== "string"
+    || !optionalString(candidate.statusSince)
     || !optionalString(candidate.seenAt)
     || !optionalString(candidate.dismissedAt)
     || !optionalString(candidate.expiresAt)
@@ -249,6 +227,7 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     || tombstones.some((item) => !item)
     || machines === null
     || machines?.some((machine) => !machine)
+    || (candidate.itemsTruncated !== undefined && typeof candidate.itemsTruncated !== "boolean")
   ) {
     throw new Error(
       "ADE Attention returned an incompatible response. Update ADE and retry.",
@@ -262,6 +241,7 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     generatedAt: candidate.generatedAt,
     machines: machines as AttentionMachineRef[] | undefined,
     items: items as AttentionItem[],
+    itemsTruncated: candidate.itemsTruncated as boolean | undefined,
     tombstones: tombstones as AttentionTombstone[],
   };
 }
@@ -279,9 +259,9 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     required("eventPolicies", (field) => {
       const policies = record(field);
       if (!policies) return false;
-      return (partial || [...ATTENTION_EVENT_KINDS].every((kind) => kind in policies))
+      return (partial || ATTENTION_EVENT_KINDS.every((kind) => kind in policies))
         && Object.entries(policies).every(([kind, policy]) =>
-          ATTENTION_EVENT_KINDS.has(kind as AttentionEventKind)
+          ATTENTION_EVENT_KINDS.includes(kind as AttentionEventKind)
           && ["off", "ambient", "notify"].includes(String(policy)));
     })
     && required("notificationsEnabled", (field) => typeof field === "boolean")
@@ -292,6 +272,7 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     && required("soundsEnabled", (field) => typeof field === "boolean")
     && required("celebrationsEnabled", (field) => typeof field === "boolean")
     && required("hideDetails", (field) => typeof field === "boolean")
+    && required("dockBadgeScope", (field) => field === "local" || field === "account")
     && required("quietHours", (field) => {
       const quietHours = record(field);
       return Boolean(
@@ -308,12 +289,15 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
 function parseAttentionPreferences(value: unknown): AttentionPreferences {
   const candidate = record(value);
   const devices = record(candidate?.devices);
+  const machines = record(candidate?.machines);
   const projects = record(candidate?.projects);
   if (
     !candidate
     || !isPreferenceScope(candidate.account)
     || !devices
     || !Object.values(devices).every((scope) => isPreferenceScope(scope, true))
+    || !machines
+    || !Object.values(machines).every((scope) => isPreferenceScope(scope, true))
     || !projects
     || !Object.values(projects).every((scope) => isPreferenceScope(scope, true))
     || !Array.isArray(candidate.mutedSessionIds)

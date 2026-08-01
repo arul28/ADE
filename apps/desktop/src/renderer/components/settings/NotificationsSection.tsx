@@ -5,6 +5,7 @@ import {
   type AttentionEventKind,
   type AttentionPreferences,
 } from "../../../shared/types/attention";
+import { ACTIVITY_EVENT_CATALOG } from "../../../shared/activityCatalog";
 import {
   attentionNotchSettingsFromPreferences,
   normalizeAttentionPreferences,
@@ -42,17 +43,15 @@ import { AgentCompletionSoundSection } from "./AgentCompletionSoundSection";
  */
 
 /** The events worth giving a user a dial for, in the order they'll scan them. */
-const EVENT_ROWS: { kind: AttentionEventKind; label: string; description: string }[] = [
-  { kind: "agent_needs_you", label: "Agent asks a question", description: "A run is blocked waiting on your answer." },
-  { kind: "agent_failed", label: "Agent fails", description: "A run stopped on an error." },
-  { kind: "agent_completed", label: "Agent finishes", description: "A run reached the end of its turn." },
-  { kind: "agent_running", label: "Agent starts working", description: "A run picked up your request." },
-  { kind: "pr_checks_failing", label: "CI fails", description: "Checks went red on one of your PRs." },
-  { kind: "pr_review_requested", label: "Review requested", description: "Someone asked you to review." },
-  { kind: "pr_changes_requested", label: "Changes requested", description: "A reviewer asked for changes." },
-  { kind: "pr_merge_ready", label: "PR ready to merge", description: "Checks passed and reviews are in." },
-  { kind: "pr_merged", label: "PR merged", description: "One of your PRs landed." },
-];
+const EVENT_ROWS: readonly {
+  kind: AttentionEventKind;
+  label: string;
+  description: string;
+}[] = ACTIVITY_EVENT_CATALOG.map(({ kind, label, description }) => ({
+  kind,
+  label,
+  description,
+}));
 
 const POLICY_OPTIONS: { value: AttentionDeliveryPolicy; label: string; hint: string }[] = [
   { value: "off", label: "Off", hint: "Don't track" },

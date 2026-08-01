@@ -1,35 +1,43 @@
+import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
 export type AttentionItemKind = "agent" | "pull_request";
 
-export type AttentionPhase =
-  | "starting"
-  | "running"
-  | "needs_you"
-  | "blocked"
-  | "failed"
-  | "completed"
-  | "stale"
-  | "checks_failing"
-  | "review_requested"
-  | "changes_requested"
-  | "merge_ready"
-  | "open"
-  | "merged"
-  | "closed";
+export const ATTENTION_PHASES = [
+  "starting",
+  "running",
+  "needs_you",
+  "blocked",
+  "failed",
+  "completed",
+  "stale",
+  "checks_failing",
+  "review_requested",
+  "changes_requested",
+  "merge_ready",
+  "open",
+  "merged",
+  "closed",
+] as const;
 
-export type AttentionEventKind =
-  | "agent_running"
-  | "agent_needs_you"
-  | "agent_failed"
-  | "agent_completed"
-  | "pr_checks_failing"
-  | "pr_review_requested"
-  | "pr_changes_requested"
-  | "pr_merge_ready"
-  | "pr_merged"
-  | "pr_opened"
-  | "pr_closed";
+export type AttentionPhase = (typeof ATTENTION_PHASES)[number];
+
+export const ATTENTION_EVENT_KINDS = [
+  "agent_running",
+  "agent_needs_you",
+  "agent_failed",
+  "agent_completed",
+  "pr_checks_failing",
+  "pr_review_requested",
+  "pr_changes_requested",
+  "pr_merge_ready",
+  "pr_merged",
+  "pr_opened",
+  "pr_closed",
+] as const;
+
+export type AttentionEventKind = (typeof ATTENTION_EVENT_KINDS)[number];
 
 export type AttentionDeliveryPolicy = "off" | "ambient" | "notify";
 
@@ -95,6 +103,12 @@ export type AttentionItem = {
   id: string;
   revision: number;
   fingerprint: string;
+  /** Alert eligibility and Activity filing. Absent on legacy items. */
+  activityTier?: "signal" | "ambient" | "idle";
+  /** Stable identity for row-content changes. */
+  contentFingerprint?: string;
+  /** Stable identity for alert deduplication. */
+  alertFingerprint?: string;
   kind: AttentionItemKind;
   eventKind: AttentionEventKind;
   phase: AttentionPhase;
@@ -118,6 +132,8 @@ export type AttentionItem = {
   actions: AttentionAction[];
   occurredAt: string;
   updatedAt: string;
+  /** Immutable timestamp for the current phase, when the publisher has one. */
+  statusSince?: string | null;
   seenAt: string | null;
   dismissedAt: string | null;
   expiresAt: string | null;
@@ -160,6 +176,7 @@ export type AttentionSnapshot = {
   /** Current account-machine presence, returned even when no items changed. */
   machines?: AttentionMachineRef[];
   items: AttentionItem[];
+  itemsTruncated?: boolean;
   tombstones?: AttentionTombstone[];
 };
 
@@ -182,6 +199,7 @@ export type AttentionPreferenceScope = {
   soundsEnabled: boolean;
   celebrationsEnabled: boolean;
   hideDetails: boolean;
+  dockBadgeScope: "local" | "account";
   quietHours: {
     enabled: boolean;
     startMinute: number;
@@ -193,6 +211,7 @@ export type AttentionPreferenceScope = {
 export type AttentionPreferences = {
   account: AttentionPreferenceScope;
   devices: Record<string, Partial<AttentionPreferenceScope>>;
+  machines: Record<string, Partial<AttentionPreferenceScope>>;
   projects: Record<string, Partial<AttentionPreferenceScope>>;
   mutedSessionIds: string[];
 };
@@ -264,19 +283,9 @@ export type AttentionNotchAcknowledgeRequest = {
 export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
   AttentionEventKind,
   AttentionDeliveryPolicy
-> = {
-  agent_running: "ambient",
-  agent_needs_you: "notify",
-  agent_failed: "notify",
-  agent_completed: "ambient",
-  pr_checks_failing: "notify",
-  pr_review_requested: "notify",
-  pr_changes_requested: "notify",
-  pr_merge_ready: "notify",
-  pr_merged: "ambient",
-  pr_opened: "ambient",
-  pr_closed: "ambient",
-};
+> = Object.fromEntries(
+  ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
+) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
 
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
@@ -288,6 +297,7 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
     soundsEnabled: false,
     celebrationsEnabled: true,
     hideDetails: false,
+    dockBadgeScope: "local",
     quietHours: {
       enabled: false,
       startMinute: 22 * 60,
@@ -296,11 +306,12 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
     },
   },
   devices: {},
+  machines: {},
   projects: {},
   mutedSessionIds: [],
 };
 
-const ATTENTION_PHASE_PRIORITY: Record<AttentionPhase, number> = {
+export const ATTENTION_PHASE_PRIORITY: Readonly<Record<AttentionPhase, number>> = {
   needs_you: 0,
   failed: 1,
   checks_failing: 1,
@@ -332,6 +343,7 @@ export function sortAttentionItems(items: readonly AttentionItem[]): AttentionIt
 }
 
 export function attentionItemNeedsInbox(item: AttentionItem): boolean {
+  if (activityItemTier(item) === "idle") return false;
   if (item.dismissedAt) return false;
   if (
     item.phase === "needs_you"
@@ -344,6 +356,31 @@ export function attentionItemNeedsInbox(item: AttentionItem): boolean {
     return true;
   }
   return (item.phase === "completed" || item.phase === "merged") && item.seenAt === null;
+}
+
+/**
+ * Legacy snapshots predate the tier field. Derive the old signal/ambient split
+ * from the phase so a mixed-version fleet still files rows consistently.
+ */
+export function activityItemTier(item: AttentionItem): "signal" | "ambient" | "idle" {
+  if (item.activityTier) return item.activityTier;
+  switch (item.phase) {
+    case "needs_you":
+    case "blocked":
+    case "failed":
+    case "checks_failing":
+    case "review_requested":
+    case "changes_requested":
+    case "merge_ready":
+      return "signal";
+    default:
+      return "ambient";
+  }
+}
+
+/** Idle rows are also ambient: neither tier is eligible to interrupt. */
+export function activityItemIsAmbient(item: AttentionItem): boolean {
+  return activityItemTier(item) !== "signal";
 }
 
 export function attentionItemIsLive(item: AttentionItem): boolean {
