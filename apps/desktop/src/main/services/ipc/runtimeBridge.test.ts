@@ -688,6 +688,372 @@ describe("registerRuntimeBridge", () => {
     );
   });
 
+  describe("runtime event subscriptions", () => {
+    type RecordedSubscription = {
+      rootPath: string;
+      request: Record<string, unknown>;
+      emit: (event: unknown, eventEpoch?: string | null) => void;
+      end: () => void;
+      cleanup: ReturnType<typeof vi.fn>;
+    };
+
+    function recordingLocalRuntimePool() {
+      const subscriptions: RecordedSubscription[] = [];
+      const pool = {
+        subscribeEventsForRoot: vi.fn(
+          async (
+            rootPath: string,
+            request: Record<string, unknown>,
+            onEvent: (event: unknown, eventEpoch?: string | null) => void,
+            onEnded: () => void,
+            onSubscribed?: (result: Record<string, unknown>) => void,
+          ) => {
+            const cleanup = vi.fn();
+            onSubscribed?.({ nextCursor: request.cursor ?? 0, hasMore: false });
+            subscriptions.push({
+              rootPath,
+              request,
+              emit: onEvent,
+              end: onEnded,
+              cleanup,
+            });
+            return cleanup;
+          },
+        ),
+        streamEventsForRoot: vi.fn(),
+      };
+      return { subscriptions, pool };
+    }
+
+    function destroyableSender(id: number) {
+      const destroyedHandlers: Array<() => void> = [];
+      const webContents = {
+        id,
+        isDestroyed: vi.fn(() => false),
+        once: vi.fn((channel: string, handler: () => void) => {
+          if (channel === "destroyed") destroyedHandlers.push(handler);
+        }),
+        send: vi.fn(),
+      } as any;
+      return {
+        webContents,
+        destroy: () => {
+          webContents.isDestroyed.mockReturnValue(true);
+          for (const handler of [...destroyedHandlers]) handler();
+        },
+      };
+    }
+
+    function ptyEvent(id: number) {
+      return {
+        id,
+        timestamp: "2026-08-01T00:00:00.000Z",
+        category: "pty" as const,
+        payload: {
+          type: "pty_data",
+          event: { ptyId: "pty-1", sessionId: "session-1", data: "out" },
+        },
+      };
+    }
+
+    function registerWithPool(pool: unknown) {
+      registerRuntimeBridge({
+        appVersion: "1.0.0",
+        globalStatePath: "/tmp/ade-state.json",
+        localRuntimeConnectionPool: pool as any,
+        getWindowSession: () => ({
+          windowId: 7,
+          project: { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+          binding: localBinding("/repo"),
+          openProjectTabs: [
+            { rootPath: "/repo", displayName: "Repo", baseRef: "main" },
+          ],
+        }),
+      });
+      return ipcHandlers.get(IPC.localRuntimeStreamEvents)!;
+    }
+
+    const activePumpRequest = { cursor: 0, limit: 100 };
+    const pinnedPtyPumpRequest = { cursor: 0, limit: 200, category: "pty" };
+
+    it("holds the active and pinned pumps as independent subscriptions on one window", async () => {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(210);
+      const poll = (request: Record<string, unknown>) =>
+        stream(eventForSender(active.webContents), {
+          rootPath: "/repo",
+          request,
+        });
+
+      await poll(activePumpRequest);
+      await poll(pinnedPtyPumpRequest);
+
+      // Distinct request keys must not evict one another.
+      expect(subscriptions).toHaveLength(2);
+      expect(subscriptions[0].request).toMatchObject({ category: undefined });
+      expect(subscriptions[1].request).toMatchObject({ category: "pty" });
+      expect(subscriptions[0].cleanup).not.toHaveBeenCalled();
+      expect(subscriptions[1].cleanup).not.toHaveBeenCalled();
+
+      subscriptions[0].emit(ptyEvent(1), "epoch-1");
+      subscriptions[1].emit(ptyEvent(2), "epoch-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(2);
+
+      // Re-polling either pump reuses its subscription instead of resubscribing.
+      await poll(activePumpRequest);
+      await poll(pinnedPtyPumpRequest);
+      expect(subscriptions).toHaveLength(2);
+      expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(2);
+
+      subscriptions[1].emit(ptyEvent(3), "epoch-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(3);
+    });
+
+    it("releases every subscription a window holds when its sender is destroyed", async () => {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const stream = registerWithPool(pool);
+      const active = destroyableSender(211);
+      const other = destroyableSender(212);
+
+      await stream(eventForSender(active.webContents), {
+        rootPath: "/repo",
+        request: activePumpRequest,
+      });
+      await stream(eventForSender(active.webContents), {
+        rootPath: "/repo",
+        request: pinnedPtyPumpRequest,
+      });
+      await stream(eventForSender(other.webContents), {
+        rootPath: "/repo",
+        request: activePumpRequest,
+      });
+      expect(subscriptions).toHaveLength(3);
+
+      active.destroy();
+
+      expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
+      expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
+      expect(subscriptions[2].cleanup).not.toHaveBeenCalled();
+
+      subscriptions[1].emit(ptyEvent(4), "epoch-1");
+      expect(active.webContents.send).not.toHaveBeenCalled();
+      subscriptions[2].emit(ptyEvent(5), "epoch-1");
+      expect(other.webContents.send).toHaveBeenCalledTimes(1);
+    });
+
+    it("expires subscriptions whose pump stopped polling so they cannot accumulate", async () => {
+      const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+      process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";
+      vi.useFakeTimers();
+      try {
+        const { subscriptions, pool } = recordingLocalRuntimePool();
+        const stream = registerWithPool(pool);
+        const active = destroyableSender(213);
+        const poll = (request: Record<string, unknown>) =>
+          stream(eventForSender(active.webContents), {
+            rootPath: "/repo",
+            request,
+          });
+
+        await poll(activePumpRequest);
+        await poll(pinnedPtyPumpRequest);
+        expect(subscriptions).toHaveLength(2);
+
+        // The active pump keeps polling; the pinned PTY pump goes away silently.
+        for (let tick = 0; tick < 12; tick += 1) {
+          await vi.advanceTimersByTimeAsync(10_000);
+          await poll(activePumpRequest);
+        }
+
+        expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
+        expect(subscriptions[0].cleanup).not.toHaveBeenCalled();
+        // The surviving pump never resubscribed, so nothing churned either.
+        expect(pool.subscribeEventsForRoot).toHaveBeenCalledTimes(2);
+
+        active.webContents.send.mockClear();
+        subscriptions[1].emit(ptyEvent(6), "epoch-1");
+        expect(active.webContents.send).not.toHaveBeenCalled();
+        subscriptions[0].emit(ptyEvent(7), "epoch-1");
+        expect(active.webContents.send).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.useRealTimers();
+        if (previous === undefined) {
+          delete process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+        } else {
+          process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = previous;
+        }
+      }
+    });
+
+    it("drops every subscription a window holds against a disconnected remote target", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          _request: unknown,
+          _onEvent: unknown,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          const cleanup = vi.fn();
+          onSubscribed?.({ nextCursor: 0, hasMore: false });
+          cleanups.push(cleanup);
+          return cleanup;
+        },
+      );
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const disconnect = ipcHandlers.get(IPC.remoteRuntimeDisconnect)!;
+      const active = destroyableSender(214);
+
+      await streamRemote(eventForSender(active.webContents), {
+        id: target.id,
+        projectId: "project-1",
+        request: { cursor: 0, limit: 100, replay: false },
+      });
+      await streamRemote(eventForSender(active.webContents), {
+        id: target.id,
+        projectId: "project-1",
+        request: { cursor: 0, limit: 200, category: "pty", replay: false },
+      });
+      expect(cleanups).toHaveLength(2);
+
+      await disconnect(eventForSender(active.webContents), { id: target.id });
+
+      expect(cleanups[0]).toHaveBeenCalledTimes(1);
+      expect(cleanups[1]).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases a local pump's subscription as soon as the renderer says it stopped reading", async () => {
+      const { subscriptions, pool } = recordingLocalRuntimePool();
+      const stream = registerWithPool(pool);
+      const release = ipcHandlers.get(IPC.runtimeEventsRelease)!;
+      const active = destroyableSender(215);
+      const poll = (request: Record<string, unknown>) =>
+        stream(eventForSender(active.webContents), {
+          rootPath: "/repo",
+          request,
+        });
+
+      await poll(activePumpRequest);
+      await poll(pinnedPtyPumpRequest);
+      expect(subscriptions).toHaveLength(2);
+
+      await expect(
+        release(eventForSender(active.webContents), {
+          rootPath: "/repo",
+          category: "pty",
+        }),
+      ).resolves.toEqual({ released: 1 });
+
+      // Only the pinned PTY pump's subscription went; the active pump keeps its
+      // own, and the released one stops reaching the renderer immediately —
+      // without waiting out the 60s idle expiry.
+      expect(subscriptions[1].cleanup).toHaveBeenCalledTimes(1);
+      expect(subscriptions[0].cleanup).not.toHaveBeenCalled();
+      subscriptions[1].emit(ptyEvent(8), "epoch-1");
+      expect(active.webContents.send).not.toHaveBeenCalled();
+      subscriptions[0].emit(ptyEvent(9), "epoch-1");
+      expect(active.webContents.send).toHaveBeenCalledTimes(1);
+
+      await expect(
+        release(eventForSender(active.webContents), { rootPath: "/repo" }),
+      ).resolves.toEqual({ released: 1 });
+      expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
+    });
+
+    it("releases both replay variants a remote pinned pump accumulated", async () => {
+      remoteRegistryGetMock.mockReturnValue(target);
+      const cleanups: Array<ReturnType<typeof vi.fn>> = [];
+      remoteSubscribeEventsForTargetMock.mockImplementation(
+        async (
+          _target: unknown,
+          _projectId: string,
+          _request: unknown,
+          _onEvent: unknown,
+          _onEnded: unknown,
+          onSubscribed?: (result: Record<string, unknown>) => void,
+        ) => {
+          const cleanup = vi.fn();
+          onSubscribed?.({ nextCursor: 0, hasMore: false });
+          cleanups.push(cleanup);
+          return cleanup;
+        },
+      );
+      const { pool } = recordingLocalRuntimePool();
+      registerWithPool(pool);
+      const streamRemote = ipcHandlers.get(IPC.remoteRuntimeStreamEvents)!;
+      const release = ipcHandlers.get(IPC.runtimeEventsRelease)!;
+      const active = destroyableSender(216);
+
+      // A pinned pump suppresses replay on its first poll and stops suppressing
+      // once caught up, so it owns both request-key variants over its life.
+      await streamRemote(eventForSender(active.webContents), {
+        id: target.id,
+        projectId: "project-1",
+        request: { cursor: 0, limit: 200, category: "pty", replay: false },
+      });
+      remoteStreamEventsForTargetMock.mockResolvedValue({
+        events: [],
+        nextCursor: 5,
+        hasMore: false,
+      });
+      await streamRemote(eventForSender(active.webContents), {
+        id: target.id,
+        projectId: "project-1",
+        request: { cursor: 5, limit: 200, category: "pty" },
+      });
+      // The replay-bearing path subscribes fire-and-forget alongside its poll.
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(cleanups).toHaveLength(2);
+
+      await expect(
+        release(eventForSender(active.webContents), {
+          id: target.id,
+          projectId: "project-1",
+          category: "pty",
+        }),
+      ).resolves.toEqual({ released: 2 });
+      expect(cleanups[0]).toHaveBeenCalledTimes(1);
+      expect(cleanups[1]).toHaveBeenCalledTimes(1);
+    });
+
+    it("stops the idle sweeper when an ended subscription empties the registry", async () => {
+      const previous = process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+      process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = "1";
+      vi.useFakeTimers();
+      try {
+        const { subscriptions, pool } = recordingLocalRuntimePool();
+        const stream = registerWithPool(pool);
+        const active = destroyableSender(217);
+        await stream(eventForSender(active.webContents), {
+          rootPath: "/repo",
+          request: activePumpRequest,
+        });
+        expect(subscriptions).toHaveLength(1);
+        expect(vi.getTimerCount()).toBe(1);
+
+        // The runtime connection dropped, so the subscription ends itself. That
+        // path used to leave the sweeper running over an empty registry.
+        subscriptions[0].end();
+
+        expect(subscriptions[0].cleanup).toHaveBeenCalledTimes(1);
+        expect(vi.getTimerCount()).toBe(0);
+      } finally {
+        vi.useRealTimers();
+        if (previous === undefined) {
+          delete process.env.ADE_DISABLE_REMOTE_AUTOCONNECT;
+        } else {
+          process.env.ADE_DISABLE_REMOTE_AUTOCONNECT = previous;
+        }
+      }
+    });
+  });
+
   it("forwards remote project runtime actions through the selected target and project", async () => {
     remoteRegistryGetMock.mockReturnValue(target);
     remoteConnectMock.mockResolvedValue({

@@ -14,6 +14,11 @@ export function createProjectNamespace(infra: AdapterInfra): AdeNamespace<"proje
 
   async function listRecent() {
     const projects = await refreshCatalog();
+    // Deliberately no `gitOriginUrl`: cross-machine lane discovery keys off it
+    // (crossMachineLanes.resolveThisMachineBindingForOrigin), and the web
+    // adapter's lanes/sessions shims cannot route pinned reads. Adding the
+    // field here would silently point those reads at the wrong machine — see
+    // the contract-gap guard in sessionsPty.ts.
     return projects.map((project) => ({
       rootPath: project.rootPath,
       displayName: project.displayName,

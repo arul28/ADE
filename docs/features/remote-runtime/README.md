@@ -41,7 +41,31 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   local port-forward creation for remote previews, per-target action registry
   lookups, replay-aware event streams, manual disconnect handling, and
   per-window remote-open generation guards so a slow earlier remote-project
-  open cannot overwrite the latest window binding.
+  open cannot overwrite the latest window binding. It also registers
+  `ade.runtime.events.release`, the renderer's explicit teardown for a
+  subscription it has stopped reading.
+- `apps/desktop/src/main/services/ipc/runtimeEventSubscriptionRegistry.ts` —
+  the store behind those streams. Subscriptions are keyed by
+  `(sender, requestKey = <bindingKey>:<category|*>:<replay|live>)`, because one
+  window runs several pumps at once (active binding, one pinned PTY pump per
+  foreign lane, one pinned chat pump) and keying by sender alone would make each
+  new pump tear down its siblings. Stale entries are reclaimed by idle expiry
+  (refreshed on every poll, swept every 20 s at a 60 s idle threshold) with the
+  renderer's release as the fast path. Every caller — release, the ended
+  callback, remote disconnect, sender death, the sweep — removes through one
+  function, so disposal and pruning cannot drift apart, and cleanup functions are
+  attached through an atomic check so a subscription replaced mid-flight never
+  adopts a disposer the registry could not run.
+- `apps/desktop/src/preload/pinnedRuntimeEvents.ts` — the renderer-side half:
+  every event pump that reads a binding the window is *not* bound to. It owns one
+  shared PTY pump per pinned binding (polling plus `ade.runtime.event` push
+  delivery, with its own cursor, epoch generation, dedupe ring, in-flight
+  epoch-rewind guard, and failure backoff), the per-listener generic pump used by
+  pinned chat/project subscriptions, and the helpers the active pump in
+  `preload.ts` shares. Main-side subscriptions are reference-counted per
+  `(binding, category)` so sibling pumps share one and only the last teardown
+  releases it; the active pump never retains a reference and therefore never
+  releases a subscription a pinned pump is still reading.
 - `apps/desktop/src/main/services/account/accountBridge.ts` and
   `apps/ade-cli/src/services/account/accountMachineDirectoryService.ts` —
   account-directory adoption. The desktop Machines row and packaged CLI both
@@ -216,16 +240,26 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   scoped per repository, so switching project tabs invalidates it wholesale.
   `selectOtherMachineBranchStates` is the derived-state seam the push guard
   reads at click time.
-- `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — **per-chat runtime
+- `apps/desktop/src/renderer/lib/chatMachineRouting.ts` — **per-session runtime
   routing**. `buildLaneBindingIndex` folds each open binding's lane list into a
   lane→binding index (active binding first wins), and `resolveChatRuntimePin`
-  returns the `OpenProjectBinding` a chat's calls must target, or `null` when
-  the chat already lives on the active binding. `isLivePinnedBinding` asks
-  whether a pin is still *open* rather than whether it is *active*, because a
-  pin differing from the active binding is now the normal state of any chat
-  whose lane lives on another open machine. Clicking such a chat streams it from
-  its own machine without rebinding the tab, which would otherwise drag Lanes /
-  PRs / Files / Git / Run along with it.
+  returns the `OpenProjectBinding` a session's calls must target, or `null` when
+  it already lives on the active binding. `collectOpenProjectBindings` and
+  `buildChatMachineRoutingState` are the shared constructors both consumers use
+  so the two surfaces cannot drift into different definitions of "open" or of
+  lane precedence. `isLivePinnedBinding` asks whether a pin is still *open*
+  rather than whether it is *active*, because a pin differing from the active
+  binding is now the normal state of any session whose lane lives on another open
+  machine. Clicking such a row streams it from its own machine without rebinding
+  the tab, which would otherwise drag Lanes / PRs / Files / Git / Run along with
+  it.
+- `apps/desktop/src/renderer/components/chat/AgentChatPane.tsx` and
+  `apps/desktop/src/renderer/components/terminals/useWorkMachineRouter.ts` — the
+  two routers built on that module. The chat pane resolves its own pin from the
+  chat's lane; the Work hook is the Work tab's single routing authority for
+  CLI/shell rows, adding lane-then-launch-pin resolution
+  (`pinForSession`) and the launch-pin registry writes
+  (`rememberSessionPin` / `forgetSessionPin`) on top of the shared router.
 - `apps/desktop/src/renderer/components/lanes/laneMachines.ts`,
   `LaneMachineSelector.tsx`, and `PushDivergenceDialog.tsx` —
   machine selection during lane creation and the push-time divergence warning.
@@ -397,14 +431,16 @@ Run all follow it. Two things are deliberately wider than that:
   Lanes not on This Mac carry a small monochrome machine marker that promotes to
   the machine's name when a glyph alone would be ambiguous (the machine is
   offline, two or more foreign machines are on screen, or the same branch exists
-  elsewhere). Foreign lanes appear only when they have chats — the union is about
-  work in flight, not an inventory. A machine that goes offline keeps its rows,
+  elsewhere). Foreign lanes appear only when they have sessions — the union is
+  about work in flight, not an inventory. A machine that goes offline keeps its rows,
   dimmed, folded shut, and inert, and sinks below the reachable machines.
-- **A chat runs on its own lane's machine.** Opening a chat from the union
-  streams it from the machine that owns its lane, with its calls pinned to that
-  machine's runtime; the tab stays bound where it was. Clicking a foreign
-  *lane* (rather than a chat) is the explicit move: it switches the tab's
-  machine, the same thing opening a remote project does.
+- **A session runs on its own lane's machine.** Opening a chat, CLI, or shell
+  session from the union streams it from the machine that owns its lane, with its
+  calls pinned to that machine's runtime; the tab stays bound where it was. A row
+  whose owning binding this window does not have open is the exception — there is
+  nothing to pin to, so the tab switches. Clicking a foreign *lane* (rather than
+  a session) is the explicit move: it switches the tab's machine, the same thing
+  opening a remote project does.
 
 Machine selection also appears at lane creation: the create-lane dialog picks
 which machine the new worktree is created on, matching each machine's checkout of

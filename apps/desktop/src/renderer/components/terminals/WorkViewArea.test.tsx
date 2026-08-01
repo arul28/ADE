@@ -12,6 +12,15 @@ const chatPaneLifecycle = vi.hoisted(() => ({
   unmounts: new Map<string, number>(),
 }));
 
+const prsMocks = vi.hoisted(() => ({
+  getForLane: vi.fn(),
+  syncLanePr: vi.fn(),
+  getChecks: vi.fn(),
+  getReviews: vi.fn(),
+  getStatus: vi.fn(),
+  onEvent: vi.fn(),
+}));
+
 vi.mock("@emoji-mart/data", () => ({
   default: { categories: [], emojis: {}, aliases: {}, sheet: { cols: 0, rows: 0 } },
 }));
@@ -77,6 +86,8 @@ vi.mock("./CliSessionWorkSurfaceHeader", () => ({
     sessionsPaneCount,
     onToggleToolsPane,
     toolsPaneOpen = false,
+    onTogglePrPane,
+    prPaneOpen = false,
   }: {
     session: TerminalSessionSummary;
     onToggleSessionsPane?: () => void;
@@ -84,6 +95,8 @@ vi.mock("./CliSessionWorkSurfaceHeader", () => ({
     sessionsPaneCount?: number;
     onToggleToolsPane?: () => void;
     toolsPaneOpen?: boolean;
+    onTogglePrPane?: () => void;
+    prPaneOpen?: boolean;
   }) => (
     <div
       data-testid="work-cli-session-header"
@@ -108,6 +121,16 @@ vi.mock("./CliSessionWorkSurfaceHeader", () => ({
           onClick={onToggleToolsPane}
         >
           Tools
+        </button>
+      ) : null}
+      {onTogglePrPane ? (
+        <button
+          type="button"
+          aria-label="Toggle PR pane"
+          aria-pressed={prPaneOpen}
+          onClick={onTogglePrPane}
+        >
+          PR
         </button>
       ) : null}
     </div>
@@ -146,6 +169,16 @@ vi.mock("../chat/AgentChatPane", async () => {
         />
       );
     },
+  };
+});
+
+vi.mock("../chat/ChatPrPane", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../chat/ChatPrPane")>();
+  return {
+    ...actual,
+    ChatPrPane: ({ laneId }: { laneId: string }) => (
+      <div data-testid="chat-pr-pane" data-lane-id={laneId} />
+    ),
   };
 });
 
@@ -242,6 +275,18 @@ beforeEach(() => {
   });
   externalSessionsListMock.mockReset();
   externalSessionsListMock.mockResolvedValue([]);
+  prsMocks.getForLane.mockReset();
+  prsMocks.getForLane.mockResolvedValue(null);
+  prsMocks.syncLanePr.mockReset();
+  prsMocks.syncLanePr.mockResolvedValue(null);
+  prsMocks.getChecks.mockReset();
+  prsMocks.getChecks.mockResolvedValue([]);
+  prsMocks.getReviews.mockReset();
+  prsMocks.getReviews.mockResolvedValue([]);
+  prsMocks.getStatus.mockReset();
+  prsMocks.getStatus.mockResolvedValue(null);
+  prsMocks.onEvent.mockReset();
+  prsMocks.onEvent.mockImplementation(() => () => {});
   Object.defineProperty(window, "ade", {
     configurable: true,
     value: {
@@ -263,6 +308,7 @@ beforeEach(() => {
       terminal: {
         preview: terminalPreviewMock,
       },
+      prs: prsMocks,
     },
   });
   vi.mocked(isChatToolType).mockReturnValue(false);
@@ -515,6 +561,71 @@ describe("WorkViewArea", () => {
     expect(terminals.map((terminal) => terminal.getAttribute("data-session-id"))).toContain("session-1");
   });
 
+  it("suppresses the PR pane and auto-pop reads for a foreign running CLI", async () => {
+    const session = { ...makeRunningSession("session-foreign", "pty-foreign"), toolType: "codex" as const };
+    const runtimePin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        resolveSessionRuntimePin={() => runtimePin}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(local.queryByRole("button", { name: "Toggle PR pane" })).toBeNull();
+    expect(local.queryByTestId("chat-pr-pane")).toBeNull();
+    await waitFor(() => {
+      for (const mock of Object.values(prsMocks)) expect(mock).not.toHaveBeenCalled();
+    });
+  });
+
+  it("keeps PR auto-pop and pane controls enabled for a local running CLI", async () => {
+    const session = { ...makeRunningSession("session-local", "pty-local"), toolType: "codex" as const };
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        resolveSessionRuntimePin={() => null}
+      />,
+    );
+    const local = within(view.container);
+
+    await waitFor(() => {
+      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1");
+      expect(prsMocks.onEvent).toHaveBeenCalledTimes(1);
+    });
+    fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
+    expect((await local.findByTestId("chat-pr-pane")).getAttribute("data-lane-id")).toBe("lane-1");
+  });
+
   it("shows the transcript for closed agent CLI sessions instead of the generic ended card", async () => {
     terminalPreviewMock.mockResolvedValueOnce({
       terminalId: "session-1",
@@ -606,6 +717,64 @@ describe("WorkViewArea", () => {
     expect(terminalPreviewMock).toHaveBeenCalledWith({ terminalId: "session-1", maxBytes: 160_000 });
     expect(slashCommandsMock).toHaveBeenCalledWith({ laneId: "lane-1", provider: "claude" });
     expect(modelsMock).not.toHaveBeenCalled();
+  });
+
+  it("pins every available closed-surface read for a foreign CLI", async () => {
+    const runtimePin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const session = {
+      ...makeSession(),
+      id: "foreign-closed",
+      toolType: "codex" as const,
+      resumeCommand: "codex resume foreign-thread",
+      resumeMetadata: {
+        provider: "codex" as const,
+        targetKind: "thread" as const,
+        targetId: "foreign-thread",
+        launch: {},
+        importedFrom: {
+          provider: "codex" as const,
+          targetId: "foreign-thread",
+          mode: "resume" as const,
+        },
+      },
+    };
+
+    const view = render(
+      <WorkViewArea
+        lanes={[]}
+        sessions={[session]}
+        visibleSessions={[session]}
+        activeItemId={session.id}
+        draftKind="chat"
+        onSelectItem={() => {}}
+        onCloseItem={() => {}}
+        onOpenChatSession={() => {}}
+        onLaunchPtySession={resolvePtyLaunch}
+        onShowDraftKind={() => {}}
+        closingPtyIds={new Set()}
+        resolveSessionRuntimePin={() => runtimePin}
+      />,
+    );
+    const local = within(view.container);
+
+    expect(await local.findByLabelText("Continue Codex session")).toBeTruthy();
+    expect(terminalPreviewMock).toHaveBeenCalledWith(
+      { terminalId: session.id, maxBytes: 160_000 },
+      runtimePin,
+    );
+    expect(slashCommandsMock).toHaveBeenCalledWith(
+      { laneId: "lane-1", provider: "codex" },
+      runtimePin,
+    );
+    expect(externalSessionsListMock).not.toHaveBeenCalled();
   });
 
   it("keeps the Work sidebar toggles available on closed agent CLI sessions", () => {

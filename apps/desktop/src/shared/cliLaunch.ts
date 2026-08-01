@@ -20,7 +20,7 @@ import { isProviderSlashCommandInput } from "./chatSlashCommands";
 import { resolveClaudeCliModelAlias } from "./claudeCliModels";
 import { decodeOpenCodeRegistryId } from "./modelRegistry";
 import { effectiveOrchestrationPermissionMode } from "./orchestrationRuntimePolicy";
-import { commandArrayToLine, quoteShellArg } from "./shell";
+import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 import type { OrchestrationRole } from "./types/orchestration";
 
 export type CliProvider = "claude" | "codex" | "cursor" | "droid" | "opencode";
@@ -335,6 +335,84 @@ export function withCodexNoAltScreen(command: string): string {
   return trimmed === "codex"
     ? "codex --no-alt-screen"
     : trimmed.replace(/^codex\b/, "codex --no-alt-screen");
+}
+
+export function shellWordSpans(command: string): Array<{ start: number; end: number }> {
+  const spans: Array<{ start: number; end: number }> = [];
+  let index = 0;
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index]!)) index += 1;
+    if (index >= command.length) break;
+
+    const start = index;
+    let quote: "'" | "\"" | null = null;
+    let escaped = false;
+    while (index < command.length) {
+      const char = command[index]!;
+      if (escaped) {
+        escaped = false;
+      } else if (quote === "'") {
+        if (char === "'") quote = null;
+      } else if (quote === "\"") {
+        if (char === "\"") quote = null;
+        else if (char === "\\") escaped = true;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === "'" || char === "\"") {
+        quote = char;
+      } else if (/\s/.test(char)) {
+        break;
+      }
+      index += 1;
+    }
+    spans.push({ start, end: index });
+  }
+  return spans;
+}
+
+export function isClaudeBinaryCommand(command: string | null | undefined): boolean {
+  const trimmed = String(command ?? "").trim();
+  if (!trimmed) return false;
+  const base = trimmed.replace(/[\\/]+$/, "").split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  return base === "claude" || base === "claude.exe" || base === "claude.cmd";
+}
+
+// Shell-wrapped launches (`/bin/bash --noprofile --norc -lc "<command line>"`)
+// carry the real Claude invocation inside the argument that follows -c/-lc.
+export function shellCommandLineArgIndex(args: string[]): number {
+  const flagIndex = args.findIndex((arg) => /^-[a-z]*c$/.test(arg));
+  if (flagIndex < 0) return -1;
+  const commandIndex = flagIndex + 1;
+  return commandIndex < args.length ? commandIndex : -1;
+}
+
+// Insert `--plugin-dir <root>` right after the `claude` token of a shell
+// command line, leaving env-var prefixes and the caller's own flags intact.
+export function withClaudePluginInCommandLine(commandLine: string, pluginRoot: string): string {
+  if (!commandLine?.trim()) return commandLine;
+  let commandArgs: string[] = [];
+  try {
+    commandArgs = parseCommandLine(commandLine);
+  } catch {
+    // Keep malformed or unsupported shell input intact.
+    return commandLine;
+  }
+  const claudeIndex = commandArgs.findIndex((arg, index) =>
+    arg === "claude"
+    && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
+  );
+  const claudeArgs = claudeIndex >= 0 ? commandArgs.slice(claudeIndex + 1) : [];
+  const hasPluginRoot = claudeArgs.some((arg, index) =>
+    (arg === "--plugin-dir" && claudeArgs[index + 1] === pluginRoot)
+    || arg === `--plugin-dir=${pluginRoot}`,
+  );
+  if (claudeIndex < 0 || hasPluginRoot) {
+    return commandLine;
+  }
+  const claudeSpan = shellWordSpans(commandLine)[claudeIndex];
+  if (!claudeSpan) return commandLine;
+  const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
+  return `${commandLine.slice(0, claudeSpan.end)} ${pluginArgs}${commandLine.slice(claudeSpan.end)}`;
 }
 
 export function defaultTrackedCliStartupCommand(provider: CliProvider): string {

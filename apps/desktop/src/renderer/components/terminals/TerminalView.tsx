@@ -17,6 +17,7 @@ import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
 import type {
+  OpenProjectBinding,
   PtyDataEvent,
   PtyExitEvent,
   TerminalSerializedSnapshot,
@@ -54,6 +55,10 @@ type CachedRuntime = {
   key: string;
   ptyId: string;
   sessionId: string;
+  // Runtime routing belongs to this cached session, not to the window. Keeping
+  // the pin on the runtime prevents simultaneously parked terminals from
+  // different machines from borrowing whichever project the window opened last.
+  runtimePin: OpenProjectBinding | null;
   projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
@@ -161,14 +166,24 @@ const ptyDataRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 const ptyExitRuntimesByPtyId = new Map<string, Set<CachedRuntime>>();
 let sharedPtyDataUnsub: (() => void) | null = null;
 let sharedPtyExitUnsub: (() => void) | null = null;
+const pinnedPtyDataUnsubs = new Map<string, () => void>();
+const pinnedPtyExitUnsubs = new Map<string, () => void>();
+let pinnedPtyRuntimeCount = 0;
 let ptyDataSubscriptionSignature: string | null = null;
+const pinnedPtyDataSubscriptionSignatures = new Map<string, string>();
 
 function terminalRuntimeKey(args: {
   sessionId: string;
   ptyId?: string | null;
   projectKey?: string | null;
+  runtimePin?: OpenProjectBinding | null;
 }): string {
-  return `${args.projectKey ?? "<no-project>"}::${args.sessionId}::${args.ptyId ?? "<no-pty>"}`;
+  const projectRuntimeKey = `${args.projectKey ?? "<no-project>"}::${args.sessionId}::${args.ptyId ?? "<no-pty>"}`;
+  // Preserve the exact local/unpinned cache key while making an explicitly
+  // pinned session distinct from an otherwise identical active-project view.
+  return args.runtimePin
+    ? `pin:${args.runtimePin.kind}:${args.runtimePin.key}::${projectRuntimeKey}`
+    : projectRuntimeKey;
 }
 let parkedRoot: HTMLDivElement | null = null;
 
@@ -506,6 +521,21 @@ function serializeSnapshotVisibleRows(snapshot: TerminalSerializedSnapshot): str
   return parts.join("");
 }
 
+function serializeSnapshotForHydration(snapshot: TerminalSerializedSnapshot): string | null {
+  // Alternate-screen TUIs own a viewport, not a scrollback transcript. Repaint
+  // their structured visible rows first so replaying an older serialized main
+  // buffer cannot corrupt Codex/Claude's full-screen state.
+  if (snapshot.bufferType === "alternate") {
+    return serializeSnapshotVisibleRows(snapshot) || snapshot.serialized || null;
+  }
+
+  // Normal/main-buffer snapshots include the persisted scrollback (bounded by
+  // the main process). Prefer it over the viewport-only repaint so attaching to
+  // a running shell starts with scrollable history; retain the structured rows
+  // as the fallback for legacy/empty serialized snapshots.
+  return snapshot.serialized || serializeSnapshotVisibleRows(snapshot);
+}
+
 function configureParkedRoot(root: HTMLDivElement): void {
   root.setAttribute("data-ade-terminal-parking", "true");
   root.setAttribute("aria-hidden", "true");
@@ -582,7 +612,13 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
   if (runtime.disposed) return;
   runtime.ptyResizeInFlight = true;
   runtime.inFlightPtyResizeDims = dims;
-  window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows })
+  const resize = runtime.runtimePin
+    ? window.ade.pty.resize(
+        { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
+        runtime.runtimePin,
+      )
+    : window.ade.pty.resize({ ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows });
+  resize
     .then(
       () => {
         runtime.lastPtyResizeDims = dims;
@@ -779,25 +815,105 @@ function shouldRuntimeReceivePtyData(runtime: CachedRuntime): boolean {
   return !runtime.disposed && runtime.refs > 0 && runtime.visible;
 }
 
-function updatePtyDataSubscriptions(): void {
-  const ptyIds = new Set<string>();
+function runtimePinSubscriptionKey(pin: OpenProjectBinding): string {
+  return `${pin.kind}:${pin.key}`;
+}
+
+function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
+  if (
+    pinnedPtyRuntimeCount === 0
+    && pinnedPtyDataSubscriptionSignatures.size === 0
+    && !removedRuntime?.runtimePin
+  ) {
+    // Preserve the original unpinned subscription path: one Set, one sorted
+    // array, the existing signature check, and the one-argument preload call.
+    const ptyIds = new Set<string>();
+    for (const [ptyId, runtimes] of ptyDataRuntimesByPtyId) {
+      for (const runtime of runtimes) {
+        if (shouldRuntimeReceivePtyData(runtime)) {
+          ptyIds.add(ptyId);
+          break;
+        }
+      }
+    }
+
+    const next = [...ptyIds].sort();
+    const signature = next.join("\0");
+    if (signature === ptyDataSubscriptionSignature) return;
+    ptyDataSubscriptionSignature = signature;
+
+    const setDataSubscriptions = window.ade.pty.setDataSubscriptions;
+    if (typeof setDataSubscriptions !== "function") return;
+    setDataSubscriptions({ ptyIds: next }).catch(() => {});
+    return;
+  }
+
+  const unpinnedPtyIds = new Set<string>();
+  const pinnedGroups = new Map<string, {
+    pin: OpenProjectBinding;
+    ptyIds: Set<string>;
+  }>();
+  let hasUnpinnedRuntime = false;
+
   for (const [ptyId, runtimes] of ptyDataRuntimesByPtyId) {
     for (const runtime of runtimes) {
+      if (runtime.runtimePin) {
+        const key = runtimePinSubscriptionKey(runtime.runtimePin);
+        let group = pinnedGroups.get(key);
+        if (!group) {
+          group = { pin: runtime.runtimePin, ptyIds: new Set() };
+          pinnedGroups.set(key, group);
+        }
+        if (shouldRuntimeReceivePtyData(runtime)) group.ptyIds.add(ptyId);
+        continue;
+      }
+
+      hasUnpinnedRuntime = true;
       if (shouldRuntimeReceivePtyData(runtime)) {
-        ptyIds.add(ptyId);
-        break;
+        unpinnedPtyIds.add(ptyId);
       }
     }
   }
 
-  const next = [...ptyIds].sort();
-  const signature = next.join("\0");
-  if (signature === ptyDataSubscriptionSignature) return;
-  ptyDataSubscriptionSignature = signature;
-
   const setDataSubscriptions = window.ade.pty.setDataSubscriptions;
-  if (typeof setDataSubscriptions !== "function") return;
-  setDataSubscriptions({ ptyIds: next }).catch(() => {});
+  if (hasUnpinnedRuntime || ptyDataSubscriptionSignature != null) {
+    const next = [...unpinnedPtyIds].sort();
+    const signature = next.join("\0");
+    if (signature !== ptyDataSubscriptionSignature) {
+      ptyDataSubscriptionSignature = signature;
+      if (typeof setDataSubscriptions === "function") {
+        // The overwhelmingly common local path intentionally retains the
+        // original one-argument call shape and allocation count.
+        setDataSubscriptions({ ptyIds: next }).catch(() => {});
+      }
+    }
+  }
+
+  for (const [key, group] of pinnedGroups) {
+    const next = [...group.ptyIds].sort();
+    const signature = next.join("\0");
+    if (signature === pinnedPtyDataSubscriptionSignatures.get(key)) continue;
+    pinnedPtyDataSubscriptionSignatures.set(key, signature);
+    if (typeof setDataSubscriptions === "function") {
+      setDataSubscriptions({ ptyIds: next }, group.pin).catch(() => {});
+    }
+  }
+
+  // A removed runtime is the authoritative source for its pin even after the
+  // runtime leaves the shared PTY map. Clear that machine's subscription
+  // without retaining a module-global binding that another session could reuse.
+  if (removedRuntime?.runtimePin) {
+    const key = runtimePinSubscriptionKey(removedRuntime.runtimePin);
+    if (
+      !pinnedGroups.has(key)
+      && pinnedPtyDataSubscriptionSignatures.has(key)
+    ) {
+      pinnedPtyDataSubscriptionSignatures.delete(key);
+      if (typeof setDataSubscriptions === "function") {
+        setDataSubscriptions({ ptyIds: [] }, removedRuntime.runtimePin).catch(() => {});
+      }
+    }
+  }
 }
 
 function clearRuntimeHydrationTimers(runtime: CachedRuntime): void {
@@ -863,6 +979,10 @@ function clearPtyInputFlushTimer(runtime: CachedRuntime): void {
 
 function writePtyInputNow(runtime: CachedRuntime, data: string) {
   if (!data || runtime.disposed) return;
+  if (runtime.runtimePin) {
+    window.ade.pty.write({ ptyId: runtime.ptyId, data }, runtime.runtimePin).catch(() => {});
+    return;
+  }
   window.ade.pty.write({ ptyId: runtime.ptyId, data }).catch(() => {});
 }
 
@@ -1054,10 +1174,13 @@ async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Pro
   try {
     const image = await window.ade.app.readClipboardImage();
     if (!image || runtime.disposed) return false;
-    const saved = await window.ade.agentChat.saveTempAttachment({
+    const attachmentArgs = {
       data: image.data,
       filename: image.filename || "clipboard.png",
-    });
+    };
+    const saved = runtime.runtimePin
+      ? await window.ade.agentChat.saveTempAttachment(attachmentArgs, runtime.runtimePin)
+      : await window.ade.agentChat.saveTempAttachment(attachmentArgs);
     if (runtime.disposed) return false;
     writePtyInput(runtime, bracketedPaste(formatClipboardImageForPty(saved.path, image.mimeType)));
     return true;
@@ -1469,6 +1592,43 @@ function removeRuntimePtySubscription(
   if (runtimes.size === 0) map.delete(runtime.ptyId);
 }
 
+function hasRuntimeForSubscriptionKey(
+  map: Map<string, Set<CachedRuntime>>,
+  subscriptionKey: string | null,
+): boolean {
+  for (const runtimes of map.values()) {
+    for (const runtime of runtimes) {
+      const runtimeKey = runtime.runtimePin
+        ? runtimePinSubscriptionKey(runtime.runtimePin)
+        : null;
+      if (runtimeKey === subscriptionKey) return true;
+    }
+  }
+  return false;
+}
+
+function dispatchPtyDataEvent(ev: PtyDataEvent, subscriptionKey: string | null): void {
+  const targets = ptyDataRuntimesByPtyId.get(ev.ptyId);
+  if (!targets) return;
+  for (const target of [...targets]) {
+    const targetKey = target.runtimePin
+      ? runtimePinSubscriptionKey(target.runtimePin)
+      : null;
+    if (targetKey === subscriptionKey) handleRuntimePtyData(target, ev);
+  }
+}
+
+function dispatchPtyExitEvent(ev: PtyExitEvent, subscriptionKey: string | null): void {
+  const targets = ptyExitRuntimesByPtyId.get(ev.ptyId);
+  if (!targets) return;
+  for (const target of [...targets]) {
+    const targetKey = target.runtimePin
+      ? runtimePinSubscriptionKey(target.runtimePin)
+      : null;
+    if (targetKey === subscriptionKey) handleRuntimePtyExit(target, ev);
+  }
+}
+
 function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
   let runtimes = ptyDataRuntimesByPtyId.get(runtime.ptyId);
   if (!runtimes) {
@@ -1476,18 +1636,35 @@ function subscribeRuntimePtyData(runtime: CachedRuntime): () => void {
     ptyDataRuntimesByPtyId.set(runtime.ptyId, runtimes);
   }
   runtimes.add(runtime);
+  if (runtime.runtimePin) pinnedPtyRuntimeCount += 1;
   updatePtyDataSubscriptions();
-  if (!sharedPtyDataUnsub) {
-    sharedPtyDataUnsub = window.ade.pty.onData((ev) => {
-      const targets = ptyDataRuntimesByPtyId.get(ev.ptyId);
-      if (!targets) return;
-      for (const target of [...targets]) handleRuntimePtyData(target, ev);
-    });
+  const runtimePin = runtime.runtimePin;
+  const subscriptionKey = runtimePin
+    ? runtimePinSubscriptionKey(runtimePin)
+    : null;
+  if (runtimePin) {
+    const pinnedSubscriptionKey = runtimePinSubscriptionKey(runtimePin);
+    if (!pinnedPtyDataUnsubs.has(pinnedSubscriptionKey)) {
+      pinnedPtyDataUnsubs.set(
+        pinnedSubscriptionKey,
+        window.ade.pty.onData(
+          (ev) => dispatchPtyDataEvent(ev, pinnedSubscriptionKey),
+          runtimePin,
+        ),
+      );
+    }
+  } else if (!sharedPtyDataUnsub) {
+    // Keep the original active-project listener and call arity untouched.
+    sharedPtyDataUnsub = window.ade.pty.onData((ev) => dispatchPtyDataEvent(ev, null));
   }
   return () => {
     removeRuntimePtySubscription(ptyDataRuntimesByPtyId, runtime);
-    updatePtyDataSubscriptions();
-    if (ptyDataRuntimesByPtyId.size === 0 && sharedPtyDataUnsub) {
+    if (runtime.runtimePin) pinnedPtyRuntimeCount = Math.max(0, pinnedPtyRuntimeCount - 1);
+    updatePtyDataSubscriptions(runtime);
+    if (subscriptionKey && !hasRuntimeForSubscriptionKey(ptyDataRuntimesByPtyId, subscriptionKey)) {
+      pinnedPtyDataUnsubs.get(subscriptionKey)?.();
+      pinnedPtyDataUnsubs.delete(subscriptionKey);
+    } else if (!subscriptionKey && !hasRuntimeForSubscriptionKey(ptyDataRuntimesByPtyId, null) && sharedPtyDataUnsub) {
       ptyDataSubscriptionSignature = null;
       sharedPtyDataUnsub();
       sharedPtyDataUnsub = null;
@@ -1502,16 +1679,31 @@ function subscribeRuntimePtyExit(runtime: CachedRuntime): () => void {
     ptyExitRuntimesByPtyId.set(runtime.ptyId, runtimes);
   }
   runtimes.add(runtime);
-  if (!sharedPtyExitUnsub) {
-    sharedPtyExitUnsub = window.ade.pty.onExit((ev) => {
-      const targets = ptyExitRuntimesByPtyId.get(ev.ptyId);
-      if (!targets) return;
-      for (const target of [...targets]) handleRuntimePtyExit(target, ev);
-    });
+  const runtimePin = runtime.runtimePin;
+  const subscriptionKey = runtimePin
+    ? runtimePinSubscriptionKey(runtimePin)
+    : null;
+  if (runtimePin) {
+    const pinnedSubscriptionKey = runtimePinSubscriptionKey(runtimePin);
+    if (!pinnedPtyExitUnsubs.has(pinnedSubscriptionKey)) {
+      pinnedPtyExitUnsubs.set(
+        pinnedSubscriptionKey,
+        window.ade.pty.onExit(
+          (ev) => dispatchPtyExitEvent(ev, pinnedSubscriptionKey),
+          runtimePin,
+        ),
+      );
+    }
+  } else if (!sharedPtyExitUnsub) {
+    // Keep the original active-project listener and call arity untouched.
+    sharedPtyExitUnsub = window.ade.pty.onExit((ev) => dispatchPtyExitEvent(ev, null));
   }
   return () => {
     removeRuntimePtySubscription(ptyExitRuntimesByPtyId, runtime);
-    if (ptyExitRuntimesByPtyId.size === 0 && sharedPtyExitUnsub) {
+    if (subscriptionKey && !hasRuntimeForSubscriptionKey(ptyExitRuntimesByPtyId, subscriptionKey)) {
+      pinnedPtyExitUnsubs.get(subscriptionKey)?.();
+      pinnedPtyExitUnsubs.delete(subscriptionKey);
+    } else if (!subscriptionKey && !hasRuntimeForSubscriptionKey(ptyExitRuntimesByPtyId, null) && sharedPtyExitUnsub) {
       sharedPtyExitUnsub();
       sharedPtyExitUnsub = null;
     }
@@ -1569,14 +1761,18 @@ async function readPreviewHydrationData(
   runtime: CachedRuntime,
   options: PreviewHydrationOptions = {},
 ): Promise<InitialHydrationData> {
-  const preview = await window.ade.terminal.preview({
-    terminalId: runtime.sessionId,
-    maxBytes: HYDRATE_TAIL_BYTES,
-  });
+  const preview = runtime.runtimePin
+    ? await window.ade.terminal.preview({
+        terminalId: runtime.sessionId,
+        maxBytes: HYDRATE_TAIL_BYTES,
+      }, runtime.runtimePin)
+    : await window.ade.terminal.preview({
+        terminalId: runtime.sessionId,
+        maxBytes: HYDRATE_TAIL_BYTES,
+      });
   if (preview?.snapshot) {
-    const visibleRows = serializeSnapshotVisibleRows(preview.snapshot);
-    if (visibleRows) return { source: "snapshot", text: visibleRows };
-    if (preview.snapshot.serialized) return { source: "snapshot", text: preview.snapshot.serialized };
+    const snapshot = serializeSnapshotForHydration(preview.snapshot);
+    if (snapshot) return { source: "snapshot", text: snapshot };
   }
   if (options.snapshotOnly) return { source: "empty", text: "" };
   if (preview?.transcript) return { source: "transcript", text: preview.transcript };
@@ -1586,11 +1782,14 @@ async function readPreviewHydrationData(
 async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise<string> {
   let transcript = "";
   try {
-    transcript = await window.ade.sessions.readTranscriptTail({
+    const args = {
       sessionId: runtime.sessionId,
       maxBytes: HYDRATE_TAIL_BYTES,
       raw: true,
-    }) || "";
+    };
+    transcript = (runtime.runtimePin
+      ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
+      : await window.ade.sessions.readTranscriptTail(args)) || "";
     if (hasTerminalPrivateModeSequence(transcript, TERMINAL_BRACKETED_PASTE_MODE)) {
       return transcript;
     }
@@ -1599,10 +1798,15 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
   }
 
   try {
-    const preview = await window.ade.terminal.preview({
-      terminalId: runtime.sessionId,
-      maxBytes: HYDRATE_TAIL_BYTES,
-    });
+    const preview = runtime.runtimePin
+      ? await window.ade.terminal.preview({
+          terminalId: runtime.sessionId,
+          maxBytes: HYDRATE_TAIL_BYTES,
+        }, runtime.runtimePin)
+      : await window.ade.terminal.preview({
+          terminalId: runtime.sessionId,
+          maxBytes: HYDRATE_TAIL_BYTES,
+        });
     const snapshot = preview?.snapshot?.serialized ?? "";
     const previewTranscript = preview?.transcript ?? "";
     return `${snapshot}${previewTranscript}${transcript}`;
@@ -1614,11 +1818,14 @@ async function readTerminalInputModeRefreshData(runtime: CachedRuntime): Promise
 async function readReplayHydrationData(runtime: CachedRuntime): Promise<InitialHydrationData> {
   // Use sessions.readTranscriptTail (not terminal.read) so this works for chat-CLI
   // tool types — terminal.read/preview throws for isPersistedChatToolType sessions.
-  const data = await window.ade.sessions.readTranscriptTail({
+  const args = {
     sessionId: runtime.sessionId,
     maxBytes: REPLAY_TRANSCRIPT_MAX_BYTES,
     raw: true,
-  });
+  };
+  const data = runtime.runtimePin
+    ? await window.ade.sessions.readTranscriptTail(args, runtime.runtimePin)
+    : await window.ade.sessions.readTranscriptTail(args);
   if (!data) return { source: "empty", text: "" };
   return { source: "replay", text: stripFullScreenRedrawSequences(data) };
 }
@@ -1649,7 +1856,9 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
   let sessionStatus: TerminalSessionStatus | null = null;
   let sessionExitCode: number | null = null;
   try {
-    const detail = await window.ade.sessions.get(runtime.sessionId);
+    const detail = runtime.runtimePin
+      ? await window.ade.sessions.get(runtime.sessionId, runtime.runtimePin)
+      : await window.ade.sessions.get(runtime.sessionId);
     sessionStatus = detail?.status ?? null;
     sessionExitCode = detail?.exitCode ?? null;
   } catch {
@@ -1666,10 +1875,15 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
   }
 
   try {
-    const preview = await window.ade.terminal.preview({
-      terminalId: runtime.sessionId,
-      maxBytes: HYDRATE_TAIL_BYTES,
-    });
+    const preview = runtime.runtimePin
+      ? await window.ade.terminal.preview({
+          terminalId: runtime.sessionId,
+          maxBytes: HYDRATE_TAIL_BYTES,
+        }, runtime.runtimePin)
+      : await window.ade.terminal.preview({
+          terminalId: runtime.sessionId,
+          maxBytes: HYDRATE_TAIL_BYTES,
+        });
     const previewSessionStatus = preview?.session?.status ?? sessionStatus;
     const previewSessionExitCode = preview?.session?.exitCode ?? sessionExitCode;
 
@@ -1687,22 +1901,22 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
     }
 
     if (preview?.snapshot) {
-      const visibleRows = serializeSnapshotVisibleRows(preview.snapshot);
-      if (visibleRows) return { source: "snapshot", text: visibleRows };
-      if (preview.snapshot.serialized) {
-        return { source: "snapshot", text: preview.snapshot.serialized };
-      }
+      const snapshot = serializeSnapshotForHydration(preview.snapshot);
+      if (snapshot) return { source: "snapshot", text: snapshot };
     }
     if (preview?.transcript) return { source: "transcript", text: preview.transcript };
   } catch {
     // Fall back to the transcript tail below.
   }
 
-  const transcript = await window.ade.sessions.readTranscriptTail({
+  const transcriptArgs = {
     sessionId: runtime.sessionId,
     maxBytes: HYDRATE_TAIL_BYTES,
     raw: true,
-  });
+  };
+  const transcript = runtime.runtimePin
+    ? await window.ade.sessions.readTranscriptTail(transcriptArgs, runtime.runtimePin)
+    : await window.ade.sessions.readTranscriptTail(transcriptArgs);
   return transcript
     ? { source: "transcript", text: transcript }
     : { source: "empty", text: "" };
@@ -1959,6 +2173,7 @@ function flushPendingWebGLRestore(runtime: CachedRuntime): void {
 function createRuntime(args: {
   ptyId: string;
   sessionId: string;
+  runtimePin: OpenProjectBinding | null;
   projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
@@ -2002,6 +2217,7 @@ function createRuntime(args: {
     key: terminalRuntimeKey(args),
     ptyId: args.ptyId,
     sessionId: args.sessionId,
+    runtimePin: args.runtimePin,
     projectKey: args.projectKey,
     projectRoot: args.projectRoot,
     projectRevision: args.projectRevision,
@@ -2188,9 +2404,48 @@ function createRuntime(args: {
   return runtime;
 }
 
+/**
+ * Restore the one-runtime-per-(session, pty) invariant after a cache-key move.
+ *
+ * The runtime key embeds the runtime pin and the project key, so either one
+ * changing relocates a mounted session to a NEW key. The guaranteed case is a
+ * cross-machine session whose pin resolves as `null` on first render and as a
+ * real binding once the lane index loads. The mount effect's cleanup parks a
+ * live runtime instead of disposing it (deliberate: switching tabs must not
+ * discard in-memory TUI state), and `ensureRuntime` only reclaims a stale
+ * runtime found at the SAME key — so the runtime left behind at the old key is
+ * unreachable garbage that still holds its PTY data/exit subscriptions. That
+ * keeps `hasRuntimeForSubscriptionKey` true forever, so the preload pinned pump
+ * for that pin never stops, `pinnedPtyRuntimeCount` stays elevated (forcing
+ * every local terminal off the fast subscription path), and a second xterm is
+ * built for the same PTY.
+ *
+ * Disposing the old runtime rather than re-keying it in place is deliberate: it
+ * hydrated through the old binding's transport, so its buffer can describe the
+ * wrong machine entirely. A fresh runtime re-hydrates against the pin the
+ * session actually lives on. Fixing this here rather than by dropping the pin
+ * out of the key also keeps the reuse check below authoritative — the key stays
+ * the identity, and every key component (pin, project) is swept the same way.
+ *
+ * Runtimes another mounted view still references (`refs > 0`) are left alone:
+ * they are not garbage, and that view's own key change sweeps them once it
+ * drops the last ref.
+ */
+function teardownRelocatedRuntimes(key: string, sessionId: string, ptyId: string): void {
+  for (const runtime of runtimeCache.values()) {
+    if (runtime.key === key || runtime.disposed) continue;
+    if (runtime.sessionId !== sessionId || runtime.ptyId !== ptyId) continue;
+    if (runtime.refs > 0) continue;
+    // teardownRuntime handles a parked host (it removes the host from the
+    // parking root) and clears any pending dispose timer.
+    teardownRuntime(runtime);
+  }
+}
+
 function ensureRuntime(args: {
   ptyId: string;
   sessionId: string;
+  runtimePin: OpenProjectBinding | null;
   projectKey: string | null;
   projectRoot: string | null;
   projectRevision: number;
@@ -2199,14 +2454,23 @@ function ensureRuntime(args: {
   imagePasteMode: TerminalImagePasteMode;
 }): CachedRuntime {
   const key = terminalRuntimeKey(args);
+  // Only walks the handful of cached runtimes, and only from the mount effect
+  // (not per render). Runs on the reuse path too so a runtime stranded while a
+  // second view still held it gets swept once that view lets go.
+  teardownRelocatedRuntimes(key, args.sessionId, args.ptyId);
   const existing = runtimeCache.get(key);
   if (existing && !existing.disposed) {
     if (
       existing.ptyId === args.ptyId
+      && existing.runtimePin?.kind === args.runtimePin?.kind
+      && existing.runtimePin?.key === args.runtimePin?.key
       && existing.projectKey === args.projectKey
       && existing.projectRoot === args.projectRoot
     ) {
       clearDisposeTimer(existing);
+      // Refresh same-session binding metadata without moving the pin outside
+      // the runtime record; callers may rebuild an equivalent binding object.
+      existing.runtimePin = args.runtimePin;
       existing.projectRevision = args.projectRevision;
       existing.imagePasteMode = args.imagePasteMode;
       applyRuntimeVisualOptions(existing, {
@@ -2242,12 +2506,15 @@ export function __resetTerminalRuntimesForTests(): void {
     teardownRuntime(runtime);
   }
   runtimeCache.clear();
+  pinnedPtyRuntimeCount = 0;
   ptyDataSubscriptionSignature = null;
+  pinnedPtyDataSubscriptionSignatures.clear();
 }
 
 export function TerminalView({
   ptyId,
   sessionId,
+  runtimePin,
   className,
   isActive,
   isVisible = isActive,
@@ -2255,6 +2522,7 @@ export function TerminalView({
 }: {
   ptyId: string;
   sessionId: string;
+  runtimePin?: OpenProjectBinding | null;
   className?: string;
   isActive: boolean;
   isVisible?: boolean;
@@ -2265,8 +2533,13 @@ export function TerminalView({
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectKey = useAppStore(selectActiveProjectStateKey);
   const projectRevision = useAppStore((s) => s.projectRevision);
+  const runtimePinIdentity = runtimePin
+    ? runtimePinSubscriptionKey(runtimePin)
+    : null;
   const runtimeProjectScopeRef = useRef<{
     sessionId: string;
+    runtimePinIdentity: string | null;
+    runtimePin: OpenProjectBinding | null;
     projectKey: string | null;
     projectRoot: string | null;
     projectRevision: number;
@@ -2274,15 +2547,19 @@ export function TerminalView({
   if (
     !runtimeProjectScopeRef.current
     || runtimeProjectScopeRef.current.sessionId !== sessionId
+    || runtimeProjectScopeRef.current.runtimePinIdentity !== runtimePinIdentity
     || (runtimeProjectScopeRef.current.projectKey == null && projectKey != null)
   ) {
     runtimeProjectScopeRef.current = {
       sessionId,
-      projectKey,
-      projectRoot,
+      runtimePinIdentity,
+      runtimePin: runtimePin ?? null,
+      projectKey: runtimePin?.key ?? projectKey,
+      projectRoot: runtimePin?.rootPath ?? projectRoot,
       projectRevision,
     };
   }
+  const runtimeRuntimePin = runtimeProjectScopeRef.current.runtimePin;
   const runtimeProjectKey = runtimeProjectScopeRef.current.projectKey;
   const runtimeProjectRoot = runtimeProjectScopeRef.current.projectRoot;
   const runtimeProjectRevision = runtimeProjectScopeRef.current.projectRevision;
@@ -2314,6 +2591,7 @@ export function TerminalView({
     const runtime = ensureRuntime({
       ptyId,
       sessionId,
+      runtimePin: runtimeRuntimePin,
       projectKey: runtimeProjectKey,
       projectRoot: runtimeProjectRoot,
       projectRevision: runtimeProjectRevision,
@@ -2526,7 +2804,7 @@ export function TerminalView({
         scheduleRuntimeDispose(runtime, EXITED_RUNTIME_KEEPALIVE_MS);
       }
     };
-  }, [imagePasteMode, runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
+  }, [imagePasteMode, runtimePinIdentity, runtimeProjectRevision, runtimeProjectRoot, ptyId, sessionId]);
 
   useEffect(() => {
     const runtime = runtimeRef.current;

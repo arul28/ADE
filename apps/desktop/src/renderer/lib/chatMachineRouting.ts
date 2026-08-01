@@ -36,6 +36,67 @@ export type ChatMachineRoutingState = {
   laneBindingIndex: LaneBindingIndex;
 };
 
+export type OpenProjectBindingCollectionArgs = {
+  activeBinding: OpenProjectBinding | null;
+  remoteBindings?: readonly (OpenProjectBinding | null | undefined)[];
+  localProjects?: readonly { rootPath: string; displayName?: string | null }[];
+  additionalBindings?: readonly (OpenProjectBinding | null | undefined)[];
+};
+
+/** Collect and de-duplicate every project binding that is open in this window. */
+export function collectOpenProjectBindings(
+  args: OpenProjectBindingCollectionArgs,
+): OpenProjectBinding[] {
+  const bindings: OpenProjectBinding[] = [];
+  const seen = new Set<string>();
+  const push = (binding: OpenProjectBinding | null | undefined) => {
+    if (!binding || seen.has(binding.key)) return;
+    seen.add(binding.key);
+    bindings.push(binding);
+  };
+
+  push(args.activeBinding);
+  for (const binding of args.remoteBindings ?? []) push(binding);
+  for (const project of args.localProjects ?? []) {
+    const rootPath = normalizeId(project.rootPath);
+    if (!rootPath) continue;
+    push({
+      kind: "local",
+      key: `local:${rootPath}`,
+      rootPath,
+      displayName: project.displayName?.trim() || rootPath,
+    });
+  }
+  for (const binding of args.additionalBindings ?? []) push(binding);
+  return bindings;
+}
+
+export type ChatMachineRoutingStateArgs = {
+  activeBinding: OpenProjectBinding | null;
+  openBindings: readonly OpenProjectBinding[];
+  activeLaneIds?: readonly string[];
+  additionalLaneSources?: readonly LaneBindingSource[];
+};
+
+/** Build router state with the active binding's live lanes taking precedence. */
+export function buildChatMachineRoutingState(
+  args: ChatMachineRoutingStateArgs,
+): ChatMachineRoutingState {
+  const sources: LaneBindingSource[] = [];
+  if (args.activeBinding) {
+    sources.push({
+      bindingKey: args.activeBinding.key,
+      laneIds: args.activeLaneIds ?? [],
+    });
+  }
+  sources.push(...(args.additionalLaneSources ?? []));
+  return {
+    activeBinding: args.activeBinding,
+    openBindings: args.openBindings,
+    laneBindingIndex: buildLaneBindingIndex(sources),
+  };
+}
+
 function normalizeId(value: string | null | undefined): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -95,18 +156,10 @@ export function resolveChatRuntimePin(
  * Is `pin` still a live target — i.e. a binding this window still has open?
  *
  * INTEGRATION NOTE (must not be lost):
- * `useWorkSessions.canMutatePinnedProjectUi` (apps/desktop/src/renderer/components/terminals/useWorkSessions.ts,
- * ~:463) and `AgentChatPane.canRefreshPinnedProject` currently test
- * `activeBinding.key === pin.key` and DROP the UI mutation when it differs.
- * That predicate encodes a pre-per-chat-routing assumption: "pin ≠ active
- * binding" used to mean only "a stale detached launch from a project the user
- * has since switched away from". Under per-chat routing it is the NORMAL,
- * CORRECT state of every chat whose lane lives on another machine, so the old
- * guard would silently suppress legitimate updates on exactly those chats.
- *
- * `useWorkSessions.canMutatePinnedProjectUi` MUST be switched to this predicate
- * (that file is owned by the union-sidebar work; the swap is a one-line change:
- * `isLivePinnedBinding(pin, openBindings)`).
+ * `useWorkSessions.canMutatePinnedProjectUi` delegates to the Work machine
+ * router's instance of this predicate, and `AgentChatPane` calls it directly.
+ * Keep both on open-binding liveness: requiring `activeBinding.key === pin.key`
+ * would drop the normal, correct updates for every foreign session.
  */
 export function isLivePinnedBinding(
   pin: { key: string } | null | undefined,

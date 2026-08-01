@@ -118,6 +118,7 @@ export const IPC = {
   personalChatsCall: "ade.personalChats.call",
   personalChatsStreamEvents: "ade.personalChats.streamEvents",
   runtimeEvent: "ade.runtime.event",
+  runtimeEventsRelease: "ade.runtime.events.release",
   projectStateGetSnapshot: "ade.project.state.getSnapshot",
   projectStateInitializeOrRepair: "ade.project.state.initializeOrRepair",
   projectStateRunIntegrityCheck: "ade.project.state.runIntegrityCheck",

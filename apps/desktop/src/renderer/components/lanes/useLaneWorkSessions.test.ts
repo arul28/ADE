@@ -597,6 +597,51 @@ describe("useLaneWorkSessions — refresh-before-focus ordering", () => {
     }, pin);
   });
 
+  it("collapses a remembered PTY pin that matches the active project binding", async () => {
+    const activeBinding = {
+      kind: "local",
+      key: "local:/active/project",
+      rootPath: "/active/project",
+      displayName: "Active",
+    } as const;
+    fakeProjectBinding = activeBinding;
+    const { result } = renderHook(() => useLaneWorkSessions("lane-1"));
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "codex",
+        pin: activeBinding,
+      });
+    });
+
+    await act(async () => {
+      await result.current.continueCliSession({
+        ...makeSession("new-pty-session", "lane-1", "Active Codex"),
+        ptyId: "pty-1",
+        toolType: "codex",
+      } as any, "keep going locally");
+    });
+    expect((window as any).ade.pty.sendToSession).toHaveBeenLastCalledWith({
+      sessionId: "new-pty-session",
+      text: "keep going locally",
+      cols: 100,
+      rows: 30,
+    });
+
+    await act(async () => {
+      await result.current.closePtySession("pty-1");
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
+      ptyId: "pty-1",
+      sessionId: "new-pty-session",
+    });
+  });
+
   it("launchPtySession skips lane UI mutations when a pinned launch resolves after project switch", async () => {
     const pin = {
       kind: "local",

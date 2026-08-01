@@ -68,11 +68,13 @@ import {
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
 import {
+  isClaudeBinaryCommand,
   sanitizeTrackedCliPromptSeed,
+  shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  withClaudePluginInCommandLine,
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
-import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -129,10 +131,39 @@ function shouldScheduleOutputSnippetTitle(tool: TerminalToolType | null): boolea
 }
 
 const CLI_USER_TITLE_SEED_MIN_LEN = 3;
-const CODEX_ADE_GUIDANCE_SCAN_BYTES = 160 * 1024;
 const CODEX_THREAD_NAME_SCAN_BYTES = 512 * 1024;
 const CLAUDE_TITLE_SCAN_BYTES = 512 * 1024;
 const CLAUDE_STORAGE_MATCH_START_SKEW_MS = 1_000;
+/** A resumed PTY that exits nonzero within this window never actually launched. */
+const RESUME_LAUNCH_FAILURE_WINDOW_MS = 5_000;
+// Live capture itself stops after 60 seconds. Ninety seconds covers Codex CLI
+// startup plus modest write/timestamp skew without admitting unrelated launches
+// several minutes later; storage backfill keeps its wider historical window.
+const CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS = 90_000;
+// ADE's delivered text lands after session_meta plus any restored context, so
+// the ownership scan reaches well past the first few KB while staying bounded.
+const CODEX_OWNERSHIP_NEEDLE_SCAN_BYTES = 160 * 1024;
+/** Shorter slices are not distinctive enough to prove a rollout is ours. */
+const CODEX_OWNERSHIP_NEEDLE_MIN_LEN = 24;
+// The needle is the whole delivered prompt, not a short head slice: two
+// launches whose prompts share a long prefix and diverge later are only told
+// apart by a needle that reaches past the shared part. The cap keeps the
+// `includes()` scan bounded for pasted-in prompts of arbitrary length.
+const CODEX_OWNERSHIP_NEEDLE_MAX_LEN = 2_000;
+/**
+ * Codex copies this env var verbatim into `session_meta.payload.originator`
+ * (checked against codex-cli 0.146.0 for both the `source: "cli"` TUI launches
+ * ADE makes and `codex exec`). It is the one per-launch channel ADE controls
+ * that reaches the rollout without adding a single token to the conversation
+ * the model sees, so it — not the prompt text — is the primary ownership proof.
+ */
+const CODEX_ORIGINATOR_OVERRIDE_ENV = "CODEX_INTERNAL_ORIGINATOR_OVERRIDE";
+/**
+ * Prefixed `ade` so usage attribution keeps counting these launches as
+ * ADE-originated, and deliberately not the bare `ade_desktop` the app-server
+ * client reports, which other services match exactly.
+ */
+const CODEX_LAUNCH_ORIGINATOR_PREFIX = "ade_pty_";
 const CLAUDE_STORAGE_MATCH_END_SKEW_MS = 5_000;
 const PTY_DATA_BATCH_INTERVAL_MS = 50;
 // Echo latency is dominated by the data batch window. After a user keystroke
@@ -315,6 +346,8 @@ type CodexStorageSessionMatch = {
   id: string;
   filePath: string;
   threadName: string | null;
+  /** Which ownership layer proved this rollout belongs to the caller's launch. */
+  ownership: "launch-nonce" | "launch-text" | "window";
 };
 
 type ClaudeStorageSessionMatch = {
@@ -625,6 +658,18 @@ type PtyEntry = {
   initialInputTimer: ReturnType<typeof setTimeout> | null;
   cliUserTitleLineBuffer: string;
   cliUserTitleCommitted: boolean;
+  /**
+   * For a resume/reattach launch only: the terminal end state this launch took
+   * over. If the new process dies immediately (a launch failure — a bad flag,
+   * a missing binary, a shell usage error), closeEntry restores this instead
+   * of stamping the row `failed`, so a still-resumable session does not become
+   * permanently dead-looking. `running` is deliberately unrepresentable here.
+   */
+  priorEndState: {
+    status: Exclude<TerminalSessionStatus, "running">;
+    exitCode: number | null;
+    endedAt: string | null;
+  } | null;
 };
 
 function isHighSurrogateCodeUnit(codeUnit: number): boolean {
@@ -652,6 +697,75 @@ function replaceUnpairedSurrogates(value: string): string {
     segmentStart = index + 1;
   }
   return segmentStart === 0 ? value : `${normalized}${value.slice(segmentStart)}`;
+}
+
+/**
+ * A per-launch ownership nonce, carried to Codex through
+ * `CODEX_INTERNAL_ORIGINATOR_OVERRIDE` and written back out as the rollout's
+ * `session_meta.payload.originator`. Unlike the text needle below it is unique
+ * per launch by construction, so it separates two launches that share a
+ * worktree, a launch window, and the exact same prompt.
+ */
+function newCodexLaunchOriginator(): string {
+  return `${CODEX_LAUNCH_ORIGINATOR_PREFIX}${randomUUID().replace(/-/g, "")}`;
+}
+
+/**
+ * A per-launch ownership marker: a bounded, contiguous slice of the text ADE
+ * itself delivers to this Codex process. Codex writes that text into its
+ * rollout, so finding the slice there proves the rollout belongs to this
+ * launch — not to some other Codex process that happens to share the worktree
+ * and the launch window.
+ *
+ * The slice is taken from the user's own prompt when there is one: everything
+ * ahead of it is ADE's fixed session-guidance preamble, which every ADE Codex
+ * launch emits and therefore cannot distinguish two of them from each other.
+ */
+function codexOwnershipNeedleFromDeliveredText(raw: string | null | undefined): string | null {
+  const text = String(raw ?? "").replace(/\r\n?/g, "\n");
+  if (!text.trim().length) return null;
+  const promptMarker = /\bUser prompt:[ \t]*\n?/iu.exec(text);
+  const distinctive = promptMarker
+    ? text.slice(promptMarker.index + promptMarker[0].length)
+    : text;
+  const trimmed = distinctive.trim();
+  if (!trimmed.length) return null;
+  let needle = trimmed.slice(0, CODEX_OWNERSHIP_NEEDLE_MAX_LEN);
+  // A slice that ends mid-surrogate would JSON-escape differently than the
+  // whole pair Codex wrote, so drop the dangling half.
+  if (needle.length > 0 && isHighSurrogateCodeUnit(needle.charCodeAt(needle.length - 1))) {
+    needle = needle.slice(0, -1);
+  }
+  needle = needle.trimEnd();
+  return needle.length >= CODEX_OWNERSHIP_NEEDLE_MIN_LEN ? needle : null;
+}
+
+/**
+ * Codex launches carry ADE's prompt one of two ways: typed into the PTY as
+ * initial input, or pushed onto argv as the trailing positional prompt (see
+ * `usePromptArg` in shared/cliLaunch). Either is text we know this process
+ * received; nothing else on the command line is ours to claim.
+ */
+function codexLaunchOwnershipNeedle(args: {
+  initialInput: string;
+  args: readonly string[];
+}): string | null {
+  const fromInitialInput = codexOwnershipNeedleFromDeliveredText(args.initialInput);
+  if (fromInitialInput) return fromInitialInput;
+  const trailingArg = args.args.length ? args.args[args.args.length - 1] ?? "" : "";
+  if (trailingArg.startsWith("-")) return null;
+  return codexOwnershipNeedleFromDeliveredText(trailingArg);
+}
+
+/**
+ * Rollout JSONL holds the delivered text inside JSON strings, so newlines and
+ * quotes arrive escaped. Match the raw slice (it may sit in a plain-text field)
+ * and its JSON-escaped form (the usual case).
+ */
+function rolloutTextContainsOwnershipNeedle(rolloutText: string, needle: string): boolean {
+  if (rolloutText.includes(needle)) return true;
+  const escaped = JSON.stringify(needle).slice(1, -1);
+  return escaped !== needle && rolloutText.includes(escaped);
 }
 
 function takeCanonicalPtyOutput(entry: PtyEntry, data: string, final = false): string {
@@ -1073,40 +1187,17 @@ function hasClaudePluginRoot(args: string[], pluginRoot: string): boolean {
   );
 }
 
-function shellWordSpans(command: string): Array<{ start: number; end: number }> {
-  const spans: Array<{ start: number; end: number }> = [];
-  let index = 0;
-  while (index < command.length) {
-    while (index < command.length && /\s/.test(command[index]!)) index += 1;
-    if (index >= command.length) break;
-
-    const start = index;
-    let quote: "'" | "\"" | null = null;
-    let escaped = false;
-    while (index < command.length) {
-      const char = command[index]!;
-      if (escaped) {
-        escaped = false;
-      } else if (quote === "'") {
-        if (char === "'") quote = null;
-      } else if (quote === "\"") {
-        if (char === "\"") quote = null;
-        else if (char === "\\") escaped = true;
-      } else if (char === "\\") {
-        escaped = true;
-      } else if (char === "'" || char === "\"") {
-        quote = char;
-      } else if (/\s/.test(char)) {
-        break;
-      }
-      index += 1;
-    }
-    spans.push({ start, end: index });
-  }
-  return spans;
-}
-
+/**
+ * `args` are the argv of whatever `command` is actually spawned — which is the
+ * Claude binary for ordinary launches but `/bin/bash ... -lc "<command line>"`
+ * for resume and reattach launches. Prepending Claude flags to a shell's argv
+ * makes bash die with "invalid option", so the flag goes wherever the `claude`
+ * token really lives: the argv for a direct Claude spawn, the -lc command line
+ * for a shell wrapper, and the startup command written into an interactive
+ * shell.
+ */
 function withBundledClaudePlugin(
+  command: string | null,
   args: string[],
   startupCommand: string,
   toolType: TerminalToolType | null,
@@ -1118,32 +1209,24 @@ function withBundledClaudePlugin(
   const pluginRoot = claudeAgentSkillPluginRoots(env)[0];
   if (!pluginRoot) return { args, startupCommand };
 
-  const normalizedArgs = hasClaudePluginRoot(args, pluginRoot)
-    ? args
-    : ["--plugin-dir", pluginRoot, ...args];
-  let normalizedStartupCommand = startupCommand;
-  if (startupCommand?.trim()) {
-    let commandArgs: string[] = [];
-    try {
-      commandArgs = parseCommandLine(startupCommand);
-    } catch {
-      // Keep malformed or unsupported shell input intact.
+  let normalizedArgs = args;
+  if (isClaudeBinaryCommand(command)) {
+    if (!hasClaudePluginRoot(args, pluginRoot)) {
+      normalizedArgs = ["--plugin-dir", pluginRoot, ...args];
     }
-    const claudeIndex = commandArgs.findIndex((arg, index) =>
-      arg === "claude"
-      && commandArgs.slice(0, index).every((prefix) => /^[A-Za-z_][A-Za-z0-9_]*=/.test(prefix)),
-    );
-    if (claudeIndex >= 0 && !hasClaudePluginRoot(commandArgs.slice(claudeIndex + 1), pluginRoot)) {
-      const claudeSpan = shellWordSpans(startupCommand)[claudeIndex];
-      if (claudeSpan) {
-        const pluginArgs = commandArrayToLine(["--plugin-dir", pluginRoot]);
-        normalizedStartupCommand = `${startupCommand.slice(0, claudeSpan.end)} ${pluginArgs}${startupCommand.slice(claudeSpan.end)}`;
+  } else if (command?.trim()) {
+    const commandLineIndex = shellCommandLineArgIndex(args);
+    if (commandLineIndex >= 0) {
+      const rewritten = withClaudePluginInCommandLine(args[commandLineIndex]!, pluginRoot);
+      if (rewritten !== args[commandLineIndex]) {
+        normalizedArgs = args.slice();
+        normalizedArgs[commandLineIndex] = rewritten;
       }
     }
   }
   return {
     args: normalizedArgs,
-    startupCommand: normalizedStartupCommand,
+    startupCommand: withClaudePluginInCommandLine(startupCommand, pluginRoot),
   };
 }
 
@@ -1548,6 +1631,21 @@ function getPtyHostReadyPromise(pty: IPty): Promise<void> | null {
     return ready;
   }
   return null;
+}
+
+function resumeTargetIdForProvider(
+  session: TerminalSessionSummary,
+  provider: TerminalResumeProvider,
+): string | null {
+  const metadataTargetId = session.resumeMetadata?.provider === provider
+    ? sanitizeResumeTargetId(session.resumeMetadata.targetId ?? null)
+    : null;
+  if (metadataTargetId) return metadataTargetId;
+
+  const parsedResumeCommand = parseTrackedCliResumeCommand(session.resumeCommand, session.toolType);
+  return parsedResumeCommand?.provider === provider
+    ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
+    : null;
 }
 
 export function createPtyService({
@@ -2598,13 +2696,19 @@ export function createPtyService({
    * Codex stores sessions at ~/.codex/sessions/YYYY/MM/DD/rollout-<ts>-<uuid>.jsonl.
    * Each JSONL starts with a session_meta event containing `payload.id` and `payload.cwd`.
    * We score recent candidates by cwd match and closeness to ADE's session startedAt.
+   * `ownershipOriginator`, when the caller stamped one on the launch, wins
+   * outright: it is a per-launch nonce Codex echoes into `session_meta`.
+   * `ownershipNeedle` is the fallback — it requires the rollout to contain text
+   * this launch delivered, see `codexLaunchOwnershipNeedle`.
    */
   const resolveCodexSessionFromStorage = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
     notBeforeMs?: number;
-    requiredText?: string;
+    excludedIds?: ReadonlySet<string>;
+    ownershipNeedle?: string | null;
+    ownershipOriginator?: string | null;
   }): CodexStorageSessionMatch | null => {
     try {
       const sessionsBase = path.join(os.homedir(), ".codex", "sessions");
@@ -2633,7 +2737,15 @@ export function createPtyService({
       if (!candidates.length) return null;
       candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
 
-      let bestMatch: { id: string; filePath: string; score: number; mtimeMs: number } | null = null;
+      type CodexRolloutCandidate = {
+        id: string;
+        filePath: string;
+        mtimeMs: number;
+        /** Session start per the rollout itself, falling back to file mtime. */
+        referenceMs: number;
+        originator: string;
+      };
+      const parsed: CodexRolloutCandidate[] = [];
       for (const candidate of candidates.slice(0, 80)) {
         const firstLine = readJsonlFirstLine(candidate.filePath);
         if (!firstLine) continue;
@@ -2648,39 +2760,71 @@ export function createPtyService({
         const id = typeof payload?.id === "string" ? payload.id.trim() : "";
         const cwd = typeof payload?.cwd === "string" ? payload.cwd.trim() : "";
         if (type !== "session_meta" || !id || cwd !== args.cwd) continue;
-        if (args.requiredText) {
-          // ADE's injected session guidance can land after a large session_meta
-          // line plus restored context, so scan beyond the first few KB while
-          // still keeping the live poll bounded.
-          const prefix = readFilePrefix(candidate.filePath, CODEX_ADE_GUIDANCE_SCAN_BYTES);
-          if (!prefix?.includes(args.requiredText)) continue;
-        }
-
-        if (!hasStartedAt) {
-          return {
-            id,
-            filePath: candidate.filePath,
-            threadName: readCodexRuntimeThreadName(candidate.filePath, id),
-          };
-        }
-
+        if (args.excludedIds?.has(id)) continue;
+        // Codex subagents fork from the thread ADE launched, share its cwd, and
+        // inherit its environment (nonce included). Resuming one would resume
+        // the wrong thread, so they are never a candidate.
+        const parentThreadId = typeof payload?.parent_thread_id === "string" ? payload.parent_thread_id.trim() : "";
+        if (parentThreadId) continue;
         const payloadTimestamp = typeof payload?.timestamp === "string" ? payload.timestamp : "";
         const payloadTimestampMs = Date.parse(payloadTimestamp);
-        const referenceMs = Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs;
-        if (typeof args.notBeforeMs === "number" && referenceMs < args.notBeforeMs) continue;
-        const score = Math.abs(referenceMs - requestedStartedAtMs);
-        if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
-        if (!bestMatch || score < bestMatch.score || (score === bestMatch.score && candidate.mtimeMs > bestMatch.mtimeMs)) {
-          bestMatch = { id, filePath: candidate.filePath, score, mtimeMs: candidate.mtimeMs };
-        }
+        parsed.push({
+          id,
+          filePath: candidate.filePath,
+          mtimeMs: candidate.mtimeMs,
+          referenceMs: Number.isFinite(payloadTimestampMs) ? payloadTimestampMs : candidate.mtimeMs,
+          originator: typeof payload?.originator === "string" ? payload.originator.trim() : "",
+        });
       }
-      return bestMatch
-        ? {
-            id: bestMatch.id,
-            filePath: bestMatch.filePath,
-            threadName: readCodexRuntimeThreadName(bestMatch.filePath, bestMatch.id),
+
+      const toMatch = (
+        candidate: CodexRolloutCandidate,
+        ownership: CodexStorageSessionMatch["ownership"],
+      ): CodexStorageSessionMatch => ({
+        id: candidate.id,
+        filePath: candidate.filePath,
+        threadName: readCodexRuntimeThreadName(candidate.filePath, candidate.id),
+        ownership,
+      });
+
+      const pickBest = (
+        ownership: CodexStorageSessionMatch["ownership"],
+        accept: (candidate: CodexRolloutCandidate) => boolean,
+      ): CodexStorageSessionMatch | null => {
+        let bestMatch: { candidate: CodexRolloutCandidate; score: number } | null = null;
+        for (const candidate of parsed) {
+          if (!accept(candidate)) continue;
+          if (!hasStartedAt) return toMatch(candidate, ownership);
+          if (typeof args.notBeforeMs === "number" && candidate.referenceMs < args.notBeforeMs) continue;
+          const score = Math.abs(candidate.referenceMs - requestedStartedAtMs);
+          if (typeof args.maxStartDeltaMs === "number" && score > args.maxStartDeltaMs) continue;
+          if (
+            !bestMatch
+            || score < bestMatch.score
+            || (score === bestMatch.score && candidate.mtimeMs > bestMatch.candidate.mtimeMs)
+          ) {
+            bestMatch = { candidate, score };
           }
-        : null;
+        }
+        return bestMatch ? toMatch(bestMatch.candidate, ownership) : null;
+      };
+
+      // The nonce is unique per launch, so it outranks the prompt-text needle,
+      // which two launches can legitimately share.
+      const ownershipOriginator = args.ownershipOriginator?.trim() ?? "";
+      if (ownershipOriginator) {
+        const nonceMatch = pickBest("launch-nonce", (candidate) => candidate.originator === ownershipOriginator);
+        if (nonceMatch) return nonceMatch;
+      }
+
+      // Older Codex builds may not honour the originator override, so ownership
+      // falls back to the delivered text rather than refusing to capture.
+      const ownershipNeedle = args.ownershipNeedle ?? "";
+      return pickBest(ownershipNeedle ? "launch-text" : "window", (candidate) => {
+        if (!ownershipNeedle) return true;
+        const prefix = readFilePrefix(candidate.filePath, CODEX_OWNERSHIP_NEEDLE_SCAN_BYTES);
+        return prefix != null && rolloutTextContainsOwnershipNeedle(prefix, ownershipNeedle);
+      });
     } catch {
       return null;
     }
@@ -2788,6 +2932,23 @@ export function createPtyService({
     }
   };
 
+  /**
+   * The directory a session's agent actually ran in. Transcripts live under the
+   * project root even for lane sessions, so the transcript path is only a
+   * fallback: every storage backfill below matches on an exact cwd, and a lane
+   * session's rollout records the lane worktree, not the project root.
+   */
+  const resolveSessionRunCwd = (session: TerminalSessionSummary): string | null => {
+    let worktreePath = "";
+    try {
+      worktreePath = (laneService.getLaneBaseAndBranch(session.laneId).worktreePath ?? "").trim();
+    } catch {
+      // Deleted lane: fall back to the transcript-derived directory.
+    }
+    if (worktreePath) return worktreePath;
+    return inferSessionCwdFromTranscriptPath(session.transcriptPath);
+  };
+
   const tryBackfillResumeTarget = async (
     sessionId: string,
     preferredToolType: TerminalToolType | null,
@@ -2800,7 +2961,7 @@ export function createPtyService({
     if (!isTrackedAgentCliToolType(effectiveToolType)) return false;
     const existingTargetId = sanitizeResumeTargetId(session.resumeMetadata?.targetId ?? null);
     if (existingTargetId) {
-      const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+      const cwd = sessionCwd ?? resolveSessionRunCwd(session);
       if (isClaudeTrackedCliToolType(effectiveToolType) && cwd) {
         scheduleClaudeRuntimeTitleCaptureBestEffort(sessionId, existingTargetId, cwd);
       }
@@ -2838,7 +2999,7 @@ export function createPtyService({
     }
 
     // Strategy 2: Read the session/thread ID from the CLI's local storage
-    const cwd = sessionCwd ?? inferSessionCwdFromTranscriptPath(session.transcriptPath);
+    const cwd = sessionCwd ?? resolveSessionRunCwd(session);
     const effectiveProvider = providerFromTool(effectiveToolType);
     const hasStorageBackfillEvidence = effectiveProvider
       ? hasProviderStorageBackfillEvidence(effectiveProvider, transcript)
@@ -3057,6 +3218,16 @@ export function createPtyService({
     }
   };
 
+  const listOtherAdoptedCodexTargetIds = (sessionId: string): Set<string> => {
+    const adoptedIds = new Set<string>();
+    for (const candidate of sessionService.list({ limit: null })) {
+      if (candidate.id === sessionId) continue;
+      const targetId = resumeTargetIdForProvider(candidate, "codex");
+      if (targetId) adoptedIds.add(targetId);
+    }
+    return adoptedIds;
+  };
+
   // Codex CLI has no pre-assigned session ID flag (unlike Claude's --session-id), so the
   // rollout JSONL is the only handle on the session's UUID. We watch the day directory for
   // the file's appearance, then store the UUID directly for resume and separately adopt any
@@ -3066,6 +3237,8 @@ export function createPtyService({
     sessionId: string,
     cwd: string,
     startedAt: string,
+    ownershipNeedle: string | null = null,
+    ownershipOriginator: string | null = null,
   ): void => {
     const startedAtMs = Date.parse(startedAt);
     const startedAtFinite = Number.isFinite(startedAtMs) ? startedAtMs : null;
@@ -3106,12 +3279,53 @@ export function createPtyService({
         cleanup();
         return true;
       }
+      let excludedIds: Set<string>;
+      try {
+        excludedIds = listOtherAdoptedCodexTargetIds(sessionId);
+      } catch (err) {
+        // Capturing no target is safer than assigning a thread when the
+        // cross-session ownership check could not run.
+        logger.warn("pty.codex_session_id_exclusion_query_failed", {
+          sessionId,
+          source,
+          attempt,
+          err: String(err),
+        });
+        return false;
+      }
+      // There is deliberately no FIXED text gate here. ADE used to require the
+      // "ADE session guidance" preamble marker in the rollout, but only the
+      // Work-tab CLI preamble ever emits it — goal launches send
+      // `<codex_internal_context source="goal">` instead — so the gate was
+      // closed for nearly every real session and thread ids were essentially
+      // never captured live.
+      //
+      // Mis-adoption safety for concurrent Codex runs in the SAME worktree has
+      // four layers:
+      //  1. the per-launch ownership nonce ADE stamped on this launch's
+      //     environment, which Codex writes back as the rollout's originator:
+      //     unique by construction, so it separates even two launches with
+      //     byte-identical prompts. It is absent only if the Codex build
+      //     ignores the override, in which case ownership degrades to layer 2;
+      //  2. the ownership needle, when this launch delivered text of its own:
+      //     only a rollout containing that text can be adopted, which rules out
+      //     an unrelated Codex process that merely shares the cwd and window;
+      //  3. a narrow launch window (including the existing not-before floor);
+      //  4. exclusion of thread ids already owned by every other terminal row —
+      //     an adopted id stays excluded even when nonce or needle matches.
+      // Timestamp proximity still breaks ties among the remaining candidates,
+      // but does not claim that rollout write order uniquely proves which PTY
+      // launched a thread. A bare interactive `codex` with nothing typed has no
+      // text to demand, so on a Codex build without the originator override it
+      // falls back to layers 3 and 4 alone and keeps that residual window.
       const codexSession = resolveCodexSessionFromStorage({
         cwd,
         startedAt,
-        maxStartDeltaMs: 5 * 60_000,
+        maxStartDeltaMs: CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS,
         ...(startedAtFinite !== null ? { notBeforeMs: startedAtFinite - 1_000 } : {}),
-        requiredText: "ADE session guidance",
+        excludedIds,
+        ownershipNeedle,
+        ownershipOriginator,
       });
       if (!codexSession) return false;
 
@@ -3125,6 +3339,7 @@ export function createPtyService({
         codexSessionId: codexSession.id,
         source,
         attempt,
+        ownership: codexSession.ownership,
       });
       cleanup();
       return true;
@@ -3217,8 +3432,31 @@ export function createPtyService({
     entry.recentOutputTail = "";
 
     const endedAt = new Date().toISOString();
-    const status = statusFromExit(exitCode);
-    sessionService.end({ sessionId: entry.sessionId, endedAt, exitCode, status });
+    let status = statusFromExit(exitCode);
+    let endExitCode = exitCode;
+    let endEndedAt = endedAt;
+    // A resume that dies on launch must not clobber the row it took over: the
+    // prior session is still resumable, and stamping it failed/exit-2 makes it
+    // look permanently dead. Only an *immediate* nonzero exit counts as a
+    // launch failure (a bad flag, a missing binary, a shell usage error) —
+    // once the CLI has actually been running, a real nonzero exit is its own.
+    const priorEndState = entry.priorEndState;
+    if (
+      priorEndState
+      && status === "failed"
+      && Date.now() - entry.createdAt <= RESUME_LAUNCH_FAILURE_WINDOW_MS
+    ) {
+      logger.warn("pty.resume_launch_failed_status_preserved", {
+        sessionId: entry.sessionId,
+        ptyId,
+        exitCode,
+        priorStatus: priorEndState.status,
+      });
+      status = priorEndState.status;
+      endExitCode = priorEndState.exitCode;
+      endEndedAt = priorEndState.endedAt ?? endedAt;
+    }
+    sessionService.end({ sessionId: entry.sessionId, endedAt: endEndedAt, exitCode: endExitCode, status });
     flushTerminalSnapshot(entry);
     scheduleTranscriptDependentWork(entry, "close");
     clearIdleTimer(entry.sessionId);
@@ -4052,23 +4290,15 @@ export function createPtyService({
         `${displayName} exited before ADE could capture a concrete resume target. Start a new ${displayName} session.`,
       );
     };
-    const resumeTargetIdFor = (candidate: TerminalSessionSummary): string | null => {
-      const parsedResumeCommand = parseTrackedCliResumeCommand(candidate.resumeCommand, candidate.toolType);
-      return sanitizeResumeTargetId(candidate.resumeMetadata?.targetId ?? null)
-        ?? (parsedResumeCommand?.provider === provider
-          ? sanitizeResumeTargetId(parsedResumeCommand.targetId ?? null)
-          : null);
-    };
-
     let resolvedSession = session;
-    let storedResumeTargetId = resumeTargetIdFor(resolvedSession);
+    let storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
     if (!storedResumeTargetId && provider !== "cursor" && isTrackedAgentCliToolType(resolvedSession.toolType)) {
-      const cwd = inferSessionCwdFromTranscriptPath(resolvedSession.transcriptPath);
+      const cwd = resolveSessionRunCwd(resolvedSession);
       const backfilled = await tryBackfillResumeTarget(sessionId, resolvedSession.toolType, "resume-launch", cwd);
       const updatedSession = backfilled ? sessionService.get(sessionId) : null;
       if (updatedSession) {
         resolvedSession = updatedSession;
-        storedResumeTargetId = resumeTargetIdFor(resolvedSession);
+        storedResumeTargetId = resumeTargetIdForProvider(resolvedSession, provider);
       }
     }
     if (
@@ -4279,6 +4509,18 @@ export function createPtyService({
       if (existingSession && !existingSession.tracked) {
         throw ptySendPreDeliveryError(`Terminal session '${requestedSessionId}' is not tracked and cannot be resumed.`);
       }
+      // Snapshot only a real terminal end state before reattach/backfill can
+      // overwrite it. A row may still say `running` after its owning brain
+      // died; capturing that stale state would make closeEntry restore a dead
+      // relaunch to `running`. Leaving it null makes closeEntry persist the new
+      // failure, while detached/completed/failed restore byte-for-byte.
+      const priorEndState = existingSession && existingSession.status !== "running"
+        ? {
+          status: existingSession.status,
+          exitCode: existingSession.exitCode ?? null,
+          endedAt: existingSession.endedAt ?? null,
+        }
+        : null;
       const liveAttachedEntry = existingSession
         ? Array.from(ptys.entries()).find(([, entry]) => entry.sessionId === existingSession.id && !entry.disposed)
         : null;
@@ -4533,6 +4775,7 @@ export function createPtyService({
         }
       }
       const claudePluginLaunch = withBundledClaudePlugin(
+        directCommand,
         directArgs,
         startupCommand,
         toolTypeHint,
@@ -4545,6 +4788,19 @@ export function createPtyService({
         directCommand,
         startupCommand,
       });
+      // Stamp a per-launch ownership nonce Codex echoes into its rollout, so
+      // thread capture never has to infer ownership from prompt text alone. An
+      // explicitly configured override wins: the caller's identity choice is
+      // not ADE's to overwrite, capture just falls back to the text needle.
+      let codexLaunchOriginator: string | null = null;
+      if (
+        (toolTypeHint === "codex" || toolTypeHint === "codex-orchestrated")
+        && !hasEnvKey(args.env ?? {}, CODEX_ORIGINATOR_OVERRIDE_ENV)
+        && !hasEnvKey(laneRuntimeEnv, CODEX_ORIGINATOR_OVERRIDE_ENV)
+      ) {
+        codexLaunchOriginator = newCodexLaunchOriginator();
+        launchEnv[CODEX_ORIGINATOR_OVERRIDE_ENV] = codexLaunchOriginator;
+      }
 
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
@@ -4737,6 +4993,7 @@ export function createPtyService({
         initialInputTimer: null,
         cliUserTitleLineBuffer: "",
         cliUserTitleCommitted: false,
+        priorEndState,
       };
       ptys.set(ptyId, entry);
       if (chatSessionId) {
@@ -5010,7 +5267,16 @@ export function createPtyService({
         && (toolTypeHint === "codex" || toolTypeHint === "codex-orchestrated")
         && cwd
       ) {
-        scheduleCodexSessionIdCaptureBestEffort(sessionId, cwd, startedAt);
+        // Derived from what this launch delivers, not from what it succeeds in
+        // delivering: if the write never lands the rollout never carries the
+        // needle, and capture is skipped rather than guessed at.
+        scheduleCodexSessionIdCaptureBestEffort(
+          sessionId,
+          cwd,
+          startedAt,
+          codexLaunchOwnershipNeedle({ initialInput: requestedInitialInput, args: directArgs }),
+          codexLaunchOriginator,
+        );
       }
       if (isClaudeTrackedCliToolType(toolTypeHint) && cwd) {
         scheduleClaudeRuntimeTitleCaptureBestEffort(

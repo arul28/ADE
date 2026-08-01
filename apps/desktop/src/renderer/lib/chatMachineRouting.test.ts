@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildChatMachineRoutingState,
   buildLaneBindingIndex,
+  collectOpenProjectBindings,
   createChatMachineRouter,
   isLivePinnedBinding,
   resolveChatRuntimePin,
@@ -56,6 +58,46 @@ describe("buildLaneBindingIndex", () => {
     expect(index.has("lane-x")).toBe(false);
     expect(index.get("lane-y")).toBe(machineA.key);
     expect(index.size).toBe(1);
+  });
+});
+
+describe("collectOpenProjectBindings", () => {
+  it("collects active, remote, local-root, and additional bindings once", () => {
+    expect(collectOpenProjectBindings({
+      activeBinding: machineA,
+      remoteBindings: [machineB, machineA],
+      localProjects: [
+        { rootPath: " /repo-c ", displayName: " Repo C " },
+        { rootPath: "" },
+      ],
+      additionalBindings: [machineB],
+    })).toEqual([
+      machineA,
+      machineB,
+      {
+        kind: "local",
+        key: "local:/repo-c",
+        rootPath: "/repo-c",
+        displayName: "Repo C",
+      },
+    ]);
+  });
+});
+
+describe("buildChatMachineRoutingState", () => {
+  it("puts the active binding's live lanes ahead of cached sources", () => {
+    const routingState = buildChatMachineRoutingState({
+      activeBinding: machineA,
+      openBindings: [machineA, machineB],
+      activeLaneIds: ["lane-shared", "lane-a"],
+      additionalLaneSources: [
+        { bindingKey: machineB.key, laneIds: ["lane-shared", "lane-b"] },
+      ],
+    });
+
+    expect(routingState.laneBindingIndex.get("lane-shared")).toBe(machineA.key);
+    expect(routingState.laneBindingIndex.get("lane-a")).toBe(machineA.key);
+    expect(routingState.laneBindingIndex.get("lane-b")).toBe(machineB.key);
   });
 });
 

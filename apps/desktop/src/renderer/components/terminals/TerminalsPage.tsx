@@ -12,7 +12,13 @@ import {
 } from "./SessionContextMenu";
 import { SessionInfoPopover, type InfoPopoverState } from "./SessionInfoPopover";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import type { AgentChatSession, OpenProjectBinding, TerminalResumeLaunchConfig, TerminalSessionSummary } from "../../../shared/types";
+import type {
+  AgentChatSession,
+  OpenProjectBinding,
+  PtyResumeSessionResult,
+  TerminalResumeLaunchConfig,
+  TerminalSessionSummary,
+} from "../../../shared/types";
 import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
@@ -134,6 +140,7 @@ async function allSettledWithConcurrency<T>(
 
 export function TerminalsPage({ active = true }: { active?: boolean }) {
   const work = useWorkSessions({ active });
+  const { machineRouter, resolveSessionRuntimePin } = work;
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const projectBinding = useAppStore((s) => s.projectBinding);
@@ -193,6 +200,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const selectableSessions = useMemo(
+    // Bulk-selection RPCs are deliberately active-binding-only. Foreign rows
+    // keep their per-row pinned actions until the bulk contract can carry pins.
     () => [
       ...work.runningFiltered,
       ...work.awaitingInputFiltered,
@@ -266,6 +275,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       event: React.MouseEvent,
       visibleSessionIds: string[],
     ) => {
+      // A CLI/shell session on a binding this window still has open is opened IN
+      // PLACE, exactly like a chat: the click selects/opens its tab in the
+      // CURRENT view state and every runtime call for it carries `binding` as a
+      // per-session pin. The tab keeps pointing wherever the user put it —
+      // switching projects here used to drag Lanes/PRs/Files to the session's
+      // machine, which is precisely the bug per-session routing removes.
+      //
+      // Remembering the pin against the session/pty id means the paths that
+      // already consult the launch-pin registry (stop/dispose, and this page's
+      // resume/continue) reach the right machine without threading a binding
+      // through every one of them.
+      if (machineRouter.isLivePin(binding)) {
+        machineRouter.rememberSessionPin(session, binding);
+        handleSelectSession(session.id, event, visibleSessionIds, binding);
+        return;
+      }
+      // Fallback: the owning binding is not open in this window, so there is
+      // nothing to pin to. Rebinding the tab is then the only way to reach the
+      // session at all — the old behavior, now the exception rather than the
+      // rule.
       const switchProject = binding.kind === "remote"
         ? switchRemoteProject(binding.targetId, binding.projectId)
         : switchProjectToPath(binding.rootPath);
@@ -310,13 +339,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           if (session.wokeAt) clearSessionWokeMarker(session.id);
         })
         .catch((reason: unknown) => {
-          // A shell/CLI has no per-session runtime pin. If its owning project
-          // cannot be selected, leaving it closed is safer than opening its id
-          // against whichever runtime the tab currently owns.
+          // Unreachable owning project: leaving the session closed is safer than
+          // opening its id against whichever runtime the tab currently owns.
+          // Surface the failure like every other switch path on this page —
+          // without it the click reads as a silent no-op.
           console.error("work.foreign_session_switch_failed", reason);
+          const machineName = binding.kind === "remote" ? binding.runtimeName : binding.displayName;
+          setSessionActionError(
+            `Could not open this session on ${machineName}: ${reason instanceof Error ? reason.message : String(reason)}`,
+          );
+          window.setTimeout(() => setSessionActionError(null), 6000);
         });
     },
-    [selectionAnchorId, setWorkViewState, switchProjectToPath, switchRemoteProject],
+    [
+      handleSelectSession,
+      machineRouter,
+      selectionAnchorId,
+      setWorkViewState,
+      switchProjectToPath,
+      switchRemoteProject,
+    ],
   );
 
   const handleInfoClick = useCallback(
@@ -408,8 +450,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // Callers (spawn cards, subagents pane) often don't know the target's
         // lane. Resolve it from the loaded session list so cross-lane jumps
         // land on the right lane instead of focusing an off-lane session.
-        const laneId = detail.laneId ?? work.sessions.find((s) => s.id === sessionId)?.laneId ?? null;
-        if (laneId) work.selectLane(laneId);
+        const session = work.sessionsById.get(sessionId) ?? null;
+        const laneId = detail.laneId ?? session?.laneId ?? null;
+        if (laneId && (!session || !resolveSessionRuntimePin(session))) work.selectLane(laneId);
         work.focusSession(sessionId);
         work.openSessionTab(sessionId);
         work.setSelectedSessionId(sessionId);
@@ -814,79 +857,90 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     })();
   }, [selectedSessions, stopAndDeleteConfirm, work]);
 
-  const handleContinueCliSession = useCallback(
-    async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
-      setSessionActionError(null);
+  const finalizeCliResumeResult = useCallback(
+    async (
+      session: TerminalSessionSummary,
+      pin: OpenProjectBinding | null,
+      result: PtyResumeSessionResult,
+    ) => {
+      invalidateSessionListCache();
+      // Patch the local sessions list with the freshly-resumed snapshot so the
+      // Work view flips to TerminalView immediately. A pinned session belongs
+      // to the cross-machine union, so its own sync round owns that snapshot and
+      // lane selection instead of inventing a local lane here.
+      if (result.session && !pin) work.upsertSessionSnapshot(result.session);
+      if (pin) {
+        machineRouter.rememberSessionPin(
+          { sessionId: result.sessionId, ptyId: result.session?.ptyId ?? session.ptyId },
+          pin,
+        );
+      }
       try {
-        const result = await window.ade.pty.sendToSession({
-          sessionId: session.id,
-          text,
-          cols: 100,
-          rows: 30,
-          ...buildPtyContinuationLaunchFields(launch),
-        });
-        invalidateSessionListCache();
-        // Patch the local sessions list with the freshly-resumed snapshot so
-        // the Work view flips from ClosedCliSessionSurface to the live
-        // TerminalView immediately. Without this the user sees the frozen
-        // pre-resume snapshot until the next refresh round-trip completes —
-        // and the PTY data events stream to a TerminalView that hasn't been
-        // mounted yet.
-        if (result.session) {
-          work.upsertSessionSnapshot(result.session);
-        }
-        try {
-          await work.refresh({ showLoading: false, force: true });
-        } catch {
-          // Best-effort after reattach; the PTY events will also refresh state.
-        }
-        work.selectLane(session.laneId);
-        work.focusSession(result.sessionId);
-        work.setActiveItemId(result.sessionId);
+        await work.refresh({ showLoading: false, force: true });
+      } catch {
+        // Best-effort after reattach; the PTY events will also refresh state.
+      }
+      if (!pin) work.selectLane(session.laneId);
+      work.focusSession(result.sessionId);
+      work.setActiveItemId(result.sessionId);
+    },
+    [machineRouter, work],
+  );
+
+  const runCliResumeRequest = useCallback(
+    async (
+      session: TerminalSessionSummary,
+      errorLabel: "Send" | "Resume",
+      request: (pin: OpenProjectBinding | null) => Promise<PtyResumeSessionResult>,
+    ) => {
+      setSessionActionError(null);
+      const pin = resolveSessionRuntimePin(session);
+      try {
+        const result = await request(pin);
+        await finalizeCliResumeResult(session, pin, result);
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Send failed: ${message}`);
+        setSessionActionError(`${errorLabel} failed: ${message}`);
         window.setTimeout(() => setSessionActionError(null), 6000);
         throw err;
       }
     },
-    [work],
+    [finalizeCliResumeResult, resolveSessionRuntimePin],
+  );
+
+  const handleContinueCliSession = useCallback(
+    async (session: TerminalSessionSummary, text: string, launch: TerminalResumeLaunchConfig | null) => {
+      const args = {
+        sessionId: session.id,
+        text,
+        cols: 100,
+        rows: 30,
+        ...buildPtyContinuationLaunchFields(launch),
+      };
+      await runCliResumeRequest(session, "Send", (pin) => (
+        pin ? window.ade.pty.sendToSession(args, pin) : window.ade.pty.sendToSession(args)
+      ));
+    },
+    [runCliResumeRequest],
   );
 
   const handleResumeCliSession = useCallback(
     async (session: TerminalSessionSummary) => {
-      setSessionActionError(null);
-      try {
-        const result = await window.ade.pty.resumeSession({
-          sessionId: session.id,
-          cols: 100,
-          rows: 30,
-        });
-        invalidateSessionListCache();
-        if (result.session) {
-          work.upsertSessionSnapshot(result.session);
-        }
-        try {
-          await work.refresh({ showLoading: false, force: true });
-        } catch {
-          // Best-effort after reattach; the PTY events will also refresh state.
-        }
-        work.selectLane(session.laneId);
-        work.focusSession(result.sessionId);
-        work.setActiveItemId(result.sessionId);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Resume failed: ${message}`);
-        window.setTimeout(() => setSessionActionError(null), 6000);
-        throw err;
-      }
+      const args = { sessionId: session.id, cols: 100, rows: 30 };
+      await runCliResumeRequest(session, "Resume", (pin) => (
+        pin ? window.ade.pty.resumeSession(args, pin) : window.ade.pty.resumeSession(args)
+      ));
     },
-    [work],
+    [runCliResumeRequest],
   );
 
   const activeWorkSession = useMemo(
-    () => (work.activeItemId ? work.sessions.find((session) => session.id === work.activeItemId) ?? null : null),
-    [work.activeItemId, work.sessions],
+    () => (work.activeItemId ? work.sessionsById.get(work.activeItemId) ?? null : null),
+    [work.activeItemId, work.sessionsById],
+  );
+  const activeWorkSessionRuntimePin = useMemo(
+    () => (activeWorkSession ? resolveSessionRuntimePin(activeWorkSession) : null),
+    [activeWorkSession, resolveSessionRuntimePin],
   );
 
   const activeLaneId = useMemo(() => {
@@ -916,6 +970,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           }
         : null;
     }
+    // WorkSidebar's composer events and terminal.write call do not carry a
+    // runtime pin. Fail closed instead of inserting into the active machine.
+    if (activeWorkSessionRuntimePin) return null;
     if (activeWorkSession.laneId !== activeLaneId) return null;
     if (isChatToolType(activeWorkSession.toolType)) {
       return { kind: "chat", sessionId: activeWorkSession.id };
@@ -933,7 +990,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       };
     }
     return null;
-  }, [activeLaneId, activeWorkSession, draftContextTargetId, work.draftKind]);
+  }, [activeLaneId, activeWorkSession, activeWorkSessionRuntimePin, draftContextTargetId, work.draftKind]);
 
   let contextDisabledReason: string | null;
   if (!activeWorkSession && contextTarget) {
@@ -941,6 +998,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     contextDisabledReason = null;
   } else if (!activeWorkSession) {
     contextDisabledReason = "Select a lane before inserting tool context.";
+  } else if (activeWorkSessionRuntimePin) {
+    contextDisabledReason = "Tool context insertion is not available for sessions on another machine.";
   } else if (activeWorkSession.laneId !== activeLaneId) {
     contextDisabledReason = "Open a Work session in the active lane to insert tool context.";
   } else if (activeWorkSession.toolType === "shell") {
@@ -1065,8 +1124,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   // exist (closed/deleted) and dissolve any set that falls below two tiles.
   const setGridSets = work.setGridSets;
   useEffect(() => {
-    if (work.loading || work.sessions.length === 0) return;
-    const liveIds = new Set(work.sessions.map((s) => s.id));
+    if (work.loading || !work.canPruneSessionIndex()) return;
+    const liveIds = new Set(work.sessionsById.keys());
     setGridSets((prev) => {
       let changed = false;
       const next = prev
@@ -1079,7 +1138,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       if (next.length !== prev.length) changed = true;
       return changed ? next : prev;
     });
-  }, [work.sessions, work.loading, setGridSets]);
+  }, [work.canPruneSessionIndex, work.loading, work.sessionsById, setGridSets]);
   const handleStopRunningSession = useCallback((session: TerminalSessionSummary) => {
     if (!session.ptyId) return;
     work.stopRuntime(session.ptyId, session.id).catch((err: unknown) => {
@@ -1167,6 +1226,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         onContextMenu={handleContextMenu}
         onContinueCliSession={handleContinueCliSession}
         onResumeCliSession={handleResumeCliSession}
+        resolveSessionRuntimePin={resolveSessionRuntimePin}
         sessionsPaneCollapsed={work.workFocusSessionsHidden}
         onToggleSessionsPane={toggleSessionsPane}
         sessionsPaneListCount={work.filtered.length}
@@ -1191,7 +1251,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       handleAddSessionToGrid,
       handleCreateGridFromSingle,
       handleRemoveSessionFromGrid,
-      work.sessions,
+      resolveSessionRuntimePin,
       work.visibleSessions,
       work.activeItemId,
       work.draftKind,
@@ -1314,6 +1374,8 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // Stable automation anchor for the whole sessions pane.
         children: (
           <div ref={sessionsPaneRefCb} className="h-full min-h-0 flex flex-col" data-tour="work.sessionsPane">
+          {/* Active-binding inventory only: this pane reads and filters foreign
+              rows from its own cross-machine union subscription. */}
           <SessionListPane
             lanes={sortedLanes}
             runningFiltered={work.runningFiltered}

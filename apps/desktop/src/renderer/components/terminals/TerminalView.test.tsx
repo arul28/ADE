@@ -3,6 +3,7 @@
 import React from "react";
 import { act, render, cleanup, waitFor } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 const MOCK_TERMINAL_FONT_FAMILY = vi.hoisted(() => "monospace");
 
@@ -225,6 +226,19 @@ function installWindowAde() {
   };
 }
 
+function remoteRuntimePin(id: string, rootPath: string): Extract<OpenProjectBinding, { kind: "remote" }> {
+  return {
+    kind: "remote",
+    key: `remote:${id}`,
+    targetId: `target-${id}`,
+    runtimeName: `Runtime ${id}`,
+    hostname: `${id}.local`,
+    projectId: `project-${id}`,
+    rootPath,
+    displayName: `Machine ${id}`,
+  };
+}
+
 async function flushAllTimers() {
   await act(async () => {
     await vi.runAllTimersAsync();
@@ -234,6 +248,12 @@ async function flushAllTimers() {
 async function flushAnimationFrame() {
   await act(async () => {
     await vi.advanceTimersByTimeAsync(0);
+  });
+}
+
+async function flushInitialHydration() {
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(130);
   });
 }
 
@@ -543,6 +563,297 @@ describe("TerminalView", () => {
     expect((window as any).ade.pty.onExit).toHaveBeenCalledTimes(1);
     expect(mockState.ptyDataListeners.size).toBe(1);
     expect(mockState.ptyExitListeners.size).toBe(1);
+  });
+
+  it("keeps simultaneous pinned runtimes isolated across hydration, events, subscriptions, resize, and input", async () => {
+    const pinA = remoteRuntimePin("a", "/remote/a/project");
+    const pinB = remoteRuntimePin("b", "/remote/b/project");
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValue({
+      terminalId: "shared-pinned-session",
+      session: null,
+      source: "empty",
+      snapshot: null,
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+    readTranscriptTailMock.mockImplementation(async ({ sessionId }: { sessionId: string }) => (
+      `hydrated ${sessionId}\n`
+    ));
+
+    render(
+      <>
+        <TerminalView
+          ptyId="pty-shared-pinned"
+          sessionId="session-pinned-a"
+          runtimePin={pinA}
+          isActive
+        />
+        <TerminalView
+          ptyId="pty-shared-pinned"
+          sessionId="session-pinned-b"
+          runtimePin={pinB}
+          isActive
+        />
+      </>,
+    );
+    await flushInitialHydration();
+
+    expect(window.ade.sessions.get).toHaveBeenCalledWith("session-pinned-a", pinA);
+    expect(window.ade.sessions.get).toHaveBeenCalledWith("session-pinned-b", pinB);
+    expect(previewMock).toHaveBeenCalledWith({
+      terminalId: "session-pinned-a",
+      maxBytes: 2_000_000,
+    }, pinA);
+    expect(previewMock).toHaveBeenCalledWith({
+      terminalId: "session-pinned-b",
+      maxBytes: 2_000_000,
+    }, pinB);
+    expect(readTranscriptTailMock).toHaveBeenCalledWith({
+      sessionId: "session-pinned-a",
+      maxBytes: 2_000_000,
+      raw: true,
+    }, pinA);
+    expect(readTranscriptTailMock).toHaveBeenCalledWith({
+      sessionId: "session-pinned-b",
+      maxBytes: 2_000_000,
+      raw: true,
+    }, pinB);
+
+    const setDataSubscriptions = window.ade.pty.setDataSubscriptions as unknown as ReturnType<typeof vi.fn>;
+    expect(setDataSubscriptions).toHaveBeenCalledWith({ ptyIds: ["pty-shared-pinned"] }, pinA);
+    expect(setDataSubscriptions).toHaveBeenCalledWith({ ptyIds: ["pty-shared-pinned"] }, pinB);
+
+    expect(window.ade.pty.resize).toHaveBeenCalledWith({
+      ptyId: "pty-shared-pinned",
+      cols: 120,
+      rows: 40,
+    }, pinA);
+    expect(window.ade.pty.resize).toHaveBeenCalledWith({
+      ptyId: "pty-shared-pinned",
+      cols: 120,
+      rows: 40,
+    }, pinB);
+
+    const onDataMock = window.ade.pty.onData as unknown as ReturnType<typeof vi.fn>;
+    const onExitMock = window.ade.pty.onExit as unknown as ReturnType<typeof vi.fn>;
+    const dataListenerA = onDataMock.mock.calls.find(([, pin]) => pin === pinA)?.[0] as
+      | ((event: { ptyId: string; projectRoot?: string; data: string }) => void)
+      | undefined;
+    const dataListenerB = onDataMock.mock.calls.find(([, pin]) => pin === pinB)?.[0] as
+      | ((event: { ptyId: string; projectRoot?: string; data: string }) => void)
+      | undefined;
+    expect(dataListenerA).toBeTypeOf("function");
+    expect(dataListenerB).toBeTypeOf("function");
+    expect(onExitMock).toHaveBeenCalledWith(expect.any(Function), pinA);
+    expect(onExitMock).toHaveBeenCalledWith(expect.any(Function), pinB);
+
+    const terminalA = mockState.terminalInstances[0] as {
+      element: HTMLElement | null;
+      write: ReturnType<typeof vi.fn>;
+    };
+    const terminalB = mockState.terminalInstances[1] as {
+      element: HTMLElement | null;
+      write: ReturnType<typeof vi.fn>;
+    };
+    terminalA.write.mockClear();
+    terminalB.write.mockClear();
+    dataListenerA?.({
+      ptyId: "pty-shared-pinned",
+      projectRoot: pinA.rootPath,
+      data: "only machine a\n",
+    });
+    await flushAnimationFrame();
+    expect(terminalA.write).toHaveBeenCalledWith("only machine a\n");
+    expect(terminalB.write).not.toHaveBeenCalled();
+
+    dataListenerB?.({
+      ptyId: "pty-shared-pinned",
+      projectRoot: pinB.rootPath,
+      data: "only machine b\n",
+    });
+    await flushAnimationFrame();
+    expect(terminalB.write).toHaveBeenCalledWith("only machine b\n");
+    expect(terminalA.write).not.toHaveBeenCalledWith("only machine b\n");
+
+    const ptyWrite = window.ade.pty.write as unknown as ReturnType<typeof vi.fn>;
+    ptyWrite.mockClear();
+    terminalA.element?.dispatchEvent(createPasteEvent("input a"));
+    terminalB.element?.dispatchEvent(createPasteEvent("input b"));
+    await flushPasteWrite();
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-shared-pinned",
+      data: "input a",
+    }, pinA);
+    expect(ptyWrite).toHaveBeenCalledWith({
+      ptyId: "pty-shared-pinned",
+      data: "input b",
+    }, pinB);
+  });
+
+  it("keeps every unpinned preload call on its original single-argument path", async () => {
+    render(<TerminalView ptyId="pty-unpinned-arity" sessionId="session-unpinned-arity" isActive />);
+    await flushInitialHydration();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    terminal?.element?.dispatchEvent(createPasteEvent("local input"));
+    await flushPasteWrite();
+
+    const calls = [
+      window.ade.sessions.get,
+      window.ade.terminal.preview,
+      window.ade.sessions.readTranscriptTail,
+      window.ade.pty.resize,
+      window.ade.pty.write,
+      window.ade.pty.setDataSubscriptions,
+      window.ade.pty.onData,
+      window.ade.pty.onExit,
+    ] as unknown as Array<ReturnType<typeof vi.fn>>;
+    for (const call of calls) {
+      expect(call).toHaveBeenCalled();
+      expect(call.mock.calls.every((args) => args.length === 1)).toBe(true);
+    }
+  });
+
+  it("disposes the stranded runtime when a live session's pin resolves after first render", async () => {
+    const pin = remoteRuntimePin("late", "/remote/late/project");
+    const setDataSubscriptions = window.ade.pty.setDataSubscriptions as unknown as ReturnType<typeof vi.fn>;
+    const onDataMock = window.ade.pty.onData as unknown as ReturnType<typeof vi.fn>;
+
+    const view = render(
+      <TerminalView ptyId="pty-late-pin" sessionId="session-late-pin" isActive />,
+    );
+    await flushInitialHydration();
+
+    expect(mockState.terminalInstances).toHaveLength(1);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(mockState.ptyExitListeners.size).toBe(1);
+    const strandedTerminal = mockState.terminalInstances[0] as {
+      dispose: ReturnType<typeof vi.fn>;
+    };
+
+    setDataSubscriptions.mockClear();
+    view.rerender(
+      <TerminalView ptyId="pty-late-pin" sessionId="session-late-pin" runtimePin={pin} isActive />,
+    );
+    await flushInitialHydration();
+
+    // The pre-pin runtime is disposed, not parked: exactly one xterm, one data
+    // pump and one exit pump survive for the PTY.
+    expect(strandedTerminal.dispose).toHaveBeenCalled();
+    expect(mockState.terminalInstances).toHaveLength(2);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(mockState.ptyExitListeners.size).toBe(1);
+    expect(onDataMock).toHaveBeenLastCalledWith(expect.any(Function), pin);
+    // The unpinned subscription is released before the pinned one takes over.
+    expect(setDataSubscriptions).toHaveBeenCalledWith({ ptyIds: [] });
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: ["pty-late-pin"] }, pin);
+  });
+
+  it("releases the previous pinned pump when a mounted session's runtime pin changes", async () => {
+    const pinA = remoteRuntimePin("swap-a", "/remote/swap-a/project");
+    const pinB = remoteRuntimePin("swap-b", "/remote/swap-b/project");
+    const setDataSubscriptions = window.ade.pty.setDataSubscriptions as unknown as ReturnType<typeof vi.fn>;
+
+    const view = render(
+      <TerminalView ptyId="pty-pin-swap" sessionId="session-pin-swap" runtimePin={pinA} isActive />,
+    );
+    await flushInitialHydration();
+
+    expect(mockState.terminalInstances).toHaveLength(1);
+    const terminalA = mockState.terminalInstances[0] as { dispose: ReturnType<typeof vi.fn> };
+
+    setDataSubscriptions.mockClear();
+    view.rerender(
+      <TerminalView ptyId="pty-pin-swap" sessionId="session-pin-swap" runtimePin={pinB} isActive />,
+    );
+    await flushInitialHydration();
+
+    expect(terminalA.dispose).toHaveBeenCalled();
+    expect(mockState.terminalInstances).toHaveLength(2);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(mockState.ptyExitListeners.size).toBe(1);
+    expect(setDataSubscriptions).toHaveBeenCalledWith({ ptyIds: [] }, pinA);
+    expect(setDataSubscriptions).toHaveBeenLastCalledWith({ ptyIds: ["pty-pin-swap"] }, pinB);
+  });
+
+  it("keeps a relocated runtime alive while another view still holds it, then sweeps it", async () => {
+    const pin = remoteRuntimePin("shared-hold", "/remote/shared-hold/project");
+
+    const view = render(
+      <>
+        <TerminalView ptyId="pty-shared-hold" sessionId="session-shared-hold" isActive />
+        <TerminalView ptyId="pty-shared-hold" sessionId="session-shared-hold" isActive={false} />
+      </>,
+    );
+    await flushInitialHydration();
+
+    // Both views share one runtime, so the second view keeps a live ref on it.
+    expect(mockState.terminalInstances).toHaveLength(1);
+    const sharedTerminal = mockState.terminalInstances[0] as { dispose: ReturnType<typeof vi.fn> };
+
+    view.rerender(
+      <>
+        <TerminalView
+          ptyId="pty-shared-hold"
+          sessionId="session-shared-hold"
+          runtimePin={pin}
+          isActive
+        />
+        <TerminalView ptyId="pty-shared-hold" sessionId="session-shared-hold" isActive={false} />
+      </>,
+    );
+    await flushInitialHydration();
+
+    expect(sharedTerminal.dispose).not.toHaveBeenCalled();
+    expect(mockState.terminalInstances).toHaveLength(2);
+
+    // Once the holder unmounts, the next mount effect sweeps the leftover.
+    view.rerender(
+      <TerminalView
+        ptyId="pty-shared-hold"
+        sessionId="session-shared-hold"
+        runtimePin={pin}
+        isActive
+        imagePasteMode="runtime-attachment"
+      />,
+    );
+    await flushInitialHydration();
+
+    expect(sharedTerminal.dispose).toHaveBeenCalled();
+    expect(mockState.terminalInstances).toHaveLength(2);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(mockState.ptyExitListeners.size).toBe(1);
+  });
+
+  it("leaves an unpinned runtime in place when the mount effect re-runs without a key change", async () => {
+    const setDataSubscriptions = window.ade.pty.setDataSubscriptions as unknown as ReturnType<typeof vi.fn>;
+    const view = render(
+      <TerminalView ptyId="pty-no-key-change" sessionId="session-no-key-change" isActive />,
+    );
+    await flushInitialHydration();
+
+    expect(mockState.terminalInstances).toHaveLength(1);
+    const terminal = mockState.terminalInstances[0] as { dispose: ReturnType<typeof vi.fn> };
+
+    setDataSubscriptions.mockClear();
+    view.rerender(
+      <TerminalView
+        ptyId="pty-no-key-change"
+        sessionId="session-no-key-change"
+        isActive
+        imagePasteMode="runtime-attachment"
+      />,
+    );
+    await flushInitialHydration();
+
+    expect(terminal.dispose).not.toHaveBeenCalled();
+    expect(mockState.terminalInstances).toHaveLength(1);
+    expect(mockState.ptyDataListeners.size).toBe(1);
+    expect(setDataSubscriptions.mock.calls.every((args) => args.length === 1)).toBe(true);
   });
 
   it("subscribes PTY data only for visible mounted runtimes", async () => {
@@ -1586,6 +1897,44 @@ describe("TerminalView", () => {
     });
   });
 
+  it("routes runtime clipboard attachments through the terminal session pin", async () => {
+    const runtimePin = remoteRuntimePin("image", "/remote/image/project");
+    (window.ade.app.readClipboardImage as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: "pinned-image-data",
+      filename: "clipboard.png",
+      mimeType: "image/png",
+    });
+    (window.ade.agentChat.saveTempAttachment as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({
+      path: "/remote/image/project/.ade/attachments/clipboard.png",
+    });
+
+    render(
+      <TerminalView
+        ptyId="pty-pinned-image-paste"
+        sessionId="session-pinned-image-paste"
+        runtimePin={runtimePin}
+        isActive
+        imagePasteMode="runtime-attachment"
+      />,
+    );
+    await flushInitialHydration();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      element: HTMLElement | null;
+    } | undefined;
+    terminal?.element?.dispatchEvent(createPasteEvent(""));
+    await flushPromises();
+
+    expect(window.ade.agentChat.saveTempAttachment).toHaveBeenCalledWith({
+      data: "pinned-image-data",
+      filename: "clipboard.png",
+    }, runtimePin);
+    expect(window.ade.pty.write).toHaveBeenCalledWith({
+      ptyId: "pty-pinned-image-paste",
+      data: "\x1b[200~ADE clipboard image attached.\nPath: /remote/image/project/.ade/attachments/clipboard.png\nType: image/png\n\x1b[201~",
+    }, runtimePin);
+  });
+
   it("sends Shift+Enter as a bracketed-paste newline only while the terminal requests bracketed paste mode", async () => {
     render(<TerminalView ptyId="pty-shift-enter" sessionId="session-shift-enter" isActive />);
     await flushAllTimers();
@@ -1998,7 +2347,58 @@ describe("TerminalView", () => {
     expect(readTranscriptTailMock).not.toHaveBeenCalled();
   });
 
-  it("preserves snapshot cell colors when hydrating live terminals", async () => {
+  it("prefers serialized main-buffer snapshots so running terminals attach with scrollback", async () => {
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    previewMock.mockResolvedValueOnce({
+      terminalId: "session-main-scrollback",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-main-scrollback",
+        cols: 120,
+        rows: 2,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "normal",
+        cursorX: 0,
+        cursorY: 1,
+        baseY: 2_000,
+        viewportY: 2_000,
+        serialized: "serialized scrollback line\nserialized viewport line\n",
+        visibleRows: [
+          {
+            text: "viewport-only repaint",
+            wrapped: false,
+            cells: "viewport-only repaint".split("").map((text) => ({
+              text,
+              fg: null,
+              bg: null,
+              fgMode: "default" as const,
+              bgMode: "default" as const,
+            })),
+          },
+        ],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+
+    render(<TerminalView ptyId="pty-main-scrollback" sessionId="session-main-scrollback" isActive />);
+    await flushInitialHydration();
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    expect(terminal?.write).toHaveBeenCalledWith(
+      "serialized scrollback line\nserialized viewport line\n",
+    );
+    const writes = terminal?.write.mock.calls.map(([value]) => String(value)) ?? [];
+    expect(writes.some((value) => value.includes("viewport-only repaint"))).toBe(false);
+  });
+
+  it("keeps alternate-buffer hydration on the viewport-only repaint with cell colors", async () => {
     const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
     const readTranscriptTailMock = window.ade.sessions.readTranscriptTail as unknown as ReturnType<typeof vi.fn>;
     previewMock.mockResolvedValueOnce({

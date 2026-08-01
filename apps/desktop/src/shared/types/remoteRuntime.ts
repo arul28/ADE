@@ -413,6 +413,31 @@ export type RemoteRuntimeEventNotificationPayload = {
   eventEpoch?: string | null;
 };
 
+/**
+ * Renderer→main release of a runtime-event subscription. Exactly one binding
+ * shape is valid per request — remote `{ id, projectId }` or local
+ * `{ rootPath }` — mirroring the subscribe descriptor so main re-derives the
+ * same request key. The `never` fields make a mixed or empty payload a type
+ * error at the call site; main still validates at runtime.
+ */
+export type RuntimeEventsReleaseRequest =
+  | {
+      id: string;
+      projectId: string;
+      rootPath?: never;
+      category?: RemoteRuntimeEventCategory;
+    }
+  | {
+      rootPath: string;
+      id?: never;
+      projectId?: never;
+      category?: RemoteRuntimeEventCategory;
+    };
+
+export type RuntimeEventsReleaseResult = {
+  released: number;
+};
+
 export type RemoteRuntimeLocalWorkMatch = {
   rootPath: string;
   displayName: string;

@@ -1984,6 +1984,78 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("fails loudly when a runtime pin reaches a single-host web terminal shim", async () => {
+    const pin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    const unsupported = /cross-machine web routing is not implemented/;
+
+    await expect(adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "shell",
+      title: "Pinned shell",
+      cols: 80,
+      rows: 24,
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.resumeSession({
+      sessionId: "session-1",
+      cols: 80,
+      rows: 24,
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.sendToSession({
+      sessionId: "session-1",
+      text: "hello",
+      cols: 80,
+      rows: 24,
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.write({
+      ptyId: "pty-1",
+      data: "hello",
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.resize({
+      ptyId: "pty-1",
+      cols: 100,
+      rows: 30,
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.dispose({
+      ptyId: "pty-1",
+      sessionId: "session-1",
+    }, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.pty.setDataSubscriptions({ ptyIds: ["pty-1"] }, pin))
+      .rejects.toThrow(unsupported);
+    expect(() => adapter.ade.pty.onData(() => {}, pin)).toThrow(unsupported);
+    expect(() => adapter.ade.pty.onExit(() => {}, pin)).toThrow(unsupported);
+    await expect(adapter.ade.terminal.preview({ terminalId: "session-1" }, pin))
+      .rejects.toThrow(unsupported);
+    expect(() => adapter.ade.agentChat.saveTempAttachment({
+      data: "data:image/png;base64,aGVsbG8=",
+      filename: "pinned.png",
+    }, pin)).toThrow(unsupported);
+
+    // The read shims on the cross-machine lane-discovery path fail the same
+    // way: a pinned sessions/lanes read silently answering from the single web
+    // host would be a wrong-machine read, not a degraded one.
+    await expect(adapter.ade.sessions.list({}, pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.sessions.get("session-1", pin)).rejects.toThrow(unsupported);
+    await expect(adapter.ade.sessions.readTranscriptTail({
+      sessionId: "session-1",
+      maxBytes: 1024,
+    }, pin)).rejects.toThrow(unsupported);
+    expect(() => adapter.ade.lanes.list({}, pin)).toThrow(unsupported);
+
+    expect(fake.commandCalls).toHaveLength(0);
+    expect(fake.terminalSubscribeCalls).toHaveLength(0);
+    adapter.dispose();
+  });
+
   it("keeps the live terminal subscription while preview and transcript tail read history", async () => {
     fake.descriptors = descriptors(["work.listSessions"]);
     fake.commandResults.set("work.listSessions", [{ id: "session-1", ptyId: "pty-1", status: "running" }]);

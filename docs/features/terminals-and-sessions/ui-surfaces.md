@@ -63,10 +63,21 @@ progress and surface a sticky error toast rather than leaving Work disabled.
 It also owns the sidebar's multi-select state:
 
 - `selectedSessionIds: Set<string>` with a `selectionAnchorId` tracker.
-- `handleSelectSession(id, event, visibleSessionIds)` — plain click
+- `handleSelectSession(id, event, visibleSessionIds, binding?)` — plain click
   clears the multi-selection and opens the tab; shift-click selects the
   range from the anchor; meta/ctrl-click toggles the id in/out of the
-  set; any of the three refresh the active single-selected item.
+  set; any of the three refresh the active single-selected item. The optional
+  binding is the per-session runtime pin carried into the opened view.
+- `handleSelectForeignRuntimeSession(session, binding, event, visibleSessionIds)`
+  — the CLI/shell row of another machine, forwarded from `SessionListPane`.
+  When the owning binding is still open (`machineRouter.isLivePin`), the page
+  remembers it as the session's runtime pin and opens the row **in place**
+  through the normal selection path; the project tab is not touched, so Lanes,
+  PRs, and Files stay where the user put them. Only when that binding is not
+  open in this window does it fall back to switching the tab to the owning
+  project, since there is then nothing to pin to; a failed switch leaves the
+  session closed rather than opening a foreign session id against the tab's
+  current runtime.
 - `handleBulkStopSelected` runs on selected running PTY sessions,
   confirming before calling `stopRuntime(ptyId, sessionId)`; failures
   are counted and surfaced through `sessionActionError`. Chat rows stay
@@ -565,10 +576,13 @@ chat-scoped and stays on the chat header.
 ## Terminal renderer: `TerminalView.tsx`
 
 Thin wrapper over xterm.js + `FitAddon`. Caches `Terminal` instances in
-a module-level map keyed by `(projectRoot, sessionId, ptyId)` (via
-`terminalRuntimeKey`) so a remount does not rebuild the emulator and so
+a module-level map keyed by `(runtimePin, projectRoot, sessionId, ptyId)`
+(via `terminalRuntimeKey`) so a remount does not rebuild the emulator and so
 two different project tabs can each cache their own runtime against the
-same chat session id without colliding. Each cached entry also records
+same chat session id without colliding. An unpinned view produces exactly the
+old `(projectRoot, sessionId, ptyId)` key; a pin adds a `pin:<kind>:<key>::`
+prefix, so a session opened against another machine can never share a cache
+entry with a same-id view of the tab's own project. Each cached entry also records
 the `(projectRoot, projectRevision)` it was created under; on mount,
 `disposeStaleRuntimes(activeProjectRoot, activeProjectRevision)` clears
 out-of-date entries. With multi-project tab hosting in `App.tsx`,
@@ -620,11 +634,35 @@ Key behaviors:
   reliable signal that "the surface is back on screen at its new
   size" since hidden surfaces no longer fire layout/resize events;
   without it, terminals come back blank after a tab swap.
+- **Runtime pin** — the optional `runtimePin` prop is the per-session runtime
+  route for a session that lives on another open binding; `null` (the hot path)
+  means the tab's own machine and every call keeps its original one-argument
+  shape. The pin is stored on the cached runtime rather than read from the
+  window, so two simultaneously parked terminals from different machines cannot
+  borrow whichever project the window opened last. It is carried by
+  `pty.write` / `pty.resize`, `terminal.preview`, `sessions.get`,
+  `sessions.readTranscriptTail`, `agentChat.saveTempAttachment`,
+  `pty.setDataSubscriptions`, and the `pty.onData` / `pty.onExit`
+  subscriptions. Data/exit listeners and the main-side PTY id filter are grouped
+  per pin — events are dispatched only to runtimes whose pin matches the
+  subscription they arrived on — and the unpinned group keeps one shared
+  listener and one signature exactly as before. Because the pin is part of the
+  cache key, a session whose pin resolves late (`null` on first render, a real
+  binding once the cross-machine lane index loads) moves to a new key;
+  `teardownRelocatedRuntimes` disposes the unreferenced runtime left at the old
+  key so its subscriptions and pumps do not leak and the same PTY does not end
+  up with two emulators. Re-hydrating through the new binding is the point: a
+  buffer filled through the old transport may describe the wrong machine.
 - **Hydration backfill** — initial hydration prefers
-  `ade.terminal.preview` (serialized snapshot of the visible rows
-  rebuilt as SGR-bracketed ANSI through `serializeSnapshotVisibleRows`,
-  falling back to the snapshot's `serialized` scrollback) and only uses
-  the transcript tail when no snapshot is available. Before either path
+  `ade.terminal.preview`. `serializeSnapshotForHydration` picks which half of
+  the snapshot to write: an **alternate-buffer** snapshot (a full-screen TUI
+  such as Claude or Codex) repaints the structured visible rows first
+  (`serializeSnapshotVisibleRows`, SGR-bracketed ANSI) because replaying an
+  older serialized main buffer would corrupt its full-screen state, while a
+  **main-buffer** snapshot prefers the persisted `serialized` scrollback so
+  attaching to a running shell starts with scrollable history, falling back to
+  the visible rows for legacy or empty serialized snapshots. Only when no
+  snapshot is available does hydration use the transcript tail. Before either path
   runs, the runtime calls `sessions.get(sessionId)` to find out whether
   the session is disposed; for any disposed session that hasn't
   displayed live data yet, hydration first tries **replay mode** via
@@ -852,6 +890,14 @@ A single hook that owns a lot of state:
   into `sessionsCacheByProject` and does not prune persisted open tabs,
   because React can briefly render the previous project's session list
   after `projectRoot` changes.
+- the Work tab's per-session runtime routing, through the single
+  `useWorkMachineRouter()` instance it owns. It is re-exported as
+  `machineRouter` and `resolveSessionRuntimePin` (which `TerminalsPage` passes
+  down to `WorkViewArea`, which hands it to each `SessionSurface` as
+  `runtimePin`). `canMutatePinnedProjectUi` is `machineRouter.isLivePin`, launch
+  and resume paths remember their pin through the router, and `stopRuntime` /
+  `stopAll` resolve theirs from the combined cross-machine union so a foreign
+  PTY is disposed on its owning machine.
 
 `useWorkSessions({ active })` accepts an optional `active` flag (default
 `true`). When `active` is false, the hook stops scheduling background

@@ -13,6 +13,7 @@ import type {
   ChatTerminalPreviewResult,
   LaneLinearIssue,
   LaneSummary,
+  OpenProjectBinding,
   TerminalResumeProvider,
   TerminalResumeLaunchConfig,
   TerminalSessionSummary,
@@ -328,9 +329,11 @@ function continuationPermissionLabel(launch: TerminalResumeLaunchConfig | null):
 
 function WorkCliContinuationComposer({
   session,
+  runtimePin,
   onContinue,
 }: {
   session: TerminalSessionSummary;
+  runtimePin: OpenProjectBinding | null;
   onContinue?: (
     session: TerminalSessionSummary,
     text: string,
@@ -393,7 +396,12 @@ function WorkCliContinuationComposer({
     )) return () => {
       cancelled = true;
     };
-    const request = recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
+    // Native provider history is machine-local and externalSessions has no
+    // pinned surface. A foreign session keeps its durable stored launch instead
+    // of consulting unrelated history on the active machine.
+    const request = runtimePin
+      ? null
+      : recoverImportedContinuationLaunch(provider, importedProvider, importedTargetId);
     if (!request) return () => {
       cancelled = true;
     };
@@ -406,7 +414,7 @@ function WorkCliContinuationComposer({
     return () => {
       cancelled = true;
     };
-  }, [importedProvider, importedTargetId, provider, recoveryIdentity]);
+  }, [importedProvider, importedTargetId, provider, recoveryIdentity, runtimePin]);
 
   useEffect(() => {
     let cancelled = false;
@@ -414,7 +422,10 @@ function WorkCliContinuationComposer({
     if (!provider) return () => {
       cancelled = true;
     };
-    void window.ade.agentChat.slashCommands({ laneId: session.laneId, provider })
+    const args = { laneId: session.laneId, provider };
+    void (runtimePin
+      ? window.ade.agentChat.slashCommands(args, runtimePin)
+      : window.ade.agentChat.slashCommands(args))
       .then((commands) => {
         if (!cancelled) {
           setSlashCommands(commands.filter((command) => command.source !== "local"));
@@ -426,7 +437,7 @@ function WorkCliContinuationComposer({
     return () => {
       cancelled = true;
     };
-  }, [provider, session.laneId]);
+  }, [provider, runtimePin, session.laneId]);
 
   const updateDraft = useCallback((next: string, element: HTMLTextAreaElement | null) => {
     setDraft(next);
@@ -593,6 +604,7 @@ function WorkCliContinuationComposer({
 function ClosedCliSessionSurface({
   session,
   lanes,
+  runtimePin,
   layoutVariant,
   onInfoClick,
   onContextMenu,
@@ -606,6 +618,7 @@ function ClosedCliSessionSurface({
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
+  runtimePin: OpenProjectBinding | null;
   layoutVariant: "standard" | "grid-tile";
   onInfoClick?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
   onContextMenu?: (session: TerminalSessionSummary, event: React.MouseEvent<HTMLElement>) => void;
@@ -649,7 +662,10 @@ function ClosedCliSessionSurface({
     let cancelled = false;
     setPreview(null);
     setError(null);
-    void window.ade.terminal.preview({ terminalId: session.id, maxBytes: 160_000 })
+    const args = { terminalId: session.id, maxBytes: 160_000 };
+    void (runtimePin
+      ? window.ade.terminal.preview(args, runtimePin)
+      : window.ade.terminal.preview(args))
       .then((result) => {
         if (!cancelled) setPreview(result);
       })
@@ -659,7 +675,7 @@ function ClosedCliSessionSurface({
     return () => {
       cancelled = true;
     };
-  }, [session.id, session.endedAt, session.status]);
+  }, [runtimePin, session.id, session.endedAt, session.status]);
 
   const snapshotRows = preview?.snapshot?.visibleRows ?? [];
   const useSnapshotPreview = snapshotRows.length > 0 && (
@@ -717,7 +733,13 @@ function ClosedCliSessionSurface({
             {transcriptText}
           </pre>
         )}
-        {showComposer ? <WorkCliContinuationComposer session={session} onContinue={onContinue} /> : null}
+        {showComposer ? (
+          <WorkCliContinuationComposer
+            session={session}
+            runtimePin={runtimePin}
+            onContinue={onContinue}
+          />
+        ) : null}
       </div>
     </div>
   );
@@ -738,6 +760,7 @@ const CLI_FLOATING_PANE_CARD_CLASS =
 function CliSessionSurface({
   session,
   lanes,
+  runtimePin = null,
   stopping = false,
   layoutVariant = "standard",
   surfaceActive,
@@ -754,6 +777,8 @@ function CliSessionSurface({
 }: {
   session: TerminalSessionSummary & { ptyId: string };
   lanes: LaneSummary[];
+  /** See `SessionSurface.runtimePin`. */
+  runtimePin?: OpenProjectBinding | null;
   stopping?: boolean;
   layoutVariant?: "standard" | "grid-tile";
   surfaceActive: boolean;
@@ -770,11 +795,14 @@ function CliSessionSurface({
 }) {
   // Persist the pane per CLI session so reopening the surface restores it, the
   // same way the ADE chat pane keys its companion UI state.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId, {
+  // PR data lives on the owning machine, but the prs preload surface is
+  // unpinned. Foreign CLI sessions therefore expose neither auto-pop nor pane.
+  const prLaneId = runtimePin ? null : session.laneId;
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(prLaneId, {
     persistKey: session.id,
   });
   const supportsSplit = layoutVariant !== "grid-tile";
-  const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
+  const prFloating = prPaneOpen && Boolean(prLaneId) && supportsSplit;
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
@@ -790,7 +818,7 @@ function CliSessionSurface({
           sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
+          onTogglePrPane={prLaneId ? () => setPrPaneOpen((v) => !v) : undefined}
           prPaneOpen={prPaneOpen}
         />
       ) : null}
@@ -801,11 +829,12 @@ function CliSessionSurface({
           sessionId={session.id}
           isActive={surfaceActive}
           isVisible={pageActive && terminalVisible}
+          runtimePin={runtimePin}
           imagePasteMode="runtime-attachment"
           className="h-full w-full"
         />
         <AnimatePresence initial={false}>
-          {prFloating && session.laneId ? (
+          {prFloating && prLaneId ? (
             <motion.div
               key="cli-pr-floating-pane"
               className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
@@ -816,7 +845,7 @@ function CliSessionSurface({
             >
               <div className={CLI_FLOATING_PANE_CARD_CLASS}>
                 <ChatPrPane
-                  laneId={session.laneId}
+                  laneId={prLaneId}
                   branchName={null}
                   delta={prPaneDelta}
                   onClose={() => setPrPaneOpen(false)}
@@ -835,6 +864,7 @@ function SessionSurface({
   sessionTitleById,
   lanes,
   isActive,
+  runtimePin = null,
   pageActive = true,
   shouldAutofocus = false,
   layoutVariant = "standard",
@@ -859,6 +889,13 @@ function SessionSurface({
   sessionTitleById?: ReadonlyMap<string, string>;
   lanes: LaneSummary[];
   isActive: boolean;
+  /**
+   * Set only for a session that lives on another open binding; `null` means the
+   * tab's own machine (the hot path — same calls as before per-session routing).
+   * The ADE chat pane resolves its own pin from the lane, so this is consumed by
+   * the PTY surfaces only.
+   */
+  runtimePin?: OpenProjectBinding | null;
   pageActive?: boolean;
   shouldAutofocus?: boolean;
   layoutVariant?: "standard" | "grid-tile";
@@ -924,6 +961,7 @@ function SessionSurface({
         <CliSessionSurface
           session={session}
           lanes={lanes}
+          runtimePin={runtimePin}
           stopping={stopping}
           layoutVariant={layoutVariant}
           surfaceActive={surfaceActive}
@@ -947,6 +985,7 @@ function SessionSurface({
         sessionId={session.id}
         isActive={surfaceActive}
         isVisible={pageActive && terminalVisible}
+        runtimePin={runtimePin}
         className="h-full w-full"
       />
     );
@@ -957,6 +996,7 @@ function SessionSurface({
       <ClosedCliSessionSurface
         session={session}
         lanes={lanes}
+        runtimePin={runtimePin}
         layoutVariant={layoutVariant}
         onInfoClick={onInfoClick}
         onContextMenu={onContextMenu}
@@ -1127,9 +1167,11 @@ export function WorkViewArea({
   onAddSessionToGrid,
   onCreateGridFromSingle,
   onRemoveSessionFromGrid,
+  resolveSessionRuntimePin,
 }: {
   pageActive?: boolean;
   lanes: LaneSummary[];
+  /** Open-session cross-machine union; active and grid lookups must use it. */
   sessions: TerminalSessionSummary[];
   visibleSessions: TerminalSessionSummary[];
   activeItemId: string | null;
@@ -1181,6 +1223,16 @@ export function WorkViewArea({
   onCreateGridFromSingle?: (draggedSessionId: string, targetSessionId: string, edge: DropEdge) => void;
   /** A grid tile was dragged out of the grid — pop it back to single view. */
   onRemoveSessionFromGrid?: (sessionId: string) => void;
+  /**
+   * Per-session runtime routing: the binding a session's PTY calls must target,
+   * or `null` when it lives on the machine the project tab is already bound to.
+   *
+   * The Work sidebar is a union across machines, so a CLI/shell surface here can
+   * belong to another machine — it is opened in place and its calls carry this
+   * pin instead of the tab being rebound. Omitted (or `null`) is the hot path
+   * for every local terminal and is behaviorally identical to before.
+   */
+  resolveSessionRuntimePin?: (session: TerminalSessionSummary) => OpenProjectBinding | null;
 }) {
   const { menu: laneContextMenuPortal } = useWorkLaneContextMenu();
   const sessionsById = useMemo(() => {
@@ -1213,6 +1265,7 @@ export function WorkViewArea({
       // transfers activeItemId (WorkGridView's onPaneMouseDown) before typing.
       isActive={session.id === activeItemId}
       pageActive={pageActive}
+      runtimePin={resolveSessionRuntimePin?.(session) ?? null}
       shouldAutofocus={session.id === activeItemId}
       terminalVisible
       onInfoClick={onInfoClick}
@@ -1265,6 +1318,7 @@ export function WorkViewArea({
           lanes={lanes}
           isActive
           pageActive={pageActive}
+          runtimePin={resolveSessionRuntimePin?.(activeSession) ?? null}
           terminalVisible
           onInfoClick={onInfoClick}
           onContextMenu={onContextMenu}

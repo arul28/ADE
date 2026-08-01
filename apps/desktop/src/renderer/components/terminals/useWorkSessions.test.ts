@@ -3,6 +3,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
 import type { WorkChatSessionCreatedDetail } from "../../lib/chatSessionEvents";
+import { createDefaultWorkProjectViewState } from "../../state/appStore";
 
 // ---------------------------------------------------------------------------
 // Spies used across all tests
@@ -31,6 +32,7 @@ function resetFakeAppStoreState() {
     setWorkViewState: setWorkViewStateSpy,
     sessionsCacheByProject: {},
     crossMachineLanesByMachineId: {},
+    crossMachineLaneIntendedMachineIds: null,
   };
   routerLocation.pathname = "/work";
   routerLocation.search = "";
@@ -146,6 +148,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 // Import the hook under test (after mocks are declared)
 // ---------------------------------------------------------------------------
 import { buildWorkTabGroupModel, reorderLaneSessionIdsForDisplay, useWorkSessions } from "./useWorkSessions";
+import { forgetWorkPtyLaunchPin, workPtyLaunchPinFor } from "./cliLaunch";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
@@ -827,6 +830,265 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }));
   });
 
+  it("retains a slow machine's sessions and runtime pin through repeated A-only refill applies", async () => {
+    const foreignA = makeSession("foreign-a", "lane-a");
+    const foreignB = makeSession("foreign-b", "lane-b");
+    const bindingA = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    } as const;
+    const bindingB = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const workState = {
+      openItemIds: [foreignA.id, foreignB.id],
+      activeItemId: foreignB.id,
+      selectedItemId: foreignB.id,
+      gridSets: [{ id: "grid-1", layoutId: "layout-grid-1", sessionIds: [foreignA.id, foreignB.id] }],
+      activeGridSetId: null,
+      draftKind: "chat" as const,
+      orchestratorEnabled: false,
+      draftLaneId: null,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [],
+      workCollapsedSectionIds: [],
+      workCollapsedTabGroupIds: [],
+      workFocusSessionsHidden: false,
+      workSidebarOpen: false,
+      workSidebarTab: "git" as const,
+      workSidebarWidthPct: 36,
+      laneSessionOrder: {},
+      pinnedSessionIds: [],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLaneIntendedMachineIds: ["target-a", "target-b"],
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          binding: bindingB,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignB],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB));
+
+    // applyCrossMachineLaneScope clears the replacement map before reads settle.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {},
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreignA.id)).toBe(foreignA);
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+
+    // Machine A resolves first. Its slice is authoritative for A only; B remains
+    // visible and its grid membership stays valid while B's read is still pending.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [{ ...foreignA, lastOutputPreview: "fresh-a" }],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreignA.id)?.lastOutputPreview).toBe("fresh-a");
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+    expect(result.current.visibleSessions).toContainEqual(foreignB);
+    expect(result.current.gridSets[0]?.sessionIds).toEqual([foreignA.id, foreignB.id]);
+
+    // Another A-only apply is a new slice result, not completion of the whole
+    // scope. B remains retained because membership still says it is intended.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [{ ...foreignA, lastOutputPreview: "fresher-a" }],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.get(foreignA.id)?.lastOutputPreview).toBe("fresher-a");
+    expect(result.current.sessionsById.get(foreignB.id)).toBe(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+  });
+
+  it("prunes retained sessions, tabs, and pins when a machine is removed mid-refill", async () => {
+    const foreignA = makeSession("scope-a", "lane-a");
+    const foreignB = makeSession("scope-b", "lane-b");
+    const bindingA = {
+      kind: "remote",
+      key: "remote:target-a:project-a",
+      targetId: "target-a",
+      runtimeName: "Machine A",
+      projectId: "project-a",
+      rootPath: "/repo-a",
+      displayName: "Repo A",
+    } as const;
+    const bindingB = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const workState = {
+      ...createDefaultWorkProjectViewState(),
+      openItemIds: [foreignA.id, foreignB.id],
+      activeItemId: foreignB.id,
+      selectedItemId: foreignB.id,
+      gridSets: [{
+        id: "grid-1",
+        layoutId: "layout-grid-1",
+        sessionIds: [foreignA.id, foreignB.id],
+      }],
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLaneIntendedMachineIds: ["target-a", "target-b"],
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          binding: bindingB,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignB],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.has(foreignB.id)).toBe(true));
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+
+    // The wholesale clear starts the refill; both machines are still intended.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {},
+    };
+    rerender();
+    expect(result.current.sessionsById.has(foreignB.id)).toBe(true);
+    expect(result.current.resolveSessionRuntimePin(foreignB)?.key).toBe(bindingB.key);
+
+    setWorkViewStateSpy.mockClear();
+    // B is deliberately forgotten before its slice arrives. Scope intent is
+    // authoritative even though the arriving record only contains A.
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLaneIntendedMachineIds: ["target-a"],
+      crossMachineLanesByMachineId: {
+        "target-a": {
+          machineId: "target-a",
+          machineName: "Machine A",
+          binding: bindingA,
+          lanes: [{ id: "lane-a" }],
+          sessions: [foreignA],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.has(foreignA.id)).toBe(true);
+    expect(result.current.sessionsById.has(foreignB.id)).toBe(false);
+    expect(result.current.visibleSessions).not.toContainEqual(foreignB);
+    expect(result.current.resolveSessionRuntimePin(foreignB)).toBeNull();
+
+    await waitFor(() => expect(setWorkViewStateSpy).toHaveBeenCalled());
+    const pruneUpdate = [...setWorkViewStateSpy.mock.calls]
+      .reverse()
+      .map((call) => call[1])
+      .find((next) => typeof next === "function");
+    expect(typeof pruneUpdate).toBe("function");
+    expect((pruneUpdate as (prev: typeof workState) => typeof workState)(workState)).toMatchObject({
+      openItemIds: [foreignA.id],
+      activeItemId: foreignA.id,
+      selectedItemId: foreignA.id,
+    });
+  });
+
+  it("removes a foreign union member when its present machine slice no longer reports it", async () => {
+    const foreign = makeSession("foreign-removed", "foreign-lane");
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: "foreign-lane" }],
+          sessions: [foreign],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessionsById.has(foreign.id)).toBe(true));
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: "foreign-lane" }],
+          sessions: [],
+        },
+      },
+    };
+    rerender();
+
+    expect(result.current.sessionsById.has(foreign.id)).toBe(false);
+    expect(result.current.visibleSessions).not.toContainEqual(foreign);
+    expect(result.current.runningSessions).not.toContainEqual(foreign);
+  });
+
   it("launchPtySession carries its project pin into stopRuntime", async () => {
     const pin = {
       kind: "local",
@@ -834,6 +1096,16 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       rootPath: "/origin/project",
       displayName: "Origin",
     } as const;
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      openProjectTabRoots: [pin.rootPath],
+    };
     (window as any).ade.pty.create.mockResolvedValueOnce({
       sessionId: "pinned-pty-session",
       ptyId: "pinned-pty",
@@ -869,6 +1141,296 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       ptyId: "pinned-pty",
       sessionId: "pinned-pty-session",
     }, pin);
+  });
+
+  it("keeps a remembered foreign pin while the cross-machine lane map is cleared", async () => {
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const foreignSession = makeSession("pin-flap", "lane-b", {
+      ptyId: "pty-pin-flap",
+      toolType: "codex",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          binding: foreignBinding,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignSession],
+        },
+      },
+    };
+
+    const { result, rerender } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    act(() => {
+      result.current.machineRouter.rememberSessionPin(foreignSession, foreignBinding);
+    });
+    expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
+
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      crossMachineLanesByMachineId: {},
+    };
+    rerender();
+
+    expect(result.current.machineRouter.isLivePin(foreignBinding)).toBe(false);
+    expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
+    act(() => {
+      result.current.machineRouter.forgetSessionPin(foreignSession);
+    });
+  });
+
+  it("collapses a remembered pin to null after the tab rebinds to that machine", async () => {
+    const activeBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const session = makeSession("pin-now-active", "lane-b", {
+      ptyId: "pty-pin-now-active",
+      toolType: "codex",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: activeBinding,
+      crossMachineLanesByMachineId: {},
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+    act(() => {
+      result.current.machineRouter.rememberSessionPin(session, activeBinding);
+    });
+
+    expect(result.current.resolveSessionRuntimePin(session)).toBeNull();
+    act(() => {
+      result.current.machineRouter.forgetSessionPin(session);
+    });
+  });
+
+  it("stops a restored foreign session on its owning binding without a launch-registry entry", async () => {
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const foreignSession = makeSession("restored-foreign", "lane-b", {
+      ptyId: "pty-restored-foreign",
+      toolType: "codex",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      openRemoteProjectTabs: [foreignBinding],
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          binding: foreignBinding,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignSession],
+        },
+      },
+    };
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(listSessionsCachedMock).toHaveBeenCalled());
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-restored-foreign", "restored-foreign");
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
+      ptyId: "pty-restored-foreign",
+      sessionId: "restored-foreign",
+    }, foreignBinding);
+  });
+
+  it("uses the owning machine slice after reload when active and foreign sessions share a lane id", async () => {
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const localSession = makeSession("duplicate-lane-local", "lane-1", {
+      ptyId: "pty-duplicate-lane-local",
+      toolType: "codex",
+    });
+    const foreignSession = makeSession("duplicate-lane-foreign", "lane-1", {
+      ptyId: "pty-duplicate-lane-foreign",
+      toolType: "codex",
+    });
+    // Simulate a fresh renderer: neither stable id has an in-memory launch pin.
+    forgetWorkPtyLaunchPin(foreignSession);
+    expect(workPtyLaunchPinFor(foreignSession)).toBeNull();
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          targetId: "target-b",
+          projectId: "project-b",
+          binding: foreignBinding,
+          online: true,
+          lanes: [{ id: "lane-1" }],
+          sessions: [foreignSession],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    };
+    listSessionsCachedMock.mockResolvedValue([localSession]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
+
+    expect(result.current.resolveSessionRuntimePin(foreignSession)).toBe(foreignBinding);
+    expect(result.current.resolveSessionRuntimePin(localSession)).toBeNull();
+  });
+
+  it("keeps an active-binding session stop on the unpinned fast path", async () => {
+    const localSession = makeSession("active-local", "lane-1", {
+      ptyId: "pty-active-local",
+      toolType: "codex",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+    };
+    listSessionsCachedMock.mockResolvedValue([localSession]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessions).toContainEqual(localSession));
+
+    await act(async () => {
+      await result.current.stopRuntime("pty-active-local", "active-local");
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenLastCalledWith({
+      ptyId: "pty-active-local",
+      sessionId: "active-local",
+    });
+  });
+
+  it("stopAllRuntimes stops local and foreign PTYs, pinning only the foreign row", async () => {
+    const foreignBinding = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      runtimeName: "Machine B",
+      projectId: "project-b",
+      rootPath: "/repo-b",
+      displayName: "Repo B",
+    } as const;
+    const localSession = makeSession("stop-all-local", "lane-1", {
+      ptyId: "pty-stop-all-local",
+      toolType: "codex",
+    });
+    const foreignSession = makeSession("stop-all-foreign", "lane-b", {
+      ptyId: "pty-stop-all-foreign",
+      toolType: "codex",
+    });
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
+      openRemoteProjectTabs: [foreignBinding],
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          binding: foreignBinding,
+          lanes: [{ id: "lane-b" }],
+          sessions: [foreignSession],
+        },
+      },
+    };
+    listSessionsCachedMock.mockResolvedValue([localSession]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.runningSessions).toHaveLength(2));
+
+    await act(async () => {
+      await result.current.stopAllRuntimes();
+    });
+
+    expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-stop-all-local",
+      sessionId: "stop-all-local",
+    });
+    expect((window as any).ade.pty.dispose).toHaveBeenCalledWith({
+      ptyId: "pty-stop-all-foreign",
+      sessionId: "stop-all-foreign",
+    }, foreignBinding);
+  });
+
+  it("keeps routing and stop callback identities stable across session refreshes", async () => {
+    const first = makeSession("identity-stable", "lane-1", {
+      ptyId: "pty-identity-stable",
+      toolType: "codex",
+      lastOutputPreview: "before",
+    });
+    const refreshed = { ...first, lastOutputPreview: "after" };
+    listSessionsCachedMock.mockResolvedValue([first]);
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => expect(result.current.sessions).toContainEqual(first));
+    const initialResolver = result.current.resolveSessionRuntimePin;
+    const initialStopRuntime = result.current.stopRuntime;
+    const initialStopAllRuntimes = result.current.stopAllRuntimes;
+
+    listSessionsCachedMock.mockResolvedValue([refreshed]);
+    await act(async () => {
+      await result.current.refresh({ force: true });
+    });
+    await waitFor(() => expect(result.current.sessions).toContainEqual(refreshed));
+
+    expect(result.current.resolveSessionRuntimePin).toBe(initialResolver);
+    expect(result.current.stopRuntime).toBe(initialStopRuntime);
+    expect(result.current.stopAllRuntimes).toBe(initialStopAllRuntimes);
   });
 
   it("launchPtySession skips Work UI mutations when a pinned launch resolves after project switch", async () => {
@@ -1214,6 +1776,49 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     expect(workState.openItemIds).toContain("session-1");
     expect(workState.activeItemId).toBe("session-1");
     expect(workState.selectedItemId).toBe("session-1");
+  });
+
+  it("opens a foreign URL session from the union without selecting its lane locally", async () => {
+    const foreign = makeSession("session-foreign", "lane-foreign");
+    useSearchParamsMock.mockReturnValue([
+      new URLSearchParams(`sessionId=${foreign.id}`),
+      vi.fn(),
+    ]);
+    const workState = {
+      openItemIds: [] as string[],
+      activeItemId: null as string | null,
+      selectedItemId: null as string | null,
+      draftKind: "chat" as const,
+      laneFilter: "all",
+      search: "",
+      sessionListOrganization: "by-lane" as const,
+      workCollapsedLaneIds: [] as string[],
+      workCollapsedTabGroupIds: [] as string[],
+      workFocusSessionsHidden: false,
+    };
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      workViewByProject: { "/fake/project": workState },
+      crossMachineLanesByMachineId: {
+        "target-b": {
+          machineId: "target-b",
+          machineName: "Machine B",
+          lanes: [{ id: foreign.laneId }],
+          sessions: [foreign],
+        },
+      },
+    };
+    setWorkViewStateSpy.mockImplementation((_projectRoot: string, next: any) => {
+      const resolved = typeof next === "function" ? next(workState) : { ...workState, ...next };
+      Object.assign(workState, resolved);
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+
+    await waitFor(() => expect(focusSessionSpy).toHaveBeenCalledWith(foreign.id));
+    expect(selectLaneSpy).not.toHaveBeenCalledWith(foreign.laneId);
+    expect(workState.openItemIds).toContain(foreign.id);
+    expect(result.current.selectedSession).toBe(foreign);
   });
 
   it("falls back to URL lane/status filters when the requested sessionId is stale", async () => {

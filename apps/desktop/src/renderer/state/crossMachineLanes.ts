@@ -1019,9 +1019,11 @@ async function runRefresh(): Promise<void> {
   const generation = ++runtime.generation;
   const scope = runtime.scope;
   const store = rootAppStoreApi.getState();
-  store.applyCrossMachineLaneScope(scope.scopeKey);
-
   const targets = resolveEligibleMachines();
+  store.applyCrossMachineLaneScope(
+    scope.scopeKey,
+    resolveRefillIntendedMachineIds(targets, true),
+  );
 
   // Bounded fan-out. Reads are independent, so a wedged machine costs one slot
   // for at most `MACHINE_READ_TIMEOUT_MS` and never blocks the others.
@@ -1147,6 +1149,35 @@ function resolveEligibleMachines(): LaneMachineOption[] {
 }
 
 /**
+ * Machine membership for one refill, independent of which slices have arrived.
+ *
+ * Existing intended ids include retained offline machines; `applyReachability`
+ * removes them only when its normal forgotten verdict fires. Eligible targets
+ * and the local counterpart are added before any read starts, so a slow slice
+ * remains distinguishable from a removed machine throughout the refill.
+ */
+function resolveRefillIntendedMachineIds(
+  targets: readonly LaneMachineOption[],
+  preserveExisting: boolean,
+): string[] {
+  const store = rootAppStoreApi.getState();
+  const intended = new Set<string>();
+  if (preserveExisting) {
+    for (const machineId of (
+      store.crossMachineLaneIntendedMachineIds
+      ?? Object.keys(store.crossMachineLanesByMachineId)
+    )) {
+      intended.add(machineId);
+    }
+  }
+  for (const target of targets) intended.add(target.id);
+  if (runtime.scope.boundTargetId && runtime.scope.thisMachineBinding) {
+    intended.add(THIS_MACHINE_ID);
+  }
+  return Array.from(intended).sort();
+}
+
+/**
  * What the newest snapshot says about one machine. A machine that is not in the
  * snapshot at all has no entry here — absence in the map IS that fact, which is
  * why there is no "gone" state to represent.
@@ -1232,8 +1263,12 @@ function applyReachability(): void {
     runtime.dropsByMachineId.delete(machineId);
     reachable.push(machineId);
   }
-  for (const entry of Object.values(store.crossMachineLanesByMachineId)) {
-    const machineId = entry.machineId;
+  const scopedMachineIds = new Set([
+    ...Object.keys(store.crossMachineLanesByMachineId),
+    ...(store.crossMachineLaneIntendedMachineIds ?? []),
+  ]);
+  for (const machineId of scopedMachineIds) {
+    const entry = store.crossMachineLanesByMachineId[machineId] ?? null;
     // This Mac is not a connection target and is always reachable; holding a
     // drop record for it would leak a map entry nothing can ever clear.
     if (machineId === THIS_MACHINE_ID) continue;
@@ -1258,7 +1293,7 @@ function applyReachability(): void {
     }
 
     const drop = runtime.dropsByMachineId.get(machineId)
-      ?? (entry.online
+      ?? (entry?.online !== false
         ? { droppedAtMs: nowMs, sawAttempt: false, attemptFailed: false }
         // Already dimmed with no drop record: a remount cleared the records
         // while the store slice survived. A fresh record would restart the floor
@@ -1280,8 +1315,8 @@ function applyReachability(): void {
       + (answered ? UNREACHABLE_FLOOR_MS : UNREACHABLE_CEILING_MS);
     // A machine that is already dimmed stays dimmed until it is eligible again,
     // whatever the deadline says — the verdict is the store's, not this tick's.
-    if (entry.online && nowMs < dimAtMs) {
-      reachable.push(machineId);
+    if (entry?.online !== false && nowMs < dimAtMs) {
+      if (entry) reachable.push(machineId);
       noteDeadline(dimAtMs);
       continue;
     }
@@ -1405,6 +1440,7 @@ function detach(): void {
 export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => void {
   const scopeChanged = !sameScope(runtime.scope, scope);
   if (scopeChanged) {
+    const preserveExistingIntent = runtime.scope.scopeKey === scope.scopeKey;
     // Project-tab transitions can briefly overlap React effect cleanup. Retarget
     // the shared runtime immediately; rejecting the new scope would leave it
     // permanently unsubscribed once the previous effect cleans up.
@@ -1418,7 +1454,11 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
     // over from the old one could hide a machine with no grace at all the moment
     // it reappears here.
     resetMachineTracking();
-    rootAppStoreApi.getState().applyCrossMachineLaneScope(scope.scopeKey);
+    runtime.scope = scope;
+    rootAppStoreApi.getState().applyCrossMachineLaneScope(
+      scope.scopeKey,
+      resolveRefillIntendedMachineIds(resolveEligibleMachines(), preserveExistingIntent),
+    );
   }
   runtime.scope = scope;
   runtime.refCount += 1;

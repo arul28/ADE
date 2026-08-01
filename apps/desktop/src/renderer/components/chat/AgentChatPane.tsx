@@ -203,7 +203,8 @@ import { setLaneNaming } from "../../state/laneNamingStore";
 import { buildChatAppearanceRootStyle, resolveChatContentWidthPx } from "./chatAppearance";
 import { copyLaunchPromptToClipboard } from "../../lib/launchPromptClipboard";
 import {
-  buildLaneBindingIndex,
+  buildChatMachineRoutingState,
+  collectOpenProjectBindings,
   createChatMachineRouter,
   isLivePinnedBinding,
   type LaneBindingSource,
@@ -3320,39 +3321,21 @@ export function AgentChatPane({
   const projectInfoByRoot = useAppStore((s) => s.projectInfoByRoot);
   const laneCacheByProject = useAppStore((s) => s.laneCacheByProject);
   const crossMachineLanesByMachineId = useRootAppStore((s) => s.crossMachineLanesByMachineId);
-  const openProjectBindings = useMemo<OpenProjectBinding[]>(() => {
-    const bindings: OpenProjectBinding[] = [];
-    const seen = new Set<string>();
-    const push = (binding: OpenProjectBinding | null | undefined) => {
-      if (!binding || seen.has(binding.key)) return;
-      seen.add(binding.key);
-      bindings.push(binding);
-    };
-    push(projectBinding);
-    for (const remote of openRemoteProjectTabs) push(remote);
-    for (const root of openProjectTabRoots) {
-      push({
-        kind: "local",
-        key: `local:${root}`,
-        rootPath: root,
-        displayName: projectInfoByRoot[root]?.displayName ?? root,
-      });
-    }
-    for (const machine of Object.values(crossMachineLanesByMachineId)) {
-      push(machine.binding);
-    }
-    return bindings;
-  }, [crossMachineLanesByMachineId, openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectInfoByRoot]);
+  const openProjectBindings = useMemo<OpenProjectBinding[]>(() => collectOpenProjectBindings({
+    activeBinding: projectBinding ?? null,
+    remoteBindings: openRemoteProjectTabs,
+    localProjects: openProjectTabRoots.map((rootPath) => ({
+      rootPath,
+      displayName: projectInfoByRoot[rootPath]?.displayName ?? rootPath,
+    })),
+    additionalBindings: Object.values(crossMachineLanesByMachineId).map((machine) => machine.binding),
+  }), [crossMachineLanesByMachineId, openProjectTabRoots, openRemoteProjectTabs, projectBinding, projectInfoByRoot]);
   const openProjectBindingsRef = useRef<OpenProjectBinding[]>(openProjectBindings);
   openProjectBindingsRef.current = openProjectBindings;
   const chatMachineRouter = useMemo(() => {
     const stateKeyFor = (binding: OpenProjectBinding): string =>
       binding.kind === "remote" ? binding.key : binding.rootPath;
     const sources: LaneBindingSource[] = [];
-    // The active binding's live lane list wins over any cached copy.
-    if (projectBinding) {
-      sources.push({ bindingKey: projectBinding.key, laneIds: lanes.map((lane) => lane.id) });
-    }
     for (const binding of openProjectBindings) {
       const cached = laneCacheByProject[stateKeyFor(binding)];
       if (!cached) continue;
@@ -3363,11 +3346,12 @@ export function AgentChatPane({
       if (!binding) continue;
       sources.push({ bindingKey: binding.key, laneIds: machine.lanes.map((lane) => lane.id) });
     }
-    return createChatMachineRouter({
+    return createChatMachineRouter(buildChatMachineRoutingState({
       activeBinding: projectBinding ?? null,
       openBindings: openProjectBindings,
-      laneBindingIndex: buildLaneBindingIndex(sources),
-    });
+      activeLaneIds: lanes.map((lane) => lane.id),
+      additionalLaneSources: sources,
+    }));
   }, [crossMachineLanesByMachineId, laneCacheByProject, lanes, openProjectBindings, projectBinding]);
   const navigate = useNavigate();
   const openAiProvidersSettings = useCallback(() => {

@@ -254,6 +254,31 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
     failure terminates the process tree and ends the session as `failed`.
     Returns `{ ptyId, sessionId, pid }`.
 
+**Claude Agent Skill plugin injection.** Before the spawn,
+`withBundledClaudePlugin` adds `--plugin-dir <bundled root>` (from
+`claudeAgentSkillPluginRoots`) to Claude launches. Where it goes depends
+on what is actually being spawned, which the helper decides from the
+resolved `command`, not from the argv shape:
+
+- a direct Claude spawn (`isClaudeBinaryCommand(command)` — basename
+  `claude`, `claude.exe`, or `claude.cmd`) gets the flag prepended to
+  its argv;
+- a shell-wrapped launch — the resume/reattach shape,
+  `/bin/bash --noprofile --norc -lc "<command line>"` — gets it inserted
+  into the command line that follows `-c`/`-lc`
+  (`shellCommandLineArgIndex` + `withClaudePluginInCommandLine`), right
+  after the `claude` token, past any `VAR=value` prefixes and ahead of
+  the caller's own flags;
+- the typed `startupCommand` is rewritten by the same command-line
+  helper.
+
+Prepending Claude flags to a shell's argv is what this prevents: bash
+receives `--plugin-dir` as its own option and dies with "invalid
+option" before the CLI ever runs, which is how resumes were failing.
+Injection is idempotent — an existing `--plugin-dir <root>` or
+`--plugin-dir=<root>` for the same root is left alone — and a command
+line that fails to parse is returned unchanged.
+
 The launch env is built layer by layer: `process.env`, the lane
 runtime env (from `getLaneRuntimeEnv`), the caller's `args.env`, then
 `withAdeTerminalContextEnv` (project / lane / chat ids plus the opaque,
@@ -687,13 +712,12 @@ resolved. Strategies, in order:
    `maxStartDeltaMs` (drop matches whose timestamp drifts more than N
    ms from `startedAt`), `notBeforeMs` (ignore rollouts older than this
    floor — used to refuse a recycled rollout from a previous launch),
-   and `requiredText` (reads up to 512 KB of the candidate's prefix and
-   only accepts the file when that substring appears, e.g. the
-   `"ADE session guidance"` marker that the renderer's CLI launcher
-   embeds in the initial Codex prompt). The live polling backfill that
-   runs while a Codex session is still streaming uses all three gates;
-   the close-time backfill only enforces a 10-minute drift window so
-   it can match older sessions on resume.
+   and `excludedIds` (skip thread ids already owned by another
+   `terminal_sessions` row, so two rows can never adopt the same
+   rollout). The live polling backfill that runs while a Codex session
+   is still streaming uses all three gates; the close-time backfill
+   only enforces a 10-minute drift window so it can match older
+   sessions on resume.
 4. Read Droid's local storage:
    `~/.factory/sessions/<escaped-cwd>/*.jsonl`. Each candidate's first
    line must be a `session_start` record whose `cwd` matches the ADE
@@ -731,8 +755,17 @@ specific session. Lazy hydration over `sessions.list` therefore relies
 only on transcript regex matches, keeping the list-render hot path off
 the disk and preventing one renderer's idle refresh from adopting
 another lane's Codex rollout. Live Codex sessions still get their
-resume target through the live capture path, which uses the strict
-`requiredText: "ADE session guidance"` gate.
+resume target through the live capture path below.
+
+Every storage strategy matches on an **exact cwd**, and that cwd is
+resolved by `resolveSessionRunCwd(session)`: the lane's worktree path
+from `laneService.getLaneBaseAndBranch(session.laneId)` first, and only
+then the directory inferred from the transcript path. Transcripts live
+under the project root even for lane sessions, so the transcript-derived
+path names the project root rather than the worktree the agent actually
+ran in — matching on it would miss every lane session's rollout. The
+transcript fallback exists for a session whose lane has since been
+deleted.
 
 ### Live Codex session-id capture
 
@@ -746,13 +779,37 @@ UUID since codex has no pre-assigned-id flag (unlike Claude's
   `~/.codex/sessions/YYYY/MM/DD/` (and tomorrow's, to handle UTC
   rollover near midnight); each `add`/`change` event triggers a
   200 ms-debounced parse pass against any new candidate file matching
-  the cwd / startedAt / required-text gates above.
+  the identification rules below.
 - **Staggered fallback poll.** `CODEX_FALLBACK_POLL_DELAYS_MS =
   [500, 2_000, 5_000, 12_000, 30_000]` schedules five timers that
   scan the same directory tree even when `fs.watch` is unavailable
   or unreliable (network mounts, some Linux file systems, the test
   harness). The whole capture aborts after
   `CODEX_LIVE_CAPTURE_HARD_TIMEOUT_MS = 60_000`.
+
+A candidate rollout is identified by **cwd plus a launch-time window**,
+with no content gate. The window is `CODEX_LIVE_CAPTURE_MAX_START_DELTA_MS
+= 90_000` on either side of the row's `startedAt`, plus the existing
+`notBeforeMs` floor (`startedAt - 1 s`) that rejects a rollout written
+before this launch existed. Ninety seconds covers Codex CLI startup and
+modest write/timestamp skew without admitting an unrelated launch minutes
+later; the storage backfill keeps its wider historical window.
+
+Mis-adoption between two concurrent Codex runs in the *same* worktree is
+prevented by exclusion rather than by text: before each pass the service
+collects every thread id already owned by another `terminal_sessions` row
+(`listOtherAdoptedCodexTargetIds`, reading `resumeMetadata.targetId` and
+the parsed `resumeCommand`) and passes it as `excludedIds`. If that query
+throws, the pass captures nothing — assigning a thread when the ownership
+check could not run is worse than capturing late. Timestamp proximity
+still breaks ties among the remaining candidates, but it is a tiebreak,
+not proof of which PTY launched which thread.
+
+There is deliberately **no** `"ADE session guidance"` marker gate. Only
+the Work-tab CLI preamble ever emitted that string — goal launches send
+`<codex_internal_context source="goal">` instead — so requiring it closed
+the gate on nearly every real session and thread ids were essentially
+never captured live.
 
 When a UUID is captured, the service writes the row's
 `resumeMetadata.targetId` and **registers a stable thread name in
@@ -784,6 +841,26 @@ Two forms of cleanup:
 Returning to a `waiting-input` runtime state does not auto-close a PTY.
 The user, owning service, or worker orchestration layer must call
 `dispose` explicitly when a terminal should close.
+
+#### Resume launches that die on launch
+
+A resume or reattach takes over an existing row, so a launch that fails
+immediately would otherwise overwrite a still-resumable session with
+`failed` / exit 2 and make it look permanently dead. `create` snapshots
+the row's `priorEndState` (`status`, `exitCode`, `endedAt`) when it
+adopts an existing session, and `closeEntry` restores that snapshot
+instead of the new exit when the process exits nonzero within
+`RESUME_LAUNCH_FAILURE_WINDOW_MS = 5_000` of the launch — the window
+that distinguishes a launch failure (bad flag, missing binary, shell
+usage error) from a real nonzero exit after the CLI had actually been
+running. Each restore logs `pty.resume_launch_failed_status_preserved`.
+
+`running` is deliberately unrepresentable in `priorEndState`: a row can
+still read `running` after its owning brain died, and restoring that
+stale value would leave a dead relaunch marked live. Only
+`detached` / `completed` / `failed` are captured and restored
+byte-for-byte; anything else leaves the snapshot null and the new
+failure is persisted normally.
 
 ---
 

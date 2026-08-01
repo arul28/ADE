@@ -143,6 +143,11 @@ export function useLaneWorkSessions(laneId: string | null) {
   const canMutatePinnedProjectUi = useCallback((pin: WorkPtyLaunchArgs["pin"] | undefined) => (
     !pin || appStore.getState().projectBinding?.key === pin.key
   ), [appStore]);
+  const collapseActiveBindingPtyPin = useCallback((pin: WorkPtyLaunchArgs["pin"]) => {
+    // Match useWorkMachineRouter.pinForSession: a remembered pin that became
+    // the active binding must stay on the unpinned path with its local fallback.
+    return pin?.key === appStore.getState().projectBinding?.key ? null : pin ?? null;
+  }, [appStore]);
 
   const currentLane = useMemo(
     () => (laneId ? lanes.find((lane) => lane.id === laneId) ?? null : null),
@@ -776,7 +781,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       rows: 30,
       ...buildPtyContinuationLaunchFields(launch),
     };
-    const pin = workPtyLaunchPinFor(session);
+    const pin = collapseActiveBindingPtyPin(workPtyLaunchPinFor(session));
     const result = pin
       ? await window.ade.pty.sendToSession(sendArgs, pin)
       : await window.ade.pty.sendToSession(sendArgs);
@@ -789,12 +794,14 @@ export function useLaneWorkSessions(laneId: string | null) {
     selectLane(session.laneId);
     focusSession(result.sessionId);
     openSessionTab(result.sessionId);
-  }, [focusSession, openSessionTab, refresh, selectLane, upsertSessionSnapshot]);
+  }, [collapseActiveBindingPtyPin, focusSession, openSessionTab, refresh, selectLane, upsertSessionSnapshot]);
 
   const closePtySession = useCallback(async (ptyId: string) => {
     const matchedSession = sessionsRef.current.find((session) => session.ptyId === ptyId) ?? null;
     const sessionId = matchedSession?.id ?? null;
-    const pin = workPtyLaunchPinFor(matchedSession ?? { ptyId, sessionId });
+    const pin = collapseActiveBindingPtyPin(
+      workPtyLaunchPinFor(matchedSession ?? { ptyId, sessionId }),
+    );
     const previousSessions = sessionsRef.current.filter((session) =>
       session.ptyId === ptyId || (sessionId != null && session.id === sessionId),
     );
@@ -864,7 +871,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       await refresh({ showLoading: false, force: true });
     }
     if (disposeError) throw disposeError;
-  }, [refresh]);
+  }, [collapseActiveBindingPtyPin, refresh]);
 
   return {
     lane: currentLane,
