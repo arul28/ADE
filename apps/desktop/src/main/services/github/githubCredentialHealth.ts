@@ -247,7 +247,15 @@ function githubCredentialCooldownMatching(
   if (!health) return null;
   const requestedResource = options.resource?.trim().toLowerCase() || null;
   const entries = requestedResource
-    ? [health.resources.get(requestedResource), health.resources.get("unknown")]
+    ? [...health.resources.entries()]
+        .filter(([resource, entry]) => (
+          resource === requestedResource
+          || resource === "unknown"
+          // A rejected token is unusable for every GitHub resource, while
+          // rate-limit buckets remain scoped to the resource GitHub reported.
+          || entry.failure?.kind === "invalid_token"
+        ))
+        .map(([, entry]) => entry)
     : [...health.resources.values()];
   const cooling = entries
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(

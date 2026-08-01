@@ -4,6 +4,7 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubCredentialNonRateLimitCooldown,
   githubCredentialRateLimitCooldown,
   recordGithubCredentialFailure,
   recordGithubOperationFailure,
@@ -147,13 +148,50 @@ describe("githubCredentialHealth", () => {
       ?.failure.kind).toBe("rate_limited");
   });
 
-  it("does not globally cool a credential after an operation-level permission denial", () => {
-    recordGithubOperationFailure(appCandidate, {
+  it("keeps permission-denied cooldowns resource-scoped", () => {
+    const permissionDenied = {
       kind: "permission_denied",
       message: "Resource protected by organization policy",
       retryAt: null,
-    }, null);
+    } as const;
+    recordGithubCredentialFailure(appCandidate, permissionDenied, {
+      limit: 5000,
+      remaining: 4999,
+      used: 1,
+      resetAt: null,
+      resource: "graphql",
+    });
 
+    expect(githubCredentialCooldown(appCandidate, Date.now(), { resource: "graphql" }))
+      .not.toBeNull();
+    expect(githubCredentialCooldown(appCandidate, Date.now(), { resource: "core" })).toBeNull();
+
+    clearGithubCredentialHealth();
+    recordGithubOperationFailure(appCandidate, permissionDenied, null);
     expect(githubCredentialCooldown(appCandidate)).toBeNull();
   });
+
+  it.each(["graphql", "search"])(
+    "applies an invalid-token cooldown recorded for %s to every API resource",
+    (resource) => {
+      recordGithubOperationFailure(ghCandidate, {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      }, {
+        limit: resource === "search" ? 30 : 5000,
+        remaining: 1,
+        used: resource === "search" ? 29 : 4999,
+        resetAt: null,
+        resource,
+      });
+
+      expect(githubCredentialCooldown(ghCandidate, Date.now(), { resource: "core" })
+        ?.failure.kind).toBe("invalid_token");
+      expect(githubCredentialNonRateLimitCooldown(ghCandidate, Date.now(), { resource: "core" })
+        ?.failure.kind).toBe("invalid_token");
+      expect(githubCredentialRateLimitCooldown(ghCandidate, Date.now(), { resource: "core" }))
+        .toBeNull();
+    },
+  );
 });

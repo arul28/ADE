@@ -307,8 +307,8 @@ export function createPrPollingService({
         await prService.refresh({ prIds: targetedPrIds });
       } else if (relayHealthy) {
         if (Date.now() - lastRelaySafetySweepAtMs >= RELAY_SAFETY_SWEEP_INTERVAL_MS) {
-          lastRelaySafetySweepAtMs = Date.now();
           await prService.refresh();
+          lastRelaySafetySweepAtMs = Date.now();
         }
       } else if (hotPrIds.length > 0) {
         await prService.refresh({ prIds: hotPrIds });

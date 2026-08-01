@@ -254,16 +254,15 @@ describe("prPollingService", () => {
     expect(refresh).toHaveBeenCalledTimes(1);
   });
 
-  it("backs off a failed relay safety sweep without retrying it every second", async () => {
+  it("retries a failed relay safety sweep after backoff, then restores the safety cadence", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00.000Z"));
     vi.spyOn(Math, "random").mockReturnValue(0.5);
 
     const summary = createSummary();
-    const listAll = vi.fn(() => [summary]);
-    const refresh = vi.fn(async () => {
-      throw new Error("safety sweep failed");
-    });
+    const listAll = () => [summary];
+    const refresh = vi.fn(async () => [summary])
+      .mockRejectedValueOnce(new Error("safety sweep failed"));
     const service = createPrPollingService({
       logger: createLogger() as any,
       prService: {
@@ -282,18 +281,16 @@ describe("prPollingService", () => {
     service.start();
     await vi.advanceTimersByTimeAsync(12_000);
     expect(refresh).toHaveBeenCalledTimes(1);
-    expect(listAll).toHaveBeenCalledTimes(1);
 
     await vi.advanceTimersByTimeAsync(9_999);
-    expect(listAll).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(1);
-    // The backoff tick reads once to choose work and once to publish the
-    // unchanged snapshot; the failed safety sweep itself is not retried.
-    expect(listAll).toHaveBeenCalledTimes(3);
     expect(refresh).toHaveBeenCalledTimes(1);
-
-    await vi.advanceTimersByTimeAsync(15 * 60_000 - 10_000);
+    await vi.advanceTimersByTimeAsync(1);
     expect(refresh).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(15 * 60_000 - 1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(3);
   });
 
   it("discovers lane PRs when the local PR cache starts empty", async () => {
