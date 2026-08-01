@@ -61,8 +61,8 @@ subagents, computer use). The pane derives all visible state from the
 | `codex/CodexPlanCard.tsx` | Codex plan card rendered inline in the transcript for `plan` events. Shows plan state (Planning / Plan ready), step progress with status glyphs, and streaming plan text as rich markdown via `ChatMarkdown`. Completed plans with no discrete steps render the full markdown body inline; plans with steps offer a toggle to expand the raw markdown details (labelled "details" when complete, "live" while streaming). Handles missing `steps` arrays gracefully. |
 | `codex/CodexGoalCard.tsx`, `codex/CodexGoalBanner.tsx` | Codex goal surfaces. The card is the active desktop surface and routes edits, status changes, and clears through typed ADE APIs (`ade.agentChat.codex.*`) rather than prompt text. It shows objective, status, token count, and elapsed time, while hiding provider budgets because ADE keeps goals unlimited. The banner remains available for compact surfaces that need a horizontal goal strip. |
 | `ChatWorkLogBlock.tsx` | Collapsible work-log group (see `chatTranscriptRows.ts`). Accepts `animate` so completed groups render a static glyph while in-flight ones pulse; prefers `waiting` over `working` when any entry is `interrupted`. Web-search work-log rows render provider action details (`query` / `queries`, `title`, `url`, `snippet`) as compact result chips; URL chips route through `openUrlInAdeBrowser()`. Also renders a `LocalhostServersStrip` above the panels when any work-log entry produced a `localhost`/`127.0.0.1`/`0.0.0.0`/`[::1]` URL: a sky-toned chip per detected URL routes through `openUrlInAdeBrowser()` (so the click opens the Work sidebar Browser tab in a new tab), and a sibling Logs button either reveals the chat's currently active terminal (via `onRevealChatTerminal`) or — when no terminal exists — drafts a "please move this server into the ADE chat terminal" prompt for the agent through `onInsertDraft`. |
-| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, fixed-height previews, note row, keyboard-first answering, A/B compare, minimize). See [Pending input card](#pending-input-card). |
-| `AnsweredQuestionReceipt.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
+| `AskQuestionComposer.tsx` | The ask-question surface, anchored **in the composer**: while a question blocks, it replaces the textarea inside the same prompt-box frame (provider mark + verb header, ledger option rows, capped previews, note row, keyboard-first answering, A/B compare, minimize). See [Pending input card](#pending-input-card). |
+| `QuestionReceipts.tsx` | The transcript record for a question: a one-line expandable receipt on the `chatCardPrimitives` / `AdeCard` convention once resolved (`AnsweredQuestionReceipt`), and an "awaiting you" row while the gate is open (`OpenQuestionReceipt`). |
 | `apps/desktop/src/shared/pendingInputAnswers.ts` | The shared answer contract — `answerState`, `sendLabel`, `buildAnswers`, `notePlaceholder`, `foldedSummary`, plus `sanitizeAnswersForTranscript` and `flattenAnswerForSingleStringProvider`. Imported directly by the desktop renderer, the web client (same component), and the TUI; iOS mirrors it in Swift. |
 | `CodeHighlighter.tsx`, `chatStatusVisuals.tsx`, `chatSurfaceTheme.ts`, `chatToolAppearance.tsx` | Supporting visuals. `chatStatusVisuals.ChatStatusGlyph` takes an `animate` prop so non-active rows skip the ping/spin animation; `AgentChatMessageList.ActivityIndicator` mirrors this and switches to a dimmed static tone plus a non-looping thinking lottie once the turn ends. |
 | `pendingInput.ts`, `chatExecutionSummary.ts`, `chatNavigation.ts`, `chatTranscriptRows.ts` | Pure state derivations consumed by the UI. `chatTranscriptRows.ts` also owns two message-list helpers: `shouldCollapseUserMessageText` (a user message over 600 characters or 8 lines renders collapsed) and `countRowsAppendedSince` (the `N new` count on the jump-to-latest pill). |
@@ -1148,8 +1148,9 @@ note rather than comma-joining it into the picks).
   virtualizer re-measure and `reconcileMeasuredScrollTop`, so the row walked out
   from under the cursor and the click landed on its neighbour. **Hover mutates
   no state.** Previews open on their own disclosure control, which neither
-  selects the option nor advances the question, and the preview viewport is
-  fixed-height with internal scroll.
+  selects the option nor advances the question. The option region is
+  natural-height and capped: explicit disclosure may grow it once, while hover
+  and focus cannot trigger any reflow.
 - **Unbounded height.** Only the option list scrolls; header, note row, and
   footer are pinned outside it, so Decline / Next / Send are reachable at any
   list length. Rows that fall fully below the fold get a `⌄ N more options` row
@@ -1159,11 +1160,14 @@ note rather than comma-joining it into the picks).
 
 **Height budget (desktop).** `useOptionsMaxHeight` measures
 `[data-chat-appearance-root]` — the flex column holding the transcript *and* the
-composer — and gives the option list `clamp(132, height * 0.4, 420)`. Budgeting
-from that column rather than the transcript viewport is load-bearing for the
-same reason it is on iOS (`workPendingInputMaxHeight`): the column's height does
-not change when the card grows, the viewport's does, and feeding the viewport
-back in is a runaway loop that eats the screen.
+composer — and gives the option list `clamp(260, height * 0.55, 520)`. The
+260px floor keeps the normal three-option case, including one disclosed
+preview, out of a cramped inner scroller; long lists still scroll with the
+footer pinned. Budgeting from that column rather than the transcript viewport
+is load-bearing for the same reason it is on iOS
+(`workPendingInputMaxHeight`): the column's height does not change when the
+card grows, the viewport's does, and feeding the viewport back in is a runaway
+loop that eats the screen.
 
 **Minimize.** A `⌄` beside the `×` folds the card to one line inside the prompt
 box (provider mark · `{header} — {question}` · `N/M` or `ANSWER` · `⌃`) so the
@@ -1198,9 +1202,10 @@ Anatomy:
   (`white-space: pre`, horizontal scroll), and prose markdown routes through
   the shared code-fence-aware `ChatMarkdown`. This replaced a bare
   `ReactMarkdown` that collapsed ASCII alignment. Previews live inside the
-  scrolling list in a fixed-height viewport, so opening one cannot change the
-  card's height. When ≥2 options carry previews, a `⇄ Compare` toggle shows two
-  side by side.
+  capped option region. The closed state stays natural-height with no blank
+  preview reserve; an explicit disclosure may grow the composer up to the cap,
+  after which only the option region scrolls. When ≥2 options carry previews,
+  a `⇄ Compare` toggle shows two side by side.
 - **Keyboard-first** — `1-9` pick, `↵` next/send, `←→` page between questions,
   `esc` declines. Digits typed into the note field are never hijacked.
 - **Accent** — chrome uses `var(--chat-accent)`, which the chat surface sets per

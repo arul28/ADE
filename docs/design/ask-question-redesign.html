@@ -171,6 +171,8 @@ section > .note code { font-family: var(--mono); font-size: 11.5px; color: var(-
    has to scroll to reveal the answer controls. iOS already proves this shape
    (`WorkStructuredQuestionCard`'s topChrome / ScrollView / bottomChrome); this
    brings desktop and the TUI onto the same budget. */
+.opts-shell { display: flex; flex-direction: column; overflow: hidden; }
+.opts-shell .opts { min-height: 0; flex: 1 1 auto; }
 .opts { overflow-y: auto; overscroll-behavior: contain; }
 .opts::-webkit-scrollbar { width: 9px; }
 .opts::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.11); border-radius: 99px;
@@ -185,7 +187,7 @@ section > .note code { font-family: var(--mono); font-size: 11.5px; color: var(-
    and clicking it scrolls the rest into view. It occupies its own line rather
    than floating over the list, so it can never cover a row you meant to click. */
 .more-row {
-  display: block; width: 100%; background: none; cursor: pointer; font: inherit;
+  display: block; flex: none; width: 100%; background: none; cursor: pointer; font: inherit;
   border: 0; border-top: 1px solid var(--hairline);
   padding: 7px 14px 7px 50px; text-align: left;
   font-family: var(--mono); font-size: 9.5px; font-weight: 700;
@@ -236,10 +238,10 @@ section > .note code { font-family: var(--mono); font-size: 11.5px; color: var(-
 }
 .opt-caret:hover { color: var(--fg-2); background: rgba(255,255,255,0.05); }
 
-/* THE GLITCH FIX. Fixed max-height + internal scroll means expanding a preview
-   can change this element's height by at most 0 — the viewport is reserved. And
-   nothing here is driven by :hover, so the transcript can never re-measure
-   under the cursor and walk the row out from under a click. */
+/* THE GLITCH FIX. The option shell stays natural-height until it reaches its
+   cap, then this panel scrolls inside it. Nothing here is driven by :hover, so
+   the transcript cannot repeatedly re-measure under the pointer and walk the
+   row out from under a click. */
 .preview {
   margin: 0 14px 12px 50px;
   border: 1px solid var(--hairline); border-radius: 8px;
@@ -665,45 +667,49 @@ function AskQuestionComposer({
       {q.multiSelect ? <div className="q-badge">◫ Pick all that apply</div> : null}
 
       <div className="ledger">
-        {/* Only this region scrolls. Note row and footer stay pinned below it. */}
         <div
-          className={`opts ${clipped ? "clipped" : ""}`}
-          ref={measureClip}
+          className="opts-shell"
           style={{ maxHeight: optionsMaxHeight }}
         >
-          {q.options.map((o, i) => (
-            <OptionRow
-              key={o.value}
-              index={i}
-              option={o}
-              multi={q.multiSelect}
-              checked={picks.includes(o.value)}
-              expanded={openPreview === o.value && !comparing}
-              onToggle={() => toggle(o.value)}
-              onTogglePreview={() => setOpen(openPreview === o.value ? null : o.value)}
-            />
-          ))}
+          {/* Only this region scrolls. Note row and footer stay pinned below it. */}
+          <div
+            className={`opts ${clipped ? "clipped" : ""}`}
+            ref={measureClip}
+          >
+            {q.options.map((o, i) => (
+              <OptionRow
+                key={o.value}
+                index={i}
+                option={o}
+                multi={q.multiSelect}
+                checked={picks.includes(o.value)}
+                expanded={openPreview === o.value && !comparing}
+                onToggle={() => toggle(o.value)}
+                onTogglePreview={() => setOpen(openPreview === o.value ? null : o.value)}
+              />
+            ))}
 
-          {comparing && comparePair.length === 2 ? (
-            <div className="compare">
-              {comparePair.map((o) => (
-                <div key={o.value}>
-                  <h4>{o.label}</h4>
-                  <pre>{o.preview}</pre>
-                </div>
-              ))}
-            </div>
+            {comparing && comparePair.length === 2 ? (
+              <div className="compare">
+                {comparePair.map((o) => (
+                  <div key={o.value}>
+                    <h4>{o.label}</h4>
+                    <pre>{o.preview}</pre>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          {hiddenBelow > 0 ? (
+            <button
+              className="more-row"
+              onClick={() => optsRef.current?.scrollBy({ top: optsRef.current.clientHeight - 40, behavior: "smooth" })}
+            >
+              ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
+            </button>
           ) : null}
         </div>
-
-        {hiddenBelow > 0 ? (
-          <button
-            className="more-row"
-            onClick={() => optsRef.current?.scrollBy({ top: optsRef.current.clientHeight - 40, behavior: "smooth" })}
-          >
-            ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
-          </button>
-        ) : null}
 
         <div className="note-row">
           <span className="opt-n">✎</span>
@@ -1079,10 +1085,10 @@ function Page() {
 
       {/* ── compare ────────────────────────────────────────────────────── */}
       <section>
-        <h2>03 · Compare, in a fixed split</h2>
+        <h2>03 · Compare, in a capped split</h2>
         <p className="note">
-          The one extra you kept from the interaction set. Fixed-height panes with internal scroll,
-          so opening it cannot change the composer's height and cannot start the reflow loop.
+          The one extra you kept from the interaction set. Capped panes scroll internally only when
+          needed; opening Compare is explicit, so pointer movement cannot start the reflow loop.
         </p>
         <div style={{ maxWidth: 620 }}>
           <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact initial={{ comparing: true }} />
@@ -1298,10 +1304,9 @@ function Page() {
   net effect: the row runs away from the click.`}</div>
         <p className="note" style={{ marginTop: 22 }}>
           Two independent breaks in that loop, both in the design above. <b>Hover no longer mutates
-          any state</b> — preview follows an explicit disclosure click and keyboard focus only. And
-          <b> the preview viewport is fixed-height with internal scroll</b>, so even a deliberate
-          open changes the composer's height by a bounded, one-time amount rather than by however
-          tall the markdown happens to render.
+          any state</b> — preview follows an explicit disclosure click only. And
+          <b> the option region is natural-height and capped</b>, so the closed state wastes no
+          space; a deliberate open may grow it once, and only long content scrolls.
         </p>
       </section>
     </div>

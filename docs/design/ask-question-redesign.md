@@ -1,6 +1,6 @@
 # Ask-question surface — implementation spec
 
-**Status:** PR 1 shipped (contract + desktop + web + TUI). PR 2 (iOS) outstanding.
+**Status:** PR 1 implements contract + desktop + web + TUI. PR 2 (iOS) remains outstanding.
 **Visual reference:** `docs/design/ask-question-redesign.html` — open it in a browser.
 It is live React and the option rows, previews, minimize, and Send labels all work.
 Rendered stills are in `docs/design/renders/`.
@@ -146,7 +146,8 @@ No disabled state, no mode switch.
   not keyboard focus. An earlier draft of this section said "keyboard focus and explicit
   clicks"; that was wrong. Arrow-key navigation opening and closing previews reintroduces
   exactly the height change that causes the jitter, so focus moves the ring and nothing
-  else. This is half the jitter fix; the other half is the fixed-height preview viewport.
+  else. An explicit disclosure may deliberately grow the natural-height option region up
+  to its cap; only long content scrolls inside it.
 - **Compare** stays: a fixed-height 2-up split when ≥2 options carry previews.
 - **Keyboard:** `1-9` pick, `↵` next/send, `←→` page, `esc` decline. Already mostly
   present on desktop and in the TUI; keep and make consistent.

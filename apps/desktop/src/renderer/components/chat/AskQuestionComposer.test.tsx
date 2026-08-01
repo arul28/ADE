@@ -255,14 +255,49 @@ describe("AskQuestionComposer previews", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
-  it("regression: reserves a fixed option viewport before preview disclosure", () => {
+  it("regression: keeps the preview region natural-height and capped", () => {
     renderComposer(strategyRequest);
     const viewport = screen.getByTestId("ask-question-options-viewport-strategy");
-    const heightBefore = viewport.style.height;
+    const maxHeightBefore = viewport.style.maxHeight;
 
-    expect(heightBefore).not.toBe("");
+    expect(viewport.style.height).toBe("");
+    expect(maxHeightBefore).not.toBe("");
     fireEvent.click(screen.getByTestId("ask-question-preview-toggle-strategy-squash"));
-    expect(viewport.style.height).toBe(heightBefore);
+    expect(viewport.style.height).toBe("");
+    expect(viewport.style.maxHeight).toBe(maxHeightBefore);
+  });
+
+  it("regression: gives an ordinary three-option preview set room before it scrolls", () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 440 });
+
+    try {
+      renderComposer(buildRequest([{
+        id: "rollout",
+        question: "How should this ship?",
+        options: [
+          { label: "Desktop first", value: "desktop", preview: "Desktop preview" },
+          { label: "Wait for iOS", value: "ios", preview: "iOS preview" },
+          { label: "Desktop only", value: "desktop-only" },
+        ],
+      }]));
+
+      expect(screen.getByTestId("ask-question-options-viewport-rollout").style.maxHeight).toBe("260px");
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+    }
+  });
+
+  it("regression: caps the option region on tall surfaces so long lists scroll", () => {
+    const originalInnerHeight = window.innerHeight;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 2_000 });
+
+    try {
+      renderComposer(strategyRequest);
+      expect(screen.getByTestId("ask-question-options-viewport-strategy").style.maxHeight).toBe("520px");
+    } finally {
+      Object.defineProperty(window, "innerHeight", { configurable: true, value: originalInnerHeight });
+    }
   });
 
   // Bug 3. Hover used to set the focused option, which swapped the preview,

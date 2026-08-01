@@ -52,10 +52,16 @@ import { QuestionOptionPreview } from "./questionOptionPreview";
  *    iOS learned this the hard way; see `workPendingInputMaxHeight`.
  */
 
-/** Fraction of the chat surface the scrolling option list may claim. */
-const OPTIONS_HEIGHT_FRACTION = 0.4;
-const OPTIONS_MIN_HEIGHT = 132;
-const OPTIONS_MAX_HEIGHT = 420;
+/**
+ * Fraction of the chat surface the option viewport may claim.
+ *
+ * The minimum is deliberately large enough for an ordinary three-option
+ * question plus one disclosed preview. Nested scrolling should be the long-
+ * list fallback, not the default experience for the common case.
+ */
+const OPTIONS_HEIGHT_FRACTION = 0.55;
+const OPTIONS_MIN_HEIGHT = 260;
+const OPTIONS_MAX_HEIGHT = 520;
 
 /**
  * Measure the chat surface — the flex column that holds the transcript and the
@@ -198,9 +204,9 @@ function OptionRow({
       {expanded && option.preview ? (
         <div
           data-testid={`ask-question-preview-${questionId}-${option.value}`}
-          /* The containing option-list viewport reserves its height whenever
-             previews exist. This panel scrolls internally; disclosure changes
-             content inside that fixed viewport, never the composer's height. */
+          /* Explicit disclosure may grow the option region up to its cap.
+             Hover and focus never open this panel, so that deliberate growth
+             cannot recreate the old runaway-row interaction. */
           className={cn("mb-3 ml-[50px] mr-3.5 max-h-[168px] overflow-auto rounded-lg border bg-black/[0.28] px-3 py-2.5", HAIRLINE)}
         >
           <QuestionOptionPreview preview={option.preview} previewFormat={option.previewFormat} />
@@ -491,12 +497,11 @@ export function AskQuestionComposer({
       <div className={cn("border-t", HAIRLINE)}>
         <div
           data-testid={`ask-question-options-viewport-${question.id}`}
-          className={previewable.length ? "flex flex-col" : undefined}
-          /* Preview disclosure can also make the "N more" affordance appear.
-             Keep the list and that row inside one fixed wrapper so either one
-             may resize internally without changing the composer. Questions
-             without previews keep their natural short-list height. */
-          style={previewable.length ? { height: optionsMaxHeight } : undefined}
+          className="flex flex-col overflow-hidden"
+          /* Natural height avoids a blank reserved preview well. Explicitly
+             opened previews may grow this region once, up to the invariant
+             surface-derived cap; genuinely long content scrolls inside it. */
+          style={{ maxHeight: optionsMaxHeight }}
         >
           {/* Only this region scrolls. Note row and footer stay pinned below it. */}
           <div
@@ -504,8 +509,7 @@ export function AskQuestionComposer({
             role={question.multiSelect ? "group" : "radiogroup"}
             aria-label={question.question}
             data-testid={`ask-question-options-${question.id}`}
-            className={cn("overflow-y-auto overscroll-contain", previewable.length ? "min-h-0 flex-1" : null)}
-            style={previewable.length ? undefined : { maxHeight: optionsMaxHeight }}
+            className="min-h-0 flex-auto overflow-y-auto overscroll-contain"
           >
             {options.map((option, index) => (
               <OptionRow
