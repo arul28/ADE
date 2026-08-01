@@ -1733,8 +1733,58 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("uses one rebuild timestamp for roster rows with invalid activity dates", async () => {
-    const rebuildAt = Date.parse("2026-08-01T12:00:00.000Z");
+  it("keeps roster alert identity stable when activity advances within one status", async () => {
+    let clock = Date.parse("2026-08-01T12:00:00.000Z");
+    const roster = rosterProject(1, "2026-08-01T11:59:00.000Z");
+    roster.chats[0]!.status = "awaiting";
+    const buildSnapshot = vi.fn(async () => [roster]);
+    const { publisher } = makeHarness(device, () => clock, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const first = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.lastActivityAt = "2026-08-01T12:00:05.000Z";
+    clock += 11_000;
+    const second = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(buildSnapshot).toHaveBeenCalledTimes(2);
+    expect(first).toMatchObject({ phase: "needs_you", activityTier: "signal" });
+    expect(second.revision).toBeGreaterThan(first.revision);
+    expect(second.updatedAt).not.toBe(first.updatedAt);
+    expect(second.statusSince).toBe(first.statusSince);
+    expect(second.alertFingerprint).toBe(first.alertFingerprint);
+    publisher.dispose();
+  });
+
+  it("changes roster statusSince whenever a chat re-enters a status", async () => {
+    let clock = Date.parse("2026-08-01T12:00:00.000Z");
+    const roster = rosterProject(1, "2026-08-01T11:59:00.000Z");
+    roster.chats[0]!.status = "awaiting";
+    const buildSnapshot = vi.fn(async () => [roster]);
+    const { publisher } = makeHarness(device, () => clock, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const awaiting = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.status = "running";
+    clock += 11_000;
+    const running = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.status = "awaiting";
+    clock += 11_000;
+    const awaitingAgain = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect([awaiting.phase, running.phase, awaitingAgain.phase])
+      .toEqual(["needs_you", "running", "needs_you"]);
+    expect(Date.parse(running.statusSince!)).toBeGreaterThan(Date.parse(awaiting.statusSince!));
+    expect(Date.parse(awaitingAgain.statusSince!)).toBeGreaterThan(Date.parse(running.statusSince!));
+    expect(awaitingAgain.alertFingerprint).not.toBe(awaiting.alertFingerprint);
+    publisher.dispose();
+  });
+
+  it("anchors invalid roster activity dates once across uncached rebuilds", async () => {
+    let rebuildAt = Date.parse("2026-08-01T12:00:00.000Z");
     const buildSnapshot = vi.fn().mockResolvedValue([
       rosterProject(2, "not-an-iso-date"),
     ]);
@@ -1747,12 +1797,20 @@ describe("createPushPublisherService flush", () => {
       },
     );
 
-    const items = (await publisher.getMachineAttentionSnapshot()).items;
+    const first = (await publisher.getMachineAttentionSnapshot()).items;
+    rebuildAt += 11_000;
+    const second = (await publisher.getMachineAttentionSnapshot()).items;
 
-    expect(items).toHaveLength(2);
-    expect(items.map((entry) => entry.revision)).toEqual([rebuildAt, rebuildAt]);
-    expect(items.map((entry) => entry.updatedAt))
+    expect(first).toHaveLength(2);
+    expect(first.map((entry) => entry.revision))
+      .toEqual([rebuildAt - 11_000, rebuildAt - 11_000]);
+    expect(first.map((entry) => entry.updatedAt))
       .toEqual(["2026-08-01T12:00:00.000Z", "2026-08-01T12:00:00.000Z"]);
+    expect(second.map((entry) => entry.revision)).toEqual([rebuildAt, rebuildAt]);
+    expect(second.map((entry) => entry.statusSince))
+      .toEqual(first.map((entry) => entry.statusSince));
+    expect(second.map((entry) => entry.alertFingerprint))
+      .toEqual(first.map((entry) => entry.alertFingerprint));
     publisher.dispose();
   });
 

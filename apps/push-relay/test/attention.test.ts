@@ -1265,9 +1265,9 @@ describe("account Attention contract", () => {
       activityTier: "ambient",
       updatedAt: "2026-07-28T08:19:00.000Z",
     }));
-    const stale = parse(activityAgentItem({
-      sessionId: "stale-signal",
-      itemId: "stale-signal",
+    const staleRoster = parse(activityAgentItem({
+      sessionId: "stale-roster-signal",
+      itemId: null,
       revision: 1,
       contentFingerprint: "stale-content",
       alertFingerprint: "stale-alert",
@@ -1301,7 +1301,7 @@ describe("account Attention contract", () => {
         {
           userId: "account-a",
           machineKey: MACHINE_KEY,
-          items: [idle, ambient, stale, fresh],
+          items: [idle, ambient, staleRoster, fresh],
           tombstones: [],
           sealCapacityTombstones: false,
           rosterEpoch: 1,
@@ -1315,7 +1315,7 @@ describe("account Attention contract", () => {
           APNS_TEAM_ID: "TESTTEAM12",
         }),
         "account-a",
-        [idle, ambient, stale, fresh],
+        [idle, ambient, staleRoster, fresh],
         sendPush,
       );
       expect(sendPush).toHaveBeenCalledTimes(1);
@@ -1707,7 +1707,7 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("caps an account and reports snapshot truncation", async () => {
+  it("caps an account, reports publish eviction, and keeps exact-cap snapshots honest", async () => {
     const database = new SqliteD1Database();
     const authorization = await machinePublishAuthorization();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -1775,7 +1775,7 @@ describe("account Attention contract", () => {
         "GET",
         "/attention/account/snapshot?since=0",
       )).json() as { itemsTruncated?: boolean };
-      expect(snapshot.itemsTruncated).toBe(true);
+      expect(snapshot.itemsTruncated).toBe(false);
     } finally {
       database.close();
     }
@@ -1880,7 +1880,7 @@ describe("account Attention contract", () => {
     }
   });
 
-  it("does not report truncation when an over-cap account has no evictable rows", async () => {
+  it("reports truncation backpressure when an over-cap account has no evictable rows", async () => {
     const database = new SqliteD1Database();
     const authorization = await machinePublishAuthorization();
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
@@ -1933,7 +1933,7 @@ describe("account Attention contract", () => {
       );
       const body = await response.json() as { itemsTruncated?: boolean };
       expect(response.status).toBe(200);
-      expect(body.itemsTruncated).toBeUndefined();
+      expect(body.itemsTruncated).toBe(true);
       expect(row(database, `
         select count(*) as count from attention_items where user_id = ?
       `, authorization.userId)?.count).toBe(2_001);

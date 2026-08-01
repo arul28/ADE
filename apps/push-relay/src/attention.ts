@@ -729,7 +729,7 @@ async function enforceActivityAccountItemCap(
     overflow,
     Number(evictionEligibleCountRow?.count ?? 0),
   );
-  if (rowsToRemove === 0) return { itemsTruncated: false, revision: null };
+  if (rowsToRemove === 0) return { itemsTruncated: true, revision: null };
 
   const revision = await commitAttentionRevision(env, userId, [
     env.DB.prepare(`
@@ -2929,7 +2929,7 @@ async function handleSnapshot(
     where user_id = ?
   `).bind(userId).first<{ count: number }>();
   const itemsTruncated = Number(accountItemCountRow?.count ?? 0)
-    >= MAX_ACCOUNT_ATTENTION_ITEMS;
+    > MAX_ACCOUNT_ATTENTION_ITEMS;
   const links = await env.DB.prepare(`
     select machine_key, machine_name, last_seen_at
     from attention_machine_links

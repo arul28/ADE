@@ -269,24 +269,32 @@ export function materializeActivityNotchSnapshot(): AttentionSnapshot {
     counts: activityNotchCounts(allItems),
     tombstones: [],
   };
-  const encoder = new TextEncoder();
-  const bytesBeforeBudget = encoder.encode(JSON.stringify(snapshot)).byteLength;
-  let bytesAfterBudget = bytesBeforeBudget;
-  while (snapshot.items.length > 0 && bytesAfterBudget > MAX_NOTCH_SNAPSHOT_BYTES) {
-    snapshot.items.pop();
-    snapshot.itemsTruncated = true;
-    bytesAfterBudget = encoder.encode(JSON.stringify(snapshot)).byteLength;
-  }
-  if (snapshot.items.length < projectedItemCount) {
-    console.warn(`activity.notch_snapshot_truncated ${JSON.stringify({
-      reason: "byte_budget",
-      budgetBytes: MAX_NOTCH_SNAPSHOT_BYTES,
-      bytesBeforeBudget,
-      bytesAfterBudget,
-      projectedItems: projectedItemCount,
-      publishedItems: snapshot.items.length,
-      totalItems: ordered.length,
-    })}`);
+  const serializedSnapshot = JSON.stringify(snapshot);
+  const mightExceedByteBudget = serializedSnapshot.length > MAX_NOTCH_SNAPSHOT_BYTES / 2
+    || (
+      serializedSnapshot.length > MAX_NOTCH_SNAPSHOT_BYTES / 3
+      && /[^\u0000-\u007f]/.test(serializedSnapshot)
+    );
+  if (mightExceedByteBudget) {
+    const encoder = new TextEncoder();
+    const bytesBeforeBudget = encoder.encode(serializedSnapshot).byteLength;
+    let bytesAfterBudget = bytesBeforeBudget;
+    while (snapshot.items.length > 0 && bytesAfterBudget > MAX_NOTCH_SNAPSHOT_BYTES) {
+      snapshot.items.pop();
+      snapshot.itemsTruncated = true;
+      bytesAfterBudget = encoder.encode(JSON.stringify(snapshot)).byteLength;
+    }
+    if (snapshot.items.length < projectedItemCount) {
+      console.warn(`[useActivitySync] activity.notch_snapshot_truncated ${JSON.stringify({
+        reason: "byte_budget",
+        budgetBytes: MAX_NOTCH_SNAPSHOT_BYTES,
+        bytesBeforeBudget,
+        bytesAfterBudget,
+        projectedItems: projectedItemCount,
+        publishedItems: snapshot.items.length,
+        totalItems: ordered.length,
+      })}`);
+    }
   }
   return snapshot;
 }
@@ -469,13 +477,30 @@ function emitActivityNotchToast(snapshot: AttentionSnapshot): void {
   if (!toast?.itemId) return;
   const notchApi = window.ade?.attentionNotch;
   if (typeof notchApi?.publishToast !== "function") return;
-  void Promise.resolve(notchApi.publishToast(toast))
-    .then(() => {
-      const publishedAt = Date.now();
-      notchLastToastAt = publishedAt;
-      notchToastCooldownByItem.set(toast.itemId!, publishedAt);
-    })
-    .catch(() => {});
+  const publishToast = notchApi.publishToast;
+  const itemId = toast.itemId;
+  const publishedAt = Date.now();
+  const accountGeneration = activityAccountGeneration;
+  const previousLastToastAt = notchLastToastAt;
+  const previousItemToastAt = notchToastCooldownByItem.get(itemId);
+  notchLastToastAt = publishedAt;
+  notchToastCooldownByItem.set(itemId, publishedAt);
+  void Promise.resolve()
+    .then(() => accountGeneration === activityAccountGeneration
+      ? publishToast(toast)
+      : undefined)
+    .catch(() => {
+      if (accountGeneration !== activityAccountGeneration) return;
+      if (notchLastToastAt === publishedAt) {
+        notchLastToastAt = previousLastToastAt;
+      }
+      if (notchToastCooldownByItem.get(itemId) !== publishedAt) return;
+      if (previousItemToastAt === undefined) {
+        notchToastCooldownByItem.delete(itemId);
+      } else {
+        notchToastCooldownByItem.set(itemId, previousItemToastAt);
+      }
+    });
 }
 
 async function refreshActivityNotchSettings(
@@ -704,16 +729,16 @@ export function useActivitySync(routeSurfaceVisible: boolean): void {
     };
     const publishNotchIfChanged = () => {
       const snapshot = materializeActivityNotchSnapshot();
-      // Toasts ride this same pass, and deliberately before the signature
-      // gate: a phase transition is exactly what earns an announcement, and a
-      // republish-suppressed frame must still be able to carry one.
-      emitActivityNotchToast(snapshot);
       const nextSignature = activityNotchSnapshotSignature(snapshot);
-      if (nextSignature === lastNotchSignature) return;
       if (!notchPrepared) {
         prepareNotch();
         return;
       }
+      // Toasts ride this same pass, and deliberately before the signature
+      // gate: a phase transition is exactly what earns an announcement, and a
+      // republish-suppressed frame must still be able to carry one.
+      emitActivityNotchToast(snapshot);
+      if (nextSignature === lastNotchSignature) return;
       if (notchPublishInFlight) {
         notchPublishQueued = true;
         return;

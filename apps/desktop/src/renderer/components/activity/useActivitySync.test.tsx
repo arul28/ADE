@@ -946,7 +946,7 @@ describe("useActivitySync", () => {
     expect(publishToast).not.toHaveBeenCalled();
   });
 
-  it("clamps toast copy and consumes cooldown only after a successful publish", async () => {
+  it("clamps toast copy and rolls back cooldown after a failed publish", async () => {
     window.localStorage.clear();
     window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
     const accountStatus = signedInStatus("user-toast-publish");
@@ -1040,6 +1040,145 @@ describe("useActivitySync", () => {
     expect(publishToast).toHaveBeenCalledTimes(2);
   });
 
+  it("optimistically rate-limits distinct signal items in one native round trip", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
+    const items = ["first", "second"].map((suffix, index) => ({
+      ...liveItem(),
+      id: `burst-${suffix}`,
+      revision: index + 1,
+      fingerprint: `burst-${suffix}:running`,
+      activityTier: "signal" as const,
+      destination: { kind: "session" as const, sessionId: `session-${suffix}` },
+    }));
+    let resolveToast: () => void = () => {};
+    const publishToast = vi.fn(() => new Promise<void>((resolve) => {
+      resolveToast = resolve;
+    }));
+    const publishSnapshot = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async () => readySnapshot(items)),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot,
+          publishToast,
+          updateSettings: vi.fn(async () => undefined),
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        items: expect.arrayContaining([
+          expect.objectContaining({ id: "burst-first" }),
+          expect.objectContaining({ id: "burst-second" }),
+        ]),
+      }),
+    ));
+
+    const firstTransition = [
+      {
+        ...items[0]!,
+        revision: 10,
+        fingerprint: "burst-first:needs-you",
+        eventKind: "agent_needs_you" as const,
+        phase: "needs_you" as const,
+      },
+      items[1]!,
+    ];
+    const secondTransition = [
+      firstTransition[0]!,
+      {
+        ...items[1]!,
+        revision: 11,
+        fingerprint: "burst-second:needs-you",
+        eventKind: "agent_needs_you" as const,
+        phase: "needs_you" as const,
+      },
+    ];
+    act(() => {
+      activityStore.getState().applySnapshot(readySnapshot(firstTransition, 2));
+      activityStore.getState().applySnapshot(readySnapshot(secondTransition, 3));
+    });
+    await waitFor(() => expect(publishToast).toHaveBeenCalledTimes(1));
+    expect(publishToast).toHaveBeenCalledWith(expect.objectContaining({
+      itemId: "burst-first",
+    }));
+
+    resolveToast();
+    await act(async () => {
+      await Promise.resolve();
+    });
+  });
+
+  it("does not toast a transition before the notch is prepared", async () => {
+    window.localStorage.clear();
+    window.localStorage.setItem("ade:attention:notch-auto-reveal", "true");
+    const initial = { ...liveItem(), activityTier: "signal" as const };
+    let resolveSettings: () => void = () => {};
+    const updateSettings = vi.fn(() => new Promise<void>((resolve) => {
+      resolveSettings = resolve;
+    }));
+    const publishSnapshot = vi.fn(async () => undefined);
+    const publishToast = vi.fn(async () => undefined);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      writable: true,
+      value: {
+        ...(originalAde ?? {}),
+        attention: {
+          getSnapshot: vi.fn(async () => readySnapshot([initial])),
+          acknowledge: vi.fn(),
+          reportPresence: vi.fn(),
+          getPreferences: vi.fn(),
+          putPreferences: vi.fn(),
+        },
+        attentionNotch: {
+          publishSnapshot,
+          publishToast,
+          updateSettings,
+          onAcknowledgeRequested: vi.fn(() => () => {}),
+        },
+      },
+    });
+
+    render(<Harness />);
+    await waitFor(() => expect(activityStore.getState().itemsById[initial.id]).toBeTruthy());
+    await waitFor(() => expect(updateSettings).toHaveBeenCalled());
+    act(() => {
+      activityStore.getState().applySnapshot(readySnapshot([{
+        ...initial,
+        revision: initial.revision + 1,
+        fingerprint: "account-fingerprint:needs-you",
+        eventKind: "agent_needs_you",
+        phase: "needs_you",
+      }], 2));
+    });
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(publishToast).not.toHaveBeenCalled();
+
+    resolveSettings();
+    await waitFor(() => expect(publishSnapshot).toHaveBeenCalled());
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(publishToast).not.toHaveBeenCalled();
+  });
+
   it("retries lazy notch preparation on the next store change", async () => {
     const publishSnapshot = vi.fn()
       .mockRejectedValueOnce(new Error("first helper write failed"))
@@ -1120,6 +1259,39 @@ describe("Activity renderer-to-notch bridge", () => {
       },
       tombstones: [],
     });
+  });
+
+  it("skips UTF-8 byte measurement for an ordinary small snapshot", () => {
+    const OriginalTextEncoder = globalThis.TextEncoder;
+    let encoderConstructions = 0;
+    class CountingTextEncoder extends OriginalTextEncoder {
+      constructor() {
+        super();
+        encoderConstructions += 1;
+      }
+    }
+    Object.defineProperty(globalThis, "TextEncoder", {
+      configurable: true,
+      writable: true,
+      value: CountingTextEncoder,
+    });
+    try {
+      activityStore.setState({
+        revision: 8,
+        generatedAt: "2026-07-28T12:00:02.000Z",
+        itemsById: { [runningItem.id]: runningItem },
+      });
+
+      materializeActivityNotchSnapshot();
+
+      expect(encoderConstructions).toBe(0);
+    } finally {
+      Object.defineProperty(globalThis, "TextEncoder", {
+        configurable: true,
+        writable: true,
+        value: OriginalTextEncoder,
+      });
+    }
   });
 
   it("maps account privacy, celebration, sound, and local presentation settings", () => {
@@ -1303,7 +1475,33 @@ describe("Activity renderer-to-notch bridge", () => {
       .toBeLessThanOrEqual(MAX_NOTCH_SNAPSHOT_BYTES);
     expect(parseAttentionNotchSnapshot(snapshot)).not.toBeNull();
     expect(warn).toHaveBeenCalledWith(expect.stringMatching(
-      /^activity\.notch_snapshot_truncated \{"reason":"byte_budget"/,
+      /^\[useActivitySync\] activity\.notch_snapshot_truncated \{"reason":"byte_budget"/,
+    ));
+  });
+
+  it("measures potentially oversized non-ASCII snapshots before publishing", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const itemsById: Record<string, AttentionItem> = {};
+    for (let index = 0; index < MAX_NOTCH_PROJECTION_ITEMS; index += 1) {
+      const id = `unicode-${String(index).padStart(2, "0")}`;
+      itemsById[id] = {
+        ...runningItem,
+        id,
+        revision: index + 1,
+        fingerprint: `${id}:1`,
+        title: "界".repeat(1_000),
+      };
+    }
+    activityStore.setState({ itemsById });
+
+    const snapshot = materializeActivityNotchSnapshot();
+
+    expect(snapshot.items.length).toBeLessThan(MAX_NOTCH_PROJECTION_ITEMS);
+    expect(snapshot.itemsTruncated).toBe(true);
+    expect(new TextEncoder().encode(JSON.stringify(snapshot)).byteLength)
+      .toBeLessThanOrEqual(MAX_NOTCH_SNAPSHOT_BYTES);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(
+      "[useActivitySync] activity.notch_snapshot_truncated",
     ));
   });
 

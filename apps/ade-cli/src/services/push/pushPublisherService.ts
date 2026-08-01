@@ -512,8 +512,17 @@ function rosterAttentionPhase(status: SyncRosterChatStatus): AttentionPhase {
   }
 }
 
-function rosterActivityTier(status: SyncRosterChatStatus): "ambient" | "idle" {
-  return status === "idle" || status === "ended" ? "idle" : "ambient";
+function rosterActivityTier(status: SyncRosterChatStatus): "signal" | "ambient" | "idle" {
+  switch (status) {
+    case "awaiting":
+    case "failed":
+      return "signal";
+    case "running":
+      return "ambient";
+    case "idle":
+    case "ended":
+      return "idle";
+  }
 }
 
 function prActivityTier(phase: AttentionPhase): "signal" | "ambient" {
@@ -572,6 +581,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
+  const rosterPhaseAnchors = new Map<string, {
+    status: SyncRosterChatStatus;
+    statusSinceAt: number;
+  }>();
   const lastMachineSnapshotItems = new Map<string, AttentionItem>();
   let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
@@ -838,6 +851,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           const activityTier = rosterActivityTier(chat.status);
           const revision = validTimestampMs(chat.lastActivityAt, nowMs);
           const activityAt = new Date(revision).toISOString();
+          const id = `agent:${machineKey}:${chat.id}`;
+          const existingAnchor = rosterPhaseAnchors.get(id);
+          const statusSinceAt = existingAnchor?.status === chat.status
+            ? existingAnchor.statusSinceAt
+            : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
+          rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
           const provider = providerDisplayName(chat.provider ?? chat.toolType);
           const subject = provider ?? chat.title?.trim() ?? "Agent";
           const preview = sanitizeAttentionPreview(
@@ -861,7 +880,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           }
           return withActivityFingerprints({
             contractVersion: ATTENTION_CONTRACT_VERSION,
-            id: `agent:${machineKey}:${chat.id}`,
+            id,
             revision,
             fingerprint: "",
             activityTier,
@@ -914,7 +933,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             actions,
             occurredAt: activityAt,
             updatedAt: activityAt,
-            statusSince: activityAt,
+            statusSince: new Date(statusSinceAt).toISOString(),
             seenAt: null,
             dismissedAt: null,
             expiresAt: activityTier === "idle"
@@ -924,6 +943,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         });
       })
       : [];
+    if (includeRoster) {
+      const rosterItemIds = new Set(rosterItems.map((item) => item.id));
+      for (const id of rosterPhaseAnchors.keys()) {
+        if (!rosterItemIds.has(id)) rosterPhaseAnchors.delete(id);
+      }
+    }
 
     const prItems = [...prActivities.values()].map((pr): AttentionItem => {
       const scopeKey = pr.scopeKey;
