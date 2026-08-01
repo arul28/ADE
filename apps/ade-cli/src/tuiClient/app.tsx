@@ -39,6 +39,10 @@ import type {
   ClaudeActiveGoal,
   CodexThreadGoal,
 } from "../../../desktop/src/shared/types/chat";
+import {
+  isStoredQuestionAnswered,
+  ownQuestionValue,
+} from "../../../desktop/src/shared/pendingInputAnswers";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
 import type {
@@ -329,7 +333,6 @@ import {
   type FeedbackType,
 } from "./feedbackForm";
 import {
-  answerForQuestion,
   buildPendingInputAnswers,
   cancelPendingQuestionDigitSelection,
   convertPendingQuestionDigitSelectionToText,
@@ -339,6 +342,7 @@ import {
   movePendingQuestionFocus,
   movePendingQuestionOption,
   optionsForPendingQuestion,
+  pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
   selectPendingQuestionDigit,
@@ -8684,12 +8688,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       return;
     }
+    const builtAnswers = buildPendingInputAnswers(
+      approval.request,
+      trimmed,
+      pendingQuestionStateRef.current?.itemId === approval.itemId ? pendingQuestionStateRef.current : null,
+    );
+    if (!builtAnswers || pendingQuestionAnsweredCount(approval.request, builtAnswers) === 0) {
+      const firstQuestion = approval.request?.questions[0];
+      addNotice(
+        pendingQuestionAnswerGuidance(approval.request, firstQuestion, 0),
+        "info",
+      );
+      return;
+    }
     await respondToInput({
       connection: conn,
       sessionId,
       itemId: approval.itemId,
       decision: "accept",
-      answers: buildPendingInputAnswers(approval.request, trimmed),
+      // Pass the live selection state so a typed note rides alongside whatever
+      // the user had already marked instead of replacing it.
+      answers: builtAnswers,
       responseText: trimmed,
     });
     addNotice("Answered request.", "success");
@@ -8710,19 +8729,32 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     if (!baseState) return false;
     const activeQuestion = questions[baseState.activeQuestionIndex] ?? questions[0] ?? null;
     if (!activeQuestion) return false;
-    // A typed answer for the active question is mapped through answerForQuestion
-    // (option-label matching + multi-select comma split) and merged into the
-    // accumulated answers, so it advances the multi-question flow instead of
-    // rebuilding a single-shot payload that would drop earlier answers.
-    const typed = typedAnswer?.trim();
-    const activeAnswer: string | string[] | null = typed
-      ? answerForQuestion(activeQuestion, typed)
+    // The typed text is folded into the selection rather than replacing it:
+    // `1` or an option label still picks, and anything else rides along as the
+    // note, selection first. Letting the note replace the pick was the TUI half
+    // of the divergence `shared/pendingInputAnswers` now settles.
+    const typed = typedAnswer?.trim() ?? "";
+    // Enter with nothing typed IS the confirmation of the highlighted row, so
+    // that path still sends the highlight even though the highlight alone is
+    // not a pick (see `touchedQuestionIds`). Enter with text goes through the
+    // shared contract, where an untouched cursor contributes nothing.
+    const activeAnswer: string | string[] | null = typed.length
+      ? ownQuestionValue(
+          buildPendingInputAnswers(request, typed, baseState, baseState.activeQuestionIndex),
+          activeQuestion.id,
+        ) ?? null
       : pendingQuestionSelectionValue(request, baseState);
     if (activeAnswer == null || (typeof activeAnswer === "string" && activeAnswer.length === 0)) {
-      addNotice("Type an answer in the prompt for this question.", "info");
+      addNotice(
+        pendingQuestionAnswerGuidance(request, activeQuestion, baseState.activeQuestionIndex),
+        "info",
+      );
       return true;
     }
-    const answers = { ...baseState.answers, [activeQuestion.id]: activeAnswer };
+    const answers = Object.fromEntries([
+      ...Object.entries(baseState.answers),
+      [activeQuestion.id, activeAnswer],
+    ]) as Record<string, string | string[]>;
     const answeredCount = pendingQuestionAnsweredCount(request, answers);
     if (answeredCount >= questions.length) {
       const conn = connectionRef.current;
@@ -8735,7 +8767,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         decision: "accept",
         answers,
         responseText: questions.map((question) => {
-          const answer = answers[question.id];
+          const answer = ownQuestionValue(answers, question.id);
           return `${question.header?.trim() || question.id}: ${Array.isArray(answer) ? answer.join(", ") : answer ?? ""}`;
         }).join("\n"),
       });
@@ -8747,7 +8779,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       return true;
     }
-    const nextUnansweredIndex = questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.id));
+    const nextUnansweredIndex = questions.findIndex((question) => !isStoredQuestionAnswered(
+      question,
+      ownQuestionValue(answers, question.id),
+    ));
     const nextState = {
       ...baseState,
       answers,
@@ -16073,10 +16108,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               );
               pendingQuestionStateRef.current = next;
               setPendingQuestionState(next);
-              if (question.multiSelect !== true) {
-                void submitSelectedPendingQuestion(pendingApproval)
-                  .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-              }
             },
             zIndex: 8,
           });
@@ -16744,7 +16775,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           ) : null}
           <Box width={centerWidth} flexDirection="column">
             {pendingApproval?.highStakes ? (
-              <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} />
+              <ApprovalPrompt approval={pendingApproval} modal questionState={pendingQuestionState} draft={prompt} />
             ) : (gridViewActive && multiView) ? (
               <MultiChatGrid
                 tiles={multiView.tiles}
@@ -16817,7 +16848,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
                   selection={chatMouseSelection}
                   width={chatWrapWidth}
                 />
-                <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} />
+                <ApprovalPrompt approval={pendingApproval} questionState={pendingQuestionState} width={centerWidth} draft={prompt} />
               </>
             )}
           </Box>

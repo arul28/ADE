@@ -70,7 +70,8 @@ import { ComposerSmartLinkMenu } from "./ComposerSmartLinkMenu";
 import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
-import { hasPendingInputOptions } from "./pendingInput";
+import { AskQuestionComposer } from "./AskQuestionComposer";
+import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
@@ -439,8 +440,9 @@ export type ParallelComposerControlSlot = {
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
   if (!pendingInput) return null;
-  if (pendingInput.kind === "question" || pendingInput.kind === "structured_question") {
-    return "Answer the question card above, or decline it.";
+  // B13: the card IS the composer now, so there is nothing "above" to answer.
+  if (isAskQuestionRequest(pendingInput)) {
+    return "Answer the question in the composer, or decline it.";
   }
   return "Resolve the pending request above before sending another message.";
 }
@@ -3950,7 +3952,19 @@ export function AgentChatComposer({
     onSendSteerNow?.();
   }, [effectiveActiveTurnSendMode, onSendSteerInterrupt, onSendSteerNow, submitComposerDraft]);
 
-  const showPendingInputOptionsHint = hasPendingInputOptions(pendingInput);
+  /**
+   * A question gate takes the composer over completely: the card replaces the
+   * textarea inside the same prompt-box frame, and the model / permission /
+   * effort row is hidden until it resolves. There is deliberately no second
+   * "answer the card above" banner — that banner sat on a composer
+   * `composerInputLocked` had already hard-locked, so the composer was dead
+   * and wearing a sign saying so.
+   */
+  const askQuestionRequest = pendingInput
+    && isAskQuestionRequest(pendingInput)
+    && pendingInput.questions.length > 0
+    ? pendingInput
+    : null;
   const selectedIosContext = iosElementContextItems.find((item) => item.id === selectedIosContextId) ?? null;
   const selectedAppControlContext = appControlContextItems.find((item) => item.id === selectedAppControlContextId) ?? null;
   const selectedBuiltInBrowserContext = builtInBrowserContextItems.find((item) => item.id === selectedBuiltInBrowserContextId) ?? null;
@@ -4191,7 +4205,7 @@ export function AgentChatComposer({
           ? "border-0 bg-transparent shadow-none"
           : "mx-auto w-full max-w-[var(--chat-column,52rem)]",
       )}
-      pendingBanner={pendingInput ? (
+      pendingBanner={pendingInput && !askQuestionRequest ? (
         pendingInput.kind === "plan_approval" ? (
           <ChatProposedPlanCard
             source={pendingInput.source}
@@ -4251,21 +4265,30 @@ export function AgentChatComposer({
                 </div>
               </>
             ) : (
-              <div className="flex items-center gap-1.5">
-                <span className="font-mono text-[length:calc(var(--chat-font-size)*10/14)] uppercase tracking-[0.14em] text-[color:color-mix(in_srgb,var(--chat-accent)_66%,white_34%)]">
-                  {showPendingInputOptionsHint
-                    ? "Answer in the inline question card, or pick an option there."
-                    : "Answer in the inline question card, or decline."}
-                </span>
-                <button
-                  type="button"
-                  disabled={approvalResponding}
-                  className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
-                  onClick={() => onApproval("decline")}
-                >
-                  Decline
-                </button>
-              </div>
+              /* Escape hatch for a gate that renders no controls of its own —
+                 in practice a question kind whose questions all failed to parse
+                 (`readPendingInputQuestion` drops empty text, so a whitespace
+                 -only askUser lands here). `composerInputLocked` is already
+                 true, so without a Decline this is a dead composer with no way
+                 out: exactly the failure this redesign exists to remove. The
+                 "answer in the card above" copy is what we wanted gone, not the
+                 button. */
+              <>
+                <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
+                  {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={approvalResponding}
+                    data-testid="pending-input-fallback-decline"
+                    className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => onApproval("decline")}
+                  >
+                    Decline
+                  </button>
+                </div>
+              </>
             )}
           </div>
         )
@@ -4589,7 +4612,23 @@ export function AgentChatComposer({
           ) : null}
         </>
       }
-      footer={
+      footer={askQuestionRequest ? (
+        /* Hiding the model / permission / effort row while a question blocks is
+           the point; hiding the whole footer took the interrupt with it. A
+           question always arrives mid-turn, and handleKeyDown (which owns
+           Cmd+.) is bound to the textarea that is no longer rendered — so
+           without this the user's only exit from a running turn is Decline. */
+        turnActive ? (
+          <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
+            <ActiveTurnStopButton
+              mode={activeTurnStopMode}
+              allowQueueChoice={sessionProvider === "claude"}
+              onModeChange={updateActiveTurnStopMode}
+              onStop={() => onInterrupt(activeTurnStopMode)}
+            />
+          </div>
+        ) : undefined
+      ) : (
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">
@@ -5095,8 +5134,18 @@ export function AgentChatComposer({
           </div>
           </div>
         </div>
-      }
+      )}
     >
+      {askQuestionRequest ? (
+        <AskQuestionComposer
+          key={askQuestionRequest.itemId ?? askQuestionRequest.requestId}
+          request={askQuestionRequest}
+          responding={approvalResponding ?? false}
+          onSubmit={(answers) => onApproval("accept", null, answers)}
+          onDecline={() => onApproval("decline")}
+        />
+      ) : (
+      <>
       {cursorCloudLaunchModeOpen && cursorCloudLaunchPanel ? (
         <div className="border-b border-violet-300/[0.10] bg-violet-500/[0.04] px-3 py-3">
           {cursorCloudLaunchPanel}
@@ -5351,6 +5400,8 @@ export function AgentChatComposer({
           ) : null}
         </div>
       </div>
+      </>
+      )}
       </ChatComposerShell>
       </BorderBeam>
     </>

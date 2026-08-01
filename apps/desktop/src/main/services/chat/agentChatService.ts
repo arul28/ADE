@@ -347,6 +347,11 @@ import {
 } from "../../../shared/types";
 import { providerDisplayLabel } from "../../../shared/pendingInputLabels";
 import {
+  flattenAnswerForSingleStringProvider,
+  ownQuestionValue,
+  sanitizeAnswersForTranscript,
+} from "../../../shared/pendingInputAnswers";
+import {
   CROSS_MACHINE_FORK_BRIEF_STUB,
   CROSS_MACHINE_FORK_ENCODED_BUDGET_BYTES,
   CROSS_MACHINE_FORK_MAIN_MAX_UNCOMPRESSED,
@@ -7628,8 +7633,9 @@ export function createAgentChatService(args: {
           : null;
       if (!key) return false;
       // Check both the question id and the question text as answer keys
-      return hasAnswerValue(answers[key])
-        || (typeof (q as Record<string, unknown>).question === "string" && hasAnswerValue(answers[(q as Record<string, unknown>).question as string]));
+      return hasAnswerValue(ownQuestionValue(answers, key))
+        || (typeof (q as Record<string, unknown>).question === "string"
+          && hasAnswerValue(ownQuestionValue(answers, (q as Record<string, unknown>).question as string)));
     });
   };
 
@@ -15118,6 +15124,23 @@ export function createAgentChatService(args: {
       itemId: string;
       decision: AgentChatApprovalDecision;
       turnId?: string | null;
+      /**
+       * The answers dispatched to the provider. Recorded on the event so the
+       * transcript receipt survives a reload — always through
+       * `sanitizeAnswersForTranscript`, which drops `isSecret` answers outright
+       * (the event is durable and syncs to every paired device) and caps the
+       * payload so one pasted essay cannot become an oversized synced event.
+       */
+      answers?: Record<string, string | string[]> | undefined;
+      /** Legacy/single-question callers may still send only responseText. */
+      responseText?: string | null | undefined;
+      /**
+       * The request's questions. REQUIRED, not optional: it is the only way to
+       * know which answers are secret, and a defaulted `[]` would fail open —
+       * a future call site that forgot it would silently persist a credential
+       * instead of failing to compile.
+       */
+      questions: readonly PendingInputQuestion[];
     },
   ): void => {
     const resolution: "cancelled" | "declined" | "accepted" = (() => {
@@ -15125,10 +15148,23 @@ export function createAgentChatService(args: {
       if (args.decision === "decline") return "declined";
       return "accepted";
     })();
+    const recordedAnswers = (() => {
+      if (resolution !== "accepted") return undefined;
+      const fromAnswers = sanitizeAnswersForTranscript(args.questions, args.answers);
+      if (fromAnswers) return fromAnswers;
+      const responseText = args.responseText?.trim() ?? "";
+      const onlyQuestion = args.questions.length === 1 ? args.questions[0] : null;
+      if (!responseText || !onlyQuestion) return undefined;
+      return sanitizeAnswersForTranscript(
+        args.questions,
+        Object.fromEntries([[onlyQuestion.id, responseText]]),
+      );
+    })();
     emitChatEvent(managed, {
       type: "pending_input_resolved",
       itemId: args.itemId,
       resolution,
+      ...(recordedAnswers ? { answers: recordedAnswers } : {}),
       ...(typeof args.turnId === "string" && args.turnId.trim().length ? { turnId: args.turnId.trim() } : {}),
     });
     persistChatState(managed);
@@ -15180,6 +15216,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: "accept",
       turnId: pendingTurnId,
+      questions: [],
     });
     resumeCodexTurnWatchdogAfterInput(managed, runtime, pendingTurnId);
   };
@@ -15199,12 +15236,12 @@ export function createAgentChatService(args: {
     answers: Record<string, string | string[]> | undefined,
     responseText?: string | null,
   ): Record<string, string[]> => {
-    const normalized: Record<string, string[]> = {};
+    const normalized = Object.create(null) as Record<string, string[]>;
     const trimValues = (values: string[]): string[] => values.map((value) => value.trim()).filter((value) => value.length > 0);
 
     if (request?.questions.length) {
       for (const question of request.questions) {
-        const raw = answers?.[question.id];
+        const raw = ownQuestionValue(answers, question.id);
         let nextValues: string[];
         if (Array.isArray(raw)) {
           nextValues = trimValues(raw.filter((value): value is string => typeof value === "string"));
@@ -15220,7 +15257,7 @@ export function createAgentChatService(args: {
     }
 
     if (request?.kind === "model_selection") {
-      const rawSelection = answers?.selection;
+      const rawSelection = ownQuestionValue(answers, "selection");
       const selectionValues = Array.isArray(rawSelection)
         ? trimValues(rawSelection.filter((value): value is string => typeof value === "string"))
         : typeof rawSelection === "string"
@@ -15235,7 +15272,7 @@ export function createAgentChatService(args: {
     if (trimmedResponse.length > 0) {
       if (request?.questions.length === 1) {
         const [question] = request.questions;
-        if (question && !normalized[question.id]?.length) {
+        if (question && !(ownQuestionValue(normalized, question.id)?.length)) {
           normalized[question.id] = [trimmedResponse];
         }
       } else {
@@ -15782,6 +15819,7 @@ export function createAgentChatService(args: {
           itemId: followup.itemId,
           decision: "cancel",
           turnId: followup.turnId,
+          questions: [],
         });
       }
       runtime.approvals.clear();
@@ -21898,7 +21936,7 @@ export function createAgentChatService(args: {
             continue;
           }
           const answerList = questions.map((question) => {
-            const answers = response.answers[question.id] ?? [];
+            const answers = ownQuestionValue(response.answers, question.id) ?? [];
             if (answers.length > 0) return answers;
             return response.responseText?.trim() ? [response.responseText.trim()] : [];
           });
@@ -22016,6 +22054,7 @@ export function createAgentChatService(args: {
             decision: (replied.response ?? replied.reply) === "reject"
               ? "decline"
               : "accept",
+            questions: pending.request?.questions ?? [],
             turnId: pending.request?.turnId ?? null,
           });
           continue;
@@ -22879,6 +22918,7 @@ export function createAgentChatService(args: {
         itemId: followup.itemId,
         decision: followup.decision,
         turnId: followup.turnId,
+        questions: [],
       });
       void sendMessage({
         sessionId: managed.session.id,
@@ -23007,6 +23047,7 @@ export function createAgentChatService(args: {
         itemId: followup.itemId,
         decision: "cancel",
         turnId: followup.turnId,
+        questions: [],
       });
     }
     runtime.approvals.clear();
@@ -25527,6 +25568,7 @@ export function createAgentChatService(args: {
             itemId,
             decision: "cancel",
             turnId: resolvedTurnId,
+            questions: [],
           });
           resumeCodexTurnWatchdogAfterInput(managed, runtime, resolvedTurnId);
           persistChatState(managed);
@@ -26051,6 +26093,7 @@ export function createAgentChatService(args: {
           itemId: followup.itemId,
           decision: "cancel",
           turnId: followup.turnId,
+          questions: [],
         });
       }
       runtime.approvals.clear();
@@ -26578,6 +26621,7 @@ export function createAgentChatService(args: {
           itemId: followup.itemId,
           decision: "cancel",
           turnId: followup.turnId,
+          questions: [],
         });
       }
       runtime.approvals.clear();
@@ -26607,6 +26651,7 @@ export function createAgentChatService(args: {
           itemId: followup.itemId,
           decision: "cancel",
           turnId: followup.turnId,
+          questions: [],
         });
       }
       runtime.approvals.clear();
@@ -32945,7 +32990,12 @@ export function createAgentChatService(args: {
         answers: req.questions.map((question, index) => ({
           index,
           question: question.question,
-          answer: response.answers[question.id]?.join(", ") ?? response.responseText ?? "",
+          // Droid takes one string per question, so the pick and any typed
+          // qualification have to share it. Labelled rather than comma-joined,
+          // or "manual, only if it survives a restart" reads as two choices.
+          answer: flattenAnswerForSingleStringProvider(question, ownQuestionValue(response.answers, question.id))
+            || response.responseText
+            || "",
         })),
       };
     };
@@ -38762,6 +38812,7 @@ export function createAgentChatService(args: {
         itemId,
         decision: "cancel",
         turnId,
+        questions: [],
       });
     }
     markSessionIdleWithFreshCache(managed);
@@ -38784,6 +38835,9 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: localPending.request.turnId ?? null,
+        answers,
+        responseText,
+        questions: localPending.request.questions,
       });
       localPending.resolve({ decision: resolvedDecision, answers, responseText });
       if (managed.runtime?.kind === "codex") {
@@ -38821,6 +38875,7 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
           turnId: null,
+          questions: [],
         });
         emitChatEvent(managed, {
           type: "system_notice",
@@ -38841,6 +38896,9 @@ export function createAgentChatService(args: {
           itemId,
           decision: resolvedDecision,
           turnId: pending.request?.turnId ?? null,
+          answers,
+          responseText,
+          questions: pending.request?.questions ?? [],
         });
         resumeCodexTurnWatchdogAfterInput(
           managed,
@@ -38946,6 +39004,9 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: pending.request?.turnId ?? null,
+        answers,
+        responseText,
+        questions: pending.request?.questions ?? [],
       });
       return;
     }
@@ -38986,6 +39047,9 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: pending.request?.turnId ?? null,
+        answers,
+        responseText,
+        questions: pending.request?.questions ?? [],
       });
       return;
     }
@@ -39011,6 +39075,7 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: cursorRuntime.activeTurnId ?? null,
+        questions: [],
       });
       return;
     }
@@ -39034,6 +39099,7 @@ export function createAgentChatService(args: {
         itemId,
         decision: resolvedDecision,
         turnId: managed.runtime.activeTurnId ?? null,
+        questions: [],
       });
       return;
     }
@@ -39047,6 +39113,7 @@ export function createAgentChatService(args: {
       itemId,
       decision: resolvedDecision === "accept" || resolvedDecision === "accept_for_session" ? "cancel" : resolvedDecision,
       turnId: null,
+      questions: [],
     });
     emitChatEvent(managed, {
       type: "system_notice",

@@ -35813,7 +35813,7 @@ describe("createAgentChatService", () => {
       title: "Pending question",
       body: "Which path should we take?",
       questions: [{
-        id: "answer",
+        id: "__proto__",
         header: "Question 1",
         question: "Which path should we take?",
         allowsFreeform: true,
@@ -35845,11 +35845,28 @@ describe("createAgentChatService", () => {
       responseText: "Take the safe path.",
     });
 
-    await expect(requestPromise).resolves.toMatchObject({
+    const result = await requestPromise;
+    expect(result).toMatchObject({
       decision: "accept",
-      answers: { answer: ["Take the safe path."] },
       responseText: "Take the safe path.",
     });
+    expect(Object.prototype.hasOwnProperty.call(result.answers, "__proto__")).toBe(true);
+    expect(result.answers.__proto__).toEqual(["Take the safe path."]);
+    const resolutionEvent = events.find((event) =>
+      event.sessionId === session.id
+      && event.event.type === "pending_input_resolved"
+      && event.event.itemId === approvalEvent.event.itemId,
+    );
+    expect(resolutionEvent?.event).toMatchObject({
+      type: "pending_input_resolved",
+      itemId: approvalEvent.event.itemId,
+      resolution: "accepted",
+    });
+    const recorded = resolutionEvent?.event.type === "pending_input_resolved"
+      ? resolutionEvent.event.answers
+      : undefined;
+    expect(Object.prototype.hasOwnProperty.call(recorded, "__proto__")).toBe(true);
+    expect(recorded?.__proto__).toBe("Take the safe path.");
     expect(readPersistedChatState(session.id).awaitingInput).toBeUndefined();
   });
 

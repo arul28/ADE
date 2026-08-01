@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../../desktop/src/shared/types/chat";
 import {
-  answerForQuestion,
   buildPendingInputAnswers,
   cancelPendingQuestionDigitSelection,
   convertPendingQuestionDigitSelectionToText,
@@ -9,10 +8,12 @@ import {
   latestPendingApproval,
   movePendingQuestionFocus,
   movePendingQuestionOption,
+  pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
   selectPendingQuestionDigit,
   selectPendingQuestionOptionIndex,
+  selectedValuesForQuestion,
 } from "../pendingInput";
 
 const baseRequest: PendingInputRequest = {
@@ -33,6 +34,27 @@ const baseRequest: PendingInputRequest = {
   blocking: true,
   canProceedWithoutAnswer: false,
 };
+
+describe("pendingQuestionAnswerGuidance", () => {
+  it("distinguishes freeform, options, defaults, and unanswerable questions", () => {
+    const question = baseRequest.questions[0]!;
+    expect(pendingQuestionAnswerGuidance(baseRequest, question, 0))
+      .toBe("Type an answer in the prompt for this question.");
+    expect(pendingQuestionAnswerGuidance(baseRequest, { ...question, allowsFreeform: false }, 0))
+      .toBe("Select one of the offered options.");
+    expect(pendingQuestionAnswerGuidance(baseRequest, {
+      ...question,
+      options: [],
+      allowsFreeform: false,
+      defaultAssumption: "Keep current",
+    }, 0)).toBe("Press Enter to use the default assumption.");
+    expect(pendingQuestionAnswerGuidance(baseRequest, {
+      ...question,
+      options: [],
+      allowsFreeform: false,
+    }, 0)).toBe("No answer options are available. Decline this request.");
+  });
+});
 
 function questionApproval(request: PendingInputRequest = baseRequest) {
   return {
@@ -59,6 +81,152 @@ describe("pendingInput", () => {
     };
     expect(buildPendingInputAnswers(request, "1, Manual")).toEqual({ path: ["recommended", "manual"] });
   });
+
+  // Bug 1. The TUI used to hand typed text through a separate parser
+  // and return it as the whole answer, so a note typed alongside a selection
+  // threw that selection away. Both must travel, selection first, note last —
+  // the same contract desktop and the web client answer under.
+  it("regression: a typed note accumulates onto the selection instead of replacing it", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
+
+    expect(buildPendingInputAnswers(baseRequest, "only if the pin survives a restart", selected))
+      .toEqual({ path: ["manual", "only if the pin survives a restart"] });
+  });
+
+  it("regression: a typed note accumulates onto every multi-select pick", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ ...baseRequest.questions[0]!, multiSelect: true }],
+    };
+    let state = createPendingQuestionSelectionState(questionApproval(request))!;
+    state = selectPendingQuestionOptionIndex(request, state, 0);
+    state = selectPendingQuestionOptionIndex(request, state, 1);
+
+    expect(buildPendingInputAnswers(request, "and roll back if CI is red", state))
+      .toEqual({ path: ["recommended", "manual", "and roll back if CI is red"] });
+  });
+
+  // The seeded cursor sits on the recommended option so the list opens with a
+  // highlight somewhere. That cursor is NOT an answer — preselecting the
+  // recommendation was explicitly dropped (spec section 6) — so free text typed
+  // without touching the list must travel alone, exactly as it does on desktop.
+  it("regression: an untouched highlight never becomes a phantom pick", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "Recommended", value: "recommended", recommended: true },
+          { label: "Manual", value: "manual" },
+        ],
+      }],
+    };
+    const untouched = createPendingQuestionSelectionState(questionApproval(request))!;
+
+    expect(selectedValuesForQuestion(request, untouched, 0)).toEqual([]);
+    expect(buildPendingInputAnswers(request, "neither, squash it", untouched))
+      .toEqual({ path: "neither, squash it" });
+  });
+
+  it("counts the highlight once the user actually moves it", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{
+        ...baseRequest.questions[0]!,
+        options: [
+          { label: "Recommended", value: "recommended", recommended: true },
+          { label: "Manual", value: "manual" },
+        ],
+      }],
+    };
+    const moved = movePendingQuestionOption(request, createPendingQuestionSelectionState(questionApproval(request))!, 1);
+
+    expect(selectedValuesForQuestion(request, moved, 0)).toEqual(["manual"]);
+    expect(buildPendingInputAnswers(request, "if CI is green", moved))
+      .toEqual({ path: ["manual", "if CI is green"] });
+  });
+
+  // `2` then more characters was never a pick, so rolling the digit back must
+  // roll the touch back with it rather than leaving a phantom selection.
+  it("regression: converting a digit selection to text leaves no pick behind", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    const digit = selectPendingQuestionDigit(baseRequest, state, "2");
+    const converted = convertPendingQuestionDigitSelectionToText(baseRequest, digit.state, "x");
+
+    expect(converted).not.toBeNull();
+    expect(selectedValuesForQuestion(baseRequest, converted!.state, 0)).toEqual([]);
+  });
+
+  // The old parser comma-split and kept only the first segment for a
+  // single-select, silently truncating any prose containing a comma.
+  it("regression: free text with a comma survives verbatim on a single-select", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    expect(buildPendingInputAnswers(baseRequest, "neither, squash it instead", state))
+      .toEqual({ path: "neither, squash it instead" });
+  });
+
+  it("still comma-splits a multi-select, keeping unmatched segments as the note", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ ...baseRequest.questions[0]!, multiSelect: true }],
+    };
+    const state = createPendingQuestionSelectionState(questionApproval(request))!;
+    expect(buildPendingInputAnswers(request, "1, Manual, and revisit later", state))
+      .toEqual({ path: ["recommended", "manual", "and revisit later"] });
+  });
+
+  it("keeps typing an option number a pick rather than a note", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    expect(buildPendingInputAnswers(baseRequest, "2", state)).toEqual({ path: "manual" });
+  });
+
+  it("sends the selection alone when nothing was typed", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    const selected = selectPendingQuestionDigit(baseRequest, state, "2").state;
+    expect(buildPendingInputAnswers(baseRequest, "", selected)).toEqual({ path: "manual" });
+  });
+
+  it("sends nothing for an untouched question with no typed text", () => {
+    const state = createPendingQuestionSelectionState(questionApproval())!;
+    expect(buildPendingInputAnswers(baseRequest, "", state)).toEqual({});
+  });
+
+  it("sends a freeform answer alone when the question offers no options", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ id: "path", question: "Which path?", allowsFreeform: true }],
+    };
+    const state = createPendingQuestionSelectionState(questionApproval(request))!;
+    expect(buildPendingInputAnswers(request, "something else", state)).toEqual({ path: "something else" });
+  });
+
+  it("regression: refuses unmatched freeform when the question disallows it", () => {
+    const request: PendingInputRequest = {
+      ...baseRequest,
+      questions: [{ ...baseRequest.questions[0]!, allowsFreeform: false }],
+    };
+    const state = createPendingQuestionSelectionState(questionApproval(request))!;
+
+    expect(buildPendingInputAnswers(request, "neither, do something else", state)).toEqual({});
+    const selected = movePendingQuestionOption(request, state, 1);
+    expect(buildPendingInputAnswers(request, "ignore this freeform", selected)).toEqual({ path: "manual" });
+  });
+
+  it.each(["__proto__", "toString"])(
+    "regression: provider question id %s is safe in TUI selection state",
+    (id) => {
+      const request: PendingInputRequest = {
+        ...baseRequest,
+        questions: [{ id, question: "What?", allowsFreeform: true }],
+      };
+      const state = createPendingQuestionSelectionState(questionApproval(request))!;
+      const built = buildPendingInputAnswers(request, "safe", state)!;
+
+      expect(Object.prototype.hasOwnProperty.call(built, id)).toBe(true);
+      expect(built[id]).toBe("safe");
+    },
+  );
 
   it("returns the latest unresolved pending input request", () => {
     const events: AgentChatEventEnvelope[] = [
@@ -183,19 +351,6 @@ describe("pendingInput", () => {
     expect(pendingQuestionSelectionValue(request, movedQuestion)).toBe("detailed");
   });
 
-  it("maps a typed answer for the active question by option label, index, or free text", () => {
-    const question = baseRequest.questions[0]!; // options: Recommended/recommended, Manual/manual
-    // Typed answers route through answerForQuestion so the multi-question flow
-    // preserves option-label matching and multi-select splitting (not raw text).
-    expect(answerForQuestion(question, "Manual")).toBe("manual");
-    expect(answerForQuestion(question, "2")).toBe("manual");
-    expect(answerForQuestion({ ...question, multiSelect: true }, "1, manual")).toEqual([
-      "recommended",
-      "manual",
-    ]);
-    expect(answerForQuestion({ id: "free", question: "Notes?" }, "  ship it  ")).toBe("ship it");
-  });
-
   it("toggles multi-select option picker values without collapsing to a scalar", () => {
     const request: PendingInputRequest = {
       ...baseRequest,
@@ -299,7 +454,7 @@ describe("pendingInput", () => {
     expect(cancelled.cancelled).toBe(true);
     expect(convertPendingQuestionDigitSelectionToText(request, cancelled.state, " apples")).toBeNull();
     expect(pendingQuestionSelectionValue(request, cancelled.state)).toBe("one");
-    expect(answerForQuestion(request.questions[0]!, "3 apples")).toBe("3 apples");
+    expect(buildPendingInputAnswers(request, "3 apples", cancelled.state)).toEqual({ path: "3 apples" });
   });
 
   it("leaves out-of-range digits for the composer", () => {
@@ -343,11 +498,12 @@ describe("pendingInput", () => {
     expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
   });
 
-  it("keeps direct option selection immediate for click-style callers", () => {
+  it("regression: pointer-style option selection only marks and never banks an answer", () => {
     const initial = createPendingQuestionSelectionState(questionApproval())!;
     const selected = selectPendingQuestionOptionIndex(baseRequest, initial, 1);
 
     expect(pendingQuestionSelectionValue(baseRequest, selected)).toBe("manual");
+    expect(selected.answers).toEqual({});
     expect(selected.pendingDigitSelection).toBeNull();
   });
 });

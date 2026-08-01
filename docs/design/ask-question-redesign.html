@@ -1,0 +1,1319 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ADE — Ask-question surface redesign</title>
+
+<script crossorigin src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+<style>
+/* ───────────────────────────────────────────────────────────────────────────
+   Tokens. These mirror the real chat surface variables so what you see here
+   transfers 1:1 into the renderer:
+     --chat-accent      → chatSurfaceTheme.ts PROVIDER_ACCENT
+     --chat-font-size   → user-configurable chat font size (14px default)
+     --chat-radius-card → composer/card radius
+   Everything else below is neutral by design. The whole point of this pass is
+   that accent appears in exactly TWO places per card.
+   ─────────────────────────────────────────────────────────────────────────── */
+:root {
+  --bg:            #0b0b0d;
+  --surface:       #121215;
+  --surface-2:     #17171b;
+  --hairline:      rgba(255,255,255,0.065);
+  --hairline-firm: rgba(255,255,255,0.10);
+  --fg:            #ededf0;
+  --fg-2:          rgba(237,237,240,0.62);
+  --fg-3:          rgba(237,237,240,0.40);
+  --fg-4:          rgba(237,237,240,0.26);
+  --ok:            #6ee7b7;
+
+  --chat-accent:      #D97706;   /* claude */
+  --chat-font-size:   14px;
+  --chat-radius-card: 14px;
+
+  --sans: ui-sans-serif, -apple-system, "SF Pro Text", "Inter", system-ui, sans-serif;
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "Menlo", monospace;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--fg); }
+body {
+  font-family: var(--sans);
+  -webkit-font-smoothing: antialiased;
+  padding: 56px 32px 120px;
+}
+
+/* ── page chrome ─────────────────────────────────────────────────────────── */
+.page      { max-width: 1180px; margin: 0 auto; }
+.page > h1 { font-size: 26px; font-weight: 600; letter-spacing: -0.015em; margin: 0 0 6px; }
+.page > .lede { color: var(--fg-2); font-size: 14.5px; line-height: 1.6; max-width: 62ch; margin: 0 0 10px; }
+.page > .meta { color: var(--fg-4); font-family: var(--mono); font-size: 11px; letter-spacing: 0.04em; margin: 0 0 48px; }
+
+.spec {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 1px; background: var(--hairline);
+  border: 1px solid var(--hairline); border-radius: 10px; overflow: hidden;
+  margin: 0 0 56px;
+}
+.spec > div { background: var(--surface); padding: 14px 16px; }
+.spec dt { font-family: var(--mono); font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.16em; color: var(--fg-4); margin: 0 0 6px; }
+.spec dd { margin: 0; font-size: 12.5px; line-height: 1.5; color: var(--fg-2); }
+.spec dd b { color: var(--fg); font-weight: 500; }
+
+section { margin: 0 0 64px; }
+section > h2 {
+  font-family: var(--mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.18em; color: var(--fg-3);
+  margin: 0 0 6px; padding-bottom: 12px; border-bottom: 1px solid var(--hairline);
+}
+section > .note { color: var(--fg-2); font-size: 13px; line-height: 1.6; max-width: 66ch; margin: 14px 0 26px; }
+section > .note code { font-family: var(--mono); font-size: 11.5px; color: var(--fg); background: rgba(255,255,255,0.05);
+                        padding: 1px 5px; border-radius: 4px; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 28px; align-items: start; }
+@media (max-width: 1000px) { .row2 { grid-template-columns: 1fr; } }
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   THE COMPOSER FRAME
+   The card is not a card any more — it IS the composer. Same border, same
+   radius, same width as the prompt box it replaces, so nothing shifts when the
+   question resolves back into a textarea.
+   ═══════════════════════════════════════════════════════════════════════════ */
+.composer {
+  border: 1px solid var(--hairline-firm);
+  border-radius: var(--chat-radius-card);
+  background: linear-gradient(180deg, var(--surface-2), var(--surface));
+  box-shadow: 0 1px 0 rgba(255,255,255,0.03) inset, 0 12px 32px -18px rgba(0,0,0,0.9);
+  overflow: hidden;
+}
+.composer.asking {
+  /* the ONE structural use of accent: a hairline top edge saying "you're in
+     answer mode". Not a glow, not a fill, not a 40%-opacity blob. */
+  border-color: color-mix(in srgb, var(--chat-accent) 30%, var(--hairline-firm));
+}
+
+/* ── header: provider mark + dot rail + dismiss ───────────────────────────── */
+.q-head { display: flex; align-items: center; gap: 9px; padding: 12px 14px 0; }
+.q-mark {
+  width: 17px; height: 17px; border-radius: 50%; flex: none;
+  display: grid; place-items: center;
+  background: color-mix(in srgb, var(--chat-accent) 16%, transparent);
+  color: var(--chat-accent); font-size: 9px; line-height: 1;
+}
+.q-who {
+  font-family: var(--mono); font-size: 10px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.15em;
+  color: color-mix(in srgb, var(--chat-accent) 78%, white 22%);
+}
+.q-head .grow { flex: 1; }
+.q-rail { display: flex; gap: 5px; align-items: center; }
+.q-dot  { width: 5px; height: 5px; border-radius: 50%; background: var(--fg-4); border: 0; padding: 0;
+          cursor: pointer; transition: background .16s, transform .16s; }
+.q-dot:hover { transform: scale(1.35); }
+.q-dot.on   { background: var(--chat-accent); }
+.q-dot.done { background: var(--ok); }
+.q-x { background: none; border: 0; color: var(--fg-4); cursor: pointer; font-size: 15px;
+       line-height: 1; padding: 2px 4px; border-radius: 5px; }
+.q-x:hover { color: var(--fg-2); background: rgba(255,255,255,0.05); }
+.q-min { background: none; border: 0; color: var(--fg-4); cursor: pointer; font-size: 13px;
+         line-height: 1; padding: 3px 5px; border-radius: 5px; font-family: var(--mono); }
+.q-min:hover { color: var(--fg-2); background: rgba(255,255,255,0.05); }
+
+/* ── minimized: folds into the prompt box so the chat scrolls freely ──────── */
+.q-folded {
+  display: grid; grid-template-columns: 17px 1fr auto auto; gap: 9px; align-items: center;
+  width: 100%; background: none; border: 0; cursor: pointer; font: inherit; color: inherit;
+  padding: 11px 12px; text-align: left;
+}
+.q-folded:hover { background: rgba(255,255,255,0.03); }
+.q-folded .fold-t { min-width: 0; font-size: 12.5px; color: var(--fg-2);
+                    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.q-folded .fold-t b { color: var(--fg); font-weight: 500; }
+.q-folded .fold-n { font-family: var(--mono); font-size: 9.5px; font-weight: 700; letter-spacing: 0.12em;
+                    text-transform: uppercase; color: color-mix(in srgb, var(--chat-accent) 80%, white 20%);
+                    border: 1px solid color-mix(in srgb, var(--chat-accent) 32%, transparent);
+                    border-radius: 999px; padding: 2px 8px; white-space: nowrap; }
+.q-folded .fold-c { color: var(--fg-4); font-size: 11px; }
+
+/* ── the ask ─────────────────────────────────────────────────────────────── */
+.q-kicker {
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.17em; color: var(--fg-4); padding: 12px 14px 0;
+}
+.q-text {
+  font-size: calc(var(--chat-font-size) * 15 / 14); font-weight: 600; line-height: 1.42;
+  letter-spacing: -0.008em; color: var(--fg); padding: 6px 14px 12px;
+}
+.q-context { font-size: 12.5px; line-height: 1.55; color: var(--fg-2); padding: 0 14px 12px; margin-top: -6px; }
+.q-badge {
+  display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 10px;
+  font-family: var(--mono); font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.14em; color: var(--fg-3);
+  border: 1px solid var(--hairline-firm); border-radius: 999px; padding: 3px 8px;
+}
+
+/* ── THE LEDGER ──────────────────────────────────────────────────────────────
+   No per-option border. No per-option fill. No per-option radius. One hairline
+   between rows and nothing else. Compare to today: 9 accent tints, a boxed
+   radio, a 2-col grid that wraps ragged.
+   ───────────────────────────────────────────────────────────────────────── */
+.ledger { border-top: 1px solid var(--hairline); }
+.opt-wrap + .opt-wrap { border-top: 1px solid var(--hairline); }
+
+/* THE HEIGHT BUDGET.
+   Only the option list scrolls. The header, the note row, and the footer are
+   pinned outside it, so Send/Decline/Next are reachable at any list length and
+   the card's total height is bounded by the chat area — the transcript never
+   has to scroll to reveal the answer controls. iOS already proves this shape
+   (`WorkStructuredQuestionCard`'s topChrome / ScrollView / bottomChrome); this
+   brings desktop and the TUI onto the same budget. */
+.opts-shell { display: flex; flex-direction: column; overflow: hidden; }
+.opts-shell .opts { min-height: 0; flex: 1 1 auto; }
+.opts { overflow-y: auto; overscroll-behavior: contain; }
+.opts::-webkit-scrollbar { width: 9px; }
+.opts::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.11); border-radius: 99px;
+                                 border: 3px solid transparent; background-clip: content-box; }
+.opts::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); background-clip: content-box; }
+/* A hairline that only appears when there is more list below — the one honest
+   signal that the region scrolls, without a permanent gradient smudge. */
+.opts.clipped { box-shadow: inset 0 -20px 16px -16px rgba(0,0,0,0.85); }
+
+/* …and the count, because a shadow alone is deniable. A list that cuts cleanly
+   after option 4 reads as "there are four options". This row says otherwise,
+   and clicking it scrolls the rest into view. It occupies its own line rather
+   than floating over the list, so it can never cover a row you meant to click. */
+.more-row {
+  display: block; flex: none; width: 100%; background: none; cursor: pointer; font: inherit;
+  border: 0; border-top: 1px solid var(--hairline);
+  padding: 7px 14px 7px 50px; text-align: left;
+  font-family: var(--mono); font-size: 9.5px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: 0.14em; color: var(--fg-4);
+}
+.more-row:hover { color: var(--fg-2); background: rgba(255,255,255,0.03); }
+
+.opt {
+  display: grid; grid-template-columns: 26px 1fr auto; align-items: baseline; gap: 10px;
+  width: 100%; text-align: left; background: none; border: 0; cursor: pointer;
+  padding: 11px 14px; font: inherit; color: inherit;
+  transition: background .12s ease;
+}
+.opt:hover        { background: rgba(255,255,255,0.028); }
+.opt:focus-visible{ outline: 1px solid color-mix(in srgb, var(--chat-accent) 55%, transparent); outline-offset: -1px; }
+.opt[aria-checked="true"] { background: rgba(255,255,255,0.038); }
+
+.opt-n {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--fg-4);
+  text-align: right; letter-spacing: 0.02em;
+}
+.opt[aria-checked="true"] .opt-n { color: var(--fg-2); }
+
+.opt-body { min-width: 0; }
+.opt-label {
+  font-family: var(--mono); font-size: calc(var(--chat-font-size) * 12 / 14);
+  font-weight: 700; text-transform: uppercase; letter-spacing: 0.055em;
+  color: var(--fg-2); line-height: 1.35;
+}
+.opt[aria-checked="true"] .opt-label,
+.opt:hover .opt-label { color: var(--fg); }
+.opt-desc {
+  font-size: calc(var(--chat-font-size) * 12 / 14); line-height: 1.5; color: var(--fg-3);
+  margin-top: 3px;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.opt-rec {
+  font-size: 10.5px; font-weight: 500; color: var(--fg-3); letter-spacing: 0.01em; white-space: nowrap;
+}
+.opt-tick { font-size: 12px; color: var(--chat-accent); line-height: 1; }
+
+/* Preview disclosure. Sits in the row's own trailing slot; clicking it neither
+   selects the option nor advances the question. */
+.opt-caret {
+  background: none; border: 0; cursor: pointer; color: var(--fg-4);
+  font-family: var(--mono); font-size: 9px; font-weight: 700; letter-spacing: 0.12em;
+  text-transform: uppercase; padding: 4px 6px; border-radius: 5px; white-space: nowrap;
+}
+.opt-caret:hover { color: var(--fg-2); background: rgba(255,255,255,0.05); }
+
+/* THE GLITCH FIX. The option shell stays natural-height until it reaches its
+   cap, then this panel scrolls inside it. Nothing here is driven by :hover, so
+   the transcript cannot repeatedly re-measure under the pointer and walk the
+   row out from under a click. */
+.preview {
+  margin: 0 14px 12px 50px;
+  border: 1px solid var(--hairline); border-radius: 8px;
+  background: rgba(0,0,0,0.28);
+  max-height: 168px; overflow: auto;
+}
+.preview pre {
+  margin: 0; padding: 10px 12px; font-family: var(--mono);
+  font-size: 11px; line-height: 1.55; color: var(--fg-2); white-space: pre; tab-size: 2;
+}
+.compare { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--hairline);
+           margin: 0 14px 12px 50px; border: 1px solid var(--hairline); border-radius: 8px; overflow: hidden; }
+.compare > div { background: rgba(0,0,0,0.28); }
+.compare h4 {
+  margin: 0; padding: 7px 10px; border-bottom: 1px solid var(--hairline);
+  font-family: var(--mono); font-size: 9px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.13em; color: var(--fg-4); white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.compare pre { margin: 0; padding: 9px 10px; font-family: var(--mono); font-size: 10.5px;
+               line-height: 1.55; color: var(--fg-2); white-space: pre; max-height: 140px; overflow: auto; }
+
+/* ── the note row — last row of the same ledger, not a separate widget ────── */
+.note-row { display: grid; grid-template-columns: 26px 1fr; gap: 10px; align-items: center;
+            padding: 4px 14px; border-top: 1px solid var(--hairline); }
+.note-row .opt-n { padding-top: 0; }
+.note-row input {
+  width: 100%; background: none; border: 0; outline: none; color: var(--fg);
+  font: inherit; font-size: calc(var(--chat-font-size) * 12.5 / 14); padding: 10px 0;
+}
+.note-row input::placeholder { color: var(--fg-4); }
+
+/* ── footer ──────────────────────────────────────────────────────────────── */
+.q-foot { display: flex; align-items: center; gap: 10px; padding: 9px 12px 10px;
+          border-top: 1px solid var(--hairline); }
+.q-foot .grow { flex: 1; }
+.q-count { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; color: var(--fg-4); }
+.keys { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--fg-4); }
+.keys kbd { color: var(--fg-3); }
+
+.btn {
+  font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase;
+  letter-spacing: 0.11em; padding: 7px 12px; border-radius: 8px; cursor: pointer;
+  border: 1px solid transparent; background: none; color: var(--fg-3); transition: .13s ease;
+}
+.btn:hover { color: var(--fg-2); background: rgba(255,255,255,0.05); }
+.btn-primary {
+  background: color-mix(in srgb, var(--chat-accent) 92%, black 8%);
+  color: #0b0b0d; border-color: transparent;
+}
+.btn-primary:hover { background: var(--chat-accent); color: #0b0b0d; }
+.btn-primary:disabled { background: rgba(255,255,255,0.055); color: var(--fg-4); cursor: not-allowed; }
+.btn-ghost { border-color: var(--hairline-firm); }
+
+/* ── resting composer (for the before/after and the return-to state) ──────── */
+.rest { padding: 14px; color: var(--fg-4); font-size: 13.5px; }
+.rest-foot { display: flex; align-items: center; gap: 14px; padding: 9px 12px;
+             border-top: 1px solid var(--hairline); font-size: 11.5px; color: var(--fg-3); }
+.rest-foot .grow { flex: 1; }
+.rest-send { width: 26px; height: 26px; border-radius: 50%; background: rgba(255,255,255,0.09);
+             display: grid; place-items: center; color: var(--fg-2); font-size: 12px; }
+
+/* ── the answered receipt (AdeCard / chatCardPrimitives convention) ───────── */
+.receipt { padding: 2px 0; }
+.receipt-line {
+  display: grid; grid-template-columns: 18px 1fr auto; gap: 9px; align-items: baseline;
+  width: 100%; background: none; border: 0; cursor: pointer; font: inherit; color: inherit;
+  padding: 5px 2px; text-align: left; border-radius: 6px;
+}
+.receipt-line:hover { background: rgba(255,255,255,0.03); }
+.receipt-glyph { color: color-mix(in srgb, var(--chat-accent) 70%, white 30%); font-size: 10px; text-align: center; }
+.receipt-title { font-size: 12.5px; color: var(--fg-2); }
+.receipt-title b { color: var(--fg); font-weight: 500; }
+.receipt-when { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em;
+                text-transform: uppercase; color: var(--fg-4); }
+.receipt-open { margin: 4px 0 2px 27px; border-left: 1px solid var(--hairline); padding-left: 13px; }
+.receipt-open .rk { font-family: var(--mono); font-size: 9px; font-weight: 700; text-transform: uppercase;
+                    letter-spacing: 0.16em; color: var(--fg-4); margin: 8px 0 5px; }
+.receipt-opt { font-size: 12px; color: var(--fg-4); padding: 2.5px 0; }
+.receipt-opt.picked { color: var(--fg-2); }
+.receipt-note { font-size: 12px; color: var(--fg-2); margin: 7px 0 2px; font-style: italic; }
+
+/* ── device frames ───────────────────────────────────────────────────────── */
+/* A real 390×844 viewport, not a crop. Whatever you see here is everything the
+   phone shows — if the card overflowed its budget you would see it clip. */
+.phone { width: 390px; height: 844px; border: 1px solid var(--hairline-firm); border-radius: 30px;
+         padding: 10px; background: #08080a; display: flex; flex-direction: column; overflow: hidden; }
+.phone-status { display: flex; justify-content: space-between; align-items: center;
+                padding: 4px 12px 8px; font-size: 11px; font-weight: 600; color: var(--fg-3); }
+.phone-nav { display: flex; align-items: center; gap: 9px; padding: 6px 6px 10px;
+             border-bottom: 1px solid var(--hairline); font-size: 13px; color: var(--fg-2); }
+.phone-nav .grow { flex: 1; }
+/* The transcript takes whatever the card leaves. It shrinks; it never scrolls
+   the card off-screen, and the card never scrolls the page. */
+.phone-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 2px; }
+.phone-dock { padding-top: 8px; }
+.phone-home { height: 5px; width: 130px; border-radius: 99px; background: rgba(255,255,255,0.22);
+              margin: 9px auto 2px; }
+.msg { font-size: 13px; line-height: 1.55; color: var(--fg-2); margin: 0 0 14px; }
+.msg.me { background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px 11px; margin-left: 44px; }
+.msg .mh { font-family: var(--mono); font-size: 9px; font-weight: 700; text-transform: uppercase;
+           letter-spacing: 0.15em; color: var(--fg-4); margin-bottom: 5px; }
+.tui { background: #07070a; border: 1px solid var(--hairline); border-radius: 8px; padding: 16px 18px;
+       font-family: var(--mono); font-size: 12px; line-height: 1.65; color: var(--fg-2);
+       white-space: pre; overflow-x: auto; }
+.tui .a { color: #D97706; } .tui .d { color: var(--fg-4); } .tui .g { color: var(--ok); }
+.tui .w { color: var(--fg); }
+
+.cap { font-family: var(--mono); font-size: 9.5px; font-weight: 700; text-transform: uppercase;
+       letter-spacing: 0.15em; color: var(--fg-4); margin: 0 0 11px; }
+.cap.bad  { color: #f0a882; }
+.cap.good { color: var(--ok); }
+
+/* ── the "before" reconstruction ─────────────────────────────────────────── */
+.before { border: 1px solid rgba(217,119,6,0.34); border-radius: 14px;
+          background: rgba(217,119,6,0.045); padding: 14px; }
+.before .bh { font-family: var(--mono); font-size: 10.5px; font-weight: 700; text-transform: uppercase;
+              letter-spacing: 0.16em; color: rgba(240,180,120,0.95); margin-bottom: 10px; }
+.before .bq { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.before-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.before-opt { border: 1px solid rgba(217,119,6,0.28); background: rgba(217,119,6,0.05);
+              border-radius: 9px; padding: 11px 13px; }
+.before-opt .l { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; }
+.before-opt .d { font-size: 11.5px; color: var(--fg-3); margin-top: 5px; line-height: 1.5; }
+.before-opt .r { display: inline-block; background: rgba(110,231,183,0.14); color: #a7f3d0;
+                 font-family: var(--mono); font-size: 8.5px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: 0.14em; padding: 1px 6px; border-radius: 999px; margin-left: 6px; }
+.before .binput { margin-top: 10px; border: 1px solid rgba(255,255,255,0.1); border-radius: 12px;
+                  padding: 10px 12px; color: var(--fg-4); font-size: 12.5px; background: rgba(0,0,0,0.22); }
+.before .bfoot { display: flex; gap: 8px; margin-top: 12px; align-items: center; }
+.before .bpill { font-family: var(--mono); font-size: 10px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: 0.1em; border: 1px solid rgba(255,255,255,0.18); border-radius: 999px;
+                 padding: 6px 11px; color: var(--fg-3); }
+.before .bpill.acc { border-color: rgba(217,119,6,0.5); color: rgba(240,180,120,0.95); }
+.before .bpill.solid { border-color: #fff; color: #fff; }
+
+.callouts { list-style: none; padding: 0; margin: 18px 0 0; }
+.callouts li { display: grid; grid-template-columns: 20px 1fr; gap: 10px; font-size: 12.5px;
+               line-height: 1.6; color: var(--fg-2); padding: 5px 0; }
+.callouts .n { font-family: var(--mono); font-size: 10px; color: var(--fg-4); padding-top: 3px; }
+.callouts code { font-family: var(--mono); font-size: 11px; color: var(--fg);
+                 background: rgba(255,255,255,0.05); padding: 1px 5px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useCallback, useMemo, useRef } = React;
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   REAL COMPONENT SOURCE
+   This is the shape intended for
+   apps/desktop/src/renderer/components/chat/AskQuestionComposer.tsx.
+   Class names map onto the CSS above; in the repo they become the existing
+   Tailwind + `--chat-*` variable vocabulary. The logic — selection model,
+   payload construction, Send-label derivation, preview disclosure, keyboard
+   handling — is production logic, not mock.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/**
+ * The four legible answer states. The Send label is derived from this and
+ * nothing else, so the button is a literal receipt for the payload.
+ *
+ *   EMPTY        → nothing selected, no note      → Send disabled
+ *   PICK         → option(s) selected, no note    → "Send 1"  /  "Send 2 picks"
+ *   PICK_NOTE    → option(s) + note               → "Send 1 + note"
+ *   NOTE         → note only                      → "Send note"
+ *
+ * Crucially: typing never clears a selection, and selecting never clears the
+ * note. Both travel. This is what every provider already accepts —
+ * Claude's `question.reply` takes `answers: string[][]`, and the universal
+ * `askUser` tool returns free-form JSON.
+ */
+function answerState(picks, note) {
+  const hasPick = picks.length > 0;
+  const hasNote = note.trim().length > 0;
+  if (hasPick && hasNote) return "PICK_NOTE";
+  if (hasPick) return "PICK";
+  if (hasNote) return "NOTE";
+  return "EMPTY";
+}
+
+function sendLabel({ picks, note, isLast, totalAnswered, totalQuestions }) {
+  if (!isLast) return "Next →";
+  const state = answerState(picks, note);
+  if (totalQuestions > 1) {
+    return state === "EMPTY" ? "Send" : `Send ${totalAnswered} answers`;
+  }
+  switch (state) {
+    case "PICK":      return picks.length > 1 ? `Send ${picks.length} picks` : "Send 1";
+    case "PICK_NOTE": return picks.length > 1 ? `Send ${picks.length} + note` : "Send 1 + note";
+    case "NOTE":      return "Send note";
+    default:          return "Send";
+  }
+}
+
+/**
+ * Payload for `chat.respondToInput`. One shape, four surfaces.
+ * Selection values come first, the note last — so a model reading the array
+ * sees the choice before the qualification.
+ */
+function buildAnswers(questions, picksById, notesById) {
+  const answers = {};
+  for (const q of questions) {
+    const values = [...(picksById[q.id] ?? [])];
+    const note = (notesById[q.id] ?? "").trim();
+    if (note) values.push(note);
+    if (values.length === 1) answers[q.id] = values[0];
+    else if (values.length > 1) answers[q.id] = values;
+  }
+  return answers;
+}
+
+/* ── one ledger row ──────────────────────────────────────────────────────── */
+function OptionRow({ index, option, checked, expanded, onToggle, onTogglePreview, multi }) {
+  return (
+    <div className="opt-wrap">
+      <button
+        type="button"
+        className="opt"
+        role={multi ? "checkbox" : "radio"}
+        aria-checked={checked}
+        onClick={onToggle}
+      >
+        <span className="opt-n">{index + 1}</span>
+        <span className="opt-body">
+          <span className="opt-label">{option.label}</span>
+          {option.description ? <span className="opt-desc">{option.description}</span> : null}
+        </span>
+        <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {option.recommended && !checked ? <span className="opt-rec">Recommended</span> : null}
+          {checked ? <span className="opt-tick">✓</span> : null}
+        </span>
+      </button>
+      {option.preview ? (
+        <div style={{ padding: "0 14px 8px 50px", marginTop: -6 }}>
+          <button
+            type="button"
+            className="opt-caret"
+            aria-expanded={expanded}
+            /* Neither selects nor advances. This is the whole fix for the
+               "button moves away as I hover" glitch: preview visibility is a
+               deliberate click on its own control, never a hover side-effect. */
+            onClick={(e) => { e.stopPropagation(); onTogglePreview(); }}
+          >
+            {expanded ? "▾ hide preview" : "▸ preview"}
+          </button>
+        </div>
+      ) : null}
+      {expanded && option.preview ? (
+        <div className="preview"><pre>{option.preview}</pre></div>
+      ) : null}
+    </div>
+  );
+}
+
+/**
+ * Placeholder for the note row, derived from whether a pick exists.
+ *
+ * This is the user-visible half of the "what actually gets sent" fix: the field
+ * is an ANSWER when nothing is picked and a QUALIFIER once something is. One
+ * string change makes the two jobs legible without a mode switch or a
+ * disabled state.
+ */
+function notePlaceholder({ hasOptions, picks, multi }) {
+  if (!hasOptions) return "Your answer";
+  if (picks.length === 0) return "Or send your own response instead";
+  if (multi && picks.length > 1) return `Add a note (sent with your ${picks.length} picks)`;
+  return "Add a note (sent with your pick)";
+}
+
+/** One-line summary shown when the card is folded into the prompt box. */
+function foldedSummary(request, q, page) {
+  const label = q.header || `Question ${page + 1}`;
+  return { label, text: q.question };
+}
+
+/* ── the composer, in asking mode ────────────────────────────────────────── */
+function AskQuestionComposer({
+  request,
+  accent,
+  compact = false,
+  initial = {},
+  /* Height the OPTION LIST may occupy — the composer's total height is this
+     plus fixed chrome. In the renderer this is computed from the chat surface
+     the same way `workPendingInputMaxHeight` does on iOS: budget from the
+     surface, never from the transcript viewport, or the transcript shrinking as
+     the card grows creates a feedback loop that eats the screen. */
+  optionsMaxHeight = 260,
+}) {
+  const questions = request.questions;
+  const [page, setPage]           = useState(initial.page ?? 0);
+  const [picksById, setPicks]     = useState(initial.picks ?? {});
+  const [notesById, setNotes]     = useState(initial.notes ?? {});
+  const [openPreview, setOpen]    = useState(initial.openPreview ?? null);
+  const [comparing, setComparing] = useState(initial.comparing ?? false);
+  const [folded, setFolded]       = useState(initial.folded ?? false);
+  const [clipped, setClipped]     = useState(false);
+
+  /* Whether the list has more below the fold — drives the one hairline that
+     admits the region scrolls. Measured, not guessed, so a short list gets no
+     false affordance. */
+  const optsRef = useRef(null);
+  const [hiddenBelow, setHiddenBelow] = useState(0);
+  const measureClip = useCallback((node) => {
+    optsRef.current = node;
+    if (!node) return;
+    const check = () => {
+      const rest = node.scrollHeight - node.scrollTop - node.clientHeight;
+      setClipped(rest > 2);
+      // Count option rows whose top edge falls below the visible fold.
+      const fold = node.getBoundingClientRect().bottom;
+      const rows = [...node.querySelectorAll(".opt-wrap")];
+      setHiddenBelow(rows.filter((r) => r.getBoundingClientRect().top >= fold - 4).length);
+    };
+    check();
+    node.addEventListener("scroll", check, { passive: true });
+    if (typeof ResizeObserver !== "undefined") new ResizeObserver(check).observe(node);
+  }, []);
+
+  const q       = questions[page];
+  const picks   = picksById[q.id] ?? [];
+  const note    = notesById[q.id] ?? "";
+  const isLast  = page === questions.length - 1;
+
+  const answeredCount = questions.filter(
+    (x) => (picksById[x.id]?.length ?? 0) > 0 || (notesById[x.id] ?? "").trim().length > 0
+  ).length;
+
+  const canProceed = answerState(picks, note) !== "EMPTY";
+  const canSend    = questions.length > 1 ? answeredCount === questions.length : canProceed;
+
+  /* Select MARKS. It never advances — the note field is right below, and
+     yanking the card away mid-thought is exactly the behaviour we're deleting
+     (`handleOption`'s submitSingle branch, AgentChatMessageList.tsx:2718). */
+  const toggle = useCallback((value) => {
+    setPicks((prev) => {
+      const cur = prev[q.id] ?? [];
+      if (q.multiSelect) {
+        return { ...prev, [q.id]: cur.includes(value) ? cur.filter((v) => v !== value) : [...cur, value] };
+      }
+      return { ...prev, [q.id]: cur.includes(value) ? [] : [value] };
+    });
+  }, [q.id, q.multiSelect]);
+
+  const previewable = q.options.filter((o) => o.preview);
+  const canCompare  = previewable.length >= 2;
+  const comparePair = comparing ? previewable.slice(0, 2) : [];
+
+  const onKeyDown = (e) => {
+    const inField = e.target.tagName === "INPUT";
+    if (!inField && /^[1-9]$/.test(e.key)) {
+      const opt = q.options[Number(e.key) - 1];
+      if (opt) { e.preventDefault(); toggle(opt.value); }
+      return;
+    }
+    if (e.key === "Enter" && !inField) {
+      e.preventDefault();
+      if (!isLast && canProceed) setPage(page + 1);
+    }
+  };
+
+  /* FOLDED. The gate is still open and still blocking — it has just collapsed
+     to one line so the transcript gets the screen back. Deliberately NOT a
+     dismiss: the × next to it declines, this only hides. iOS already ships this
+     idea (`pendingInputCollapsed`); it comes to desktop and gets a shared
+     summary string so both surfaces fold to the same sentence. */
+  if (folded) {
+    const { label, text } = foldedSummary(request, q, page);
+    return (
+      <div className="composer asking" style={{ "--chat-accent": accent }}>
+        <button className="q-folded" onClick={() => setFolded(false)}>
+          <span className="q-mark">✻</span>
+          <span className="fold-t"><b>{label}</b> — {text}</span>
+          {questions.length > 1 ? (
+            <span className="fold-n">{answeredCount}/{questions.length}</span>
+          ) : (
+            <span className="fold-n">answer</span>
+          )}
+          <span className="fold-c">⌃</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="composer asking"
+      style={{ "--chat-accent": accent }}
+      onKeyDown={onKeyDown}
+      tabIndex={0}
+    >
+      <div className="q-head">
+        <span className="q-mark">✻</span>
+        <span className="q-who">{request.who} asks</span>
+        <span className="grow" />
+        {questions.length > 1 ? (
+          <span className="q-rail">
+            {questions.map((x, i) => {
+              const done = (picksById[x.id]?.length ?? 0) > 0 || (notesById[x.id] ?? "").trim().length > 0;
+              return (
+                <button
+                  key={x.id}
+                  className={`q-dot ${i === page ? "on" : done ? "done" : ""}`}
+                  title={x.header}
+                  onClick={() => setPage(i)}
+                />
+              );
+            })}
+          </span>
+        ) : null}
+        <button
+          className="q-min"
+          title="Minimize — keeps the question open so you can scroll the chat"
+          onClick={() => setFolded(true)}
+        >⌄</button>
+        <button className="q-x" title="Decline">×</button>
+      </div>
+
+      {q.header ? <div className="q-kicker">{q.header}</div> : null}
+      <div className="q-text">{q.question}</div>
+      {request.context ? <div className="q-context">{request.context}</div> : null}
+      {q.multiSelect ? <div className="q-badge">◫ Pick all that apply</div> : null}
+
+      <div className="ledger">
+        <div
+          className="opts-shell"
+          style={{ maxHeight: optionsMaxHeight }}
+        >
+          {/* Only this region scrolls. Note row and footer stay pinned below it. */}
+          <div
+            className={`opts ${clipped ? "clipped" : ""}`}
+            ref={measureClip}
+          >
+            {q.options.map((o, i) => (
+              <OptionRow
+                key={o.value}
+                index={i}
+                option={o}
+                multi={q.multiSelect}
+                checked={picks.includes(o.value)}
+                expanded={openPreview === o.value && !comparing}
+                onToggle={() => toggle(o.value)}
+                onTogglePreview={() => setOpen(openPreview === o.value ? null : o.value)}
+              />
+            ))}
+
+            {comparing && comparePair.length === 2 ? (
+              <div className="compare">
+                {comparePair.map((o) => (
+                  <div key={o.value}>
+                    <h4>{o.label}</h4>
+                    <pre>{o.preview}</pre>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          {hiddenBelow > 0 ? (
+            <button
+              className="more-row"
+              onClick={() => optsRef.current?.scrollBy({ top: optsRef.current.clientHeight - 40, behavior: "smooth" })}
+            >
+              ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
+            </button>
+          ) : null}
+        </div>
+
+        <div className="note-row">
+          <span className="opt-n">✎</span>
+          <input
+            value={note}
+            placeholder={notePlaceholder({
+              hasOptions: q.options.length > 0,
+              picks,
+              multi: q.multiSelect,
+            })}
+            onChange={(e) => setNotes((p) => ({ ...p, [q.id]: e.target.value }))}
+          />
+        </div>
+      </div>
+
+      <div className="q-foot">
+        <button className="btn">Decline</button>
+        {canCompare ? (
+          <button className="btn" onClick={() => setComparing((c) => !c)}>
+            {comparing ? "⇄ Single" : "⇄ Compare"}
+          </button>
+        ) : null}
+        <span className="grow" />
+        {!compact ? <span className="keys"><kbd>1-9</kbd> pick · <kbd>↵</kbd> next · <kbd>esc</kbd> decline</span> : null}
+        {questions.length > 1 ? (
+          <span className="q-count">{page + 1} / {questions.length}</span>
+        ) : null}
+        <button
+          className="btn btn-primary"
+          disabled={isLast ? !canSend : !canProceed}
+          onClick={() => { if (!isLast) setPage(page + 1); }}
+        >
+          {sendLabel({ picks, note, isLast, totalAnswered: answeredCount, totalQuestions: questions.length })}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ── the answered receipt, on chatCardPrimitives / AdeCard convention ─────
+   "Shape follows the state, not the variant name: a quiet result is ONE line,
+   no box, hairline rule." — AdeCard.tsx. So: one line, expandable.
+   ──────────────────────────────────────────────────────────────────────── */
+function AnsweredReceipt({ request, answers, accent, declined = false, defaultOpen = false }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="receipt" style={{ "--chat-accent": accent }}>
+      <button className="receipt-line" onClick={() => setOpen((o) => !o)}>
+        <span className="receipt-glyph">✻</span>
+        <span className="receipt-title">
+          {declined ? (
+            <>{request.who} asked — <b>you declined</b>, it proceeded on its own assumption</>
+          ) : (
+            <>{request.who} asked · <b>{request.questions.map((q) => {
+              const a = answers[q.id];
+              const first = Array.isArray(a) ? a[0] : a;
+              return first;
+            }).filter(Boolean).join(" · ")}</b></>
+          )}
+        </span>
+        <span className="receipt-when">{open ? "hide" : "answered"}</span>
+      </button>
+      {open ? (
+        <div className="receipt-open">
+          {/* Header · answer · note. NOT the full offered-option list with the
+              chosen one marked — replaying every rejected option is a menu, not
+              a receipt, and it re-inflates the row this was meant to shrink. */}
+          {request.questions.map((q) => {
+            const a = answers[q.id];
+            const values = Array.isArray(a) ? a : a ? [a] : [];
+            const byValue = new Map(q.options.map((o) => [o.value, o.label]));
+            const picks = values.filter((v) => byValue.has(v)).map((v) => byValue.get(v));
+            const noteText = values.filter((v) => !byValue.has(v)).join(" ");
+            return (
+              <div key={q.id}>
+                <div className="rk">{q.header}</div>
+                {/* An isSecret answer never reaches the persisted event at all,
+                    so there is nothing here to show. */}
+                {q.isSecret ? (
+                  <div className="receipt-opt">answer hidden</div>
+                ) : (
+                  <>
+                    {picks.length ? <div className="receipt-opt picked">{picks.join(" · ")}</div> : null}
+                    {noteText ? <div className="receipt-note">note: “{noteText}”</div> : null}
+                    {!picks.length && !noteText ? (
+                      <div className="receipt-opt">no answer recorded</div>
+                    ) : null}
+                  </>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+/* ── resting composer, for the return-to state ───────────────────────────── */
+function RestingComposer() {
+  return (
+    <div className="composer">
+      <div className="rest">Type to vibecode…</div>
+      <div className="rest-foot">
+        <span>⛨ Bypass ⌄</span><span>✻ Claude Opus 5 ⌄</span><span style={{ color: "#7dd3fc" }}>Medium ⌄</span>
+        <span className="grow" /><span className="rest-send">↑</span>
+      </div>
+    </div>
+  );
+}
+
+/* A true 390×844 viewport with real transcript above the dock, so the card's
+   height budget is honest: if it overflowed, you'd see it clip here. */
+function PhoneFrame({ children, long = false }) {
+  return (
+    <div className="phone">
+      <div className="phone-status"><span>9:41</span><span>􀙇 􀛨 􀋨</span></div>
+      <div className="phone-nav"><span>‹</span><span>ade/964e38ed</span><span className="grow" /><span>⋯</span></div>
+      <div className="phone-scroll">
+        <div className="msg me">Start with the context skill — this is what an ADE chat asking a question looks like.</div>
+        <div className="msg">
+          <div className="mh">✻ Claude</div>
+          Traced it. One data model, four renderers that disagree — desktop concatenates the
+          note onto the pick, the TUI throws the pick away, iOS drops the note. Two decisions
+          before I write anything.
+        </div>
+        {long ? (
+          <>
+            <div className="msg me">Does that mean the provider decides, or us?</div>
+            <div className="msg">
+              <div className="mh">✻ Claude</div>
+              Us. Claude's <code>question.reply</code> takes <code>answers: string[][]</code> and the
+              universal <code>askUser</code> tool returns free-form JSON — no provider constrains this.
+              The inconsistency is entirely ours.
+            </div>
+            <div className="msg me">Fold the card away so I can read that again.</div>
+          </>
+        ) : null}
+      </div>
+      <div className="phone-dock">{children}</div>
+      <div className="phone-home" />
+    </div>
+  );
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   FIXTURES — your real CTO question, verbatim from the screenshot.
+   ═══════════════════════════════════════════════════════════════════════════ */
+const CTO_REQUEST = {
+  who: "Claude",
+  context: "Two decisions before I write anything.",
+  questions: [
+    {
+      id: "isolation",
+      header: "Isolation",
+      question: "How separate should the CTO thread actually be from the primary lane?",
+      multiSelect: false,
+      options: [
+        {
+          value: "hide",
+          label: "Hide it, keep the pin",
+          recommended: true,
+          description: "Tag the session surface:\"cto\", add identityKey/surface to TerminalSessionSummary, and filter identity rows out of sessions:list + laneAgents — matching what laneListSnapshotService already does.",
+          preview:
+            'session {\n  surface:     "cto"\n  identityKey: "cto-primary"\n  laneId:      <primary>      ← invisible cwd detail\n}\n\nsessions:list   → filtered out\nlaneAgents      → filtered out\nnew worktree    → none\nblast radius    → small',
+        },
+        {
+          value: "lane",
+          label: "Dedicated hidden CTO lane",
+          description: "New laneType \"cto\" with its own worktree, so the CTO touches nothing about the primary lane. Truly separate on disk, but costs a worktree and a lane row.",
+          preview:
+            'lane {\n  laneType:  "cto"\n  worktree:  .ade/worktrees/cto\n  visible:   false\n}\n\nsessions:list   → own row (hidden)\nnew worktree    → yes\nblast radius    → medium',
+        },
+        {
+          value: "unlane",
+          label: "Fully un-lane the CTO",
+          description: "Make laneId optional for identity sessions and give the CTO a project-root or .ade/cto cwd. Cleanest model, but laneId is load-bearing across chat launch, git tools, execution-lane selection, and sync.",
+        },
+      ],
+    },
+    {
+      id: "intro",
+      header: "Intro msg",
+      question: "Should the CTO greet you on first open, or stay silent until spoken to?",
+      multiSelect: false,
+      options: [
+        { value: "greet",  label: "Greet once, then stay quiet", recommended: true,
+          description: "One short orientation message the first time the thread is opened on a machine." },
+        { value: "silent", label: "Always silent",
+          description: "No unsolicited output ever. The thread opens empty." },
+      ],
+    },
+  ],
+};
+
+/* A deliberately long list — the case that used to make the card taller than
+   the chat and push Send off-screen. */
+const LONG_REQUEST = {
+  who: "Claude",
+  questions: [{
+    id: "surface",
+    header: "Surfaces",
+    question: "Which surfaces should the redesign land on?",
+    multiSelect: true,
+    options: [
+      { value: "desktop", label: "Desktop renderer",     recommended: true, description: "AgentChatMessageList + AgentChatComposer." },
+      { value: "web",     label: "Web client",           description: "Free — shares the same React component." },
+      { value: "tui",     label: "ade code TUI",         description: "ApprovalPrompt.tsx, Ink cells." },
+      { value: "ios",     label: "iOS companion",        description: "WorkStructuredQuestionCard.swift." },
+      { value: "widget",  label: "iOS widget / live activity", description: "Shows the pending question on the lock screen." },
+      { value: "watch",   label: "Attention center",     description: "Session row badge and drawer entry." },
+      { value: "push",    label: "Push notification",    description: "Fires when a question lands while you're away." },
+      { value: "cli",     label: "ade chat ask",         description: "Headless CLI question rendering." },
+    ],
+  }],
+};
+
+const SINGLE_REQUEST = {
+  who: "Codex",
+  questions: [{
+    id: "stack",
+    header: "Stack",
+    question: "What stack should this use?",
+    multiSelect: false,
+    options: [
+      { value: "plain", label: "Plain HTML/CSS/JS", recommended: true, description: "No build step, no dependencies. Opens straight in a browser." },
+      { value: "vite",  label: "React + Vite",       description: "Component model and HMR, one config file." },
+      { value: "next",  label: "Next.js",            description: "Routing and SSR out of the box; heaviest option." },
+    ],
+  }],
+};
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   PAGE
+   ═══════════════════════════════════════════════════════════════════════════ */
+function Page() {
+  return (
+    <div className="page">
+      <h1>Ask-question surface — redesign</h1>
+      <p className="lede">
+        One card, living inside the composer. Ledger rows, hairlines, no per-option chrome,
+        two accent tints. Everything below is live React — click the rows, open the previews,
+        watch the Send label change.
+      </p>
+      <p className="meta">
+        desktop · web client · TUI · iOS &nbsp;|&nbsp; lane ade/964e38ed &nbsp;|&nbsp; four-PR stack
+      </p>
+
+      <div className="spec">
+        <div><dt>Accent uses</dt><dd><b>2</b> — header mark, selected ✓. Was ~9 tints.</dd></div>
+        <div><dt>Per-option chrome</dt><dd><b>0</b> — one hairline. Was border + fill + radius + radio.</dd></div>
+        <div><dt>Type levels</dt><dd><b>4</b> — 10 mono / 15 sans / 12 mono / 12 sans-muted.</dd></div>
+        <div><dt>Hover side-effects</dt><dd><b>0</b> — kills the reflow-jitter loop.</dd></div>
+        <div><dt>Send semantics</dt><dd><b>1</b> shared module across all four surfaces.</dd></div>
+      </div>
+
+      {/* ── before / after ─────────────────────────────────────────────── */}
+      <section>
+        <h2>01 · Before → after</h2>
+        <p className="note">
+          Left is today, reconstructed from your screenshot. Right is the same request in the new
+          treatment. Note what's gone: the duplicate <code>CLAUDE ASKS</code> banner over the prompt
+          box, the ragged 2-column grid, four mismatched pill buttons, and the redundant
+          <code>(RECOMMENDED)</code> chip on a row already labelled Recommended.
+        </p>
+        <div className="row2">
+          <div>
+            <p className="cap bad">Today</p>
+            <div className="before">
+              <div className="bh">✻ Claude asks<span style={{ float: "right", color: "var(--fg-3)" }}>0 OF 2 ANSWERED</span></div>
+              <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+                <span className="bpill acc">① ISOLATION</span>
+                <span className="bpill">② INTRO MSG</span>
+              </div>
+              <div className="bq">How separate should the CTO thread actually be from the primary lane?</div>
+              <div className="before-grid">
+                <div className="before-opt">
+                  <div className="l">◯ HIDE IT, KEEP THE PIN <span className="r">Recommended</span></div>
+                  <div className="d">Tag the session surface:"cto", add identityKey/surface to TerminalSessionSummary…</div>
+                </div>
+                <div className="before-opt">
+                  <div className="l">◯ DEDICATED HIDDEN CTO LANE</div>
+                  <div className="d">New laneType "cto" with its own worktree, so the CTO touches nothing…</div>
+                </div>
+                <div className="before-opt">
+                  <div className="l">◯ FULLY UN-LANE THE CTO</div>
+                  <div className="d">Make laneId optional for identity sessions and give the CTO a project-root…</div>
+                </div>
+              </div>
+              <div className="binput">Optional response</div>
+              <div className="bfoot">
+                <span className="bpill">‹ BACK</span><span className="bpill acc">NEXT ›</span>
+                <span style={{ color: "var(--fg-4)", fontFamily: "var(--mono)", fontSize: 11 }}>1 / 2</span>
+                <span className="grow" style={{ flex: 1 }} />
+                <span className="bpill" style={{ opacity: .45 }}>SEND ANSWERS</span>
+                <span className="bpill solid">DECLINE</span>
+              </div>
+            </div>
+            <div style={{ height: 14 }} />
+            <div className="before" style={{ padding: 12 }}>
+              <div className="bh" style={{ marginBottom: 6 }}>✻ Claude asks</div>
+              <div style={{ fontFamily: "var(--mono)", fontSize: 11, letterSpacing: ".1em",
+                            textTransform: "uppercase", color: "rgba(240,180,120,.8)" }}>
+                Answer in the inline question card, or pick an option there. <span className="bpill solid">DECLINE</span>
+              </div>
+              <div className="binput" style={{ marginTop: 10 }}>Answer the question card above, or decline it.</div>
+            </div>
+            <ul className="callouts">
+              <li><span className="n">1</span><span>The second block is <code>AgentChatComposer.tsx:4130</code> — pure nag, no controls. The textarea is already hard-locked by <code>composerInputLocked</code>.</span></li>
+              <li><span className="n">2</span><span>3 options in a 2-col grid ⇒ ragged orphan row.</span></li>
+              <li><span className="n">3</span><span>Header, kicker, and option label are all bold-uppercase-mono at near-identical size.</span></li>
+            </ul>
+          </div>
+          <div>
+            <p className="cap good">Proposed</p>
+            <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" optionsMaxHeight={440} />
+            <ul className="callouts">
+              <li><span className="n">1</span><span>One surface. The card <em>is</em> the composer, so there is nothing to duplicate.</span></li>
+              <li><span className="n">2</span><span>Single column always. Reads top-to-bottom, no orphan.</span></li>
+              <li><span className="n">3</span><span>Model/permission/effort row hidden while asking — you're visibly in a different mode.</span></li>
+              <li><span className="n">4</span><span>Select marks and stays. Note field is right there. <code>Next</code> advances.</span></li>
+            </ul>
+          </div>
+        </div>
+      </section>
+
+      {/* ── the four answer states ─────────────────────────────────────── */}
+      <section>
+        <h2>02 · The Send label is the receipt</h2>
+        <p className="note">
+          Your question — does selecting <em>and</em> typing send both? — was unanswerable because
+          nothing said so. Now the button says. Every provider accepts both: Claude's
+          <code>question.reply</code> takes <code>answers: string[][]</code>, and the universal
+          <code>askUser</code> tool returns free-form JSON. Type and click in each card below.
+        </p>
+        <div className="row2">
+          <div>
+            <p className="cap">Nothing yet → disabled</p>
+            <AskQuestionComposer request={SINGLE_REQUEST} accent="#E7E5E4" compact />
+          </div>
+          <div>
+            <p className="cap">Pick + note → “Send 1 + note”</p>
+            <AskQuestionComposer
+              request={SINGLE_REQUEST}
+              accent="#E7E5E4"
+              compact
+              initial={{ picks: { stack: ["plain"] }, notes: { stack: "but wire it up with Babel standalone" } }}
+            />
+          </div>
+        </div>
+        <div style={{ height: 28 }} />
+        <div className="row2">
+          <div>
+            <p className="cap">Note only, no pick → “Send note”</p>
+            <AskQuestionComposer
+              request={SINGLE_REQUEST}
+              accent="#E7E5E4"
+              compact
+              initial={{ notes: { stack: "none of these — use Svelte" } }}
+            />
+          </div>
+          <div>
+            <p className="cap">Preview open · never on hover</p>
+            <AskQuestionComposer
+              request={CTO_REQUEST}
+              accent="#D97706"
+              compact
+              initial={{ picks: { isolation: ["hide"] }, openPreview: "hide" }}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ── compare ────────────────────────────────────────────────────── */}
+      <section>
+        <h2>03 · Compare, in a capped split</h2>
+        <p className="note">
+          The one extra you kept from the interaction set. Capped panes scroll internally only when
+          needed; opening Compare is explicit, so pointer movement cannot start the reflow loop.
+        </p>
+        <div style={{ maxWidth: 620 }}>
+          <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact initial={{ comparing: true }} />
+        </div>
+      </section>
+
+      {/* ── receipts ───────────────────────────────────────────────────── */}
+      <section>
+        <h2>04 · What's left in the transcript</h2>
+        <p className="note">
+          Built from <code>chatCardPrimitives</code> on the <code>AdeCard</code> convention, so it
+          lines up column-for-column with every other transcript row. Quiet result = one line, no
+          box, hairline rule. Click to expand — the alternatives are kept, so scrollback tells you
+          what you turned down, not just what you chose.
+        </p>
+        <div style={{ borderTop: "1px solid var(--hairline)", borderBottom: "1px solid var(--hairline)", padding: "10px 0" }}>
+          <AnsweredReceipt
+            request={CTO_REQUEST}
+            accent="#D97706"
+            answers={{ isolation: ["hide", "but rename it to identityKey"], intro: "greet" }}
+          />
+          <AnsweredReceipt
+            request={SINGLE_REQUEST}
+            accent="#E7E5E4"
+            declined
+            answers={{}}
+          />
+          <AnsweredReceipt
+            request={CTO_REQUEST}
+            accent="#D97706"
+            defaultOpen
+            answers={{ isolation: ["hide", "but rename it to identityKey"], intro: "greet" }}
+          />
+        </div>
+        <div style={{ height: 22 }} />
+        <p className="cap">…and the composer returns, unchanged</p>
+        <div style={{ maxWidth: 620 }}><RestingComposer /></div>
+      </section>
+
+      {/* ── height budget ──────────────────────────────────────────────── */}
+      <section>
+        <h2>05 · Long lists scroll inside the card, not the chat</h2>
+        <p className="note">
+          Eight options with descriptions. Only the option region scrolls — the header, the note
+          row, and the footer are pinned outside it, so <b>Send / Decline / Next are reachable at any
+          list length</b> and the card's total height stays inside the chat area. The hairline under
+          the list only appears while there's more below it; scroll to the bottom and it goes away.
+        </p>
+        <div className="row2">
+          <div>
+            <p className="cap">8 options · list capped, chrome pinned</p>
+            <AskQuestionComposer request={LONG_REQUEST} accent="#D97706" optionsMaxHeight={250} compact />
+          </div>
+          <div>
+            <p className="cap">Same list, 2 picked + a note</p>
+            <AskQuestionComposer
+              request={LONG_REQUEST}
+              accent="#D97706"
+              optionsMaxHeight={250}
+              compact
+              initial={{ picks: { surface: ["desktop", "tui"] }, notes: { surface: "iOS can wait for PR4" } }}
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* ── minimize ───────────────────────────────────────────────────── */}
+      <section>
+        <h2>06 · Minimize — fold it into the prompt box</h2>
+        <p className="note">
+          The <code>⌄</code> beside the <code>×</code> folds the whole thing to one line so you can
+          scroll back through the chat to work out your answer. It does <b>not</b> dismiss and does
+          not unblock — the gate is still open, the line still says what's waiting, and the
+          answered count comes with it. The <code>×</code> next to it is the decline. Click either
+          card below to toggle.
+        </p>
+        <div className="row2">
+          <div>
+            <p className="cap">Folded — one line, chat scrolls freely</p>
+            <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact initial={{ folded: true }} />
+            <div style={{ height: 16 }} />
+            <AskQuestionComposer
+              request={CTO_REQUEST}
+              accent="#D97706"
+              compact
+              initial={{ folded: true, page: 1, picks: { isolation: ["hide"] } }}
+            />
+            <div style={{ height: 16 }} />
+            <AskQuestionComposer request={SINGLE_REQUEST} accent="#E7E5E4" compact initial={{ folded: true }} />
+          </div>
+          <div>
+            <p className="cap">Click to expand back in place</p>
+            <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact optionsMaxHeight={220} />
+          </div>
+        </div>
+      </section>
+
+      {/* ── note placeholder ───────────────────────────────────────────── */}
+      <section>
+        <h2>07 · The note row explains itself</h2>
+        <p className="note">
+          One string, two jobs, and the placeholder says which one is live. Nothing picked yet — the
+          field is <em>the</em> answer. Pick something and it becomes a qualifier on that pick. No
+          disabled state, no mode switch, no guessing what travels.
+        </p>
+        <div className="row2">
+          <div>
+            <p className="cap">No pick → “Or send your own response instead”</p>
+            <AskQuestionComposer request={SINGLE_REQUEST} accent="#E7E5E4" compact />
+          </div>
+          <div>
+            <p className="cap">Picked → “Add a note (sent with your pick)”</p>
+            <AskQuestionComposer
+              request={SINGLE_REQUEST} accent="#E7E5E4" compact
+              initial={{ picks: { stack: ["plain"] } }}
+            />
+          </div>
+        </div>
+        <div style={{ height: 26 }} />
+        <div style={{ maxWidth: 620 }}>
+          <p className="cap">Multi-select → the count comes along</p>
+          <AskQuestionComposer
+            request={LONG_REQUEST} accent="#D97706" compact optionsMaxHeight={190}
+            initial={{ picks: { surface: ["desktop", "web", "tui"] } }}
+          />
+        </div>
+      </section>
+
+      {/* ── mobile ─────────────────────────────────────────────────────── */}
+      <section>
+        <h2>08 · iOS — one screen, nothing clipped</h2>
+        <p className="note">
+          These are true 390×844 viewports, not crops. The tab strip is gone; same ledger, same dot
+          rail, same Send label, same <code>⌄</code> minimize. The transcript above takes whatever
+          the card leaves and shrinks as it grows — so the card always fits and you never scroll the
+          page to reach Send. Third frame is the eight-option list on the same screen.
+        </p>
+        <div style={{ display: "flex", gap: 26, flexWrap: "wrap" }}>
+          <div>
+            <p className="cap">1 of 2 · fits with room to spare</p>
+            <PhoneFrame>
+              <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact optionsMaxHeight={230} />
+            </PhoneFrame>
+          </div>
+          <div>
+            <p className="cap">8 options · list scrolls, footer pinned</p>
+            <PhoneFrame>
+              <AskQuestionComposer
+                request={LONG_REQUEST} accent="#D97706" compact optionsMaxHeight={250}
+                initial={{ picks: { surface: ["desktop"] } }}
+              />
+            </PhoneFrame>
+          </div>
+          <div>
+            <p className="cap">Minimized · full transcript back</p>
+            <PhoneFrame long>
+              <AskQuestionComposer request={CTO_REQUEST} accent="#D97706" compact initial={{ folded: true }} />
+            </PhoneFrame>
+          </div>
+        </div>
+      </section>
+
+      {/* ── TUI ────────────────────────────────────────────────────────── */}
+      <section>
+        <h2>09 · `ade code` TUI — the same ledger in cells</h2>
+        <p className="note">
+          <code>ApprovalPrompt.tsx</code> already prints key hints; it gains the numbered ledger,
+          the ✓-right selection mark, and — the real change — the shared answer semantics, so
+          typing stops replacing your selection the way <code>buildPendingInputAnswers</code>
+          does today.
+        </p>
+        <div className="tui">{`┌─ `}<span className="a">✻ CLAUDE ASKS</span>{`  ─────────────────────────────  `}<span className="a">●</span>{` `}<span className="d">○</span>{` ──┐
+│                                                        │
+│ `}<span className="d">ISOLATION</span>{`                                              │
+│ `}<span className="w">How separate should the CTO thread actually be</span>{`          │
+│ `}<span className="w">from the primary lane?</span>{`                                 │
+│                                                        │
+│  `}<span className="d">1</span>{`  `}<span className="w">HIDE IT, KEEP THE PIN</span>{`               Recommended `}<span className="a">✓</span>{`  │
+│     `}<span className="d">Tag the session surface:"cto", filter…   ▸ preview</span>{` │
+│ `}<span className="d">────────────────────────────────────────────────────</span>{`   │
+│  `}<span className="d">2</span>{`  `}<span className="d">DEDICATED HIDDEN CTO LANE</span>{`                        │
+│     `}<span className="d">New laneType "cto" with its own worktree… ▸ preview</span>{`│
+│ `}<span className="d">────────────────────────────────────────────────────</span>{`   │
+│  `}<span className="d">3</span>{`  `}<span className="d">FULLY UN-LANE THE CTO</span>{`                            │
+│ `}<span className="d">────────────────────────────────────────────────────</span>{`   │
+│  `}<span className="d">✎</span>{`  `}<span className="w">but rename it to identityKey</span>{`█                     │
+│                                                        │
+│ `}<span className="d">1-9 pick · ↵ next · ⇄ compare · esc decline</span>{`             │
+│ `}<span className="d">decline</span>{`                    `}<span className="d">1/2</span>{`      `}<span className="a">[ next → ]</span>{`     │
+└────────────────────────────────────────────────────────┘`}</div>
+      </section>
+
+      {/* ── the glitch ─────────────────────────────────────────────────── */}
+      <section>
+        <h2>10 · The hover glitch, and why it happens</h2>
+        <p className="note">
+          Not random. <code>AgentChatMessageList.tsx:2863</code> sets
+          <code>onMouseEnter → setFocusedOption</code>, and the focused option's preview renders
+          below the list at its natural height. So:
+        </p>
+        <div className="tui" style={{ fontSize: 11.5 }}>{`  hover option 2
+      ↓
+  setFocusedOption("lane")
+      ↓
+  preview swaps → card height changes
+      ↓
+  virtualizer re-measures → reconcileMeasuredScrollTop
+      ↓
+  card shifts under the cursor
+      ↓
+  cursor is now over option 3 → `}<span className="a">back to the top</span>{`
+
+  net effect: the row runs away from the click.`}</div>
+        <p className="note" style={{ marginTop: 22 }}>
+          Two independent breaks in that loop, both in the design above. <b>Hover no longer mutates
+          any state</b> — preview follows an explicit disclosure click only. And
+          <b> the option region is natural-height and capped</b>, so the closed state wastes no
+          space; a deliberate open may grow it once, and only long content scrolls.
+        </p>
+      </section>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<Page />);
+</script>
+</body>
+</html>

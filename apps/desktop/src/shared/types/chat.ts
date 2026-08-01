@@ -673,6 +673,16 @@ export type AgentChatEvent =
       type: "pending_input_resolved";
       itemId: string;
       resolution: "accepted" | "declined" | "cancelled";
+      /**
+       * What the user actually sent, so the transcript receipt can read it back
+       * after a reload instead of showing a bare "answered".
+       *
+       * Sanitized by `sanitizeAnswersForTranscript` before it is written: an
+       * `isSecret` question contributes no key at all (this event is durable
+       * and replicates to every paired device), and the payload is capped so a
+       * pasted essay cannot become an oversized synced event.
+       */
+      answers?: Record<string, string | string[]>;
       turnId?: string;
     }
   | {
