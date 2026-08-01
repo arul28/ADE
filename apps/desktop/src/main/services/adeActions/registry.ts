@@ -3592,7 +3592,9 @@ function buildGithubDomainService(runtime: AdeRuntime): OpaqueService | null {
     },
     async setToken(args?: unknown) {
       githubService.setToken(readStringActionArg(args, "token"));
-      return githubService.getStatus();
+      const status = await githubService.getStatus();
+      const credentialVerification = await githubService.verifyStoredPat(status);
+      return { ...status, credentialVerification };
     },
     async clearToken() {
       githubService.clearToken();

@@ -506,6 +506,7 @@ ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fi
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)
 ade github app-auth status --text                 # show whether a GitHub App user token is stored (login, expiry)
 ade --role cto github app-auth clear              # remove the stored GitHub App authorization
+ade actions run github.getStatus --input-json '{"forceRefresh":true}' --text # show active read/write sources and cooldowns
 ade open ade://lane/<lane-uuid>
 ade open --linear-issue ADE-123 --branch arul/ade-123-fix
 ade link lane <lane-uuid>
@@ -520,6 +521,11 @@ ade linear install
 ade skill list --text
 ade skill show ade-browser --text
 ```
+
+GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI →
+stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
+reports the active read/write sources, per-credential failure/cooldown state,
+fallback details, and any background-refresh pause without exposing tokens.
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
 

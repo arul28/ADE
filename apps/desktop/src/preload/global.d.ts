@@ -330,6 +330,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
   AdeAccountLoginStart,
@@ -2296,7 +2297,7 @@ declare global {
         getRemoteStatus: (opts?: {
           forceRefresh?: boolean;
         }) => Promise<{ repo: GitHubRepoRef | null; hasOrigin: boolean }>;
-        setToken: (token: string) => Promise<GitHubStatus>;
+        setToken: (token: string) => Promise<GitHubSetTokenResult>;
         clearToken: () => Promise<GitHubStatus>;
         getAppUserAuthStatus: () => Promise<GitHubAppUserAuthStatus>;
         startAppUserDeviceAuth: () => Promise<GitHubAppDeviceAuthStartResult>;

@@ -594,7 +594,7 @@ async function inspectHandoffStorage(params: Record<string, unknown>) {
       let destinationAuthHeader = "";
       if (githubService.parseGitHubRepoFromRemoteUrl(originUrl) && /^https:\/\//i.test(originUrl)) {
         try {
-          const token = await githubService.getTokenOrThrowAsync();
+          const token = await githubService.getGitTransportTokenOrThrowAsync();
           const basic = Buffer.from(`x-access-token:${token}`, "utf8").toString("base64");
           destinationAuthHeader = `AUTHORIZATION: basic ${basic}`;
         } catch {

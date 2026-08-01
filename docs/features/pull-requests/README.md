@@ -47,7 +47,7 @@ runtime. In packaged / installed builds the desktop window is
 runtime-bound, so the ADE daemon owns the `prPollingService` instance
 (created, started, and disposed in `apps/ade-cli/src/bootstrap.ts`)
 whose ticks emit the PR events consumers render as `prs-updated`; the
-    daemon also starts the automation ingress relay subscriber/drain loop there, which feeds
+daemon also starts the automation ingress relay subscriber/drain loop there, which feeds
 `prService.ingestGithubWebhook` for webhook-driven freshness (see
 [automations](../automations/README.md#runtime-ownership)). Without
 this the desktop main process no longer hosts the loop in production,
@@ -80,7 +80,7 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
 | `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` (lane delete) and `detachPullRequestRowsByIds` (branch switch / rename-with-branch-change) stamp `detached_at` + the frozen lane identity and provenance, lift `commit_count` / `changed_files` off the snapshot, null the bulky snapshot JSON columns, and drop lane-scoped group membership. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for the genuinely destructive paths. See [Detached PR rows](#detached-pr-rows). |
-| `prPollingService.ts` | 60 s fallback polling loop, fingerprint-based change detection, notification emission, targeted webhook reconciliation, and GitHub rate-limit backoff. `reconcilePrs(prIds)` coalesces webhook-linked PR ids and refreshes only those rows immediately; ordinary `poke()` still requests a normal tick. User-driven hot windows poll affected PRs every 5 s for the first minute and 15 s until the three-minute cap, but poll results cannot start or restart a hot window. Writes `last_polled_at` per PR so callers can run delta polls on the next tick. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) so background polling and PR events run for runtime-bound windows; the desktop main process still owns one for local-bound windows. When zero PRs are tracked yet, the forced full-snapshot `discoverLanePullRequests` fetch is throttled to a 10-minute cadence instead of running every tick — user-driven surfaces discover PRs on their own reads anyway |
+| `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
 | `prMergeAutoSettlementService.ts` | Applies the enabled lane-PR merge settlement policy after each polling snapshot. It files eligible, unblocked chat and tracked-agent-CLI sessions for a newly discovered merged PR, but emits `pr-sessions-auto-settled` only when the preceding in-memory snapshot contained that PR as open or draft. A first-sight merge — including backfilled history from another machine or the first snapshot after restart — is filed silently, so an imported history cannot generate merge toasts or push notifications. |
 | `prChatCards.ts` | Converts bounded PR polling transitions into durable `ade_card` episodes for linked Work chats: CI completion/failure, review received, merge ready, conflicts, and merged. CI jobs are failure-first, capped at three visible rows with `rowsTruncated`, and report an honest `degradedReason` + Retry action when both job/check detail sources fail instead of rendering an empty success state. Desktop-main and daemon-owned pollers call the same emitter, and failures are isolated per PR/session so one cold or malformed chat cannot stop the poll loop. |
 | `prSummaryService.ts` | AI PR summary generator; caches `PrAiSummary` per `(prId, headSha)` in `pull_request_ai_summaries` so pushes invalidate the cache |
@@ -92,6 +92,16 @@ Service files (`apps/desktop/src/main/services/prs/`):
 | `prIssueResolver.ts` | Builds issue-resolution prompts for the agent, launches chat session |
 | `prRebaseResolver.ts` | Builds rebase-resolution prompts, launches chat session |
 | `resolverUtils.ts` | Shared permission-mode mapping, recent commit reading, comment noise filter, and the `looksLikeResolutionAck` heuristic that flags resolved-looking replies on unresolved review threads |
+
+GitHub access and relay dependencies:
+
+| File | Responsibility |
+|------|---------------|
+| `apps/desktop/src/main/services/github/githubService.ts`, `apps/ade-cli/src/headlessLinearServices.ts` | Desktop-local and runtime-owned GitHub request paths. Both build the environment → App → GitHub CLI → PAT read chain, skip the read-only App for writes, retry compatible credentials after auth/permission/rate failures, and expose the active/fallback sources through `GitHubStatus`. |
+| `apps/desktop/src/main/services/github/githubCredentialHealth.ts`, `githubRateLimit.ts` | Token-digest health keyed by REST/GraphQL resource, five-minute invalid/permission cooldowns, rate-limit reset handling, same-account primary-quota propagation, and the 500-request background reserve. |
+| `apps/desktop/src/shared/githubOperationCredential.ts`, `apps/desktop/src/shared/types/git.ts` | Capability-aware credential order and the optional status DTOs for source state, fallback, write availability, and background-pause time. |
+| `apps/desktop/src/main/services/automations/automationIngressService.ts`, `apps/ade-cli/src/bootstrap.ts`, `apps/desktop/src/main/main.ts` | Relay cursor drain and targeted reconciliation, relay-health tracking, and injection of relay/quota state into the runtime-owned or desktop-local PR poller. |
+| `apps/webhook-relay/src/relay.ts` | Hosted event/subscription authorization. Signed-in ADE account requests use the installed repository binding in D1 first; legacy clients fall back to a GitHub-token repository-access check. |
 
 Branch-scoped `gh` lookup (`apps/desktop/src/main/services/git/`):
 
@@ -164,7 +174,7 @@ Shared contracts:
 | File | Responsibility |
 |------|---------------|
 | `apps/desktop/src/shared/types/prs.ts` | PR DTOs and integration proposal contracts, including `preferredIntegrationLaneId`, `mergeIntoHeadSha`, `integrationLaneOrigin`, and `additionalInstructions` fields. `PrSummary.unmapped?: true` flags a projection-synthesized summary with no `pull_requests` row. `syntheticGithubPrId(coords)` / `parseSyntheticGithubPrId(id)` are the single source of the `gh:owner/repo#num` id format — both the service (projection-only summaries, coordinate fetches) and the renderer (keying unmapped GitHub-tab rows) import them from here instead of re-deriving the string. `MergeStateStatus` (lowercase mirror of GitHub's GraphQL merge-box enum) and `PrReviewDecision` drive the merge checklist; `PrStatus` carries `mergeStateStatus`, `reviewDecision`, `approvalsCount` / `requiredApprovals`, `mergeabilityComputing`, `canBypass`, and `headSha`. `LandPrArgs` adds `commitTitle` / `commitBody` (editable merge-commit message) and `expectedHeadSha` (stale-head guard) alongside `bypassRules`, which opts the merge into a `gh pr merge --admin` retry when GitHub rejects the standard merge. `UpdateBranchArgs` / `UpdateBranchResult` back the `merge` / `rebase` update-branch flow. `PrActionCapabilities` adds `mergeStateStatus`, `canBypass`, and `canUpdateBranch` so mobile renders the same merge state. `PrTimelineEvent` carries a `pr_opened` variant plus `lifecycle`, `cross_reference`, `renamed`, `branch_ref`, `assignment`, expanded `review_request`, and `review_dismissed` variants so the timeline reaches GitHub event parity; review-thread events now carry the full `comments` list (with `diffHunk`) and force-push commit events carry before/after SHAs. `PrEventPayload` adds a `pr-reconcile` variant (`state: "running" | "idle"`, `polledAt`) emitted around a catch-up reconcile so the renderer can show a "syncing…" affordance. `PrDetachedLane` (`at`, `laneName`, `laneColor`, `chats`, `artifacts`, `checkpoints`) and `PrMergedBy` (`login`, `avatarUrl`) back the merged view; `PrSummary` and `GitHubPrListItem` both carry `detached`, `mergedBy`, `mergeMethod`, `commitCount`, `changedFiles` (all optional and null-tolerant, because rows predating this feature have none). |
-| `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs the new `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink` IPC channels. |
+| `apps/desktop/src/shared/types/git.ts` | `BranchPullRequest` (branch / prNumber / title / state / url / author / updatedAt) — the lightweight PR shape returned by `prService.listOpenPullRequests` and consumed by the branch picker without going through `PrSummary`. `GitHubAutolink` (id / keyPrefix / urlTemplate / isAlphanumeric) backs `ade.github.listRepoAutolinks` / `ade.github.createRepoAutolink`. The same module owns the optional `GitHubStatus` credential-chain fields described in [GitHub connectivity model](#github-connectivity-model). |
 | `apps/desktop/src/shared/types/conflicts.ts` | Conflict resolver DTOs; `PrepareResolverSessionArgs.additionalInstructions` is appended to generated resolver prompts. |
 | `apps/desktop/src/shared/linearMagicWords.ts` | Pure helpers for PR/commit Linear references. `linearPrMagicWord` / `buildLinearPrReference` / `ensureLinearPrReference` (single-issue magic word in the PR body), `dedupeLinearPrIssueReferences` / `ensureLinearPrReferences` (multi-issue dedupe + injection), and `renderLinearPrIssueLinkSection` / `ensureLinearPrIssueLinkSection` (the `<!-- ade:linear-links v=1 -->`-fenced "Linked Linear issues" markdown block appended to PR bodies by `prService.applyLinearPrLinkage`). |
 | `apps/desktop/src/shared/prMarkdownText.ts` | `normalizeEscapedMarkdownNewlines(text)` — unescapes literal `\n` / `\r\n` / `\r` / `\t` sequences that arrive in PR bodies after GitHub round-trips them through JSON. Used by `PrMarkdown` before handing the string to ReactMarkdown so escaped newlines render as paragraph breaks. |
@@ -570,26 +580,38 @@ for PRs merged before this shipped, and every surface renders them as optional.
 ## GitHub connectivity model
 
 `getStatus()` in `apps/desktop/src/main/services/github/githubService.ts`
-returns a `GitHubStatus` shaped to be the single source of truth for
-"GitHub is usable here" — UI banners and badges read `status.connected`
-rather than re-deriving from individual fields.
+returns a `GitHubStatus` shaped to be the single source of truth for GitHub
+read and write availability. UI banners and badges read `status.connected` for
+read access and `writeAuthSource` for mutations rather than inferring either
+from token-storage fields.
 
 Fields:
 
 - `tokenStored`, `tokenDecryptionFailed`, `tokenType` — `classic` |
-  `fine-grained` | `unknown`. Set from token prefix on save.
+  `fine-grained` | `oauth` | `unknown`, detected from the active token.
 - `userLogin`, `scopes`, `checkedAt` — outcome of `validateToken` (calls
   `GET /user`). Classic tokens populate `scopes` from
   `x-oauth-scopes`; fine-grained tokens never return that header so
   `scopes` is empty.
+- `authSource` — the credential selected for reads, using environment → ADE
+  GitHub App → GitHub CLI → stored PAT. The App credential is read-only.
+- `writeAuthSource` — the first usable environment, GitHub CLI, or stored PAT
+  credential. `none` means reads may remain connected through the App while
+  create/update/merge actions remain unavailable.
+- `credentialStates`, `credentialFallback` — optional per-source availability,
+  capabilities, active roles, cooldown/failure state, and the active read
+  fallback transition. Different sources that resolve to the same token are
+  attempted once.
 - `authFailure` — optional structured validation failure for compatibility
-  with older runtimes: `rate_limited`, `invalid_token`, `network`, or
-  `unknown`, with the original message and optional retry time. A present
-  failure means ADE found a credential but could not finish validating it;
-  clients must not reinterpret that as missing scopes.
-- `rateLimit` — the latest GitHub REST quota headers (`limit`, `remaining`,
-  `used`, `resetAt`, and `resource`) from either the user validation request
-  or the fine-grained repository probe.
+  with older runtimes: `rate_limited`, `invalid_token`, `permission_denied`,
+  `network`, or `unknown`, with the original message and optional retry time. A
+  present failure means ADE found credentials but could not finish validating
+  a usable read path; clients must not reinterpret that as missing scopes.
+- `rateLimit` — the latest quota headers (`limit`, `remaining`, `used`,
+  `resetAt`, and `resource`) from the active status probe.
+- `backgroundRefreshPausedUntil` — optional reset time exposed when the core or
+  GraphQL quota of an available project credential reaches the 500-request
+  reserve. Search's smaller independent bucket does not pause PR refresh.
 - `repo` — auto-detected origin owner/name.
 - `repoAccessOk: boolean | null`, `repoAccessError: string | null` —
   result of an explicit `GET /repos/{owner}/{name}` probe
@@ -597,20 +619,21 @@ Fields:
   probe, or `getStatus` returned early on a token-error path).
 - `connected: boolean` — computed by `computeConnected`:
   - `false` if token is missing or `userLogin` is null.
+  - For the App: requires the repository probe to pass (or no repo to probe).
   - For `fine-grained` tokens: requires the repo probe to pass (or no
     repo to probe). This is the only reliable check because fine-grained
     permissions are not introspectable from headers; a token can
     authenticate as a user yet 403 every PR-tab call.
-  - For `classic` tokens: requires `getGitHubTokenAccessState(scopes)`
+  - For `classic` / `oauth` tokens: requires
+    `getGitHubTokenAccessState(scopes)`
     to report `hasRequiredAccess`.
   - For `unknown` token prefixes: best-effort — `userLogin` is enough.
 
-Status is cached in-memory for 30 s. The cache is bypassed when the
-caller passes `getStatus({ forceRefresh: true })` (Settings'
-"REFRESH" button does this so the user can fix permissions on
-github.com and immediately re-check). When the cache is hit but the
-auto-detected `repo` has changed, `repoAccessOk` is reset to `null`
-because the cached probe no longer applies.
+Status is cached in-memory for 30 s. The cache is invalidated and re-probed when
+the auto-detected repository or the head credential changes. The cache is also
+bypassed when the caller passes `getStatus({ forceRefresh: true })` (Settings'
+"REFRESH" button); forced refresh retries invalid/permission cooldowns so a user
+can verify a repair immediately, but it still honors rate-limit resets.
 
 Status changes broadcast through the `ade.github.statusChanged` IPC
 channel (`window.ade.github.onStatusChanged`) every time
@@ -624,31 +647,39 @@ CONNECTED while the AppShell banner still said disconnected.
 
 - `tokenAuthenticated` — token decrypted and `userLogin` is populated.
 - `isConnected` (`status.connected` from the backend) — the actual
-  "GitHub is usable" gate. Drives the connected / needs-permission /
-  not-connected presentation and any saved-and-verified notice.
+  "GitHub reads are usable" gate. Drives the connected / needs-permission /
+  not-connected presentation and allows App-only PR snapshots. Write actions
+  use `writeAuthSource`; when it is `none`, ADE keeps reads live and asks the
+  user to connect GitHub CLI or a PAT before changing GitHub.
 - A structured auth failure takes precedence over permission inference.
-  Rate limits render as **Rate limited**, show the API quota and reset time,
-  and explicitly say that no authentication command is needed. Invalid
-  credentials render a reconnect action; network and unknown validation
-  failures render a retry/status action, with the raw error confined to
-  Settings.
+  Healthy connections do not expose GitHub quota bookkeeping. If one
+  credential is temporarily unavailable, Settings names the paused connection
+  and the connection ADE is using instead, plus the retry time when GitHub
+  supplied one. When no fallback remains, invalid credentials render a
+  reconnect action; network and unknown validation failures render a
+  retry/status action, with the raw error confined to Settings.
 - A repo-probe-failed inline error renders when the token authenticated
   but the probe came back 403/404, with copy that asks the user to
   grant Contents (Read), Pull requests (Read and write), and Metadata
   (Read) on the active repo (fine-grained tokens) or to make sure the
   classic token has access to the repo.
 
-The App Shell banner uses the same shared presentation helper as Settings, so
-it cannot advertise a reconnect/permission command while GitHub has merely
-rate-limited a valid credential.
+The App Shell banner uses the same shared presentation helper as Settings. It
+stays quiet when a fallback keeps reads and writes usable, distinguishes
+App-only read access from a write-capable connection, and never advertises a
+reconnect command for an account-level rate-limit pause.
 
 ## Background polling
 
-`prPollingService` runs inside the process that backs the window's
-runtime — the ADE daemon for runtime-bound (packaged) windows, the
-desktop main process for local-bound windows (see
-[Where this runs](#where-this-runs)). It runs at a 60 s default interval
-(clamped to 5 s–5 min, jittered ±10%). Each tick:
+`prPollingService` runs inside the process that backs the window's runtime —
+the ADE daemon for runtime-bound (packaged) windows, the desktop main process
+for local-bound windows (see [Where this runs](#where-this-runs)). With a
+healthy GitHub App relay, webhook deliveries drive targeted refreshes and the
+poller performs only a 15-minute safety sweep (30 minutes for empty-project
+discovery). Relay health means the most recent cursor drain completed
+successfully; a disabled or failed drain clears that signal so the poller's
+next run uses the direct-GitHub fallback. Without a healthy relay the poller uses the configured 60 s default
+interval (clamped to 5 s–5 min, jittered ±10%). Each sweep:
 
 1. Pulls the current PR list via `prService`.
 2. Computes a fingerprint per PR (excluding volatile timing fields:
@@ -665,26 +696,29 @@ scheduled tick. The service coalesces those ids and runs one targeted
 one immediate follow-up. This preserves the real-time webhook feel without
 turning each delivery into a broad repository refresh.
 
-Hot refresh is reserved for service-owned activity that is expected to cause
-near-term GitHub transitions, such as merge-queue progress, PR mutations, or a
-newly mapped PR row.
-It is strictly bounded: 5 s reads for the first minute, 15 s reads until three
-minutes, then the normal cadence resumes. Re-marking an already-hot PR retains
-the original start time, and fingerprint changes discovered by the poller do
-not mark PRs hot. This prevents active CI from self-rearming an unbounded
-five-second loop.
+When the relay is unavailable, hot refresh is reserved for service-owned
+activity expected to cause near-term GitHub transitions, such as merge-queue
+progress, PR mutations, or a newly mapped PR row. It is strictly bounded: 15 s
+reads for the first minute, 30 s reads until three minutes, then the normal
+cadence resumes. A healthy relay suppresses the hot loop because webhook
+reconciliation owns the fast path. Re-marking an already-hot PR retains the
+original start time, and fingerprint changes discovered by the poller do not
+mark PRs hot.
 
-GitHub REST failures that carry a primary or secondary rate-limit reset are
-typed with `rateLimitResetAtMs`. The poller waits until that reset plus a small
-buffer and does not let webhook pokes bypass the pause.
+GitHub REST or GraphQL failures that carry a primary or secondary rate-limit
+reset are typed with `rateLimitResetAtMs`. The poller waits until that reset plus
+a small buffer and does not let webhook pokes bypass the pause. It also stops
+when an available project credential's core or GraphQL bucket reaches 500
+remaining, leaving that reserve for explicit user actions, and resumes
+automatically after reset. A low search bucket does not pause PR polling.
 
 When `prService` reports zero tracked PRs, the tick can force a full
 repo-snapshot discovery (`discoverLanePullRequests`). Because that is
-far heavier than a tracked-PR delta poll, it is throttled to at most
-once every 10 minutes for projects that have no PRs yet (new users,
-non-PR projects) — user-driven surfaces still discover PRs on their own
-reads. The throttle seeds from epoch, not "never", so the first tick
-after start still discovers.
+far heavier than a tracked-PR delta poll, it is throttled to at most once every
+30 minutes with a healthy relay or 10 minutes without one for projects that
+have no PRs yet (new users, non-PR projects). User-driven surfaces still
+discover PRs on their own reads. The throttle seeds from epoch, not "never", so
+the first tick after start still discovers.
 
 Notification titles are generic (not PR-specific) so they display
 well as system notifications. The event payload includes `prTitle`,
@@ -713,13 +747,21 @@ PR state stays current through complementary layers:
    relay page is durably cursor-committed, linked PR ids are coalesced into one
    targeted REST reconciliation. A successful multi-page drain emits one
    reconciliation batch; if a later page fails, ids from already committed
-   pages are still flushed. Webhook results never start a hot-poll window.
+   pages are still flushed. A successful drain marks the relay healthy. Failed
+   relay polls mark it unhealthy, respect `Retry-After` when present, and use an
+   exponential 30 s–15 min retry cooldown; `pollNow()` clears that cooldown for
+   an explicit retry. Webhook results never start a hot-poll window. Signed-in
+   account event reads and subscriptions authorize from the relay's installed
+   repository binding without spending a GitHub REST request; the GitHub-token
+   repository check remains as the legacy-client fallback.
 2. **Background polling** — the safety net for missed or unavailable webhooks.
-   The runtime-owned `prPollingService` runs at the normal 60 s cadence, with
-   bounded hot windows only around service-owned changes expected to produce
-   near-term GitHub transitions, plus rate-limit-aware backoff. Poll results can
-   notify consumers but cannot re-arm the hot window, so active CI does not
-   amplify itself into a quota-exhausting loop.
+   A healthy relay reduces broad reconciliation to a 15-minute safety sweep;
+   the 60 s cadence is retained only when webhook delivery is unavailable.
+   When the relay is unavailable, bounded hot windows run only around
+   service-owned changes expected to produce near-term GitHub transitions, with
+   rate-limit-aware backoff and a 500-request reserve for direct user work. Poll
+   results can notify consumers but cannot re-arm the hot window, so active CI
+   does not amplify itself into a quota-exhausting loop.
 3. **Reconcile-on-focus** — the broader catch-up path for a project that was
    dormant, unfocused, or missed enough events to require a snapshot sweep.
    `prService.reconcileOnFocus()` runs on project open

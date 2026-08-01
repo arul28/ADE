@@ -71,18 +71,30 @@ Main process:
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
   config generation for `.ade/ade.yaml`.
-- `apps/desktop/src/main/services/github/githubService.ts` and
-  `githubRateLimit.ts` — GitHub App, environment, PAT, and GitHub CLI
-  credential discovery; `/user` and repository probes; structured
-  auth-failure classification; and REST quota parsing. Explicit environment
-  tokens override all stored credentials for automation. Otherwise REST
-  operations prefer local GitHub CLI auth and then a stored PAT. The ADE GitHub
-  App remains a separate, read-only credential used only for webhook-backed
-  real-time PR updates.
-  `GitHubStatus.authFailure`
-  distinguishes rate limiting,
-  invalid credentials, network failures, and unknown validation errors so
-  clients do not flatten every failed probe into missing permissions.
+- `apps/desktop/src/main/services/github/githubService.ts`,
+  `githubCredentialHealth.ts`, and `githubRateLimit.ts` — GitHub App,
+  environment, PAT, and GitHub CLI credential discovery; `/user` and repository
+  probes; REST and GraphQL failure/quota classification; per-resource credential
+  cooldowns; and the shared-account primary-quota circuit breaker. Reads use
+  environment → ADE GitHub App → GitHub CLI → stored PAT. Writes use environment
+  → GitHub CLI → stored PAT because the App user credential is intentionally
+  read-only. Request-level 401/403/429 responses, GraphQL rate/permission errors,
+  and 403/404 repository-probe denials advance to the next compatible source.
+  Invalid or permission-denied credentials cool down for five minutes; rate
+  limits wait at least one minute and honor GitHub's reset. ADE then retries the
+  preferred source automatically. GitHub's primary user quota is shared by App
+  user, OAuth, and PAT credentials for the same account, so an exhausted primary
+  bucket pauses known credentials for that account instead of cycling tokens.
+  `GitHubStatus.authFailure` distinguishes rate limiting, invalid credentials,
+  permission denial, network failures, and unknown validation errors so clients
+  do not flatten every failed probe into missing permissions.
+- `apps/desktop/src/shared/githubOperationCredential.ts` — the capability-aware
+  read/write credential order, App read-only rule, and duplicate-token removal
+  used by desktop and runtime-side GitHub services.
+- `apps/ade-cli/src/headlessLinearServices.ts` — runtime-owned mirror of the
+  GitHub request/status path. It applies the same candidate order, cooldowns,
+  GraphQL classification, conditional-request cache isolation, and read/write
+  status fields when a packaged or remote-bound window uses `ade serve`.
 - `apps/desktop/src/main/services/config/projectConfigService.ts` —
   YAML config read/merge/save, AI mode migration, lane env init,
   Linear sync resolver. ~3,150 lines, the largest service.
@@ -105,9 +117,11 @@ Shared types and IPC:
   `DEFAULT_AUTO_UPDATE_PREFERENCES` (`automaticInstall: false`,
   `onlyWhenIdle: true`) plus the renderer-visible update snapshot contract.
 - `apps/desktop/src/shared/types/git.ts` — `GitHubStatus`,
-  `GitHubAuthFailure`, and `GitHubRateLimitState`. The failure/quota fields are
-  optional so a newer client can remain compatible with an older remote
-  runtime.
+  `GitHubAuthFailure`, `GitHubRateLimitState`, and the credential source,
+  capability, state, and fallback contracts. `writeAuthSource`,
+  `credentialStates`, `credentialFallback`, and
+  `backgroundRefreshPausedUntil` are optional so a newer client remains
+  compatible with an older remote runtime.
 - `apps/desktop/src/shared/ipc.ts` — channels:
   - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
     applySuggestedConfig, complete, setDismissed)
@@ -258,17 +272,20 @@ Renderer — settings:
 - `apps/desktop/src/renderer/components/settings/GitHubIntegrationSection.tsx`
   and `GitHubSection.tsx` — ADE GitHub App / environment / GitHub CLI / PAT
   auth, credential-specific permission diagnostics, structured validation
-  failures, and the latest GitHub REST quota. Embedded inside General. Classic
+  failures, and automatic fallback state. Embedded inside Integrations. Classic
   PATs and CLI OAuth tokens show their detected scopes; fine-grained PATs show
   repository-permission guidance; App user tokens show installation-backed
   repository metadata access and never report missing classic `repo` /
   `workflow` scopes, because GitHub Apps do not use those OAuth scopes. The App
-  panel also states that the App is intentionally read-only and separate from
-  operation credentials, and documents the environment → GitHub CLI → PAT
-  order. A rate-limited
-  credential renders **Rate limited**, the reset time/quota, and no auth
-  command; only a missing, invalid, or genuinely under-scoped credential shows
-  login/refresh instructions. The App-installation card also classifies relay
+  panel states that the App is intentionally read-only and documents the
+  environment → App → GitHub CLI → PAT read order plus the write-capable
+  subset. Healthy connections do not expose quota bookkeeping. When ADE is
+  compensating for a problem, Settings names the paused source and temporary
+  replacement, plus the retry time when GitHub supplied one. An exhausted shared
+  account bucket renders the reset time and explains that background refresh is
+  paused automatically; it never asks the user to re-authenticate. When no
+  fallback remains, a missing, invalid, or genuinely under-scoped credential
+  shows login/refresh instructions. The App-installation card also classifies relay
   rate-limit responses as a concise cooldown state instead of displaying
   GitHub's raw request-id / scraping-policy error. Raw network/unknown
   validation errors stay in Settings rather than the global banner. The shared
@@ -313,9 +330,18 @@ Renderer — settings:
 - `apps/desktop/src/renderer/lib/githubIntegrationStatus.ts`
   — pure, two-axis derivation of GitHub App integration health (account
   user-token axis vs. per-repo install axis), the `deriveGithubRealtimeBlock`
-  top-blocker picker (account problems outrank repo problems), and the shared
-  banner/Settings copy for the account, repo, and gh-CLI/token sub-states.
-  Imported by both `GitHubAppInstallPanel` and `IntegrationBannerHost`.
+  top-blocker picker (account problems outrank repo problems),
+  `githubStatusHasWriteCredential` for capability-gating mutations, and the
+  shared banner/Settings copy for the account, repo, and gh-CLI/token
+  sub-states. Imported by `GitHubAppInstallPanel`, `IntegrationBannerHost`, and
+  write surfaces such as `FeedbackReporterModal`; App-only read connectivity
+  therefore keeps PR data live while still prompting for GitHub CLI or a PAT
+  before a mutation.
+- `apps/desktop/src/renderer/components/app/IntegrationBannerHost.tsx` and
+  `FeedbackReporterModal.tsx` — consume the shared read/write distinction. The
+  app shell raises a write-access banner for an otherwise connected App-only
+  status, and feedback submission requires a write-capable credential rather
+  than treating read connectivity as sufficient.
 - `apps/desktop/src/renderer/components/settings/LinearIntegrationSection.tsx`
   and `LinearSection.tsx` — Linear OAuth / API key, workspace status,
   and GitHub autolink setup. Embedded inside General.

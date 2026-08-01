@@ -1,6 +1,7 @@
 import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
+  GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
 
@@ -238,6 +239,62 @@ export function isGithubRateLimitMessage(message: string | null | undefined): bo
  * GitHub App" block. Lives here alongside the account/repo copy so Settings and
  * the banner draw from one source and can't disagree.
  */
+export function githubStatusHasWriteCredential(status: GitHubStatus | null): boolean {
+  if (!status) return false;
+  if (status.writeAuthSource != null) return status.writeAuthSource !== "none";
+  return status.connected
+    && status.authSource !== "app"
+    && status.authSource !== "none";
+}
+
+export function githubStatusHasUsablePat(result: GitHubSetTokenResult | null): boolean {
+  const pat = result?.credentialVerification;
+  return Boolean(
+    pat?.source === "pat"
+    && pat.failure == null
+    && pat.capabilities.includes("write")
+  );
+}
+
+export function describeGithubPatVerification(result: GitHubSetTokenResult): {
+  verified: boolean;
+  message: string;
+} {
+  if (githubStatusHasUsablePat(result)) {
+    return { verified: true, message: "Personal access token saved and verified." };
+  }
+  const failure = result.credentialVerification.failure;
+  if (failure?.kind === "invalid_token") {
+    return {
+      verified: false,
+      message: "Token saved, but authentication failed. Re-check the token value.",
+    };
+  }
+  if (failure?.kind === "rate_limited") {
+    return {
+      verified: false,
+      message: "Token saved, but GitHub temporarily paused verification. ADE will try it again when needed.",
+    };
+  }
+  if (failure?.kind === "permission_denied") {
+    const repoLabel = result.repo ? `${result.repo.owner}/${result.repo.name}` : "this repository";
+    return {
+      verified: false,
+      message: `Token saved, but ADE cannot use it for write actions on ${repoLabel}. Check the token's repository access and write permissions.`,
+    };
+  }
+  if (failure?.kind === "network") {
+    return {
+      verified: false,
+      message: "Token saved, but ADE could not reach GitHub to verify it. Try again.",
+    };
+  }
+  return {
+    verified: false,
+    message: "Token saved, but ADE could not verify it for GitHub write actions. Check the token and its repository permissions.",
+  };
+}
+
 export function describeGithubCliBanner(status: GitHubStatus): {
   subState: string;
   title: string;
@@ -249,6 +306,14 @@ export function describeGithubCliBanner(status: GitHubStatus): {
       subState: "no-token",
       title: "GitHub CLI or token not connected",
       detail: "Connect the GitHub CLI (gh auth login) or add a personal access token so ADE can run git and PR operations.",
+      action: "Connect GitHub",
+    };
+  }
+  if (status.connected && !githubStatusHasWriteCredential(status)) {
+    return {
+      subState: "no-write-credential",
+      title: "GitHub write access isn't connected",
+      detail: "The ADE GitHub App can keep pull request data fresh, but GitHub CLI or a personal access token is needed for create, update, and merge actions.",
       action: "Connect GitHub",
     };
   }
@@ -285,14 +350,14 @@ export function describeGithubAuthFailure(status: GitHubStatus): {
     const retryAt = formatGithubRetryAt(status.authFailure.retryAt);
     return {
       subState: `rate-limited:${status.authFailure.retryAt ?? "unknown"}`,
-      statusLabel: "Rate limited",
-      title: "GitHub API rate limit reached",
+      statusLabel: "GitHub paused",
+      title: "GitHub requests are temporarily paused",
       detail: retryAt
-        ? `ADE is signed in, but GitHub paused API requests until ${retryAt}. No authentication command is needed.`
-        : "ADE is signed in, but GitHub temporarily paused API requests. No authentication command is needed.",
+        ? `ADE stopped background checks and will resume automatically at ${retryAt}. GitHub App, CLI, and personal tokens for the same account may share this pause.`
+        : "ADE stopped background checks and will resume automatically. GitHub App, CLI, and personal tokens for the same account may share this pause.",
       settingsDetail: retryAt
-        ? `ADE is signed in, but GitHub paused API requests until ${retryAt}. No authentication command is needed.`
-        : "ADE is signed in, but GitHub temporarily paused API requests. No authentication command is needed.",
+        ? `GitHub paused requests for this account until ${retryAt}. ADE has stopped background checks and will resume automatically; reconnecting will not make it recover sooner.`
+        : "GitHub paused requests for this account. ADE has stopped background checks and will resume automatically; reconnecting is not needed.",
       action: "View GitHub status",
     };
   }
@@ -314,6 +379,16 @@ export function describeGithubAuthFailure(status: GitHubStatus): {
       detail: "ADE found your credential but could not reach GitHub to verify it. Check the connection and retry.",
       settingsDetail: status.authFailure.message,
       action: "View GitHub status",
+    };
+  }
+  if (status.authFailure?.kind === "permission_denied") {
+    return {
+      subState: "permission-denied",
+      statusLabel: "Access needed",
+      title: "GitHub access was not granted",
+      detail: "ADE tried every available GitHub connection, but none can access this operation.",
+      settingsDetail: status.authFailure.message,
+      action: "Fix GitHub auth",
     };
   }
   if (status.authFailure) {

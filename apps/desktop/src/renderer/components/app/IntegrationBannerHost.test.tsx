@@ -183,6 +183,24 @@ describe("IntegrationBannerHost", () => {
     const stored = window.localStorage.getItem("ade.bannerDismiss.v1");
     expect(stored).toContain("ai-provider:/project/a");
   });
+
+  it("shows the write-access banner for a connected read-only GitHub App", async () => {
+    setAdeMock(undefined);
+
+    await act(async () => {
+      render(<IntegrationBannerHost {...baseProps({
+        githubStatus: makeGithubStatus({
+          tokenStored: true,
+          authSource: "app",
+          writeAuthSource: "none",
+          userLogin: "octocat",
+          connected: true,
+        }),
+      })} />);
+    });
+
+    expect(screen.getByText("GitHub write access isn't connected")).toBeTruthy();
+  });
 });
 
 describe("IntegrationBannerHost relay-offline banner", () => {

@@ -308,10 +308,42 @@ export type GitHubRateLimitState = {
 };
 
 export type GitHubAuthFailure = {
-  kind: "rate_limited" | "invalid_token" | "network" | "unknown";
+  kind: "rate_limited" | "invalid_token" | "permission_denied" | "network" | "unknown";
   message: string;
   retryAt: string | null;
 };
+
+export type GitHubCredentialSource = "environment" | "app" | "gh" | "pat";
+
+export type GitHubCredentialCapability = "read" | "write";
+
+export type GitHubCredentialState = {
+  source: GitHubCredentialSource;
+  available: boolean;
+  capabilities: GitHubCredentialCapability[];
+  activeFor: GitHubCredentialCapability[];
+  state: "active" | "ready" | "cooldown" | "unavailable";
+  failure: GitHubAuthFailure | null;
+  rateLimit: GitHubRateLimitState | null;
+};
+
+export type GitHubCredentialVerification = {
+  source: GitHubCredentialSource;
+  capabilities: GitHubCredentialCapability[];
+  userLogin: string | null;
+  failure: GitHubAuthFailure | null;
+  rateLimit: GitHubRateLimitState | null;
+};
+
+export type GitHubCredentialFallback = {
+  capability: GitHubCredentialCapability;
+  fromSource: GitHubCredentialSource;
+  toSource: GitHubCredentialSource;
+  reason: GitHubAuthFailure["kind"];
+  retryAt: string | null;
+};
+
+export type GitHubTokenType = "classic" | "fine-grained" | "oauth" | "unknown";
 
 export type GitHubStatus = {
   tokenStored: boolean;
@@ -319,7 +351,7 @@ export type GitHubStatus = {
   tokenDecryptionFailed: boolean;
   storageScope: "app";
   authSource: "app" | "pat" | "environment" | "gh" | "none";
-  tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
+  tokenType?: GitHubTokenType;
   repo: GitHubRepoRef | null;
   // True when the project has any `origin` remote, even non-GitHub. Distinct
   // from `repo != null`, which is only true for GitHub origins. The Publish
@@ -335,15 +367,25 @@ export type GitHubStatus = {
   // flattened into "missing scopes" by clients.
   authFailure?: GitHubAuthFailure | null;
   rateLimit?: GitHubRateLimitState | null;
+  // Optional for compatibility with older runtimes. These fields describe the
+  // operation credential chain without exposing credential material.
+  writeAuthSource?: Exclude<GitHubStatus["authSource"], "app">;
+  writeUserLogin?: string | null;
+  credentialStates?: GitHubCredentialState[];
+  credentialFallback?: GitHubCredentialFallback | null;
+  backgroundRefreshPausedUntil?: string | null;
   // null = no repo to probe / probe not run; true/false = result of GET /repos/{owner}/{repo}.
   // Required because fine-grained tokens pass /user validation even when the user forgot to
   // grant the active repo, which then 403s every PR-tab call.
   repoAccessOk: boolean | null;
   repoAccessError: string | null;
-  // Single source of truth for "GitHub is usable here" — UI banners and badges read this so
-  // they cannot disagree (the bug we just fixed: Settings said CONNECTED while the AppShell
-  // banner stayed up).
+  // Single source of truth for "GitHub reads are usable here". Write surfaces
+  // additionally require writeAuthSource !== "none".
   connected: boolean;
+};
+
+export type GitHubSetTokenResult = GitHubStatus & {
+  credentialVerification: GitHubCredentialVerification;
 };
 
 export type GitHubAppInstallationStatus = {

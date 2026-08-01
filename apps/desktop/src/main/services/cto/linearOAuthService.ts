@@ -29,7 +29,10 @@ type LinearOAuthSessionState = {
   createdAt: number;
   status: CtoGetLinearOAuthSessionResult["status"];
   error: string | null;
+  callbackClaimed: boolean;
   server: http.Server;
+  abortController: AbortController;
+  closePromise: Promise<void> | null;
 };
 
 type LinearExternalOAuthSessionState = {
@@ -40,6 +43,7 @@ type LinearExternalOAuthSessionState = {
   codeVerifier: string;
   createdAt: number;
   expiresAt: string;
+  completionInFlight: Promise<LinearExternalOAuthCompleteResult> | null;
 };
 
 export type LinearExternalOAuthStartResult = {
@@ -69,6 +73,47 @@ function createOAuthPortInUseError(): Error {
   return error;
 }
 
+function closeServerAndWait(server: http.Server): Promise<void> {
+  return new Promise((resolve) => {
+    try {
+      server.close(() => resolve());
+    } catch {
+      resolve();
+    }
+  });
+}
+
+function writeResponse(
+  response: http.ServerResponse,
+  status: number,
+  contentType: string,
+  body: string,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      response.off("finish", finish);
+      response.off("close", finish);
+    };
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve();
+    };
+    response.once("finish", finish);
+    response.once("close", finish);
+    try {
+      response.writeHead(status, { "content-type": contentType });
+      response.end(body);
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
+  });
+}
 
 export function createLinearOAuthService(args: {
   credentials: LinearCredentialService;
@@ -78,25 +123,107 @@ export function createLinearOAuthService(args: {
   const fetchImpl = args.fetchImpl ?? fetch;
   const sessions = new Map<string, LinearOAuthSessionState>();
   const externalSessions = new Map<string, LinearExternalOAuthSessionState>();
+  let disposed = false;
+  let startingServer: http.Server | null = null;
+  let disposeInFlight: Promise<void> | null = null;
+
+  const assertActive = (): void => {
+    if (disposed) throw new Error("Linear OAuth service is no longer active.");
+  };
+
+  const markSessionTerminal = (session: LinearOAuthSessionState, patch: {
+    status: LinearOAuthSessionState["status"];
+    error?: string | null;
+  }): void => {
+    session.status = patch.status;
+    session.error = patch.error ?? null;
+    session.abortController.abort();
+  };
+
+  const beginServerClose = (session: LinearOAuthSessionState): Promise<void> => {
+    const closed = closeServerAndWait(session.server);
+    session.server.closeIdleConnections();
+    return closed;
+  };
+
+  const closeSessionServer = (session: LinearOAuthSessionState): Promise<void> => {
+    if (!session.closePromise) session.closePromise = beginServerClose(session);
+    return session.closePromise;
+  };
+
+  const forceCloseSessionServer = (session: LinearOAuthSessionState): Promise<void> => {
+    const closed = closeSessionServer(session);
+    session.server.closeAllConnections();
+    return closed;
+  };
 
   const finalizeSession = (session: LinearOAuthSessionState, patch: {
     status: LinearOAuthSessionState["status"];
     error?: string | null;
-  }) => {
-    session.status = patch.status;
-    session.error = patch.error ?? null;
+  }): Promise<void> => {
+    markSessionTerminal(session, patch);
+    return patch.status === "expired"
+      ? forceCloseSessionServer(session)
+      : closeSessionServer(session);
+  };
+
+  const respondAndFinalizeSession = (
+    session: LinearOAuthSessionState,
+    patch: {
+      status: LinearOAuthSessionState["status"];
+      error?: string | null;
+    },
+    response: http.ServerResponse,
+    reply: {
+      status: number;
+      contentType: string;
+      body: string;
+    },
+  ): Promise<void> => {
+    markSessionTerminal(session, patch);
+    return writeResponse(response, reply.status, reply.contentType, reply.body)
+      .then(() => closeSessionServer(session));
+  };
+
+  const respondAlreadyFinished = (response: http.ServerResponse): Promise<void> => (
+    writeResponse(
+      response,
+      409,
+      "text/plain; charset=utf-8",
+      "This Linear sign-in has already finished. Return to ADE to continue.",
+    )
+  );
+
+  const respondAlreadyFinishedAndClose = async (
+    session: LinearOAuthSessionState,
+    response: http.ServerResponse,
+  ): Promise<void> => {
     try {
-      session.server.close();
-    } catch {
-      // best effort
+      await respondAlreadyFinished(response);
+    } catch (error) {
+      args.logger?.warn("linear_sync.oauth_callback_fallback_response_failed", {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      await forceCloseSessionServer(session);
     }
   };
+
+  const respondCallbackInProgress = (response: http.ServerResponse): Promise<void> => (
+    writeResponse(
+      response,
+      409,
+      "text/plain; charset=utf-8",
+      "This Linear sign-in is already being completed. Return to ADE to continue.",
+    )
+  );
 
   const pruneExpiredSessions = () => {
     const now = Date.now();
     for (const session of sessions.values()) {
       if (session.status === "pending" && now - session.createdAt > LOOPBACK_SESSION_TTL_MS) {
-        finalizeSession(session, {
+        void finalizeSession(session, {
           status: "expired",
           error: "Linear OAuth session expired before the callback completed.",
         });
@@ -150,6 +277,7 @@ export function createLinearOAuthService(args: {
   const exchangeCode = async (
     session: Pick<LinearOAuthSessionState, "redirectUri" | "codeVerifier">,
     code: string,
+    signal?: AbortSignal,
   ): Promise<void> => {
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
@@ -175,6 +303,7 @@ export function createLinearOAuthService(args: {
         "content-type": "application/x-www-form-urlencoded",
       },
       body: body.toString(),
+      signal,
     });
 
     const payload = await response.json().catch(() => ({})) as {
@@ -184,6 +313,11 @@ export function createLinearOAuthService(args: {
       error?: string;
       error_description?: string;
     };
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error
+        ? signal.reason
+        : new Error("Linear OAuth session was cancelled.");
+    }
 
     if (!response.ok || typeof payload.access_token !== "string" || !payload.access_token.trim()) {
       throw new Error(payload.error_description ?? payload.error ?? `Linear OAuth token exchange failed (HTTP ${response.status}).`);
@@ -201,16 +335,25 @@ export function createLinearOAuthService(args: {
     });
   };
 
-  const startSession = async (): Promise<CtoStartLinearOAuthResult> => {
+  const startSessionOnce = async (): Promise<CtoStartLinearOAuthResult> => {
+    assertActive();
     pruneExpiredSessions();
     // Close any leftover pending sessions so the fixed port is available.
     // This handles the case where the user closed the browser tab without
     // completing or cancelling the previous OAuth flow.
+    const supersededSessions: Promise<void>[] = [];
     for (const prev of sessions.values()) {
       if (prev.status === "pending") {
-        finalizeSession(prev, { status: "expired", error: "Superseded by a new OAuth attempt." });
+        supersededSessions.push(finalizeSession(prev, {
+          status: "expired",
+          error: "Superseded by a new OAuth attempt.",
+        }));
+      } else if (prev.closePromise) {
+        supersededSessions.push(prev.closePromise);
       }
     }
+    await Promise.all(supersededSessions);
+    assertActive();
     const oauthClient = args.credentials.getOAuthClientCredentials();
     if (!oauthClient) {
       throw new Error("Linear OAuth is not configured. Configure it in Settings > Linear.");
@@ -245,55 +388,118 @@ export function createLinearOAuthService(args: {
           return;
         }
 
+        if (session.status !== "pending") {
+          await respondAlreadyFinished(res);
+          return;
+        }
+        if (session.callbackClaimed) {
+          await respondCallbackInProgress(res);
+          return;
+        }
+        // Authorization codes are single-use. Claim the callback synchronously
+        // before the token exchange yields so a duplicate request cannot race
+        // the owning callback or change its terminal outcome.
+        session.callbackClaimed = true;
+
         if (error) {
-          finalizeSession(session, {
-            status: "failed",
-            error: errorDescription ?? error,
-          });
-          res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-          res.end("Linear authorization was declined.");
+          await respondAndFinalizeSession(
+            session,
+            { status: "failed", error: errorDescription ?? error },
+            res,
+            {
+              status: 400,
+              contentType: "text/plain; charset=utf-8",
+              body: "Linear authorization was declined.",
+            },
+          );
           return;
         }
 
         if (!code) {
-          finalizeSession(session, {
-            status: "failed",
-            error: "Linear OAuth callback did not include an authorization code.",
-          });
-          res.writeHead(400, { "content-type": "text/plain; charset=utf-8" });
-          res.end("Missing authorization code.");
+          await respondAndFinalizeSession(
+            session,
+            {
+              status: "failed",
+              error: "Linear OAuth callback did not include an authorization code.",
+            },
+            res,
+            {
+              status: 400,
+              contentType: "text/plain; charset=utf-8",
+              body: "Missing authorization code.",
+            },
+          );
           return;
         }
 
-        await exchangeCode(session, code);
-        finalizeSession(session, { status: "completed" });
-        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end("<!doctype html><html><body style=\"font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px\">Linear connected. You can close this window and return to ADE.</body></html>");
+        await exchangeCode(session, code, session.abortController.signal);
+        if (session.status !== "pending") {
+          await respondAlreadyFinishedAndClose(session, res);
+          return;
+        }
+        await respondAndFinalizeSession(
+          session,
+          { status: "completed" },
+          res,
+          {
+            status: 200,
+            contentType: "text/html; charset=utf-8",
+            body: "<!doctype html><html><body style=\"font-family:Geist,-apple-system,BlinkMacSystemFont,sans-serif;padding:24px\">Linear connected. You can close this window and return to ADE.</body></html>",
+          },
+        );
       } catch (error) {
+        if (session.status !== "pending") {
+          await respondAlreadyFinishedAndClose(session, res);
+          return;
+        }
         const message = error instanceof Error ? error.message : "OAuth callback failed.";
-        finalizeSession(session, { status: "failed", error: message });
         args.logger?.warn("linear_sync.oauth_callback_failed", {
           error: message,
         });
-        res.writeHead(500, { "content-type": "text/plain; charset=utf-8" });
-        res.end(message);
+        await respondAndFinalizeSession(
+          session,
+          { status: "failed", error: message },
+          res,
+          {
+            status: 500,
+            contentType: "text/plain; charset=utf-8",
+            body: message,
+          },
+        );
       }
     });
+    startingServer = server;
 
     try {
       await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
+        const cleanup = () => {
+          server.off("error", onError);
+          server.off("close", onClose);
+        };
+        const onError = (error: Error) => {
+          cleanup();
+          reject(error);
+        };
+        const onClose = () => {
+          cleanup();
+          reject(new Error("Linear OAuth callback server closed before it started."));
+        };
+        server.once("error", onError);
+        server.once("close", onClose);
         server.listen(OAUTH_PORT, OAUTH_HOST, () => {
-          server.off("error", reject);
+          cleanup();
           resolve();
         });
       });
     } catch (error) {
+      if (startingServer === server) startingServer = null;
       try {
         server.close();
       } catch {
         // best effort
       }
+
+      if (disposed) assertActive();
 
       if (isAddressInUseError(error)) {
         args.logger?.warn("linear_sync.oauth_callback_port_in_use", {
@@ -304,6 +510,13 @@ export function createLinearOAuthService(args: {
         throw createOAuthPortInUseError();
       }
       throw error;
+    }
+    if (disposed) {
+      if (startingServer === server) startingServer = null;
+      const closed = closeServerAndWait(server);
+      server.closeAllConnections();
+      await closed;
+      assertActive();
     }
 
     const address = server.address();
@@ -329,15 +542,30 @@ export function createLinearOAuthService(args: {
       createdAt: Date.now(),
       status: "pending",
       error: null,
+      callbackClaimed: false,
       server,
+      abortController: new AbortController(),
+      closePromise: null,
     };
     sessions.set(sessionId, session);
+    if (startingServer === server) startingServer = null;
 
     return {
       sessionId,
       authUrl: session.authUrl,
       redirectUri,
     };
+  };
+
+  let startSessionInFlight: Promise<CtoStartLinearOAuthResult> | null = null;
+  const startSession = (): Promise<CtoStartLinearOAuthResult> => {
+    if (disposed) return Promise.reject(new Error("Linear OAuth service is no longer active."));
+    if (startSessionInFlight) return startSessionInFlight;
+    const work = startSessionOnce().finally(() => {
+      if (startSessionInFlight === work) startSessionInFlight = null;
+    });
+    startSessionInFlight = work;
+    return work;
   };
 
   const getSession = (sessionId: string): CtoGetLinearOAuthSessionResult => {
@@ -384,6 +612,7 @@ export function createLinearOAuthService(args: {
       codeVerifier: pkce.verifier,
       createdAt,
       expiresAt,
+      completionInFlight: null,
     });
 
     return { sessionId, authorizeUrl, expiresAt };
@@ -412,21 +641,28 @@ export function createLinearOAuthService(args: {
         message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
       };
     }
+    if (session.completionInFlight) return session.completionInFlight;
 
-    try {
-      await exchangeCode(session, input.code);
-      externalSessions.delete(session.id);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error && error.message
-        ? error.message
-        : "Linear OAuth token exchange failed.";
-      args.logger?.warn("linear_sync.external_oauth_exchange_failed", {
-        sessionId: session.id,
-        error: message,
+    const completion = exchangeCode(session, input.code)
+      .then<LinearExternalOAuthCompleteResult>(() => {
+        externalSessions.delete(session.id);
+        return { ok: true };
+      })
+      .catch<LinearExternalOAuthCompleteResult>((error: unknown) => {
+        const message = error instanceof Error && error.message
+          ? error.message
+          : "Linear OAuth token exchange failed.";
+        args.logger?.warn("linear_sync.external_oauth_exchange_failed", {
+          sessionId: session.id,
+          error: message,
+        });
+        return { ok: false, message };
+      })
+      .finally(() => {
+        if (session.completionInFlight === completion) session.completionInFlight = null;
       });
-      return { ok: false, message };
-    }
+    session.completionInFlight = completion;
+    return completion;
   };
 
   return {
@@ -434,16 +670,26 @@ export function createLinearOAuthService(args: {
     getSession,
     startExternalSession,
     completeExternalSession,
-    dispose() {
+    dispose(): Promise<void> {
+      if (disposeInFlight) return disposeInFlight;
+      disposed = true;
+      const closePromises: Promise<void>[] = [];
+      if (startingServer) {
+        const server = startingServer;
+        startingServer = null;
+        closePromises.push(closeServerAndWait(server));
+        server.closeAllConnections();
+      }
       for (const session of sessions.values()) {
-        try {
-          session.server.close();
-        } catch {
-          // best effort
-        }
+        closePromises.push(finalizeSession(session, {
+          status: "expired",
+          error: "Linear OAuth service stopped.",
+        }));
       }
       sessions.clear();
       externalSessions.clear();
+      disposeInFlight = Promise.all(closePromises).then(() => undefined);
+      return disposeInFlight;
     },
   };
 }

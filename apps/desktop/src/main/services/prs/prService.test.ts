@@ -244,6 +244,9 @@ function makeGithubService(overrides?: Record<string, unknown>) {
     clearToken: vi.fn(),
     getTokenOrThrow,
     getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getReadTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getGitTransportTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    requestRawWithCredentialFallback: vi.fn(),
     ...remainingOverrides,
   } as any;
 }
@@ -255,6 +258,7 @@ function makeGithubStatus(overrides?: Record<string, unknown>) {
     tokenDecryptionFailed: false,
     storageScope: "app",
     authSource: "pat",
+    writeAuthSource: "pat",
     tokenType: "classic",
     connected: true,
     repo: REPO,
@@ -875,6 +879,90 @@ describe("prService.getForLane", () => {
   });
 });
 
+describe("prService repository-scoped GraphQL mutations", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("passes the owning repository for every node-only review mutation", async () => {
+    const row = makePrRow();
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { path: string; body?: unknown }) => {
+        if (args.path !== "/graphql") throw new Error(`Unexpected GitHub API path: ${args.path}`);
+        const query = String((args.body as { query?: unknown } | undefined)?.query ?? "");
+        if (query.includes("query AdePullRequestReviewThreads")) {
+          return {
+            data: {
+              data: {
+                repository: {
+                  pullRequest: {
+                    reviewThreads: {
+                      pageInfo: { hasNextPage: false, endCursor: null },
+                      nodes: [{
+                        id: "thread-1",
+                        isResolved: false,
+                        isOutdated: false,
+                        comments: { nodes: [] },
+                      }],
+                    },
+                  },
+                },
+              },
+            },
+          };
+        }
+        if (query.includes("addPullRequestReviewThreadReply")) {
+          return {
+            data: {
+              data: {
+                addPullRequestReviewThreadReply: {
+                  comment: { id: "comment-1", body: "reply", author: { login: "octocat" } },
+                },
+              },
+            },
+          };
+        }
+        if (query.includes("resolveReviewThread")) {
+          return {
+            data: {
+              data: { resolveReviewThread: { thread: { id: "thread-1", isResolved: true } } },
+            },
+          };
+        }
+        if (query.includes("addReaction")) {
+          return {
+            data: { data: { addReaction: { reaction: { id: "reaction-1", content: "THUMBS_UP" } } } },
+          };
+        }
+        throw new Error("Unexpected GraphQL operation");
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+    const syntheticPrId = `gh:${REPO.owner}/${REPO.name}#${row.github_pr_number}`;
+
+    await service.replyToReviewThread({ prId: syntheticPrId, threadId: "thread-1", body: "reply" });
+    await service.resolveReviewThread({ prId: syntheticPrId, threadId: "thread-1" });
+    await service.postReviewComment({ prId: row.id, threadId: "thread-1", body: "reply" });
+    await service.setReviewThreadResolved({ prId: row.id, threadId: "thread-1", resolved: true });
+    await service.reactToComment({ prId: row.id, commentId: "comment-1", content: "+1" });
+
+    const mutationCalls = githubService.apiRequest.mock.calls
+      .map(([args]: [{ body?: unknown }]) => args)
+      .filter((args: { body?: unknown }) => /^\s*mutation\b/i.test(
+        String((args.body as { query?: unknown } | undefined)?.query ?? ""),
+      ));
+    expect(mutationCalls).toHaveLength(5);
+    for (const call of mutationCalls) {
+      expect(call).toEqual(expect.objectContaining({
+        capability: "write",
+        repo: REPO,
+      }));
+    }
+  });
+});
+
 describe("prService.getGithubSnapshot", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -930,6 +1018,30 @@ describe("prService.getGithubSnapshot", () => {
       path: `/repos/${REPO.owner}/${REPO.name}/pulls`,
       query: expect.objectContaining({ state: "open" }),
     }));
+  });
+
+  it("allows read-only GitHub App snapshots without a write credential", async () => {
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        authSource: "app",
+        writeAuthSource: "none",
+        patTokenStored: false,
+        connected: true,
+        repoAccessOk: true,
+      })),
+      getTokenOrThrow: vi.fn(() => {
+        throw new Error("GitHub auth missing");
+      }),
+      apiRequest: vi.fn(async () => ({ data: [] })),
+    });
+    const { service } = buildService({ githubService, laneService: makeLaneService([]) });
+
+    await expect(service.getGithubSnapshot({ force: true })).resolves.toMatchObject({
+      repo: REPO,
+      viewerLogin: "octocat",
+      repoPullRequests: [],
+    });
+    expect(githubService.apiRequest).toHaveBeenCalled();
   });
 
   it("fetches all PR state totals in one GraphQL request when mobile asks for counts", async () => {
@@ -3605,6 +3717,91 @@ describe("prService.getCheckLog", () => {
       vi.unstubAllGlobals();
     }
   });
+
+  it("downloads the API redirect through credential fallback without authenticating the blob request", async () => {
+    const row = makePrRow({ id: "pr-actions", github_pr_number: 90 });
+    const db = makeMockDb();
+    db.get.mockImplementation((sql: string, params: unknown[]) => {
+      const text = String(sql);
+      if (text.includes("from pull_requests") && text.includes("where id = ?")) {
+        return params[0] === row.id ? row : null;
+      }
+      return null;
+    });
+    const redirectResponse = new Response(null, {
+      status: 302,
+      headers: { location: "https://pipelines.actions.githubusercontent.com/log.txt" },
+    });
+    const discardRedirectBody = vi.spyOn(redirectResponse, "arrayBuffer");
+    const requestRawWithCredentialFallback = vi.fn(async () => redirectResponse);
+    const githubService = makeGithubService({
+      requestRawWithCredentialFallback,
+      apiRequest: vi.fn(async (args: { path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/90") {
+          return { data: makeGitHubPull({ number: 90, head: { ref: "my-feature", sha: "head-sha" } }) };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs") {
+          return {
+            data: {
+              workflow_runs: [{
+                id: 7,
+                name: "CI",
+                status: "completed",
+                conclusion: "failure",
+                head_sha: "head-sha",
+                html_url: "https://github.com/test-owner/test-repo/actions/runs/7",
+                created_at: "2026-07-27T11:55:00.000Z",
+                updated_at: "2026-07-27T11:59:00.000Z",
+              }],
+            },
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/actions/runs/7/jobs") {
+          return {
+            data: {
+              jobs: [{
+                id: 111,
+                name: "build",
+                status: "completed",
+                conclusion: "failure",
+                steps: [{ number: 1, name: "test", status: "completed", conclusion: "failure" }],
+              }],
+            },
+          };
+        }
+        throw new Error(`Unexpected GitHub API path: ${args.path}`);
+      }),
+    });
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response("test failed\n", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const { service } = buildService({ db, githubService });
+
+      const excerpt = await service.getCheckLog({ prId: "pr-actions", jobId: 111 });
+
+      expect(excerpt).toMatchObject({ jobId: 111, jobName: "build" });
+      expect(requestRawWithCredentialFallback).toHaveBeenCalledWith({
+        url: "https://api.github.com/repos/test-owner/test-repo/actions/jobs/111/logs",
+        method: "GET",
+        headers: { accept: "application/vnd.github+json" },
+        redirect: "manual",
+        signal: expect.any(AbortSignal),
+        capability: "read",
+        repo: REPO,
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [blobUrl, blobInit] = fetchMock.mock.calls[0] ?? [];
+      expect(String(blobUrl)).toBe("https://pipelines.actions.githubusercontent.com/log.txt");
+      expect(blobInit).toEqual({
+        method: "GET",
+        signal: expect.any(AbortSignal),
+      });
+      expect(discardRedirectBody).toHaveBeenCalledOnce();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });
 
 describe("prService.rerunChecks", () => {
@@ -4673,6 +4870,70 @@ describe("prService.land", () => {
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/merge conflicts/i);
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
+  });
+
+  it("attributes a successful merge to the active write credential", async () => {
+    const row = makePrRow({ id: "pr-write-identity", github_pr_number: 95 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        authSource: "app",
+        userLogin: "alice",
+        writeAuthSource: "gh",
+        writeUserLogin: "bob",
+      })),
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/95")) {
+          return { data: makeGitHubPull({ number: 95, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (args.method === "PUT" && args.path.endsWith("/pulls/95/merge")) {
+          return { data: { sha: "merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({
+      success: true,
+      mergeCommitSha: "merge-sha",
+    });
+
+    const outcomeWrite = db.run.mock.calls.find(([sql]: unknown[]) =>
+      String(sql).includes("merged_by_login = coalesce"));
+    expect(outcomeWrite?.[1]).toEqual(expect.arrayContaining(["bob"]));
+  });
+
+  it("preserves merge attribution from a legacy writable GitHub status", async () => {
+    const row = makePrRow({ id: "pr-legacy-write-identity", github_pr_number: 96 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => {
+        const status = makeGithubStatus({ authSource: "gh", userLogin: "octocat" });
+        return { ...status, writeAuthSource: undefined };
+      }),
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/96")) {
+          return { data: makeGitHubPull({ number: 96, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (args.method === "PUT" && args.path.endsWith("/pulls/96/merge")) {
+          return { data: { sha: "legacy-merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({
+      success: true,
+      mergeCommitSha: "legacy-merge-sha",
+    });
+
+    const outcomeWrite = db.run.mock.calls.find(([sql]: unknown[]) =>
+      String(sql).includes("merged_by_login = coalesce"));
+    expect(outcomeWrite?.[1]).toEqual(expect.arrayContaining(["octocat"]));
   });
 
   // Helper: a minimal stand-in for a child_process.ChildProcess that the runGh
@@ -6362,13 +6623,13 @@ describe("prService hot refresh", () => {
     const { service } = buildService({ onHotRefreshChanged });
 
     service.markHotRefresh(["pr-1"]);
-    expect(service.getHotRefreshDelayMs()).toBe(5_000);
+    expect(service.getHotRefreshDelayMs()).toBe(15_000);
 
     vi.setSystemTime(new Date("2026-01-01T00:00:59.000Z"));
     service.markHotRefresh(["pr-1"]);
     vi.setSystemTime(new Date("2026-01-01T00:01:01.000Z"));
 
-    expect(service.getHotRefreshDelayMs()).toBe(15_000);
+    expect(service.getHotRefreshDelayMs()).toBe(30_000);
 
     vi.setSystemTime(new Date("2026-01-01T00:03:01.000Z"));
     expect(service.getHotRefreshPrIds()).toEqual([]);

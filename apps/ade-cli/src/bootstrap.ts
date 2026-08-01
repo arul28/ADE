@@ -1221,7 +1221,7 @@ export async function createAdeRuntime(args: {
       logger,
       appVersion: "ade-cli",
       getAdeCliAgentEnv: createHeadlessAdeCliAgentEnv,
-      getLocalGitHubToken: () => headlessLinearServices.githubService.getTokenOrThrowAsync(),
+      getLocalGitHubToken: () => headlessLinearServices.githubService.getGitTransportTokenOrThrowAsync(),
       onLinearIssueChatLinked: publishLinearChatLink,
       onEvent: (event) => {
         pushEvent("runtime", event as unknown as Record<string, unknown>);
@@ -1446,6 +1446,9 @@ export async function createAdeRuntime(args: {
     prService: headlessLinearServices.prService,
     projectConfigService,
     db,
+    isGithubRelayHealthy: () => automationIngressService.isGithubRelayHealthy(),
+    getGithubBackgroundPauseUntilMs: () =>
+      headlessLinearServices.githubService.getBackgroundRequestPauseUntilMs(),
     onEvent: emitPrEvent,
     onPullRequestsSnapshot: (snapshot) =>
       prMergeAutoSettlementService?.processSnapshot(snapshot),
@@ -1978,7 +1981,7 @@ export async function createAdeRuntime(args: {
       swallow(() => iosSimulatorService?.dispose());
       swallow(() => appControlService?.dispose());
       swallow(() => builtInBrowserBridge?.dispose());
-      swallow(() => linearOAuthService.dispose());
+      void linearOAuthService.dispose().catch(() => {});
       swallow(() => headlessLinearServices.dispose());
       swallow(() => agentChatService?.forceDisposeAll?.());
       swallow(() => testService.disposeAll());

@@ -2742,6 +2742,13 @@ describe("runtime GitHub actions", () => {
           repoAccessError: tokenStored ? null : "GitHub auth missing.",
           connected: tokenStored,
         })),
+        verifyStoredPat: vi.fn(async () => ({
+          source: "pat",
+          capabilities: ["read", "write"],
+          userLogin: "octocat",
+          failure: null,
+          rateLimit: null,
+        })),
         setToken,
         clearToken,
       },
@@ -2750,6 +2757,10 @@ describe("runtime GitHub actions", () => {
     const githubService = getAdeActionDomainServices(runtime).github as {
       setToken(token: string): Promise<{
         connected: boolean;
+        credentialVerification: {
+          source: "pat";
+          failure: null;
+        };
         hasOrigin: boolean;
         repoAccessError: string | null;
         repoAccessOk: boolean | null;
@@ -2766,6 +2777,10 @@ describe("runtime GitHub actions", () => {
 
     await expect(githubService.setToken("ghp_test")).resolves.toMatchObject({
       connected: true,
+      credentialVerification: {
+        source: "pat",
+        failure: null,
+      },
       hasOrigin: true,
       repoAccessError: null,
       repoAccessOk: true,

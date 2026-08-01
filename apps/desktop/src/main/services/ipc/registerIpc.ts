@@ -245,6 +245,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
   AdeAccountLoginStart,
@@ -1642,6 +1643,14 @@ export function registerIpc({
   const watcherCleanupBoundSenders = new Set<number>();
   let linearOAuthService: LinearOAuthService | null = null;
   let linearOAuthServiceAdeDir: string | null = null;
+  let linearOAuthOperationTail: Promise<void> = Promise.resolve();
+  let linearOAuthQueuedAdeDir: string | null = null;
+  let linearOAuthQueueEpoch = 0;
+  let linearOAuthStartInFlight: {
+    adeDir: string;
+    queueEpoch: number;
+    promise: Promise<CtoStartLinearOAuthResult>;
+  } | null = null;
   const appControlRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   const builtInBrowserRateBuckets = new Map<string, { windowStartMs: number; count: number }>();
   let fallbackAnalyticsEnabled = true;
@@ -1794,19 +1803,40 @@ export function registerIpc({
     throw error;
   };
 
-  const getLinearOAuthBridge = (ctx: AppContext): LinearOAuthService => {
-    if (!ctx.linearCredentialService) {
-      throw new Error("Linear credential service is not available.");
+  const enterLinearOAuthQueueContext = (adeDir: string): number => {
+    if (linearOAuthQueuedAdeDir !== adeDir) {
+      linearOAuthQueuedAdeDir = adeDir;
+      linearOAuthQueueEpoch += 1;
     }
-    if (!linearOAuthService || linearOAuthServiceAdeDir !== ctx.adeDir) {
-      linearOAuthService?.dispose();
-      linearOAuthService = createLinearOAuthService({
-        credentials: ctx.linearCredentialService,
-        logger: ctx.logger,
-      });
-      linearOAuthServiceAdeDir = ctx.adeDir;
-    }
-    return linearOAuthService;
+    return linearOAuthQueueEpoch;
+  };
+
+  const withLinearOAuthBridge = <T>(
+    ctx: AppContext,
+    useService: (service: LinearOAuthService) => T | Promise<T>,
+  ): Promise<T> => {
+    enterLinearOAuthQueueContext(ctx.adeDir);
+    const work = linearOAuthOperationTail.then(async () => {
+      if (!ctx.linearCredentialService) {
+        throw new Error("Linear credential service is not available.");
+      }
+      if (linearOAuthService && linearOAuthServiceAdeDir !== ctx.adeDir) {
+        const previousService = linearOAuthService;
+        linearOAuthService = null;
+        linearOAuthServiceAdeDir = null;
+        await previousService.dispose();
+      }
+      if (!linearOAuthService) {
+        linearOAuthService = createLinearOAuthService({
+          credentials: ctx.linearCredentialService,
+          logger: ctx.logger,
+        });
+        linearOAuthServiceAdeDir = ctx.adeDir;
+      }
+      return useService(linearOAuthService);
+    });
+    linearOAuthOperationTail = work.then(() => undefined, () => undefined);
+    return work;
   };
 
   const withIpcTiming = async <T>(
@@ -4304,7 +4334,7 @@ export function registerIpc({
     bindRemoteProject,
     getGitHubTokenForRemoteClone: async () => {
       try {
-        return await getCtx().githubService.getTokenOrThrowAsync();
+        return await getCtx().githubService.getGitTransportTokenOrThrowAsync();
       } catch {
         return null;
       }
@@ -9095,12 +9125,14 @@ export function registerIpc({
     return await ctx.githubService.getRemoteStatus();
   });
 
-  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {
+  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
     ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
-    broadcastGithubStatus(status);
-    return status;
+    const credentialVerification = await ctx.githubService.verifyStoredPat(status);
+    const verifiedStatus = { ...status, credentialVerification };
+    broadcastGithubStatus(verifiedStatus);
+    return verifiedStatus;
   });
 
   ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {
@@ -10420,16 +10452,30 @@ export function registerIpc({
     return buildLinearConnectionStatus(ctx, tokenStored);
   });
 
-  ipcMain.handle(IPC.ctoStartLinearOAuth, async (): Promise<CtoStartLinearOAuthResult> => {
+  ipcMain.handle(IPC.ctoStartLinearOAuth, (): Promise<CtoStartLinearOAuthResult> => {
     const ctx = getCtx();
-    return getLinearOAuthBridge(ctx).startSession();
+    const queueEpoch = enterLinearOAuthQueueContext(ctx.adeDir);
+    if (
+      linearOAuthStartInFlight?.adeDir === ctx.adeDir
+      && linearOAuthStartInFlight.queueEpoch === queueEpoch
+    ) {
+      return linearOAuthStartInFlight.promise;
+    }
+    const start = withLinearOAuthBridge(ctx, (service) => service.startSession());
+    const trackedStart = start.finally(() => {
+      if (linearOAuthStartInFlight?.promise === trackedStart) {
+        linearOAuthStartInFlight = null;
+      }
+    });
+    linearOAuthStartInFlight = { adeDir: ctx.adeDir, queueEpoch, promise: trackedStart };
+    return trackedStart;
   });
 
   ipcMain.handle(
     IPC.ctoGetLinearOAuthSession,
     async (_event, arg: CtoGetLinearOAuthSessionArgs): Promise<CtoGetLinearOAuthSessionResult> => {
       const ctx = getCtx();
-      const session = getLinearOAuthBridge(ctx).getSession(arg.sessionId);
+      const session = await withLinearOAuthBridge(ctx, (service) => service.getSession(arg.sessionId));
       if (session.status !== "completed") {
         return session;
       }

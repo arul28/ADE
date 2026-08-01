@@ -75,6 +75,56 @@ export const GITHUB_RELAY_CONNECTED_SAFETY_POLL_MS = 5 * 60_000;
 export const GITHUB_RELAY_SUBSCRIPTION_CONNECT_TIMEOUT_MS = 20_000;
 export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_BASE_MS = 1_000;
 export const GITHUB_RELAY_SUBSCRIPTION_BACKOFF_CAP_MS = 60_000;
+const GITHUB_RELAY_POLL_BACKOFF_BASE_MS = 30_000;
+const GITHUB_RELAY_POLL_BACKOFF_CAP_MS = 15 * 60_000;
+const GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH = 500;
+
+class GithubRelayPollError extends Error {
+  constructor(
+    message: string,
+    readonly retryAtMs: number | null,
+  ) {
+    super(message);
+    this.name = "GithubRelayPollError";
+  }
+}
+
+class GithubRelayPollSupersededError extends Error {
+  constructor() {
+    super("GitHub relay poll was superseded by a newer service lifecycle.");
+    this.name = "GithubRelayPollSupersededError";
+  }
+}
+
+function createGithubRelayPollRun(args: {
+  generation: number;
+  currentGeneration: () => number;
+  isStopped: () => boolean;
+}) {
+  const isCurrent = (): boolean =>
+    args.generation === args.currentGeneration() && !args.isStopped();
+  const assertCurrent = (): void => {
+    if (!isCurrent()) throw new GithubRelayPollSupersededError();
+  };
+  return {
+    isCurrent,
+    assertCurrent,
+    async wait<T>(work: PromiseLike<T>): Promise<T> {
+      const value = await work;
+      assertCurrent();
+      return value;
+    },
+  };
+}
+
+function relayRetryAtMs(headers: Pick<Headers, "get">): number | null {
+  const value = headers.get("retry-after")?.trim() ?? "";
+  if (!value) return null;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Date.now() + seconds * 1_000;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
 
 export function computeGithubRelaySubscriptionBackoffMs(
   attempt: number,
@@ -316,9 +366,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   }
   let server: http.Server | null = null;
   let pollTimer: NodeJS.Timeout | null = null;
+  let relayPollRetryTimer: NodeJS.Timeout | null = null;
   let pollInFlight: Promise<void> | null = null;
   let pollRerunRequested = false;
   let pollAbortController: AbortController | null = null;
+  let relayPollGeneration = 0;
   let started = false;
   let stopped = false;
   let subscriptionSocket: WebSocket | null = null;
@@ -328,6 +380,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   let subscriptionConnectTimer: NodeJS.Timeout | null = null;
   let subscriptionReconnectAttempt = 0;
   let subscriptionConnected = false;
+  let githubRelayHealthy = false;
+  let relayPollCooldownUntilMs = 0;
+  let relayPollFailureCount = 0;
   let subscriptionLoggedState: "connected" | "disconnected" | null = null;
   // When the hosted relay needs a GitHub App user token that the user has not
   // granted yet, that is an idle state, not an error: skip polling for a
@@ -339,6 +394,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
   );
 
   const updateGithubRelayStatus = (patch: Partial<AutomationIngressStatus["githubRelay"]>) => {
+    if (typeof patch.healthy === "boolean") githubRelayHealthy = patch.healthy;
     args.automationService?.updateIngressStatus({
       githubRelay: patch,
     });
@@ -562,6 +618,23 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     pollTimer.unref?.();
   };
 
+  const clearRelayPollRetryTimer = (): void => {
+    if (!relayPollRetryTimer) return;
+    clearTimeout(relayPollRetryTimer);
+    relayPollRetryTimer = null;
+  };
+
+  const scheduleRelayPollRetry = (): void => {
+    clearRelayPollRetryTimer();
+    if (!started || stopped) return;
+    const delayMs = Math.max(0, relayPollCooldownUntilMs - Date.now());
+    relayPollRetryTimer = setTimeout(() => {
+      relayPollRetryTimer = null;
+      void pollGithubRelayOnce();
+    }, delayMs);
+    relayPollRetryTimer.unref?.();
+  };
+
   const clearSubscriptionReconnectTimer = (): void => {
     if (!subscriptionReconnectTimer) return;
     clearTimeout(subscriptionReconnectTimer);
@@ -715,11 +788,21 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
   };
 
-  const pollGithubRelay = async () => {
+  const pollGithubRelay = async (generation: number) => {
+    const run = createGithubRelayPollRun({
+      generation,
+      currentGeneration: () => relayPollGeneration,
+      isStopped: () => stopped,
+    });
+    if (!run.isCurrent()) return;
+    if (Date.now() < relayPollCooldownUntilMs) {
+      scheduleRelayPollRetry();
+      return;
+    }
     const config = buildGithubRelayConfig();
     const useLegacyProjectRoute = shouldUseLegacyGitHubRelayProjectRoute(config);
     const accountAccessToken = args.getAccountAccessToken
-      ? (await args.getAccountAccessToken().catch(() => null))?.trim() || null
+      ? (await run.wait(args.getAccountAccessToken().catch(() => null)))?.trim() || null
       : null;
     // Account auth may become available during the GitHub-token cooldown, so
     // it is checked first. Without either credential, neither HTTP nor socket
@@ -736,6 +819,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     });
     if (!config.configured) {
       disableRelaySubscription();
+      updateGithubRelayStatus({ healthy: false });
       return;
     }
     const committedIngestedPrIds = new Set<string>();
@@ -763,7 +847,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         // new config later fails.
         disableRelaySubscription();
       }
-      const repo = useLegacyProjectRoute ? null : await args.githubService?.detectRepo();
+      const repo = useLegacyProjectRoute
+        ? null
+        : await run.wait(Promise.resolve(args.githubService?.detectRepo()));
       const eventsUrl = useLegacyProjectRoute
         ? new URL(`${baseUrl}/projects/${encodeURIComponent(config.remoteProjectId!)}/github/events`)
         : repo
@@ -789,8 +875,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       let githubAppUserToken: string | null = null;
       if (!useLegacyProjectRoute) {
         try {
-          githubAppUserToken = ((await args.githubService?.getAppUserTokenForRelay()) ?? "").trim() || null;
+          githubAppUserToken = ((await run.wait(Promise.resolve(
+            args.githubService?.getAppUserTokenForRelay(),
+          ))) ?? "").trim() || null;
         } catch (error) {
+          if (error instanceof GithubRelayPollSupersededError) throw error;
           if (!accountAccessToken) {
             enterHostedAuthPending(error instanceof Error ? error.message : String(error));
             return;
@@ -845,10 +934,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           hostedAuth?.ok ? "github-app-user-token" : "account-token",
         );
       }
+      let remoteProjectId: string | null = null;
+      if (useLegacyProjectRoute) remoteProjectId = config.remoteProjectId;
+      else if (repo) remoteProjectId = `${repo.owner}/${repo.name}`;
       updateGithubRelayStatus({
         configured: true,
         apiBaseUrl: config.apiBaseUrl,
-        remoteProjectId: useLegacyProjectRoute ? config.remoteProjectId : repo ? `${repo.owner}/${repo.name}` : null,
+        remoteProjectId,
         status: "polling",
       });
 
@@ -864,17 +956,32 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         pollAbortController = controller;
         const timeout = setTimeout(() => controller.abort(), GITHUB_RELAY_POLL_TIMEOUT_MS);
         timeout.unref?.();
-        const response = await fetch(pageUrl.toString(), {
+        const response = await run.wait(fetch(pageUrl.toString(), {
           headers: requestHeaders,
           signal: controller.signal,
         }).finally(() => {
           clearTimeout(timeout);
           if (pollAbortController === controller) pollAbortController = null;
-        });
+        }));
         if (!response.ok) {
-          throw new Error(`GitHub relay poll failed (${response.status})`);
+          const responseText = await run.wait(response.text().catch(() => ""));
+          let responseMessage = responseText.trim();
+          try {
+            const parsed = JSON.parse(responseText) as { error?: unknown; message?: unknown };
+            if (typeof parsed.error === "string") responseMessage = parsed.error;
+            else if (typeof parsed.message === "string") responseMessage = parsed.message;
+          } catch {
+            // Keep the plain-text response.
+          }
+          responseMessage = responseMessage.trim().slice(0, GITHUB_RELAY_ERROR_MESSAGE_MAX_LENGTH);
+          throw new GithubRelayPollError(
+            responseMessage
+              ? `GitHub relay poll failed (${response.status}): ${responseMessage}`
+              : `GitHub relay poll failed (${response.status})`,
+            relayRetryAtMs(response.headers),
+          );
         }
-        const payload = await response.json() as {
+        const payload = await run.wait(response.json()) as {
           events?: Array<Record<string, unknown>>;
           nextCursor?: unknown;
           cursorExpired?: unknown;
@@ -898,7 +1005,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           // direct GitHub poller corrects PR state independently. A throwing
           // event would otherwise replay from the same cursor forever and
           // freeze all ingest for the repo.
-          const ingested = await args.prService?.ingestGithubWebhook({
+          const ingested = await run.wait(Promise.resolve(args.prService?.ingestGithubWebhook({
             eventName: githubEvent,
             deliveryId: eventId,
             payload: rawPayload,
@@ -909,7 +1016,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               error: error instanceof Error ? error.message : String(error),
             });
             return null;
-          });
+          })));
           // Same as the local-webhook path: a relay-delivered PR change should
           // refresh the poller immediately instead of waiting for its next tick.
           // Batch every delivery in this drain into one targeted reconciliation
@@ -918,7 +1025,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
             for (const prId of ingested.linkedPrIds) pageIngestedPrIds.add(prId);
           }
           try {
-            await args.automationService?.dispatchIngressTrigger({
+            await run.wait(Promise.resolve(args.automationService?.dispatchIngressTrigger({
               source: "github-relay",
               eventKey: eventId,
               triggerType: "github-webhook",
@@ -927,8 +1034,9 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
               cursor: eventCursor ?? eventId,
               keywords: summary.split(/\s+/g).filter(Boolean),
               rawPayload,
-            });
+            })));
           } catch (error) {
+            if (error instanceof GithubRelayPollSupersededError) throw error;
             args.logger.warn("automations.github_relay_dispatch_failed", {
               githubEvent,
               eventId,
@@ -942,7 +1050,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           : null;
         if (responseCursor) pageLastCursor = responseCursor;
         if (payload.cursorExpired === true && repo) {
-          await args.prService?.reconcileGithubStacks(repo);
+          await run.wait(Promise.resolve(args.prService?.reconcileGithubStacks(repo)));
         }
         // Commit only after every event and any cursor-expiry repair in this
         // page have completed. A failed page is replayed from its previous
@@ -950,6 +1058,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         if (pageLastCursor && pageLastCursor !== pageCursor) {
           setIngressCursor({ source: "github-relay", cursor: pageLastCursor });
           for (const prId of pageIngestedPrIds) committedIngestedPrIds.add(prId);
+          flushCommittedPrReconciliation();
         }
         lastSeenCursor = pageLastCursor;
         if (useLegacyProjectRoute || payload.hasMore !== true) break;
@@ -958,7 +1067,11 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         }
         pageCursor = pageLastCursor;
       }
+      run.assertCurrent();
       flushCommittedPrReconciliation();
+      relayPollFailureCount = 0;
+      relayPollCooldownUntilMs = 0;
+      clearRelayPollRetryTimer();
       updateGithubRelayStatus({
         healthy: true,
         status: "ready",
@@ -968,10 +1081,26 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
         lastError: null,
       });
     } catch (error) {
+      if (error instanceof GithubRelayPollSupersededError || !run.isCurrent()) return;
       flushCommittedPrReconciliation();
       if (stopped && error instanceof Error && error.name === "AbortError") return;
+      relayPollFailureCount += 1;
+      const backoffMs = Math.min(
+        GITHUB_RELAY_POLL_BACKOFF_CAP_MS,
+        GITHUB_RELAY_POLL_BACKOFF_BASE_MS * 2 ** Math.max(0, relayPollFailureCount - 1),
+      );
+      const nowMs = Date.now();
+      relayPollCooldownUntilMs = Math.max(
+        nowMs + backoffMs,
+        Math.min(
+          nowMs + GITHUB_RELAY_POLL_BACKOFF_CAP_MS,
+          error instanceof GithubRelayPollError ? error.retryAtMs ?? 0 : 0,
+        ),
+      );
+      scheduleRelayPollRetry();
       args.logger.warn("automations.github_relay_poll_failed", {
         error: error instanceof Error ? error.message : String(error),
+        retryAt: new Date(relayPollCooldownUntilMs).toISOString(),
       });
       updateGithubRelayStatus({
         healthy: false,
@@ -990,8 +1119,12 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
     pollInFlight = (async () => {
       do {
         pollRerunRequested = false;
-        await pollGithubRelay();
-      } while (pollRerunRequested && !stopped);
+        try {
+          await pollGithubRelay(relayPollGeneration);
+        } catch (error) {
+          if (!(error instanceof GithubRelayPollSupersededError)) throw error;
+        }
+      } while (pollRerunRequested && !stopped && Date.now() >= relayPollCooldownUntilMs);
     })().finally(() => {
       pollInFlight = null;
     });
@@ -1003,6 +1136,7 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       if (started && !stopped) return;
       started = true;
       stopped = false;
+      relayPollGeneration += 1;
       // The local webhook server exists to receive automation webhooks; in
       // PR-freshness-only mode (no automation service) only the relay poll runs.
       if (!server && args.automationService) {
@@ -1034,6 +1168,10 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       return args.automationService?.getIngressStatus() ?? null;
     },
 
+    isGithubRelayHealthy() {
+      return githubRelayHealthy;
+    },
+
     listRecentEvents(limit = 20) {
       return args.automationService?.listIngressEvents(limit) ?? [];
     },
@@ -1042,16 +1180,24 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
       // Explicit polls (e.g. right after the user authorizes the GitHub App)
       // bypass the auth-pending cooldown.
       hostedAuthPendingUntilMs = 0;
+      clearRelayPollRetryTimer();
+      relayPollCooldownUntilMs = 0;
+      relayPollFailureCount = 0;
       await pollGithubRelayOnce();
     },
 
     stop() {
       stopped = true;
       started = false;
+      relayPollGeneration += 1;
+      githubRelayHealthy = false;
+      relayPollCooldownUntilMs = 0;
+      relayPollFailureCount = 0;
       if (pollTimer) {
         clearInterval(pollTimer);
         pollTimer = null;
       }
+      clearRelayPollRetryTimer();
       clearSubscriptionReconnectTimer();
       clearSubscriptionConnectTimer();
       pollAbortController?.abort();

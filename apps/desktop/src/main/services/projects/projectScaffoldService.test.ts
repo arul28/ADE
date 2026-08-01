@@ -30,6 +30,8 @@ function makeGithubServiceStub(overrides: Partial<{
     apiRequest: overrides.apiRequest ?? vi.fn(),
     getTokenOrThrow,
     getTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getReadTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
+    getGitTransportTokenOrThrowAsync: vi.fn(async () => getTokenOrThrow()),
     parseGitHubRepoFromRemoteUrl:
       overrides.parseGitHubRepoFromRemoteUrl ??
       vi.fn((url: string) => {
@@ -544,9 +546,12 @@ describe("listMyGitHubRepos", () => {
       .mockResolvedValueOnce({ data: fullPage, response: null })
       .mockResolvedValueOnce({ data: partialPage, response: null });
 
+    const githubService = makeGithubServiceStub({ apiRequest });
+    githubService.getReadTokenOrThrowAsync.mockResolvedValue("ghp_healthy_rest_fallback");
+    githubService.getGitTransportTokenOrThrowAsync.mockResolvedValue("ghp_rate_limited_primary");
     const service = createProjectScaffoldService({
       logger: makeLogger(),
-      githubService: makeGithubServiceStub({ apiRequest }),
+      githubService,
     });
 
     const result = await service.listMyGitHubRepos({});
@@ -565,6 +570,8 @@ describe("listMyGitHubRepos", () => {
     expect(apiRequest.mock.calls[1]?.[0]).toMatchObject({
       query: expect.objectContaining({ page: 2 }),
     });
+    expect(githubService.getReadTokenOrThrowAsync).toHaveBeenCalledOnce();
+    expect(githubService.getGitTransportTokenOrThrowAsync).not.toHaveBeenCalled();
     expect(result.repos).toHaveLength(102);
     expect(result.repos[0]).toMatchObject({
       owner: "alice",

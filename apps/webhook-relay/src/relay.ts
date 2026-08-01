@@ -548,15 +548,22 @@ async function authenticateAccount(request: Request, env: RelayEnv): Promise<str
   return null;
 }
 
+async function readInstalledGitHubRepositoryAccount(
+  env: RelayEnv,
+  repo: { owner: string; name: string },
+): Promise<AccountMappingRow | null> {
+  return await env.DB
+    .prepare("select account_id from github_app_repositories where repository_key = ? and installed = 1 limit 1")
+    .bind(`${repo.owner}/${repo.name}`.toLowerCase())
+    .first<AccountMappingRow>();
+}
+
 async function githubRepositoryAccountMatches(
   env: RelayEnv,
   repo: { owner: string; name: string },
   accountId: string,
 ): Promise<boolean> {
-  const row = await env.DB
-    .prepare("select account_id from github_app_repositories where repository_key = ? limit 1")
-    .bind(`${repo.owner}/${repo.name}`.toLowerCase())
-    .first<AccountMappingRow>();
+  const row = await readInstalledGitHubRepositoryAccount(env, repo);
   return row?.account_id === accountId;
 }
 
@@ -1517,14 +1524,43 @@ async function authorizeRepoEventRead(
   env: RelayEnv,
   repo: { owner: string; name: string },
 ): Promise<RepoEventReadAuthorization> {
+  // Signed-in ADE clients already have a relay account identity whose repo
+  // binding was established during GitHub App setup. Check that first so every
+  // event poll and WebSocket reconnect does not spend a GitHub REST request on
+  // re-proving repository access. The GitHub-token path remains for legacy
+  // clients that do not send an ADE account token.
+  const accountId = await authenticateAccount(request, env);
+  if (accountId) {
+    const mapping = await readInstalledGitHubRepositoryAccount(env, repo);
+    if (mapping?.account_id === accountId) {
+      return { authorized: true, accountId };
+    }
+    if (!mapping) {
+      return {
+        authorized: false,
+        response: json({ ok: false, error: "unauthorized" }, { status: 401 }),
+      };
+    }
+    const auth = await assertGitHubRepoAuthorized(request, env, repo);
+    if (!auth.authorized) return { authorized: false, response: auth.response };
+
+    const repositoryKey = `${repo.owner}/${repo.name}`.toLowerCase();
+    if (await associateGitHubRepositoryWithAccount(env, repositoryKey, repositoryKey, accountId)) {
+      return { authorized: true, accountId };
+    }
+
+    // A repository claimed by another account or explicitly unlinked from this
+    // one must remain terminal for account-authenticated event reads. Legacy
+    // callers without an ADE account token still use the provider path below.
+    return {
+      authorized: false,
+      response: json({ ok: false, error: "unauthorized" }, { status: 401 }),
+    };
+  }
+
   const auth = await assertGitHubRepoAuthorized(request, env, repo);
   if (auth.authorized) return { authorized: true, accountId: null };
-
-  const accountId = await authenticateAccount(request, env);
-  if (!accountId || !await githubRepositoryAccountMatches(env, repo, accountId)) {
-    return { authorized: false, response: auth.response };
-  }
-  return { authorized: true, accountId };
+  return { authorized: false, response: auth.response };
 }
 
 async function handleListRepoEvents(request: Request, env: RelayEnv, repo: { owner: string; name: string }): Promise<Response> {

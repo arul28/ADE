@@ -36,6 +36,7 @@ const remoteDisconnectMock = vi.hoisted(() => vi.fn());
 const hasKnownSshHostKeyForTargetMock = vi.hoisted(() => vi.fn(() => false));
 const getSshHostKeyTrustForTargetMock = vi.hoisted(() => vi.fn());
 const trustSshHostKeyForTargetMock = vi.hoisted(() => vi.fn());
+const createLinearOAuthServiceMock = vi.hoisted(() => vi.fn());
 
 vi.mock("electron", () => ({
   app: {
@@ -117,6 +118,10 @@ vi.mock("../remoteRuntime/sshTransport", () => ({
 
 vi.mock("../git/git", () => ({
   runGit: vi.fn(),
+}));
+
+vi.mock("../cto/linearOAuthService", () => ({
+  createLinearOAuthService: createLinearOAuthServiceMock,
 }));
 
 import {
@@ -1821,10 +1826,210 @@ describe("registerIpc sync bridge", () => {
     ipcHandlers.clear();
     browserWindowFromWebContents.mockReset().mockReturnValue({ id: 7 });
     showOpenDialogMock.mockReset();
+    createLinearOAuthServiceMock.mockReset();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("coalesces concurrent Linear OAuth starts within one project credential context", async () => {
+    let releaseStart!: () => void;
+    const startReleased = new Promise<void>((resolve) => {
+      releaseStart = resolve;
+    });
+    const startSession = vi.fn(async () => {
+      await startReleased;
+      return { sessionId: "session-a", authUrl: "https://linear.test/a", redirectUri: "http://a" };
+    });
+    const service = {
+      startSession,
+      getSession: vi.fn(),
+      dispose: vi.fn(async () => undefined),
+    };
+    createLinearOAuthServiceMock.mockReturnValue(service);
+
+    const credentials = { id: "credentials-a" };
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    registerIpc({
+      getCtx: () => ({
+        adeDir: "/repo-a/.ade",
+        linearCredentialService: credentials,
+        logger,
+      }) as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const handler = ipcHandlers.get(IPC.ctoStartLinearOAuth);
+    const firstRequest = handler?.(eventForSender()) as Promise<unknown>;
+    const duplicateRequest = handler?.(eventForSender()) as Promise<unknown>;
+    await vi.waitFor(() => expect(startSession).toHaveBeenCalledTimes(1));
+
+    releaseStart();
+    const [firstResult, duplicateResult] = await Promise.all([firstRequest, duplicateRequest]);
+
+    expect(firstResult).toEqual({
+      sessionId: "session-a",
+      authUrl: "https://linear.test/a",
+      redirectUri: "http://a",
+    });
+    expect(duplicateResult).toEqual(firstResult);
+    expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(1);
+    expect(service.dispose).not.toHaveBeenCalled();
+  });
+
+  it("serializes Linear OAuth operations across project credential contexts", async () => {
+    let releaseFirstStart!: () => void;
+    const firstStartReleased = new Promise<void>((resolve) => {
+      releaseFirstStart = resolve;
+    });
+    const firstStartSession = vi.fn(async () => {
+      await firstStartReleased;
+      return { sessionId: "session-a", authUrl: "https://linear.test/a", redirectUri: "http://a" };
+    });
+    const firstDispose = vi.fn(async () => undefined);
+    const firstCredentials = { id: "credentials-a" };
+    const secondCredentials = { id: "credentials-b" };
+    const firstService = {
+      startSession: firstStartSession,
+      getSession: vi.fn(),
+      dispose: firstDispose,
+    };
+    const secondService = {
+      startSession: vi.fn(async () => ({
+        sessionId: "session-b",
+        authUrl: "https://linear.test/b",
+        redirectUri: "http://b",
+      })),
+      getSession: vi.fn(),
+      dispose: vi.fn(async () => undefined),
+    };
+    createLinearOAuthServiceMock.mockImplementation(({ credentials }) => (
+      credentials === firstCredentials ? firstService : secondService
+    ));
+
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    let activeContext = {
+      adeDir: "/repo-a/.ade",
+      linearCredentialService: firstCredentials,
+      logger,
+    };
+    registerIpc({
+      getCtx: () => activeContext as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const handler = ipcHandlers.get(IPC.ctoStartLinearOAuth);
+    const firstRequest = handler?.(eventForSender()) as Promise<unknown>;
+    await vi.waitFor(() => expect(firstStartSession).toHaveBeenCalledTimes(1));
+
+    activeContext = {
+      adeDir: "/repo-b/.ade",
+      linearCredentialService: secondCredentials,
+      logger,
+    };
+    const secondRequest = handler?.(eventForSender()) as Promise<unknown>;
+
+    expect(firstDispose).not.toHaveBeenCalled();
+    expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(1);
+
+    releaseFirstStart();
+    await expect(firstRequest).resolves.toMatchObject({ sessionId: "session-a" });
+    await expect(secondRequest).resolves.toMatchObject({ sessionId: "session-b" });
+
+    expect(firstDispose).toHaveBeenCalledTimes(1);
+    expect(createLinearOAuthServiceMock).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      credentials: firstCredentials,
+    }));
+    expect(createLinearOAuthServiceMock).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      credentials: secondCredentials,
+    }));
+    expect(secondService.startSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not coalesce Linear OAuth starts across an intervening project session poll", async () => {
+    let releaseFirstStart!: () => void;
+    const firstStartReleased = new Promise<void>((resolve) => {
+      releaseFirstStart = resolve;
+    });
+    const firstService = {
+      startSession: vi.fn(async () => {
+        await firstStartReleased;
+        return { sessionId: "session-a1", authUrl: "https://linear.test/a1", redirectUri: "http://a1" };
+      }),
+      getSession: vi.fn(),
+      dispose: vi.fn(async () => undefined),
+    };
+    const secondService = {
+      startSession: vi.fn(),
+      getSession: vi.fn(() => ({ status: "pending", error: null })),
+      dispose: vi.fn(async () => undefined),
+    };
+    const thirdService = {
+      startSession: vi.fn(async () => ({
+        sessionId: "session-a2",
+        authUrl: "https://linear.test/a2",
+        redirectUri: "http://a2",
+      })),
+      getSession: vi.fn(),
+      dispose: vi.fn(async () => undefined),
+    };
+    createLinearOAuthServiceMock
+      .mockReturnValueOnce(firstService)
+      .mockReturnValueOnce(secondService)
+      .mockReturnValueOnce(thirdService);
+
+    const logger = { warn: vi.fn(), info: vi.fn(), error: vi.fn(), debug: vi.fn() };
+    const firstCredentials = { id: "credentials-a" };
+    const secondCredentials = { id: "credentials-b" };
+    let activeContext = {
+      adeDir: "/repo-a/.ade",
+      linearCredentialService: firstCredentials,
+      logger,
+    };
+    registerIpc({
+      getCtx: () => activeContext as any,
+      switchProjectFromDialog: vi.fn(),
+      closeCurrentProject: vi.fn(),
+      closeProjectByPath: vi.fn(),
+      globalStatePath: "/tmp/ade-state.json",
+    });
+
+    const startHandler = ipcHandlers.get(IPC.ctoStartLinearOAuth);
+    const getHandler = ipcHandlers.get(IPC.ctoGetLinearOAuthSession);
+    const firstStart = startHandler?.(eventForSender()) as Promise<unknown>;
+    await vi.waitFor(() => expect(firstService.startSession).toHaveBeenCalledTimes(1));
+
+    activeContext = {
+      adeDir: "/repo-b/.ade",
+      linearCredentialService: secondCredentials,
+      logger,
+    };
+    const interveningPoll = getHandler?.(eventForSender(), { sessionId: "session-b" }) as Promise<unknown>;
+
+    activeContext = {
+      adeDir: "/repo-a/.ade",
+      linearCredentialService: firstCredentials,
+      logger,
+    };
+    const secondStart = startHandler?.(eventForSender()) as Promise<unknown>;
+    expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(1);
+
+    releaseFirstStart();
+    await expect(firstStart).resolves.toMatchObject({ sessionId: "session-a1" });
+    await expect(interveningPoll).resolves.toEqual({ status: "pending", error: null });
+    await expect(secondStart).resolves.toMatchObject({ sessionId: "session-a2" });
+
+    expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(3);
+    expect(firstService.dispose).toHaveBeenCalledTimes(1);
+    expect(secondService.dispose).toHaveBeenCalledTimes(1);
+    expect(thirdService.startSession).toHaveBeenCalledTimes(1);
   });
 
   it("dispatches lane archived automation once after IPC reclaim archives, even when removal later fails", async () => {

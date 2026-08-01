@@ -260,6 +260,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
   AdeAccountLoginStart,
@@ -8483,7 +8484,7 @@ contextBridge.exposeInMainWorld("ade", {
             : githubRemoteStatusCache.get(),
       );
     },
-    setToken: async (token: string): Promise<GitHubStatus> =>
+    setToken: async (token: string): Promise<GitHubSetTokenResult> =>
       clearAround(
         () => {
           githubStatusCache.clear();

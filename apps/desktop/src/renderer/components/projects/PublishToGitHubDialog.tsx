@@ -20,6 +20,7 @@ import {
 import type { PublishProjectResult } from "../../../shared/types";
 import { extractCodeFromMessage } from "../../lib/codedError";
 import { extractError } from "../../lib/format";
+import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 import { fadeScale } from "../../lib/motion";
 import {
   COLORS,
@@ -187,7 +188,12 @@ export function PublishToGitHubDialog({
     setTokenSaving(true);
     setTokenError(null);
     try {
-      await window.ade.github.setToken(token);
+      const result = await window.ade.github.setToken(token);
+      const verification = describeGithubPatVerification(result);
+      if (!verification.verified) {
+        setTokenError(verification.message);
+        return;
+      }
       setTokenDraft("");
       setConnectMode(false);
       void window.ade.github.getStatus({ forceRefresh: true }).then((status) => {
