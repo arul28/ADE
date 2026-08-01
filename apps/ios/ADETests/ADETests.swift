@@ -21038,6 +21038,123 @@ final class ADETests: XCTestCase {
     """)
   }
 
+  // MARK: - pull_requests replication (soft-detach columns)
+
+  /// Every column desktop can write to `pull_requests` must exist on the phone.
+  /// cr-sqlite raises on an unknown `cid`, which nacks the whole changeset batch and
+  /// stalls replication for the device until an app update ships — so this is a sync
+  /// liveness test, not a feature test.
+  private func pullRequestChangeRows(prId: String, siteId: String) -> [CrsqlChangeRow] {
+    let pk = packedDesktopTextPrimaryKey(prId)
+    let columns: [(String, SyncScalarValue)] = [
+      ("project_id", .string("proj-1")),
+      ("lane_id", .string("lane-deleted")),
+      ("repo_owner", .string("arul28")),
+      ("repo_name", .string("ADE")),
+      ("github_pr_number", .number(988)),
+      ("github_url", .string("https://github.com/arul28/ADE/pull/988")),
+      ("state", .string("merged")),
+      ("base_branch", .string("main")),
+      ("head_branch", .string("ade/auto-naming")),
+      ("additions", .number(412)),
+      ("deletions", .number(88)),
+      ("created_at", .string("2026-07-20T00:00:00.000Z")),
+      ("updated_at", .string("2026-07-29T00:00:00.000Z")),
+      ("merged_at", .string("2026-07-29T00:00:00.000Z")),
+      // Columns desktop has written for a while that the phone historically lacked.
+      ("merge_conflicts", .number(0)),
+      ("behind_base_by", .number(0)),
+      // Soft-detach + merge-outcome columns.
+      ("detached_at", .string("2026-07-30T00:00:00.000Z")),
+      ("detached_lane_name", .string("auto-naming")),
+      ("detached_lane_color", .string("#4ADE80")),
+      ("detached_provenance", .string("{\"chats\":3,\"artifacts\":2,\"checkpoints\":5}")),
+      ("merged_by_login", .string("arul")),
+      ("merged_by_avatar_url", .string("https://avatars.githubusercontent.com/arul")),
+      ("merge_method", .string("squash")),
+      ("commit_count", .number(12)),
+      ("changed_files", .number(9)),
+    ]
+    return columns.enumerated().map { index, column in
+      CrsqlChangeRow(
+        table: "pull_requests",
+        pk: pk,
+        cid: column.0,
+        val: column.1,
+        colVersion: 1,
+        dbVersion: 2,
+        siteId: siteId,
+        cl: 1,
+        seq: index
+      )
+    }
+  }
+
+  func testDatabaseAppliesPullRequestDetachColumnsFromDesktop() throws {
+    let database = DatabaseService(baseURL: makeTemporaryDirectory())
+    XCTAssertNil(database.initializationError)
+
+    let rows = pullRequestChangeRows(prId: "pr-detached-sync", siteId: "b00e9b92c864a27958669c1595fcb2c3")
+    let result = try database.applyChanges(rows)
+
+    XCTAssertEqual(result.appliedCount, rows.count)
+    XCTAssertEqual(result.touchedTables, ["pull_requests"])
+    XCTAssertFalse(database.skippedUnknownSyncTables.contains("pull_requests"))
+
+    let replayed = database.exportChangesSince(version: 0).filter { $0.table == "pull_requests" }
+    XCTAssertEqual(replayed.count, rows.count)
+    XCTAssertEqual(replayed.first(where: { $0.cid == "detached_lane_name" })?.val, .string("auto-naming"))
+    XCTAssertEqual(replayed.first(where: { $0.cid == "merge_method" })?.val, .string("squash"))
+    // The two columns desktop already wrote before this shipped.
+    XCTAssertNotNil(replayed.first(where: { $0.cid == "merge_conflicts" }))
+    XCTAssertNotNil(replayed.first(where: { $0.cid == "behind_base_by" }))
+
+    database.close()
+  }
+
+  func testDatabaseBootstrapUpgradesLegacyPullRequestsForDetachColumns() throws {
+    // A phone that installed before these columns existed must migrate on launch,
+    // then accept a changeset that carries them. Without the migration the batch
+    // throws and replication stops for good.
+    let baseURL = makeTemporaryDirectory()
+    let legacyDatabase = DatabaseService(baseURL: baseURL, bootstrapSQL: """
+      create table if not exists pull_requests (
+        id text primary key,
+        project_id text not null,
+        lane_id text not null,
+        repo_owner text not null,
+        repo_name text not null,
+        github_pr_number integer not null,
+        github_url text not null,
+        state text not null,
+        base_branch text not null,
+        head_branch text not null,
+        additions integer not null default 0,
+        deletions integer not null default 0,
+        created_at text not null,
+        updated_at text not null
+      );
+    """)
+    XCTAssertNil(legacyDatabase.initializationError)
+    legacyDatabase.close()
+
+    // Reopen with the real production bootstrap + ensureColumn migrations.
+    let upgradedDatabase = DatabaseService(baseURL: baseURL)
+    XCTAssertNil(upgradedDatabase.initializationError)
+
+    let rows = pullRequestChangeRows(prId: "pr-legacy-upgrade", siteId: "b00e9b92c864a27958669c1595fcb2c3")
+    let result = try upgradedDatabase.applyChanges(rows)
+
+    XCTAssertEqual(result.appliedCount, rows.count)
+    XCTAssertFalse(upgradedDatabase.skippedUnknownSyncTables.contains("pull_requests"))
+
+    let replayed = upgradedDatabase.exportChangesSince(version: 0).filter { $0.table == "pull_requests" }
+    XCTAssertEqual(replayed.first(where: { $0.cid == "detached_provenance" })?.val,
+                   .string("{\"chats\":3,\"artifacts\":2,\"checkpoints\":5}"))
+
+    upgradedDatabase.close()
+  }
+
   private func packedDesktopTextPrimaryKey(_ value: String) -> SyncScalarValue {
     .bytes(SyncScalarBytes(type: "bytes", base64: packedDesktopTextPrimaryKeyData(value).base64EncodedString()))
   }
