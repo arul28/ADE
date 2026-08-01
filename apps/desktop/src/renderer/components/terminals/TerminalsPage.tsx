@@ -339,7 +339,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         .catch((reason: unknown) => {
           // Unreachable owning project: leaving the session closed is safer than
           // opening its id against whichever runtime the tab currently owns.
+          // Surface the failure like every other switch path on this page —
+          // without it the click reads as a silent no-op.
           console.error("work.foreign_session_switch_failed", reason);
+          const machineName = binding.kind === "remote" ? binding.runtimeName : binding.displayName;
+          setSessionActionError(
+            `Could not open this session on ${machineName}: ${reason instanceof Error ? reason.message : String(reason)}`,
+          );
+          window.setTimeout(() => setSessionActionError(null), 6000);
         });
     },
     [
