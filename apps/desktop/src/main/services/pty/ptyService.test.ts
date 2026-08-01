@@ -3475,6 +3475,63 @@ describe("ptyService", () => {
       }
     });
 
+    it("preserves percent signs when resuming a Windows CLI through cmd.exe", async () => {
+      vi.useFakeTimers();
+      try {
+        setPlatform("win32");
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-codex-windows-percent",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "C:\\tmp\\transcripts\\session-codex-windows-percent.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-windows-percent",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-windows-percent",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-codex-windows-percent",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const prompt = "Keep 100% literal and do not expand %PATH%.";
+        const pending = service.sendToSession({
+          sessionId: "session-codex-windows-percent",
+          text: prompt,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "› \ngpt-5.5 xhigh fast · C:\\Projects\\ADE\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+        await pending;
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const [command, commandLine] = spawn.mock.calls[0] as [string, string];
+        expect(command).toMatch(/cmd(?:\.exe)?$/i);
+        expect(commandLine).toContain("thread-windows-percent");
+        expect(commandLine).not.toContain("100%");
+        expect(commandLine).not.toContain("%PATH%");
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(
+          expect.stringContaining(prompt),
+        );
+        expect(writes).not.toContainEqual(
+          expect.stringContaining("100%%"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("sendToSession does not wait for provider-specific readiness before resuming with a prompt", async () => {
       vi.useFakeTimers();
       try {

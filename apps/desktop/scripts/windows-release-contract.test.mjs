@@ -20,6 +20,15 @@ const winArtifactValidator = fs.readFileSync(
   path.join(desktopRoot, "scripts", "validate-win-artifacts.mjs"),
   "utf8",
 );
+const electronBuilderWrapper = fs.readFileSync(
+  path.join(desktopRoot, "scripts", "run-electron-builder.mjs"),
+  "utf8",
+);
+const desktopMain = fs.readFileSync(path.join(desktopRoot, "src", "main", "main.ts"), "utf8");
+const registerIpc = fs.readFileSync(
+  path.join(desktopRoot, "src", "main", "services", "ipc", "registerIpc.ts"),
+  "utf8",
+);
 
 const remoteTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
 
@@ -49,6 +58,16 @@ test("electron-builder owns packaged update metadata and preserves the upstream 
   assert.deepEqual(appUpdate, { provider: "github", owner: "arul28", repo: "ADE" });
   assert.equal(pkg.build.extraResources.some((entry) => entry.to === "app-update.yml"), false);
   assert.match(pkg.scripts["package:win"], /run-electron-builder\.mjs/);
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.extraMetadata\.adeReleaseRepository=\$\{configuredRepository\}/,
+  );
+  assert.match(desktopMain, /packageJson\.adeReleaseRepository/);
+  assert.ok(
+    (desktopMain.match(/releaseRepository: packagedReleaseRepository/g) ?? []).length >= 2,
+    "packaged repository must reach both updater state and release-link IPC",
+  );
+  assert.match(registerIpc, /buildGithubReleaseUrl\(version, releaseRepository\)/);
 });
 
 test("public Windows packaging fails closed on Authenticode signing", () => {
@@ -122,8 +141,12 @@ test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
   );
   assert.match(nsis, /!macro customUnInstall/);
   assert.match(nsis, /windows-uninstall-cleanup\.ps1/);
+  assert.match(nsis, /-AppExecutableName "\$\{APP_EXECUTABLE_FILENAME\}"/);
+  assert.match(nsis, /-PackageChannel "\$2"/);
   assert.match(nsis, /Abort/);
   assert.match(cleanup, /serve" "--uninstall-service/);
+  assert.match(cleanup, /ADE_PACKAGE_CHANNEL = \$normalizedPackageChannel/);
+  assert.match(cleanup, /ADE_HOME = Join-Path/);
   assert.match(cleanup, /SetEnvironmentVariable\("Path"/);
 });
 

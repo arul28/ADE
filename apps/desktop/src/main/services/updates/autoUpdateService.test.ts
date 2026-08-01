@@ -278,6 +278,41 @@ describe("createAutoUpdateService", () => {
     service.dispose();
   });
 
+  it("uses the packaged update repository for post-install GitHub links", () => {
+    const globalStatePath = makeStatePath();
+    fs.writeFileSync(globalStatePath, JSON.stringify({
+      recentlyInstalledUpdate: {
+        version: "1.2.3",
+        installedAt: "2026-04-06T15:20:00.000Z",
+        releaseNotesUrl: "https://www.ade-app.dev/docs/changelog/v1.2.3",
+        githubReleaseUrl: "https://github.com/arul28/ADE/releases/tag/v1.2.3",
+      },
+    }), "utf8");
+
+    const service = createAutoUpdateService({
+      logger: makeLogger(),
+      currentVersion: "1.2.3",
+      globalStatePath,
+      releaseRepository: "acme/custom-ade",
+      startupDelayMs: 60_000,
+      periodicCheckMs: 60_000,
+      now: () => "2026-04-06T15:21:00.000Z",
+      updater: new FakeAutoUpdater(),
+    });
+
+    expect(service.getSnapshot().recentlyInstalled?.githubReleaseUrl).toBe(
+      "https://github.com/acme/custom-ade/releases/tag/v1.2.3",
+    );
+    const persisted = readState(globalStatePath) as {
+      recentlyInstalledUpdate?: { githubReleaseUrl?: string | null };
+    };
+    expect(persisted.recentlyInstalledUpdate?.githubReleaseUrl).toBe(
+      "https://github.com/acme/custom-ade/releases/tag/v1.2.3",
+    );
+
+    service.dispose();
+  });
+
   // The archive is checksum-verified before the update is offered, so one
   // failed handoff does not make it suspect. Re-downloading the whole release
   // on every retry is what made a flaky install cost gigabytes.

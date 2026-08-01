@@ -42,6 +42,7 @@ const args = [
   ...builderArgs,
   `--config.publish.owner=${owner}`,
   `--config.publish.repo=${repo}`,
+  `--config.extraMetadata.adeReleaseRepository=${configuredRepository}`,
   ...(requireSigning ? ["--config.forceCodeSigning=true"] : []),
 ];
 

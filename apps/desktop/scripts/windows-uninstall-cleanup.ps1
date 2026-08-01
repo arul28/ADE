@@ -2,6 +2,8 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$InstallDir,
+  [string]$AppExecutableName = "",
+  [string]$PackageChannel = "stable",
   [string]$CliBinDir = "",
   [switch]$SkipServiceRemoval,
   [switch]$SkipUserPathUpdate
@@ -46,12 +48,25 @@ namespace Ade.Windows {
 }
 
 $resolvedInstallDir = Resolve-NormalizedPath $InstallDir
+$normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
+if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
+  throw "Unsupported ADE package channel: $PackageChannel"
+}
 
 if (-not $SkipServiceRemoval) {
-  $appExe = Join-Path $resolvedInstallDir "ADE.exe"
+  $normalizedAppExecutableName = [System.IO.Path]::GetFileName($AppExecutableName)
+  if (
+    [string]::IsNullOrWhiteSpace($normalizedAppExecutableName) -or
+    -not [string]::Equals($normalizedAppExecutableName, $AppExecutableName, [System.StringComparison]::Ordinal) -or
+    -not $normalizedAppExecutableName.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)
+  ) {
+    throw "The installer did not provide a valid ADE executable name."
+  }
+
+  $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
   $cliPath = Join-Path $resolvedInstallDir "resources\ade-cli\cli.cjs"
   if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-    throw "Cannot remove the ADE background service because ADE.exe is missing from $resolvedInstallDir."
+    throw "Cannot remove the ADE background service because $normalizedAppExecutableName is missing from $resolvedInstallDir."
   }
   if (-not (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
     throw "Cannot remove the ADE background service because the packaged CLI is missing from $resolvedInstallDir."
@@ -61,9 +76,16 @@ if (-not $SkipServiceRemoval) {
   $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
   $disableCliInstallPresent = Test-Path Env:ADE_DISABLE_CLI_AUTO_INSTALL
   $disableCliInstall = $env:ADE_DISABLE_CLI_AUTO_INSTALL
+  $packageChannelPresent = Test-Path Env:ADE_PACKAGE_CHANNEL
+  $previousPackageChannel = $env:ADE_PACKAGE_CHANNEL
+  $adeHomePresent = Test-Path Env:ADE_HOME
+  $previousAdeHome = $env:ADE_HOME
   try {
     $env:ELECTRON_RUN_AS_NODE = "1"
     $env:ADE_DISABLE_CLI_AUTO_INSTALL = "1"
+    $env:ADE_PACKAGE_CHANNEL = $normalizedPackageChannel
+    $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
+    $env:ADE_HOME = Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
     & $appExe $cliPath "serve" "--uninstall-service"
     if ($LASTEXITCODE -ne 0) {
       throw "The ADE background service cleanup command exited with code $LASTEXITCODE."
@@ -71,6 +93,8 @@ if (-not $SkipServiceRemoval) {
   } finally {
     Restore-EnvironmentValue "ELECTRON_RUN_AS_NODE" $electronRunAsNode $electronRunAsNodePresent
     Restore-EnvironmentValue "ADE_DISABLE_CLI_AUTO_INSTALL" $disableCliInstall $disableCliInstallPresent
+    Restore-EnvironmentValue "ADE_PACKAGE_CHANNEL" $previousPackageChannel $packageChannelPresent
+    Restore-EnvironmentValue "ADE_HOME" $previousAdeHome $adeHomePresent
   }
 }
 

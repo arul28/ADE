@@ -27,7 +27,7 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import { resolveCliSpawnInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
 import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
 import type {
@@ -4190,18 +4190,37 @@ export function createPtyService({
     const command = provider === "codex" && rawResumeCommand
       ? withCodexNoAltScreen(rawResumeCommand)
       : rawResumeCommand;
-    const launch = metadata && process.platform === "win32"
-      ? buildTrackedCliResumeLaunchCommand(
+    let promptAtLaunch = Boolean(prompt && metadataResumeCommand && provider !== "cursor");
+    const launch = (() => {
+      if (!metadata || process.platform !== "win32") {
+        return command ? legacyResumeLaunch(command) : null;
+      }
+
+      const candidate = buildTrackedCliResumeLaunchCommand(
+        metadata,
+        metadataOverrides,
+        { platform: "win32" },
+      );
+      if (
+        promptAtLaunch
+        && candidate.command
+        && shouldUseWindowsCmdWrapper(candidate.command, "win32")
+      ) {
+        // cmd.exe expands percent-delimited environment variables before the
+        // provider sees argv. Keep user text out of that command line and send
+        // it through the PTY after the resumed provider is ready instead.
+        promptAtLaunch = false;
+        return buildTrackedCliResumeLaunchCommand(
           metadata,
-          metadataOverrides,
+          { ...metadataOverrides, prompt: null },
           { platform: "win32" },
-        )
-      : command
-        ? legacyResumeLaunch(command)
-        : null;
+        );
+      }
+      return candidate;
+    })();
     return {
       launch,
-      promptAtLaunch: Boolean(launch && prompt && metadataResumeCommand && provider !== "cursor"),
+      promptAtLaunch: Boolean(launch && promptAtLaunch),
     };
   };
 
@@ -5350,7 +5369,10 @@ export function createPtyService({
       }
 
       const written = await writeSubmittedText(created.sessionId, text, provider, {
-        waitForReady: provider === "cursor" || resumeFlightAlreadyInProgress || !resumeFlightCreated,
+        waitForReady: process.platform === "win32"
+          || provider === "cursor"
+          || resumeFlightAlreadyInProgress
+          || !resumeFlightCreated,
       });
       if (!written) {
         logger.warn("pty.resume_send_input_failed_preserved", {

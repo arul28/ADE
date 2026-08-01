@@ -8,6 +8,7 @@ import { DEFAULT_AUTO_UPDATE_PREFERENCES } from "../../../shared/types";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
+  DEFAULT_RELEASE_REPOSITORY,
 } from "../updates/autoUpdateVersions";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -1587,6 +1588,7 @@ export function registerIpc({
   closeCurrentProject,
   closeProjectByPath,
   globalStatePath,
+  releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
   publishAttentionNotchSnapshot,
@@ -1614,6 +1616,7 @@ export function registerIpc({
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
+  releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
@@ -3926,7 +3929,7 @@ export function registerIpc({
       if (!version) return null;
       return {
         version,
-        htmlUrl: buildGithubReleaseUrl(version),
+        htmlUrl: buildGithubReleaseUrl(version, releaseRepository),
         publishedAt: null,
         updateAvailable: compareUpdateVersions(version, app.getVersion()) > 0,
       };
