@@ -327,12 +327,12 @@ export function CtoPage({ active = true }: { active?: boolean } = {}) {
               the machine is stated as a fact — never offered as a choice. */}
           <span
             data-testid="cto-machine-indicator"
-            title="The CTO thread is pinned to This Mac and cannot be moved."
+            title="The CTO thread is pinned to This computer and cannot be moved."
             className="inline-flex h-6 shrink-0 items-center gap-1.5 rounded-md border border-dashed border-white/[0.12] px-2 font-sans text-[10px] font-medium text-muted-fg/55"
             style={{ whiteSpace: "nowrap" }}
           >
             <Desktop size={11} aria-hidden />
-            Always runs on This Mac
+            Always runs on This computer
           </span>
           <button
             type="button"

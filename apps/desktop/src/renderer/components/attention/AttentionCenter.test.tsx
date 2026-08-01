@@ -4,6 +4,14 @@ import React from "react";
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../lib/platform", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/platform")>("../../lib/platform");
+  return {
+    ...actual,
+    supportsNativeNotch: true,
+  };
+});
+
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,
@@ -414,8 +422,6 @@ describe("AttentionCenter", () => {
 
   // Off, the three reveal modes, and the expanded-panel switch are the whole
   // presentation contract; they only mean anything if they reach the helper.
-
-
   it("clears a closed save without letting its stale result interrupt a replacement", async () => {
     let resolveStaleSave: () => void = () => {};
     const staleSave = new Promise<void>((resolve) => {

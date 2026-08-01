@@ -191,7 +191,7 @@ export class AttentionNotchHelper {
       return {
         state: "disabled",
         title: "ADE Notch is off",
-        message: "Enable ADE Notch to show account activity on this Mac.",
+        message: "Enable ADE Notch to show account activity on this computer.",
         recovery: null,
         surface: null,
       };

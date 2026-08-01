@@ -297,7 +297,7 @@ function isTailscalePeerMachine(
  * Drops this machine's own Bonjour advertisement from the discovery list. The
  * ADE sync service advertises itself over mDNS with its `deviceId` in the TXT
  * payload (surfaced as `hostIdentity`); comparing that against the local sync
- * device id keeps the panel from listing "this Mac" as a connectable target.
+ * device id keeps the panel from listing "this computer" as a connectable target.
  */
 export function dropSelfDiscoveredMachines(
   machines: RemoteRuntimeDiscoveredMachine[],
@@ -395,6 +395,7 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
       {
         timeout: Math.max(500, timeoutMs),
         maxBuffer: 1024 * 1024,
+        windowsHide: true,
       },
     );
     return {

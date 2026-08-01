@@ -19,7 +19,7 @@ function snapshot(
     generatedAt: "2026-07-29T12:00:00.000Z",
     machines: [{
       machineKey: "machine-local",
-      name: "This MacBook",
+      name: "This computerBook",
       online: true,
       lastSeenAt: "2026-07-29T12:00:00.000Z",
     }],
@@ -100,10 +100,10 @@ describe("AttentionAccountCoordinator", () => {
         state: "degraded",
         title: "Account session needs attention",
         recovery: "sign_in",
-        hostName: "This MacBook",
+        hostName: "This computerBook",
       },
     });
-    expect(result.availability?.message).toContain("Showing work from This MacBook");
+    expect(result.availability?.message).toContain("Showing work from This computerBook");
     expect(result.availability?.message).not.toMatch(/relay|bearer|401/i);
     expect(callAttention).toHaveBeenCalledWith("getMachineSnapshot", {});
     expect(testLogger.warn).toHaveBeenCalledWith(

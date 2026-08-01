@@ -466,6 +466,8 @@ export type SyncRoleSnapshot = {
   routeHealth: SyncRouteHealth;
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
+  /** Absent on older runtimes; false means phone/CRDT sync must not be offered. */
+  crdtSyncAvailable?: boolean;
   survivableStateText: string;
   blockingStateText: string;
 };

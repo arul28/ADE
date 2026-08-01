@@ -1,9 +1,9 @@
 /**
- * Resolving "This Mac" back to *this repository's* local checkout.
+ * Resolving "This computer" back to *this repository's* local checkout.
  *
  * The machine picker in the composer and in the Chats tab is a dimension of ONE
  * repo's tab: picking a machine is supposed to show you the same repository on
- * a different machine. Both surfaces used to resolve "This Mac" as
+ * a different machine. Both surfaces used to resolve "This computer" as
  *
  *     openProjectTabRoots[0] ?? localProjectRootPath
  *
@@ -54,7 +54,7 @@ export function resolveThisMachineProjectRoot(input: {
     recentProjects = [],
   } = input;
 
-  // Already on this Mac: the bound root IS the answer.
+  // Already on this computer: the bound root IS the answer.
   if (projectBinding?.kind === "local") {
     return { ok: true, rootPath: projectBinding.rootPath };
   }

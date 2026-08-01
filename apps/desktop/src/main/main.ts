@@ -50,6 +50,10 @@ import { captureAgentTurnSettledAnalytics } from "./services/analytics/agentTurn
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
+import {
+  ADE_WINDOWS_APP_USER_MODEL_ID,
+  windowChromeOptions,
+} from "./windowAppearance";
 import { openKvDb } from "./services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
 import { ensureAdeDirs } from "./services/state/projectState";
@@ -188,6 +192,7 @@ import {
   type JsonRpcTransport,
 } from "../../../ade-cli/src/jsonrpc";
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
+import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
 import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
@@ -259,6 +264,7 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
 import { resolveDesktopUserDataPath, resolveElectronAppDataPath } from "./desktopUserDataPath";
@@ -268,6 +274,31 @@ type RemoteOpenProjectBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 const AUTO_UPDATER_CACHE_DIR_NAME = "ade-desktop-updater";
 
 type AdePackageChannel = "alpha" | "beta";
+
+function normalizeAdeReleaseRepository(value: unknown): string | null {
+  const normalized = typeof value === "string"
+    ? value.trim().replace(/^\/+|\/+$/g, "")
+    : "";
+  return /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(normalized) ? normalized : null;
+}
+
+function readBundledAdeReleaseRepository(): string {
+  try {
+    const packageJsonPath = path.join(app.getAppPath(), "package.json");
+    const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf8")) as {
+      adeReleaseRepository?: unknown;
+    };
+    const bundledRepository = normalizeAdeReleaseRepository(packageJson.adeReleaseRepository);
+    if (bundledRepository) return bundledRepository;
+  } catch {
+    // Older packages use the upstream repository default.
+  }
+  if (!app.isPackaged) {
+    return normalizeAdeReleaseRepository(process.env.ADE_RELEASE_REPOSITORY)
+      ?? DEFAULT_RELEASE_REPOSITORY;
+  }
+  return DEFAULT_RELEASE_REPOSITORY;
+}
 
 function normalizeAdePackageChannel(value: unknown): AdePackageChannel | null {
   const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -309,6 +340,7 @@ function applyPackagedChannelDefaults(): void {
 }
 
 applyPackagedChannelDefaults();
+const packagedReleaseRepository = readBundledAdeReleaseRepository();
 
 function configureDesktopUserDataPath(): void {
   const appDataPath = (() => {
@@ -618,9 +650,7 @@ async function createWindow(args: {
   const win = new BrowserWindow({
     ...defaultWindowBounds,
     icon,
-    // Hide the native title bar but keep macOS traffic lights.
-    titleBarStyle: "hiddenInset",
-    trafficLightPosition: { x: 12, y: 12 },
+    ...windowChromeOptions(process.platform),
     // Match renderer dark theme to avoid a flash on load.
     backgroundColor: "#0F0D14",
     webPreferences: {
@@ -906,6 +936,10 @@ protocol.registerSchemesAsPrivileged([
 // binding; they only listen for URLs explicitly delivered to that process.
 const deeplinkChannel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
 const deeplinkClaimAsDefault = app.isPackaged && deeplinkChannel === null;
+
+if (process.platform === "win32") {
+  app.setAppUserModelId(ADE_WINDOWS_APP_USER_MODEL_ID);
+}
 
 const pendingAppNavigationRequests: AppNavigationRequest[] = [];
 let dispatchAppNavigationRequest: ((request: AppNavigationRequest) => void) | null = null;
@@ -2230,6 +2264,7 @@ app.whenReady().then(async () => {
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
     productAnalyticsService,
+    releaseRepository: packagedReleaseRepository,
     forceQuit: () => {
       for (const win of BrowserWindow.getAllWindows()) {
         try {
@@ -4277,10 +4312,11 @@ app.whenReady().then(async () => {
           ? envSocketOverride
           : `${envSocketOverride}.${Buffer.from(normalizeProjectRoot(projectRoot)).toString("base64url").slice(0, 8)}`
         : adePaths.socketPath;
+      const activeRpcSocketPath = rpcSocketPath;
 
-      if (!isAdeRuntimeNamedPipePath(rpcSocketPath)) {
+      if (!isAdeRuntimeNamedPipePath(activeRpcSocketPath)) {
         try {
-          fs.unlinkSync(rpcSocketPath);
+          fs.unlinkSync(activeRpcSocketPath);
         } catch {}
       }
 
@@ -4347,11 +4383,11 @@ app.whenReady().then(async () => {
           };
           server.once("listening", handleListening);
           server.once("error", handleError);
-          server.listen(rpcSocketPath);
+          server.listen(localIpcListenOptions(activeRpcSocketPath));
         }),
       );
       logger.warn("rpc.socket_server_started", {
-        socketPath: rpcSocketPath,
+        socketPath: activeRpcSocketPath,
         mode: "legacy_desktop",
       });
     } else {
@@ -7023,6 +7059,7 @@ app.whenReady().then(async () => {
     closeCurrentProject,
     closeProjectByPath,
     globalStatePath,
+    releaseRepository: packagedReleaseRepository,
     builtInBrowserService,
     productAnalyticsService,
     publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {

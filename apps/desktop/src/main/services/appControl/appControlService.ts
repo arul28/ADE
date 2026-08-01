@@ -36,6 +36,8 @@ import {
   commandLooksLikeDirectElectronLaunch,
   commandLooksLikePackageScriptLaunch,
   insertDebugFlagsIntoDirectElectronCommand,
+  resolveDirectElectronLaunch,
+  resolvePackageScriptElectronLaunch,
   rewritePackageScriptElectronLaunch,
   shellQuote,
   unquoteShellValue,
@@ -150,6 +152,9 @@ type ResolvedLaunch = {
   label: string;
   cwd: string;
   commandForDisplay: string;
+  command?: string;
+  args?: string[];
+  env?: Record<string, string>;
 };
 
 function nowIso(): string {
@@ -1369,9 +1374,50 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
       }
       let command = rawCommand;
       if (!commandForwardsAppControlDebug(command)) {
+        if (process.platform === "win32") {
+          const structuredPackage = resolvePackageScriptElectronLaunch(
+            command,
+            autoDebugFlags,
+            cwd,
+            { platform: process.platform },
+          );
+          if (structuredPackage) {
+            return {
+              label: launchArgs.label?.trim() || rawCommand,
+              cwd: structuredPackage.cwd,
+              command: structuredPackage.command,
+              args: structuredPackage.args,
+              env: structuredPackage.env,
+              commandForDisplay: structuredPackage.commandForDisplay,
+            };
+          }
+          const structuredDirect = resolveDirectElectronLaunch(
+            command,
+            autoDebugFlags,
+            { platform: process.platform },
+          );
+          if (structuredDirect) {
+            return {
+              label: launchArgs.label?.trim() || rawCommand,
+              cwd,
+              command: structuredDirect.command,
+              args: structuredDirect.args,
+              env: structuredDirect.env,
+              commandForDisplay: structuredDirect.commandForDisplay,
+            };
+          }
+        }
+
         if (commandLooksLikePackageScriptLaunch(command)) {
-          command = rewritePackageScriptElectronLaunch(command, autoDebugFlags, cwd)
-            ?? `${command} -- ${autoDebugFlags.map(shellQuote).join(" ")}`;
+          command = rewritePackageScriptElectronLaunch(
+            command,
+            autoDebugFlags,
+            cwd,
+            {
+              platform: process.platform,
+              shell: process.platform === "win32" ? "powershell" : undefined,
+            },
+          ) ?? `${command} -- ${autoDebugFlags.map(shellQuote).join(" ")}`;
         } else if (commandLooksLikeDirectElectronLaunch(command)) {
           command = insertDebugFlagsIntoDirectElectronCommand(command, autoDebugFlags);
         }
@@ -1527,6 +1573,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
     const env: Record<string, string> = {
       ...inheritedEnv,
       ...launchEnv,
+      ...(resolved.env ?? {}),
       ADE_APP_CONTROL: "1",
       ADE_APP_CONTROL_SESSION_ID: session.id,
       ADE_APP_CONTROL_CDP_PORT: String(debugPort),
@@ -1553,6 +1600,9 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         // its parent chat.
         toolType: "shell",
         startupCommand: resolved.commandForDisplay,
+        ...(resolved.command
+          ? { command: resolved.command, args: resolved.args ?? [] }
+          : {}),
         env,
         chatSessionId: launchArgs.chatSessionId ?? null,
       });

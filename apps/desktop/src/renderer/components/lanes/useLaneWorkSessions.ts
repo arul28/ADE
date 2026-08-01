@@ -671,7 +671,7 @@ export function useLaneWorkSessions(laneId: string | null) {
       // defaults from the other fields (which used to override the caller's
       // intent — e.g. a custom startupCommand silently displaced by default
       // command/args).
-      const launchFields = resolveLaunchFields({
+      const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
@@ -693,6 +693,7 @@ export function useLaneWorkSessions(laneId: string | null) {
         ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...(args.linearIssues?.length ? { linearIssues: args.linearIssues } : {}),
+        ...(args.runtimeCliLaunch ? { runtimeCliLaunch: args.runtimeCliLaunch } : {}),
         ...launchFields,
       };
       const result = args.pin

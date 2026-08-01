@@ -85,7 +85,7 @@ actor SSHBootstrapService {
             username: input.normalizedUsername
           )
         } catch {
-          validated.credentialWarning = "Your Mac is paired, but ADE could not save the SSH key. You can pair again later if you need SSH recovery."
+          validated.credentialWarning = "Your computer is paired, but ADE could not save the SSH key. You can pair again later if you need SSH recovery."
         }
       } else {
         credentialStore.remove(host: input.normalizedHost, port: input.port, username: input.normalizedUsername)

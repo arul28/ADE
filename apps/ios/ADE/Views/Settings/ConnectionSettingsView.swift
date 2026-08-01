@@ -31,7 +31,7 @@ struct ConnectionSettingsView: View {
             // Pairing-only entry point (from the no-account gate): connection
             // status + the pair actions, nothing else.
             VStack(alignment: .leading, spacing: 12) {
-              SettingsSectionHeader(label: "MAC", hint: "Your Mac connection")
+              SettingsSectionHeader(label: "CONNECTION", hint: "Your computer connection")
 
               SettingsConnectionHeader(
                 snapshot: presentationModel.connectionSnapshot,
@@ -167,7 +167,7 @@ struct ConnectionSettingsView: View {
       }
       .background(SettingsAuroraBackground().ignoresSafeArea())
       .adeNavigationGlass()
-      .navigationTitle(pairingOnly ? "Connect a Mac" : "Settings")
+      .navigationTitle(pairingOnly ? "Connect a computer" : "Settings")
       .toolbar {
         ToolbarItem(placement: .topBarTrailing) {
           Button {
@@ -854,7 +854,7 @@ func settingsMachineRowErrorsRetiring(
   return remaining
 }
 
-/// The CONNECTIONS machine list: a unified, deduplicated roster of the Macs a
+/// The CONNECTIONS machine list: a unified, deduplicated roster of the computers a
 /// phone can reach — machines on the signed-in account plus previously-paired
 /// machines — ranked current → online → offline. Shows the top three inline
 /// with a "See all machines" sheet for the rest. Offline machines render grayed
@@ -1165,7 +1165,7 @@ struct SettingsMachinesSection: View {
       case .account(let machine):
         guard let authorization = AccountService.shared.currentPairingAuthorization else {
           connectingId = nil
-          rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your Mac."
+          rowErrors[entry.id] = "Your account session ended. Sign in again, then choose your computer."
           return
         }
         let connected = await syncService.pairWithAccountMachine(
@@ -1180,7 +1180,7 @@ struct SettingsMachinesSection: View {
           rowErrors[entry.id] = settingsMachineRowErrorMessage(
             attemptFailure: syncService.lastConnectAttemptFailure,
             lastError: syncService.lastError,
-            fallback: "ADE could not connect to that Mac. Try again."
+            fallback: "ADE could not connect to that computer. Try again."
           )
         }
 

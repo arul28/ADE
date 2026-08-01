@@ -16,8 +16,10 @@ function currentTarget() {
   return `${platform}-${arch}`;
 }
 
-const targets = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1"
-  ? [currentTarget()]
+const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
+const hostTarget = currentTarget();
+const targets = allowHostOnlyRuntimeResources
+  ? allTargets.includes(hostTarget) ? [hostTarget] : []
   : allTargets;
 
 function fail(message) {
@@ -65,7 +67,7 @@ async function main() {
     await validateNativeArchive(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), target);
   }
 
-  const mode = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1" ? "host-only local" : "full";
+  const mode = allowHostOnlyRuntimeResources ? "host-only local" : "full";
   console.log(`[runtime-resources] Found ${targets.length} ${mode} ADE service binaries and native archives.`);
 }
 

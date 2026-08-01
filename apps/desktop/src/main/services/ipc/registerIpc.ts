@@ -8,6 +8,7 @@ import { DEFAULT_AUTO_UPDATE_PREFERENCES } from "../../../shared/types";
 import {
   buildGithubReleaseUrl,
   compareUpdateVersions,
+  DEFAULT_RELEASE_REPOSITORY,
 } from "../updates/autoUpdateVersions";
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
@@ -662,6 +663,7 @@ import {
   type TranscriptionStatus,
   TranscriptionError,
 } from "../transcription/transcriptionService";
+import { requestMicrophoneAccess } from "../transcription/microphoneAccess";
 import type { createAiIntegrationService } from "../ai/aiIntegrationService";
 import { fetchAdeLatestRelease, type createGithubService } from "../github/githubService";
 import { createAccountBridge } from "../account/accountBridge";
@@ -1586,6 +1588,7 @@ export function registerIpc({
   closeCurrentProject,
   closeProjectByPath,
   globalStatePath,
+  releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   builtInBrowserService,
   productAnalyticsService,
   publishAttentionNotchSnapshot,
@@ -1613,6 +1616,7 @@ export function registerIpc({
   closeCurrentProject: () => Promise<void>;
   closeProjectByPath: (projectRoot: string) => Promise<void>;
   globalStatePath: string;
+  releaseRepository?: string;
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
@@ -3759,6 +3763,7 @@ export function registerIpc({
             const child = spawn(command, args, {
               detached: true,
               stdio: "ignore",
+              windowsHide: true,
               windowsVerbatimArguments: options?.windowsVerbatimArguments,
             });
             child.once("error", (error) => {
@@ -3924,7 +3929,7 @@ export function registerIpc({
       if (!version) return null;
       return {
         version,
-        htmlUrl: buildGithubReleaseUrl(version),
+        htmlUrl: buildGithubReleaseUrl(version, releaseRepository),
         publishedAt: null,
         updateAvailable: compareUpdateVersions(version, app.getVersion()) > 0,
       };
@@ -6999,31 +7004,16 @@ export function registerIpc({
     },
   );
 
-  // Ensure macOS microphone access before the renderer calls getUserMedia.
+  // Check OS-level microphone access before the renderer calls getUserMedia.
   // Electron on macOS returns a silent (all-zero) audio track instead of
   // throwing when the OS hasn't granted mic access, so we must check/request
   // the system-level permission explicitly (electron/electron#23792, #42714).
+  // Windows exposes the global Win32 microphone privacy switch through
+  // getMediaAccessStatus; Chromium owns any per-origin prompt.
   ipcMain.handle(
     IPC.transcriptionRequestMicAccess,
     async (): Promise<{ status: "granted" | "denied" | "not-determined" | "restricted" | "unknown" }> => {
-      if (process.platform !== "darwin") {
-        return { status: "granted" };
-      }
-      const current = systemPreferences.getMediaAccessStatus("microphone");
-      if (current === "granted") {
-        return { status: "granted" };
-      }
-      if (current === "not-determined") {
-        try {
-          const ok = await systemPreferences.askForMediaAccess("microphone");
-          return { status: ok ? "granted" : "denied" };
-        } catch {
-          return { status: "denied" };
-        }
-      }
-      // "denied" | "restricted" | "unknown" — the user must change this in
-      // System Settings; askForMediaAccess will not re-prompt.
-      return { status: current };
+      return requestMicrophoneAccess(process.platform, systemPreferences);
     },
   );
 
@@ -7764,7 +7754,7 @@ export function registerIpc({
   const simulatorWindowName = /(?:^|\s|[(\[\-–])(simulator|iphone|ipad|apple\s*watch|apple\s*tv|vision\s*pro)(?:\s|[)\]\-–]|$)/i;
   const runMacUtility = async (command: string, args: string[], timeoutMs = 900) => {
     await new Promise<void>((resolve) => {
-      const child = spawn(command, args, { stdio: "ignore" });
+      const child = spawn(command, args, { stdio: "ignore", windowsHide: true });
       let settled = false;
       const finish = () => {
         if (settled) return;
@@ -7785,7 +7775,10 @@ export function registerIpc({
   };
   const runMacUtilityText = async (command: string, args: string[], timeoutMs = 900): Promise<string> => {
     return new Promise<string>((resolve, reject) => {
-      const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(command, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
       let stdout = "";
       let stderr = "";
       const timeout = setTimeout(() => {

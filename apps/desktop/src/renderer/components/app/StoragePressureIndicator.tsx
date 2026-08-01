@@ -6,7 +6,7 @@ import { cn } from "../ui/cn";
 
 const STORAGE_PRESSURE_SAMPLE_MS = 30_000;
 const WARNING_DESCRIPTION = "Storage is running low — ADE and your active projects may create more files while agents work. Click to review ADE storage.";
-const CRITICAL_DESCRIPTION = "Your Mac is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.";
+const CRITICAL_DESCRIPTION = "Your computer is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.";
 
 function useStoragePressure(enabled: boolean): DiskPressureSnapshot | null {
   const [snapshot, setSnapshot] = useState<DiskPressureSnapshot | null>(null);

@@ -923,7 +923,7 @@ describe("DesktopPairedMachineStore", () => {
       name: "requires an update when an old host omits AEAD negotiation",
       responseAead: undefined,
       expectedError:
-        "The other Mac is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
+        "The other computer is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
     },
     {
       name: "rejects a host AEAD that the client did not offer",

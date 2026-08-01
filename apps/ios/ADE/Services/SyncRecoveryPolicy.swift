@@ -334,11 +334,11 @@ func syncSocketCloseError(closeCodeRawValue: Int, reason: String?) -> NSError {
   case 4004:
     message = "Connection attempts are paused briefly. Try again shortly."
   case 4503:
-    message = "This Mac is handling too many connections. Try again shortly."
+    message = "This computer is handling too many connections. Try again shortly."
   case 4000, 4001, 4002, 4008, 4501, 4502, 4505, 4506, 4507:
-    message = "Can’t reach this Mac right now. Reconnecting now."
+    message = "Can’t reach this computer right now. Reconnecting now."
   default:
-    message = "Can’t reach this Mac right now. Reconnecting now."
+    message = "Can’t reach this computer right now. Reconnecting now."
   }
   var userInfo: [String: Any] = [
     NSLocalizedDescriptionKey: message,

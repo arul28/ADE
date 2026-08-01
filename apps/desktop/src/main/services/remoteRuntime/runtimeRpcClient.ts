@@ -84,7 +84,10 @@ export class RuntimeRpcClient {
   async initialize(
     clientName: string,
     version: string,
-    options: { desktopBridgeAuthToken?: string | null } = {},
+    options: {
+      desktopBridgeAuthToken?: string | null;
+      timeoutMs?: number;
+    } = {},
   ): Promise<unknown> {
     return await this.call("ade/initialize", {
       protocolVersion: "2025-06-18",
@@ -96,6 +99,8 @@ export class RuntimeRpcClient {
       ...(options.desktopBridgeAuthToken?.trim()
         ? { desktopBridgeAuthToken: options.desktopBridgeAuthToken.trim() }
         : {}),
+    }, {
+      ...(options.timeoutMs != null ? { timeoutMs: options.timeoutMs } : {}),
     });
   }
 

@@ -413,6 +413,7 @@ function resolveRemoteProjectIconInWorker(
         killSignal: "SIGKILL",
         maxBuffer: REMOTE_ICON_MAX_DATA_URL_BYTES + 16 * 1024,
         encoding: "utf8",
+        windowsHide: true,
       },
       (error, stdout) => {
         if (error) {

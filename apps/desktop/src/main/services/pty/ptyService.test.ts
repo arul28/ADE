@@ -300,6 +300,7 @@ vi.mock("../../utils/codexComputerUse", () => ({
 import {
   createPtyService,
   ensureNodePtySpawnHelperExecutable,
+  materializeRuntimeCliLaunch,
   PTY_AI_TITLE_DEBOUNCE_MS,
   PTY_AI_TITLE_TIMEOUT_MS,
   EARLY_CLI_AI_TITLE_DELAY_MS,
@@ -555,6 +556,26 @@ describe("ptyService", () => {
       return { kill: vi.fn() };
     });
     mocks.spawnSync.mockReturnValue({ status: 1, stdout: "", stderr: "" });
+  });
+
+  it("materializes fresh provider launch wrappers on the owning runtime platform", () => {
+    const launch = {
+      provider: "droid" as const,
+      permissionMode: "full-auto" as const,
+      model: "droid/model-a",
+      initialPrompt: "Inspect the remote lane.",
+    };
+
+    setPlatform("win32");
+    const windows = materializeRuntimeCliLaunch(launch, "C:\\repo\\lane");
+    expect(windows.command).toBe("powershell.exe");
+    expect(windows.env?.ADE_AGENT_SKILLS_DIRS).toContain(";");
+
+    setPlatform("linux");
+    const linux = materializeRuntimeCliLaunch(launch, "/repo/lane");
+    expect(linux.command).toBe("/bin/bash");
+    expect(linux.env?.ADE_AGENT_SKILLS_DIRS).toMatch(/^\/repo\/lane\/\.cursor\/skills:/);
+    expect(linux.env?.ADE_AGENT_SKILLS_DIRS).not.toContain(";");
   });
 
   describe("resource attribution roots", () => {
@@ -1094,7 +1115,7 @@ describe("ptyService", () => {
             allowed: false,
             state: "exhausted",
             code: "disk_full",
-            message: "Your Mac is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
+            message: "Your computer is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
           }
         : { allowed: true, state: "normal" });
       const { service, loadPty } = createHarness({ diskPressureMonitor: { canPerform } });
@@ -1118,7 +1139,7 @@ describe("ptyService", () => {
         command: "codex",
       })).rejects.toMatchObject({
         code: "disk_full",
-        message: "Your Mac is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
+        message: "Your computer is almost out of storage. ADE can't safely start a new CLI session until you free up space.",
       });
       await expect(service.create({
         laneId: "lane-1",
@@ -3454,6 +3475,63 @@ describe("ptyService", () => {
       }
     });
 
+    it("preserves percent signs when resuming a Windows CLI through cmd.exe", async () => {
+      vi.useFakeTimers();
+      try {
+        setPlatform("win32");
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-codex-windows-percent",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Codex CLI",
+          startedAt: "2026-04-09T12:00:00.000Z",
+          transcriptPath: "C:\\tmp\\transcripts\\session-codex-windows-percent.log",
+          toolType: "codex",
+          resumeCommand: "codex resume thread-windows-percent",
+          resumeMetadata: {
+            provider: "codex",
+            targetKind: "thread",
+            targetId: "thread-windows-percent",
+            launch: { permissionMode: "plan" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-codex-windows-percent",
+          endedAt: "2026-04-09T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const prompt = "Keep 100% literal and do not expand %PATH%.";
+        const pending = service.sendToSession({
+          sessionId: "session-codex-windows-percent",
+          text: prompt,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "› \ngpt-5.5 xhigh fast · C:\\Projects\\ADE\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+        await pending;
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const [command, commandLine] = spawn.mock.calls[0] as [string, string];
+        expect(command).toMatch(/cmd(?:\.exe)?$/i);
+        expect(commandLine).toContain("thread-windows-percent");
+        expect(commandLine).not.toContain("100%");
+        expect(commandLine).not.toContain("%PATH%");
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(
+          expect.stringContaining(prompt),
+        );
+        expect(writes).not.toContainEqual(
+          expect.stringContaining("100%%"),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("sendToSession does not wait for provider-specific readiness before resuming with a prompt", async () => {
       vi.useFakeTimers();
       try {
@@ -3758,6 +3836,84 @@ describe("ptyService", () => {
         ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
         expect.any(Object),
       );
+    });
+
+    it("resumes OpenCode on Windows through direct argv and inherited env", async () => {
+      vi.useFakeTimers();
+      const originalPlatform = process.platform;
+      const previousReplay = process.env.ADE_OPENCODE_REPLAY_RESUME;
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      process.env.ADE_OPENCODE_REPLAY_RESUME = "0";
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-opencode-windows",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "OpenCode CLI",
+          startedAt: "2026-07-30T12:00:00.000Z",
+          transcriptPath: "C:\\tmp\\transcripts\\session-opencode-windows.log",
+          toolType: "opencode",
+          resumeCommand: "opencode --session ses_windows",
+          resumeMetadata: {
+            provider: "opencode",
+            targetKind: "session",
+            targetId: "ses_windows",
+            launch: {
+              permissionMode: "plan",
+              model: "opencode/openai/gpt-5.4",
+            },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-opencode-windows",
+          endedAt: "2026-07-30T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
+        const pending = service.sendToSession({
+          sessionId: "session-opencode-windows",
+          text: prompt,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "OpenCode\nWhat do you want to do?\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await expect(pending).resolves.toEqual(expect.objectContaining({
+          sessionId: "session-opencode-windows",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const [spawnCommand, spawnArgs, spawnOptions] = spawn.mock.calls[0] as [
+          string,
+          string | string[],
+          { env: Record<string, string> },
+        ];
+        expect(spawnCommand.toLowerCase()).toContain("cmd");
+        expect(spawnArgs).toContain("opencode");
+        expect(spawnArgs).toContain("--session");
+        expect(spawnArgs).toContain("ses_windows");
+        expect(spawnArgs).not.toContain(prompt);
+        expect(spawnArgs).not.toContain("%TEMP%");
+        expect(spawnOptions.env.OPENCODE_CONFIG_CONTENT).toContain("\"question\":\"allow\"");
+        expect(mockPty.write).not.toHaveBeenCalledWith(expect.stringContaining("OPENCODE_CONFIG_CONTENT="));
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(expect.stringContaining(prompt));
+        expect(writes).not.toContainEqual(expect.stringContaining("%%TEMP%%"));
+      } finally {
+        vi.useRealTimers();
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+        if (previousReplay === undefined) {
+          delete process.env.ADE_OPENCODE_REPLAY_RESUME;
+        } else {
+          process.env.ADE_OPENCODE_REPLAY_RESUME = previousReplay;
+        }
+      }
     });
 
     it("sendToSession uses OpenCode replay resume when the installed CLI supports it", async () => {
@@ -7341,6 +7497,61 @@ describe("ptyService", () => {
         expect(result.terminalId).toBe(created.sessionId);
         expect(result.ptyId).not.toBe(created.ptyId);
         expect(freshSpawn).toHaveBeenCalled();
+      });
+
+      it("reattaches legacy OpenCode chats on Windows without typing POSIX env syntax", async () => {
+        const { service, loadPty, sessionStore } = createChatHarness();
+        const created = await service.create({
+          sessionId: "chat-opencode-windows-legacy",
+          allowNewSessionId: true,
+          laneId: "lane-1",
+          title: "OpenCode Chat",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-opencode-windows-legacy",
+          tracked: true,
+          toolType: "opencode-chat",
+          startupCommand: "opencode --session ses_legacy",
+        });
+        const record = sessionStore.get("chat-opencode-windows-legacy");
+        if (record) {
+          record.resumeCommand = "OPENCODE_CONFIG_CONTENT='{\"permission\":\"allow\"}' opencode --session ses_legacy";
+          record.resumeMetadata = null;
+        }
+        service.dispose({ ptyId: created.ptyId, sessionId: created.sessionId });
+
+        const originalPlatform = process.platform;
+        Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+        try {
+          const freshMockPty = createMockPty();
+          const freshSpawn = vi.fn(() => freshMockPty);
+          loadPty.mockImplementationOnce(() => ({ spawn: freshSpawn as any }));
+
+          await expect(service.reattachChatCli({
+            chatSessionId: "chat-opencode-windows-legacy",
+          })).resolves.toEqual(expect.objectContaining({
+            terminalId: "chat-opencode-windows-legacy",
+            relaunched: true,
+          }));
+
+          const [spawnCommand, spawnArgs, spawnOptions] = freshSpawn.mock.calls[0] as unknown as [
+            string,
+            string | string[],
+            { env: Record<string, string> },
+          ];
+          expect(spawnCommand.toLowerCase()).toContain("cmd");
+          expect(spawnArgs).toContain("opencode");
+          expect(spawnArgs).toContain("ses_legacy");
+          expect(spawnOptions.env.OPENCODE_CONFIG_CONTENT).toContain("\"permission\":\"allow\"");
+          expect(freshMockPty.write).not.toHaveBeenCalledWith(
+            expect.stringContaining("OPENCODE_CONFIG_CONTENT="),
+          );
+        } finally {
+          Object.defineProperty(process, "platform", {
+            value: originalPlatform,
+            configurable: true,
+          });
+        }
       });
 
       it("throws when the chat-CLI session record is missing", async () => {

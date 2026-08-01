@@ -23,7 +23,7 @@ async function walkDocs(dir) {
     }
 
     const fullPath = path.join(dir, entry.name);
-    const relPath = path.relative(repoRoot, fullPath);
+    const relPath = path.relative(repoRoot, fullPath).replaceAll(path.sep, "/");
 
     if (entry.isDirectory()) {
       if (dir === repoRoot && ignoredTopLevel.has(entry.name)) continue;

@@ -405,6 +405,54 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  package-win:
+    needs: build-runtime-binaries
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Download ADE runtime sidecars
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Validate Windows release contract
+        run: npm --prefix apps/desktop run test:win:release-contract
+
+      - name: Build and smoke unsigned Windows preview
+        env:
+          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+        run: cd apps/desktop && npm run dist:win
+
+      - name: Upload Windows preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-preview-${{ github.sha }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
@@ -449,6 +497,7 @@ jobs:
       - test-account-directory
       - build
       - build-runtime-binaries
+      - package-win
       - validate-docs
     runs-on: ubuntu-latest
     steps:

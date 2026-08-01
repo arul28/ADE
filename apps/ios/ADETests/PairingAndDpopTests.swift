@@ -1260,6 +1260,18 @@ final class PairingAndDpopTests: XCTestCase {
     XCTAssertNil(payload.relayUrl)
   }
 
+  func testParsesWindowsDesktopHostIdentity() throws {
+    let json = #"{"version":3,"hostIdentity":{"deviceId":"windows-host","name":"Workstation","platform":"windows","deviceType":"desktop"},"port":8787,"addressCandidates":[]}"#
+    let payload = try XCTUnwrap(PairingQrPayload.parse(json))
+
+    XCTAssertEqual(payload.hostIdentity.platform, "windows")
+    XCTAssertEqual(payload.hostIdentity.deviceType, "desktop")
+    XCTAssertEqual(
+      machineDeviceSymbol(deviceType: payload.hostIdentity.deviceType, platform: payload.hostIdentity.platform),
+      "desktopcomputer"
+    )
+  }
+
   func testDropsNonWssRelayUrl() throws {
     let json = #"{"version":3,"hostIdentity":{"deviceId":"d1","name":"Box"},"port":8787,"addressCandidates":[],"relayUrl":"ws://relay.ade-app.dev/x"}"#
     let payload = try XCTUnwrap(PairingQrPayload.parse(json))

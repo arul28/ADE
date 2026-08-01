@@ -39,10 +39,10 @@ const REQUIRED_ACTIONS = [
 ] as const;
 
 export const SESSION_LIFECYCLE_DISCONNECTED_MESSAGE =
-  "Can't reach this Mac right now, so nothing was changed.";
+  "Can't reach this computer right now, so nothing was changed.";
 
 export const SESSION_LIFECYCLE_UNSUPPORTED_MESSAGE =
-  "This Mac is running an older ADE that can't settle or snooze sessions.";
+  "This computer is running an older ADE that can't settle or snooze sessions.";
 
 export type SessionLifecycleUnavailableCode = "disconnected" | "unsupported";
 

@@ -128,10 +128,10 @@ function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
 }
 
 function pruneOpenCodeInstallShim(runtimeRoot, platform) {
-  if (platform === "win32") return;
   const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
   if (removeIfPresent(runtimeRoot, shimPath)) {
-    console.log(`[afterPack] Pruned non-target OpenCode install shim: ${shimPath}`);
+    const reason = platform === "win32" ? "duplicate" : "non-target";
+    console.log(`[afterPack] Pruned ${reason} OpenCode install shim: ${shimPath}`);
   }
 }
 
@@ -422,6 +422,7 @@ module.exports = async function afterPack(context) {
   } else if (platform === "win32") {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-uninstall-cleanup.ps1"), "bundled Windows uninstall cleanup script");
   } else {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade"), "bundled ADE CLI wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.sh"), "bundled ADE CLI PATH installer");

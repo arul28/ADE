@@ -266,7 +266,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
   });
 });
 
-describe("This Mac counterpart resolution", () => {
+describe("This computer counterpart resolution", () => {
   it("joins only an existing local checkout with the same normalized origin", () => {
     expect(resolveThisMachineBindingForOrigin([
       {
@@ -358,7 +358,7 @@ describe("machine marker", () => {
         },
         [THIS_MACHINE_ID]: {
           machineId: THIS_MACHINE_ID,
-          machineName: "This Mac",
+          machineName: "This computer",
           targetId: null,
           projectId: null,
           binding: {
@@ -618,7 +618,7 @@ describe("selectOtherMachineBranchStates", () => {
     const warning = detectPushDivergence({
       current: {
         machineId: THIS_MACHINE_ID,
-        machineName: "This Mac",
+        machineName: "This computer",
         branchRef: "feature/shared",
         headSha: null,
         ahead: 1,
@@ -731,7 +731,7 @@ describe("selectOtherMachineBranchStates", () => {
         },
         [THIS_MACHINE_ID]: {
           machineId: THIS_MACHINE_ID,
-          machineName: "This Mac",
+          machineName: "This computer",
           targetId: null,
           projectId: null,
           online: true,
@@ -796,7 +796,7 @@ describe("foreign payload decoding", () => {
 });
 
 describe("cross-machine refresh scheduling", () => {
-  it("reads This Mac explicitly while the active tab is bound remotely", async () => {
+  it("reads This computer explicitly while the active tab is bound remotely", async () => {
     vi.useFakeTimers();
     const localBinding = {
       kind: "local" as const,

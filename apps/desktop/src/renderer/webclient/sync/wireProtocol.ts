@@ -32,8 +32,8 @@ export class BrowserSyncProtocolVersionMismatchError extends Error {
       : `${SYNC_PROTOCOL_MIN_SUPPORTED}-${SYNC_PROTOCOL_VERSION}`;
     const updateTarget = receivedVersion < SYNC_PROTOCOL_MIN_SUPPORTED ? "host" : "client";
     super(updateTarget === "host"
-      ? `Update ADE on your Mac. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
-      : `Update ADE in this browser. The Mac uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
+      ? `Update ADE on your computer. It uses sync protocol ${receivedVersion}; this browser supports ${supported}.`
+      : `Update ADE in this browser. The computer uses sync protocol ${receivedVersion}; this browser supports ${supported}.`);
     this.name = "BrowserSyncProtocolVersionMismatchError";
     this.updateTarget = updateTarget;
   }

@@ -33,7 +33,7 @@ const lanes = [
 ];
 
 const machines = [
-  { id: "this-mac", name: "This Mac" },
+  { id: "this-mac", name: "This computer" },
   { id: "studio", name: "MacBook Pro (97)" },
 ];
 
@@ -74,7 +74,7 @@ describe("LaneCombobox machine grouping", () => {
     render(<LaneCombobox lanes={lanes} value="lane-local" onChange={vi.fn()} />);
     const popover = openList();
 
-    expect(within(popover).queryByText("This Mac")).toBeNull();
+    expect(within(popover).queryByText("This computer")).toBeNull();
     expect(within(popover).getAllByText("Auto-create lane")).toHaveLength(1);
     expect(within(popover).queryByText("Auto-create lane here")).toBeNull();
   });
@@ -83,14 +83,14 @@ describe("LaneCombobox machine grouping", () => {
     render(<LaneCombobox lanes={lanes} machines={machines} value="lane-local" onChange={vi.fn()} />);
     const popover = openList();
 
-    expect(within(popover).getByText("This Mac")).toBeTruthy();
+    expect(within(popover).getByText("This computer")).toBeTruthy();
     expect(within(popover).getByText("MacBook Pro (97)")).toBeTruthy();
     expect(within(popover).getAllByText("Auto-create lane here")).toHaveLength(2);
 
     const rows = Array.from(popover.querySelectorAll(".ade-lane-popover-list > *")).map(
       (node) => node.textContent?.trim() ?? "",
     );
-    expect(rows[0]).toBe("This Mac");
+    expect(rows[0]).toBe("This computer");
     expect(rows[1]).toBe("Auto-create lane here");
     expect(rows[2]).toContain("auth-refresh");
     expect(rows[3]).toBe("MacBook Pro (97)");
@@ -127,7 +127,7 @@ describe("LaneCombobox machine grouping", () => {
       target: { value: "render" },
     });
 
-    expect(within(popover).queryByText("This Mac")).toBeNull();
+    expect(within(popover).queryByText("This computer")).toBeNull();
     expect(within(popover).getByText("MacBook Pro (97)")).toBeTruthy();
     expect(within(popover).getAllByText("render-perf").length).toBeGreaterThan(0);
   });

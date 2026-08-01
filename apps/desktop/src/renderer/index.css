@@ -121,7 +121,7 @@
 
   /* App shell primitives (shared contract for TopBar + sidebar) */
   --shell-header-height: 32px;
-  --shell-header-padding-start: 80px;
+  --shell-header-padding-start: 14px;
   --shell-header-padding-end: 14px;
   --shell-header-bg: rgba(12, 11, 16, 0.82);
   --shell-header-fg: var(--color-fg);
@@ -138,6 +138,15 @@
   --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
   --shell-sidebar-item-active-fg: var(--color-accent);
   --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
+
+  &[data-ade-platform="darwin"] {
+    --shell-header-padding-start: 80px;
+  }
+
+  &[data-ade-platform="win32"] {
+    /* Keep utility controls clear of minimize/maximize/close in the overlay. */
+    --shell-header-padding-end: 150px;
+  }
   --shell-sidebar-item-active-rail: var(--color-accent);
   --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
 

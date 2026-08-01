@@ -2074,6 +2074,7 @@ export function createCtoOperatorTools(deps: CtoOperatorToolDeps): Record<string
           encoding: "utf8",
           maxBuffer: 512 * 1024,
           timeout: 10_000,
+          windowsHide: true,
         }).trim();
         const lines = result ? result.split("\n") : [];
         const outputLines: string[] = [];

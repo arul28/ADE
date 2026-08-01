@@ -75,6 +75,7 @@ export const runCliCapture = (
     const child = spawn(bin, args, {
       cwd: opts.cwd,
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];

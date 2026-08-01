@@ -12631,7 +12631,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (!attachment) {
-      addNotice("No clipboard image was found. On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste.", "error");
+      const clipboardHint = process.platform === "win32"
+        ? "On Windows, copy an image or image file path; ADE Code reads the system clipboard through PowerShell."
+        : process.platform === "darwin"
+          ? "On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste."
+          : "Copy an image or image file path; ADE Code checks wl-paste and xclip when available.";
+      addNotice(`No clipboard image was found. ${clipboardHint}`, "error");
       return true;
     }
     if (activePaneRef.current !== "chat") {
@@ -16710,7 +16715,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     : EMPTY_TERMINAL_CHUNKS;
 
   if (error && !connection) {
-    const remoteLabel = project.remoteLabel?.trim() || "the remote Mac";
+    const remoteLabel = project.remoteLabel?.trim() || "the remote computer";
     return (
       <Box flexDirection="column">
         <Text color="red">
@@ -16721,7 +16726,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         <Text>{error}</Text>
         {remoteLaunch ? (
           <Text color={theme.color.mutedFg} dimColor>
-            The remote Mac may be restarting; every retry re-evaluates its saved connection paths.
+            The remote computer may be restarting; every retry re-evaluates its saved connection paths.
           </Text>
         ) : null}
         <Text color={theme.color.mutedFg} dimColor>

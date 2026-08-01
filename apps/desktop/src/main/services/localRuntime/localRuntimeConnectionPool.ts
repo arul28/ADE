@@ -56,6 +56,9 @@ import {
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
+const LOCAL_RUNTIME_STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+const LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS = 2_000;
+const LOCAL_RUNTIME_STARTUP_RETRY_MS = 250;
 // Ring-cap the in-memory slow-action window so a sustained slow-call storm can
 // never grow this array without bound (the very failure mode we are surfacing).
 const RUNTIME_HEALTH_MAX_SAMPLES = 5_000;
@@ -999,6 +1002,7 @@ export class LocalRuntimeConnectionPool {
         env: buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -1139,6 +1143,7 @@ export class LocalRuntimeConnectionPool {
         },
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -1924,8 +1929,7 @@ export class LocalRuntimeConnectionPool {
 
     const child = this.spawnRuntime(socketPath);
     try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectSpawnedRuntime(socketPath, child);
       return { client, child, socketPath };
     } catch (error) {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
@@ -2083,8 +2087,9 @@ export class LocalRuntimeConnectionPool {
     await unlinkSocketIfNotListening(socketPath);
     const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
     try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
+      const client = await this.connectSpawnedRuntime(socketPath, child, {
+        preserveVersionSkew: true,
+      });
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child, socketPath };
     } catch (error) {
@@ -2208,20 +2213,33 @@ export class LocalRuntimeConnectionPool {
 
   private async connectClient(
     socketPath: string,
-    options: { preserveVersionSkew?: boolean } = {},
+    options: {
+      preserveVersionSkew?: boolean;
+      expectedPid?: number | null;
+      connectTimeoutMs?: number;
+      initializeTimeoutMs?: number;
+    } = {},
   ): Promise<RuntimeRpcClient> {
-    const transport = await openSocketTransport(socketPath);
+    const transport = await openSocketTransport(socketPath, options.connectTimeoutMs);
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     try {
       initializeResult = await client.initialize("ade-desktop-local", this.appVersion, {
         desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
+        timeoutMs: options.initializeTimeoutMs,
       });
     } catch (error) {
       closeRuntimeClient(client);
       throw error;
     }
     const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+    if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
+      closeRuntimeClient(client);
+      throw new Error(
+        `ADE service socket is still owned by runtime PID ${runtimeInfo.pid ?? "unknown"}; ` +
+        `waiting for spawned runtime PID ${options.expectedPid}.`,
+      );
+    }
     const compatibilityError = this.runtimeCompatibilityError(socketPath, runtimeInfo);
     if (compatibilityError) {
       closeRuntimeClient(client);
@@ -2255,6 +2273,46 @@ export class LocalRuntimeConnectionPool {
     return client;
   }
 
+  private async connectSpawnedRuntime(
+    socketPath: string,
+    child: ChildProcess,
+    options: { preserveVersionSkew?: boolean } = {},
+  ): Promise<RuntimeRpcClient> {
+    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_TIMEOUT_MS;
+    let lastError: Error | null = null;
+    while (Date.now() < deadline) {
+      if (child.exitCode != null || child.signalCode != null) {
+        throw new Error(
+          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready.` +
+          (lastError ? ` Last connection error: ${lastError.message}` : ""),
+        );
+      }
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const probeTimeoutMs = Math.min(LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS, remainingMs);
+      try {
+        return await this.connectClient(socketPath, {
+          ...options,
+          expectedPid: child.pid ?? null,
+          connectTimeoutMs: probeTimeoutMs,
+          initializeTimeoutMs: probeTimeoutMs,
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+      const retryDelayMs = Math.min(
+        LOCAL_RUNTIME_STARTUP_RETRY_MS,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    }
+    throw new Error(
+      `Timed out waiting for spawned ADE runtime PID ${child.pid ?? "unknown"} at ${socketPath}.` +
+      (lastError ? ` Last connection error: ${lastError.message}` : ""),
+    );
+  }
+
   private spawnRuntime(
     socketPath: string,
     options: { disableSync?: boolean } = this.options,
@@ -2270,6 +2328,7 @@ export class LocalRuntimeConnectionPool {
       env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: false,
+      windowsHide: true,
     });
     this.ownedRuntimeChild = child;
     const outputBase = {

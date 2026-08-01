@@ -75,7 +75,7 @@ struct AccountSignInPromptCard: View {
           Text("Continue to ADE")
             .font(.headline)
             .foregroundStyle(ADEColor.textPrimary)
-          Text("Connect to a Mac on another network. Use the same ADE account on your iPhone and Mac.")
+          Text("Connect to a computer on another network. Use the same ADE account on your iPhone and computer.")
             .font(.subheadline)
             .foregroundStyle(ADEColor.textSecondary)
             .fixedSize(horizontal: false, vertical: true)
@@ -217,7 +217,7 @@ struct AccountMachinesList: View {
       if account.machines.isEmpty {
         AccountMachinesNote(
           icon: "desktopcomputer",
-          text: "No Macs are signed in to this account yet. Open ADE on your Mac and sign in there too."
+          text: "No computers are signed in to this account yet. Open ADE on your computer and sign in there too."
         )
       } else {
         machineRows

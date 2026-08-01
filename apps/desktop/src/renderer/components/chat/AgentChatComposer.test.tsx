@@ -2543,7 +2543,7 @@ describe("AgentChatComposer", () => {
       expect(element.querySelector("span")?.className).toContain("truncate");
     });
 
-    it("names this Mac when a running chat has no remote binding", () => {
+    it("names this computer when a running chat has no remote binding", () => {
       // A null binding is not "unknown" — it is local. The composer is one row
       // with nothing to contrast against, so unlike the sidebar it states the
       // machine even when the answer is "here".

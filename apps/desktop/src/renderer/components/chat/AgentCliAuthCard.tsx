@@ -261,7 +261,7 @@ export function AgentCliAuthCard({
 
   // Machines are always named absolutely — "this machine" has no fixed referent
   // once a chat's machine can change underneath it.
-  const installLocation = runtimeName?.trim() ? runtimeName.trim() : "This Mac";
+  const installLocation = runtimeName?.trim() ? runtimeName.trim() : "This computer";
   const title = missing
     ? `${agentCli.displayName} is not installed`
     : `${agentCli.displayName} is logged out`;

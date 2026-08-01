@@ -348,10 +348,10 @@ describe("HeaderAttentionControl", () => {
       snapshotScope: "machine",
       availability: {
         state: "signed_out",
-        title: "Showing this Mac",
+        title: "Showing this computer",
         message: "Sign in to combine Attention across every ADE machine.",
         recovery: "sign_in",
-        hostName: "This Mac",
+        hostName: "This computer",
       },
     });
     renderControl();
@@ -362,7 +362,7 @@ describe("HeaderAttentionControl", () => {
     expect(trigger.getAttribute("aria-label")).toContain("this machine only");
 
     fireEvent.click(trigger);
-    expect(screen.getByText("Showing this Mac")).toBeTruthy();
+    expect(screen.getByText("Showing this computer")).toBeTruthy();
     expect(screen.getByRole("heading", { name: /Needs you/ })).toBeTruthy();
     expect(
       screen.getByText(/Sign in to combine Attention across every ADE machine/),

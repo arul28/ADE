@@ -93,7 +93,7 @@ The ADE brain runs as a per-user login service. The implementations live in `src
 | --- | --- | --- |
 | macOS | launchd `LaunchAgent` | `~/Library/LaunchAgents/com.ade.runtime.plist` |
 | Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
-| Windows | `schtasks.exe ONLOGON` | scheduled task `ADE Runtime` |
+| Windows | Current-user startup entry | `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run` |
 
 The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright and is used for both launchd and systemd unit names. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
 

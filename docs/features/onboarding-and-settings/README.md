@@ -656,7 +656,15 @@ banner):
   version clears the cache. On packaged launches with a
   recently installed update, the desktop refreshes the per-user runtime
   service so `ade serve` re-execs the updated bundled CLI and clients
-  do not fall back to an isolated build-mismatch runtime.
+  do not fall back to an isolated build-mismatch runtime. On Windows,
+  electron-builder generates the installed `app-update.yml` from the build's
+  GitHub publish authority; package smoke requires it to match
+  `ADE_RELEASE_REPOSITORY`. The source default remains upstream
+  `arul28/ADE`; fork CI overrides it with the repository performing the build.
+  The NSIS handoff uses the non-macOS 60-second quit deadline. Signed/public
+  Windows release assets remain behind the independent repository-variable
+  gates described in
+  [desktop-auto-update.md](./desktop-auto-update.md#windows-update-path).
 - `apps/desktop/src/renderer/components/app/AutoUpdateControl.tsx` —
   the primary update control: a small badge in the app shell top bar. Shows
   "Checking for updates" / "Downloading vX.Y.Z (NN%)" / "Install update
@@ -754,7 +762,7 @@ the General settings tab via `AdeCliSection`:
 3. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in
-   `apps/ade-cli/src/serviceManager/` (launchd / systemd / schtasks).
+   `apps/ade-cli/src/serviceManager/` (launchd / systemd / Windows per-user startup).
    The result is exposed as `LocalRuntimeStatus.serviceInstall` and
    `serviceHealth` (`unsupported | not_installed | installed | running |
    error | unknown`).

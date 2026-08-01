@@ -29,10 +29,10 @@ function friendlyPairError(error: unknown): string {
     .replace(/^Error:\s*/i, "")
     .trim();
   if (/pin|unauthor|forbidden|401|403|invalid code/i.test(message)) {
-    return "That code didn't work. Check the six digits shown on the other Mac and try again.";
+    return "That code didn't work. Check the six digits shown on the other computer and try again.";
   }
   if (/unreachable|timed out|timeout|ECONN|ENOTFOUND|network|connect|offline/i.test(message)) {
-    return "Couldn't reach that Mac. Make sure ADE is open there, then try again.";
+    return "Couldn't reach that computer. Make sure ADE is open there, then try again.";
   }
   return message || "Pairing failed.";
 }
@@ -49,7 +49,7 @@ type PairMachineFormProps = {
 /**
  * First-time pairing with a nearby Mac: ADE discovered it on the network and
  * synthesized its pairing URL internally, so the user only confirms the machine
- * and types the 6-digit code shown in ADE on that Mac. There is no manual link
+ * and types the 6-digit code shown in ADE on that computer. There is no manual link
  * or address entry — nearby discovery is the only entry point.
  */
 export function PairMachineForm({
@@ -64,7 +64,7 @@ export function PairMachineForm({
   const [pin, setPin] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const deviceName = defaultDeviceName.trim() || "This Mac";
+  const deviceName = defaultDeviceName.trim() || "This computer";
 
   const trimmedInput = initialInput?.trim() ?? "";
 
@@ -127,10 +127,10 @@ export function PairMachineForm({
   return (
     <form onSubmit={(event) => void handleSubmit(event)} style={{ display: "grid", gap: 12 }}>
       <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
-        You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.
+        You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer.
       </div>
       <div style={{ display: "grid", gap: 6 }}>
-        <span style={LABEL_STYLE}>Nearby Mac</span>
+        <span style={LABEL_STYLE}>Nearby computer</span>
         {parsing ? (
           <span style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5 }}>
             Checking…
@@ -171,7 +171,7 @@ export function PairMachineForm({
           />
         </label>
         <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 11.5, lineHeight: 1.4 }}>
-          This confirms that you can see the code on the other Mac.
+          This confirms that you can see the code on the other computer.
         </div>
       </div>
 

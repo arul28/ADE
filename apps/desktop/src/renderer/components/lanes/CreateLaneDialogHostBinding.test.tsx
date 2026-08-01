@@ -138,7 +138,7 @@ describe("CreateLaneDialogHost machine binding", () => {
     const view = render(
       <CreateLaneDialogHost open onOpenChange={vi.fn()} behavior="close-on-create" />,
     );
-    await screen.findByText("pick:This Mac");
+    await screen.findByText("pick:This computer");
 
     view.rerender(
       <CreateLaneDialogHost open={false} onOpenChange={vi.fn()} behavior="close-on-create" />,

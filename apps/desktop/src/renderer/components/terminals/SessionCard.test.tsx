@@ -1617,7 +1617,7 @@ describe("SessionCard where line", () => {
     expect(badged.querySelector("[data-session-status-slot]")?.contains(marker)).toBe(false);
   });
 
-  it("never badges a lane that is on this Mac, but still names it in the detail card", () => {
+  it("never badges a lane that is on this computer, but still names it in the detail card", () => {
     // The whole vocabulary of the badge is "this work isn't here", so a local
     // binding earns no glyph however it is pinned. The fact is not lost — the
     // hover card still answers it, and still says the MACHINE rather than the
@@ -1641,7 +1641,7 @@ describe("SessionCard where line", () => {
 
     expect(container.querySelector("[data-session-machine]")).toBeNull();
     openRowTooltip(container);
-    expect(hoverRow("machine").textContent).toContain("This Mac");
+    expect(hoverRow("machine").textContent).toContain("This computer");
     expect(hoverRow("machine").textContent).not.toContain("t3code-6754bb34");
   });
 

@@ -34,12 +34,12 @@ export function connectionTone(state: SyncConnectionState): ConnectionTone {
     case "reconnecting":
       return { label: "Reconnecting", color: COLORS.warning, live: false, fatal: false };
     case "auth_failed":
-      return { label: "Can't reach this Mac", color: COLORS.danger, live: false, fatal: true };
+      return { label: "Can't reach this computer", color: COLORS.danger, live: false, fatal: true };
     case "error":
-      return { label: "Can't reach this Mac", color: COLORS.danger, live: false, fatal: false };
+      return { label: "Can't reach this computer", color: COLORS.danger, live: false, fatal: false };
     case "disconnected":
     case "idle":
     default:
-      return { label: "Can't reach this Mac", color: COLORS.textMuted, live: false, fatal: false };
+      return { label: "Can't reach this computer", color: COLORS.textMuted, live: false, fatal: false };
   }
 }

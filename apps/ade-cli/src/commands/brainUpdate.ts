@@ -364,6 +364,7 @@ function runCommand(
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
+    windowsHide: true,
   });
   return {
     status: result.status,
@@ -689,6 +690,7 @@ function spawnDetached(command: string, args: string[], options: SpawnOptions): 
     ...options,
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
   });
   child.unref();
 }

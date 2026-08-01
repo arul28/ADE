@@ -13,7 +13,7 @@ export type CopyToClipboardOptions = {
    * Test seam: override the spawn function. The override must return the
    * same shape as `spawnSync` (status + error). Defaults to `spawnSync`.
    */
-  spawn?: (cmd: string, args: string[], options: { input: string }) => {
+  spawn?: (cmd: string, args: string[], options: { input: string; windowsHide?: boolean }) => {
     error?: Error;
     status?: number | null;
   };
@@ -50,7 +50,7 @@ export function copyToClipboard(text: string, options: CopyToClipboardOptions = 
       return false;
     }
   }
-  const r = spawn(cmd, args, { input: text });
+  const r = spawn(cmd, args, { input: text, windowsHide: true });
   if (r.error || (typeof r.status === "number" && r.status !== 0)) return false;
   return true;
 }
@@ -58,6 +58,7 @@ export function copyToClipboard(text: string, options: CopyToClipboardOptions = 
 function defaultCommandExists(cmd: string): boolean {
   const r = spawnSync(process.platform === "win32" ? "where" : "which", [cmd], {
     stdio: "ignore",
+    windowsHide: true,
   });
   return !r.error && r.status === 0;
 }

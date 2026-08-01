@@ -83,6 +83,7 @@ function readGitOriginUrl(rootPath: string): string | null {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
     timeout: 5_000,
+    windowsHide: true,
   });
   if (result.status !== 0) return null;
   const value = result.stdout.trim();
