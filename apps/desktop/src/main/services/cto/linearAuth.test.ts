@@ -642,6 +642,88 @@ describe("linearOAuthService", () => {
     expect(firstStatus.error).toContain("Superseded");
   });
 
+  it("coalesces concurrent session starts behind one callback listener", async () => {
+    const service = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger: createLogger(),
+    });
+    activeServices.push(service);
+
+    const firstStart = service.startSession();
+    const secondStart = service.startSession();
+
+    expect(secondStart).toBe(firstStart);
+    const [first, second] = await Promise.all([firstStart, secondStart]);
+    expect(second).toEqual(first);
+    expect(service.getSession(first.sessionId).status).toBe("pending");
+  });
+
+  it("aborts an active token exchange before replacing its callback listener", async () => {
+    const credentials = createCredentialsMock();
+    let markExchangeStarted: (() => void) | null = null;
+    const exchangeStarted = new Promise<void>((resolve) => {
+      markExchangeStarted = resolve;
+    });
+    const mockFetch = vi.fn((_url: string, init?: RequestInit) => new Promise((_resolve, reject) => {
+      markExchangeStarted?.();
+      const signal = init?.signal;
+      if (signal?.aborted) {
+        reject(signal.reason);
+        return;
+      }
+      signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+    })) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const first = await service.startSession();
+    const state = new URL(first.authUrl).searchParams.get("state")!;
+    const callback = httpGet(`${first.redirectUri}?code=slow-code&state=${state}`);
+    await exchangeStarted;
+
+    const second = await Promise.race([
+      service.startSession(),
+      waitMs(1_000).then(() => {
+        throw new Error("Replacement OAuth session timed out");
+      }),
+    ]);
+    await callback;
+
+    expect(service.getSession(first.sessionId)).toMatchObject({
+      status: "expired",
+      error: expect.stringContaining("Superseded"),
+    });
+    expect(service.getSession(second.sessionId).status).toBe("pending");
+    expect(credentials.setOAuthToken).not.toHaveBeenCalled();
+  });
+
+  it("does not bind a callback listener after disposal interrupts startup", async () => {
+    const service = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger: createLogger(),
+    });
+    activeServices.push(service);
+
+    const interruptedStart = service.startSession();
+    await Promise.resolve();
+    service.dispose();
+
+    await expect(interruptedStart).rejects.toThrow("no longer active");
+
+    const replacement = createLinearOAuthService({
+      credentials: createCredentialsMock() as any,
+      logger: createLogger(),
+    });
+    activeServices.push(replacement);
+    await expect(replacement.startSession()).resolves.toMatchObject({
+      redirectUri: expect.stringContaining(":19836/oauth/callback"),
+    });
+  });
+
   it("dispose clears all sessions and closes servers", async () => {
     const credentials = createCredentialsMock();
     const service = createLinearOAuthService({
