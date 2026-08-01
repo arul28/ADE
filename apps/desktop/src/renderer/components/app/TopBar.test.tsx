@@ -9,9 +9,9 @@ import { applyShellHeaderInset } from "../../lib/zoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
@@ -412,11 +412,11 @@ describe("TopBar", () => {
     } else {
       globalThis.window.__adeWebClient = originalWebClientMode;
     }
-    resetAttentionStoreForTests();
+    resetActivityStoreForTests();
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
-  it("carries account-wide Attention in the header and routes Open all to the center", () => {
+  it("carries account-wide Activity in the header and raises the pane from Open all", () => {
     const needsYou = {
       contractVersion: ATTENTION_CONTRACT_VERSION,
       id: "needs-you",
@@ -445,7 +445,7 @@ describe("TopBar", () => {
       dismissedAt: null,
       expiresAt: null,
     };
-    attentionStore.setState({ itemsById: { [needsYou.id]: needsYou } });
+    activityStore.setState({ itemsById: { [needsYou.id]: needsYou } });
     publishAccountStatus({
       signedIn: true,
       userId: "account-a",
@@ -456,18 +456,23 @@ describe("TopBar", () => {
       imageUrl: null,
     });
     const onNavigate = vi.fn();
+    const onOpenActivityPane = vi.fn();
 
-    render(<TopBar onNavigate={onNavigate} />);
+    render(<TopBar onNavigate={onNavigate} onOpenActivityPane={onOpenActivityPane} />);
 
-    const trigger = screen.getByTestId("header-attention-trigger");
+    const trigger = screen.getByTestId("header-activity-trigger");
     // The item belongs to another machine and project entirely — the header is
     // account-wide, not scoped to whatever project this window has open.
-    expect(trigger.getAttribute("aria-label")).toBe("Attention · 1 needs you");
+    expect(trigger.getAttribute("aria-label")).toBe("Activity · 1 needs you");
 
     fireEvent.click(trigger);
     fireEvent.click(screen.getByRole("button", { name: /Open all/ }));
 
-    expect(onNavigate).toHaveBeenCalledWith("/attention");
+    // Activity is a modal over the current tab, so opening it is shell state —
+    // navigating would cost the user whatever tab they were on.
+    expect(onOpenActivityPane).toHaveBeenCalledTimes(1);
+    expect(onNavigate).not.toHaveBeenCalledWith("/attention");
+    expect(onNavigate).not.toHaveBeenCalledWith("/activity");
   });
 
   it("shows connections before a project is open without immediate polling", async () => {

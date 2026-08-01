@@ -2,14 +2,19 @@ import XCTest
 @testable import ADEAttentionNotchCore
 
 final class NotchInteractionStateTests: XCTestCase {
-    func testStaleHoverGenerationCannotOpenPeekAfterPointerExit() {
+    /// Hover stops at prehover. The 145ms promotion to `.peek` is gone: that
+    /// layout belongs to event toasts now, and a hover that grew into a card
+    /// competed with the toast it looked identical to.
+    func testHoverStopsAtPrehoverAndNeverOpensTheToastLayout() {
         var state = NotchInteractionState()
-        let hoverGeneration = state.pointerEntered(hasItems: true)
+        state.pointerEntered(hasItems: true)
+        XCTAssertEqual(state.presentation, .prehover)
+
+        // Nothing else the hover flow can do promotes it further.
+        state.pointerEntered(hasItems: true)
         XCTAssertEqual(state.presentation, .prehover)
 
         state.pointerExited()
-        state.applyPeek(generation: hoverGeneration, pointerInside: true)
-
         XCTAssertEqual(state.presentation, .compact)
     }
 
@@ -45,9 +50,8 @@ final class NotchInteractionStateTests: XCTestCase {
         XCTAssertEqual(NotchPresentationPolicy(settings: NotchSettings()), .default)
 
         var state = NotchInteractionState()
-        let token = state.pointerEntered(hasItems: true, policy: .default)
-        state.applyPeek(generation: token, pointerInside: true)
-        XCTAssertEqual(state.presentation, .peek)
+        state.pointerEntered(hasItems: true, policy: .default)
+        XCTAssertEqual(state.presentation, .prehover)
     }
 
     func testHoverModeIsVisuallyDormantOnlyWhileResting() {
@@ -97,10 +101,8 @@ final class NotchInteractionStateTests: XCTestCase {
         for mode in [NotchRevealMode.click, .minimal] {
             let policy = NotchPresentationPolicy(revealMode: mode)
             var state = NotchInteractionState()
-            let token = state.pointerEntered(hasItems: true, policy: policy)
+            state.pointerEntered(hasItems: true, policy: policy)
             XCTAssertEqual(state.presentation, .compact, "\(mode) grew on hover")
-            state.applyPeek(generation: token, pointerInside: true)
-            XCTAssertEqual(state.presentation, .compact, "\(mode) peeked on hover")
         }
     }
 
@@ -116,16 +118,65 @@ final class NotchInteractionStateTests: XCTestCase {
         }
     }
 
-    /// Presentation choices never let an event override the user's reveal
-    /// preference; hover means the pointer is what reveals the surface.
-    func testEveryModeSuppressesAlertAndCelebrationGrowth() {
+    /// Automatic reveal is a setting now, but "click only" still outranks it:
+    /// that mode is literal, and nothing but a click may open anything.
+    func testAutomaticRevealHonoursTheSettingAndDefersToClickOnlyMode() {
         for mode in NotchRevealMode.allCases {
-            let policy = NotchPresentationPolicy(revealMode: mode)
+            let allowed = NotchPresentationPolicy(revealMode: mode, automaticRevealEnabled: true)
+            XCTAssertEqual(allowed.allowsAutomaticReveal, mode != .click, "\(mode)")
+
+            var alerting = NotchInteractionState()
+            alerting.setAttention(policy: allowed)
+            XCTAssertEqual(alerting.presentation, mode == .click ? .compact : .attention, "\(mode)")
+
+            var celebrating = NotchInteractionState()
+            celebrating.setCelebration(policy: allowed)
+            XCTAssertEqual(celebrating.presentation, mode == .click ? .compact : .celebration, "\(mode)")
+
+            // Turned off, no mode may grow the surface on its own.
+            let off = NotchPresentationPolicy(revealMode: mode, automaticRevealEnabled: false)
+            XCTAssertFalse(off.allowsAutomaticReveal, "\(mode)")
+            var suppressed = NotchInteractionState()
+            suppressed.setAttention(policy: off)
+            XCTAssertEqual(suppressed.presentation, .compact, "\(mode)")
+            suppressed.setCelebration(policy: off)
+            XCTAssertEqual(suppressed.presentation, .compact, "\(mode)")
+        }
+    }
+
+    /// Turning automatic reveal off while a toast is on screen has to collapse
+    /// it; otherwise the setting looks broken until the toast expires.
+    func testTurningOffAutomaticRevealCollapsesAToastAlreadyOnScreen() {
+        for treatment in [NotchToastTreatment.alert, .celebration] {
             var state = NotchInteractionState()
-            state.setAttention(policy: policy)
-            XCTAssertEqual(state.presentation, .compact)
-            state.setCelebration(policy: policy)
-            XCTAssertEqual(state.presentation, .compact)
+            let on = NotchPresentationPolicy(revealMode: .hover, automaticRevealEnabled: true)
+            if treatment == .celebration {
+                state.setCelebration(policy: on)
+            } else {
+                state.setAttention(policy: on)
+            }
+            XCTAssertEqual(state.presentation, treatment.presentation)
+
+            state.applyPolicy(NotchPresentationPolicy(
+                revealMode: .hover,
+                automaticRevealEnabled: false
+            ))
+            XCTAssertEqual(state.presentation, .compact, "\(treatment)")
+        }
+    }
+
+    /// The ticker belongs to the pinned strip, the one mode that keeps a bar on
+    /// screen at rest.
+    func testTickerOnlyRunsInThePinnedMode() {
+        for mode in NotchRevealMode.allCases {
+            XCTAssertEqual(
+                NotchPresentationPolicy(revealMode: mode, tickerEnabled: true).showsTicker,
+                mode == .minimal,
+                "\(mode)"
+            )
+            XCTAssertFalse(
+                NotchPresentationPolicy(revealMode: mode, tickerEnabled: false).showsTicker
+            )
         }
     }
 
@@ -148,12 +199,11 @@ final class NotchInteractionStateTests: XCTestCase {
 
     /// A hover-opened peek is not "open": clicking through one has to latch the
     /// surface rather than dismiss it.
-    func testClickingThroughAHoverPeekLatchesInsteadOfClosing() {
+    func testClickingThroughAHoverLatchesInsteadOfClosing() {
         let policy = NotchPresentationPolicy(revealMode: .hover, expandedPanelEnabled: false)
         var state = NotchInteractionState()
-        let token = state.pointerEntered(hasItems: true, policy: policy)
-        state.applyPeek(generation: token, pointerInside: true)
-        XCTAssertEqual(state.presentation, .peek)
+        state.pointerEntered(hasItems: true, policy: policy)
+        XCTAssertEqual(state.presentation, .prehover)
         XCTAssertFalse(state.isExplicitlyInteractive)
 
         state.explicitToggle(hasItems: true, policy: policy)
@@ -178,14 +228,16 @@ final class NotchInteractionStateTests: XCTestCase {
     /// mode had already put on screen.
     func testSwitchingModesCollapsesSurfacesTheNewModeForbids() {
         var hovering = NotchInteractionState()
-        let token = hovering.pointerEntered(hasItems: true, policy: .default)
-        hovering.applyPeek(generation: token, pointerInside: true)
+        hovering.pointerEntered(hasItems: true, policy: .default)
         hovering.applyPolicy(NotchPresentationPolicy(revealMode: .click))
         XCTAssertEqual(hovering.presentation, .compact)
 
         var alerting = NotchInteractionState()
         alerting.setAttention(policy: .default)
-        alerting.applyPolicy(NotchPresentationPolicy(revealMode: .minimal))
+        alerting.applyPolicy(NotchPresentationPolicy(
+            revealMode: .minimal,
+            automaticRevealEnabled: false
+        ))
         XCTAssertEqual(alerting.presentation, .compact)
 
         var manuallyExpanded = NotchInteractionState()
@@ -195,17 +247,23 @@ final class NotchInteractionStateTests: XCTestCase {
         XCTAssertTrue(manuallyExpanded.isExplicitlyInteractive)
     }
 
-    /// Settling out of an alert under a pointer that is not allowed to reveal
-    /// anything has to land on compact, not on a peek hover never opened.
-    func testTransientsSettleToCompactWhenHoverCannotReveal() {
-        var state = NotchInteractionState()
-        state.setAttention(policy: NotchPresentationPolicy(revealMode: .click))
-        state.finishTransient(pointerInside: true, policy: NotchPresentationPolicy(revealMode: .click))
-        XCTAssertEqual(state.presentation, .compact)
-
-        let hoverToken = state.pointerEntered(hasItems: true, policy: .default)
-        state.applyPeek(generation: hoverToken, pointerInside: true)
-        XCTAssertEqual(state.presentation, .peek)
+    /// A toast always settles back to the bar. `.peek` is the toast's own
+    /// layout now, so landing there would leave a card on screen with nothing
+    /// left to say — under a hovering pointer it lands on prehover instead.
+    func testTransientsNeverSettleOntoTheToastLayout() {
+        for (mode, pointerInside, expected) in [
+            (NotchRevealMode.click, true, NotchPresentationState.compact),
+            (.hover, true, .prehover),
+            (.hover, false, .compact),
+            (.minimal, true, .compact),
+        ] {
+            var state = NotchInteractionState()
+            let policy = NotchPresentationPolicy(revealMode: mode)
+            state.setAttention(policy: policy)
+            state.finishTransient(pointerInside: pointerInside, policy: policy)
+            XCTAssertEqual(state.presentation, expected, "\(mode) inside=\(pointerInside)")
+            XCTAssertNotEqual(state.presentation, .peek)
+        }
     }
 
     /// Turning the notch off entirely stays the strongest setting: it outranks
@@ -221,6 +279,7 @@ final class NotchInteractionStateTests: XCTestCase {
             XCTAssertEqual(state.presentation, .compact)
             state.explicitToggle(hasItems: true, policy: policy)
             state.setAttention(policy: policy)
+            state.setCelebration(policy: policy)
             XCTAssertEqual(state.presentation, .compact, "\(mode) reappeared while off")
         }
     }
@@ -244,14 +303,90 @@ final class NotchInteractionStateTests: XCTestCase {
         }
     }
 
-    func testNavigationWrapsInBothDirections() {
+    /// The pager is gone — the panel scrolls — so selection is only ever set by
+    /// pointing at a row, and only has to stay inside the list.
+    func testSelectionIsClampedToTheListInsteadOfPaged() {
         var state = NotchInteractionState()
-        state.navigate(delta: -1, itemCount: 3)
-        XCTAssertEqual(state.selectedIndex, 2)
-        state.navigate(delta: 1, itemCount: 3)
-        XCTAssertEqual(state.selectedIndex, 0)
         state.select(index: 9, itemCount: 3)
         XCTAssertEqual(state.selectedIndex, 2)
+        state.select(index: -4, itemCount: 3)
+        XCTAssertEqual(state.selectedIndex, 0)
+        state.select(index: 2, itemCount: 3)
+        state.clampSelection(itemCount: 1)
+        XCTAssertEqual(state.selectedIndex, 0)
+        state.clampSelection(itemCount: 0)
+        XCTAssertEqual(state.selectedIndex, 0)
+    }
+
+    // MARK: - Activity sections
+
+    /// The panel files a row exactly where the desktop popover files it,
+    /// including the rule that idle roster history is the ambient tail of Done
+    /// no matter what phase it preserved.
+    func testSectionsMirrorTheRendererPriorityFlatThree() {
+        let needsYou = sectionFixture(id: "needs", phase: "needs_you")
+        let failed = sectionFixture(id: "failed", phase: "failed")
+        let running = sectionFixture(id: "running", phase: "running")
+        let completed = sectionFixture(id: "completed", phase: "completed")
+        let idleButRunning = sectionFixture(id: "idle", phase: "running", tier: "idle")
+
+        let sections = notchActivitySections([completed, running, idleButRunning, failed, needsYou])
+        XCTAssertEqual(sections.needsYou.map(\.id), ["needs", "failed"])
+        XCTAssertEqual(sections.working.map(\.id), ["running"])
+        XCTAssertEqual(sections.done.map(\.id), ["completed", "idle"])
+        XCTAssertEqual(sections.live.map(\.id), ["needs", "failed", "running"])
+        XCTAssertEqual(sections.total, 5)
+    }
+
+    /// A host that predates the counts block must not make the surface claim an
+    /// overflow it cannot see.
+    func testCountsFallBackToTheRowsOnHandWhenTheHostSendsNone() {
+        let snapshot = AttentionSnapshot(
+            revision: 1,
+            generatedAt: "2026-08-01T12:00:00Z",
+            items: [
+                sectionFixture(id: "needs", phase: "needs_you"),
+                sectionFixture(id: "running", phase: "running"),
+            ]
+        )
+        let counts = snapshot.resolvedCounts()
+        XCTAssertEqual(counts.needsYou, 1)
+        XCTAssertEqual(counts.working, 1)
+        XCTAssertEqual(counts.total, 2)
+        XCTAssertEqual(counts.overflow(shownItemCount: 2), 0)
+
+        // With counts, the totals are the account's, not the frame's.
+        let projected = AttentionSnapshot(
+            revision: 2,
+            generatedAt: "2026-08-01T12:00:01Z",
+            items: [sectionFixture(id: "needs", phase: "needs_you")],
+            counts: AttentionCounts(needsYou: 3, working: 9, done: 49, total: 61)
+        )
+        XCTAssertEqual(projected.resolvedCounts().total, 61)
+        XCTAssertEqual(projected.resolvedCounts().overflow(shownItemCount: 1), 60)
+    }
+
+    private func sectionFixture(
+        id: String,
+        phase: String,
+        tier: String? = nil
+    ) -> AttentionItem {
+        AttentionItem(
+            id: id,
+            fingerprint: "fingerprint-\(id)",
+            kind: "agent",
+            eventKind: "agent_running",
+            phase: phase,
+            machine: AttentionMachine(machineKey: "mac-1", name: "Studio", online: true, lastSeenAt: nil),
+            project: AttentionProject(projectId: "ade", name: "ADE"),
+            title: "Work",
+            preview: "Working",
+            privacyPreview: "Agent update",
+            destination: AttentionDestination(kind: "session", sessionId: "session-\(id)"),
+            occurredAt: "2026-08-01T12:00:00Z",
+            updatedAt: "2026-08-01T12:00:00Z",
+            activityTier: tier
+        )
     }
 
     func testPhysicalSurfaceReservesHardwareAndSideEars() {

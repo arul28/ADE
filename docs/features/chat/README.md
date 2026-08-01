@@ -1324,7 +1324,7 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   `approval_request` / `structured_question`. The same id is mirrored
   into `TerminalSessionSummary.pendingInputItemId` for sync clients
   that key off the terminal session row. iOS uses it to back
-  Approve/Deny/Reply intents in the Attention Drawer without opening
+  Approve/Deny/Reply intents in the Activity drawer without opening
   the chat.
 - **Steer delivery vs. turn completion.** `deliverNextQueuedSteer()` is
   invoked on every turn-end code path (success, failure, interrupt,

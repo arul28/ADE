@@ -289,6 +289,22 @@ func shortProviderLabel(_ toolType: String?) -> String {
   return raw.replacingOccurrences(of: "-", with: " ").capitalized
 }
 
+/// Compact model label for a session meta line. Strips the vendor prefix and the
+/// date suffix a model id carries — `anthropic/claude-sonnet-4-5-20250929` reads
+/// as `claude-sonnet-4-5` — because on a phone row the version is the only part
+/// that distinguishes two rows on the same provider.
+func shortModelLabel(_ model: String?) -> String {
+  let raw = model?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+  guard !raw.isEmpty else { return "" }
+  let withoutVendor = raw.split(separator: "/").last.map(String.init) ?? raw
+  let parts = withoutVendor.split(separator: "-")
+  // A trailing 8-digit build date is noise; anything else is part of the name.
+  if let last = parts.last, last.count == 8, last.allSatisfy(\.isNumber) {
+    return parts.dropLast().joined(separator: "-")
+  }
+  return withoutVendor
+}
+
 func providerIcon(_ provider: String) -> String {
   switch providerFamilyKey(provider) {
   case "codex", "openai":
@@ -581,16 +597,27 @@ func workChatStatusSortRank(_ status: String) -> Int {
   }
 }
 
-func workChatStatusTint(_ status: String) -> Color {
+/// Tone for the coarse four-value chat status string, for the surfaces that only
+/// ever hold that string (the hub roster, personal chats, the session settings
+/// sheet). Rows that hold a real session use `workSessionRowTone` instead, which
+/// reads the canonical phase.
+///
+/// Both route through `ActivityTone`, which is what enforces the one-hue rule:
+/// amber is "your move" and nothing else. That rule moved two colours here — an
+/// active chat is blue (work is happening) rather than the green that now means
+/// "finished", and an idle chat is neutral rather than the amber it used to
+/// borrow, which made resting chats shout as loudly as blocked ones.
+func workChatStatusTone(_ status: String) -> ActivityTone {
   switch status {
-  case "awaiting-input": return ADEColor.warning
-  case "active": return ADEColor.success
-  // Match desktop, where idle/needs-attention chats render as amber. Previously
-  // idle was rendered with the purple accent, which read as "running" and
-  // diverged from the desktop status-dot semantics.
-  case "idle": return ADEColor.warning
-  default: return ADEColor.textSecondary
+  case "awaiting-input": return .amber
+  case "active": return .blue
+  case "idle": return .neutral
+  default: return .neutral
   }
+}
+
+func workChatStatusTint(_ status: String) -> Color {
+  activityToneColor(workChatStatusTone(status))
 }
 
 func workChatStatusIcon(_ status: String) -> String {

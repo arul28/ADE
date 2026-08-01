@@ -321,6 +321,238 @@ struct AccountDeviceRevocationStore {
   }
 }
 
+/// One optimistic acknowledgment that still needs to reach the account relay.
+/// Entries are owner-scoped by `AccountAttentionPendingAckStore`, so the wire
+/// shape stays limited to item state and can never cross an account boundary.
+struct AccountAttentionPendingAck: Codable, Equatable, Sendable {
+  let itemId: String
+  let seenAt: Date?
+  let dismissedAt: Date?
+  let sourceRevision: Int?
+  let queuedAt: Date
+  let attemptCount: Int
+
+  init(
+    itemId: String,
+    seenAt: Date?,
+    dismissedAt: Date?,
+    sourceRevision: Int?,
+    queuedAt: Date = Date(),
+    attemptCount: Int = 0
+  ) {
+    self.itemId = itemId
+    self.seenAt = seenAt
+    self.dismissedAt = dismissedAt
+    self.sourceRevision = sourceRevision
+    self.queuedAt = queuedAt
+    self.attemptCount = max(0, attemptCount)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case itemId, seenAt, dismissedAt, sourceRevision, queuedAt, attemptCount
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    itemId = try container.decode(String.self, forKey: .itemId)
+    seenAt = try container.decodeIfPresent(Date.self, forKey: .seenAt)
+    dismissedAt = try container.decodeIfPresent(Date.self, forKey: .dismissedAt)
+    sourceRevision = try container.decodeIfPresent(Int.self, forKey: .sourceRevision)
+    queuedAt = try container.decodeIfPresent(Date.self, forKey: .queuedAt)
+      ?? [seenAt, dismissedAt].compactMap { $0 }.max()
+      ?? Date()
+    attemptCount = max(
+      0,
+      try container.decodeIfPresent(Int.self, forKey: .attemptCount) ?? 0
+    )
+  }
+
+  func merging(_ other: AccountAttentionPendingAck) -> AccountAttentionPendingAck {
+    precondition(itemId == other.itemId)
+    let mergedQueuedAt = max(queuedAt, other.queuedAt)
+    let mergedAttemptCount: Int
+    if queuedAt == other.queuedAt {
+      mergedAttemptCount = max(attemptCount, other.attemptCount)
+    } else {
+      mergedAttemptCount = mergedQueuedAt == queuedAt ? attemptCount : other.attemptCount
+    }
+    return AccountAttentionPendingAck(
+      itemId: itemId,
+      seenAt: Self.latest(seenAt, other.seenAt),
+      dismissedAt: Self.latest(dismissedAt, other.dismissedAt),
+      sourceRevision: Self.latest(sourceRevision, other.sourceRevision),
+      queuedAt: mergedQueuedAt,
+      attemptCount: mergedAttemptCount
+    )
+  }
+
+  private static func latest<Value: Comparable>(_ lhs: Value?, _ rhs: Value?) -> Value? {
+    switch (lhs, rhs) {
+    case (.some(let lhs), .some(let rhs)): return max(lhs, rhs)
+    case (.some(let lhs), .none): return lhs
+    case (.none, .some(let rhs)): return rhs
+    case (.none, .none): return nil
+    }
+  }
+}
+
+private struct AccountAttentionPendingAckArchive: Codable {
+  var entriesByOwner: [String: [AccountAttentionPendingAck]] = [:]
+}
+
+/// App Group-backed queue for account acknowledgments. Reads always normalize
+/// duplicate item ids so a crash between enqueue and cleanup cannot multiply
+/// relay writes on the next foreground refresh.
+struct AccountAttentionPendingAckStore {
+  static let maximumEntriesPerOwner = 200
+  static let maximumAge: TimeInterval = 24 * 60 * 60
+  static let maximumFailedAttempts = 5
+
+  private let defaults: UserDefaults
+  private let key: String
+
+  init(
+    defaults: UserDefaults = ADESharedContainer.defaults,
+    key: String = ADESharedContainer.attentionPendingAcksKey
+  ) {
+    self.defaults = defaults
+    self.key = key
+  }
+
+  func entries(for ownerId: String) -> [AccountAttentionPendingAck] {
+    let ownerId = normalizedOwnerId(ownerId)
+    guard !ownerId.isEmpty else { return [] }
+    return Self.bounded(load().entriesByOwner[ownerId] ?? [])
+  }
+
+  func enqueue(_ entries: [AccountAttentionPendingAck], for ownerId: String) {
+    let ownerId = normalizedOwnerId(ownerId)
+    guard !ownerId.isEmpty, !entries.isEmpty else { return }
+    var archive = load()
+    archive.entriesByOwner[ownerId] = Self.bounded(
+      (archive.entriesByOwner[ownerId] ?? []) + entries
+    )
+    save(archive)
+  }
+
+  func replace(_ entries: [AccountAttentionPendingAck], for ownerId: String) {
+    let ownerId = normalizedOwnerId(ownerId)
+    guard !ownerId.isEmpty else { return }
+    var archive = load()
+    let normalized = Self.bounded(entries)
+    if normalized.isEmpty {
+      archive.entriesByOwner.removeValue(forKey: ownerId)
+    } else {
+      archive.entriesByOwner[ownerId] = normalized
+    }
+    save(archive)
+  }
+
+  func remove(itemIds: Set<String>, for ownerId: String) {
+    guard !itemIds.isEmpty else { return }
+    replace(
+      entries(for: ownerId).filter { !itemIds.contains($0.itemId) },
+      for: ownerId
+    )
+  }
+
+  func clear(for ownerId: String) {
+    replace([], for: ownerId)
+  }
+
+  @discardableResult
+  func pruneExpired(
+    for ownerId: String,
+    now: Date = Date()
+  ) -> [AccountAttentionPendingAck] {
+    let cutoff = now.addingTimeInterval(-Self.maximumAge)
+    let retained = entries(for: ownerId).filter { $0.queuedAt >= cutoff }
+    replace(retained, for: ownerId)
+    return retained
+  }
+
+  @discardableResult
+  func recordFailedAttempt(
+    itemIds: Set<String>,
+    for ownerId: String
+  ) -> Set<String> {
+    guard !itemIds.isEmpty else { return [] }
+    var evicted: Set<String> = []
+    let updated = entries(for: ownerId).compactMap { entry in
+      guard itemIds.contains(entry.itemId) else { return entry }
+      guard entry.attemptCount < Self.maximumFailedAttempts - 1 else {
+        evicted.insert(entry.itemId)
+        return nil
+      }
+      return AccountAttentionPendingAck(
+        itemId: entry.itemId,
+        seenAt: entry.seenAt,
+        dismissedAt: entry.dismissedAt,
+        sourceRevision: entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount + 1
+      )
+    }
+    replace(updated, for: ownerId)
+    return evicted
+  }
+
+  static func deduplicated(
+    _ entries: [AccountAttentionPendingAck]
+  ) -> [AccountAttentionPendingAck] {
+    var byId: [String: AccountAttentionPendingAck] = [:]
+    for entry in entries {
+      let itemId = entry.itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+      guard !itemId.isEmpty else { continue }
+      let normalized = AccountAttentionPendingAck(
+        itemId: itemId,
+        seenAt: entry.seenAt,
+        dismissedAt: entry.dismissedAt,
+        sourceRevision: entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount
+      )
+      byId[itemId] = byId[itemId]?.merging(normalized) ?? normalized
+    }
+    return byId.values.sorted {
+      if $0.queuedAt != $1.queuedAt {
+        return $0.queuedAt < $1.queuedAt
+      }
+      return $0.itemId < $1.itemId
+    }
+  }
+
+  private static func bounded(
+    _ entries: [AccountAttentionPendingAck]
+  ) -> [AccountAttentionPendingAck] {
+    Array(deduplicated(entries).suffix(maximumEntriesPerOwner))
+  }
+
+  private func normalizedOwnerId(_ ownerId: String) -> String {
+    ownerId.trimmingCharacters(in: .whitespacesAndNewlines)
+  }
+
+  private func load() -> AccountAttentionPendingAckArchive {
+    guard let data = defaults.data(forKey: key),
+          let archive = try? JSONDecoder().decode(
+            AccountAttentionPendingAckArchive.self,
+            from: data
+          ) else {
+      return AccountAttentionPendingAckArchive()
+    }
+    return archive
+  }
+
+  private func save(_ archive: AccountAttentionPendingAckArchive) {
+    if archive.entriesByOwner.isEmpty {
+      defaults.removeObject(forKey: key)
+    } else if let data = try? JSONEncoder().encode(archive) {
+      defaults.set(data, forKey: key)
+    }
+    defaults.synchronize()
+  }
+}
+
 /// Keep token eligibility independently testable from ClerkKit. A cached Clerk
 /// session is not enough: ADE must currently publish the same signed-in user
 /// and must not be under a device-local sign-out boundary.
@@ -470,6 +702,98 @@ func accountPairingCommitIsAuthorized(
     )
 }
 
+let ActivityPollInterval: UInt64 = 20_000_000_000
+typealias AccountAttentionPollSleep = @MainActor (UInt64) async throws -> Void
+typealias AccountAttentionPollSignedIn = @MainActor () -> Bool
+typealias AccountAttentionPollRefresh = @MainActor () async -> Void
+
+struct AccountAttentionAckFlushOutcome {
+  var attemptedItemIds: Set<String> = []
+  var staleItemIds: Set<String> = []
+  var unbackedItemIds: Set<String> = []
+  var failureMessage: String?
+}
+
+struct AccountAttentionAckTiming: Hashable {
+  let seenAt: Date
+  let dismissedAt: Date?
+}
+
+/// Drains every ready acknowledgment batch unless Relay reports an ownership
+/// fence. Retryable failures are recorded per entry and do not prevent later
+/// batches from making progress.
+@MainActor
+func flushAccountAttentionAckEntries(
+  _ entries: [AccountAttentionPendingAck],
+  ownerId: String,
+  revisionById: [String: Int],
+  store: AccountAttentionPendingAckStore,
+  acknowledge: @MainActor (
+    _ itemIds: [String],
+    _ timing: AccountAttentionAckTiming,
+    _ sourceRevisions: [String: Int]
+  ) async throws -> AccountAttentionAcknowledgmentResult
+) async -> AccountAttentionAckFlushOutcome {
+  var outcome = AccountAttentionAckFlushOutcome()
+  let grouped = Dictionary(grouping: entries) { entry in
+    AccountAttentionAckTiming(
+      seenAt: entry.seenAt ?? entry.dismissedAt ?? entry.queuedAt,
+      dismissedAt: entry.dismissedAt
+    )
+  }
+  for (timing, groupEntries) in grouped {
+    var startIndex = 0
+    while startIndex < groupEntries.count {
+      let endIndex = min(startIndex + 64, groupEntries.count)
+      let batch = Array(groupEntries[startIndex..<endIndex])
+      let batchIds = batch.map(\.itemId)
+      outcome.attemptedItemIds.formUnion(batchIds)
+      let sourceRevisions = Dictionary(
+        uniqueKeysWithValues: batch.compactMap { entry in
+          revisionById[entry.itemId].map { (entry.itemId, $0) }
+        }
+      )
+      do {
+        let result = try await acknowledge(batchIds, timing, sourceRevisions)
+        store.remove(itemIds: Set(result.applied), for: ownerId)
+        outcome.staleItemIds.formUnion(result.stale)
+        let reportedIds = Set(result.applied).union(result.stale)
+        outcome.staleItemIds.formUnion(Set(batchIds).subtracting(reportedIds))
+      } catch AccountAttentionRelayClient.RelayError.staleOwnership {
+        // A 409 is an account fence, not a retryable network failure. Keep no
+        // queued mutations for the rejected owner.
+        store.clear(for: ownerId)
+        outcome.failureMessage = AccountAttentionRelayClient.RelayError
+          .staleOwnership.localizedDescription
+        return outcome
+      } catch {
+        store.recordFailedAttempt(itemIds: Set(batchIds), for: ownerId)
+        if outcome.failureMessage == nil {
+          outcome.failureMessage = (error as? LocalizedError)?.errorDescription
+            ?? "Couldn't sync this Activity update. It will retry automatically."
+        }
+        // One unreachable or rejected batch must not starve unrelated work.
+        // The per-entry attempt limit above bounds persistent failures.
+      }
+      startIndex = endIndex
+    }
+  }
+  return outcome
+}
+
+/// Small orchestration seam used by the service and unit tests. A stale relay
+/// response gets exactly one refresh and one retry; an empty set does neither.
+@MainActor
+func retryAccountAttentionAcknowledgmentsOnce<Output>(
+  itemIds: Set<String>,
+  refresh: () async -> Void,
+  retry: (Set<String>) async -> Output
+) async -> Output? {
+  guard !itemIds.isEmpty else { return nil }
+  await refresh()
+  return await retry(itemIds)
+}
+
 /// Wraps ClerkKit behind the app's `ObservableObject` convention so SwiftUI
 /// surfaces observe published state instead of the `@Observable` `Clerk` type
 /// directly. Owns configuration, session restore, the sign-in/out operations,
@@ -505,6 +829,12 @@ final class AccountService: ObservableObject {
   /// Bumped after a new account Attention snapshot is committed to the App
   /// Group. The in-app model observes this alongside SyncService revisions.
   @Published private(set) var attentionSnapshotRevision = 0
+  /// Last relay acknowledgment failure. Optimistic local drawer state remains
+  /// active while the durable queue waits for the next successful refresh.
+  @Published private(set) var attentionAckFailure: String?
+  /// Last snapshot-refresh failure. Without it an unreachable relay and a
+  /// genuinely quiet account render the same empty drawer.
+  @Published private(set) var attentionRefreshFailure: String?
   /// Transient, user-facing error from the last sign-in attempt.
   @Published var lastError: String?
 
@@ -520,7 +850,14 @@ final class AccountService: ObservableObject {
   private var lastRelayCredential: (ownerId: String, token: String)?
   private var attentionRefreshTask: Task<Void, Never>?
   private var attentionRefreshId: UUID?
+  private var attentionPollTask: Task<Void, Never>?
+  private var attentionPollGeneration = 0
+  private let attentionPollSleep: AccountAttentionPollSleep
+  private let attentionPollSignedInOverride: AccountAttentionPollSignedIn?
+  private let attentionPollRefreshOverride: AccountAttentionPollRefresh?
   private var attentionPresenceState = AccountAttentionPresenceState()
+  private let attentionPendingAckStore: AccountAttentionPendingAckStore
+  private var attentionAckFlushExclusions: Set<String> = []
   private var isEndingAccountOwnership = false
   private let accountRegistrationQueue =
     LatestAccountRegistrationQueue<AccountAttentionDeviceRegistrationRequest>()
@@ -546,7 +883,19 @@ final class AccountService: ObservableObject {
       ?? "ios-device"
   }
 
-  private init() {}
+  init(
+    attentionPollSleep: @escaping AccountAttentionPollSleep = {
+      try await Task.sleep(nanoseconds: $0)
+    },
+    attentionPollSignedIn: AccountAttentionPollSignedIn? = nil,
+    attentionPollRefresh: AccountAttentionPollRefresh? = nil,
+    attentionPendingAckStore: AccountAttentionPendingAckStore = AccountAttentionPendingAckStore()
+  ) {
+    self.attentionPollSleep = attentionPollSleep
+    self.attentionPollSignedInOverride = attentionPollSignedIn
+    self.attentionPollRefreshOverride = attentionPollRefresh
+    self.attentionPendingAckStore = attentionPendingAckStore
+  }
 
   // MARK: - Lifecycle
 
@@ -639,6 +988,7 @@ final class AccountService: ObservableObject {
       if phase != .signedIn {
         phase = .signedIn
       }
+      startAttentionPolling()
       if shouldRefreshMachines {
         Task {
           if accountSwitched {
@@ -686,7 +1036,11 @@ final class AccountService: ObservableObject {
     lastRelayCredential = nil
     accountRegistrationQueue.discardPending()
     accountPreferencesQueue.discardPending()
+    if let previousOwnerId {
+      attentionPendingAckStore.clear(for: previousOwnerId)
+    }
     cancelAttentionRefresh()
+    stopAttentionPolling()
     invalidatePairingAuthorization()
     SyncService.shared?.removeAccountOwnedPairings(exceptOwnerId: nil)
     identity = nil
@@ -718,6 +1072,60 @@ final class AccountService: ObservableObject {
     attentionRefreshTask?.cancel()
     attentionRefreshTask = nil
     attentionRefreshId = nil
+  }
+
+  /// Starts the foreground account Activity poll. Repeated starts while the
+  /// same loop is live are a no-op; stop/start advances the generation so a
+  /// cancellation-insensitive sleeper cannot resurrect an older loop.
+  func startAttentionPolling() {
+    guard attentionPollTask == nil, attentionPollingIsSignedIn else { return }
+    attentionPollGeneration &+= 1
+    let generation = attentionPollGeneration
+    attentionPollTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        guard self?.attentionPollingIsSignedIn == true,
+              let pollSleep = self?.attentionPollSleep else {
+          break
+        }
+        do {
+          try await pollSleep(ActivityPollInterval)
+        } catch {
+          break
+        }
+        guard let self,
+              !Task.isCancelled,
+              self.attentionPollGeneration == generation,
+              self.attentionPollingIsSignedIn else {
+          break
+        }
+        if let refresh = self.attentionPollRefreshOverride {
+          await refresh()
+        } else {
+          await self.refreshAttentionSnapshot()
+        }
+      }
+      if let self, self.attentionPollGeneration == generation {
+        self.attentionPollTask = nil
+      }
+    }
+  }
+
+  func stopAttentionPolling() {
+    attentionPollGeneration &+= 1
+    attentionPollTask?.cancel()
+    attentionPollTask = nil
+  }
+
+  var isAttentionPolling: Bool {
+    attentionPollTask != nil
+  }
+
+  var currentAttentionPollGeneration: Int {
+    attentionPollGeneration
+  }
+
+  private var attentionPollingIsSignedIn: Bool {
+    attentionPollSignedInOverride?() ?? isSignedIn
   }
 
   /// Called only after an explicit sign-in operation completes and Clerk has
@@ -1012,6 +1420,18 @@ final class AccountService: ObservableObject {
     }
 
     let existing = ADESharedContainer.readAttentionSnapshot()
+    let pendingAckOutcome = await flushPendingAttentionAcks(
+      ownerId: requestedOwnerId,
+      session: initialSession,
+      baseURL: baseURL,
+      snapshot: existing
+    )
+    if let failureMessage = pendingAckOutcome.failureMessage {
+      attentionAckFailure = failureMessage
+    } else if !pendingAckOutcome.attemptedItemIds.isEmpty,
+              pendingAckOutcome.staleItemIds.isEmpty {
+      attentionAckFailure = nil
+    }
     do {
       let delta = try await attentionRelay.fetchSnapshot(
         baseURL: baseURL,
@@ -1040,45 +1460,216 @@ final class AccountService: ObservableObject {
         incoming: delta
       )
       guard ADESharedContainer.writeAttentionSnapshot(complete) else { return }
+      attentionRefreshFailure = nil
       attentionSnapshotRevision &+= 1
       WidgetReloadBridge.reloadAllTimelines()
+
+      // A stale fence needs one fresh snapshot before retrying. Items queued
+      // before their account row existed get the same single post-refresh
+      // opportunity; if they are still absent they remain durable for a later
+      // publisher reconcile.
+      let retryItemIds = pendingAckOutcome.staleItemIds
+        .union(pendingAckOutcome.unbackedItemIds)
+      if pendingAckOutcome.failureMessage == nil, !retryItemIds.isEmpty {
+        let retryOutcome = await flushPendingAttentionAcks(
+          ownerId: requestedOwnerId,
+          session: initialSession,
+          baseURL: baseURL,
+          snapshot: complete,
+          limitingTo: retryItemIds
+        )
+        if let failureMessage = retryOutcome.failureMessage {
+          attentionAckFailure = failureMessage
+        } else if !retryOutcome.staleItemIds.isEmpty {
+          attentionAckFailure = "Activity changed again before the update was applied. Try again."
+        } else {
+          attentionAckFailure = nil
+        }
+      } else if pendingAckOutcome.failureMessage == nil {
+        attentionAckFailure = nil
+      }
     } catch {
-      // Keep the last-known account snapshot and machine-local fallback.
+      // Keep the last-known account snapshot and machine-local fallback, but
+      // say so: an unreachable relay must not read as "nothing is happening".
+      attentionRefreshFailure = "Couldn't reach your machines. Showing the last known activity."
     }
   }
 
   func acknowledgeAttentionItems(_ itemIds: [String], dismiss: Bool) async {
-    let ids = Array(Set(itemIds.filter { !$0.isEmpty })).prefix(64)
-    guard !ids.isEmpty,
-          isSignedIn,
-          let requestedOwnerId = identity?.userId,
+    let ids = Array(Set(itemIds.compactMap { itemId -> String? in
+      let normalized = itemId.trimmingCharacters(in: .whitespacesAndNewlines)
+      return normalized.isEmpty ? nil : normalized
+    })).prefix(64)
+    guard !ids.isEmpty else { return }
+    guard let requestedOwnerId = identity?.userId
+      ?? deviceOwnershipStore.state.ownerId else {
+      attentionAckFailure = "Sign in to sync this Activity update."
+      return
+    }
+
+    let now = Date()
+    let revisionById = Dictionary(
+      uniqueKeysWithValues: (ADESharedContainer.readAttentionSnapshot()?.items ?? [])
+        .map { ($0.id, $0.revision) }
+    )
+    let pending = ids.map {
+      AccountAttentionPendingAck(
+        itemId: $0,
+        seenAt: now,
+        dismissedAt: dismiss ? now : nil,
+        sourceRevision: revisionById[$0]
+      )
+    }
+    attentionPendingAckStore.enqueue(pending, for: requestedOwnerId)
+
+    guard isSignedIn,
           let baseURL = AccountConfig.attentionRelayBaseURL,
           let initialSession = await pairingSession(),
           initialSession.authorization.ownerId == requestedOwnerId,
           isPairingCommitAuthorized(initialSession.authorization) else {
+      attentionAckFailure = "Couldn't sync this Activity update yet. It will retry automatically."
       return
     }
-    do {
-      try await attentionRelay.acknowledge(
-        baseURL: baseURL,
-        token: initialSession.token,
-        itemIds: Array(ids),
-        dismiss: dismiss,
-        refreshToken: { [weak self] in
-          guard let self,
-                self.isPairingCommitAuthorized(initialSession.authorization) else {
-            return nil
-          }
-          return try? await self.freshRelaySession(
-            expectedAuthorization: initialSession.authorization
-          ).token
-        }
-      )
-      await refreshAttentionSnapshot()
-    } catch {
-      // The local seen state remains useful offline. A later snapshot refresh
-      // will reconcile shared acknowledgment.
+    let attemptedIds = Set(ids)
+    let outcome = await flushPendingAttentionAcks(
+      ownerId: requestedOwnerId,
+      session: initialSession,
+      baseURL: baseURL,
+      snapshot: ADESharedContainer.readAttentionSnapshot(),
+      limitingTo: attemptedIds
+    )
+    if let failureMessage = outcome.failureMessage {
+      attentionAckFailure = failureMessage
+      return
     }
+
+    let retryItemIds = outcome.staleItemIds.union(outcome.unbackedItemIds)
+    if retryItemIds.isEmpty {
+      attentionAckFailure = nil
+      await refreshAttentionSnapshot()
+      return
+    }
+
+    // Keep the refresh's top-of-cycle queue drain from sending the stale ids a
+    // second time before the snapshot fence has advanced. The retry below is
+    // their one allowed post-refresh attempt.
+    attentionAckFlushExclusions.formUnion(retryItemIds)
+    let retryOutcome = await retryAccountAttentionAcknowledgmentsOnce(
+      itemIds: retryItemIds,
+      refresh: { [weak self] in
+        await self?.refreshAttentionSnapshot()
+      },
+      retry: { [weak self] retryItemIds in
+        guard let self else {
+          return AccountAttentionAckFlushOutcome(
+            failureMessage: "Couldn't finish the Activity update."
+          )
+        }
+        self.attentionAckFlushExclusions.subtract(retryItemIds)
+        guard self.isPairingCommitAuthorized(initialSession.authorization),
+              self.identity?.userId == requestedOwnerId else {
+          return AccountAttentionAckFlushOutcome(
+            failureMessage: "The signed-in account changed before the Activity update completed."
+          )
+        }
+        return await self.flushPendingAttentionAcks(
+          ownerId: requestedOwnerId,
+          session: initialSession,
+          baseURL: baseURL,
+          snapshot: ADESharedContainer.readAttentionSnapshot(),
+          limitingTo: retryItemIds
+        )
+      }
+    ) ?? AccountAttentionAckFlushOutcome()
+    if let failureMessage = retryOutcome.failureMessage {
+      attentionAckFailure = failureMessage
+    } else if !retryOutcome.staleItemIds.isEmpty {
+      attentionAckFailure = "Activity changed again before the update was applied. Try again."
+    } else {
+      attentionAckFailure = nil
+    }
+  }
+
+  private func flushPendingAttentionAcks(
+    ownerId: String,
+    session initialSession: AccountPairingSession,
+    baseURL: URL,
+    snapshot: AccountAttentionSnapshot?,
+    limitingTo itemIds: Set<String>? = nil
+  ) async -> AccountAttentionAckFlushOutcome {
+    var outcome = AccountAttentionAckFlushOutcome()
+    guard isPairingCommitAuthorized(initialSession.authorization),
+          initialSession.authorization.ownerId == ownerId else {
+      outcome.failureMessage = "The signed-in account changed before the Activity update completed."
+      return outcome
+    }
+
+    let revisionById = Dictionary(
+      uniqueKeysWithValues: (snapshot?.items ?? []).map { ($0.id, $0.revision) }
+    )
+    // Orphaned item ids are intentionally unsendable without a current
+    // snapshot row. Bound their lifetime here so they cannot persist forever.
+    let stored = attentionPendingAckStore.pruneExpired(for: ownerId)
+    let hydrated = stored.map { entry in
+      AccountAttentionPendingAck(
+        itemId: entry.itemId,
+        seenAt: entry.seenAt,
+        dismissedAt: entry.dismissedAt,
+        sourceRevision: revisionById[entry.itemId] ?? entry.sourceRevision,
+        queuedAt: entry.queuedAt,
+        attemptCount: entry.attemptCount
+      )
+    }
+    if hydrated != stored {
+      attentionPendingAckStore.replace(hydrated, for: ownerId)
+    }
+
+    let selected = hydrated.filter { entry in
+      (itemIds == nil || itemIds?.contains(entry.itemId) == true)
+        && !attentionAckFlushExclusions.contains(entry.itemId)
+    }
+    // Only the complete snapshot proves an item is account-backed *now*.
+    // Persisted source revisions are historical context, never authority for a
+    // send after the row disappeared or the account stream reset.
+    let ready = selected.filter { revisionById[$0.itemId] != nil }
+    outcome.unbackedItemIds = Set(
+      selected.filter { revisionById[$0.itemId] == nil }.map(\.itemId)
+    )
+    guard !ready.isEmpty else { return outcome }
+
+    let drained = await flushAccountAttentionAckEntries(
+      ready,
+      ownerId: ownerId,
+      revisionById: revisionById,
+      store: attentionPendingAckStore,
+      acknowledge: { [weak self] batchIds, timing, sourceRevisions in
+        guard let self else {
+          throw AccountAttentionRelayClient.RelayError.transport
+        }
+        return try await self.attentionRelay.acknowledge(
+          baseURL: baseURL,
+          token: initialSession.token,
+          itemIds: batchIds,
+          seenAt: timing.seenAt,
+          dismissedAt: timing.dismissedAt,
+          sourceRevisions: sourceRevisions,
+          expectedAccountOwnerId: ownerId,
+          refreshToken: { [weak self] in
+            guard let self,
+                  self.isPairingCommitAuthorized(initialSession.authorization) else {
+              return nil
+            }
+            return try? await self.freshRelaySession(
+              expectedAuthorization: initialSession.authorization
+            ).token
+          }
+        )
+      }
+    )
+    outcome.attemptedItemIds.formUnion(drained.attemptedItemIds)
+    outcome.staleItemIds.formUnion(drained.staleItemIds)
+    outcome.failureMessage = drained.failureMessage
+    return outcome
   }
 
   func acknowledgeAttentionNavigation(_ itemId: String?) async {

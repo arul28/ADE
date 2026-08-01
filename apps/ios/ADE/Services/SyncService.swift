@@ -3828,7 +3828,7 @@ final class SyncService: ObservableObject {
 
   /// Sessions currently eligible for glance surfaces. Rebuilt from
   /// `localStateRevision` changes and written into the App Group snapshot for
-  /// the lock-screen widget and in-app Attention Drawer.
+  /// the lock-screen widget and in-app Activity drawer.
   @Published private(set) var activeSessions: [AgentSnapshot] = []
 
   /// Chat sessions currently waiting on user input. Surfaced as a count chip
@@ -3867,16 +3867,15 @@ final class SyncService: ObservableObject {
   /// uses to observe `activeSessions` / workspace snapshot writes. Lazily
   /// initialised on first access so tests + previews that never touch the
   /// drawer don't allocate an extra `ObservableObject`.
-  private var attentionDrawerStorage: AttentionDrawerModel?
+  private var attentionDrawerStorage: ActivityDrawerModel?
   private var attentionDrawerCancellables: Set<AnyCancellable> = []
 
   /// Drawer surface injected into the root view via `.environmentObject`.
   /// Rebuilt from the App Group `WorkspaceSnapshot` each time the host
   /// state changes — no independent transport.
-  @available(iOS 17.0, *)
-  var attentionDrawer: AttentionDrawerModel {
+  var attentionDrawer: ActivityDrawerModel {
     if let existing = attentionDrawerStorage { return existing }
-    let fresh = AttentionDrawerModel()
+    let fresh = ActivityDrawerModel()
     attentionDrawerCancellables = fresh.bind(to: self)
     attentionDrawerStorage = fresh
     return fresh
@@ -18918,7 +18917,7 @@ extension SyncService {
   }
 
   /// Dispatch a remote command over the existing sync WebSocket. Used by:
-  ///   • in-app Attention Drawer App Intents
+  ///   • in-app Activity drawer App Intents
   ///   • "Send to Mac" deep-link handoff
   ///
   /// The caller supplies a loosely-typed payload so action-specific fields
@@ -19156,7 +19155,7 @@ extension SyncService {
 
     // `activeSessions` holds every relevant chat session — running,
     // awaiting-input, idle, and failed. The widget reads the running subset
-    // while the in-app Attention Drawer still gets the full set. Non-chat
+    // while the in-app Activity drawer still gets the full set. Non-chat
     // (shell / CLI) sessions are excluded entirely.
     // Completed / ended sessions are dropped since they're terminal.
     var allAgents: [AgentSnapshot] = []
@@ -19167,7 +19166,7 @@ extension SyncService {
 
     // The lock-screen widget should only surface chats actively streaming
     // output right now. Anything older than this gate is dropped from the
-    // running roster, but can still appear in the in-app Attention Drawer via
+    // running roster, but can still appear in the in-app Activity drawer via
     // `allAgents`.
     let runningRecencyCutoff = now.addingTimeInterval(-120)
 

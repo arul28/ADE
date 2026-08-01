@@ -28,6 +28,7 @@ export const SETTINGS_TAB_IDS = [
   "lanes-git",
   "integrations",
   "notifications",
+  "activity",
   "secrets",
   "storage",
   "stats",
@@ -49,6 +50,7 @@ export const SETTINGS_TABS: readonly SettingsTab[] = [
   { id: "lanes-git", label: "Lanes & Git", description: "How lanes start, stay current, and tell you they fell behind." },
   { id: "integrations", label: "Integrations", description: "GitHub, Linear, and the ADE command line." },
   { id: "notifications", label: "Notifications & Sound", description: "What ADE interrupts you for, and how." },
+  { id: "activity", label: "Activity", description: "What's running everywhere, and how ADE shows it." },
   // Named "Secrets & Environment" while planning, on the assumption that
   // `EnvironmentSection` held environment-variable mappings. It doesn't — it
   // was App version + ADE CLI, which now live in General and Integrations —
@@ -423,24 +425,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     group: "Delivery",
   },
   {
-    id: "notifications.hide-previews",
-    label: "Hide previews",
-    keywords: ["privacy", "redact", "private", "content", "summary"],
-    tab: "notifications",
-    anchor: "hide-previews",
-    scope: "machine",
-    group: "Delivery",
-  },
-  {
-    id: "notifications.attention-sounds",
-    label: "Attention sounds",
-    keywords: ["sound", "audio", "cue", "chime"],
-    tab: "notifications",
-    anchor: "attention-sounds",
-    scope: "machine",
-    group: "Sound",
-  },
-  {
     id: "notifications.completion-sound",
     label: "Agent completion sound",
     keywords: ["sound", "audio", "chime", "bell", "volume", "done"],
@@ -448,15 +432,6 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     anchor: "agent-completion-sound",
     scope: "app",
     group: "Sound",
-  },
-  {
-    id: "notifications.celebrations",
-    label: "Celebrations",
-    keywords: ["confetti", "flourish", "animation", "success"],
-    tab: "notifications",
-    anchor: "celebrations",
-    scope: "machine",
-    group: "Attention notch",
   },
   {
     id: "notifications.lane-banners",
@@ -467,14 +442,99 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     scope: "machine",
     group: "On-screen banners",
   },
+
+  // ── Activity ─────────────────────────────────────────────────────────────
   {
-    id: "notifications.notch",
-    label: "Attention notch",
-    keywords: ["notch", "menu bar", "hud", "reveal", "celebration", "overlay"],
-    tab: "notifications",
-    anchor: "attention-notch",
+    id: "activity.notch-enabled",
+    label: "ADE notch",
+    keywords: ["notch", "menu bar", "hud", "overlay", "ambient", "attention"],
+    tab: "activity",
+    anchor: "activity-notch",
     scope: "machine",
-    group: "Attention notch",
+    showScopeChip: true,
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.notch-reveal",
+    label: "Notch behavior",
+    keywords: ["reveal", "hover", "click", "peek", "compact"],
+    tab: "activity",
+    anchor: "activity-notch-reveal",
+    scope: "machine",
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.notch-expanded",
+    label: "Expanded panel",
+    keywords: ["panel", "expand", "list", "sessions", "tall"],
+    tab: "activity",
+    anchor: "activity-notch-expanded",
+    scope: "machine",
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.notch-auto-reveal",
+    label: "Automatic reveal",
+    keywords: ["reveal", "pop", "auto", "interrupt", "toast", "alert"],
+    tab: "activity",
+    anchor: "activity-auto-reveal",
+    scope: "machine",
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.notch-ticker",
+    label: "Live ticker",
+    keywords: ["ticker", "cycle", "strip", "live", "rotate", "status"],
+    tab: "activity",
+    anchor: "activity-ticker",
+    scope: "machine",
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.celebrations",
+    label: "Celebrations",
+    keywords: ["confetti", "flourish", "animation", "success"],
+    tab: "activity",
+    anchor: "activity-celebrations",
+    scope: "machine",
+    group: "Notch & menu bar",
+  },
+  {
+    id: "activity.sounds",
+    label: "Activity sounds",
+    keywords: ["sound", "audio", "cue", "chime", "attention"],
+    tab: "activity",
+    anchor: "activity-sounds",
+    scope: "machine",
+    group: "Sound",
+  },
+  {
+    id: "activity.hide-details",
+    label: "Hide previews",
+    keywords: ["privacy", "redact", "private", "content", "summary", "preview"],
+    tab: "activity",
+    anchor: "activity-hide-details",
+    scope: "machine",
+    group: "Privacy",
+  },
+  {
+    id: "activity.dock-badge",
+    label: "Dock badge counts",
+    keywords: ["dock", "badge", "count", "this mac", "all machines", "account"],
+    tab: "activity",
+    anchor: "activity-dock-badge",
+    scope: "machine",
+    group: "Account",
+  },
+  {
+    id: "activity.machines",
+    label: "Notify me about",
+    keywords: ["machine", "mute", "silence", "mac", "device", "per-machine"],
+    tab: "activity",
+    anchor: "activity-machines",
+    scope: "machine",
+    showScopeChip: true,
+    group: "Machines",
   },
 
   // ── Secrets ──────────────────────────────────────────────────────────────
@@ -570,6 +630,8 @@ export const LEGACY_TAB_ALIASES: Readonly<Record<string, SettingsTabId>> = {
   onboarding: "general",
   help: "general",
   tours: "general",
+  // The Attention center became the Activity pane and tab.
+  attention: "activity",
 };
 
 /**
@@ -592,6 +654,11 @@ export const LEGACY_HASH_ALIASES: Readonly<Record<string, string>> = {
   "auto-updates": "general.auto-updates",
   "product-analytics": "general.analytics",
   storage: "storage.usage",
+  // Moved out of Notifications when Activity got its own tab.
+  "attention-notch": "activity.notch-enabled",
+  celebrations: "activity.celebrations",
+  "attention-sounds": "activity.sounds",
+  "hide-previews": "activity.hide-details",
 };
 
 const ENTRIES_BY_ID = new Map(SETTINGS_ENTRIES.map((entry) => [entry.id, entry]));

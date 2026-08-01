@@ -26,7 +26,7 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
   bounded context capsule, destination setup, route confirmation, and
   idempotent recovery used by **Send to machine**.
-- `push-notifications.md` — ADE Attention's account-wide source of truth and
+- `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
   per-device policy, exact routing, acknowledgments, and ownership fences.
@@ -40,7 +40,7 @@ commands, file requests, and chat/terminal streams. Browser environments paired
 before this release can still reconnect over their saved local/direct routes,
 but the hosted client no longer creates non-account pairings.
 
-Account Attention deliberately does **not** follow that selected machine or
+Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
 the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
 the consolidated account stream through an account-scoped path. Navigation and
@@ -1199,7 +1199,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   handoff is idempotent. Legacy peers that do not advertise renewal close at
   token expiry; capable peers have only the advertised short grace window.
 
-Account Attention and push:
+Account Activity and push:
 
 - `apps/ade-cli/src/services/push/pushPublisherService.ts` — derives one
   bounded machine contribution across every project hosted by the brain,
@@ -1216,18 +1216,70 @@ Account Attention and push:
   desktop account-first read/ack/presence/preferences coordinator. It bypasses
   the selected project or remote-machine binding and uses the local machine
   runtime only as an explicitly labeled fallback.
+- `apps/ade-cli/src/services/push/activityFingerprint.ts` — the two identities
+  every item carries. The *content* fingerprint is what the row looks like with
+  elapsed durations and token/file counters normalized away, so progress churn
+  does not rewrite account state; the *alert* fingerprint is the stable identity
+  of one phase entry, so a re-published item cannot re-alert a phone that
+  already heard about it.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
   destination, availability, preference, and native-presentation contract.
-- `apps/desktop/src/renderer/components/attention/` and
-  `apps/desktop/src/renderer/state/attentionStore.ts` — global header control,
-  compact drawer, full history center, account-switch/revision-safe mutations,
-  and renderer-to-native snapshot feed.
+  `ATTENTION_CONTRACT_VERSION` is the *item* contract; the publish protocol
+  version is separate (see `push-notifications.md`).
+- `apps/desktop/src/shared/activityCatalog.ts` — one table naming every
+  Activity event: its group (agents / pull requests), its icon key, and its
+  default delivery policy. Desktop settings, the Activity columns, and the
+  delivery defaults read this instead of each keeping a private switch.
+- `apps/desktop/src/renderer/state/activityStore.ts` — the renderer's account
+  snapshot, with account-switch and source-revision fences on every mutation.
+- `apps/desktop/src/renderer/components/activity/useActivitySync.ts` — the
+  single account poller, mounted in `AppShell` so the header control and ADE
+  Notch stay truthful while `/activity` is closed. It also derives the notch
+  toast stream.
+- `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx` —
+  the global-header count and its popover preview of both buckets.
+- `apps/desktop/src/renderer/components/activity/ActivityPane.tsx` — the
+  `/activity` two-column pane, with `ActivitySessionsColumn.tsx` (Needs you /
+  Working / Done, split per machine and divided where an offline machine's rows
+  become last-known state), `ActivityInboxColumn.tsx` (PR/CI and other
+  outcomes), `ActivityFilters.tsx` (machine / chat type / model, every option
+  derived from the snapshot on screen), and `ActivityDetailSheet.tsx`.
+- `apps/desktop/src/renderer/components/activity/ActivityCard.tsx` and
+  `ActivityCardSkeleton.tsx` — the row and its fixed-height placeholder. The
+  card deliberately does **not** reuse `terminals/SessionCard`: an Activity row
+  frequently belongs to another machine, and `SessionCard`'s settle/snooze
+  controls call this Mac's local session service, where a non-unique session id
+  could land the mutation on a same-id local session. The status vocabulary is
+  shared instead through the pure `terminals/SessionStatusLabel.tsx`, extracted
+  from `SessionStatusSlot` for exactly this reason. Read the comment at the top
+  of `ActivityCard.tsx` before "simplifying" it.
+- `apps/desktop/src/renderer/components/activity/activityPriority.ts` and
+  `activityPresentation.ts` — section assignment (Needs you / Working / Done)
+  and the per-item label/tone/glyph derivation.
+- `apps/desktop/src/renderer/components/activity/useProgressiveRows.ts` — the
+  bounded row budget (60, stepped by 60) that keeps long columns cheap.
+- `apps/desktop/src/renderer/components/activity/activityNotchLocalSettings.ts`
+  — this Mac's offline cache of the notch presentation. Account preferences win
+  when loaded. The three original `ade:attention:notch-*` localStorage keys are
+  frozen wire for anyone who already made a choice; new settings got new keys.
+- `apps/desktop/src/renderer/components/activity/ActivitySettingsPopover.tsx` —
+  the gear in both the popover and the pane. It mounts
+  `settings/ActivitySettingsControls.tsx` in its `popover` variant, which
+  `settings/ActivitySection.tsx` also mounts, so the Settings tab and the
+  in-surface gear cannot drift. Every row saves on change; there is no Save
+  button, which the popover it replaced did have.
+- `apps/desktop/src/renderer/lib/legacyRoutes.ts` — `LEGACY_ROUTE_ALIASES`
+  maps `/attention` to `/activity`. ADE's shell matches top-level surfaces with
+  pathname predicates rather than `<Route>` elements, so there is no
+  router-level redirect to hang a rename on; this is the route-level twin of
+  `settingsManifest.ts`'s `LEGACY_TAB_ALIASES`.
 - `apps/desktop/src/renderer/webclient/adapter/attention.ts` — direct browser
   account-relay reader plus signed-out paired-host fallback through
   `attention.getMachineSnapshot` / `attention.acknowledgeMachine`.
-- `apps/ade-cli/src/tuiClient/attentionPane.ts` and
-  `components/AttentionPaneView.tsx` — ADE Code's machine-global `/attention`
-  pane and exact-destination acknowledgment flow.
+- `apps/ade-cli/src/tuiClient/activityPane.ts` and
+  `components/ActivityPaneView.tsx` — ADE Code's machine-global `/activity`
+  pane and exact-destination acknowledgment flow. The hidden `/attention`
+  alias and `attention.call` RPC remain for compatibility.
 - `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
   Clerk verification, acknowledgments, presence/preferences, APNs fan-out, and
   one account-wide Live Activity per phone.

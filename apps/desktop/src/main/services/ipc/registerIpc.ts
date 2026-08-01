@@ -20,6 +20,7 @@ import { IPC } from "../../../shared/ipc";
 import type {
   AttentionItem,
   AttentionNotchSettings,
+  AttentionNotchToast,
   AttentionSnapshot,
 } from "../../../shared/types/attention";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
@@ -105,6 +106,7 @@ import { authorizeRecentProjectRuntimeRoot } from "../projects/recentProjectRunt
 import {
   parseAttentionNotchSettings,
   parseAttentionNotchSnapshot,
+  parseAttentionNotchToast,
 } from "../attention/attentionNotchRouter";
 import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordinator";
 import type {
@@ -1589,6 +1591,7 @@ export function registerIpc({
   builtInBrowserService,
   productAnalyticsService,
   publishAttentionNotchSnapshot,
+  publishAttentionNotchToast,
   updateAttentionNotchSettings,
   getAttentionNotchHealth,
   retryAttentionNotch,
@@ -1616,6 +1619,7 @@ export function registerIpc({
   builtInBrowserService?: ReturnType<typeof createBuiltInBrowserService> | null;
   productAnalyticsService?: ProductAnalyticsService;
   publishAttentionNotchSnapshot?: (snapshot: AttentionSnapshot) => void;
+  publishAttentionNotchToast?: (toast: AttentionNotchToast) => void;
   updateAttentionNotchSettings?: (settings: AttentionNotchSettings) => void;
   getAttentionNotchHealth?: () => import("../../../shared/types").AttentionNotchHealth;
   retryAttentionNotch?: () => import("../../../shared/types").AttentionNotchHealth;
@@ -1628,6 +1632,7 @@ export function registerIpc({
     | "reportAttentionPresence"
     | "getAttentionPreferences"
     | "putAttentionPreferences"
+    | "putActivityMachinePreferences"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -1857,6 +1862,7 @@ export function registerIpc({
     [IPC.accountRenameMachine]: new Set(["machineKey", "customName"]),
     [IPC.accountRemoveMachine]: new Set(["machineKey"]),
     [IPC.attentionNotchPublishSnapshot]: new Set(["items"]),
+    [IPC.attentionNotchPublishToast]: new Set(["title", "subtitle"]),
   };
 
   const redactIpcArgsForChannel = (channel: string, args: unknown[]): unknown[] => {
@@ -3204,13 +3210,19 @@ export function registerIpc({
 
   ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot(input);
-    if (!snapshot) throw new Error("Invalid Attention Notch snapshot.");
+    if (!snapshot) throw new Error("Invalid ADE Notch snapshot.");
     publishAttentionNotchSnapshot?.(snapshot);
+  });
+
+  ipcMain.handle(IPC.attentionNotchPublishToast, async (_event, input: unknown) => {
+    const toast = parseAttentionNotchToast(input);
+    if (!toast) throw new Error("Invalid ADE Notch toast.");
+    publishAttentionNotchToast?.(toast);
   });
 
   ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {
     const settings = parseAttentionNotchSettings(input);
-    if (!settings) throw new Error("Invalid Attention Notch settings.");
+    if (!settings) throw new Error("Invalid ADE Notch settings.");
     updateAttentionNotchSettings?.(settings);
   });
 
@@ -3257,6 +3269,24 @@ export function registerIpc({
     async (_event, input: unknown) => attentionAccountCoordinator.putPreferences(input),
   );
 
+  ipcMain.handle(
+    IPC.attentionPutMachinePreferences,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as {
+            accountOwnerId?: unknown;
+            machineKey?: unknown;
+            preferences?: unknown;
+          }
+        : {};
+      return attentionAccountCoordinator.putActivityMachinePreferences(
+        request.machineKey,
+        request.preferences,
+        request.accountOwnerId,
+      );
+    },
+  );
+
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot({
       contractVersion: ATTENTION_CONTRACT_VERSION,
@@ -3273,7 +3303,7 @@ export function registerIpc({
       tombstones: [],
     });
     const item = snapshot?.items[0] ?? null;
-    if (!item) throw new Error("Invalid Attention item.");
+    if (!item) throw new Error("Invalid Activity item.");
     await openAttentionItem?.(item);
   });
 
@@ -10574,7 +10604,7 @@ export function registerIpc({
       windowId: number | null;
     }) {
       const machineKey = args.machineKey.trim();
-      if (!machineKey) throw new Error("Attention machine identity is required.");
+      if (!machineKey) throw new Error("Activity machine identity is required.");
       let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
       if (!targetId) {
         targetId = (await accountBridge.pairMachine(machineKey)).targetId;

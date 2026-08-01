@@ -1885,16 +1885,20 @@ describe("registerIpc sync bridge", () => {
       streamId: "account-stream",
       revision: 5,
       generatedAt: "2026-07-28T12:00:00.000Z",
-      items: [],
+      items: [{ id: "attention-1", revision: 5 } as never],
       tombstones: [],
     };
     const callAttention = vi.fn();
     const accountAttentionClient = {
       getAttentionSnapshot: vi.fn(async () => snapshot),
-      acknowledgeAttention: vi.fn(async () => ({})),
+      acknowledgeAttention: vi.fn(async () => ({
+        applied: ["attention-1"],
+        stale: [],
+      })),
       reportAttentionPresence: vi.fn(async () => undefined),
       getAttentionPreferences: vi.fn(async () => ({ account: { hideDetails: true } })),
       putAttentionPreferences: vi.fn(async () => undefined),
+      putActivityMachinePreferences: vi.fn(async () => undefined),
     };
     const openAttentionItem = vi.fn(async () => undefined);
     registerIpc({
@@ -1936,6 +1940,8 @@ describe("registerIpc sync bridge", () => {
     });
     await ipcHandlers.get(IPC.attentionAcknowledge)?.(eventForSender(), {
       itemIds: ["attention-1"],
+      sourceRevisions: { "attention-1": 5 },
+      expectedAccountOwnerId: "account-a",
       seenAt: "2026-07-28T12:01:00.000Z",
     });
     await ipcHandlers.get(IPC.attentionReportPresence)?.(eventForSender(), {
@@ -1952,6 +1958,14 @@ describe("registerIpc sync bridge", () => {
       {
         accountOwnerId: "account-a",
         preferences: { account: { hideDetails: false } },
+      },
+    );
+    await ipcHandlers.get(IPC.attentionPutMachinePreferences)?.(
+      eventForSender(),
+      {
+        accountOwnerId: "account-a",
+        machineKey: "machine-a",
+        preferences: { notificationsEnabled: false },
       },
     );
     const attentionItem: AttentionItem = {
@@ -2003,12 +2017,19 @@ describe("registerIpc sync bridge", () => {
     );
     expect(accountAttentionClient.acknowledgeAttention).toHaveBeenCalledWith({
       itemIds: ["attention-1"],
+      sourceRevisions: { "attention-1": 5 },
+      expectedAccountOwnerId: "account-a",
       seenAt: "2026-07-28T12:01:00.000Z",
     });
     expect(accountAttentionClient.getAttentionPreferences).toHaveBeenCalledWith("account-a");
     expect(accountAttentionClient.putAttentionPreferences).toHaveBeenCalledWith(
       "account-a",
       { account: { hideDetails: false } },
+    );
+    expect(accountAttentionClient.putActivityMachinePreferences).toHaveBeenCalledWith(
+      "account-a",
+      "machine-a",
+      { notificationsEnabled: false },
     );
     expect(openAttentionItem).toHaveBeenCalledWith(attentionItem);
 

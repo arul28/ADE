@@ -6,7 +6,10 @@ import {
   DEFAULT_ATTENTION_PREFERENCES,
   type AttentionSnapshot,
 } from "../../../shared/types/attention";
-import { AttentionAccountCoordinator } from "./attentionAccountCoordinator";
+import {
+  ActivityAcknowledgmentStaleError,
+  AttentionAccountCoordinator,
+} from "./attentionAccountCoordinator";
 
 function snapshot(
   overrides: Partial<AttentionSnapshot> = {},
@@ -62,11 +65,224 @@ describe("AttentionAccountCoordinator", () => {
       streamId: "account:owner-a",
       availability: {
         state: "ready",
+        title: "",
+        message: "",
         recovery: null,
       },
     });
     expect(getAttentionSnapshot).toHaveBeenCalledWith(7, "account:owner-a");
     expect(callAttention).not.toHaveBeenCalled();
+  });
+
+  it("marks only the responding host online in a machine fallback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T12:30:00.000Z"));
+    const callAttention = vi.fn(async () => snapshot({
+      streamId: "machine:machine-local",
+      machines: [
+        {
+          machineKey: "machine-local",
+          name: "This MacBook",
+          online: false,
+          lastSeenAt: "2026-07-29T11:00:00.000Z",
+        },
+        {
+          machineKey: "machine-remote",
+          name: "Studio Mac",
+          online: true,
+          lastSeenAt: "2026-07-29T10:00:00.000Z",
+        },
+      ],
+      items: [
+        {
+          id: "local-item",
+          revision: 1,
+          machine: {
+            machineKey: "machine-local",
+            online: false,
+            lastSeenAt: "2026-07-29T11:00:00.000Z",
+          },
+        } as never,
+        {
+          id: "remote-item",
+          revision: 1,
+          machine: {
+            machineKey: "machine-remote",
+            online: false,
+            lastSeenAt: "2026-07-29T10:00:00.000Z",
+          },
+        } as never,
+      ],
+    }));
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => null,
+      localRuntimeConnectionPool: { callAttention } as any,
+    });
+
+    const result = await coordinator.getSnapshot({});
+
+    expect(result.machines?.[0]).toMatchObject({
+      machineKey: "machine-local",
+      online: true,
+      lastSeenAt: "2026-07-29T12:30:00.000Z",
+    });
+    expect(result.machines?.[1]).toEqual({
+      machineKey: "machine-remote",
+      name: "Studio Mac",
+      online: true,
+      lastSeenAt: "2026-07-29T10:00:00.000Z",
+    });
+    expect(result.availability?.hostName).toBe("This MacBook");
+    expect(result.items[0]?.machine).toMatchObject({
+      machineKey: "machine-local",
+      online: true,
+      lastSeenAt: "2026-07-29T12:30:00.000Z",
+    });
+    expect(result.items[1]?.machine).toEqual({
+      machineKey: "machine-remote",
+      online: false,
+      lastSeenAt: "2026-07-29T10:00:00.000Z",
+    });
+    vi.useRealTimers();
+  });
+
+  it("does not stamp an arbitrary machine when a legacy stream omits its key", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-29T12:30:00.000Z"));
+    const legacy = snapshot({
+      streamId: "legacy-stream",
+      machines: [{
+        machineKey: "machine-first",
+        name: "First Mac",
+        online: false,
+        lastSeenAt: "2026-07-29T11:00:00.000Z",
+      }],
+      items: [{
+        id: "legacy-item",
+        revision: 1,
+        machine: {
+          machineKey: "machine-first",
+          online: false,
+          lastSeenAt: "2026-07-29T11:00:00.000Z",
+        },
+      } as never],
+    });
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => null,
+      localRuntimeConnectionPool: {
+        callAttention: vi.fn(async () => legacy),
+      } as any,
+    });
+
+    const result = await coordinator.getSnapshot({});
+
+    expect(result.machines).toEqual(legacy.machines);
+    expect(result.items[0]?.machine).toEqual(legacy.items[0]?.machine);
+    expect(result.availability?.hostName).toBe("this Mac");
+    vi.useRealTimers();
+  });
+
+  it("fences account acknowledgments with cached revisions and the loaded owner", async () => {
+    const acknowledgeAttention = vi.fn(async () => ({
+      applied: ["attention-1"],
+      stale: [],
+    }));
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => "owner-a",
+      accountAttentionClient: {
+        getAttentionSnapshot: vi.fn(async () => snapshot({
+          scope: "account",
+          items: [{ id: "attention-1", revision: 8 } as never],
+        })),
+        acknowledgeAttention,
+        reportAttentionPresence: vi.fn(),
+        getAttentionPreferences: vi.fn(),
+        putAttentionPreferences: vi.fn(),
+      },
+    });
+
+    await coordinator.getSnapshot({});
+    await coordinator.acknowledge({
+      itemIds: ["attention-1"],
+      sourceRevisions: { "attention-1": 999 },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-29T12:01:00.000Z",
+    });
+
+    expect(acknowledgeAttention).toHaveBeenCalledWith({
+      itemIds: ["attention-1"],
+      sourceRevisions: { "attention-1": 8 },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-29T12:01:00.000Z",
+    });
+    expect(acknowledgeAttention).toHaveBeenCalledTimes(1);
+    expect(coordinator).toBeInstanceOf(AttentionAccountCoordinator);
+  });
+
+  it("surfaces relay-stale account acknowledgments as a typed refresh error", async () => {
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => "owner-a",
+      accountAttentionClient: {
+        getAttentionSnapshot: vi.fn(async () => snapshot({
+          scope: "account",
+          items: [{ id: "attention-1", revision: 8 } as never],
+        })),
+        acknowledgeAttention: vi.fn(async () => ({
+          applied: [],
+          stale: ["attention-1"],
+        })),
+        reportAttentionPresence: vi.fn(),
+        getAttentionPreferences: vi.fn(),
+        putAttentionPreferences: vi.fn(),
+      },
+    });
+
+    await coordinator.getSnapshot({});
+    const error = await coordinator.acknowledge({
+      itemIds: ["attention-1"],
+      expectedAccountOwnerId: "owner-a",
+    }).catch((caught: unknown) => caught);
+
+    expect(error).toBeInstanceOf(ActivityAcknowledgmentStaleError);
+    expect(error).toMatchObject({
+      code: "activity_acknowledgment_stale",
+      staleItemIds: ["attention-1"],
+    });
+    expect((error as Error).message).toMatch(/refresh Activity/i);
+  });
+
+  it("writes one machine preference scope through the account relay", async () => {
+    const putActivityMachinePreferences = vi.fn(async () => undefined);
+    const coordinator = new AttentionAccountCoordinator({
+      getLogger: logger,
+      getCurrentAccountOwnerId: () => "owner-a",
+      accountAttentionClient: {
+        getAttentionSnapshot: vi.fn(),
+        acknowledgeAttention: vi.fn(),
+        reportAttentionPresence: vi.fn(),
+        getAttentionPreferences: vi.fn(),
+        putAttentionPreferences: vi.fn(),
+        putActivityMachinePreferences,
+      },
+    });
+
+    await coordinator.putActivityMachinePreferences(
+      " machine-1 ",
+      { notificationsEnabled: false },
+      "owner-a",
+    );
+
+    expect(putActivityMachinePreferences).toHaveBeenCalledWith(
+      "owner-a",
+      "machine-1",
+      { notificationsEnabled: false },
+    );
+    expect(putActivityMachinePreferences).toHaveBeenCalledTimes(1);
+    expect(coordinator).toBeInstanceOf(AttentionAccountCoordinator);
   });
 
   it("sanitizes account auth failures and falls back to the local machine", async () => {

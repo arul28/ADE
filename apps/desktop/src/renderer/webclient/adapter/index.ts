@@ -33,22 +33,6 @@ export type AdeWebAdapter = {
   dispose(): void;
 };
 
-export const WEB_HIDDEN_CAPABILITIES = {
-  revealInFinder: false,
-  externalEditor: false,
-  updater: false,
-  builtInBrowser: false,
-  appControl: false,
-  iosSimulator: false,
-  computerUse: false,
-  nativeWindowControls: false,
-  nativeDirectoryPicker: false,
-  localPathOpen: false,
-  cursorCloud: false,
-  transcription: false,
-  automations: false,
-} as const;
-
 const DOMAIN_EVENTS = {
   lanes: "lanesInvalidated",
   sessions: "sessionsInvalidated",

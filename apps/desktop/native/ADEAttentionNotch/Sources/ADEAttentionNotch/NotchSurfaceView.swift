@@ -3,7 +3,7 @@ import SwiftUI
 import ADEAttentionNotchCore
 
 /// ADE design tokens, mirrored from `apps/desktop/src/renderer/index.css` and
-/// the Attention center's tone system. Values are duplicated rather than
+/// the Activity pane's tone system. Values are duplicated rather than
 /// derived because the helper is a separate process with no access to the
 /// renderer stylesheet; keep them in step with the CSS custom properties named
 /// in each comment.
@@ -151,7 +151,7 @@ struct NotchSurfaceView: View {
         case .compact, .prehover:
             compactContent
         case .peek:
-            peekContent
+            toastContent
         case .expanded:
             expandedContent
         case .attention:
@@ -173,20 +173,16 @@ struct NotchSurfaceView: View {
         }
     }
 
-    /// Split around the hardware cutout: identity on the left ear, live status
-    /// on the right. Nothing is ever drawn under the cutout itself.
+    /// Split around the hardware cutout: the agents at work on the left ear,
+    /// the account's counts on the right. Nothing is ever drawn under the
+    /// cutout itself.
     private func physicalCompactContent(notchWidth: Double) -> some View {
         let reserved = min(size.width - 120, notchWidth + 14)
         let earWidth = max(64, (size.width - reserved) / 2)
         return HStack(spacing: 0) {
             HStack(spacing: 7) {
                 Spacer(minLength: 0)
-                Text(compactIdentityLabel)
-                    .font(.system(size: ADE.fsXs, weight: .semibold))
-                    .foregroundStyle(ADE.fg)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                ProviderMark(item: item, status: status, diameter: 18, active: isMarkActive, reducedMotion: reduceMotion)
+                compactIdentityCluster
             }
             .padding(.leading, 10)
             .padding(.trailing, 7)
@@ -209,99 +205,181 @@ struct NotchSurfaceView: View {
 
     private var floatingCompactContent: some View {
         HStack(spacing: 8) {
-            ProviderMark(item: item, status: status, diameter: 18, active: isMarkActive, reducedMotion: reduceMotion)
-            // The identity is the only elastic element: it truncates so the
-            // status never collapses to an ellipsis.
-            Text(compactIdentityLabel)
-                .font(.system(size: ADE.fsSm, weight: .semibold))
-                .foregroundStyle(ADE.fg)
-                .lineLimit(1)
-                .truncationMode(.tail)
+            compactIdentityCluster
             Spacer(minLength: 4)
+            if showsTicker {
+                NotchTickerView(items: model.tickerItems, hideDetails: model.settings.hideDetails)
+                    .frame(maxWidth: 150)
+            }
             compactStatusCluster
         }
         .padding(.horizontal, 13)
         .frame(height: CGFloat(size.height))
     }
 
-    /// Status is short, fixed, and always fully legible.
+    /// Up to three agent marks. With N sessions running, one item's name and
+    /// elapsed time is a lie about the other N-1 — the marks say "these are the
+    /// agents at work" without claiming to be all of them.
+    private var compactIdentityCluster: some View {
+        let leading = model.leadingItems
+        return HStack(spacing: leading.isEmpty ? 7 : -4) {
+            if leading.isEmpty {
+                ProviderMark(
+                    item: nil,
+                    status: status,
+                    diameter: 18,
+                    active: false,
+                    reducedMotion: reduceMotion
+                )
+                Text(status?.compactLabel ?? "ADE")
+                    .font(.system(size: ADE.fsXs, weight: .semibold))
+                    .foregroundStyle(ADE.fg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                ForEach(leading) { leadingItem in
+                    ProviderMark(
+                        item: leadingItem,
+                        status: nil,
+                        diameter: 16,
+                        active: leadingItem.isAttention,
+                        reducedMotion: reduceMotion
+                    )
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 16 * 0.3, style: .continuous)
+                            .stroke(hasPhysicalNotch ? Color.black : ADE.bg, lineWidth: 1.4)
+                    }
+                }
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    /// The account's shape, not one row's: `● 5` live and `⚠ 2 need you`. Short,
+    /// fixed, and always fully legible.
     private var compactStatusCluster: some View {
-        HStack(spacing: 5) {
+        let counts = model.counts
+        let liveCount = counts.working + counts.needsYou
+        return HStack(spacing: 6) {
             if status?.isProblem == true, item != nil {
                 // Items are still showing, but they may be stale.
                 Image(systemName: "exclamationmark.triangle.fill")
                     .font(.system(size: 7.5, weight: .bold))
                     .foregroundStyle(notchToneColor(status?.tone ?? .amber))
             }
-            Circle()
-                .fill(toneColor)
-                .frame(width: 5, height: 5)
-                .shadow(color: toneColor.opacity(0.6), radius: reduceMotion ? 0 : 2)
-            Text(compactStatusLabel)
-                .font(.system(size: ADE.fs2xs, weight: .semibold))
-                .foregroundStyle(toneColor)
-                .lineLimit(1)
-                .truncationMode(.tail)
-            if let item {
-                ElapsedTimeLabel(isoDate: item.occurredAt)
-                    .fixedSize()
+            if liveCount == 0 {
+                Text(compactStatusLabel)
+                    .font(.system(size: ADE.fs2xs, weight: .semibold))
+                    .foregroundStyle(toneColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            } else {
+                CountChip(
+                    symbol: "circle.fill",
+                    symbolSize: 5,
+                    text: "\(liveCount)",
+                    tone: notchToneColor(.blue),
+                    pulses: !reduceMotion && counts.working > 0
+                )
+                if counts.needsYou > 0 {
+                    CountChip(
+                        symbol: "exclamationmark.triangle.fill",
+                        symbolSize: 8,
+                        text: "\(counts.needsYou) need\(counts.needsYou == 1 ? "s" : "") you",
+                        tone: notchToneColor(.amber),
+                        pulses: false
+                    )
+                }
             }
         }
         .layoutPriority(1)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(countsAccessibilityLabel)
     }
 
-    // MARK: - Peek
+    // MARK: - Toast
+    //
+    // This is the old peek layout. Hover no longer opens it — a hover that grew
+    // into a card competed with the toast it looked identical to — so the 316×76
+    // geometry now belongs to events, and to the short card a click opens when
+    // the tall panel is off.
 
-    private var peekContent: some View {
-        HStack(spacing: 11) {
-            ProviderMark(item: item, status: status, diameter: 26, active: isMarkActive, reducedMotion: reduceMotion)
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 8) {
-                    Text(peekTitle)
-                        .font(.system(size: ADE.fsMd, weight: .semibold))
-                        .foregroundStyle(ADE.fg)
-                        .lineLimit(1)
-                    Spacer(minLength: 4)
-                    Text(peekStatusLabel)
-                        .font(.system(size: ADE.fs2xs, weight: .bold))
-                        .foregroundStyle(toneColor)
-                        .lineLimit(1)
-                }
-                if let progress = itemPresentation?.planProgress, progress.total > 0 {
-                    PlanProgressBar(progress: progress, tone: toneColor)
-                } else {
-                    Text(peekSubtitle)
-                        .font(.system(size: ADE.fsXs, weight: .medium))
-                        .foregroundStyle(ADE.secondaryFg)
-                        .lineLimit(1)
+    @ViewBuilder
+    private var toastContent: some View {
+        if let toast = model.toastPresentation {
+            let tone = notchToneColor(toast.resolvedTone)
+            HStack(spacing: 11) {
+                ToastGlyph(treatment: toast.treatment, tone: tone, reducedMotion: reduceMotion)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 8) {
+                        Text(toast.title)
+                            .font(.system(size: ADE.fsMd, weight: .semibold))
+                            .foregroundStyle(ADE.fg)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Text(toastStatusLabel(for: toast))
+                            .font(.system(size: ADE.fs2xs, weight: .bold))
+                            .foregroundStyle(tone)
+                            .lineLimit(1)
+                    }
+                    if let progress = itemPresentation?.planProgress,
+                       progress.total > 0,
+                       model.activeToast == nil {
+                        PlanProgressBar(progress: progress, tone: tone)
+                    } else if let subtitle = toast.subtitle, !subtitle.isEmpty {
+                        Text(subtitle)
+                            .font(.system(size: ADE.fsXs, weight: .medium))
+                            .foregroundStyle(ADE.secondaryFg)
+                            .lineLimit(1)
+                    }
                 }
             }
+            .padding(.horizontal, 15)
+            .padding(.top, 9)
         }
-        .padding(.horizontal, 15)
-        .padding(.top, 9)
+    }
+
+    /// The phase the toast is about, or the treatment's own word when it is not
+    /// tied to a row that is still on screen.
+    private func toastStatusLabel(for toast: AttentionToast) -> String {
+        if let itemId = toast.itemId,
+           let match = model.items.first(where: { $0.id == itemId }) {
+            return match.statusLabel
+        }
+        switch toast.treatment {
+        case .celebration: return "Merged"
+        case .success: return "Done"
+        case .alert: return "Needs you"
+        case .info: return status?.compactLabel ?? "Update"
+        }
     }
 
     // MARK: - Expanded
 
+    /// A scrolling list of every row the frame carried, filed under the same
+    /// three headings as the desktop popover. The pager it replaced showed one
+    /// card at a time, which was unusable the moment the feed went account-wide.
     private var expandedContent: some View {
         VStack(spacing: 0) {
             expandedHeader
             Rectangle().fill(ADE.hairline).frame(height: 0.8)
             // Only a banner when items are still on screen and may be stale;
             // with no items the body below already carries the same copy.
-            if let status, status.isProblem, item != nil {
+            if let status, status.isProblem, !model.items.isEmpty {
                 StatusBanner(status: status)
                 Rectangle().fill(ADE.hairline).frame(height: 0.8)
             }
-            if let item {
-                expandedItemBody(item: item)
-                Spacer(minLength: 4)
-                actionBar
-                    .padding(.horizontal, 15)
-                    .padding(.bottom, 14)
-            } else if let status {
-                StatusBody(status: status)
+            if model.items.isEmpty {
+                if let status {
+                    StatusBody(status: status)
+                } else {
+                    AllClearBody()
+                }
+            } else {
+                expandedList
             }
+            Rectangle().fill(ADE.hairline).frame(height: 0.8)
+            expandedFooter
         }
     }
 
@@ -309,7 +387,7 @@ struct NotchSurfaceView: View {
         HStack(spacing: 10) {
             AttentionGlyph(tone: surfaceTone)
             VStack(alignment: .leading, spacing: 2) {
-                Text("ADE Attention Center")
+                Text("Activity")
                     .font(.system(size: ADE.fsMd, weight: .semibold))
                     .foregroundStyle(ADE.fg)
                 Text(accountScopeLabel)
@@ -317,91 +395,80 @@ struct NotchSurfaceView: View {
                     .foregroundStyle(ADE.mutedFg)
             }
             Spacer(minLength: 8)
-            if model.items.count > 1 {
-                navigationControls
+            Button {
+                model.openSettings()
+            } label: {
+                Image(systemName: "gearshape")
             }
+            .buttonStyle(NotchIconButtonStyle())
+            .accessibilityLabel("Activity settings")
+            .accessibilityHint("Opens Activity settings in ADE")
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
         .padding(.bottom, 12)
     }
 
-    private func expandedItemBody(item: AttentionItem) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .top, spacing: 10) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(itemPresentation?.title ?? "ADE attention")
-                        .font(.system(size: ADE.fsLg, weight: .semibold))
-                        .foregroundStyle(ADE.fg)
-                        .lineLimit(2)
-                    Text(itemPresentation?.scopeLabel ?? "Account-wide activity")
-                        .font(.system(size: ADE.fsXs, weight: .medium))
-                        .foregroundStyle(ADE.mutedFg)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                PhasePill(label: item.statusLabel, tone: surfaceTone)
+    private var expandedList: some View {
+        let sections = model.sections
+        return ScrollView(.vertical) {
+            LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                expandedSection("Needs you", tone: .amber, items: sections.needsYou)
+                expandedSection("Working", tone: .blue, items: sections.working)
+                expandedSection("Done", tone: .emerald, items: sections.done)
             }
-
-            Text(model.visiblePreview)
-                .font(.system(size: ADE.fsSm, weight: .regular))
-                .foregroundStyle(ADE.secondaryFg)
-                .lineLimit(2)
-                .frame(maxWidth: .infinity, alignment: .leading)
-
-            if let progress = itemPresentation?.planProgress, progress.total > 0 {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        Text(progress.current ?? "Plan progress")
-                            .lineLimit(1)
-                        Spacer(minLength: 4)
-                        Text("\(progress.completed)/\(progress.total)")
-                            .monospacedDigit()
-                    }
-                    .font(.system(size: ADE.fs2xs, weight: .medium))
-                    .foregroundStyle(ADE.mutedFg)
-                    PlanProgressBar(progress: progress, tone: toneColor)
-                }
-            } else if let activity = itemPresentation?.recentActivity, !activity.isEmpty {
-                VStack(alignment: .leading, spacing: 4) {
-                    ForEach(Array(activity.prefix(2).enumerated()), id: \.offset) { _, line in
-                        HStack(alignment: .firstTextBaseline, spacing: 7) {
-                            Circle()
-                                .fill(toneColor.opacity(0.75))
-                                .frame(width: 3.5, height: 3.5)
-                            Text(line)
-                                .font(.system(size: ADE.fsXs, weight: .regular))
-                                .foregroundStyle(ADE.mutedFg)
-                                .lineLimit(1)
-                        }
-                    }
-                }
-            }
+            .padding(.bottom, 6)
         }
-        .padding(.horizontal, 16)
-        .padding(.top, 13)
+        .scrollIndicators(.automatic)
+        .frame(maxHeight: .infinity)
     }
 
-    private var actionBar: some View {
+    @ViewBuilder
+    private func expandedSection(
+        _ label: String,
+        tone: NotchStatusTone,
+        items: [AttentionItem]
+    ) -> some View {
+        if !items.isEmpty {
+            Section {
+                ForEach(items) { sectionItem in
+                    NotchActivityRow(
+                        item: sectionItem,
+                        hideDetails: model.settings.hideDetails,
+                        selected: sectionItem.id == model.selectedItem?.id,
+                        reducedMotion: reduceMotion,
+                        onOpen: { model.open(sectionItem) },
+                        onDismiss: { model.dismiss(sectionItem) },
+                        onFocus: { model.focus(sectionItem) }
+                    )
+                }
+            } header: {
+                SectionHeader(label: label, count: items.count, tone: tone)
+            }
+        }
+    }
+
+    private var expandedFooter: some View {
         HStack(spacing: 8) {
-            if model.items.count > 1 {
-                Text("\(model.interaction.selectedIndex + 1) of \(model.items.count)")
+            if model.overflowCount > 0 {
+                Text("+\(model.overflowCount) more")
                     .font(.system(size: ADE.fs2xs, weight: .medium))
                     .foregroundStyle(ADE.mutedFg)
                     .monospacedDigit()
-                    .padding(.leading, 2)
             }
             Spacer(minLength: 4)
             secondaryActionButtons
             Button {
-                model.openSelected()
+                model.openActivity()
             } label: {
-                Label("Open in ADE", systemImage: "arrow.up.forward")
+                Label("Open all in ADE", systemImage: "arrow.up.forward")
                     .labelStyle(.titleAndIcon)
             }
             .buttonStyle(NotchButtonStyle(prominent: true))
-            .accessibilityHint("Opens the exact agent or pull request in ADE")
+            .accessibilityHint("Opens Activity in ADE")
         }
+        .padding(.horizontal, 15)
+        .padding(.vertical, 11)
     }
 
     /// `model.navigationActions` already drops a plain `open`, which the
@@ -417,42 +484,26 @@ struct NotchSurfaceView: View {
         }
     }
 
-    private var navigationControls: some View {
-        HStack(spacing: 4) {
-            Button {
-                model.navigate(delta: -1)
-            } label: {
-                Image(systemName: "chevron.left")
-            }
-            .accessibilityLabel("Previous attention item")
-            Button {
-                model.navigate(delta: 1)
-            } label: {
-                Image(systemName: "chevron.right")
-            }
-            .accessibilityLabel("Next attention item")
-        }
-        .buttonStyle(NotchIconButtonStyle())
-    }
-
     // MARK: - Attention / celebration
 
     private var attentionContent: some View {
-        VStack(alignment: .leading, spacing: 9) {
+        let toast = model.toastPresentation
+        let tone = toast.map { notchToneColor($0.resolvedTone) } ?? toneColor
+        return VStack(alignment: .leading, spacing: 9) {
             HStack(spacing: 10) {
                 ProviderMark(item: item, status: status, diameter: 26, active: true, reducedMotion: reduceMotion)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(item?.statusLabel ?? status?.title ?? "Needs you")
+                    Text(toast.map(toastStatusLabel(for:)) ?? item?.statusLabel ?? "Needs you")
                         .font(.system(size: ADE.fs2xs, weight: .bold))
-                        .foregroundStyle(toneColor)
-                    Text(itemPresentation?.title ?? "ADE needs your attention")
+                        .foregroundStyle(tone)
+                    Text(toast?.title ?? itemPresentation?.title ?? "Needs you")
                         .font(.system(size: ADE.fsSm + 1, weight: .semibold))
                         .foregroundStyle(ADE.fg)
                         .lineLimit(1)
                 }
                 Spacer(minLength: 4)
             }
-            Text(model.visiblePreview)
+            Text(toast?.subtitle ?? model.visiblePreview)
                 .font(.system(size: ADE.fsXs, weight: .regular))
                 .foregroundStyle(ADE.secondaryFg)
                 .lineLimit(2)
@@ -482,10 +533,10 @@ struct NotchSurfaceView: View {
                     .font(.system(size: 26, weight: .semibold))
                     .symbolRenderingMode(.palette)
                     .foregroundStyle(ADE.bg, notchToneColor(.emerald))
-                Text("Merged")
+                Text(model.activeToast.map(toastStatusLabel(for:)) ?? "Merged")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(ADE.fg)
-                Text(itemPresentation?.celebrationTitle ?? "Pull request merged")
+                Text(model.toastPresentation?.title ?? itemPresentation?.celebrationTitle ?? "Pull request merged")
                     .font(.system(size: ADE.fsXs, weight: .medium))
                     .foregroundStyle(ADE.mutedFg)
                     .lineLimit(1)
@@ -566,47 +617,54 @@ struct NotchSurfaceView: View {
         item?.isAttention == true || state == .prehover || state == .peek
     }
 
+    /// The pinned strip is the only mode that keeps a bar on screen at rest, so
+    /// it is the only one with anywhere to run a ticker.
+    private var showsTicker: Bool {
+        model.settings.tickerEnabled
+            && model.settings.revealMode == .minimal
+            && !reduceMotion
+            && !model.tickerItems.isEmpty
+    }
+
     // MARK: - Copy
 
-    private var compactIdentityLabel: String {
-        itemPresentation?.compactIdentity ?? "ADE"
-    }
-
     /// The canonical phase vocabulary from the renderer; no shortened synonyms.
+    /// Only used when the account has nothing live to count.
     private var compactStatusLabel: String {
-        item?.statusLabel ?? status?.compactLabel ?? "Ready"
+        if model.counts.done > 0 { return "\(model.counts.done) done" }
+        return status?.compactLabel ?? "All clear"
     }
 
-    private var peekTitle: String {
-        itemPresentation?.title ?? status?.title ?? "ADE Attention Center"
-    }
-
-    private var peekSubtitle: String {
-        item == nil ? (status?.message ?? "ADE is ready") : model.visiblePreview
-    }
-
-    private var peekStatusLabel: String {
-        item?.statusLabel ?? status?.compactLabel ?? "Ready"
+    private var countsAccessibilityLabel: String {
+        let counts = model.counts
+        var parts: [String] = []
+        if counts.needsYou > 0 {
+            parts.append("\(counts.needsYou) need\(counts.needsYou == 1 ? "s" : "") you")
+        }
+        if counts.working > 0 { parts.append("\(counts.working) working") }
+        if counts.done > 0 { parts.append("\(counts.done) done") }
+        return parts.isEmpty ? "All agents idle" : parts.joined(separator: ", ")
     }
 
     private var accountScopeLabel: String {
         if let status, model.items.isEmpty {
-            return status.isProblem ? "Account attention unavailable" : "Account-wide activity"
+            return status.isProblem ? "Activity unavailable" : "Account-wide activity"
         }
         if model.settings.hideDetails {
             return "Account-wide activity"
         }
-        return attentionScopeSummary(
-            itemCount: model.items.count,
-            projectCount: Set(model.items.map(\.project.projectId)).count,
-            machineCount: Set(model.items.map(\.machine.machineKey)).count
-        )
+        let counts = model.counts
+        return [
+            attentionPluralized(counts.total, "session"),
+            "\(counts.machinesOnline)/\(counts.machinesTotal) machines online",
+        ].joined(separator: " · ")
     }
 
     private var accessibilitySummary: String {
+        if state == .expanded { return "Activity. \(countsAccessibilityLabel)" }
         if let presentation = itemPresentation { return presentation.accessibilitySummary }
         if let status { return "\(status.title). \(status.message)" }
-        return "ADE Attention Center"
+        return "ADE Activity"
     }
 
     private var accessibilityHint: String {
@@ -614,8 +672,8 @@ struct NotchSurfaceView: View {
             return "Press Escape to close"
         }
         return model.settings.expandedPanelEnabled
-            ? "Click to expand ADE Attention Center"
-            : "Click to preview ADE Attention Center"
+            ? "Click to open Activity"
+            : "Click to preview Activity"
     }
 }
 
@@ -784,6 +842,292 @@ private struct ProviderMark: View {
         default: colors = [ADE.accent, ADE.accentDeep]
         }
         return LinearGradient(colors: colors, startPoint: .topLeading, endPoint: .bottomTrailing)
+    }
+}
+
+/// The Swift mirror of the renderer's compact `ActivityCard`: provider mark,
+/// status dot + label + elapsed, title, lane, machine. Same anatomy and the
+/// same one-hue-one-meaning table, so a row reads identically in the notch and
+/// in the desktop popover.
+private struct NotchActivityRow: View {
+    let item: AttentionItem
+    let hideDetails: Bool
+    let selected: Bool
+    let reducedMotion: Bool
+    let onOpen: () -> Void
+    let onDismiss: () -> Void
+    let onFocus: () -> Void
+
+    @State private var hovering = false
+
+    var body: some View {
+        let presentation = item.presentation(hideDetails: hideDetails)
+        let tone = notchStatusColor(for: item.phase)
+        Button(action: onOpen) {
+            HStack(alignment: .top, spacing: 9) {
+                ProviderMark(
+                    item: item,
+                    status: nil,
+                    diameter: 20,
+                    active: item.isAttention && !reducedMotion,
+                    reducedMotion: reducedMotion
+                )
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(spacing: 6) {
+                        Text(presentation.title)
+                            .font(.system(size: ADE.fsSm, weight: .medium))
+                            .foregroundStyle(ADE.fg)
+                            .lineLimit(1)
+                        Spacer(minLength: 4)
+                        Circle()
+                            .fill(tone)
+                            .frame(width: 4.5, height: 4.5)
+                        Text(item.statusLabel)
+                            .font(.system(size: ADE.fs2xs, weight: .semibold))
+                            .foregroundStyle(tone)
+                            .lineLimit(1)
+                        // `statusSince` is immutable for the life of a phase;
+                        // `occurredAt` is the honest approximation while a
+                        // publisher predates it.
+                        ElapsedTimeLabel(isoDate: item.elapsedAnchor)
+                            .fixedSize()
+                    }
+                    HStack(spacing: 6) {
+                        Text(laneLabel)
+                            .font(.system(size: ADE.fsXs, weight: .medium))
+                            .foregroundStyle(ADE.mutedFg)
+                            .lineLimit(1)
+                        if !presentation.preview.isEmpty {
+                            Text("·").foregroundStyle(ADE.mutedFg.opacity(0.5))
+                            Text(presentation.preview)
+                                .font(.system(size: ADE.fsXs, weight: .regular))
+                                .italic()
+                                .foregroundStyle(ADE.secondaryFg.opacity(0.85))
+                                .lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        MachineChip(machine: item.machine, hideDetails: hideDetails)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(rowBackground)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        // An offline machine's rows are last-known state, not observed state.
+        .opacity(item.machine.online ? 1 : 0.55)
+        .onHover { inside in
+            hovering = inside
+            if inside { onFocus() }
+        }
+        .overlay(alignment: .trailing) {
+            if hovering {
+                Button(action: onDismiss) {
+                    Image(systemName: "xmark")
+                }
+                .buttonStyle(NotchIconButtonStyle())
+                .padding(.trailing, 6)
+                .accessibilityLabel("Dismiss \(presentation.title)")
+            }
+        }
+        .contextMenu {
+            Button("Open in ADE", action: onOpen)
+            Button("Dismiss", action: onDismiss)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(presentation.accessibilitySummary)
+        .accessibilityAddTraits(.isButton)
+    }
+
+    private var laneLabel: String {
+        if hideDetails { return "Private" }
+        let lane = item.laneName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return lane.isEmpty ? item.project.name : lane
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        if selected || hovering {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(.white.opacity(hovering ? 0.06 : 0.035))
+                .padding(.horizontal, 8)
+        }
+    }
+}
+
+/// Neutral by design: amber means "your move" everywhere in Activity, so a
+/// machine chip may never borrow it for identity.
+private struct MachineChip: View {
+    let machine: AttentionMachine
+    let hideDetails: Bool
+
+    var body: some View {
+        if hideDetails {
+            EmptyView()
+        } else {
+            HStack(spacing: 3) {
+                Image(systemName: portable ? "laptopcomputer" : "desktopcomputer")
+                    .font(.system(size: 8, weight: .medium))
+                Text(machine.name)
+                    .font(.system(size: ADE.fs2xs, weight: .medium))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(ADE.mutedFg.opacity(machine.online ? 0.75 : 0.4))
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(.white.opacity(0.04), in: Capsule())
+        }
+    }
+
+    /// A read of the name, not a hardware fact — decoration either way.
+    private var portable: Bool {
+        machine.name.range(
+            of: "macbook|laptop|air|book",
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil
+    }
+}
+
+private struct SectionHeader: View {
+    let label: String
+    let count: Int
+    let tone: NotchStatusTone
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Text(label.uppercased())
+                .font(.system(size: 8.5, weight: .heavy))
+                .tracking(0.6)
+                .foregroundStyle(notchToneColor(tone))
+            Text("\(count)")
+                .font(.system(size: 8.5, weight: .bold))
+                .monospacedDigit()
+                .foregroundStyle(ADE.mutedFg)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 9)
+        .padding(.bottom, 5)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ADE.bg.opacity(0.94))
+    }
+}
+
+/// The pinned strip's ticker: what each live agent is doing, one at a time.
+/// Gated on the ticker setting and on reduced motion by its caller — a
+/// cross-fading strip is exactly the kind of ambient movement that setting is
+/// about.
+private struct NotchTickerView: View {
+    let items: [AttentionItem]
+    let hideDetails: Bool
+
+    private static let intervalSeconds: Double = 4
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: Self.intervalSeconds)) { timeline in
+            if let current = item(at: timeline.date) {
+                Text(current.presentation(hideDetails: hideDetails).preview)
+                    .font(.system(size: ADE.fs2xs, weight: .medium))
+                    .foregroundStyle(ADE.mutedFg)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .id(current.id)
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.35), value: current.id)
+            }
+        }
+        .accessibilityHidden(true)
+    }
+
+    private func item(at date: Date) -> AttentionItem? {
+        guard !items.isEmpty else { return nil }
+        let step = Int(date.timeIntervalSinceReferenceDate / Self.intervalSeconds)
+        return items[((step % items.count) + items.count) % items.count]
+    }
+}
+
+/// `● 5` / `⚠ 2 need you` — the account's shape in the space of a phase label.
+private struct CountChip: View {
+    let symbol: String
+    let symbolSize: CGFloat
+    let text: String
+    let tone: Color
+    let pulses: Bool
+
+    var body: some View {
+        HStack(spacing: 3.5) {
+            TimelineView(.animation(minimumInterval: 1 / 20, paused: !pulses)) { timeline in
+                let pulse = pulses
+                    ? (sin(timeline.date.timeIntervalSinceReferenceDate * 3.2) + 1) / 2
+                    : 0
+                Image(systemName: symbol)
+                    .font(.system(size: symbolSize, weight: .bold))
+                    .foregroundStyle(tone)
+                    .shadow(color: tone.opacity(0.6), radius: 1 + pulse * 2)
+            }
+            Text(text)
+                .font(.system(size: ADE.fs2xs, weight: .semibold))
+                .foregroundStyle(tone)
+                .monospacedDigit()
+                .lineLimit(1)
+        }
+    }
+}
+
+private struct ToastGlyph: View {
+    let treatment: NotchToastTreatment
+    let tone: Color
+    let reducedMotion: Bool
+
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(tone.opacity(0.16))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 8, style: .continuous)
+                        .stroke(tone.opacity(0.32), lineWidth: 0.8)
+                }
+            Image(systemName: symbolName)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(tone)
+        }
+        .frame(width: 26, height: 26)
+        .accessibilityHidden(true)
+    }
+
+    private var symbolName: String {
+        switch treatment {
+        case .celebration: return "checkmark.seal.fill"
+        case .success: return "checkmark.circle.fill"
+        case .alert: return "exclamationmark.triangle.fill"
+        case .info: return "bell.fill"
+        }
+    }
+}
+
+/// Nothing wrong, nothing running — said plainly rather than left blank, so an
+/// empty panel never reads as a broken one.
+private struct AllClearBody: View {
+    var body: some View {
+        VStack(spacing: 8) {
+            Spacer(minLength: 0)
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 22, weight: .regular))
+                .foregroundStyle(ADE.mutedFg.opacity(0.7))
+            Text("All agents idle.")
+                .font(.system(size: ADE.fsSm + 1, weight: .semibold))
+                .foregroundStyle(ADE.fg)
+            Text("Nothing is running anywhere on your account.")
+                .font(.system(size: ADE.fsXs, weight: .regular))
+                .foregroundStyle(ADE.secondaryFg)
+                .multilineTextAlignment(.center)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 26)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

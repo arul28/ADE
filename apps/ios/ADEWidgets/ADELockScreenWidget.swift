@@ -134,6 +134,12 @@ private struct LockScreenPriorityStatus {
     let tint: Color
     let destinationURL: URL
     let metrics: [Metric]
+    /// Up to two rows for the rectangular family. Empty on the machine-local
+    /// fallback path, which has no per-item feed to list — that path keeps the
+    /// single-focus layout.
+    let lines: [ActivityWidgetPresentation.CompactLine]
+    /// Visible rows the two lines left off.
+    let overflowCount: Int
 
     struct Metric: Identifiable {
         let id: String
@@ -143,21 +149,32 @@ private struct LockScreenPriorityStatus {
 
     init(attentionSnapshot: AccountAttentionSnapshot, hideDetails: Bool = false) {
         let now = Date()
-        let visible = attentionSnapshot.items.filter { item in
-            item.dismissedAt == nil
-                && (item.expiresAt == nil || item.expiresAt! > now)
-        }
+        let visible = ActivityWidgetPresentation.visibleItems(attentionSnapshot.items, now: now)
         let ordered = visible.sorted { lhs, rhs in
             let priority = Self.priority(lhs.phase) - Self.priority(rhs.phase)
             if priority != 0 { return priority < 0 }
             return lhs.updatedAt > rhs.updatedAt
         }
-        let inbox = visible.filter(\.needsInbox)
+        // The rectangular family lists rows; the circular and inline families
+        // still compress everything into the single focus below.
+        let lines = ActivityWidgetPresentation.compactLines(
+            for: visible,
+            hideDetails: hideDetails,
+            now: now
+        )
+        let overflow = ActivityWidgetPresentation.overflowCount(for: visible, now: now)
+        // Tapping goes to whatever is actually blocked on the reader, not to
+        // whatever happened to sort first.
+        let destination = ActivityWidgetPresentation.deepLink(for: visible, now: now)
+        // "N need" means N rows are blocked on the reader. It used to count the
+        // whole inbox — PR traffic and finished-but-unlooked-at rows included —
+        // which made a quiet account read as a demanding one.
+        let needsYou = visible.filter { $0.phase == .needsYou }
         let live = visible.filter(\.isLive)
         let machines = Set(visible.map(\.machine.machineKey))
         let onlineMachines = Set(visible.filter(\.machine.online).map(\.machine.machineKey))
         let metrics = [
-            inbox.isEmpty ? nil : Metric(id: "needs", label: "\(inbox.count) need", symbol: "bell.fill"),
+            needsYou.isEmpty ? nil : Metric(id: "needs", label: "\(needsYou.count) need", symbol: "bell.fill"),
             live.isEmpty ? nil : Metric(id: "live", label: "\(live.count) live", symbol: "waveform.path.ecg"),
             machines.isEmpty ? nil : Metric(id: "machines", label: "\(machines.count) Mac", symbol: "desktopcomputer"),
         ].compactMap { $0 }
@@ -172,7 +189,7 @@ private struct LockScreenPriorityStatus {
                 symbol: "moon.zzz.fill",
                 shortLabel: "IDLE",
                 tint: ADESharedTheme.statusIdle,
-                destinationURL: Self.workspaceURL,
+                destinationURL: ActivityWidgetPresentation.activityURL,
                 metrics: []
             )
             return
@@ -190,22 +207,24 @@ private struct LockScreenPriorityStatus {
                 symbol: "wifi.slash",
                 shortLabel: "OFF",
                 tint: ADESharedTheme.statusIdle,
-                destinationURL: focus.deepLinkURL ?? Self.workspaceURL,
-                metrics: metrics
+                destinationURL: destination,
+                metrics: metrics,
+                lines: lines,
+                overflowCount: overflow
             )
             return
         }
 
         let presentation = Self.presentation(for: focus.phase)
         let scope = "\(focus.machine.name) · \(focus.project.name)"
-        let attentionCount = inbox.count
+        let attentionCount = needsYou.count
         let ambientCount = visible.count
         let privateTitle = focus.privacyPreview
             .trimmingCharacters(in: .whitespacesAndNewlines)
         self = .init(
             kind: presentation.kind,
             title: hideDetails
-                ? (privateTitle.isEmpty ? "Attention update" : privateTitle)
+                ? (privateTitle.isEmpty ? "Activity update" : privateTitle)
                 : focus.title,
             detail: hideDetails ? "Across your signed-in machines" : scope,
             inlineText: attentionCount > 0
@@ -219,8 +238,10 @@ private struct LockScreenPriorityStatus {
             symbol: presentation.symbol,
             shortLabel: presentation.label,
             tint: presentation.tint,
-            destinationURL: focus.deepLinkURL ?? Self.workspaceURL,
-            metrics: metrics
+            destinationURL: destination,
+            metrics: metrics,
+            lines: lines,
+            overflowCount: overflow
         )
     }
 
@@ -429,8 +450,12 @@ private struct LockScreenPriorityStatus {
         shortLabel: String,
         tint: Color,
         destinationURL: URL,
-        metrics: [Metric]
+        metrics: [Metric],
+        lines: [ActivityWidgetPresentation.CompactLine] = [],
+        overflowCount: Int = 0
     ) {
+        self.lines = lines
+        self.overflowCount = overflowCount
         self.kind = kind
         self.title = title
         self.detail = detail
@@ -514,6 +539,7 @@ private struct LockScreenPriorityStatus {
         case .open, .stale: return 4
         case .completed, .merged: return 5
         case .closed: return 6
+        case .unrecognized: return 7
         }
     }
 
@@ -559,12 +585,21 @@ private struct LockScreenPriorityStatus {
             return (.idle, "arrow.triangle.merge", "MERGED", ADESharedTheme.statusSuccess)
         case .closed:
             return (.idle, "xmark.circle.fill", "CLOSED", ADESharedTheme.statusIdle)
+        case .unrecognized:
+            return (.idle, "questionmark.circle", "UNKNOWN", ADESharedTheme.statusIdle)
         }
     }
 }
 
 // MARK: - Rectangular
 
+/// Two compact session lines plus the metrics tail when the account feed can
+/// supply them, and the original single-focus layout when it cannot (the
+/// machine-local fallback path, which has no per-item feed).
+///
+/// The rectangular family is the only one with room for more than one fact, and
+/// it used to spend all of it on one row — so a lock screen with four agents
+/// running looked identical to one with a single agent.
 private struct LockScreenRectangularView: View {
     let status: LockScreenPriorityStatus
     @Environment(\.isLuminanceReduced) private var isLuminanceReduced
@@ -572,6 +607,71 @@ private struct LockScreenRectangularView: View {
     var body: some View {
         ZStack {
             AccessoryWidgetBackground()
+            if status.lines.isEmpty {
+                focusLayout
+            } else {
+                lineLayout
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("ADE status")
+        .accessibilityValue(accessibilityValue)
+    }
+
+    private var accessibilityValue: String {
+        guard !status.lines.isEmpty else { return "\(status.title). \(status.detail)" }
+        var parts = status.lines.map { "\($0.title), \($0.phaseLabel)" }
+        if status.overflowCount > 0 { parts.append("\(status.overflowCount) more") }
+        return parts.joined(separator: ". ")
+    }
+
+    private var lineLayout: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            ForEach(status.lines) { line in
+                HStack(spacing: 5) {
+                    Image(systemName: line.glyph?.systemImage ?? "circle.fill")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(activityToneColor(line.tone))
+                        .widgetAccentable()
+                        .accessibilityHidden(true)
+                    Text(line.title)
+                        .font(.footnote.weight(.semibold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .truncationMode(.tail)
+                    Spacer(minLength: 4)
+                    Text(line.phaseLabel)
+                        .font(.system(size: 9, weight: .bold, design: .rounded))
+                        .foregroundStyle(activityToneColor(line.tone))
+                        .lineLimit(1)
+                        .fixedSize()
+                        .widgetAccentable()
+                }
+            }
+
+            HStack(spacing: 6) {
+                if status.overflowCount > 0 {
+                    Text("+\(status.overflowCount) more")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                }
+                ForEach(status.metrics.prefix(status.overflowCount > 0 ? 1 : 2)) { metric in
+                    Label(metric.label, systemImage: metric.symbol)
+                        .font(.caption2.weight(.semibold))
+                        .labelStyle(.titleAndIcon)
+                        .lineLimit(1)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer(minLength: 0)
+            }
+        }
+        .padding(.horizontal, 1)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .opacity(isLuminanceReduced ? 0.85 : 1)
+    }
+
+    private var focusLayout: some View {
+        Group {
             HStack(spacing: 8) {
                 ZStack {
                     Circle()
@@ -622,9 +722,6 @@ private struct LockScreenRectangularView: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .opacity(isLuminanceReduced ? 0.85 : 1)
         }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("ADE status")
-        .accessibilityValue("\(status.title). \(status.detail)")
     }
 }
 

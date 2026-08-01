@@ -67,6 +67,23 @@ describe("settings manifest", () => {
     }
   });
 
+  it("follows the legacy Activity-settings aliases already in the wild", () => {
+    // `?tab=notifications#attention-notch` shipped in tour steps and deeplinks
+    // before Activity had a tab of its own. Landing those on Notifications —
+    // which no longer holds the card — would be an invisible dead end.
+    for (const [hash, expectedTab] of [
+      ["attention-notch", "activity"],
+      ["celebrations", "activity"],
+      ["attention-sounds", "activity"],
+      ["hide-previews", "activity"],
+    ] as const) {
+      const entry = resolveSettingsHash(hash);
+      expect(entry, `hash "${hash}" did not resolve`).not.toBeNull();
+      expect(entry!.tab).toBe(expectedTab);
+    }
+    expect(resolveSettingsTab("attention")).toBe("activity");
+  });
+
   it("resolves a live anchor directly, without needing an alias", () => {
     for (const entry of SETTINGS_ENTRIES) {
       expect(resolveSettingsHash(entry.anchor)?.id).toBe(entry.id);
@@ -114,6 +131,7 @@ describe("settings manifest", () => {
     expect(searchSettingsEntries("api key").map((e) => e.id)).toContain("secrets.secrets");
     expect(searchSettingsEntries("banner").map((e) => e.id)).toContain("lanes-git.rebase-suggestions");
     expect(searchSettingsEntries("do not disturb").map((e) => e.id)).toContain("notifications.focus-suppression");
+    expect(searchSettingsEntries("all machines").map((e) => e.id)).toContain("activity.dock-badge");
   });
 
   it("returns nothing for a blank query rather than every setting", () => {

@@ -19,7 +19,12 @@ public struct NotchRect: Equatable, Sendable {
 }
 
 public struct NotchDisplayGeometry: Equatable, Sendable {
-    public static let panelSize = NotchSize(width: 720, height: 460)
+    /// The transparent host every surface state is drawn into, top-aligned.
+    /// Sized for the tallest state (the scrollable expanded panel at 440pt of
+    /// surface below the menu-bar band) with room to spare, so growing a state
+    /// never needs a second window. Verified against a 13" MacBook's 1440×900
+    /// by `NotchGeometryTests.testExpandedSurfaceFitsUnderA13InchMenuBar`.
+    public static let panelSize = NotchSize(width: 760, height: 640)
 
     public let displayId: UInt32
     public let frame: NotchRect

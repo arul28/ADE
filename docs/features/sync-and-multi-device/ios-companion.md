@@ -284,8 +284,22 @@ apps/ios/
 │   │   ├── ADEAgentActivityAttributes.swift # account-wide ActivityKit
 │   │   │                            # content-state + exact machine links +
 │   │   │                            # non-PII ownership-epoch fence
+│   │   ├── ActivityRowPresentation.swift # pure item → label/tone/glyph/elapsed
+│   │   │                            # mapper; the iOS mirror of desktop
+│   │   │                            #   sessionStatusPresentation.ts +
+│   │   │                            #   activityPresentation.ts. No SwiftUI —
+│   │   │                            #   tones are tokens. Compiles into the
+│   │   │                            #   widget extension, so iOS 17 only.
+│   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
+│   │   │                            # lock-screen ranking, shared by the app and
+│   │   │                            #   the widget so the two cannot describe the
+│   │   │                            #   same session differently. iOS 17 only.
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
+│   │   ├── Activity/                # ActivityDrawerSheet (global account-wide
+│   │   │                            #   Sessions/Inbox drawer), ActivityDrawerModel
+│   │   │                            #   (snapshot + local dismissals + acks),
+│   │   │                            # ActivityRow, ActivityBellButton
 │   │   ├── Account/                 # account choice/sign-in plus the mobile
 │   │   │                            # access gate and connections section
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
@@ -309,7 +323,10 @@ apps/ios/
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look)
+│   │   │                            #   cross-project quick look),
+│   │   │                            # HubLiveStrip ("Live now" — agents working
+│   │   │                            #   across every account machine, read from
+│   │   │                            #   ActivityDrawerModel; hidden when empty)
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -395,7 +412,16 @@ apps/ios/
 │   │   │                            # WorkSessionDestination*,
 │   │   │                            # WorkRootScreen+Selection (multi-select state +
 │   │   │                            #   bulk close/archive/restore/delete/export),
-│   │   │                            # WorkSelectionActionBar, etc.
+│   │   │                            # WorkSelectionActionBar,
+│   │   │                            # WorkLaneOrder (pure lane ordering + the
+│   │   │                            #   singleton/headerless rule; the port of
+│   │   │                            #   desktop workLaneOrder.ts and the
+│   │   │                            #   headerlessLaneIds memo. Models manual
+│   │   │                            #   drag and handoff jobs even though iOS
+│   │   │                            #   has neither yet — they are the two rules
+│   │   │                            #   that decide whether a lane keeps its
+│   │   │                            #   header, and dropping them is how a port
+│   │   │                            #   silently loses a rule later), etc.
 │   │   ├── Linear/                  # LinearPaneSheet, issue list/detail screens,
 │   │   │                            # launch config, brand/logo paths, pane store
 │   │   │                            # and toolbar button. Uses existing cto.* read
@@ -1350,7 +1376,7 @@ contract) is documented in
   signed-in or paired phone registers ActivityKit's push-to-start token even
   when ordinary notification permission is denied and no alert APNs token
   exists. Signed-in phones send APNs and push-to-start routing directly to the
-  account Attention relay. `AccountService` serializes
+  account Activity relay. `AccountService` serializes
   account device PUTs, coalesces queued token/preferences refreshes, and sends a
   persisted monotonic `ownershipEpoch` on every device PUT/DELETE. Sign-out
   commits an unowned epoch before revocation; a direct account switch commits
@@ -1381,7 +1407,7 @@ contract) is documented in
   tap while the app is dead queues in the registry and drains on the next
   launch / foreground. Remote account rows navigate to the exact machine and
   pending item instead of executing a current-host intent.
-- **App-icon badge.** Account Attention delivery stamps the account-wide
+- **App-icon badge.** Account Activity delivery stamps the account-wide
   unresolved attention count on alerts and badge-only refreshes. The phone clears the badge
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
@@ -1438,20 +1464,22 @@ contract) is documented in
 - `UIImpactFeedbackGenerator` and `UINotificationFeedbackGenerator`
   on message send, intervention approval, worker launch, PR merge.
 
-### Attention Drawer
+### Activity drawer
 
-Source: `apps/ios/ADE/Views/AttentionDrawer/`.
+Source: `apps/ios/ADE/Views/Activity/`.
 
-The navigation-bar bell opens one global account-wide Attention Center
-(`AttentionDrawerSheet`). The signed-in app reads the Clerk-authenticated
+The navigation-bar bell opens one global account-wide Activity drawer
+(`ActivityDrawerSheet`). The signed-in app reads the Clerk-authenticated
 relay snapshot incrementally and persists it in the App Group container with
 the same source-revision, account-cursor, tombstone, and expiry rules as
 desktop. The existing per-project drawer is a project lens over that model; it
 is not a separate inbox.
 
-The sheet has **Needs you**, **Live**, and **Recent** views, a project lens
-picker, and machine/project context on every item. It remains useful when the
-phone is account-signed-in but not directly paired to a machine.
+The sheet has two buckets: **Sessions**, ordered as Needs you → Working → Done,
+and **Inbox** for PR/CI work and unseen outcomes. It includes project filtering
+and machine/project context on every item, and remains useful when the phone is
+account-signed-in but not directly paired to a machine. Rows can be dismissed
+with a swipe; account fallback and offline states remain explicit.
 
 Each row uses the shared item destination and actions:
 
@@ -1461,8 +1489,19 @@ Each row uses the shared item destination and actions:
 - **CI failing / review requested / merge ready** — exact PR tab navigation.
 - **Completed / merged** — retained in Recent until seen or dismissed.
 
+Row vocabulary is derived once, in `Shared/ActivityRowPresentation.swift` — a
+pure item-to-label/tone/glyph/elapsed mapper with no SwiftUI in it — and the
+tone-to-colour binding plus the lock-screen ranking live beside it in
+`Shared/ActivityWidgetPresentation.swift`. Both compile into the widget
+extension as well as the app, which is what keeps the lock screen from
+describing a session in words and colours the app does not use; it also means
+both files are pinned to the extension's iOS 17 deployment target. The Hub's
+"Live now" strip (`Views/Hub/HubLiveStrip.swift`) is a third reader of the same
+model, showing agents working on any account machine and hiding itself entirely
+when none are.
+
 The drawer uses the same one-hue-one-meaning contract as the widget and desktop
-sidebar. `blocked` is a neutral Live item with an Open action, distinct from the
+Activity pane. `blocked` is a neutral Working item with an Open action, distinct from the
 amber `awaitingInput` kind; running uses the shared dotted-circle glyph, and a
 stale run says `Stale` with a clock rather than claiming the host is offline.
 
@@ -1720,7 +1759,7 @@ rows use the hollow status ring, lower opacity, stay openable, and render
 `statusNote` as `done: …`; an explicit attention request instead puts its
 question in the preview line. Ready/idle rows remain in Your move without a
 capsule, while `Needs you` is the loud tier used by awaiting counts, the
-attention drawer, push, and attention-first roster behavior. A settled chat
+  Activity drawer, push, and attention-first roster behavior. A settled chat
 woken by unattended scheduled work shows Running during the turn and returns
 to Settled at idle because only user activity clears its declaration.
 
@@ -2698,7 +2737,7 @@ different machine's cached limits.
   reachable host no longer lists as pending. It never drops while the host is
   unreachable or the refresh came back empty, so a transient gap cannot erase
   a genuinely queued message.
-- **`AttentionDrawerModel.clearVisibleItems()` persists dismissals
+- **`ActivityDrawerModel.dismissVisible(in:)` persists dismissals
   scoped to the active id set.** Ids are stored under
   `ade.attention.dismissedItemIDs` and pruned on every rebuild
   against the live active set, so a chat that re-enters

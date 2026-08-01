@@ -1,21 +1,37 @@
 import type {
   AppNavigationRequest,
   AttentionAction,
+  AttentionEventKind,
   AttentionItem,
   AttentionNotchSettings,
+  AttentionNotchToast,
+  AttentionNotchToastTreatment,
   AttentionSnapshot,
+  AttentionTone,
   OpenProjectBinding,
 } from "../../../shared/types";
 import {
   ATTENTION_CONTRACT_VERSION,
+  ATTENTION_NOTCH_TOAST_MAX_DURATION_MS,
+  ATTENTION_NOTCH_TOAST_MIN_DURATION_MS,
+  ATTENTION_NOTCH_TOAST_TREATMENTS,
+  ATTENTION_TONES,
   DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
   isAttentionNotchRevealMode,
 } from "../../../shared/types/attention";
 import type { AttentionNotchOutput } from "./attentionNotchHelper";
 
-const MAX_NOTCH_ITEMS = 256;
+// The write cap must stay under the helper's own read cap, or a snapshot the
+// router happily accepts is silently dropped on the far side of the pipe.
+const MAX_NOTCH_ITEMS = 64;
 const MAX_NOTCH_ACTIONS = 12;
-const MAX_SNAPSHOT_BYTES = 512 * 1024;
+const MAX_SNAPSHOT_BYTES = 192 * 1024;
+const MAX_TOAST_TITLE_LENGTH = 256;
+const MAX_TOAST_SUBTITLE_LENGTH = 512;
+const MAX_TOAST_ITEM_ID_LENGTH = 512;
+export const ATTENTION_NOTCH_TOAST_DEDUPE_MS = 5_000;
+const TOAST_TREATMENTS = new Set<string>(ATTENTION_NOTCH_TOAST_TREATMENTS);
+const TONES = new Set<string>(ATTENTION_TONES);
 const ATTENTION_PHASES = new Set([
   "starting",
   "running",
@@ -45,6 +61,28 @@ const ATTENTION_EVENTS = new Set([
   "pr_opened",
   "pr_closed",
 ]);
+
+/**
+ * Several renderer windows observe the same account store. Keep that useful
+ * redundancy for snapshots, but allow only one native toast for the same event
+ * during a short cross-window arbitration window.
+ */
+export function createAttentionNotchToastDeduper(
+  now: () => number = Date.now,
+  windowMs = ATTENTION_NOTCH_TOAST_DEDUPE_MS,
+): (toast: AttentionNotchToast) => boolean {
+  const forwardedAtByKey = new Map<string, number>();
+  return (toast) => {
+    const at = now();
+    for (const [key, forwardedAt] of forwardedAtByKey) {
+      if (at - forwardedAt >= windowMs) forwardedAtByKey.delete(key);
+    }
+    const key = JSON.stringify([toast.itemId ?? toast.title, toast.eventKind]);
+    if (forwardedAtByKey.has(key)) return false;
+    forwardedAtByKey.set(key, at);
+    return true;
+  };
+}
 
 export type AttentionNotchResolvedOutput =
   | {
@@ -159,6 +197,14 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     || !Number.isSafeInteger(value.revision)
     || Number(value.revision) < 0
     || !isNonEmptyString(value.fingerprint, 1_024)
+    || (
+      value.activityTier !== undefined
+      && value.activityTier !== "signal"
+      && value.activityTier !== "ambient"
+      && value.activityTier !== "idle"
+    )
+    || (value.contentFingerprint !== undefined && !isNonEmptyString(value.contentFingerprint, 1_024))
+    || (value.alertFingerprint !== undefined && !isNonEmptyString(value.alertFingerprint, 1_024))
     || (value.kind !== "agent" && value.kind !== "pull_request")
     || typeof value.eventKind !== "string"
     || !ATTENTION_EVENTS.has(value.eventKind)
@@ -220,6 +266,7 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     || !value.actions.every(isAttentionAction)
     || !isNonEmptyString(value.occurredAt, 128)
     || !isNonEmptyString(value.updatedAt, 128)
+    || !isNullableString(value.statusSince, 128)
     || !isNullableString(value.seenAt, 128)
     || !isNullableString(value.dismissedAt, 128)
     || !isNullableString(value.expiresAt, 128)
@@ -227,6 +274,23 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     return false;
   }
   return true;
+}
+
+const ATTENTION_COUNT_KEYS = [
+  "needsYou",
+  "working",
+  "done",
+  "total",
+  "machinesOnline",
+  "machinesTotal",
+] as const;
+
+function isAttentionCounts(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  return ATTENTION_COUNT_KEYS.every((key) => {
+    const count = value[key];
+    return Number.isSafeInteger(count) && Number(count) >= 0;
+  });
 }
 
 export function parseAttentionNotchSnapshot(input: unknown): AttentionSnapshot | null {
@@ -245,10 +309,49 @@ export function parseAttentionNotchSnapshot(input: unknown): AttentionSnapshot |
     || !Array.isArray(input.items)
     || input.items.length > MAX_NOTCH_ITEMS
     || !input.items.every(isAttentionItem)
+    || (input.itemsTruncated !== undefined && typeof input.itemsTruncated !== "boolean")
+    || (input.counts !== undefined && input.counts !== null && !isAttentionCounts(input.counts))
   ) {
     return null;
   }
   return input as AttentionSnapshot;
+}
+
+/**
+ * A toast is an event, not state: a malformed one is dropped rather than
+ * clamped, so a drifted renderer cannot quietly pin the surface open.
+ */
+export function parseAttentionNotchToast(input: unknown): AttentionNotchToast | null {
+  if (!isRecord(input)) return null;
+  if (
+    typeof input.eventKind !== "string"
+    || !ATTENTION_EVENTS.has(input.eventKind)
+    || typeof input.treatment !== "string"
+    || !TOAST_TREATMENTS.has(input.treatment)
+    || !isNonEmptyString(input.title, MAX_TOAST_TITLE_LENGTH)
+    || !isNullableString(input.subtitle, MAX_TOAST_SUBTITLE_LENGTH)
+    || !isNullableString(input.itemId, MAX_TOAST_ITEM_ID_LENGTH)
+    || (input.tone != null && (typeof input.tone !== "string" || !TONES.has(input.tone)))
+    || (
+      input.durationMs != null
+      && (
+        !Number.isSafeInteger(input.durationMs)
+        || Number(input.durationMs) < ATTENTION_NOTCH_TOAST_MIN_DURATION_MS
+        || Number(input.durationMs) > ATTENTION_NOTCH_TOAST_MAX_DURATION_MS
+      )
+    )
+  ) {
+    return null;
+  }
+  return {
+    itemId: input.itemId == null ? null : String(input.itemId),
+    eventKind: input.eventKind as AttentionEventKind,
+    treatment: input.treatment as AttentionNotchToastTreatment,
+    title: input.title,
+    subtitle: input.subtitle == null ? null : String(input.subtitle),
+    tone: input.tone == null ? null : (input.tone as AttentionTone),
+    durationMs: input.durationMs == null ? null : Number(input.durationMs),
+  };
 }
 
 export function parseAttentionNotchSettings(input: unknown): AttentionNotchSettings | null {
@@ -270,6 +373,11 @@ export function parseAttentionNotchSettings(input: unknown): AttentionNotchSetti
       input.expandedPanelEnabled !== undefined
       && typeof input.expandedPanelEnabled !== "boolean"
     )
+    || (
+      input.automaticRevealEnabled !== undefined
+      && typeof input.automaticRevealEnabled !== "boolean"
+    )
+    || (input.tickerEnabled !== undefined && typeof input.tickerEnabled !== "boolean")
   ) {
     return null;
   }
@@ -279,6 +387,8 @@ export function parseAttentionNotchSettings(input: unknown): AttentionNotchSetti
       ? input.revealMode
       : DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
     expandedPanelEnabled: input.expandedPanelEnabled !== false,
+    automaticRevealEnabled: input.automaticRevealEnabled !== false,
+    tickerEnabled: input.tickerEnabled !== false,
     preferredDisplayId: input.preferredDisplayId == null
       ? null
       : Number(input.preferredDisplayId),

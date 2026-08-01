@@ -296,6 +296,11 @@ struct AccountDirectoryClient {
 /// relay. It intentionally shares Clerk session semantics with the account
 /// directory but stores the resulting snapshot in the App Group so widgets
 /// never need network or authentication access.
+struct AccountAttentionAcknowledgmentResult: Equatable, Sendable {
+  let applied: [String]
+  let stale: [String]
+}
+
 struct AccountAttentionRelayClient {
   enum RelayError: LocalizedError, Equatable {
     case unauthorized
@@ -308,9 +313,9 @@ struct AccountAttentionRelayClient {
       switch self {
       case .unauthorized: return "Your session expired. Sign in again."
       case .staleOwnership: return "A newer device owner has already been registered."
-      case .server(let status): return "Attention service error (\(status))."
-      case .transport: return "Couldn't reach the Attention service."
-      case .invalidSnapshot: return "The Attention service returned unreadable data."
+      case .server(let status): return "Activity service error (\(status))."
+      case .transport: return "Couldn't reach the Activity service."
+      case .invalidSnapshot: return "The Activity service returned unreadable data."
       }
     }
   }
@@ -355,21 +360,72 @@ struct AccountAttentionRelayClient {
     itemIds: [String],
     dismiss: Bool,
     refreshToken: (() async -> String?)? = nil
-  ) async throws {
-    guard !itemIds.isEmpty else { return }
-    let timestamp = ISO8601DateFormatter().string(from: Date())
+  ) async throws -> AccountAttentionAcknowledgmentResult {
+    let now = Date()
+    return try await acknowledge(
+      baseURL: baseURL,
+      token: token,
+      itemIds: itemIds,
+      seenAt: now,
+      dismissedAt: dismiss ? now : nil,
+      sourceRevisions: nil,
+      expectedAccountOwnerId: nil,
+      refreshToken: refreshToken
+    )
+  }
+
+  func acknowledge(
+    baseURL: URL,
+    token: String,
+    itemIds: [String],
+    seenAt: Date,
+    dismissedAt: Date?,
+    sourceRevisions: [String: Int]?,
+    expectedAccountOwnerId: String?,
+    refreshToken: (() async -> String?)? = nil
+  ) async throws -> AccountAttentionAcknowledgmentResult {
+    let ids = Array(itemIds.prefix(64))
+    guard !ids.isEmpty else {
+      return AccountAttentionAcknowledgmentResult(applied: [], stale: [])
+    }
+    let formatter = ISO8601DateFormatter()
     var payload: [String: Any] = [
-      "itemIds": Array(itemIds.prefix(64)),
-      "seenAt": timestamp,
+      "itemIds": ids,
+      "seenAt": formatter.string(from: seenAt),
     ]
-    if dismiss { payload["dismissedAt"] = timestamp }
+    if let dismissedAt {
+      payload["dismissedAt"] = formatter.string(from: dismissedAt)
+    }
+    if let sourceRevisions {
+      payload["sourceRevisions"] = sourceRevisions
+    }
+    if let expectedAccountOwnerId {
+      payload["expectedAccountOwnerId"] = expectedAccountOwnerId
+    }
     let body = try JSONSerialization.data(withJSONObject: payload)
-    _ = try await perform(
+    let data = try await perform(
       url: endpoint(baseURL, "ack"),
       method: "POST",
       token: token,
       body: body,
       refreshToken: refreshToken
+    )
+    // Older relays returned no applied/stale arrays. Treat a successful legacy
+    // response as applying every requested id so this additive client remains
+    // compatible during a staggered rollout.
+    guard !data.isEmpty else {
+      return AccountAttentionAcknowledgmentResult(applied: ids, stale: [])
+    }
+    struct Response: Decodable {
+      let applied: [String]?
+      let stale: [String]?
+    }
+    guard let response = try? JSONDecoder().decode(Response.self, from: data) else {
+      throw RelayError.invalidSnapshot
+    }
+    return AccountAttentionAcknowledgmentResult(
+      applied: response.applied ?? ids,
+      stale: response.stale ?? []
     )
   }
 

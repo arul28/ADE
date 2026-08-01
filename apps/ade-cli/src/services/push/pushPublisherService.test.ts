@@ -5,6 +5,7 @@ import { createHash, createHmac } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../../desktop/src/shared/types/attention";
 import type { AgentChatEventEnvelope } from "../../../../desktop/src/shared/types/chat";
+import type { SyncRosterProject } from "../../../../desktop/src/shared/types/sync";
 import type {
   PushDeviceRegistration,
   PushQuietHours,
@@ -13,6 +14,7 @@ import {
   createPushRegistrationStore,
   type PushRegistrationStore,
   type StoredAttentionAcknowledgment,
+  type StoredRemoteAttentionAcknowledgment,
 } from "./pushRegistrationStore";
 import { createPushRelayClient } from "./pushRelayClient";
 import {
@@ -44,9 +46,37 @@ function run(overrides: Partial<AgentRunState>): AgentRunState {
     itemId: null,
     startedAt: 0,
     lastActiveAt: 0,
+    statusSinceAt: 0,
     metaResolved: true,
     ...overrides,
   };
+}
+
+function rosterProject(count: number, lastActivityAt = "2026-08-01T12:00:00.000Z"): SyncRosterProject {
+  return {
+    projectId: "roster-project",
+    rootPath: "/projects/roster",
+    displayName: "Roster project",
+    booted: false,
+    runningCount: 0,
+    attentionCount: 0,
+    lanes: [{ id: "lane-roster", name: "Roster lane" }],
+    chats: Array.from({ length: count }, (_, index) => ({
+      id: `disk-session-${String(index).padStart(3, "0")}`,
+      laneId: "lane-roster",
+      title: `Disk session ${index}`,
+      provider: "codex",
+      model: "gpt-5",
+      toolType: "codex-chat",
+      status: "idle" as const,
+      lastActivityAt,
+      preview: `Processed ${index} files in 12s`,
+    })),
+  };
+}
+
+async function settleMicrotasks(): Promise<void> {
+  for (let index = 0; index < 12; index += 1) await Promise.resolve();
 }
 
 describe("quiet hours", () => {
@@ -149,6 +179,12 @@ describe("createPushPublisherService flush", () => {
   function makeHarness(
     deviceOverride: typeof device | Array<typeof device> = device,
     now?: () => number,
+    options: {
+      activityProtocol?: number | null;
+      activityRosterProvider?: { buildSnapshot(): Promise<SyncRosterProject[]> } | null;
+      lastPublishedRevisionById?: Record<string, number>;
+      remoteAttentionAcknowledgments?: StoredRemoteAttentionAcknowledgment[];
+    } = {},
   ) {
     const publish = vi.fn().mockResolvedValue({ ok: true });
     const publishAttention = vi.fn().mockResolvedValue(null);
@@ -156,6 +192,19 @@ describe("createPushPublisherService flush", () => {
     let accountOwnerId: string | null = "owner-a";
     const devices = Array.isArray(deviceOverride) ? [...deviceOverride] : [deviceOverride];
     const attentionAcknowledgments = new Map<string, StoredAttentionAcknowledgment>();
+    const remoteAttentionAcknowledgments = new Map<string, StoredRemoteAttentionAcknowledgment>();
+    for (const acknowledgment of options.remoteAttentionAcknowledgments ?? []) {
+      remoteAttentionAcknowledgments.set(
+        `${acknowledgment.accountOwnerId ?? ""}\u0000${acknowledgment.itemId}`,
+        acknowledgment,
+      );
+    }
+    let activityProtocol = options.activityProtocol ?? null;
+    let activityRosterEpoch = 0;
+    let lastPublishedActivityRevisions = {
+      accountOwnerId: "owner-a" as string | null,
+      revisions: { ...(options.lastPublishedRevisionById ?? {}) },
+    };
     const attentionAcknowledgmentKey = (
       accountOwnerId: string | null,
       itemId: string,
@@ -240,6 +289,49 @@ describe("createPushPublisherService flush", () => {
           }
         }
       },
+      recordRemoteAttentionAcknowledgments: (args: {
+        accountOwnerId: string | null;
+        acknowledgments: Array<{
+          itemId: string;
+          sourceRevision: number;
+          seenAt: string | null;
+          dismissedAt: string | null;
+        }>;
+        updatedAt: string;
+      }) => {
+        for (const acknowledgment of args.acknowledgments) {
+          const key = attentionAcknowledgmentKey(args.accountOwnerId, acknowledgment.itemId);
+          remoteAttentionAcknowledgments.set(key, {
+            ...acknowledgment,
+            accountOwnerId: args.accountOwnerId,
+            updatedAt: args.updatedAt,
+          });
+        }
+      },
+      listRemoteAttentionAcknowledgments: (ownerId?: string | null) =>
+        [...remoteAttentionAcknowledgments.values()].filter((acknowledgment) =>
+          ownerId === undefined || acknowledgment.accountOwnerId === ownerId),
+      getActivityProtocol: () => activityProtocol,
+      setActivityProtocol: (protocol: number | null) => {
+        activityProtocol = protocol;
+      },
+      nextActivityRosterEpoch: vi.fn(() => {
+        activityRosterEpoch += 1;
+        return activityRosterEpoch;
+      }),
+      getLastPublishedActivityRevisions: () => ({
+        accountOwnerId: lastPublishedActivityRevisions.accountOwnerId,
+        revisions: { ...lastPublishedActivityRevisions.revisions },
+      }),
+      setLastPublishedActivityRevisions: (value: {
+        accountOwnerId: string | null;
+        revisions: Record<string, number>;
+      }) => {
+        lastPublishedActivityRevisions = {
+          accountOwnerId: value.accountOwnerId,
+          revisions: { ...value.revisions },
+        };
+      },
     };
     const relayClient = {
       publish,
@@ -271,8 +363,14 @@ describe("createPushPublisherService flush", () => {
         summary: null,
       }),
     };
+    const publisherLogger = {
+      debug: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      info: vi.fn(),
+    };
     const publisher = createPushPublisherService({
-      logger: { debug: vi.fn(), warn: vi.fn(), error: vi.fn(), info: vi.fn() } as never,
+      logger: publisherLogger as never,
       store: store as never,
       relayClient: relayClient as never,
       machineName: "MacBook",
@@ -284,6 +382,7 @@ describe("createPushPublisherService flush", () => {
       now,
       flushDebounceMs: 2_000,
       promptFlushMs: 150,
+      activityRosterProvider: options.activityRosterProvider,
     });
     const cliSessions = new Map<string, {
       title: string | null;
@@ -312,6 +411,12 @@ describe("createPushPublisherService flush", () => {
       cliSessions,
       detach,
       attentionAcknowledgments,
+      remoteAttentionAcknowledgments,
+      publisherLogger,
+      getLastPublishedActivityRevisions: () => ({
+        accountOwnerId: lastPublishedActivityRevisions.accountOwnerId,
+        revisions: { ...lastPublishedActivityRevisions.revisions },
+      }),
       getAttentionAcknowledgment: (
         itemId: string,
         ownerId: string | null = accountOwnerId,
@@ -1029,7 +1134,7 @@ describe("createPushPublisherService flush", () => {
       itemIds: ["agent:other-machine:unknown"],
       sourceRevisions: { "agent:other-machine:unknown": 1 },
       expectedAccountOwnerId: "owner-a",
-    })).rejects.toThrow(/latest Attention snapshot/i);
+    })).rejects.toThrow(/latest Activity snapshot/i);
 
     const current = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     setAccountOwnerId("owner-b");
@@ -1056,9 +1161,9 @@ describe("createPushPublisherService flush", () => {
       getAttentionAcknowledgment,
     } = makeHarness();
     publishAttention.mockResolvedValue({ ok: true, revision: 1 });
-    acknowledgeAttention.mockResolvedValue({ ok: true, revision: 2 });
     emit(approval);
     const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    acknowledgeAttention.mockResolvedValue({ applied: [item.id], stale: [] });
 
     await publisher.acknowledgeMachineAttention({
       itemIds: [item.id],
@@ -1073,9 +1178,61 @@ describe("createPushPublisherService flush", () => {
     expect(publishAttention).toHaveBeenCalledTimes(1);
     expect(acknowledgeAttention).toHaveBeenCalledWith({
       itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
       seenAt: "2026-07-05T12:00:01.000Z",
       expectedAccountOwnerId: "owner-a",
     });
+    expect(getAttentionAcknowledgment(item.id, "owner-a")?.pendingRelaySync).toBe(false);
+    publisher.dispose();
+  });
+
+  it("keeps relay-stale machine acknowledgments pending with their source fence", async () => {
+    const {
+      publisher,
+      emit,
+      publishAttention,
+      acknowledgeAttention,
+      getAttentionAcknowledgment,
+    } = makeHarness(device, undefined, { activityProtocol: 2 });
+    emit(approval);
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    const refreshedRevision = item.revision + 1;
+    publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [{
+        itemId: item.id,
+        sourceRevision: refreshedRevision,
+        seenAt: null,
+        dismissedAt: null,
+      }],
+    });
+    acknowledgeAttention
+      .mockResolvedValueOnce({ applied: [], stale: [item.id] })
+      .mockResolvedValueOnce({ applied: [item.id], stale: [] });
+
+    await publisher.acknowledgeMachineAttention({
+      itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
+      expectedAccountOwnerId: "owner-a",
+      seenAt: "2026-07-05T12:00:01.000Z",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(acknowledgeAttention).toHaveBeenCalledWith(expect.objectContaining({
+      itemIds: [item.id],
+      sourceRevisions: { [item.id]: item.revision },
+    }));
+    expect(getAttentionAcknowledgment(item.id, "owner-a")?.pendingRelaySync).toBe(true);
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+
+    publisher.poke();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(acknowledgeAttention).toHaveBeenCalledTimes(2);
+    expect(acknowledgeAttention.mock.calls[1]?.[0].sourceRevisions)
+      .toEqual({ [item.id]: refreshedRevision });
     expect(getAttentionAcknowledgment(item.id, "owner-a")?.pendingRelaySync).toBe(false);
     publisher.dispose();
   });
@@ -1116,7 +1273,7 @@ describe("createPushPublisherService flush", () => {
     });
     acknowledgeAttention.mockImplementationOnce(async () => {
       setAccountOwnerId("owner-b");
-      return { ok: true, revision: 2 };
+      return { applied: [first.id], stale: [] };
     });
 
     await vi.advanceTimersByTimeAsync(200);
@@ -1149,7 +1306,7 @@ describe("createPushPublisherService flush", () => {
     publisher.dispose();
   });
 
-  it("advances the Attention revision without spamming a duplicate alert", async () => {
+  it("does not republish when only the source revision advances", async () => {
     const fixedNow = Date.parse("2026-07-05T12:00:00.000Z");
     const { publisher, publish, publishAttention, emit } = makeHarness(
       device,
@@ -1169,8 +1326,8 @@ describe("createPushPublisherService flush", () => {
     emit(approval);
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(publishAttention).toHaveBeenCalledTimes(2);
-    expect(publish).not.toHaveBeenCalled();
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publish).toHaveBeenCalledTimes(1);
 
     publisher.dispose();
   });
@@ -1224,6 +1381,582 @@ describe("createPushPublisherService flush", () => {
       `agent:${"a".repeat(40)}:running-63`,
     );
 
+    publisher.dispose();
+  });
+
+  it("coalesces 50 running-agent events into exactly one protocol-2 publish", async () => {
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    for (let index = 0; index < 50; index += 1) {
+      emit({
+        sessionId: "s-running",
+        timestamp: new Date().toISOString(),
+        event: { type: "text", text: `stream chunk ${index}` },
+      });
+    }
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention.mock.calls[0][0]).toMatchObject({
+      mode: "reconcile",
+      page: 0,
+      final: true,
+      items: [expect.objectContaining({ phase: "running", activityTier: "ambient" })],
+    });
+    publisher.dispose();
+  });
+
+  it("publishes changed items and dropped ids as an explicit delta", async () => {
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+    emit({
+      sessionId: "s-running",
+      timestamp: "",
+      event: { type: "text", text: "working" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    publishAttention.mockClear();
+
+    publisher._debug.onPtyExit("scope-1", {
+      ptyId: "pty-s-running",
+      sessionId: "s-running",
+      laneId: "auth-lane",
+      exitCode: 130,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention.mock.calls[0][0]).toMatchObject({
+      mode: "delta",
+      items: [],
+      tombstones: [expect.objectContaining({
+        id: `agent:${"a".repeat(40)}:s-running`,
+        deletedAt: expect.any(String),
+      })],
+    });
+    publisher.dispose();
+  });
+
+  it("pages a 200-session roster reconcile under the item and body caps", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(200)]);
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(buildSnapshot).toHaveBeenCalledTimes(1);
+    expect(publishAttention).toHaveBeenCalledTimes(5);
+    const payloads = publishAttention.mock.calls.map(([payload]) => payload);
+    expect(payloads.every((payload) => payload.mode === "reconcile")).toBe(true);
+    expect(payloads.every((payload) => payload.items.length <= 48)).toBe(true);
+    expect(payloads.every((payload) => payload.tombstones.length <= 48)).toBe(true);
+    expect(payloads.slice(0, -1).every((payload) => payload.final === false)).toBe(true);
+    expect(payloads.at(-1)?.final).toBe(true);
+    expect(payloads.flatMap((payload) => payload.items)).toHaveLength(200);
+    expect(
+      payloads.every((payload) => Buffer.byteLength(JSON.stringify(payload), "utf8") < 256 * 1024),
+    ).toBe(true);
+    publisher.dispose();
+  });
+
+  it("shrinks the roster cap by ten percent when the relay truncates items", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(300)]);
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockImplementation(async () => ({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+      itemsTruncated: publishAttention.mock.calls.length === 1,
+    }));
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+    const snapshot = await publisher.getMachineAttentionSnapshot();
+
+    expect(snapshot.items).toHaveLength(270);
+    publisher.dispose();
+  });
+
+  it("never ratchets the roster cap below 100 and resets it for a new publisher", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(300)]);
+    const first = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+    first.publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+      itemsTruncated: true,
+    });
+    await first.publisher.start();
+    for (let index = 0; index < 15; index += 1) {
+      await vi.advanceTimersByTimeAsync(200);
+      first.publisher.poke();
+    }
+    await vi.advanceTimersByTimeAsync(200);
+    expect((await first.publisher.getMachineAttentionSnapshot()).items).toHaveLength(100);
+    first.publisher.dispose();
+
+    const restarted = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+    expect((await restarted.publisher.getMachineAttentionSnapshot()).items).toHaveLength(300);
+    restarted.publisher.dispose();
+  });
+
+  it("explicitly tombstones roster overflow", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(301)]);
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+
+    const payloads = publishAttention.mock.calls.map(([payload]) => payload);
+    expect(payloads.flatMap((payload) => payload.items)).toHaveLength(300);
+    expect(payloads.flatMap((payload) => payload.tombstones)).toEqual([
+      expect.objectContaining({
+        id: `agent:${"a".repeat(40)}:disk-session-300`,
+        deletedAt: expect.any(String),
+      }),
+    ]);
+    publisher.dispose();
+  });
+
+  it("publishes an empty presence heartbeat without rebuilding the roster", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(1)]);
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+    publishAttention.mockResolvedValue({ ok: true, protocol: 2, revision: 1, acks: [] });
+    emit({
+      sessionId: "s-running",
+      timestamp: "",
+      event: { type: "text", text: "working" },
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    expect(buildSnapshot).toHaveBeenCalledTimes(1);
+    publishAttention.mockClear();
+
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention).toHaveBeenCalledWith({
+      machineName: "MacBook",
+      mode: "presence",
+      rosterEpoch: 1,
+      items: [],
+      tombstones: [],
+    });
+    expect(buildSnapshot).toHaveBeenCalledTimes(1);
+    publisher.dispose();
+  });
+
+  it("skips roster rebuilds and durable epochs while signed out", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(1)]);
+    const {
+      publisher,
+      publishAttention,
+      setAccountOwnerId,
+      store,
+    } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+    setAccountOwnerId(null);
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(90_000);
+
+    expect(publishAttention).not.toHaveBeenCalled();
+    expect(buildSnapshot).not.toHaveBeenCalled();
+    expect(store.nextActivityRosterEpoch).not.toHaveBeenCalled();
+    publisher.dispose();
+  });
+
+  it("treats a null Activity publish response as unavailable", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(1)]);
+    const {
+      publisher,
+      publishAttention,
+      publisherLogger,
+      store,
+    } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+    publishAttention.mockResolvedValue(null);
+
+    await publisher.start();
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(store.nextActivityRosterEpoch).toHaveBeenCalledTimes(1);
+    expect(publisherLogger.warn).not.toHaveBeenCalledWith(
+      "attention.publish_failed",
+      expect.anything(),
+    );
+    publisher.dispose();
+  });
+
+  it("persists remote dismissal acknowledgments and downgrades signal items", async () => {
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    publishAttention.mockImplementation(async (payload) => ({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: payload.items.map((item: { id: string; revision: number }) => ({
+        itemId: item.id,
+        seenAt: "2026-07-05T12:00:01.000Z",
+        dismissedAt: "2026-07-05T12:00:02.000Z",
+        sourceRevision: item.revision,
+      })),
+    }));
+
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(item).toMatchObject({
+      phase: "needs_you",
+      activityTier: "ambient",
+      seenAt: "2026-07-05T12:00:01.000Z",
+      dismissedAt: "2026-07-05T12:00:02.000Z",
+    });
+    publishAttention.mockClear();
+    publisher.poke();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(publishAttention.mock.calls[0][0]).toMatchObject({
+      mode: "delta",
+      items: [expect.objectContaining({
+        id: item.id,
+        activityTier: "ambient",
+        dismissedAt: "2026-07-05T12:00:02.000Z",
+      })],
+    });
+    publisher.dispose();
+  });
+
+  it("falls back to a live-only full snapshot when protocol is absent", async () => {
+    const buildSnapshot = vi.fn().mockResolvedValue([rosterProject(3)]);
+    const { publisher, publishAttention, emit } = makeHarness(
+      device,
+      undefined,
+      { activityRosterProvider: { buildSnapshot } },
+    );
+    publishAttention.mockResolvedValue({ ok: true, revision: 1 });
+    emit(approval);
+    await vi.advanceTimersByTimeAsync(200);
+
+    expect(publishAttention).toHaveBeenCalledTimes(1);
+    expect(publishAttention.mock.calls[0][0]).toMatchObject({
+      machineName: "MacBook",
+      fullSnapshot: true,
+      items: [expect.objectContaining({ id: `agent:${"a".repeat(40)}:s-1` })],
+    });
+    expect(publishAttention.mock.calls[0][0].mode).toBeUndefined();
+    expect(buildSnapshot).not.toHaveBeenCalled();
+    publisher.dispose();
+  });
+
+  it("keeps idle roster revisions stable across uncached rebuilds", async () => {
+    let clock = Date.parse("2026-08-01T12:00:00.000Z");
+    const buildSnapshot = vi.fn().mockResolvedValue([
+      rosterProject(1, "2026-07-01T09:30:00.000Z"),
+    ]);
+    const { publisher } = makeHarness(
+      device,
+      () => clock,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+
+    const first = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    clock += 11_000;
+    const second = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(buildSnapshot).toHaveBeenCalledTimes(2);
+    expect(first).toMatchObject({
+      activityTier: "idle",
+      phase: "stale",
+      expiresAt: null,
+      statusSince: "2026-07-01T09:30:00.000Z",
+    });
+    expect(second.revision).toBe(first.revision);
+    expect(second.revision).toBe(Date.parse("2026-07-01T09:30:00.000Z"));
+    publisher.dispose();
+  });
+
+  it("keeps roster alert identity stable when activity advances within one status", async () => {
+    let clock = Date.parse("2026-08-01T12:00:00.000Z");
+    const roster = rosterProject(1, "2026-08-01T11:59:00.000Z");
+    roster.chats[0]!.status = "awaiting";
+    const buildSnapshot = vi.fn(async () => [roster]);
+    const { publisher } = makeHarness(device, () => clock, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const first = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.lastActivityAt = "2026-08-01T12:00:05.000Z";
+    clock += 11_000;
+    const second = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(buildSnapshot).toHaveBeenCalledTimes(2);
+    expect(first).toMatchObject({ phase: "needs_you", activityTier: "signal" });
+    expect(second.revision).toBeGreaterThan(first.revision);
+    expect(second.updatedAt).not.toBe(first.updatedAt);
+    expect(second.statusSince).toBe(first.statusSince);
+    expect(second.alertFingerprint).toBe(first.alertFingerprint);
+    publisher.dispose();
+  });
+
+  it("changes roster statusSince whenever a chat re-enters a status", async () => {
+    let clock = Date.parse("2026-08-01T12:00:00.000Z");
+    const roster = rosterProject(1, "2026-08-01T11:59:00.000Z");
+    roster.chats[0]!.status = "awaiting";
+    const buildSnapshot = vi.fn(async () => [roster]);
+    const { publisher } = makeHarness(device, () => clock, {
+      activityProtocol: 2,
+      activityRosterProvider: { buildSnapshot },
+    });
+
+    const awaiting = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.status = "running";
+    clock += 11_000;
+    const running = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    roster.chats[0]!.status = "awaiting";
+    clock += 11_000;
+    const awaitingAgain = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect([awaiting.phase, running.phase, awaitingAgain.phase])
+      .toEqual(["needs_you", "running", "needs_you"]);
+    expect(Date.parse(running.statusSince!)).toBeGreaterThan(Date.parse(awaiting.statusSince!));
+    expect(Date.parse(awaitingAgain.statusSince!)).toBeGreaterThan(Date.parse(running.statusSince!));
+    expect(awaitingAgain.alertFingerprint).not.toBe(awaiting.alertFingerprint);
+    publisher.dispose();
+  });
+
+  it("anchors invalid roster activity dates once across uncached rebuilds", async () => {
+    let rebuildAt = Date.parse("2026-08-01T12:00:00.000Z");
+    const buildSnapshot = vi.fn().mockResolvedValue([
+      rosterProject(2, "not-an-iso-date"),
+    ]);
+    const { publisher } = makeHarness(
+      device,
+      () => rebuildAt,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot },
+      },
+    );
+
+    const first = (await publisher.getMachineAttentionSnapshot()).items;
+    rebuildAt += 11_000;
+    const second = (await publisher.getMachineAttentionSnapshot()).items;
+
+    expect(first).toHaveLength(2);
+    expect(first.map((entry) => entry.revision))
+      .toEqual([rebuildAt - 11_000, rebuildAt - 11_000]);
+    expect(first.map((entry) => entry.updatedAt))
+      .toEqual(["2026-08-01T12:00:00.000Z", "2026-08-01T12:00:00.000Z"]);
+    expect(second.map((entry) => entry.revision)).toEqual([rebuildAt, rebuildAt]);
+    expect(second.map((entry) => entry.statusSince))
+      .toEqual(first.map((entry) => entry.statusSince));
+    expect(second.map((entry) => entry.alertFingerprint))
+      .toEqual(first.map((entry) => entry.alertFingerprint));
+    publisher.dispose();
+  });
+
+  it("keeps live-to-roster source revisions monotonic", async () => {
+    const roster = rosterProject(1, "2026-07-01T09:30:00.000Z");
+    roster.chats[0]!.id = "live-to-roster";
+    const { publisher, publishAttention, cliSessions } = makeHarness(
+      device,
+      undefined,
+      {
+        activityProtocol: 2,
+        activityRosterProvider: { buildSnapshot: async () => [roster] },
+      },
+    );
+    publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+    });
+    cliSessions.set("live-to-roster", {
+      title: "Live session",
+      toolType: "codex",
+      chatSessionId: null,
+    });
+    publisher.handleCliRuntimeSignal("scope-1", {
+      laneId: "lane-roster",
+      sessionId: "live-to-roster",
+      runtimeState: "running",
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+    const live = publishAttention.mock.calls[0][0].items[0];
+    publishAttention.mockClear();
+
+    publisher._debug.onPtyExit("scope-1", {
+      ptyId: "pty-live-to-roster",
+      sessionId: "live-to-roster",
+      laneId: "lane-roster",
+      exitCode: 130,
+    });
+    await vi.advanceTimersByTimeAsync(2_500);
+
+    const rosterPayload = publishAttention.mock.calls[0][0];
+    expect(rosterPayload.tombstones).toEqual([]);
+    expect(rosterPayload.items[0]).toMatchObject({
+      id: live.id,
+      phase: "stale",
+      revision: live.revision,
+    });
+    expect(rosterPayload.items[0].revision)
+      .toBeGreaterThan(Date.parse("2026-07-01T09:30:00.000Z"));
+    publisher.dispose();
+  });
+
+  it("clamps rebuilt roster rows to persisted and remote source revisions", async () => {
+    const itemId = `agent:${"a".repeat(40)}:disk-session-000`;
+    const persistedFloor = Date.parse("2026-07-06T00:00:00.000Z");
+    const remoteFloor = persistedFloor + 1;
+    const { publisher } = makeHarness(device, undefined, {
+      activityProtocol: 2,
+      activityRosterProvider: {
+        buildSnapshot: async () => [rosterProject(1, "2026-07-01T00:00:00.000Z")],
+      },
+      lastPublishedRevisionById: { [itemId]: persistedFloor },
+      remoteAttentionAcknowledgments: [{
+        itemId,
+        accountOwnerId: "owner-a",
+        sourceRevision: remoteFloor,
+        seenAt: null,
+        dismissedAt: null,
+        updatedAt: "2026-07-06T00:00:01.000Z",
+      }],
+    });
+
+    const item = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(item.id).toBe(itemId);
+    expect(item.revision).toBe(remoteFloor);
+    expect(item.updatedAt).toBe("2026-07-01T00:00:00.000Z");
+    publisher.dispose();
+  });
+
+  it("keeps live statusSince immutable while the phase is unchanged", async () => {
+    const { publisher, emit } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    emit({
+      sessionId: "s-running",
+      timestamp: "",
+      event: { type: "text", text: "first" },
+    });
+    const first = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+    vi.setSystemTime(new Date("2026-07-05T12:00:05.000Z"));
+    emit({
+      sessionId: "s-running",
+      timestamp: "",
+      event: { type: "text", text: "second" },
+    });
+    const second = (await publisher.getMachineAttentionSnapshot()).items[0]!;
+
+    expect(second.revision).toBeGreaterThan(first.revision);
+    expect(second.statusSince).toBe(first.statusSince);
+    publisher.dispose();
+  });
+
+  it("publishes a second item-less question after needs-you phase re-entry", async () => {
+    const { publisher, publishAttention } = makeHarness(
+      device,
+      undefined,
+      { activityProtocol: 2 },
+    );
+    publishAttention.mockResolvedValue({
+      ok: true,
+      protocol: 2,
+      revision: 1,
+      acks: [],
+    });
+
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "question-reentry",
+      kind: "chat",
+      title: "Choose rollout",
+      message: "Which rollout should I use?",
+      laneId: "auth-lane",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+    publisher.handleSessionAttentionResolved("scope-1", "question-reentry");
+    await vi.advanceTimersByTimeAsync(200);
+    publisher.handleSessionAttentionRequested("scope-1", {
+      sessionId: "question-reentry",
+      kind: "chat",
+      title: "Choose rollout",
+      message: "Which rollout should I use?",
+      laneId: "auth-lane",
+    });
+    await vi.advanceTimersByTimeAsync(200);
+
+    const needsYouItems = publishAttention.mock.calls
+      .flatMap(([payload]) => payload.items)
+      .filter((entry: { phase: string }) => entry.phase === "needs_you");
+    expect(needsYouItems).toHaveLength(2);
+    expect(needsYouItems.map((entry) => entry.destination.itemId)).toEqual([null, null]);
+    expect(needsYouItems[1].statusSince).not.toBe(needsYouItems[0].statusSince);
+    expect(needsYouItems[1].alertFingerprint).not.toBe(needsYouItems[0].alertFingerprint);
     publisher.dispose();
   });
 
@@ -2120,7 +2853,7 @@ describe("createPushPublisherService flush", () => {
     publishAttention.mockClear();
     detach();
     await vi.runAllTicks();
-    await Promise.resolve();
+    await settleMicrotasks();
 
     expect(publishAttention).toHaveBeenCalledTimes(1);
     expect(publishAttention).toHaveBeenCalledWith({
@@ -2151,7 +2884,7 @@ describe("createPushPublisherService flush", () => {
     publishAttention.mockClear();
     detach();
     await vi.runAllTicks();
-    await Promise.resolve();
+    await settleMicrotasks();
 
     expect(publishAttention).toHaveBeenCalledTimes(1);
     expect(publishAttention.mock.calls[0][0].items).toEqual([]);
@@ -2357,6 +3090,45 @@ describe("createPushRegistrationStore", () => {
     });
     expect(reopened.listPendingAttentionAcknowledgments()).toHaveLength(2);
   });
+
+  it("persists protocol, roster epochs, remote acknowledgments, and revision floors", () => {
+    const store = createPushRegistrationStore({ filePath });
+    store.getOrCreateIdentity();
+    store.setActivityProtocol(2);
+    expect(store.nextActivityRosterEpoch()).toBe(1);
+    expect(store.nextActivityRosterEpoch()).toBe(2);
+    store.recordRemoteAttentionAcknowledgments({
+      accountOwnerId: "owner-a",
+      acknowledgments: [{
+        itemId: "agent:machine:session-1",
+        sourceRevision: 9,
+        seenAt: "2026-07-05T01:00:00.000Z",
+        dismissedAt: "2026-07-05T01:01:00.000Z",
+      }],
+      updatedAt: "2026-07-05T01:01:00.000Z",
+    });
+    store.setLastPublishedActivityRevisions({
+      accountOwnerId: "owner-a",
+      revisions: { "agent:machine:session-1": 11 },
+    });
+
+    const reopened = createPushRegistrationStore({ filePath });
+    expect(reopened.getActivityProtocol()).toBe(2);
+    expect(reopened.nextActivityRosterEpoch()).toBe(3);
+    expect(reopened.listRemoteAttentionAcknowledgments("owner-a")).toEqual([
+      expect.objectContaining({
+        itemId: "agent:machine:session-1",
+        accountOwnerId: "owner-a",
+        sourceRevision: 9,
+        dismissedAt: "2026-07-05T01:01:00.000Z",
+      }),
+    ]);
+    expect(reopened.listRemoteAttentionAcknowledgments("owner-b")).toEqual([]);
+    expect(reopened.getLastPublishedActivityRevisions()).toEqual({
+      accountOwnerId: "owner-a",
+      revisions: { "agent:machine:session-1": 11 },
+    });
+  });
 });
 
 const MACHINE_KEY = "0123456789abcdef0123456789abcdef"; // gitleaks:allow — test fixture
@@ -2539,6 +3311,78 @@ describe("createPushRelayClient", () => {
     );
   });
 
+  it("decodes the typed Activity publish result at the relay boundary", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        protocol: 2,
+        revision: 19,
+        acks: [{
+          itemId: "agent:machine:session-1",
+          sourceRevision: 7,
+          seenAt: "2026-07-05T00:01:00.000Z",
+          dismissedAt: null,
+        }],
+        upserted: 1,
+        removed: 0,
+        itemsTruncated: true,
+      }),
+    });
+    const client = createPushRelayClient({
+      store: makeStore({ isClaimed: () => true }),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    const result = await client.publishAttention({
+      machineName: "MacBook",
+      mode: "delta",
+      rosterEpoch: 1,
+      items: [],
+      tombstones: [],
+    });
+
+    expect(result?.protocol).toBe(2);
+    expect(result?.acks).toEqual([expect.objectContaining({
+      itemId: "agent:machine:session-1",
+      sourceRevision: 7,
+    })]);
+    expect(result?.itemsTruncated).toBe(true);
+  });
+
+  it("rejects malformed Activity publish results", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        protocol: "2",
+        acks: [{ itemId: "session-1", sourceRevision: "stale" }],
+      }),
+    });
+    const client = createPushRelayClient({
+      store: makeStore({ isClaimed: () => true }),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await expect(client.publishAttention({
+      machineName: "MacBook",
+      mode: "delta",
+      rosterEpoch: 1,
+      items: [],
+      tombstones: [],
+    })).rejects.toThrow(/invalid Activity publish result/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]?.[0]).toContain("/attention");
+  });
+
   it("binds incremental snapshot cursors to the authenticated stream", async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -2567,6 +3411,128 @@ describe("createPushRelayClient", () => {
       "https://relay.test/attention/account/snapshot?since=12&streamId=account-a",
     );
     expect(init.headers.authorization).toBe("Bearer account-access-token");
+  });
+
+  it("passes through the additive Activity snapshot fields", async () => {
+    const activityItem = {
+      id: "agent:machine-a:session-1",
+      revision: 17,
+      activityTier: "idle",
+      contentFingerprint: "content-17",
+      alertFingerprint: "alert-17",
+      statusSince: "2026-07-05T00:00:00.000Z",
+    };
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        contractVersion: 1,
+        streamId: "account-a",
+        revision: 17,
+        generatedAt: "2026-07-05T00:00:00.000Z",
+        items: [activityItem],
+        itemsTruncated: true,
+        tombstones: [],
+        machines: [],
+      }),
+    });
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    const result = await client.getAttentionSnapshot();
+
+    expect(result?.itemsTruncated).toBe(true);
+    expect(result?.items[0]).toMatchObject(activityItem);
+    expect(result?.streamId).toBe("account-a");
+  });
+
+  it("sends revision and owner fences and parses stale acknowledgments", async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        ok: true,
+        revision: 19,
+        applied: ["item-applied"],
+        stale: ["item-stale"],
+      }),
+    });
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await expect(client.acknowledgeAttention({
+      itemIds: ["item-applied", "item-stale"],
+      sourceRevisions: { "item-applied": 4, "item-stale": 7 },
+      expectedAccountOwnerId: "account-a",
+      seenAt: "2026-07-05T00:01:00.000Z",
+    })).resolves.toEqual({
+      applied: ["item-applied"],
+      stale: ["item-stale"],
+    });
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("https://relay.test/attention/account/ack");
+    expect(JSON.parse(init.body)).toEqual({
+      itemIds: ["item-applied", "item-stale"],
+      sourceRevisions: { "item-applied": 4, "item-stale": 7 },
+      expectedAccountOwnerId: "account-a",
+      seenAt: "2026-07-05T00:01:00.000Z",
+    });
+  });
+
+  it("omits machine and device overrides from full preference writes", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await client.putAttentionPreferences("account-a", {
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      devices: { "phone-1": { hideDetails: true } },
+      machines: { "machine-a": { notificationsEnabled: false } },
+    });
+
+    const [url, init] = fetchMock.mock.calls[0];
+    const body = JSON.parse(init.body) as Record<string, unknown>;
+    expect(url).toBe("https://relay.test/attention/account/preferences");
+    expect(body.devices).toBeUndefined();
+    expect(body.machines).toBeUndefined();
+    expect(body.account).toEqual(DEFAULT_ATTENTION_PREFERENCES.account);
+  });
+
+  it("patches one encoded Activity machine preference scope", async () => {
+    const client = createPushRelayClient({
+      store: makeStore(),
+      logger,
+      baseUrl: "https://relay.test",
+      getAccountAccessToken: async () => "account-access-token",
+      getAccountUserId: () => "account-a",
+    });
+
+    await client.putActivityMachinePreferences(
+      "account-a",
+      "machine/a",
+      { notificationsEnabled: false },
+    );
+
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe(
+      "https://relay.test/attention/account/preferences/machines/machine%2Fa",
+    );
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(init.body)).toEqual({ notificationsEnabled: false });
   });
 
   it("retries one unauthorized account read with a forced fresh token", async () => {
@@ -2659,7 +3625,7 @@ describe("createPushRelayClient", () => {
     });
 
     await expect(client.getAttentionSnapshot()).rejects.toThrow(
-      /invalid Attention snapshot/i,
+      /invalid Activity snapshot/i,
     );
   });
 

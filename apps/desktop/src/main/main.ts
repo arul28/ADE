@@ -121,6 +121,7 @@ import {
 import {
   attentionRemoteBindingMatches,
   attentionItemNavigationRequest,
+  createAttentionNotchToastDeduper,
   resolveAttentionNotchOutput,
   type AttentionNotchResolvedOutput,
 } from "./services/attention/attentionNotchRouter";
@@ -6717,6 +6718,7 @@ app.whenReady().then(async () => {
   installApplicationMenu();
 
   let latestAttentionNotchSnapshot: AttentionSnapshot | null = null;
+  const shouldForwardAttentionNotchToast = createAttentionNotchToastDeduper();
   let attentionIpcBridge: ReturnType<typeof registerIpc> | null = null;
   const attentionAccountAuthService = getSharedAccountAuthService();
   const attentionRelayClient = createPushRelayClient({
@@ -6812,7 +6814,7 @@ app.whenReady().then(async () => {
     if (requiresRemoteMachine && !remoteWindow) {
       const win = await attentionWindow();
       if (!win || win.isDestroyed() || !attentionIpcBridge) {
-        throw new Error("ADE could not open the remote Attention destination.");
+        throw new Error("ADE could not open the remote Activity destination.");
       }
       const binding = await attentionIpcBridge.openAttentionProject({
         machineKey: accountMachineKey,
@@ -6915,11 +6917,37 @@ app.whenReady().then(async () => {
       requestAttentionNotchRefresh(true);
       return;
     }
+    if (output.type === "open_settings") {
+      dispatchAppNavigationRequest?.({
+        target: { kind: "settings", tab: "activity", anchor: null },
+        source: "attention-notch",
+      });
+      return;
+    }
+    if (output.type === "dismiss_item") {
+      void sendAttentionNotchAcknowledge({
+        itemId: output.itemId,
+        mode: "dismiss",
+      }).catch((error: unknown) => {
+        getActiveContext().logger.warn("attention.notch_ack_route_failed", {
+          itemId: output.itemId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+      return;
+    }
     if (output.type === "settings") {
-      attentionNotchHelper?.updateSettings(output.settings);
+      // A helper older than the presentation booleans omits them; both default
+      // on, so an absent field must read as enabled rather than undefined.
+      const settings: AttentionNotchSettings = {
+        ...output.settings,
+        automaticRevealEnabled: output.settings.automaticRevealEnabled !== false,
+        tickerEnabled: output.settings.tickerEnabled !== false,
+      };
+      attentionNotchHelper?.updateSettings(settings);
       for (const win of BrowserWindow.getAllWindows()) {
         if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
-        win.webContents.send(IPC.attentionNotchSettingsChanged, output.settings);
+        win.webContents.send(IPC.attentionNotchSettingsChanged, settings);
       }
       return;
     }
@@ -7028,6 +7056,10 @@ app.whenReady().then(async () => {
     publishAttentionNotchSnapshot: (snapshot: AttentionSnapshot) => {
       latestAttentionNotchSnapshot = snapshot;
       attentionNotchHelper?.publishSnapshot(snapshot);
+    },
+    publishAttentionNotchToast: (toast) => {
+      if (!shouldForwardAttentionNotchToast(toast)) return;
+      attentionNotchHelper?.publishToast(toast);
     },
     updateAttentionNotchSettings: (settings: AttentionNotchSettings) => {
       attentionNotchHelper?.updateSettings(settings);

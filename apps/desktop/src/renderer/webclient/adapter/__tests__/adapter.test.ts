@@ -66,6 +66,7 @@ describe("createAdeWebAdapter", () => {
   it("boots before and after a bound project", async () => {
     const adapter = createAdeWebAdapter(fake.asClient());
 
+    expect("attentionNotch" in adapter.ade).toBe(false);
     await expect(adapter.ade.app.getProject()).resolves.toBeNull();
     await expect(adapter.ade.app.getWindowSession()).resolves.toMatchObject({
       windowId: null,
@@ -227,7 +228,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("reads account Attention directly and refreshes one rejected browser token", async () => {
+  it("reads account Activity directly and refreshes one rejected browser token", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -287,7 +288,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects malformed account Attention responses at the relay boundary", async () => {
+  it("rejects malformed account Activity responses at the relay boundary", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -317,12 +318,12 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
     adapter.dispose();
   });
 
-  it("validates account Attention preferences before exposing them to the renderer", async () => {
+  it("validates account Activity preferences before exposing them to the renderer", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -341,9 +342,23 @@ describe("createAdeWebAdapter", () => {
       isSessionLeaseCurrent: () => true,
       getAccessToken: vi.fn(async () => "account-token"),
     } as unknown as BrowserAccountClient;
+    const {
+      dockBadgeScope: _legacyDockBadgeScope,
+      ...legacyAccount
+    } = DEFAULT_ATTENTION_PREFERENCES.account;
+    const {
+      machines: _legacyMachines,
+      ...legacyPreferences
+    } = DEFAULT_ATTENTION_PREFERENCES;
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         preferences: DEFAULT_ATTENTION_PREFERENCES,
+      }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        preferences: {
+          ...legacyPreferences,
+          account: legacyAccount,
+        },
       }), { status: 200 }))
       .mockResolvedValueOnce(new Response(JSON.stringify({
         preferences: {
@@ -357,13 +372,102 @@ describe("createAdeWebAdapter", () => {
     await expect(adapter.ade.attention.getPreferences("account-a"))
       .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
     await expect(adapter.ade.attention.getPreferences("account-a"))
+      .resolves.toEqual(DEFAULT_ATTENTION_PREFERENCES);
+    await expect(adapter.ade.attention.getPreferences("account-a"))
       .rejects.toThrow(
-        "Account Attention preferences were incompatible. Update ADE and retry.",
+        "Activity preferences were incompatible. Update ADE and retry.",
       );
     adapter.dispose();
   });
 
-  it("loads real machine Attention from the paired host while signed out", async () => {
+  it("strips device and machine overrides from account preference saves", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await adapter.ade.attention.putPreferences("account-a", {
+      ...DEFAULT_ATTENTION_PREFERENCES,
+      devices: { browser: { notificationsEnabled: false } },
+      machines: { studio: { notificationsEnabled: false } },
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body))).toEqual({
+      account: DEFAULT_ATTENTION_PREFERENCES.account,
+      projects: DEFAULT_ATTENTION_PREFERENCES.projects,
+      mutedSessionIds: DEFAULT_ATTENTION_PREFERENCES.mutedSessionIds,
+    });
+    adapter.dispose();
+  });
+
+  it("patches one machine's notification mute without rewriting the account document", async () => {
+    const snapshot: BrowserAccountSnapshot = {
+      state: "signed_in",
+      userId: "account-a",
+      email: "owner@example.test",
+      name: "Owner",
+      imageUrl: null,
+      expiresAt: "2026-07-30T00:00:00.000Z",
+      machines: [],
+      relayBaseUrls: ["wss://relay.example"],
+      message: null,
+    };
+    const accountClient = {
+      getSnapshot: () => snapshot,
+      captureSessionLease: () => ({ userId: "account-a", generation: 1 }),
+      isSessionLeaseCurrent: () => true,
+      getAccessToken: vi.fn(async () => "account-token"),
+    } as unknown as BrowserAccountClient;
+    const fetchMock = vi.fn(async () => new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
+
+    await expect(adapter.ade.attention.putMachinePreferences!(
+      "account-a",
+      "studio mac/1",
+      { notificationsEnabled: false },
+    )).resolves.toBeUndefined();
+
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    // The machine key goes in the path, so it has to survive a space and a slash.
+    expect(url).toContain("/attention/account/preferences/machines/studio%20mac%2F1");
+    expect(init.method).toBe("PATCH");
+    expect(JSON.parse(String(init.body))).toEqual({ notificationsEnabled: false });
+    expect(init.headers).toMatchObject({ authorization: "Bearer account-token" });
+
+    // A machine mute written after an account switch would land on the wrong
+    // account's preferences entirely.
+    await expect(adapter.ade.attention.putMachinePreferences!(
+      "account-b",
+      "studio",
+      { notificationsEnabled: false },
+    )).rejects.toThrow(/account changed/i);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    adapter.dispose();
+  });
+
+  it("loads real machine Activity from the paired host while signed out", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_out",
       userId: null,
@@ -423,7 +527,7 @@ describe("createAdeWebAdapter", () => {
         },
         project: { projectId: "project-host", name: "Host Project" },
         title: "Agent is working",
-        preview: "Implementing account Attention",
+        preview: "Implementing account Activity",
         privacyPreview: "Agent is working",
         destination: { kind: "session", sessionId: "session-host" },
         actions: [],
@@ -516,7 +620,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects malformed signed-out machine Attention from the paired host", async () => {
+  it("rejects malformed signed-out machine Activity from the paired host", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_out",
       userId: null,
@@ -546,12 +650,12 @@ describe("createAdeWebAdapter", () => {
     const adapter = createAdeWebAdapter(fake.asClient(), undefined, accountClient);
 
     await expect(adapter.ade.attention.getSnapshot()).rejects.toThrow(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
     adapter.dispose();
   });
 
-  it("connects the owning account machine before opening an Attention destination", async () => {
+  it("connects the owning account machine before opening an Activity destination", async () => {
     const ownerMachine = {
       machineKey: "account-machine-studio",
       deviceId: "host-studio",

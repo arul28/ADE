@@ -557,6 +557,9 @@ struct WorkSessionListRow: View {
   let isArchived: Bool
   let transitionNamespace: Namespace.ID?
   var compact: Bool = false
+  /// True when no lane header sits above this row — the singleton form, where
+  /// the row carries the lane identity itself.
+  var showsLaneIdentity: Bool = true
   var isLaneDeleting = false
   @Binding var selectedSessionId: String?
   let isSelecting: Bool
@@ -653,7 +656,8 @@ struct WorkSessionListRow: View {
           isMuted: isMuted,
           transitionNamespace: transitionNamespace,
           isSelectedTransitionSource: selectedSessionId == session.id,
-          compact: compact
+          compact: compact,
+          showsLaneIdentity: showsLaneIdentity
         )
         .equatable()
       }
@@ -1075,6 +1079,13 @@ private struct WorkSessionRowRenderSignature: Equatable {
   let pullRequestState: String?
   let status: String
   let canonicalPhase: CanonicalSessionPhase
+  /// The rendered capsule and dot, not just the phase behind them: the badge
+  /// kind moves on its own when planning starts or stops, and the tone is what
+  /// the dot is painted with.
+  let badgeKind: SessionBadgeKind?
+  let rowTone: ActivityTone
+  let model: String?
+  let showsLaneIdentity: Bool
   let settledAt: String?
   let statusNote: String?
   let attentionRequestedAt: String?
@@ -1107,7 +1118,8 @@ private struct WorkSessionRowRenderSignature: Equatable {
     isArchived: Bool,
     isMuted: Bool,
     isSelectedTransitionSource: Bool,
-    compact: Bool
+    compact: Bool,
+    showsLaneIdentity: Bool
   ) {
     self.sessionId = session.id
     self.title = chatSummary?.title ?? session.title
@@ -1130,6 +1142,10 @@ private struct WorkSessionRowRenderSignature: Equatable {
     self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
     self.status = status
     self.canonicalPhase = canonical.phase
+    self.badgeKind = workSessionStatusBadge(session: session, summary: chatSummary)?.kind
+    self.rowTone = workSessionRowTone(session: session, summary: chatSummary)
+    self.model = chatSummary?.model
+    self.showsLaneIdentity = showsLaneIdentity
     self.settledAt = session.settledAt
     self.statusNote = session.statusNote
     self.attentionRequestedAt = session.attentionRequestedAt
@@ -1161,6 +1177,9 @@ struct WorkSessionRow: View, Equatable {
   let transitionNamespace: Namespace.ID?
   let isSelectedTransitionSource: Bool
   var compact: Bool = false
+  /// The singleton form: no lane header above this row, so the row shows the
+  /// lane itself. Under a lane header the chip would just repeat the header.
+  var showsLaneIdentity: Bool = true
   private let renderSignature: WorkSessionRowRenderSignature
 
   init(
@@ -1173,7 +1192,8 @@ struct WorkSessionRow: View, Equatable {
     isMuted: Bool = false,
     transitionNamespace: Namespace.ID?,
     isSelectedTransitionSource: Bool,
-    compact: Bool = false
+    compact: Bool = false,
+    showsLaneIdentity: Bool = true
   ) {
     self.session = session
     self.lane = lane
@@ -1185,6 +1205,7 @@ struct WorkSessionRow: View, Equatable {
     self.transitionNamespace = transitionNamespace
     self.isSelectedTransitionSource = isSelectedTransitionSource
     self.compact = compact
+    self.showsLaneIdentity = showsLaneIdentity
     self.renderSignature = WorkSessionRowRenderSignature(
       session: session,
       lane: lane,
@@ -1194,7 +1215,8 @@ struct WorkSessionRow: View, Equatable {
       isArchived: isArchived,
       isMuted: isMuted,
       isSelectedTransitionSource: isSelectedTransitionSource,
-      compact: compact
+      compact: compact,
+      showsLaneIdentity: showsLaneIdentity
     )
   }
 
@@ -1270,8 +1292,11 @@ struct WorkSessionRow: View, Equatable {
         HStack(alignment: .center, spacing: 6) {
           Group {
             if isSettled {
+              // Hollow, not filled: settled work is put away, and the ring says
+              // that without spending a solid dot on it. Tinted rather than
+              // white so it still carries the phase's hue.
               Circle()
-                .stroke(Color.white.opacity(0.35), lineWidth: 1)
+                .stroke(rowTint.opacity(0.7), lineWidth: 1)
             } else {
               Circle()
                 .fill(rowTint)
@@ -1319,25 +1344,45 @@ struct WorkSessionRow: View, Equatable {
             .foregroundStyle(ADEColor.textMuted)
             .lineLimit(1)
 
-          Text("·")
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-
-          if let laneAccent = LaneColorPalette.color(forHex: lane?.color) {
-            Circle()
-              .fill(laneAccent)
-              .frame(width: 6, height: 6)
-          } else {
-            Image(systemName: "arrow.triangle.branch")
-              .font(.system(size: 10, weight: .semibold))
+          // The model the turn actually runs on. iOS carried it in the chat
+          // summary and never showed it, so two rows on the same provider were
+          // indistinguishable.
+          if let model = renderSignature.model, !model.isEmpty {
+            Text("·")
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+            Text(shortModelLabel(model))
+              .font(.caption2)
               .foregroundStyle(ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+              .layoutPriority(-1)
           }
-          Text(session.laneName)
-            .font(.caption2)
-            .foregroundStyle(LaneColorPalette.color(forHex: lane?.color) ?? ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.middle)
-            .layoutPriority(-1)
+
+          // Under a lane header the lane chip only repeats the header, so it is
+          // spent here on the model instead. A headerless (singleton) row is the
+          // only thing carrying the lane, and always shows it.
+          if showsLaneIdentity {
+            Text("·")
+              .font(.caption2)
+              .foregroundStyle(ADEColor.textMuted.opacity(0.5))
+
+            if let laneAccent = LaneColorPalette.color(forHex: lane?.color) {
+              Circle()
+                .fill(laneAccent)
+                .frame(width: 6, height: 6)
+            } else {
+              Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(ADEColor.textMuted)
+            }
+            Text(session.laneName)
+              .font(.caption2)
+              .foregroundStyle(LaneColorPalette.color(forHex: lane?.color) ?? ADEColor.textMuted)
+              .lineLimit(1)
+              .truncationMode(.middle)
+              .layoutPriority(-1)
+          }
 
           if lane?.status.dirty == true {
             Circle()
@@ -1417,10 +1462,11 @@ struct WorkSessionRow: View, Equatable {
     providerTint(chatSummary?.provider ?? session.toolType)
   }
 
-  /// Canonical attention capsule (needs_you / failed / stale); nil for calm
-  /// states so the row never shifts layout when no capsule renders.
+  /// The row's status capsule, in the full shared vocabulary — needs you,
+  /// failed, stale, working, planning, done. Nil for the resting states, so the
+  /// row never shifts layout to say that nothing is happening.
   var capsuleBadge: SessionBadge? {
-    canonicalState.badge
+    workSessionStatusBadge(session: session, summary: chatSummary)
   }
 
   var canonicalState: CanonicalSessionState {
@@ -1442,14 +1488,20 @@ struct WorkSessionRow: View, Equatable {
     workIsPendingChatCreationSession(session)
   }
 
+  /// The status dot's hue. Reads the canonical phase through the shared tone
+  /// table rather than the coarse four-value status string, so the dot and the
+  /// capsule above it can never tell different stories.
   var rowTint: Color {
     if isPendingSyncCreation { return ADEColor.textMuted }
     if isArchived { return ADEColor.warning }
-    return workChatStatusTint(status)
+    return activityToneColor(renderSignature.rowTone)
   }
 
   var accessibilityLabel: String {
     var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
+    if let model = renderSignature.model, !model.isEmpty {
+      parts.append(shortModelLabel(model))
+    }
     if session.pinned {
       parts.append("pinned")
     }

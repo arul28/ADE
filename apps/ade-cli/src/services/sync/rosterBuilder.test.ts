@@ -229,6 +229,16 @@ describe("buildRosterSnapshot", () => {
     ]);
   });
 
+  it("keeps terminal_sessions.id as the canonical publisher session id", async () => {
+    const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
+    const row = projects[0]!.chats.find((chat) => chat.title === "Codex CLI");
+
+    // Activity publishes this row as agent:<machineKey>:<chat.id>; using the
+    // parent chat_session_id here would prevent live/roster collision dedupe.
+    expect(row?.id).toBe("cli-codex");
+    expect(row?.chatSessionId).toBeNull();
+  });
+
   it("maps disk status truthfully (running→idle, awaiting, failed) when un-booted", async () => {
     const projects = await buildRosterSnapshot({ projectRegistry, scopeRegistry: unbootedScopes });
     const byId = new Map(projects[0]!.chats.map((chat) => [chat.id, chat]));

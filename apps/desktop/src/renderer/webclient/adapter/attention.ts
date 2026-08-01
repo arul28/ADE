@@ -1,5 +1,7 @@
 import {
   ATTENTION_CONTRACT_VERSION,
+  ATTENTION_EVENT_KINDS,
+  ATTENTION_PHASES,
   DEFAULT_ATTENTION_PREFERENCES,
   attentionDestinationDeepLink,
   type AttentionAction,
@@ -31,37 +33,6 @@ type RelayResult = {
   response: Response;
   body: unknown;
 };
-
-const ATTENTION_PHASES = new Set<AttentionPhase>([
-  "starting",
-  "running",
-  "needs_you",
-  "blocked",
-  "failed",
-  "completed",
-  "stale",
-  "checks_failing",
-  "review_requested",
-  "changes_requested",
-  "merge_ready",
-  "open",
-  "merged",
-  "closed",
-]);
-
-const ATTENTION_EVENT_KINDS = new Set<AttentionEventKind>([
-  "agent_running",
-  "agent_needs_you",
-  "agent_failed",
-  "agent_completed",
-  "pr_checks_failing",
-  "pr_review_requested",
-  "pr_changes_requested",
-  "pr_merge_ready",
-  "pr_merged",
-  "pr_opened",
-  "pr_closed",
-]);
 
 function record(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -179,8 +150,14 @@ function parseAttentionItem(value: unknown): AttentionItem | null {
     || !Number.isInteger(candidate.revision)
     || typeof candidate.fingerprint !== "string"
     || !["agent", "pull_request"].includes(String(candidate.kind))
-    || !ATTENTION_EVENT_KINDS.has(candidate.eventKind as AttentionEventKind)
-    || !ATTENTION_PHASES.has(candidate.phase as AttentionPhase)
+    || !ATTENTION_EVENT_KINDS.includes(candidate.eventKind as AttentionEventKind)
+    || !ATTENTION_PHASES.includes(candidate.phase as AttentionPhase)
+    || (
+      candidate.activityTier !== undefined
+      && !["signal", "ambient", "idle"].includes(String(candidate.activityTier))
+    )
+    || (candidate.contentFingerprint !== undefined && typeof candidate.contentFingerprint !== "string")
+    || (candidate.alertFingerprint !== undefined && typeof candidate.alertFingerprint !== "string")
     || !machine
     || !project
     || !destination
@@ -198,6 +175,7 @@ function parseAttentionItem(value: unknown): AttentionItem | null {
     || !progressValid
     || typeof candidate.occurredAt !== "string"
     || typeof candidate.updatedAt !== "string"
+    || !optionalString(candidate.statusSince)
     || !optionalString(candidate.seenAt)
     || !optionalString(candidate.dismissedAt)
     || !optionalString(candidate.expiresAt)
@@ -249,9 +227,10 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     || tombstones.some((item) => !item)
     || machines === null
     || machines?.some((machine) => !machine)
+    || (candidate.itemsTruncated !== undefined && typeof candidate.itemsTruncated !== "boolean")
   ) {
     throw new Error(
-      "ADE Attention returned an incompatible response. Update ADE and retry.",
+      "ADE Activity returned an incompatible response. Update ADE and retry.",
     );
   }
   return {
@@ -262,6 +241,7 @@ function parseAttentionSnapshot(value: unknown): AttentionSnapshot {
     generatedAt: candidate.generatedAt,
     machines: machines as AttentionMachineRef[] | undefined,
     items: items as AttentionItem[],
+    itemsTruncated: candidate.itemsTruncated as boolean | undefined,
     tombstones: tombstones as AttentionTombstone[],
   };
 }
@@ -279,9 +259,9 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     required("eventPolicies", (field) => {
       const policies = record(field);
       if (!policies) return false;
-      return (partial || [...ATTENTION_EVENT_KINDS].every((kind) => kind in policies))
+      return (partial || ATTENTION_EVENT_KINDS.every((kind) => kind in policies))
         && Object.entries(policies).every(([kind, policy]) =>
-          ATTENTION_EVENT_KINDS.has(kind as AttentionEventKind)
+          ATTENTION_EVENT_KINDS.includes(kind as AttentionEventKind)
           && ["off", "ambient", "notify"].includes(String(policy)));
     })
     && required("notificationsEnabled", (field) => typeof field === "boolean")
@@ -292,6 +272,7 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
     && required("soundsEnabled", (field) => typeof field === "boolean")
     && required("celebrationsEnabled", (field) => typeof field === "boolean")
     && required("hideDetails", (field) => typeof field === "boolean")
+    && required("dockBadgeScope", (field) => field === "local" || field === "account")
     && required("quietHours", (field) => {
       const quietHours = record(field);
       return Boolean(
@@ -307,23 +288,34 @@ function isPreferenceScope(value: unknown, partial = false): value is AttentionP
 
 function parseAttentionPreferences(value: unknown): AttentionPreferences {
   const candidate = record(value);
+  const account = record(candidate?.account);
+  const normalizedAccount = account && account.dockBadgeScope === undefined
+    ? { ...account, dockBadgeScope: "local" }
+    : account;
   const devices = record(candidate?.devices);
+  const machines = candidate?.machines === undefined ? {} : record(candidate.machines);
   const projects = record(candidate?.projects);
   if (
     !candidate
-    || !isPreferenceScope(candidate.account)
+    || !isPreferenceScope(normalizedAccount)
     || !devices
     || !Object.values(devices).every((scope) => isPreferenceScope(scope, true))
+    || !machines
+    || !Object.values(machines).every((scope) => isPreferenceScope(scope, true))
     || !projects
     || !Object.values(projects).every((scope) => isPreferenceScope(scope, true))
     || !Array.isArray(candidate.mutedSessionIds)
     || !candidate.mutedSessionIds.every((id) => typeof id === "string")
   ) {
     throw new Error(
-      "Account Attention preferences were incompatible. Update ADE and retry.",
+      "Activity preferences were incompatible. Update ADE and retry.",
     );
   }
-  return candidate as AttentionPreferences;
+  return {
+    ...candidate,
+    account: normalizedAccount,
+    machines,
+  } as AttentionPreferences;
 }
 
 function relayBaseUrl(): string {
@@ -340,7 +332,7 @@ function relayError(action: string, result: RelayResult): Error {
     : typeof body?.error === "string"
       ? body.error
       : `HTTP ${result.response.status}`;
-  return new Error(`Account Attention ${action} failed. ${reason}`);
+  return new Error(`Activity ${action} failed. ${reason}`);
 }
 
 export function createAttentionNamespace(
@@ -368,7 +360,7 @@ export function createAttentionNamespace(
       availability: {
         state: "incompatible",
         title: `${hostName} needs an ADE update`,
-        message: `Update ADE on ${hostName}, then reconnect to load this machine's Attention.`,
+        message: `Update ADE on ${hostName}, then reconnect to load this machine's Activity.`,
         recovery: "update_host",
         hostName,
       },
@@ -382,16 +374,16 @@ export function createAttentionNamespace(
 
   const request = async (
     action: string,
-    method: "GET" | "POST" | "PUT",
+    method: "GET" | "POST" | "PUT" | "PATCH",
     path: string,
     body?: unknown,
   ): Promise<unknown> => {
     const lease = accountClient.captureSessionLease();
-    if (!lease) throw new Error("Sign in to use account-wide Attention.");
+    if (!lease) throw new Error("Sign in to use account-wide Activity.");
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResult> => {
       const accessToken = await accountClient.getAccessToken({ forceRefresh });
       if (!accountClient.isSessionLeaseCurrent(lease)) {
-        throw new Error("The ADE account changed before Attention could load.");
+        throw new Error("The ADE account changed before Activity could load.");
       }
       const response = await fetch(`${relayBaseUrl()}${path}`, {
         method,
@@ -438,7 +430,7 @@ export function createAttentionNamespace(
           availability: {
             state: "signed_out",
             title: `Showing ${hostName} only`,
-            message: `Attention from ${hostName} is available. Sign in to combine work across every ADE machine.`,
+            message: `Activity from ${hostName} is available. Sign in to combine work across every ADE machine.`,
             recovery: "sign_in",
             hostName,
           },
@@ -459,7 +451,7 @@ export function createAttentionNamespace(
         accountOwnerId: accountClient.getSnapshot().userId?.trim() || null,
         availability: {
           state: "ready",
-          title: "Account Attention is live",
+          title: "Activity is live",
           message: "Work from every signed-in ADE machine is available.",
           recovery: null,
         },
@@ -473,7 +465,7 @@ export function createAttentionNamespace(
         : null;
       if (currentAccountOwnerId !== lastSnapshotAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after Attention loaded. Refresh Attention, then try again.",
+          "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
         );
       }
       if (lastSnapshotScope === "machine") {
@@ -482,7 +474,7 @@ export function createAttentionNamespace(
           || args.itemIds.some((itemId) => !lastMachineItemIds.has(itemId))
         ) {
           throw new Error(
-            "Refresh this machine's Attention before acknowledging the item.",
+            "Refresh this machine's Activity before acknowledging the item.",
           );
         }
         if (
@@ -491,13 +483,13 @@ export function createAttentionNamespace(
             !Number.isFinite(args.sourceRevisions?.[itemId]))
         ) {
           throw new Error(
-            "Refresh this machine's Attention before acknowledging a changed item.",
+            "Refresh this machine's Activity before acknowledging a changed item.",
           );
         }
         if (!infra.commands.hasAction("attention.acknowledgeMachine")) {
           const hostName = infra.client.getStatus().hostName?.trim() || "the connected ADE host";
           throw new Error(
-            `Update ADE on ${hostName}, reconnect, then try this Attention action again.`,
+            `Update ADE on ${hostName}, reconnect, then try this Activity action again.`,
           );
         }
         await infra.commands.call(
@@ -516,7 +508,7 @@ export function createAttentionNamespace(
         return;
       }
       if (lastSnapshotScope !== "account" || !currentAccountOwnerId) {
-        throw new Error("Refresh account Attention before acknowledging this item.");
+        throw new Error("Refresh account Activity before acknowledging this item.");
       }
       await request("acknowledgment", "POST", "/attention/account/ack", args);
     },
@@ -529,7 +521,7 @@ export function createAttentionNamespace(
     async getPreferences(accountOwnerId: string) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Attention preferences could load.");
+        throw new Error("The ADE account changed before Activity settings could load.");
       }
       const result = record(await request(
         "preferences",
@@ -547,14 +539,43 @@ export function createAttentionNamespace(
     ) {
       const owner = accountClient.getSnapshot().userId?.trim() ?? "";
       if (!owner || owner !== accountOwnerId.trim()) {
-        throw new Error("The ADE account changed before Attention preferences could be saved.");
+        throw new Error("The ADE account changed before Activity settings could be saved.");
       }
-      const { devices: _deviceOverrides, ...accountPreferences } = preferences;
+      const {
+        devices: _deviceOverrides,
+        machines: _machineOverrides,
+        ...accountPreferences
+      } = preferences;
       await request(
         "preference update",
         "PUT",
         "/attention/account/preferences",
         accountPreferences,
+      );
+    },
+
+    /**
+     * Per-machine notification mute. It has its own relay route rather than
+     * riding the preferences PUT because that PUT strips `devices` and
+     * `machines` before replacing the account document — a partial machine
+     * scope written that way would race every other tab editing preferences.
+     */
+    async putMachinePreferences(
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ) {
+      const owner = accountClient.getSnapshot().userId?.trim() ?? "";
+      if (!owner || owner !== accountOwnerId.trim()) {
+        throw new Error("The ADE account changed before Activity settings could be saved.");
+      }
+      const key = machineKey.trim();
+      if (!key) throw new Error("A machine is required to change its notifications.");
+      await request(
+        "machine preference update",
+        "PATCH",
+        `/attention/account/preferences/machines/${encodeURIComponent(key)}`,
+        preferences,
       );
     },
 
@@ -569,7 +590,7 @@ export function createAttentionNamespace(
       const currentHostDeviceId = infra.client.getStatus().hostDeviceId?.trim() ?? "";
       if (ownerMachine && ownerMachine.deviceId !== currentHostDeviceId) {
         const lease = accountClient.captureSessionLease();
-        if (!lease) throw new Error("Sign in again to open this Attention item.");
+        if (!lease) throw new Error("Sign in again to open this Activity item.");
         const accessToken = await accountClient.getAccessToken();
         await infra.client.pairWithAccountMachine({
           machine: ownerMachine,
@@ -606,7 +627,7 @@ export function createAttentionNamespace(
         }
       }
       const parsed = parseDeeplink(attentionDestinationDeepLink(item.destination, item));
-      if (!parsed.ok) throw new Error("This Attention destination is invalid.");
+      if (!parsed.ok) throw new Error("This Activity destination is invalid.");
       infra.events.emit("navigate", {
         target: deeplinkToNavigationTarget(parsed.target),
         source: "attention",

@@ -39,7 +39,7 @@ final class StandardIOTransport {
             data.append(0x0A)
             FileHandle.standardOutput.write(data)
         } catch {
-            let message = "ADE Attention Notch could not encode output: \(error)\n"
+            let message = "ADE Notch could not encode output: \(error)\n"
             FileHandle.standardError.write(Data(message.utf8))
         }
     }

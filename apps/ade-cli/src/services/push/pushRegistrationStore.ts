@@ -23,6 +23,15 @@ export type StoredAttentionAcknowledgment = {
   pendingRelaySync: boolean;
 };
 
+export type StoredRemoteAttentionAcknowledgment = {
+  itemId: string;
+  accountOwnerId: string | null;
+  sourceRevision: number;
+  seenAt: string | null;
+  dismissedAt: string | null;
+  updatedAt: string;
+};
+
 type PushRegistrationFile = {
   version: 1;
   /** Unguessable machine key claimed on the relay (32 hex chars). */
@@ -36,6 +45,16 @@ type PushRegistrationFile = {
   devices: Record<string, StoredPushDevice>;
   /** Durable machine-fallback inbox state, revision-fenced per Attention item. */
   attentionAcknowledgments: Record<string, StoredAttentionAcknowledgment>;
+  /** Relay-owned acknowledgments flowing back down with protocol-2 publishes. */
+  remoteAttentionAcknowledgments: Record<string, StoredRemoteAttentionAcknowledgment>;
+  /** Last detected relay protocol. `1` means the response omitted protocol. */
+  activityProtocol: number | null;
+  /** Durable monotonic reconcile epoch; incremented before every new sweep. */
+  activityRosterEpoch: number;
+  /** Account owner whose published source-revision clamps are stored below. */
+  lastPublishedRevisionAccountOwnerId: string | null;
+  /** Durable per-item revision floor so live-to-roster fallback survives restart. */
+  lastPublishedRevisionById: Record<string, number>;
   lastPublishAt: string | null;
   lastPublishError: string | null;
   lastRelayContactAt: string | null;
@@ -97,6 +116,11 @@ function createEmptyFile(): PushRegistrationFile {
     enabled: true,
     devices: {},
     attentionAcknowledgments: {},
+    remoteAttentionAcknowledgments: {},
+    activityProtocol: null,
+    activityRosterEpoch: 0,
+    lastPublishedRevisionAccountOwnerId: null,
+    lastPublishedRevisionById: {},
     lastPublishAt: null,
     lastPublishError: null,
     lastRelayContactAt: null,
@@ -192,6 +216,54 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
               },
             ];
           }),
+      ),
+      remoteAttentionAcknowledgments: Object.fromEntries(
+        Object.entries(parsed.remoteAttentionAcknowledgments ?? {})
+          .filter((entry): entry is [string, StoredRemoteAttentionAcknowledgment] => {
+            const acknowledgment = entry[1];
+            return Boolean(
+              acknowledgment
+              && typeof acknowledgment === "object"
+              && typeof acknowledgment.itemId === "string"
+              && acknowledgment.itemId.trim().length > 0
+              && (
+                acknowledgment.accountOwnerId === undefined
+                || acknowledgment.accountOwnerId === null
+                || typeof acknowledgment.accountOwnerId === "string"
+              )
+              && Number.isFinite(acknowledgment.sourceRevision)
+              && (acknowledgment.seenAt === null || typeof acknowledgment.seenAt === "string")
+              && (acknowledgment.dismissedAt === null || typeof acknowledgment.dismissedAt === "string")
+              && typeof acknowledgment.updatedAt === "string",
+            );
+          })
+          .map(([, acknowledgment]) => {
+            const accountOwnerId = acknowledgment.accountOwnerId?.trim() || null;
+            return [
+              attentionAcknowledgmentKey(accountOwnerId, acknowledgment.itemId),
+              { ...acknowledgment, accountOwnerId },
+            ];
+          }),
+      ),
+      activityProtocol: Number.isSafeInteger(parsed.activityProtocol)
+        && Number(parsed.activityProtocol) > 0
+        ? Number(parsed.activityProtocol)
+        : null,
+      activityRosterEpoch: Number.isSafeInteger(parsed.activityRosterEpoch)
+        && Number(parsed.activityRosterEpoch) >= 0
+        ? Number(parsed.activityRosterEpoch)
+        : 0,
+      lastPublishedRevisionAccountOwnerId:
+        typeof parsed.lastPublishedRevisionAccountOwnerId === "string"
+          ? parsed.lastPublishedRevisionAccountOwnerId.trim() || null
+          : null,
+      lastPublishedRevisionById: Object.fromEntries(
+        Object.entries(parsed.lastPublishedRevisionById ?? {})
+          .filter(([itemId, revision]) =>
+            itemId.trim().length > 0
+            && Number.isSafeInteger(revision)
+            && Number(revision) >= 0)
+          .map(([itemId, revision]) => [itemId, Number(revision)]),
       ),
       lastPublishAt: parsed.lastPublishAt ?? null,
       lastPublishError: parsed.lastPublishError ?? null,
@@ -379,6 +451,111 @@ export function createPushRegistrationStore(args: PushRegistrationStoreArgs) {
         changed = true;
       }
       if (changed) write({ ...file, attentionAcknowledgments: next });
+    },
+
+    recordRemoteAttentionAcknowledgments(args: {
+      accountOwnerId: string | null;
+      acknowledgments: Array<{
+        itemId: string;
+        sourceRevision: number;
+        seenAt: string | null;
+        dismissedAt: string | null;
+      }>;
+      updatedAt: string;
+    }): void {
+      const file = load();
+      const next = { ...file.remoteAttentionAcknowledgments };
+      for (const acknowledgment of args.acknowledgments) {
+        const itemId = acknowledgment.itemId.trim();
+        if (!itemId || !Number.isFinite(acknowledgment.sourceRevision)) continue;
+        const key = attentionAcknowledgmentKey(args.accountOwnerId, itemId);
+        const existing = next[key];
+        if (existing && existing.sourceRevision > acknowledgment.sourceRevision) continue;
+        next[key] = {
+          itemId,
+          accountOwnerId: args.accountOwnerId,
+          sourceRevision: acknowledgment.sourceRevision,
+          seenAt: acknowledgment.seenAt,
+          dismissedAt: acknowledgment.dismissedAt,
+          updatedAt: args.updatedAt,
+        };
+      }
+      const bounded = Object.fromEntries(
+        Object.entries(next)
+          .sort((left, right) =>
+            Date.parse(right[1].updatedAt) - Date.parse(left[1].updatedAt))
+          .slice(0, ATTENTION_ACK_MAX),
+      );
+      write({ ...file, remoteAttentionAcknowledgments: bounded });
+    },
+
+    listRemoteAttentionAcknowledgments(
+      accountOwnerId?: string | null,
+    ): StoredRemoteAttentionAcknowledgment[] {
+      return Object.values(load().remoteAttentionAcknowledgments)
+        .filter((acknowledgment) =>
+          accountOwnerId === undefined || acknowledgment.accountOwnerId === accountOwnerId)
+        .sort((left, right) => left.updatedAt.localeCompare(right.updatedAt));
+    },
+
+    getActivityProtocol(): number | null {
+      return load().activityProtocol;
+    },
+
+    setActivityProtocol(protocol: number | null): void {
+      const file = load();
+      const normalized = Number.isSafeInteger(protocol) && Number(protocol) > 0
+        ? Number(protocol)
+        : null;
+      if (file.activityProtocol === normalized) return;
+      write({ ...file, activityProtocol: normalized });
+    },
+
+    nextActivityRosterEpoch(): number {
+      const file = load();
+      const next = Math.max(0, file.activityRosterEpoch) + 1;
+      write({ ...file, activityRosterEpoch: next });
+      return next;
+    },
+
+    getLastPublishedActivityRevisions(): {
+      accountOwnerId: string | null;
+      revisions: Record<string, number>;
+    } {
+      const file = load();
+      return {
+        accountOwnerId: file.lastPublishedRevisionAccountOwnerId,
+        revisions: { ...file.lastPublishedRevisionById },
+      };
+    },
+
+    setLastPublishedActivityRevisions(args: {
+      accountOwnerId: string | null;
+      revisions: Record<string, number>;
+    }): void {
+      const file = load();
+      const revisions = Object.fromEntries(
+        Object.entries(args.revisions)
+          .filter(([itemId, revision]) =>
+            itemId.trim().length > 0
+            && Number.isSafeInteger(revision)
+            && Number(revision) >= 0)
+          .map(([itemId, revision]) => [itemId, Number(revision)]),
+      );
+      const accountOwnerId = args.accountOwnerId?.trim() || null;
+      const currentEntries = Object.entries(file.lastPublishedRevisionById);
+      if (
+        file.lastPublishedRevisionAccountOwnerId === accountOwnerId
+        && currentEntries.length === Object.keys(revisions).length
+        && currentEntries.every(([itemId, revision]) => revisions[itemId] === revision)
+      ) {
+        return;
+      }
+      write({
+        ...file,
+        lastPublishedRevisionAccountOwnerId: accountOwnerId,
+        lastPublishedRevisionById: revisions,
+      });
     },
 
     hasRegisteredDevices(): boolean {

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   ATTENTION_CONTRACT_VERSION,
+  DEFAULT_ATTENTION_PREFERENCES,
+  activityItemIsAmbient,
+  activityItemTier,
   attentionDestinationDeepLink,
   attentionItemNeedsInbox,
   sanitizeAttentionPreview,
@@ -53,6 +56,24 @@ describe("attention contract helpers", () => {
       seenAt: "2026-07-28T10:05:00.000Z",
     }))).toBe(false);
     expect(attentionItemNeedsInbox(item({ dismissedAt: "2026-07-28T10:05:00.000Z" }))).toBe(false);
+  });
+
+  it("keeps idle roster rows out of Inbox and derives legacy tiers by phase", () => {
+    const idleOutcome = item({
+      phase: "completed",
+      eventKind: "agent_completed",
+      activityTier: "idle",
+    });
+    expect(attentionItemNeedsInbox(idleOutcome)).toBe(false);
+    expect(activityItemTier(idleOutcome)).toBe("idle");
+    expect(activityItemIsAmbient(idleOutcome)).toBe(true);
+    expect(activityItemTier(item({ phase: "needs_you" }))).toBe("signal");
+    expect(activityItemTier(item({ phase: "running", eventKind: "agent_running" }))).toBe("ambient");
+  });
+
+  it("defaults machine overrides empty and the dock badge to this Mac", () => {
+    expect(DEFAULT_ATTENTION_PREFERENCES.machines).toEqual({});
+    expect(DEFAULT_ATTENTION_PREFERENCES.account.dockBadgeScope).toBe("local");
   });
 
   it("builds exact session and PR deep links", () => {

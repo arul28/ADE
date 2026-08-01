@@ -60,6 +60,11 @@ const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
 const APP_ROUTE_ROOTS = [
   "/work",
+  // Activity is a modal, but its pathname is a real deep link the shell turns
+  // back into one. Without these two a hard reload on the hosted client drops
+  // the user at the sign-in shell instead of the app.
+  "/activity",
+  "/attention",
   "/lanes",
   "/files",
   "/prs",

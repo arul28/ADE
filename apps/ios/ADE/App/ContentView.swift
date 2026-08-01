@@ -111,7 +111,7 @@ struct ContentView: View {
         ConnectionSettingsView(syncService: syncService)
       }
       .sheet(isPresented: $syncService.attentionDrawerPresented) {
-        AttentionDrawerSheet()
+        ActivityDrawerSheet()
           .environmentObject(syncService)
           .environmentObject(syncService.attentionDrawer)
       }

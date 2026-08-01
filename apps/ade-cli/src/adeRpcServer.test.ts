@@ -3491,7 +3491,7 @@ describe("adeRpcServer", () => {
       (entry: { name: string }) => entry.name === "attention.getSnapshot",
     );
     expect(getSnapshotAction).toMatchObject({
-      description: expect.stringContaining("account-wide Attention stream"),
+      description: expect.stringContaining("account-wide Activity stream"),
       input: expect.stringContaining("streamId"),
       example: expect.stringContaining("attention.getSnapshot"),
     });

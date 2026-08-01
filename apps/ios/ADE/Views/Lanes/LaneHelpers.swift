@@ -11,7 +11,7 @@ func lanePriorityBadge(snapshot: LaneListSnapshot) -> some View {
   } else if snapshot.runtime.bucket == "running" {
     LaneTypeBadge(text: "Running", tint: ADEColor.success)
   } else if snapshot.runtime.bucket == "awaiting-input" {
-    LaneTypeBadge(text: "Attention", tint: ADEColor.warning)
+    LaneTypeBadge(text: "Activity", tint: ADEColor.warning)
   } else if snapshot.lane.archivedAt != nil {
     LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
   } else if let rebaseSuggestion = snapshot.rebaseSuggestion {

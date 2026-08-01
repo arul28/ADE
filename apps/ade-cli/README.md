@@ -182,7 +182,7 @@ The runtime exposes two layers of JSON-RPC methods (`src/multiProjectRpcServer.t
 ```text
 ade/initialize   ade/initialized   ping   shutdown   exit
 runtime/info     machineInfo.get
-account.call
+account.call     attention.call
 projects.list    projects.add      projects.remove   projects.touch
 projects.browseDirectories         projects.getDetail
 projects.getWorkSummary            projects.getDefaultParentDir
@@ -207,6 +207,13 @@ directory operations. Prefer the typed `ade login`, `ade auth status`,
 `ade account token create`, `ade machines list`, and `ade machines connect`
 commands; they select the CTO role where credential-bearing operations require
 it and keep account-machine pairing on the DPoP-bound runtime path.
+
+`attention.call` is the CTO-gated account-wide Activity surface backing `ade
+code`'s `/activity` pane (`getSnapshot`, `getMachineSnapshot`, `acknowledge`,
+`reportPresence`, `getPreferences`, `putPreferences`). `attention` stays as the
+frozen wire identifier for the method, the action domain, and the item ids even
+though the product surface is now called Activity. Agents on a desktop endpoint
+reach the same operations through `ade actions run attention.<action>`.
 
 `runtimeEvents.subscribe` returns `eventEpoch`, `nextCursor`, `hasMore`, `gap`, and `oldestCursor`; when `gap` is true, the caller's cursor predates the retained buffer and it should refresh state before resuming from `oldestCursor` / `nextCursor`.
 
@@ -490,7 +497,7 @@ ade storage compress --text                          # losslessly compress old c
 ade --role cto storage maintenance --text            # run the policy-driven ledger maintenance sweep now (CTO)
 ade storage actions --text                           # raw storage service actions (cleanupPreview/cleanup live here)
 ade actions list --domain chat --text
-ade --role cto actions list --domain attention --text # discover account-wide Attention actions
+ade --role cto actions list --domain attention --text # discover account-wide Activity actions (domain name is a frozen wire identifier)
 ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id

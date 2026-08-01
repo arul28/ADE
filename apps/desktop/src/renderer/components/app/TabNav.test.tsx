@@ -84,7 +84,7 @@ describe("TabNav", () => {
     expect(screen.getByRole("link", { name: "Review" }).getAttribute("aria-disabled")).toBe("true");
   });
 
-  it("keeps the full Attention center secondary to the global header control", () => {
+  it("keeps Activity a header control and a modal, never a nav tab", () => {
     useAppStore.setState({
       project: null,
       projectBinding: null,
@@ -97,6 +97,9 @@ describe("TabNav", () => {
       </MemoryRouter>,
     );
 
-    expect(screen.queryByRole("link", { name: "Attention" })).toBeNull();
+    // Deliberate: deleting this assertion is the quiet path to a tenth tab
+    // nobody agreed to. Activity lives in the header and opens as a modal.
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
   });
 });

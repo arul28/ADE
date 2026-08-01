@@ -83,7 +83,9 @@ import {
 } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
-import { useAttentionSync } from "../attention/useAttentionSync";
+import { ActivityPane } from "../activity/ActivityPane";
+import { useActivitySync } from "../activity/useActivitySync";
+import { isActivityRoute } from "../../lib/legacyRoutes";
 
 type PrToast = {
   id: string;
@@ -98,12 +100,13 @@ type AutoLinkToast = {
 };
 
 function primaryTabPath(pathname: string): string {
-  const roots = ["/hub", "/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
+  const roots = ["/hub", "/activity", "/attention", "/lanes", "/files", "/work", "/graph", "/prs", "/history", "/automations", "/cto", "/settings"];
   return roots.find((root) => pathname === root || pathname.startsWith(`${root}/`)) ?? pathname;
 }
 
 const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
   "/hub",
+  "/activity",
   "/attention",
   "/lanes",
   "/files",
@@ -121,6 +124,10 @@ const PRODUCT_ANALYTICS_ROUTE_ROOTS = [
 
 export function productAnalyticsScreenForPathname(pathname: string): string {
   if (pathname === "/project" || pathname.startsWith("/project/")) return "project";
+  // Activity used to be the "/attention" route, and the screen name is derived
+  // from the path root. Mapping it explicitly keeps one PostHog series across
+  // the rename instead of forking it into "attention" and "activity".
+  if (isActivityRoute(pathname)) return "attention";
   const root = PRODUCT_ANALYTICS_ROUTE_ROOTS.find(
     (candidate) => pathname === candidate || pathname.startsWith(`${candidate}/`),
   );
@@ -344,8 +351,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const isOnboardingRoute = location.pathname === "/onboarding";
   const isPersonalChatsRoute =
     location.pathname === "/chats" || location.pathname.startsWith("/chats/");
-  const isAttentionRoute =
-    location.pathname === "/attention" || location.pathname.startsWith("/attention/");
+  const activityDeepLink = isActivityRoute(location.pathname);
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
   const isWebHubRoute = isWebClientMode() && location.pathname === "/hub";
@@ -358,9 +364,26 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   });
   const isWorkAdjacentRoute = isWorkRoute || isLanesRoute;
   const isLanesRouteRef = useRef(isLanesRoute);
+
+  // Activity is a modal over whatever tab is in front, not a tab of its own, so
+  // the shell owns whether it is up. `/activity` (and its `/attention`
+  // predecessor) stay valid deep links: they open the pane and immediately hand
+  // the URL back, so the surface underneath is a real tab rather than a blank
+  // route that exists only to host an overlay.
+  const [activityPaneOpen, setActivityPaneOpen] = useState(false);
+  const lastNonActivityRouteRef = useRef("/work");
+  if (!activityDeepLink) {
+    lastNonActivityRouteRef.current = `${location.pathname}${location.search}`;
+  }
+  useEffect(() => {
+    if (!activityDeepLink) return;
+    setActivityPaneOpen(true);
+    navigate(lastNonActivityRouteRef.current, { replace: true });
+  }, [activityDeepLink, navigate]);
+
   useAppWideSessionAttention();
   useCtoAttention();
-  useAttentionSync(isAttentionRoute);
+  useActivitySync(activityPaneOpen);
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;
@@ -1130,6 +1153,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const tintClass = useMemo(() => {
     const tintMap: Record<string, string> = {
+      "/activity": "tab-tint-work",
       "/attention": "tab-tint-work",
       "/lanes": "tab-tint-lanes",
       "/files": "tab-tint-files",
@@ -1187,6 +1211,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           accountRouteActive={isAccountRoute}
           hubRouteActive={isWebHubRoute}
           onNavigate={(path, opts) => navigate(path, opts)}
+          onOpenActivityPane={() => setActivityPaneOpen(true)}
         />
       </div>
 
@@ -1692,6 +1717,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           ) : null}
         </main>
       </div>
+
+      <ActivityPane open={activityPaneOpen} onClose={() => setActivityPaneOpen(false)} />
 
       <CommandPalette open={commandOpen} onOpenChange={setCommandOpen} />
       <WorktreeOpenDialog />

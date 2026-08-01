@@ -51,6 +51,7 @@ public enum ADESharedContainer {
     /// calls `WidgetCenter.shared.reloadAllTimelines()` on change.
     public static let workspaceSnapshotKey = "ade.workspaceSnapshot"
     public static let attentionSnapshotKey = "ade.attentionSnapshot.v1"
+    public static let attentionPendingAcksKey = "ade.attentionPendingAcks.v1"
     public static let pushPreferencesKey = "ade.push.prefs"
     public static let pendingAccountDeviceRevocationKey =
         "ade.attention.pending-account-device-revocation.v1"
@@ -148,6 +149,12 @@ public enum ADESharedContainer {
         decoder.dateDecodingStrategy = .custom { decoder in
             let container = try decoder.singleValueContainer()
             if let seconds = try? container.decode(Double.self) {
+                guard seconds.isFinite, abs(seconds) < 3_200_000_000 else {
+                    throw DecodingError.dataCorruptedError(
+                        in: container,
+                        debugDescription: "Attention timestamp is outside the supported range"
+                    )
+                }
                 return Date(timeIntervalSince1970: seconds)
             }
             let raw = try container.decode(String.self)

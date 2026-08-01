@@ -75,7 +75,7 @@ import {
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import { HeaderAttentionControl } from "../attention/HeaderAttentionControl";
+import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";
@@ -951,12 +951,15 @@ export function TopBar({
   personalChatsRouteActive = false,
   accountRouteActive = false,
   hubRouteActive = false,
+  onOpenActivityPane,
   onNavigate,
 }: {
   personalChatsRouteActive?: boolean;
   accountRouteActive?: boolean;
   hubRouteActive?: boolean;
   onNavigate?: (path: string, opts?: { replace?: boolean }) => void;
+  /** Raises the shell's Activity pane over whatever tab is in front. */
+  onOpenActivityPane?: () => void;
 } = {}) {
   const project = useAppStore((s) => s.project);
   const hasProject = Boolean(project?.rootPath);
@@ -1586,10 +1589,14 @@ export function TopBar({
     window.ade.app.newWindow().catch(() => {});
   }, [isProjectBusy]);
 
-  // Attention is account-wide, so it never depends on a project being open.
-  const handleOpenAttentionCenter = useCallback(() => {
-    onNavigate?.("/attention");
-  }, [onNavigate]);
+  // Activity is account-wide, so it never depends on a project being open — and
+  // it is a modal, not a tab, so opening it flips shell state instead of
+  // navigating. The `/activity` pathname still works as a deep link; the shell
+  // turns it back into this same flip.
+  const handleOpenActivityPane = useCallback(() => {
+    if (onOpenActivityPane) onOpenActivityPane();
+    else onNavigate?.("/activity");
+  }, [onNavigate, onOpenActivityPane]);
 
   // Clicking a project tab while either the personal-chats or account machine
   // route is foreground must leave it, or ProjectTabHost's route replay never
@@ -2740,11 +2747,11 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: attention · status · updates · utility cluster */}
+      {/* Trailing controls: activity · status · updates · utility cluster */}
       <div className="flex shrink-0 items-center gap-2">
-        {/* Account-wide Attention — the one place every machine's work surfaces,
+        {/* Account-wide Activity — the one place every machine's work surfaces,
             reachable from every tab and project without a nav detour. */}
-        <HeaderAttentionControl onOpenCenter={handleOpenAttentionCenter} />
+        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
         {/* App-global voice capture — visible from any tab while recording. */}
         <GlobalVoiceCaptureIndicator />

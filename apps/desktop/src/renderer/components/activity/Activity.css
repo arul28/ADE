@@ -1,0 +1,1207 @@
+/* Activity chrome: the tone system every Activity surface shares, the row
+   chrome for `ActivityCard`, the expanded pane (split columns + slide-over
+   detail), and the settings popover.
+
+   This replaces `AttentionCenter.css`, which was a 1761-line page stylesheet
+   for a route that no longer exists. Almost none of it survived on purpose:
+   the container changed from a full-page route to a modal, and the rows became
+   Tailwind `ActivityCard`s, so the `attention-item-*` / `attention-roster-*` /
+   `attention-breadcrumb-*` families died with the components that used them.
+   What was worth keeping — the tone table, the plan-progress bar, the recent
+   activity rail, and the settings popover — was copied by hand rather than
+   swept, because a mechanical `attention-` → `activity-` rename would have
+   produced `activity-activity-list`.
+
+   Rows are Tailwind; only what needs a per-tone colour lives here, driven by
+   the `--tone-color` variable each `.activity-tone-*` class sets. */
+
+/* ── Tones ──────────────────────────────────────────────────────────────
+   One hue, one meaning — the same table as
+   `shared/sessionStatusPresentation.ts`. Unscoped on purpose: a tone class
+   means the same thing in the header popover, the pane, and the detail sheet,
+   and scoping it per surface is how three copies drift apart. */
+
+.activity-tone-amber { --tone-color: #fbbf24; }
+.activity-tone-red { --tone-color: #f87171; }
+.activity-tone-violet { --tone-color: #a78bfa; }
+.activity-tone-blue { --tone-color: #60a5fa; }
+.activity-tone-cyan { --tone-color: #22d3ee; }
+.activity-tone-emerald { --tone-color: #34d399; }
+.activity-tone-neutral { --tone-color: #a1a1aa; }
+
+/* 400-level tones sit near 1.7:1 on a white card; light mode uses the 600/700
+   equivalents so pills and dots stay legible instead of washing out. */
+[data-theme="light"] .activity-tone-amber { --tone-color: #b45309; }
+[data-theme="light"] .activity-tone-red { --tone-color: #dc2626; }
+[data-theme="light"] .activity-tone-violet { --tone-color: #6d28d9; }
+[data-theme="light"] .activity-tone-blue { --tone-color: #1d4ed8; }
+[data-theme="light"] .activity-tone-cyan { --tone-color: #0e7490; }
+[data-theme="light"] .activity-tone-emerald { --tone-color: #047857; }
+[data-theme="light"] .activity-tone-neutral { --tone-color: #52525b; }
+
+/* ── Row chrome (the card body itself is Tailwind) ──────────────────── */
+
+.activity-card {
+  --tone-color: #a1a1aa;
+  transition: background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.activity-card::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--tone-color);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+
+.activity-card:hover,
+.activity-card:focus-visible,
+.activity-card[data-selected="true"] {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  outline: none;
+}
+
+.activity-card:hover::before,
+.activity-card:focus-visible::before,
+.activity-card[data-selected="true"]::before {
+  opacity: 1;
+}
+
+.activity-card:focus-visible {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--tone-color) 55%, transparent);
+}
+
+/* The lane is the row's identity line. Accent, not tone: a lane's colour must
+   not change because its agent's phase did. */
+.activity-card-lane {
+  color: color-mix(in srgb, var(--color-accent) 82%, var(--color-fg));
+}
+
+.activity-card-unseen {
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--tone-color);
+}
+
+/* ── Pane shell ─────────────────────────────────────────────────────── */
+
+.activity-pane {
+  --activity-fs-2xs: 10px;
+  --activity-fs-xs: 11px;
+  --activity-fs-sm: 12px;
+  --activity-fs-md: 13px;
+  --activity-hairline: color-mix(in srgb, var(--color-border) 70%, transparent);
+  --activity-surface: color-mix(in srgb, var(--color-card) 94%, var(--color-bg));
+  --activity-sunken: color-mix(in srgb, var(--color-bg) 45%, transparent);
+  --tone-color: #a1a1aa;
+  color: var(--color-fg);
+  background: var(--activity-surface);
+}
+
+.activity-pane:focus-visible,
+.activity-pane [role="dialog"]:focus-visible {
+  outline: none;
+}
+
+.activity-pane-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 10px 10px 14px;
+  border-bottom: 1px solid var(--activity-hairline);
+}
+
+.activity-pane-head h2 {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.activity-pane-machines {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-pane-freshness {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 7px;
+  border: 1px solid var(--activity-hairline);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-card) 60%, transparent);
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-2xs);
+  font-weight: 600;
+}
+
+button.activity-pane-freshness {
+  cursor: pointer;
+}
+
+.activity-pane-freshness.is-error {
+  border-color: color-mix(in srgb, var(--color-error, #ef4444) 45%, transparent);
+  color: var(--color-error, #ef4444);
+}
+
+.activity-pane-icon-button {
+  display: inline-flex;
+  height: 24px;
+  width: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  color: var(--color-muted-fg);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.activity-pane-icon-button:hover,
+.activity-pane-icon-button:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  color: var(--color-fg);
+  outline: none;
+}
+
+.activity-pane-spin {
+  animation: activity-spin 1.1s linear infinite;
+}
+
+@keyframes activity-spin {
+  to { transform: rotate(360deg); }
+}
+
+.activity-pane-alert {
+  display: flex;
+  flex-shrink: 0;
+  align-items: flex-start;
+  gap: 7px;
+  padding: 8px 14px;
+  border-bottom: 1px solid var(--activity-hairline);
+  background: color-mix(in srgb, var(--color-error, #ef4444) 10%, transparent);
+  color: var(--color-error, #ef4444);
+  font-size: var(--activity-fs-xs);
+  line-height: 1.45;
+}
+
+/* ── Filters ────────────────────────────────────────────────────────── */
+
+.activity-filters {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-bottom: 1px solid var(--activity-hairline);
+}
+
+.activity-filter {
+  position: relative;
+}
+
+.activity-filter-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 24px;
+  padding: 0 8px;
+  border: 1px solid var(--activity-hairline);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-card) 60%, transparent);
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  font-weight: 600;
+  transition: color 120ms ease, border-color 120ms ease, background-color 120ms ease;
+}
+
+.activity-filter-trigger:hover,
+.activity-filter-trigger:focus-visible {
+  color: var(--color-fg);
+  outline: none;
+}
+
+.activity-filter-trigger[data-active="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  color: var(--color-accent);
+}
+
+.activity-filter-menu {
+  position: absolute;
+  z-index: 5;
+  top: calc(100% + 5px);
+  left: 0;
+  display: flex;
+  min-width: 190px;
+  max-height: 280px;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 4px;
+  border: 1px solid var(--activity-hairline);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-card) 97%, var(--color-bg));
+  box-shadow: 0 22px 55px -25px rgba(0, 0, 0, 0.75);
+}
+
+.activity-filter-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 7px;
+  border-radius: 7px;
+  color: var(--color-fg);
+  font-size: var(--activity-fs-sm);
+  text-align: left;
+}
+
+.activity-filter-option:hover,
+.activity-filter-option:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  outline: none;
+}
+
+.activity-filter-option > span:first-child {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-filter-clear {
+  flex-shrink: 0;
+  padding: 0 6px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  font-weight: 600;
+}
+
+.activity-filter-clear:hover,
+.activity-filter-clear:focus-visible {
+  color: var(--color-fg);
+  outline: none;
+  text-decoration: underline;
+}
+
+/* ── Split body ─────────────────────────────────────────────────────── */
+
+.activity-pane-body {
+  position: relative;
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  grid-template-columns: minmax(0, 1.55fr) minmax(280px, 1fr);
+  overflow: hidden;
+}
+
+.activity-column {
+  display: flex;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.activity-column + .activity-column {
+  border-left: 1px solid var(--activity-hairline);
+  background: var(--activity-sunken);
+}
+
+.activity-column-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px 8px;
+  border-bottom: 1px solid var(--activity-hairline);
+}
+
+.activity-column-head h3 {
+  margin: 0;
+  font-size: var(--activity-fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--color-muted-fg);
+}
+
+.activity-column-head-count {
+  flex: 1;
+  color: var(--color-muted-fg);
+  font-family: var(--font-mono);
+  font-size: var(--activity-fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.activity-column-action {
+  flex-shrink: 0;
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  font-weight: 600;
+  transition: color 120ms ease, background-color 120ms ease;
+}
+
+.activity-column-action:hover,
+.activity-column-action:focus-visible {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  outline: none;
+}
+
+.activity-column-scroll {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 1px;
+  overflow-y: auto;
+  padding: 5px;
+}
+
+.activity-section-heading {
+  position: sticky;
+  top: -5px;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  padding: 8px 7px 5px;
+  background: color-mix(in srgb, var(--color-card) 94%, var(--color-bg));
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.activity-section-dot {
+  width: 6px;
+  height: 6px;
+  flex-shrink: 0;
+  border-radius: 999px;
+  background: var(--tone-color);
+}
+
+.activity-section-count {
+  color: var(--tone-color);
+  font-family: var(--font-mono);
+  font-size: var(--activity-fs-2xs);
+  font-variant-numeric: tabular-nums;
+}
+
+/* An offline machine's rows are memory, not observation: label the boundary
+   once and dim what follows rather than repeating a warning per row. */
+.activity-offline-divider {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 6px 7px 3px;
+  padding-top: 6px;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-2xs);
+  font-weight: 600;
+}
+
+.activity-offline-group {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  opacity: 0.55;
+}
+
+.activity-more {
+  align-self: flex-start;
+  margin: 4px 0 6px 8px;
+  padding: 3px 7px;
+  border-radius: 7px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  font-weight: 600;
+}
+
+.activity-more:hover,
+.activity-more:focus-visible {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+  outline: none;
+}
+
+/* ── Inbox rows ─────────────────────────────────────────────────────── */
+
+.activity-inbox-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 8px;
+  border-radius: 9px;
+  text-align: left;
+  transition: background-color 120ms ease;
+}
+
+.activity-inbox-row:hover,
+.activity-inbox-row:focus-within {
+  background: color-mix(in srgb, var(--color-fg) 6%, transparent);
+}
+
+.activity-inbox-open {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 8px;
+  text-align: left;
+}
+
+.activity-inbox-open:focus-visible {
+  outline: none;
+}
+
+.activity-inbox-icon {
+  display: inline-flex;
+  height: 24px;
+  width: 24px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  border: 1px solid color-mix(in srgb, var(--tone-color) 26%, transparent);
+  background: color-mix(in srgb, var(--tone-color) 11%, transparent);
+  color: var(--tone-color);
+}
+
+.activity-inbox-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+}
+
+.activity-inbox-copy strong {
+  overflow: hidden;
+  font-size: var(--activity-fs-sm);
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-inbox-copy span {
+  overflow: hidden;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-inbox-dismiss {
+  display: inline-flex;
+  height: 22px;
+  width: 22px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--color-muted-fg);
+  opacity: 0;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.activity-inbox-row:hover .activity-inbox-dismiss,
+.activity-inbox-dismiss:focus-visible {
+  opacity: 1;
+}
+
+.activity-inbox-dismiss:hover,
+.activity-inbox-dismiss:focus-visible {
+  background: color-mix(in srgb, var(--color-fg) 9%, transparent);
+  color: var(--color-fg);
+  outline: none;
+}
+
+/* ── Detail sheet ───────────────────────────────────────────────────── */
+
+/* The sheet slides over both columns rather than replacing one, so the list
+   you came from stays where your eye left it. */
+.activity-sheet-scrim {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  background: color-mix(in srgb, var(--color-bg) 55%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.activity-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 3;
+  display: flex;
+  width: 62%;
+  min-width: 380px;
+  flex-direction: column;
+  overflow: hidden;
+  border-left: 1px solid var(--activity-hairline);
+  background: color-mix(in srgb, var(--color-card) 98%, var(--color-bg));
+  box-shadow: -24px 0 60px -32px rgba(0, 0, 0, 0.75);
+  transform: translateX(0);
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .activity-sheet {
+    animation: activity-sheet-in 180ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+}
+
+@keyframes activity-sheet-in {
+  from { transform: translateX(14px); opacity: 0; }
+  to { transform: translateX(0); opacity: 1; }
+}
+
+.activity-sheet-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px 9px 8px;
+  border-bottom: 1px solid var(--activity-hairline);
+}
+
+.activity-sheet-breadcrumb {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  overflow: hidden;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activity-sheet-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+  padding: 16px;
+}
+
+.activity-sheet-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 640;
+  letter-spacing: -0.01em;
+}
+
+.activity-sheet-kicker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  color: var(--tone-color);
+  font-size: var(--activity-fs-xs);
+  font-weight: 650;
+}
+
+.activity-sheet-note {
+  margin: 8px 0 0;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-md);
+  font-style: italic;
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+}
+
+.activity-sheet-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+}
+
+.activity-sheet-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.activity-sheet-section h4 {
+  margin: 0 0 8px;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-2xs);
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.activity-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.activity-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 11px;
+  border: 1px solid var(--activity-hairline);
+  border-radius: 8px;
+  color: var(--color-fg);
+  font-size: var(--activity-fs-sm);
+  font-weight: 600;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+.activity-action[data-tone="primary"] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 70%, var(--color-accent-deep, var(--color-accent)));
+  color: #fff;
+}
+
+.activity-action[data-tone="danger"] {
+  border-color: color-mix(in srgb, #f87171 45%, transparent);
+  color: #f87171;
+}
+
+.activity-action[data-tone="secondary"]:hover,
+.activity-action[data-tone="ghost"]:hover {
+  background: color-mix(in srgb, var(--color-fg) 7%, transparent);
+}
+
+.activity-action:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.activity-progress-track {
+  height: 5px;
+  margin-top: 10px;
+  overflow: hidden;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+}
+
+.activity-progress-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, color-mix(in srgb, var(--tone-color) 72%, white), var(--tone-color));
+  box-shadow: 0 0 12px color-mix(in srgb, var(--tone-color) 35%, transparent);
+  transition: width 260ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.activity-plan-current {
+  margin: 9px 0 0;
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-md);
+  overflow-wrap: anywhere;
+}
+
+/* A vertical rail through the bullets: the list is a sequence, and the rail is
+   what says so without numbering it. */
+.activity-recent {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.activity-recent::before {
+  content: "";
+  position: absolute;
+  top: 10px;
+  bottom: 10px;
+  left: 3px;
+  width: 1px;
+  background: color-mix(in srgb, var(--color-border) 85%, transparent);
+}
+
+.activity-recent li {
+  position: relative;
+  display: flex;
+  gap: 9px;
+  padding: 5px 0;
+  color: color-mix(in srgb, var(--color-muted-fg) 92%, transparent);
+  font-size: var(--activity-fs-md);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.activity-recent-node {
+  z-index: 1;
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  margin-top: 5px;
+  border: 2px solid color-mix(in srgb, var(--color-card) 82%, var(--color-bg));
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--tone-color) 68%, var(--color-muted-fg));
+}
+
+.activity-sheet-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 9px 11px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-muted-fg);
+  font-size: var(--activity-fs-xs);
+  line-height: 1.45;
+}
+
+.activity-sheet-banner[data-tone="error"] {
+  border-color: color-mix(in srgb, #f87171 30%, transparent);
+  background: color-mix(in srgb, #f87171 8%, transparent);
+  color: #f87171;
+}
+
+/* ── Empty states ───────────────────────────────────────────────────── */
+
+.activity-empty {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 40px 26px;
+  text-align: center;
+  color: var(--color-muted-fg);
+}
+
+.activity-empty strong {
+  color: var(--color-fg);
+  font-size: var(--activity-fs-md);
+  font-weight: 650;
+}
+
+.activity-empty p {
+  margin: 0;
+  max-width: 32ch;
+  font-size: var(--activity-fs-xs);
+  line-height: 1.5;
+}
+
+/* All-clear is a state worth designing, not a gap to apologise for. */
+.activity-calm-dot {
+  position: relative;
+  width: 9px;
+  height: 9px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, #34d399 78%, transparent);
+}
+
+.activity-calm-dot::after {
+  content: "";
+  position: absolute;
+  inset: -6px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, #34d399 26%, transparent);
+  animation: activity-calm 3.6s ease-in-out infinite;
+}
+
+@keyframes activity-calm {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 0.15; transform: scale(1.12); }
+}
+
+/* ── Settings popover ───────────────────────────────────────────────────
+   Moved verbatim (bar the tokens it used to inherit from the center's page
+   scope) so the gear behaves the same wherever it is mounted. */
+
+.activity-settings-wrap {
+  position: relative;
+}
+
+.activity-settings-trigger {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: color-mix(in srgb, var(--color-muted-fg) 92%, transparent);
+  transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
+}
+
+.activity-settings-trigger:hover,
+.activity-settings-trigger[aria-expanded="true"] {
+  color: var(--color-fg);
+  border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
+  background: color-mix(in srgb, var(--color-accent) 8%, var(--color-card));
+}
+
+.activity-settings-trigger:active {
+  transform: scale(0.94);
+}
+
+.activity-settings-popover {
+  position: absolute;
+  top: calc(100% + 9px);
+  right: 0;
+  z-index: 80;
+  width: min(400px, calc(100vw - 32px));
+  max-height: min(560px, calc(100vh - 120px));
+  overflow-y: auto;
+  border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--color-card) 97%, var(--color-bg));
+  box-shadow: 0 30px 80px -32px rgba(0, 0, 0, 0.86);
+  backdrop-filter: blur(30px) saturate(1.25);
+  transform-origin: top right;
+  color: var(--color-fg);
+}
+
+.activity-settings-popover:focus {
+  outline: none;
+}
+
+.activity-settings-popover > header {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  background: color-mix(in srgb, var(--color-card) 96%, var(--color-bg));
+}
+
+.activity-settings-popover > header > div {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.activity-settings-popover > header > div > span:last-child {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.activity-settings-popover > header strong {
+  font-size: 12px;
+  font-weight: 660;
+  letter-spacing: -0.01em;
+}
+
+.activity-settings-popover > header small {
+  margin-top: 2px;
+  color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
+  font-size: 11px;
+}
+
+.activity-settings-heading-icon {
+  display: inline-flex;
+  width: 31px;
+  height: 31px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 24%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-accent) 9%, transparent);
+  color: var(--color-accent-bright, var(--color-accent));
+}
+
+.activity-settings-account-badge {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+  color: color-mix(in srgb, var(--color-accent) 55%, var(--color-fg));
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.02em;
+}
+
+.activity-settings-popover section {
+  padding: 10px 10px 6px;
+}
+
+.activity-settings-popover section + section {
+  padding-top: 9px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+}
+
+.activity-settings-popover section h3 {
+  margin: 0 0 5px 3px;
+  color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.activity-settings-row {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px;
+  border-radius: 10px;
+  transition: background 130ms ease;
+}
+
+.activity-settings-row:hover {
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+}
+
+.activity-settings-row[data-disabled] {
+  opacity: 0.5;
+}
+
+.activity-settings-row-icon {
+  display: inline-flex;
+  width: 29px;
+  height: 29px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--color-bg) 46%, transparent);
+  color: color-mix(in srgb, var(--color-accent) 43%, var(--color-muted-fg));
+}
+
+.activity-settings-row-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.activity-settings-row-copy > span {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.activity-settings-row-copy strong {
+  font-size: 12px;
+  font-weight: 630;
+}
+
+.activity-settings-row-copy small {
+  flex: 0 0 auto;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  color: color-mix(in srgb, var(--color-accent) 50%, var(--color-fg));
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.activity-settings-row-copy em {
+  margin-top: 3px;
+  color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.35;
+}
+
+.activity-settings-row select {
+  width: 148px;
+  height: 27px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--color-bg) 62%, var(--color-card));
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 11px;
+}
+
+.activity-settings-switch {
+  position: relative;
+  width: 32px;
+  height: 19px;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--color-border) 90%, transparent);
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-muted) 80%, transparent);
+  transition: border-color 150ms ease, background 150ms ease;
+}
+
+.activity-settings-switch > span {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 13px;
+  height: 13px;
+  border-radius: 99px;
+  background: color-mix(in srgb, var(--color-muted-fg) 82%, white);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), background 150ms ease;
+}
+
+.activity-settings-switch[aria-checked="true"] {
+  border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 62%, var(--color-accent-deep, var(--color-accent)));
+}
+
+.activity-settings-switch[aria-checked="true"] > span {
+  background: #fff;
+  transform: translateX(13px);
+}
+
+.activity-settings-machines {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.activity-settings-loading {
+  display: flex;
+  min-height: 180px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
+  font-size: 13px;
+}
+
+.activity-settings-loading > span {
+  width: 14px;
+  height: 14px;
+  border: 2px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
+  border-top-color: var(--color-accent);
+  border-radius: 50%;
+  animation: activity-spin 700ms linear infinite;
+}
+
+.activity-settings-error {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin: 5px 10px 8px;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, #f87171 26%, transparent);
+  border-radius: 8px;
+  background: color-mix(in srgb, #f87171 7%, transparent);
+  color: #f87171;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.activity-settings-error svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.activity-settings-popover > footer {
+  position: sticky;
+  bottom: 0;
+  display: flex;
+  min-height: 46px;
+  align-items: center;
+  gap: 7px;
+  padding: 9px 10px;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
+  background: color-mix(in srgb, var(--color-card) 96%, var(--color-bg));
+}
+
+.activity-settings-popover > footer > span {
+  display: inline-flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 5px;
+  color: color-mix(in srgb, var(--color-muted-fg) 82%, transparent);
+  font-size: 11px;
+}
+
+.activity-settings-open-full {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  margin-top: 4px;
+  padding: 8px 10px;
+  border: 1px solid color-mix(in srgb, var(--color-border) 85%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--color-fg) 4%, transparent);
+  color: var(--color-secondary-fg);
+  font-size: 12px;
+  font-weight: 500;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.activity-settings-open-full:hover,
+.activity-settings-open-full:focus-visible {
+  color: var(--color-fg);
+  background: color-mix(in srgb, var(--color-fg) 8%, transparent);
+  outline: none;
+}
+
+/* ── Responsive and motion ──────────────────────────────────────────── */
+
+/* Below this the inbox column cannot hold a title and a meta line side by side
+   with the sessions list, so the sheet takes the whole width instead of
+   leaving a 120px sliver of columns nobody can read. */
+@media (max-width: 1080px) {
+  .activity-pane-body {
+    grid-template-columns: minmax(0, 1fr) minmax(240px, 0.8fr);
+  }
+
+  .activity-sheet {
+    width: 100%;
+    min-width: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .activity-pane *,
+  .activity-pane *::before,
+  .activity-pane *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+
+  .activity-calm-dot::after {
+    animation: none;
+  }
+}

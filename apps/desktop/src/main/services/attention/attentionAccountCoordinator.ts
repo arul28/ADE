@@ -2,6 +2,7 @@ import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/p
 import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
   DEFAULT_ATTENTION_PREFERENCES,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
@@ -16,7 +17,7 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
->;
+> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">>;
 
 type AttentionAccountCoordinatorOptions = {
   getLogger: () => Pick<Logger, "warn">;
@@ -46,6 +47,17 @@ type AttentionPreferenceUpdateRequest = AttentionPreferenceRequest & {
   preferences?: unknown;
 };
 
+export class ActivityAcknowledgmentStaleError extends Error {
+  readonly code = "activity_acknowledgment_stale" as const;
+
+  constructor(readonly staleItemIds: string[]) {
+    super(
+      "One or more Activity items changed after they loaded. Refresh Activity, then try again.",
+    );
+    this.name = "ActivityAcknowledgmentStaleError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -54,7 +66,7 @@ export class AttentionAccountCoordinator {
   private loggedRuntimeCompatibilityFailure = false;
   private lastSnapshotScope: AttentionSnapshot["scope"] | null = null;
   private lastSnapshotAccountOwnerId: string | null = null;
-  private readonly lastMachineItemRevisions = new Map<string, number>();
+  private readonly lastSnapshotItemRevisions = new Map<string, number>();
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
 
@@ -83,8 +95,8 @@ export class AttentionAccountCoordinator {
             accountOwnerId,
             availability: {
               state: "ready",
-              title: "Account Attention is live",
-              message: "Work from every signed-in ADE machine is available.",
+              title: "",
+              message: "",
               recovery: null,
             },
           };
@@ -107,12 +119,32 @@ export class AttentionAccountCoordinator {
             "getMachineSnapshot",
             {},
           );
-        const machineName = snapshot.machines?.[0]?.name?.trim() || "this Mac";
+        const generatedAt = new Date().toISOString();
+        const hostMachineKey = snapshot.streamId?.startsWith("machine:")
+          ? snapshot.streamId.slice("machine:".length)
+          : null;
+        const keyedHostMachine = hostMachineKey
+          ? snapshot.machines?.find((machine) => machine.machineKey === hostMachineKey)
+          : null;
+        const hostMachine = hostMachineKey
+          ? keyedHostMachine ?? snapshot.machines?.[0]
+          : null;
+        const resolvedHostMachineKey = hostMachine?.machineKey ?? hostMachineKey;
+        const stampHostMachine = <T extends { machineKey: string }>(machine: T): T =>
+          machine.machineKey === resolvedHostMachineKey
+            ? { ...machine, online: true, lastSeenAt: generatedAt }
+            : machine;
+        const machineName = hostMachine?.name?.trim() || "this Mac";
         const accountAvailability = accountFailure
           ? this.describeAccountFailure(accountFailure)
           : null;
         const machineSnapshot: AttentionSnapshot = {
           ...snapshot,
+          machines: snapshot.machines?.map(stampHostMachine),
+          items: snapshot.items.map((item) =>
+            item.machine && typeof item.machine.machineKey === "string"
+              ? { ...item, machine: stampHostMachine(item.machine) }
+              : item),
           scope: "machine",
           accountOwnerId,
           availability: accountOwnerId
@@ -131,7 +163,7 @@ export class AttentionAccountCoordinator {
             : {
                 state: "signed_out",
                 title: `Showing ${machineName}`,
-                message: "Sign in to combine Attention across every ADE machine.",
+                message: "Sign in to combine Activity across every ADE machine.",
                 recovery: "sign_in",
                 hostName: machineName,
               },
@@ -144,7 +176,7 @@ export class AttentionAccountCoordinator {
           throw new Error(
             accountFailure
               ? (
-                  "Account Attention could not connect, and this Mac cannot provide a fallback. "
+                  "Account Activity could not connect, and this Mac cannot provide a fallback. "
                   + compatibilityMessage
                 )
               : compatibilityMessage,
@@ -162,7 +194,7 @@ export class AttentionAccountCoordinator {
       );
     }
     throw new Error(
-      "Attention cannot reach this Mac's ADE brain. Restart ADE on this Mac, then try again.",
+      "Activity cannot reach this Mac's ADE brain. Restart ADE on this Mac, then try again.",
     );
   }
 
@@ -176,7 +208,7 @@ export class AttentionAccountCoordinator {
         .slice(0, 64)
       : [];
     if (itemIds.length === 0) {
-      throw new Error("At least one Attention item id is required.");
+      throw new Error("At least one Activity item id is required.");
     }
     const acknowledgment = {
       itemIds,
@@ -188,7 +220,7 @@ export class AttentionAccountCoordinator {
     const currentAccountOwnerId = this.currentAccountOwnerId();
     if (this.lastSnapshotAccountOwnerId !== currentAccountOwnerId) {
       throw new Error(
-        "The ADE account changed after Attention loaded. Refresh Attention, then try again.",
+        "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
       );
     }
     if (this.lastSnapshotScope === "machine") {
@@ -199,7 +231,7 @@ export class AttentionAccountCoordinator {
           )
         : {};
       const staleItemIds = itemIds.filter((itemId) =>
-        sourceRevisions[itemId] !== this.lastMachineItemRevisions.get(itemId));
+        sourceRevisions[itemId] !== this.lastSnapshotItemRevisions.get(itemId));
       if (staleItemIds.length > 0) {
         throw new Error(
           "This machine can only acknowledge the exact item revision that was loaded. Refresh and try again.",
@@ -215,11 +247,11 @@ export class AttentionAccountCoordinator {
         || requestedAccountOwnerId !== this.lastSnapshotAccountOwnerId
       ) {
         throw new Error(
-          "The machine Attention account scope changed after this item loaded. Refresh and try again.",
+          "The machine Activity account scope changed after this item loaded. Refresh and try again.",
         );
       }
       if (!this.options.localRuntimeConnectionPool) {
-        throw new Error("Machine Attention is unavailable until this Mac's ADE brain is ready.");
+        throw new Error("Machine Activity is unavailable until this Mac's ADE brain is ready.");
       }
       await this.options.localRuntimeConnectionPool.callAttention<void>(
         "acknowledge",
@@ -233,19 +265,52 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (this.lastSnapshotScope !== "account") {
-      throw new Error("Refresh Attention before acknowledging this item.");
+      throw new Error("Refresh Activity before acknowledging this item.");
     }
     if (currentAccountOwnerId && this.options.accountAttentionClient) {
-      await this.options.accountAttentionClient.acknowledgeAttention(acknowledgment);
+      const requestedAccountOwnerId =
+        request.expectedAccountOwnerId === null
+        || typeof request.expectedAccountOwnerId === "string"
+          ? request.expectedAccountOwnerId?.trim() || null
+          : undefined;
+      if (
+        requestedAccountOwnerId === undefined
+        || requestedAccountOwnerId !== this.lastSnapshotAccountOwnerId
+      ) {
+        throw new Error(
+          "The account Activity scope changed after this item loaded. Refresh and try again.",
+        );
+      }
+      const sourceRevisions = Object.fromEntries(
+        itemIds.flatMap((itemId) => {
+          const revision = this.lastSnapshotItemRevisions.get(itemId);
+          return revision === undefined ? [] : [[itemId, revision]];
+        }),
+      );
+      const staleItemIds = itemIds.filter((itemId) => sourceRevisions[itemId] === undefined);
+      if (staleItemIds.length > 0) {
+        throw new ActivityAcknowledgmentStaleError(staleItemIds);
+      }
+      const result = await this.options.accountAttentionClient.acknowledgeAttention({
+        ...acknowledgment,
+        sourceRevisions,
+        expectedAccountOwnerId: requestedAccountOwnerId,
+      });
+      if (!result) {
+        throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
+      }
+      if (result.stale.length > 0) {
+        throw new ActivityAcknowledgmentStaleError(result.stale);
+      }
       return;
     }
-    throw new Error("Sign in again, refresh Attention, then try to acknowledge this item.");
+    throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
   }
 
   async reportPresence(input: unknown): Promise<void> {
     const presence = isRecord(input) ? input : null;
     if (!presence || typeof presence.deviceId !== "string" || !presence.deviceId.trim()) {
-      throw new Error("A valid Attention presence payload is required.");
+      throw new Error("A valid Activity presence payload is required.");
     }
     if (this.currentAccountOwnerId() && this.options.accountAttentionClient) {
       await this.options.accountAttentionClient.reportAttentionPresence(
@@ -278,7 +343,7 @@ export class AttentionAccountCoordinator {
   async putPreferences(input: unknown): Promise<void> {
     const request = isRecord(input) ? input as AttentionPreferenceUpdateRequest : null;
     if (!request || !isRecord(request.preferences)) {
-      throw new Error("A valid Attention preferences payload is required.");
+      throw new Error("A valid Activity preferences payload is required.");
     }
     const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
     if (this.options.accountAttentionClient) {
@@ -289,7 +354,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw new Error("Account Attention is unavailable until this Mac's ADE brain is ready.");
+      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
     }
     await this.options.localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
@@ -297,6 +362,34 @@ export class AttentionAccountCoordinator {
         accountOwnerId,
         preferences: request.preferences,
       },
+    );
+  }
+
+  async putActivityMachinePreferences(
+    machineKey: unknown,
+    partial: unknown,
+    expectedAccountOwnerId?: unknown,
+  ): Promise<void> {
+    const normalizedMachineKey = typeof machineKey === "string" ? machineKey.trim() : "";
+    if (!normalizedMachineKey || !isRecord(partial)) {
+      throw new Error("A valid Activity machine preference update is required.");
+    }
+    const accountOwnerId = expectedAccountOwnerId === undefined
+      ? this.currentAccountOwnerId()
+      : this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!accountOwnerId) {
+      throw new Error("Sign in before changing Activity machine preferences.");
+    }
+    if (
+      !this.options.accountAttentionClient
+      || !this.options.accountAttentionClient.putActivityMachinePreferences
+    ) {
+      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
+    }
+    await this.options.accountAttentionClient.putActivityMachinePreferences(
+      accountOwnerId,
+      normalizedMachineKey,
+      partial as Partial<AttentionPreferenceScope>,
     );
   }
 
@@ -310,21 +403,19 @@ export class AttentionAccountCoordinator {
   ): void {
     this.lastSnapshotScope = snapshot.scope ?? null;
     this.lastSnapshotAccountOwnerId = accountOwnerId;
-    this.lastMachineItemRevisions.clear();
-    if (snapshot.scope === "machine") {
-      for (const item of snapshot.items) {
-        this.lastMachineItemRevisions.set(item.id, item.revision);
-      }
+    this.lastSnapshotItemRevisions.clear();
+    for (const item of snapshot.items) {
+      this.lastSnapshotItemRevisions.set(item.id, item.revision);
     }
   }
 
   private requireCurrentAccountOwner(value: unknown): string {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     if (!accountOwnerId) {
-      throw new Error("A valid Attention account owner is required.");
+      throw new Error("A valid Activity account owner is required.");
     }
     if (this.currentAccountOwnerId() !== accountOwnerId) {
-      throw new Error("The ADE account changed before Attention preferences could be used.");
+      throw new Error("The ADE account changed before Activity preferences could be used.");
     }
     return accountOwnerId;
   }
@@ -345,7 +436,7 @@ export class AttentionAccountCoordinator {
       });
     }
     return (
-      "Account Attention requires a newer connected ADE brain. "
+      "Account Activity requires a newer connected ADE brain. "
       + "Update and restart ADE on the host machine so the notch can receive account-wide work."
     );
   }
@@ -358,20 +449,20 @@ export class AttentionAccountCoordinator {
         title: "Account session needs attention",
         message:
           "ADE could not verify your account after refreshing the session. "
-          + "Sign out and back in to restore account-wide Attention.",
+          + "Sign out and back in to restore account-wide Activity.",
         recovery: "sign_in",
       };
     }
     if (error instanceof PushRelayRequestError && error.status === 503) {
       return {
-        title: "Account Attention is temporarily unavailable",
+        title: "Account Activity is temporarily unavailable",
         message:
           "ADE's account service is not ready. Machine-scoped work remains available while it recovers.",
         recovery: "retry",
       };
     }
     return {
-      title: "Account Attention is reconnecting",
+      title: "Account Activity is reconnecting",
       message:
         "ADE cannot reach the account stream right now. Machine-scoped work remains available.",
       recovery: "retry",

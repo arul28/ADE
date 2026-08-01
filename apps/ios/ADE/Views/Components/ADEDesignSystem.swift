@@ -859,7 +859,7 @@ struct ADEHubBackButton: View {
 
 struct ADERootToolbarControls: View {
   @EnvironmentObject private var syncService: SyncService
-  @EnvironmentObject private var drawer: AttentionDrawerModel
+  @EnvironmentObject private var drawer: ActivityDrawerModel
 
   /// Disambiguator folded into inspector ids so two simultaneous instances of
   /// this control (e.g. the active and incoming root tab during a transition)
@@ -938,7 +938,7 @@ struct ADERootToolbarControls: View {
       icon: "bell.fill",
       tint: hasUnread ? ADESharedTheme.warningAmber : PrsGlass.textSecondary,
       isAlive: hasUnread,
-      accessibilityLabel: "Attention items: \(drawer.unreadCount)",
+      accessibilityLabel: hasUnread ? "Activity, \(drawer.unreadCount) need you" : "Activity",
       action: { syncService.attentionDrawerPresented = true }
     )
   }
@@ -1020,7 +1020,7 @@ struct ADERootToolbarLeading: View {
     HStack(spacing: 10) {
       ADEConnectionDot()
       ADEProjectHubButton()
-      AttentionDrawerButton()
+      ActivityBellButton()
     }
     .fixedSize(horizontal: true, vertical: false)
   }
@@ -1124,7 +1124,7 @@ struct ADERootToolbarLeadingItems: ToolbarContent {
     .sharedBackgroundVisibility(.hidden)
 
     ToolbarItem(placement: .topBarLeading) {
-      AttentionDrawerButton()
+      ActivityBellButton()
     }
     .sharedBackgroundVisibility(.hidden)
   }

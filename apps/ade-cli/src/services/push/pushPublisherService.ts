@@ -1,5 +1,4 @@
 import path from "node:path";
-import { createHash } from "node:crypto";
 import type { Logger } from "../../../../desktop/src/main/services/logging/logger";
 import type { AgentChatEventEnvelope, AgentChatSessionSummary } from "../../../../desktop/src/shared/types/chat";
 import {
@@ -10,10 +9,16 @@ import {
   type AttentionEventKind,
   type AttentionItem,
   type AttentionPhase,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
+  type AttentionTombstone,
 } from "../../../../desktop/src/shared/types/attention";
+import type {
+  SyncRosterChatStatus,
+  SyncRosterProject,
+} from "../../../../desktop/src/shared/types/sync";
 import type { PtyExitEvent, TerminalSessionStatus } from "../../../../desktop/src/shared/types/sessions";
 import { canonicalSessionState } from "../../../../desktop/src/shared/sessionCanonicalState";
 import type { PrNotificationKind } from "../../../../desktop/src/shared/types/prs";
@@ -26,10 +31,16 @@ import type {
 } from "../../../../desktop/src/shared/types/push";
 import type { PushRegistrationStore } from "./pushRegistrationStore";
 import type {
+  ActivityPublishResult,
   PushRelayAlertItem,
   PushRelayClient,
   PushRelayLiveActivityItem,
 } from "./pushRelayClient";
+import { PushRelayRequestError } from "./pushRelayClient";
+import {
+  activityPublishFingerprint,
+  withActivityFingerprints,
+} from "./activityFingerprint";
 
 export const AGENT_RUNS_ACTIVITY_ID = "agent-runs";
 export const AGENT_RUNS_ATTRIBUTES_TYPE = "ADEAgentRunsAttributes";
@@ -79,8 +90,12 @@ const RUNNING_TTL_MS = 2 * 60 * 60 * 1000; // 2h for running/starting
 const WAITING_TTL_MS = 24 * 60 * 60 * 1000; // 24h for waiting_for_*
 const PR_LIVE_ACTIVITY_TTL_MS = 45 * 60 * 1000; // keep recent PR status visible, then age it out
 const ATTENTION_RECENT_TTL_MS = 24 * 60 * 60 * 1000;
-/** The relay rejects an Attention publish containing more than 64 items. */
-const ATTENTION_PUBLISH_MAX_ITEMS = 64;
+export const ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE = 300;
+export const ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE = 100;
+export const ACTIVITY_PUBLISH_PAGE_ITEMS = 48;
+export const ACTIVITY_RECONCILE_INTERVAL_MS = 30 * 60_000;
+const ACTIVITY_ROSTER_CACHE_MS = 10_000;
+const LEGACY_ATTENTION_PUBLISH_MAX_ITEMS = 64;
 const DEFAULT_FLUSH_DEBOUNCE_MS = 2_000;
 const DEFAULT_PROMPT_FLUSH_MS = 150;
 const PUBLISH_RETRY_MS = 30_000;
@@ -112,6 +127,8 @@ export type AgentRunState = {
   itemId: string | null;
   startedAt: number;
   lastActiveAt: number;
+  /** Immutable while `phase` is unchanged. */
+  statusSinceAt: number;
   metaResolved: boolean;
 };
 
@@ -151,6 +168,7 @@ export type PrLiveActivityState = {
   repoOwner: string | null;
   repoName: string | null;
   updatedAt: number;
+  statusSinceAt: number;
 };
 
 type PendingAlert = {
@@ -191,6 +209,9 @@ export type PushPublisherDeps = {
     deviceId?: string | null;
   } | null;
   getAccountOwnerId?: () => string | null;
+  activityRosterProvider?: {
+    buildSnapshot(): Promise<SyncRosterProject[]>;
+  } | null;
   /** Test seams. */
   now?: () => number;
   flushDebounceMs?: number;
@@ -472,13 +493,54 @@ function providerDisplayName(provider: string | null | undefined): string | null
   }
 }
 
-function fingerprintAttentionItem(value: Omit<AttentionItem, "fingerprint">): string {
-  return createHash("sha256").update(JSON.stringify(value), "utf8").digest("hex");
-}
-
 function agentAttentionPhase(phase: AgentRunPhase): AttentionPhase {
   if (phase === "waiting_for_approval" || phase === "waiting_for_input") return "needs_you";
   return phase;
+}
+
+function rosterAttentionPhase(status: SyncRosterChatStatus): AttentionPhase {
+  switch (status) {
+    case "awaiting":
+      return "needs_you";
+    case "failed":
+      return "failed";
+    case "running":
+      return "running";
+    case "idle":
+      return "stale";
+    case "ended":
+      return "completed";
+  }
+}
+
+function rosterActivityTier(status: SyncRosterChatStatus): "signal" | "ambient" | "idle" {
+  switch (status) {
+    case "awaiting":
+    case "failed":
+      return "signal";
+    case "running":
+      return "ambient";
+    case "idle":
+    case "ended":
+      return "idle";
+  }
+}
+
+function prActivityTier(phase: AttentionPhase): "signal" | "ambient" {
+  return phase === "checks_failing"
+    || phase === "changes_requested"
+    || phase === "review_requested"
+    || phase === "merge_ready"
+    ? "signal"
+    : "ambient";
+}
+
+function validTimestampMs(
+  value: string | null | undefined,
+  fallback: number,
+): number {
+  const parsed = typeof value === "string" ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
 }
 
 function agentAttentionEventKind(phase: AgentRunPhase): AttentionEventKind {
@@ -520,11 +582,32 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   const runs = new Map<string, AgentRunState>();
   const recentRuns = new Map<string, AgentRunState>();
   const prActivities = new Map<string, PrLiveActivityState>();
+  const rosterPhaseAnchors = new Map<string, {
+    status: SyncRosterChatStatus;
+    statusSinceAt: number;
+  }>();
   const lastMachineSnapshotItems = new Map<string, AttentionItem>();
   let lastMachineSnapshotAccountOwnerId: string | null | undefined;
   let pendingAlerts: PendingAlert[] = [];
   const lastAlertFingerprintByKey = new Map<string, Map<string, string>>();
-  let lastAttentionFingerprint: string | null = null;
+  const lastPublishedFingerprintById = new Map<string, string>();
+  const initialAccountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+  const persistedPublishedRevisions =
+    deps.store.getLastPublishedActivityRevisions?.() ?? null;
+  const lastPublishedRevisionById = new Map<string, number>(
+    Object.entries(persistedPublishedRevisions?.revisions ?? {}),
+  );
+  const lastOverflowRevisionById = new Map<string, number>();
+  let activityProtocol = deps.store.getActivityProtocol?.() ?? null;
+  let activityRosterProvider = deps.activityRosterProvider ?? null;
+  let rosterCache: { at: number; projects: SyncRosterProject[] } | null = null;
+  let rosterEpoch = 0;
+  let reconcilePending = true;
+  let lastReconcileAt = 0;
+  let lastActivityAccountOwnerId: string | null | undefined =
+    persistedPublishedRevisions?.accountOwnerId ?? initialAccountOwnerId;
+  let activityRosterCap = ACTIVITY_ROSTER_MAX_ITEMS_PER_MACHINE;
+  let lastLegacyAttentionFingerprint: string | null = null;
   let lastAttentionPublishedAt = 0;
   /** Last Live Activity content confirmed per phone. Absence means start. */
   const liveActivityFingerprintByDevice = new Map<string, string>();
@@ -547,6 +630,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
   let attentionHeartbeatTimer: NodeJS.Timeout | null = null;
   let flushFireAt = 0;
   let flushing = false;
+  let scheduledFlushIncludesActivity = false;
   let finalAttentionSnapshotPending = false;
   let finalAttentionSnapshotQueued = false;
   let disposed = false;
@@ -566,6 +650,13 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
   const logWarn = (message: string, error: unknown): void => {
     deps.logger.warn(message, { error: error instanceof Error ? error.message : String(error) });
+  };
+
+  const persistLastPublishedRevisions = (): void => {
+    deps.store.setLastPublishedActivityRevisions?.({
+      accountOwnerId: lastActivityAccountOwnerId ?? null,
+      revisions: Object.fromEntries(lastPublishedRevisionById),
+    });
   };
 
   const isGated = (): boolean => {
@@ -591,6 +682,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         itemId: null,
         startedAt: ts,
         lastActiveAt: ts,
+        statusSinceAt: ts,
         metaResolved: false,
       };
       runs.set(sessionId, run);
@@ -603,6 +695,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     run.lastActiveAt = Math.max(now(), run.lastActiveAt + 1);
   };
 
+  const setRunPhase = (run: AgentRunState, phase: AgentRunPhase): void => {
+    if (run.phase === phase) return;
+    run.phase = phase;
+    run.statusSinceAt = run.lastActiveAt;
+  };
+
   const runSubject = (run: AgentRunState): string => run.agent?.trim() || run.title?.trim() || "Agent";
 
   const laneTitleLine = (run: AgentRunState): string => {
@@ -610,16 +708,37 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     return parts.length > 0 ? parts.join(" · ") : run.title?.trim() || "Agent run";
   };
 
-  const buildAttentionItems = (nowMs: number): AttentionItem[] => {
+  const loadActivityRoster = async (nowMs: number): Promise<SyncRosterProject[]> => {
+    if (!activityRosterProvider) return [];
+    if (rosterCache && nowMs - rosterCache.at < ACTIVITY_ROSTER_CACHE_MS) {
+      return rosterCache.projects;
+    }
+    try {
+      const projects = await activityRosterProvider.buildSnapshot();
+      rosterCache = { at: nowMs, projects };
+      return projects;
+    } catch (error) {
+      logWarn("attention.activity_roster_build_failed", error);
+      const projects = rosterCache?.projects ?? [];
+      rosterCache = { at: nowMs, projects };
+      return projects;
+    }
+  };
+
+  const buildAttentionItems = async (
+    nowMs: number,
+    includeRoster: boolean,
+  ): Promise<AttentionItem[]> => {
     const { machineKey } = deps.store.getOrCreateIdentity();
     const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
+    const nowIso = new Date(nowMs).toISOString();
     const machine = {
       machineKey,
       accountMachineKey: accountMachineIdentity?.machineKey ?? null,
       deviceId: accountMachineIdentity?.deviceId ?? null,
       name: deps.machineName,
       online: true,
-      lastSeenAt: null,
+      lastSeenAt: nowIso,
     };
     const attentionRuns = new Map<string, AgentRunState>([
       ...recentRuns,
@@ -668,10 +787,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           payload: { sessionId: run.sessionId },
         });
       }
-      const withoutFingerprint: Omit<AttentionItem, "fingerprint"> = {
+      const item: AttentionItem = {
         contractVersion: ATTENTION_CONTRACT_VERSION,
         id: `agent:${machineKey}:${run.sessionId}`,
         revision: run.lastActiveAt,
+        fingerprint: "",
+        activityTier: phase === "needs_you" || phase === "failed" ? "signal" : "ambient",
         kind: "agent",
         eventKind,
         phase,
@@ -715,15 +836,120 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         actions,
         occurredAt: new Date(run.startedAt).toISOString(),
         updatedAt: new Date(run.lastActiveAt).toISOString(),
+        statusSince: new Date(run.statusSinceAt).toISOString(),
         seenAt: null,
         dismissedAt: null,
         expiresAt,
       };
-      return {
-        ...withoutFingerprint,
-        fingerprint: fingerprintAttentionItem(withoutFingerprint),
-      };
+      return withActivityFingerprints(item);
     });
+
+    const rosterItems = includeRoster
+      ? (await loadActivityRoster(nowMs)).flatMap((project): AttentionItem[] => {
+        const laneNames = new Map(project.lanes.map((lane) => [lane.id, lane.name]));
+        return project.chats.map((chat): AttentionItem => {
+          const phase = rosterAttentionPhase(chat.status);
+          const activityTier = rosterActivityTier(chat.status);
+          const revision = validTimestampMs(chat.lastActivityAt, nowMs);
+          const activityAt = new Date(revision).toISOString();
+          const id = `agent:${machineKey}:${chat.id}`;
+          const existingAnchor = rosterPhaseAnchors.get(id);
+          const statusSinceAt = existingAnchor?.status === chat.status
+            ? existingAnchor.statusSinceAt
+            : Math.max(revision, (existingAnchor?.statusSinceAt ?? -1) + 1);
+          rosterPhaseAnchors.set(id, { status: chat.status, statusSinceAt });
+          const provider = providerDisplayName(chat.provider ?? chat.toolType);
+          const subject = provider ?? chat.title?.trim() ?? "Agent";
+          const preview = sanitizeAttentionPreview(
+            chat.attentionMessage?.trim()
+              || chat.statusNote?.trim()
+              || chat.preview?.trim()
+              || chat.title?.trim()
+              || laneNames.get(chat.laneId)
+              || "ADE session",
+          );
+          const actions: AttentionItem["actions"] = [
+            { id: "open", kind: "open", label: "Open" },
+          ];
+          if (phase === "needs_you") {
+            actions.unshift({
+              id: "answer",
+              kind: "answer",
+              label: "Answer",
+              payload: { sessionId: chat.id },
+            });
+          }
+          return withActivityFingerprints({
+            contractVersion: ATTENTION_CONTRACT_VERSION,
+            id,
+            revision,
+            fingerprint: "",
+            activityTier,
+            kind: "agent",
+            eventKind: phase === "needs_you"
+              ? "agent_needs_you"
+              : phase === "failed"
+                ? "agent_failed"
+                : phase === "completed"
+                  ? "agent_completed"
+                  : "agent_running",
+            phase,
+            machine,
+            project: {
+              projectId: project.projectId,
+              name: project.displayName,
+              rootPath: project.rootPath ?? null,
+            },
+            laneId: chat.laneId,
+            laneName: laneNames.get(chat.laneId) ?? null,
+            provider,
+            model: chat.model ?? null,
+            title: phase === "needs_you"
+              ? `${subject} needs you`
+              : phase === "failed"
+                ? `${subject} failed`
+                : phase === "completed"
+                  ? `${subject} is done`
+                  : phase === "stale"
+                    ? `${subject} is idle`
+                    : `${subject} is working`,
+            preview,
+            privacyPreview: phase === "needs_you"
+              ? "An ADE agent needs your input."
+              : phase === "failed"
+                ? "An ADE agent run failed."
+                : phase === "completed"
+                  ? "An ADE agent is done."
+                  : phase === "stale"
+                    ? "An ADE agent session is idle."
+                    : "An ADE agent is working.",
+            detail: chat.statusNote ? sanitizeAttentionPreview(chat.statusNote, 1_000) : null,
+            recentActivity: [],
+            planProgress: null,
+            destination: {
+              kind: "session",
+              sessionId: chat.id,
+              itemId: null,
+            },
+            actions,
+            occurredAt: activityAt,
+            updatedAt: activityAt,
+            statusSince: new Date(statusSinceAt).toISOString(),
+            seenAt: null,
+            dismissedAt: null,
+            expiresAt: activityTier === "idle"
+              ? null
+              : new Date(revision + (phase === "running" ? RUNNING_TTL_MS : ATTENTION_RECENT_TTL_MS)).toISOString(),
+          });
+        });
+      })
+      : [];
+    if (includeRoster) {
+      const rosterItemIds = new Set(rosterItems.map((item) => item.id));
+      for (const id of rosterPhaseAnchors.keys()) {
+        if (!rosterItemIds.has(id)) rosterPhaseAnchors.delete(id);
+      }
+    }
 
     const prItems = [...prActivities.values()].map((pr): AttentionItem => {
       const scopeKey = pr.scopeKey;
@@ -746,10 +972,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
           payload: { prId: pr.prId, prNumber: pr.prNumber },
         });
       }
-      const withoutFingerprint: Omit<AttentionItem, "fingerprint"> = {
+      const item: AttentionItem = {
         contractVersion: ATTENTION_CONTRACT_VERSION,
         id: `pull-request:${machineKey}:${pr.id}`,
         revision: pr.updatedAt,
+        fingerprint: "",
+        activityTier: prActivityTier(mapped.phase),
         kind: "pull_request",
         eventKind: mapped.eventKind,
         phase: mapped.phase,
@@ -780,36 +1008,71 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         actions,
         occurredAt: new Date(pr.updatedAt).toISOString(),
         updatedAt: new Date(pr.updatedAt).toISOString(),
+        statusSince: new Date(pr.statusSinceAt).toISOString(),
         seenAt: null,
         dismissedAt: null,
         expiresAt: new Date(pr.updatedAt + ATTENTION_RECENT_TTL_MS).toISOString(),
       };
-      return {
-        ...withoutFingerprint,
-        fingerprint: fingerprintAttentionItem(withoutFingerprint),
-      };
+      return withActivityFingerprints(item);
     });
-    return [...runItems, ...prItems];
+
+    const agentItems = new Map<string, AttentionItem>();
+    for (const item of rosterItems) agentItems.set(item.id, item);
+    // Live state is authoritative on the shared terminal_sessions.id/sessionId
+    // namespace and therefore wins every collision with a roster row.
+    for (const item of runItems) agentItems.set(item.id, item);
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    const remoteRevisionById = new Map(
+      (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
+        .map((acknowledgment) => [acknowledgment.itemId, acknowledgment.sourceRevision]),
+    );
+    return [...agentItems.values(), ...prItems].map((item) => {
+      const revision = Math.max(
+        item.revision,
+        lastPublishedRevisionById.get(item.id) ?? 0,
+        remoteRevisionById.get(item.id) ?? 0,
+      );
+      return revision === item.revision ? item : { ...item, revision };
+    });
   };
 
-  const mergeMachineAcknowledgments = (items: AttentionItem[]): AttentionItem[] =>
-    items.map((item) => {
-      const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
-      const acknowledgment = deps.store.getAttentionAcknowledgment?.(
-        item.id,
-        accountOwnerId,
-      );
+  const mergeMachineAcknowledgments = (items: AttentionItem[]): AttentionItem[] => {
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    const remoteById = new Map(
+      (deps.store.listRemoteAttentionAcknowledgments?.(accountOwnerId) ?? [])
+        .map((acknowledgment) => [acknowledgment.itemId, acknowledgment]),
+    );
+    return items.map((item) => {
+      const local = deps.store.getAttentionAcknowledgment?.(item.id, accountOwnerId);
+      const remote = remoteById.get(item.id);
+      let seenAt = item.seenAt;
+      let dismissedAt = item.dismissedAt;
       if (
-        !acknowledgment
-        || acknowledgment.accountOwnerId !== accountOwnerId
-        || acknowledgment.sourceRevision < item.revision
-      ) return item;
-      return {
+        local
+        && local.accountOwnerId === accountOwnerId
+        && local.sourceRevision >= item.revision
+      ) {
+        seenAt = local.seenAt;
+        dismissedAt = local.dismissedAt;
+      }
+      // The relay is canonical for account acknowledgments. A revision-current
+      // remote value replaces the local projection, including explicit nulls.
+      if (
+        remote
+        && remote.accountOwnerId === accountOwnerId
+        && remote.sourceRevision >= item.revision
+      ) {
+        seenAt = remote.seenAt;
+        dismissedAt = remote.dismissedAt;
+      }
+      return withActivityFingerprints({
         ...item,
-        seenAt: acknowledgment.seenAt,
-        dismissedAt: acknowledgment.dismissedAt,
-      };
+        seenAt,
+        dismissedAt,
+        ...(dismissedAt ? { activityTier: "ambient" as const } : {}),
+      });
     });
+  };
 
   const reconcileMachineAcknowledgments = async (
     currentItems: readonly AttentionItem[],
@@ -822,8 +1085,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         const current = currentById.get(acknowledgment.itemId);
         return Boolean(
           current
-          && acknowledgment.accountOwnerId === accountOwnerId
-          && acknowledgment.sourceRevision >= current.revision,
+          && acknowledgment.accountOwnerId === accountOwnerId,
         );
       });
     for (let offset = 0; offset < pending.length; offset += 64) {
@@ -845,6 +1107,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         try {
           const result = await deps.relayClient.acknowledgeAttention({
             itemIds: group.map((acknowledgment) => acknowledgment.itemId),
+            sourceRevisions: Object.fromEntries(
+              group.map((acknowledgment) => [
+                acknowledgment.itemId,
+                currentById.get(acknowledgment.itemId)!.revision,
+              ]),
+            ),
             seenAt: group[0]!.seenAt,
             ...(group[0]!.dismissedAt
               ? { dismissedAt: group[0]!.dismissedAt }
@@ -852,12 +1120,15 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             expectedAccountOwnerId: accountOwnerId,
           });
           if (result) {
+            const applied = new Set(result.applied);
             deps.store.markAttentionAcknowledgmentsSynced?.(
-              group.map((acknowledgment) => ({
-                itemId: acknowledgment.itemId,
-                accountOwnerId: acknowledgment.accountOwnerId,
-                updatedAt: acknowledgment.updatedAt,
-              })),
+              group
+                .filter((acknowledgment) => applied.has(acknowledgment.itemId))
+                .map((acknowledgment) => ({
+                  itemId: acknowledgment.itemId,
+                  accountOwnerId: acknowledgment.accountOwnerId,
+                  updatedAt: acknowledgment.updatedAt,
+                })),
             );
           }
         } catch (error) {
@@ -876,8 +1147,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     lastAlertFingerprintByKey.delete(dedupeKey);
   };
 
-  const scheduleFlush = (immediate: boolean): void => {
+  const scheduleFlush = (immediate: boolean, activityChanged = true): void => {
     if (disposed) return;
+    if (activityChanged) scheduledFlushIncludesActivity = true;
     const delay = immediate ? promptFlushMs : flushDebounceMs;
     const fireAt = now() + delay;
     // Keep the earliest scheduled flush — a prompt (immediate) is never pushed
@@ -888,7 +1160,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushFireAt = 0;
-      void runFlush();
+      const presenceOnly = !scheduledFlushIncludesActivity;
+      scheduledFlushIncludesActivity = false;
+      void runFlush(presenceOnly);
     }, delay);
   };
 
@@ -972,7 +1246,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
             || (record.settleOverride !== "active" && record.settledAt)
           )
         ) {
-          run.phase = "completed";
+          setRunPhase(run, "completed");
           recentRuns.set(run.sessionId, { ...run });
           runs.delete(run.sessionId);
           continue;
@@ -1132,56 +1406,349 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     return { items, commit };
   };
 
-  const publishAttentionSnapshot = async (
+  type ActivityPublishResponse = {
+    protocol: number;
+    result: ActivityPublishResult;
+    capShrunk: boolean;
+  };
+
+  const recordActivityPublishResponse = (
+    result: ActivityPublishResult,
     nowMs: number,
-  ): Promise<"published" | "unchanged" | "unavailable"> => {
-    if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
-    // Bound the full snapshot before fingerprinting it. The relay treats the
-    // published window as authoritative for this machine, so selection must be
-    // deterministic and use the same canonical priority order as every ADE
-    // Attention surface (needs-you/failures first, then recency and stable id).
-    const items = sortAttentionItems(buildAttentionItems(nowMs))
-      .slice(0, ATTENTION_PUBLISH_MAX_ITEMS);
-    const fingerprint = JSON.stringify(items.map((item) => ({
-      id: item.id,
-      revision: item.revision,
-      fingerprint: item.fingerprint,
-    })));
+    allowCapShrink = true,
+  ): ActivityPublishResponse => {
+    const protocol = Number.isSafeInteger(result.protocol) && Number(result.protocol) >= 2
+      ? Number(result.protocol)
+      : 1;
+    if (activityProtocol !== protocol) {
+      activityProtocol = protocol;
+      deps.store.setActivityProtocol?.(protocol);
+    }
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    const acknowledgments = result.acks ?? [];
+    if (acknowledgments.length > 0) {
+      deps.store.recordRemoteAttentionAcknowledgments?.({
+        accountOwnerId,
+        acknowledgments,
+        updatedAt: new Date(nowMs).toISOString(),
+      });
+    }
+    const previousCap = activityRosterCap;
+    if (allowCapShrink && protocol >= 2 && result.itemsTruncated === true) {
+      activityRosterCap = Math.max(
+        ACTIVITY_ROSTER_MIN_ITEMS_PER_MACHINE,
+        Math.floor(activityRosterCap * 0.9),
+      );
+      reconcilePending = true;
+    }
+    lastAttentionPublishedAt = nowMs;
+    return {
+      protocol,
+      result,
+      capShrunk: activityRosterCap < previousCap,
+    };
+  };
+
+  const selectActivityRoster = (items: AttentionItem[]): {
+    selected: AttentionItem[];
+    overflow: AttentionItem[];
+  } => {
+    const ordered = sortAttentionItems(items);
+    const foreground = ordered.filter((item) => item.activityTier !== "idle");
+    const idle = ordered
+      .filter((item) => item.activityTier === "idle")
+      .sort((left, right) => {
+        const time = Date.parse(right.updatedAt) - Date.parse(left.updatedAt);
+        return Number.isFinite(time) && time !== 0 ? time : left.id.localeCompare(right.id);
+      });
+    const all = [...foreground, ...idle];
+    return {
+      selected: all.slice(0, activityRosterCap),
+      overflow: all.slice(activityRosterCap),
+    };
+  };
+
+  const activityTombstone = (
+    id: string,
+    sourceRevision: number,
+    nowMs: number,
+  ): AttentionTombstone => ({
+    id,
+    revision: Math.max(nowMs, sourceRevision + 1),
+    deletedAt: new Date(nowMs).toISOString(),
+  });
+
+  const publishLegacyAttention = async (
+    nowMs: number,
+    force: boolean,
+  ): Promise<"published" | "unchanged" | "unavailable" | "protocol2"> => {
+    const items = mergeMachineAcknowledgments(
+      sortAttentionItems(await buildAttentionItems(nowMs, false))
+        .slice(0, LEGACY_ATTENTION_PUBLISH_MAX_ITEMS),
+    );
+    const fingerprint = JSON.stringify(
+      items.map((item) => [item.id, activityPublishFingerprint(item)]),
+    );
     if (
-      fingerprint === lastAttentionFingerprint
+      !force
+      && fingerprint === lastLegacyAttentionFingerprint
       && nowMs - lastAttentionPublishedAt < ATTENTION_HEARTBEAT_MS
     ) {
       await reconcileMachineAcknowledgments(items);
       return "unchanged";
     }
-    try {
-      const result = await deps.relayClient.publishAttention({
+    const result = await deps.relayClient.publishAttention?.({
+      machineName: deps.machineName,
+      fullSnapshot: true,
+      items,
+    });
+    if (!result) return "unavailable";
+    const response = recordActivityPublishResponse(result, nowMs, false);
+    for (const item of items) {
+      lastPublishedRevisionById.set(item.id, item.revision);
+    }
+    persistLastPublishedRevisions();
+    lastLegacyAttentionFingerprint = fingerprint;
+    await reconcileMachineAcknowledgments(items);
+    if (response.protocol >= 2) {
+      reconcilePending = true;
+      return "protocol2";
+    }
+    reconcilePending = false;
+    return result.unchanged === true || result.suppressed === true
+      ? "unchanged"
+      : "published";
+  };
+
+  const publishProtocol2Reconcile = async (
+    nowMs: number,
+    items: AttentionItem[],
+    overflow: AttentionItem[],
+  ): Promise<"published" | "unchanged" | "unavailable" | "legacy"> => {
+    rosterEpoch = deps.store.nextActivityRosterEpoch?.() ?? rosterEpoch + 1;
+    const tombstones = overflow.map((item) =>
+      activityTombstone(item.id, item.revision, nowMs));
+    const itemPages: AttentionItem[][] = [];
+    const tombstonePages: AttentionTombstone[][] = [];
+    for (let offset = 0; offset < items.length; offset += ACTIVITY_PUBLISH_PAGE_ITEMS) {
+      itemPages.push(items.slice(offset, offset + ACTIVITY_PUBLISH_PAGE_ITEMS));
+    }
+    for (let offset = 0; offset < tombstones.length; offset += ACTIVITY_PUBLISH_PAGE_ITEMS) {
+      tombstonePages.push(tombstones.slice(offset, offset + ACTIVITY_PUBLISH_PAGE_ITEMS));
+    }
+    const pageCount = Math.max(1, itemPages.length, tombstonePages.length);
+    let capShrunk = false;
+    let unchanged = true;
+    for (let page = 0; page < pageCount; page += 1) {
+      const result = await deps.relayClient.publishAttention!({
         machineName: deps.machineName,
-        fullSnapshot: true,
-        items,
+        mode: "reconcile",
+        rosterEpoch,
+        page,
+        final: page === pageCount - 1,
+        items: itemPages[page] ?? [],
+        tombstones: tombstonePages[page] ?? [],
       });
-      if (result) {
-        lastAttentionFingerprint = fingerprint;
-        lastAttentionPublishedAt = nowMs;
-        await reconcileMachineAcknowledgments(items);
-        return result.unchanged === true || result.suppressed === true
-          ? "unchanged"
-          : "published";
+      if (!result) return "unavailable";
+      const response = recordActivityPublishResponse(result, nowMs, page === 0);
+      if (response.protocol < 2) return "legacy";
+      for (const item of itemPages[page] ?? []) {
+        lastPublishedRevisionById.set(item.id, item.revision);
       }
-      return "unavailable";
+      persistLastPublishedRevisions();
+      capShrunk = capShrunk || response.capShrunk;
+      unchanged = unchanged && (result.unchanged === true || result.suppressed === true);
+    }
+    lastPublishedFingerprintById.clear();
+    lastPublishedRevisionById.clear();
+    lastOverflowRevisionById.clear();
+    for (const item of items) {
+      lastPublishedFingerprintById.set(item.id, activityPublishFingerprint(item));
+      lastPublishedRevisionById.set(item.id, item.revision);
+    }
+    for (const item of overflow) {
+      lastOverflowRevisionById.set(item.id, item.revision);
+    }
+    persistLastPublishedRevisions();
+    lastReconcileAt = nowMs;
+    reconcilePending = capShrunk;
+    await reconcileMachineAcknowledgments(items);
+    return unchanged ? "unchanged" : "published";
+  };
+
+  const publishProtocol2Delta = async (
+    nowMs: number,
+    items: AttentionItem[],
+    overflow: AttentionItem[],
+    presenceOnly: boolean,
+  ): Promise<"published" | "unchanged" | "unavailable" | "legacy"> => {
+    const selectedIds = new Set(items.map((item) => item.id));
+    const overflowById = new Map(overflow.map((item) => [item.id, item]));
+    const changed = items.filter((item) =>
+      lastPublishedFingerprintById.get(item.id) !== activityPublishFingerprint(item));
+    const droppedTombstones = [...lastPublishedFingerprintById.keys()]
+      .filter((id) => !selectedIds.has(id))
+      .map((id) => activityTombstone(
+        id,
+        lastPublishedRevisionById.get(id) ?? 0,
+        nowMs,
+      ));
+    const overflowTombstones = overflow
+      .filter((item) => lastOverflowRevisionById.get(item.id) !== item.revision)
+      .map((item) => activityTombstone(
+        item.id,
+        Math.max(item.revision, lastPublishedRevisionById.get(item.id) ?? 0),
+        nowMs,
+      ));
+    const tombstones = [...new Map(
+      [...droppedTombstones, ...overflowTombstones]
+        .map((tombstone) => [tombstone.id, tombstone]),
+    ).values()];
+    if (changed.length === 0 && tombstones.length === 0) {
+      if (!presenceOnly && nowMs - lastAttentionPublishedAt < ATTENTION_HEARTBEAT_MS) {
+        await reconcileMachineAcknowledgments(items);
+        return "unchanged";
+      }
+      const result = await deps.relayClient.publishAttention!({
+        machineName: deps.machineName,
+        mode: "presence",
+        rosterEpoch,
+        items: [],
+        tombstones: [],
+      });
+      if (!result) return "unavailable";
+      const response = recordActivityPublishResponse(result, nowMs);
+      return response.protocol >= 2 ? "unchanged" : "legacy";
+    }
+
+    // A normal delta is bounded by the machine cap, but a burst can still
+    // exceed one wire page. Page explicit deltas too; unlike reconcile, no
+    // page/final fields are needed because every page is independently safe.
+    const pageCount = Math.max(
+      Math.ceil(changed.length / ACTIVITY_PUBLISH_PAGE_ITEMS),
+      Math.ceil(tombstones.length / ACTIVITY_PUBLISH_PAGE_ITEMS),
+    );
+    let unchanged = true;
+    for (let page = 0; page < pageCount; page += 1) {
+      const pageItems = changed.slice(
+        page * ACTIVITY_PUBLISH_PAGE_ITEMS,
+        (page + 1) * ACTIVITY_PUBLISH_PAGE_ITEMS,
+      );
+      const pageTombstones = tombstones.slice(
+        page * ACTIVITY_PUBLISH_PAGE_ITEMS,
+        (page + 1) * ACTIVITY_PUBLISH_PAGE_ITEMS,
+      );
+      const result = await deps.relayClient.publishAttention!({
+        machineName: deps.machineName,
+        mode: "delta",
+        rosterEpoch,
+        items: pageItems,
+        tombstones: pageTombstones,
+      });
+      if (!result) return "unavailable";
+      const response = recordActivityPublishResponse(result, nowMs, page === 0);
+      if (response.protocol < 2) return "legacy";
+      unchanged = unchanged && (result.unchanged === true || result.suppressed === true);
+      for (const item of pageItems) {
+        lastPublishedFingerprintById.set(item.id, activityPublishFingerprint(item));
+        lastPublishedRevisionById.set(item.id, item.revision);
+        lastOverflowRevisionById.delete(item.id);
+      }
+      for (const tombstone of pageTombstones) {
+        lastPublishedFingerprintById.delete(tombstone.id);
+        lastPublishedRevisionById.delete(tombstone.id);
+        const overflowItem = overflowById.get(tombstone.id);
+        if (overflowItem) lastOverflowRevisionById.set(tombstone.id, overflowItem.revision);
+        else lastOverflowRevisionById.delete(tombstone.id);
+      }
+      persistLastPublishedRevisions();
+    }
+    await reconcileMachineAcknowledgments(items);
+    return unchanged ? "unchanged" : "published";
+  };
+
+  const publishActivity = async (
+    nowMs: number,
+    presenceOnly: boolean,
+  ): Promise<"published" | "unchanged" | "unavailable"> => {
+    if (typeof deps.relayClient.publishAttention !== "function") return "unavailable";
+    const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
+    if (!accountOwnerId) return "unavailable";
+    if (lastActivityAccountOwnerId !== accountOwnerId) {
+      lastPublishedFingerprintById.clear();
+      lastPublishedRevisionById.clear();
+      lastOverflowRevisionById.clear();
+      lastActivityAccountOwnerId = accountOwnerId;
+      persistLastPublishedRevisions();
+      reconcilePending = true;
+    }
+    if (lastReconcileAt > 0 && nowMs - lastReconcileAt >= ACTIVITY_RECONCILE_INTERVAL_MS) {
+      reconcilePending = true;
+    }
+
+    try {
+      if (activityProtocol == null || activityProtocol < 2) {
+        const legacy = await publishLegacyAttention(nowMs, activityProtocol == null || reconcilePending);
+        if (legacy !== "protocol2") return legacy;
+      }
+
+      // A pure presence heartbeat must never touch the all-project disk roster.
+      if (presenceOnly && !reconcilePending) {
+        const result = await deps.relayClient.publishAttention({
+          machineName: deps.machineName,
+          mode: "presence",
+          rosterEpoch,
+          items: [],
+          tombstones: [],
+        });
+        if (!result) return "unavailable";
+        const response = recordActivityPublishResponse(result, nowMs);
+        if (response.protocol >= 2) return "unchanged";
+        return await publishLegacyAttention(nowMs, true) === "published"
+          ? "published"
+          : "unchanged";
+      }
+
+      const built = mergeMachineAcknowledgments(await buildAttentionItems(nowMs, true));
+      const { selected, overflow } = selectActivityRoster(built);
+      const protocolResult = reconcilePending
+        ? await publishProtocol2Reconcile(nowMs, selected, overflow)
+        : await publishProtocol2Delta(nowMs, selected, overflow, presenceOnly);
+      if (protocolResult === "unavailable") {
+        reconcilePending = true;
+        return "unavailable";
+      }
+      if (protocolResult !== "legacy") return protocolResult;
+      lastPublishedFingerprintById.clear();
+      lastPublishedRevisionById.clear();
+      lastOverflowRevisionById.clear();
+      persistLastPublishedRevisions();
+      reconcilePending = true;
+      return await publishLegacyAttention(nowMs, true) === "published"
+        ? "published"
+        : "unchanged";
     } catch (error) {
+      reconcilePending = true;
+      if (
+        error instanceof PushRelayRequestError
+        && error.status >= 400
+        && error.status < 500
+      ) {
+        activityProtocol = null;
+        deps.store.setActivityProtocol?.(null);
+      }
       logWarn("attention.publish_failed", error);
       scheduleRetry();
       return "unavailable";
     }
   };
 
-  const flush = async (): Promise<void> => {
+  const flush = async (presenceOnly = false): Promise<void> => {
     const nowMs = now();
     pruneRuns(nowMs);
     prunePrActivities(nowMs);
     await resolveMissingMeta();
-    const attentionPublishResult = await publishAttentionSnapshot(nowMs);
+    const attentionPublishResult = await publishActivity(nowMs, presenceOnly);
     const accountAttentionPublished = attentionPublishResult === "published";
     const accountAttentionAvailable = attentionPublishResult !== "unavailable";
     if (isGated()) {
@@ -1450,19 +2017,19 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     flushTimer = setTimeout(() => {
       flushTimer = null;
       flushFireAt = 0;
-      void runFlush();
+      void runFlush(false);
     }, PUBLISH_RETRY_MS);
   };
 
-  const runFlush = async (): Promise<void> => {
+  const runFlush = async (presenceOnly = false): Promise<void> => {
     if (disposed) return;
     if (flushing) {
-      if (scopes.size > 0) scheduleFlush(false);
+      if (scopes.size > 0) scheduleFlush(false, !presenceOnly);
       return;
     }
     flushing = true;
     try {
-      await flush();
+      await flush(presenceOnly);
     } catch (error) {
       logWarn("push.flush_failed", error);
     } finally {
@@ -1482,7 +2049,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       // if another authoritative snapshot is still needed.
       if (flushing) return;
       finalAttentionSnapshotPending = false;
-      void runFlush();
+      void runFlush(false);
     });
   };
 
@@ -1503,7 +2070,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
 
     switch (event.type) {
       case "approval_request": {
-        run.phase = "waiting_for_approval";
+        setRunPhase(run, "waiting_for_approval");
         run.detail = event.description ?? run.detail;
         run.itemId = event.itemId || null;
         enqueueAlert({
@@ -1521,7 +2088,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         break;
       }
       case "structured_question": {
-        run.phase = "waiting_for_input";
+        setRunPhase(run, "waiting_for_input");
         run.detail = event.question ?? run.detail;
         enqueueAlert({
           sessionId,
@@ -1537,7 +2104,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       }
       case "pending_input_resolved": {
         if (run.phase === "waiting_for_approval" || run.phase === "waiting_for_input") {
-          run.phase = "running";
+          setRunPhase(run, "running");
         }
         run.itemId = null;
         // Allow a later prompt in the same session to alert again.
@@ -1548,28 +2115,28 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       case "status": {
         if (event.turnStatus !== "started") run.itemId = null;
         if (event.turnStatus === "started") {
-          if (isTerminalPhase(run.phase)) run.phase = "running";
+          if (isTerminalPhase(run.phase)) setRunPhase(run, "running");
         } else if (event.turnStatus === "failed") {
-          run.phase = "failed";
+          setRunPhase(run, "failed");
           enqueueFailedAlert(run);
         } else if (event.turnStatus === "completed" || event.turnStatus === "interrupted") {
-          run.phase = "completed";
+          setRunPhase(run, "completed");
         }
         break;
       }
       case "done": {
         if (event.status === "failed") {
-          run.phase = "failed";
+          setRunPhase(run, "failed");
           if (!run.model && event.model) run.model = event.model;
           enqueueFailedAlert(run);
         } else {
-          run.phase = "completed";
+          setRunPhase(run, "completed");
         }
         break;
       }
       default: {
         if (!isTerminalPhase(run.phase) && run.phase === "starting") {
-          run.phase = "running";
+          setRunPhase(run, "running");
         }
         break;
       }
@@ -1612,9 +2179,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       )
     ) {
       if (existing) {
-        existing.phase = "completed";
         existing.itemId = null;
         markRunUpdated(existing);
+        setRunPhase(existing, "completed");
         recentRuns.set(signal.sessionId, { ...existing });
         runs.delete(signal.sessionId);
         pendingAlerts = pendingAlerts.filter(
@@ -1655,7 +2222,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     if (existing && existing.kind === "chat") return;
     const run = ensureRun(signal.sessionId, scopeKey, "cli");
     markRunUpdated(run);
-    run.phase = phase;
+    setRunPhase(run, phase);
     if (!run.lane) {
       run.lane = scopes.get(scopeKey)?.resolveLaneName?.(signal.laneId) ?? signal.laneId ?? null;
     }
@@ -1676,8 +2243,8 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     // runtime signal stream never reports exit codes.
     const run = runs.get(event.sessionId);
     if (run && run.kind === "cli") {
-      run.phase = event.exitCode == null || event.exitCode === 0 ? "completed" : "failed";
       markRunUpdated(run);
+      setRunPhase(run, event.exitCode == null || event.exitCode === 0 ? "completed" : "failed");
       recentRuns.set(run.sessionId, { ...run });
       scheduleFlush(false);
     }
@@ -1761,9 +2328,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       ? (resolveLaneName?.(notification.laneId) ?? notification.laneId)
       : null;
     const activityId = prActivityId(scopeKey, notification);
+    const existingActivity = prActivities.get(activityId);
     const eventStamp = Math.max(
       now(),
-      (prActivities.get(activityId)?.updatedAt ?? -1) + 1,
+      (existingActivity?.updatedAt ?? -1) + 1,
     );
     prActivities.set(activityId, {
       id: activityId,
@@ -1776,6 +2344,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       repoOwner: notification.repoOwner?.trim() || null,
       repoName: notification.repoName?.trim() || null,
       updatedAt: eventStamp,
+      statusSinceAt: existingActivity?.phase === notification.kind
+        ? existingActivity.statusSinceAt
+        : eventStamp,
     });
     schedulePrActivityExpiry(eventStamp);
 
@@ -1893,6 +2464,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (disposed || warmed) return;
       warmed = true;
       void relayApnsConfigured().catch(() => {});
+      reconcilePending = true;
+      scheduleFlush(true);
+    },
+
+    setActivityRosterProvider(
+      provider: PushPublisherDeps["activityRosterProvider"],
+    ): void {
+      if (activityRosterProvider === provider) return;
+      activityRosterProvider = provider ?? null;
+      rosterCache = null;
+      reconcilePending = true;
+      if (warmed && scopes.size > 0) scheduleFlush(true);
     },
 
     /**
@@ -1924,7 +2507,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         unsubscribes: scopeUnsubscribes,
       });
       if (!attentionHeartbeatTimer) {
-        attentionHeartbeatTimer = setInterval(() => scheduleFlush(false), ATTENTION_HEARTBEAT_MS);
+        attentionHeartbeatTimer = setInterval(
+          () => scheduleFlush(false, false),
+          ATTENTION_HEARTBEAT_MS,
+        );
         attentionHeartbeatTimer.unref?.();
       }
       return () => detachScope(scopeKey);
@@ -1948,9 +2534,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       run.lane = request.laneId
         ? scopes.get(scopeKey)?.resolveLaneName?.(request.laneId) ?? request.laneId
         : run.lane;
-      run.phase = "waiting_for_input";
       run.detail = request.message;
       markRunUpdated(run);
+      setRunPhase(run, "waiting_for_input");
       run.metaResolved = true;
       // An explicit ask supersedes any pending approval on the same session:
       // clear the stale approval item + its queued alert/dedupe so the next
@@ -1978,9 +2564,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const run = runs.get(sessionId);
       if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
       if (run.phase !== "waiting_for_input" && run.phase !== "waiting_for_approval") return;
-      run.phase = "running";
       run.itemId = null;
       markRunUpdated(run);
+      setRunPhase(run, "running");
       pendingAlerts = pendingAlerts.filter(
         (alert) =>
           alert.dedupeKey !== `alert:${sessionId}:approval`
@@ -1995,9 +2581,9 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       if (disposed || !sessionId) return;
       const run = runs.get(sessionId);
       if (!run || (scopeKey != null && run.scopeKey !== scopeKey)) return;
-      run.phase = "completed";
       run.itemId = null;
       markRunUpdated(run);
+      setRunPhase(run, "completed");
       recentRuns.set(sessionId, { ...run });
       runs.delete(sessionId);
       pendingAlerts = pendingAlerts.filter(
@@ -2090,10 +2676,10 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
     async getMachineAttentionSnapshot(): Promise<AttentionSnapshot> {
       const nowMs = now();
       const { machineKey } = deps.store.getOrCreateIdentity();
-      const items = mergeMachineAcknowledgments(
-        sortAttentionItems(buildAttentionItems(nowMs))
-          .slice(0, ATTENTION_PUBLISH_MAX_ITEMS),
+      const built = mergeMachineAcknowledgments(
+        await buildAttentionItems(nowMs, activityProtocol != null && activityProtocol >= 2),
       );
+      const items = selectActivityRoster(built).selected;
       const accountMachineIdentity = deps.getAccountMachineIdentity?.() ?? null;
       const accountOwnerId = deps.getAccountOwnerId?.()?.trim() || null;
       const machine = items[0]?.machine ?? {
@@ -2102,7 +2688,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         deviceId: accountMachineIdentity?.deviceId ?? null,
         name: deps.machineName,
         online: true,
-        lastSeenAt: null,
+        lastSeenAt: new Date(nowMs).toISOString(),
       };
       lastMachineSnapshotItems.clear();
       for (const item of items) lastMachineSnapshotItems.set(item.id, item);
@@ -2142,12 +2728,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const expectedAccountOwnerId = args.expectedAccountOwnerId?.trim() || null;
       if (expectedAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after this machine Attention snapshot loaded. Refresh and try again.",
+          "The ADE account changed after this machine Activity snapshot loaded. Refresh and try again.",
         );
       }
       if (lastMachineSnapshotAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "Refresh machine Attention after changing ADE accounts, then try again.",
+          "Refresh machine Activity after changing ADE accounts, then try again.",
         );
       }
       const items = args.itemIds.flatMap((itemId) => {
@@ -2156,26 +2742,26 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       });
       if (items.length !== args.itemIds.length) {
         throw new Error(
-          "This machine can only acknowledge items from its latest Attention snapshot. Refresh and try again.",
+          "This machine can only acknowledge items from its latest Activity snapshot. Refresh and try again.",
         );
       }
       const staleItem = items.find((item) =>
         args.sourceRevisions[item.id] !== item.revision);
       if (staleItem) {
         throw new Error(
-          "This Attention item changed after it loaded. Refresh before acknowledging the newer state.",
+          "This Activity item changed after it loaded. Refresh before acknowledging the newer state.",
         );
       }
       const updatedAt = new Date(now()).toISOString();
       const seenAt = args.seenAt?.trim() || updatedAt;
       if (Number.isNaN(Date.parse(seenAt))) {
-        throw new Error("Attention seenAt must be an ISO timestamp.");
+        throw new Error("Activity seenAt must be an ISO timestamp.");
       }
       if (
         typeof args.dismissedAt === "string"
         && Number.isNaN(Date.parse(args.dismissedAt))
       ) {
-        throw new Error("Attention dismissedAt must be an ISO timestamp.");
+        throw new Error("Activity dismissedAt must be an ISO timestamp.");
       }
       deps.store.recordAttentionAcknowledgments?.({
         items: items.map((item) => ({ id: item.id, revision: item.revision })),
@@ -2206,6 +2792,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       preferences: AttentionPreferences,
     ): Promise<void> {
       await deps.relayClient.putAttentionPreferences?.(accountOwnerId, preferences);
+    },
+
+    async putAttentionMachinePreferences(
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ): Promise<void> {
+      await deps.relayClient.putActivityMachinePreferences?.(
+        accountOwnerId,
+        machineKey,
+        preferences,
+      );
     },
 
     dispose,

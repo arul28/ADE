@@ -132,6 +132,17 @@ final class DeepLinkRouter {
             isValidLinearIssueBranch(url: url)
       else { return }
       routeLinearIssue(identifier: identifier, url: url)
+    case "activity":
+      // `ade://activity` — the lock-screen widget's fallback when nothing in
+      // particular is asking for you. It opens the drawer rather than picking a
+      // row on the user's behalf, which is the honest answer to "show me
+      // everything". Takes no path or query, so there is nothing to validate.
+      SyncService.shared?.attentionDrawerPresented = true
+      NotificationCenter.default.post(
+        name: .adeDeepLinkRequested,
+        object: nil,
+        userInfo: ["kind": "activity", "identifier": ""]
+      )
     default:
       return
     }

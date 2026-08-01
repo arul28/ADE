@@ -12,7 +12,9 @@ import {
   MagnifyingGlass,
   Palette,
   PlugsConnected,
+  Pulse as PulseIcon,
 } from "@phosphor-icons/react";
+import { ActivitySection } from "../settings/ActivitySection";
 import { AppearanceSection } from "../settings/AppearanceSection";
 import { AboutSection } from "../settings/AboutSection";
 import { AdeCliSection } from "../settings/AdeCliSection";
@@ -62,6 +64,7 @@ const TAB_ICONS: Record<SettingsTabId, PhosphorIcon> = {
   "lanes-git": GitBranch,
   integrations: PlugsConnected,
   notifications: Bell,
+  activity: PulseIcon,
   secrets: Key,
   storage: HardDrives,
   stats: ChartLineUp,
@@ -117,6 +120,8 @@ function TabContent({ tab }: { tab: SettingsTabId }) {
       );
     case "notifications":
       return <NotificationsSection />;
+    case "activity":
+      return <ActivitySection />;
     case "secrets":
       return <SecretsSection />;
     case "storage":

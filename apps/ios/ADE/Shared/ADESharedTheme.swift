@@ -101,7 +101,7 @@ public enum ADESharedTheme {
 
     // MARK: - Semantic status colors
 
-    // Attention phase colors mirror the desktop attention center so the same
+    // Attention phase colors mirror the desktop Activity pane so the same
     // state reads identically on every ADE surface. One hue, one meaning —
     // see `AgentRunPhase` and `sessionStatusPresentation.ts` for why:
     //

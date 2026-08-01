@@ -89,8 +89,8 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 ### Brain, runtime, and clients
 
 - [**Remote Runtime**](./features/remote-runtime/README.md) — Remote access to an ADE runtime. Multi-project registry, machine endpoint, login-service install, SSH bootstrap of the cross-platform `ade-<platform-arch>` runtime binaries shipped under `apps/desktop/resources/runtime/`. A remote machine's brain is authoritative for its projects.
-- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller, including session ask/note/settle lifecycle controls and the account-wide `/attention` pane.
-- [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB, and account Attention that remains independent of the selected project.
+- [**ADE Code**](./features/ade-code/README.md) — Terminal-native Work chat (Ink + React) inside `apps/ade-cli`. Default attaches to the machine brain and starts it if missing. Same JSON-RPC surface as the desktop app and the iOS controller, including session ask/note/settle lifecycle controls and the account-wide Activity pane.
+- [**Web Client**](./features/web-client/README.md) — Owner-only hosted browser controller. Static Cloudflare Pages SPA, ADE account sign-in, account-directory machine selection, DPoP-bound sync WebSocket transport, no local DB, and account Activity that remains independent of the selected project.
 
 ### Work execution
 
@@ -123,7 +123,7 @@ ADE is the control plane. It owns ADE Browser automation for its built-in projec
 - [**Linear Integration**](./features/linear-integration/README.md) — Issue read/search, lane/commit/PR attachment flow, batch launch, session-scoped attachment, and an optional live-status round-trip.
 - [**Computer Use**](./features/computer-use/README.md) — Direct signed Codex Computer Use, intentional proof capture, and active App Control. Canonical artifact model, ownership-linked storage.
 - [**iOS Simulator**](./features/ios-simulator/README.md) — Chat-side macOS-only drawer that builds, launches, mirrors, inspects, and controls a booted iOS Simulator. ADEInspector publishes per-frame SwiftUI element metadata so taps become source-anchored chat context.
-- [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation), host/controller model, WebSocket envelope, remote commands, the [cross-machine session handoff contract](./features/sync-and-multi-device/cross-machine-session-handoff.md), and [ADE Attention](./features/sync-and-multi-device/push-notifications.md): one account-wide source of truth across desktop, web, ADE Code, iOS, notifications, widgets, Live Activities, and the native Mac presentation.
+- [**Sync and Multi-Device**](./features/sync-and-multi-device/README.md) — cr-sqlite CRDT (desktop native ext, iOS pure-SQL emulation), host/controller model, WebSocket envelope, remote commands, the [cross-machine session handoff contract](./features/sync-and-multi-device/cross-machine-session-handoff.md), and [Activity](./features/sync-and-multi-device/push-notifications.md): one account-wide source of truth across desktop, web, ADE Code, iOS, notifications, widgets, Live Activities, and the native Mac presentation.
 
 ---
 

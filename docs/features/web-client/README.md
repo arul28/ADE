@@ -373,11 +373,15 @@ Reused desktop renderer (web-mode adaptation):
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
-- `apps/desktop/src/renderer/components/attention/HeaderAttentionControl.tsx`
-  and `AttentionCenter.tsx` - the project-independent header drawer and its
-  secondary Open all/history route. Attention is a global utility route, not
+- `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
+  and `ActivityPane.tsx` - the project-independent header popover and the
+  expanded pane its "Open all" raises. Activity is a global utility surface, not
   another selected-machine tab, so it is intentionally separate from
-  `WEB_CLIENT_TAB_PATHS`.
+  `WEB_CLIENT_TAB_PATHS`. Its `/activity` pathname (and the `/attention` name it
+  replaced) is a deep link that opens the pane over the current tab; both are in
+  `APP_ROUTE_ROOTS` so a hard reload keeps it. The notch has no web counterpart,
+  so `attentionNotch` is listed in `WEB_HIDDEN_CAPABILITIES` and its settings
+  rows are hidden rather than rendered inert.
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` - the single desktop Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers
@@ -798,7 +802,7 @@ refresh hints rather than replicated state.
 
 Because there is no local replica, project/runtime reads are live transport
 round-trips to the active project binding's machine — where the desktop renderer would hit its
-in-process cr-sqlite. Account Attention is the deliberate exception: a
+in-process cr-sqlite. Account Activity is the deliberate exception: a
 signed-in browser reads the consolidated push-relay stream directly, so changing
 the active machine/project cannot narrow or block the account inbox. Two
 adapter-side measures keep ordinary machine reads from turning routine UI into

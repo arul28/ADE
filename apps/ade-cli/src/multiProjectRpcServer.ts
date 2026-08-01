@@ -1449,7 +1449,7 @@ export function createMultiProjectRpcRequestHandler(
       if (!publisher) {
         throw new JsonRpcError(
           JsonRpcErrorCode.invalidRequest,
-          "Account Attention is unavailable until the ADE brain is ready.",
+          "Account Activity is unavailable until the ADE brain is ready.",
         );
       }
       if (action === "getSnapshot") {
@@ -1537,7 +1537,7 @@ export function createMultiProjectRpcRequestHandler(
         if (!accountOwnerId || currentAccountOwnerUserId() !== accountOwnerId) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "The ADE account changed before Attention preferences could be read.",
+            "The ADE account changed before Activity preferences could be read.",
           );
         }
         return await publisher.getAttentionPreferences(accountOwnerId);
@@ -1552,7 +1552,7 @@ export function createMultiProjectRpcRequestHandler(
         ) {
           throw new JsonRpcError(
             JsonRpcErrorCode.invalidRequest,
-            "The ADE account changed before Attention preferences could be saved.",
+            "The ADE account changed before Activity preferences could be saved.",
           );
         }
         await publisher.putAttentionPreferences(
@@ -1563,7 +1563,7 @@ export function createMultiProjectRpcRequestHandler(
       }
       throw new JsonRpcError(
         JsonRpcErrorCode.methodNotFound,
-        `Unknown Attention action: ${action || "(empty)"}`,
+        `Unknown Activity action: ${action || "(empty)"}`,
       );
     }
 

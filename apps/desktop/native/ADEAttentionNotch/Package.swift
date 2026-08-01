@@ -30,7 +30,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ADEAttentionNotchCoreTests",
-            dependencies: ["ADEAttentionNotchCore"]
+            dependencies: ["ADEAttentionNotchCore", "ADEAttentionNotch"]
         ),
     ]
 )

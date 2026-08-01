@@ -92,19 +92,19 @@ export function ownerNavigationFailureCopy(
     return {
       title: "Update the owning ADE machine",
       message: "This item belongs to a machine running an incompatible ADE service.",
-      detail: `${detail}\n\nUpdate and restart ADE on that host, then retry from Attention.`,
+      detail: `${detail}\n\nUpdate and restart ADE on that host, then retry from Activity.`,
     };
   }
   if (/project .* no longer available on this ADE machine/i.test(detail)) {
     return {
       title: "Project no longer available",
       message: "ADE found the owning machine, but that project is no longer registered there.",
-      detail: `${detail}\n\nOpen or restore the project on that machine, then retry from Attention.`,
+      detail: `${detail}\n\nOpen or restore the project on that machine, then retry from Activity.`,
     };
   }
   return {
     title: "Owning machine unavailable",
     message: "ADE couldn’t open this item on the machine and project that own it.",
-    detail: `${detail}\n\nReconnect that machine from Connections, then retry from Attention.`,
+    detail: `${detail}\n\nReconnect that machine from Connections, then retry from Activity.`,
   };
 }

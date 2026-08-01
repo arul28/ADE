@@ -26,17 +26,41 @@ enum CanonicalSessionPhase: Equatable {
   case settled
 }
 
-/// The three attention states that earn a capsule. Calm phases get no badge.
+/// The states that earn a capsule on a Work row.
+///
+/// The first three are the attention states — the only ones `badge` has ever
+/// carried, and the only ones that survive on the `CanonicalSessionState` value
+/// so nothing downstream starts treating "Working" as something to act on. The
+/// rest are the descriptive half of the vocabulary, reached through
+/// `workSessionStatusBadge`, which is what the row actually renders.
+///
+/// The truly resting phases (ready / idle / stopped / ended) still earn no
+/// capsule: their story is the neutral dot and the timestamp, and a row must not
+/// shift layout to say "nothing is happening".
 enum SessionBadgeKind: Equatable {
   case needsYou
   case failed
   case stale
+  case working
+  case planning
+  case done
 }
 
 struct SessionBadge: Equatable {
   let kind: SessionBadgeKind
-  /// Short capsule copy; calm states get no badge at all.
+  /// Short capsule copy; resting states get no badge at all.
   let label: String
+  /// Hue token from the shared `ActivityPhaseVocabulary`, so a Work row and an
+  /// Activity row describing the same session cannot pick different colours.
+  let tone: ActivityTone
+  let glyph: ActivityGlyph?
+
+  init(kind: SessionBadgeKind, label: String, tone: ActivityTone, glyph: ActivityGlyph? = nil) {
+    self.kind = kind
+    self.label = label
+    self.tone = tone
+    self.glyph = glyph
+  }
 }
 
 struct CanonicalSessionState: Equatable {
@@ -53,11 +77,23 @@ struct CanonicalSessionState: Equatable {
 /// (e.g. the 7-day chat reclassification in `normalizedWorkChatSessionStatus`).
 let sessionStaleAfterSeconds: TimeInterval = 3 * 60 * 60
 
+/// The attention badges, worded and hued by the shared vocabulary rather than
+/// by a second table that could drift away from it.
 private let badgeByKind: [SessionBadgeKind: SessionBadge] = [
-  .needsYou: SessionBadge(kind: .needsYou, label: "Needs you"),
-  .failed: SessionBadge(kind: .failed, label: "Failed"),
-  .stale: SessionBadge(kind: .stale, label: "Stale"),
+  .needsYou: workSessionBadge(kind: .needsYou, phase: .needsYou),
+  .failed: workSessionBadge(kind: .failed, phase: .failed),
+  .stale: workSessionBadge(kind: .stale, phase: .stale),
 ]
+
+private func workSessionBadge(kind: SessionBadgeKind, phase: AccountAttentionPhase) -> SessionBadge {
+  let presentation = ActivityPhaseVocabulary.presentation(for: phase)
+  return SessionBadge(
+    kind: kind,
+    label: presentation.label,
+    tone: presentation.tone,
+    glyph: presentation.glyph
+  )
+}
 
 private func isSilentPast(_ lastActivityAt: String?, now: Date, thresholdSeconds: TimeInterval) -> Bool {
   guard let at = workParsedDate(lastActivityAt) else { return false }
@@ -233,6 +269,76 @@ func workSessionCapsuleBadge(
     summary: summary,
     now: now
   ).badge
+}
+
+// MARK: - The full status vocabulary
+
+/// Canonical phase → the shared Activity phase, so a Work row reads its label
+/// and its hue out of the same table the drawer, the hub strip, and the widget
+/// use. The four resting phases have no Activity phase of their own and are
+/// carried as additive raw values, which `ActivityPhaseVocabulary` answers with
+/// the quiet neutral presentation they want.
+func workActivityPhase(for phase: CanonicalSessionPhase) -> AccountAttentionPhase {
+  switch phase {
+  case .starting: return .starting
+  case .running: return .running
+  case .needsYou: return .needsYou
+  case .failed: return .failed
+  case .stale: return .stale
+  // Settled is a declared "this is finished and filed", which is exactly what
+  // the emerald `completed` presentation says.
+  case .settled: return .completed
+  case .ready: return .unrecognized("ready")
+  case .idle: return .unrecognized("idle")
+  case .stopped: return .unrecognized("stopped")
+  case .ended: return .unrecognized("ended")
+  }
+}
+
+/// Planning is a PRESENTATION fact, never a canonical phase — the same split
+/// desktop makes, where `chatActivityMode` is derived from the chat's
+/// interaction mode and folded in at render time
+/// (`chatSessionProjection.ts`: `interactionMode === "plan"`).
+func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
+  summary?.interactionMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plan"
+}
+
+/// The capsule a Work row renders: the full vocabulary, not just the attention
+/// third. Nil for the resting phases, which say what they need to say with the
+/// neutral dot alone.
+func workSessionStatusBadge(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  now: Date = Date()
+) -> SessionBadge? {
+  let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
+  if canonical.phase == .running && workSessionIsPlanning(summary: summary) {
+    return workSessionBadge(kind: .planning, phase: .unrecognized("planning"))
+  }
+  switch canonical.phase {
+  case .needsYou, .failed, .stale:
+    return canonical.badge
+  case .starting, .running:
+    return workSessionBadge(kind: .working, phase: workActivityPhase(for: canonical.phase))
+  case .settled:
+    return workSessionBadge(kind: .done, phase: .completed)
+  case .ready, .idle, .stopped, .ended:
+    return nil
+  }
+}
+
+/// The hue of the row's status dot. Same table as the capsule, so a row whose
+/// capsule says "Working" can never wear a green dot.
+func workSessionRowTone(
+  session: TerminalSessionSummary,
+  summary: AgentChatSessionSummary?,
+  now: Date = Date()
+) -> ActivityTone {
+  let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
+  if canonical.phase == .running && workSessionIsPlanning(summary: summary) {
+    return ActivityPhaseVocabulary.presentation(for: .unrecognized("planning")).tone
+  }
+  return ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: canonical.phase)).tone
 }
 
 /// Canonical state for a concrete Work row. This is the one bridge from the
@@ -659,17 +765,20 @@ struct WorkSessionLifecycleTag: View {
   }
 }
 
-/// Small attention capsule shown next to a Work row title. Amber for needs_you
-/// (matching the app's existing amber chip language), red for failed, and an
-/// outlined muted capsule with a clock glyph for stale. Calm states render
-/// nothing, so callers gate on a non-nil badge to avoid any layout shift.
+/// Small status capsule shown next to a Work row title. The hue comes from the
+/// shared tone token — amber for needs_you and nothing else, blue for work in
+/// flight, emerald for finished, red for failed, violet for planning — so the
+/// row cannot describe a session differently from the drawer or the widget.
+/// Neutral badges render outlined rather than filled, which keeps a calm row
+/// calm. Resting states have no badge at all, so callers gate on a non-nil
+/// badge and the row never shifts layout.
 struct WorkSessionStatusCapsule: View {
   let badge: SessionBadge
 
   var body: some View {
     HStack(spacing: 3) {
-      if badge.kind == .stale {
-        Image(systemName: "clock")
+      if let glyph = badge.glyph, showsGlyph {
+        Image(systemName: glyph.systemImage)
           .font(.system(size: 8, weight: .semibold))
       }
       Text(badge.label)
@@ -685,20 +794,25 @@ struct WorkSessionStatusCapsule: View {
     .accessibilityLabel(accessibilityLabel)
   }
 
+  /// Only where the word alone is ambiguous: "Stale" wants the clock that asks
+  /// how long, "Planning" wants the list that says what kind of work. The rest
+  /// read fine as plain words and stay uncluttered.
+  private var showsGlyph: Bool {
+    badge.kind == .stale || badge.kind == .planning
+  }
+
+  private var isOutlined: Bool { badge.tone == .neutral }
+
   private var tint: Color {
-    switch badge.kind {
-    case .needsYou: return ADEColor.warning
-    case .failed: return ADEColor.danger
-    case .stale: return ADEColor.textMuted
-    }
+    activityToneColor(badge.tone)
   }
 
   private var fill: Color {
-    badge.kind == .stale ? Color.clear : tint.opacity(0.14)
+    isOutlined ? Color.clear : tint.opacity(0.14)
   }
 
   private var stroke: Color {
-    badge.kind == .stale ? tint.opacity(0.4) : tint.opacity(0.3)
+    isOutlined ? tint.opacity(0.4) : tint.opacity(0.3)
   }
 
   private var accessibilityLabel: String {
@@ -706,6 +820,9 @@ struct WorkSessionStatusCapsule: View {
     case .needsYou: return "Needs your input"
     case .failed: return "Failed"
     case .stale: return "Stale, no recent activity"
+    case .working: return "Working"
+    case .planning: return "Planning"
+    case .done: return "Done"
     }
   }
 }

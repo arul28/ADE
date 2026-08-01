@@ -6,11 +6,14 @@ import type {
   AttentionDestination,
   AttentionNotchHealth,
   AttentionNotchSettings,
+  AttentionNotchToast,
   AttentionSnapshot,
 } from "../../../shared/types/attention";
 import type { Logger } from "../logging/logger";
 
-const MAX_HELPER_LINE_BYTES = 256 * 1024;
+// Must stay above the router's snapshot write cap so a snapshot the router
+// accepted can never overflow this buffer and be dropped on arrival.
+const MAX_HELPER_LINE_BYTES = 512 * 1024;
 const MAX_RESTART_ATTEMPTS = 3;
 const GRACEFUL_SHUTDOWN_MS = 500;
 const DEFAULT_REFRESH_INTERVAL_MS = 15_000;
@@ -49,11 +52,20 @@ export type AttentionNotchOutput =
   | {
       type: "settings";
       settings: AttentionNotchSettings;
+    }
+  | {
+      type: "open_settings";
+    }
+  | {
+      type: "dismiss_item";
+      itemId: string;
+      destination?: AttentionDestination | null;
     };
 
 type AttentionNotchInput =
   | { type: "settings"; settings: AttentionNotchSettings }
   | { type: "snapshot"; snapshot: AttentionSnapshot }
+  | { type: "toast"; toast: AttentionNotchToast }
   | { type: "visibility"; visible: boolean }
   | { type: "reanchor" }
   | { type: "quit" };
@@ -273,6 +285,16 @@ export class AttentionNotchHelper {
     }
   }
 
+  /**
+   * A toast is a one-shot event, so it never starts the helper and is never
+   * retained as latest state: replaying it after a restart would announce
+   * something that already happened, minutes late.
+   */
+  publishToast(toast: AttentionNotchToast): void {
+    if (!this.child) return;
+    this.write({ type: "toast", toast });
+  }
+
   updateSettings(settings: AttentionNotchSettings): void {
     this.latestSettings = settings;
     if (!settings.enabled) {
@@ -356,10 +378,14 @@ export class AttentionNotchHelper {
   }
 
   private enqueuePendingWrite(payload: AttentionNotchInput): void {
-    // Every helper command is state-setting/idempotent. Keep only the newest
+    // Every state-setting helper command is idempotent. Keep only the newest
     // value per type, append it after other controls to preserve causal order,
     // and retain a hard cap in case the protocol grows new command types.
-    this.pendingWrites = this.pendingWrites.filter((entry) => entry.type !== payload.type);
+    // Toasts are the exception: they are events, and collapsing two of them
+    // into one would drop an announcement rather than refresh it.
+    if (payload.type !== "toast") {
+      this.pendingWrites = this.pendingWrites.filter((entry) => entry.type !== payload.type);
+    }
     this.pendingWrites.push(payload);
     if (this.pendingWrites.length > MAX_PENDING_WRITES) {
       this.pendingWrites.splice(0, this.pendingWrites.length - MAX_PENDING_WRITES);
@@ -479,7 +505,12 @@ function isAttentionNotchOutput(value: unknown): value is AttentionNotchOutput {
     );
   }
   if (value.type === "protocol_error") return typeof value.message === "string";
-  if (value.type === "open_center" || value.type === "refresh") return true;
+  if (
+    value.type === "open_center"
+    || value.type === "refresh"
+    || value.type === "open_settings"
+  ) return true;
+  if (value.type === "dismiss_item") return typeof value.itemId === "string";
   if (value.type === "settings") {
     if (!isRecord(value.settings)) return false;
     const settings = value.settings;
@@ -491,6 +522,15 @@ function isAttentionNotchOutput(value: unknown): value is AttentionNotchOutput {
         || settings.revealMode === "click"
       )
       && typeof settings.expandedPanelEnabled === "boolean"
+      // Optional: a helper built before these existed must still be accepted.
+      && (
+        settings.automaticRevealEnabled === undefined
+        || typeof settings.automaticRevealEnabled === "boolean"
+      )
+      && (
+        settings.tickerEnabled === undefined
+        || typeof settings.tickerEnabled === "boolean"
+      )
       && (
         settings.preferredDisplayId == null
         || typeof settings.preferredDisplayId === "number"

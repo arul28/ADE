@@ -15362,7 +15362,14 @@ final class ADETests: XCTestCase {
     )
     newer.createdAt = "2026-03-25T00:00:00.000Z"
 
-    let ordered = sortWorkLanesForTabs([older, primary, newer])
+    let ordered = orderWorkLanes(
+      [older, primary, newer],
+      inputs: [
+        primary.id: WorkLaneOrderInput(lane: primary),
+        older.id: WorkLaneOrderInput(lane: older),
+        newer.id: WorkLaneOrderInput(lane: newer),
+      ]
+    )
 
     XCTAssertEqual(ordered.map(\.id), ["lane-primary", "lane-newer", "lane-older"])
   }

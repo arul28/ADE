@@ -39,7 +39,7 @@ Two failure modes this replaced, both visible in production screenshots:
   tone.
 
 Colours, type scale and phase vocabulary mirror the renderer's Attention
-surfaces (`index.css` tokens, `attentionPresentation.ts`, the
+surfaces (`index.css` tokens, `activityPresentation.ts`, the
 `.attention-tone-*` palette) so a phase reads identically in the notch, the
 header control and the Attention center. `NotchSurfaceShape` and
 `NotchPanelController.interactivePath` are built from the same corner metrics

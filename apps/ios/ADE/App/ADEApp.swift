@@ -50,11 +50,13 @@ struct ADEApp: App {
         .onChange(of: scenePhase) { _, newPhase in
           if newPhase == .background {
             didEnterBackground = true
+            accountService.stopAttentionPolling()
             ProductAnalytics.shared.flush()
             Task { await accountService.updateAttentionAppForeground(false) }
             return
           }
           guard newPhase == .active else { return }
+          accountService.startAttentionPolling()
           if didEnterBackground {
             didEnterBackground = false
             ProductAnalytics.shared.captureAppOpened(.foreground)

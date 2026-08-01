@@ -6,6 +6,7 @@ import {
   type AttentionItem,
   type AttentionNotchAcknowledgeRequest,
   type AttentionNotchSettings,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
@@ -4784,6 +4785,16 @@ contextBridge.exposeInMainWorld("ade", {
         accountOwnerId,
         preferences,
       }),
+    putMachinePreferences: async (
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutMachinePreferences, {
+        accountOwnerId,
+        machineKey,
+        preferences,
+      }),
     openItem: async (item: AttentionItem): Promise<void> => {
       await ipcRenderer.invoke(IPC.attentionOpenItem, item);
     },
@@ -4791,6 +4802,9 @@ contextBridge.exposeInMainWorld("ade", {
   attentionNotch: {
     publishSnapshot: async (snapshot: AttentionSnapshot): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchPublishSnapshot, snapshot),
+    publishToast: async (
+      toast: import("../shared/types").AttentionNotchToast,
+    ): Promise<void> => ipcRenderer.invoke(IPC.attentionNotchPublishToast, toast),
     updateSettings: async (settings: AttentionNotchSettings): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionNotchUpdateSettings, settings),
     getHealth: async (): Promise<import("../shared/types").AttentionNotchHealth> =>

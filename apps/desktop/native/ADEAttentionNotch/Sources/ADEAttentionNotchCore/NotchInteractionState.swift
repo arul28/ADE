@@ -18,28 +18,46 @@ public enum NotchPresentationState: String, Codable, Equatable, Sendable {
 public struct NotchPresentationPolicy: Equatable, Sendable {
     public let revealMode: NotchRevealMode
     public let expandedPanelEnabled: Bool
+    public let automaticRevealEnabled: Bool
+    public let tickerEnabled: Bool
 
     public static let `default` = NotchPresentationPolicy()
 
-    public init(revealMode: NotchRevealMode = .hover, expandedPanelEnabled: Bool = true) {
+    public init(
+        revealMode: NotchRevealMode = .hover,
+        expandedPanelEnabled: Bool = true,
+        automaticRevealEnabled: Bool = true,
+        tickerEnabled: Bool = true
+    ) {
         self.revealMode = revealMode
         self.expandedPanelEnabled = expandedPanelEnabled
+        self.automaticRevealEnabled = automaticRevealEnabled
+        self.tickerEnabled = tickerEnabled
     }
 
     public init(settings: NotchSettings) {
         self.init(
             revealMode: settings.revealMode,
-            expandedPanelEnabled: settings.expandedPanelEnabled
+            expandedPanelEnabled: settings.expandedPanelEnabled,
+            automaticRevealEnabled: settings.automaticRevealEnabled,
+            tickerEnabled: settings.tickerEnabled
         )
     }
 
-    /// Only hover mode lets the pointer alone open the peek.
+    /// Hover mode is the only one where the pointer alone changes the surface,
+    /// and since the Activity revamp it stops at prehover: the old peek-on-hover
+    /// is gone and its layout now belongs to event toasts.
     public var allowsHoverReveal: Bool { revealMode == .hover }
 
-    /// All three user-selectable modes are manual. In particular, "Reveal on
-    /// hover" is literal: a needs-you update may change notification/status
-    /// state, but it cannot make the hidden surface appear by itself.
-    public var allowsAutomaticReveal: Bool { false }
+    /// An event may open the surface by itself when the user allows it — except
+    /// in "click only", which is literal: nothing but a click opens anything.
+    public var allowsAutomaticReveal: Bool {
+        automaticRevealEnabled && revealMode != .click
+    }
+
+    /// The ticker is a property of the pinned strip, so it only ever runs in the
+    /// mode that keeps a strip on screen at rest.
+    public var showsTicker: Bool { tickerEnabled && revealMode == .minimal }
 
     /// Compact mode never grows past a short peek. Other modes may open the
     /// tall panel unless the user disabled it globally.
@@ -76,6 +94,9 @@ public struct NotchInteractionState: Equatable, Sendable {
 
     public init() {}
 
+    /// Hover stops here. Before the Activity revamp a 145ms timer promoted this
+    /// to `.peek`; the peek layout is now the toast's, and a hover that grew
+    /// into a card competed with the toast it looks identical to.
     @discardableResult
     public mutating func pointerEntered(
         hasItems: Bool,
@@ -89,11 +110,6 @@ public struct NotchInteractionState: Equatable, Sendable {
             presentation = .prehover
         }
         return generation
-    }
-
-    public mutating func applyPeek(generation token: UInt64, pointerInside: Bool) {
-        guard token == generation, pointerInside, isVisible, presentation == .prehover else { return }
-        presentation = .peek
     }
 
     @discardableResult
@@ -138,22 +154,15 @@ public struct NotchInteractionState: Equatable, Sendable {
         presentation = .celebration
     }
 
+    /// A toast always settles back to the compact bar. `.peek` is the toast's
+    /// own layout now, so landing there would leave a card on screen with
+    /// nothing left to say.
     public mutating func finishTransient(
         pointerInside: Bool,
         policy: NotchPresentationPolicy = .default
     ) {
         generation &+= 1
-        // Settling under a pointer that is not allowed to reveal anything has
-        // to land on compact, not on the peek hover never opened.
-        presentation = (pointerInside && policy.allowsHoverReveal) ? .peek : .compact
-    }
-
-    public mutating func navigate(delta: Int, itemCount: Int) {
-        guard itemCount > 0 else {
-            selectedIndex = 0
-            return
-        }
-        selectedIndex = (selectedIndex + delta % itemCount + itemCount) % itemCount
+        presentation = (pointerInside && policy.allowsHoverReveal) ? .prehover : .compact
     }
 
     public mutating func select(index: Int, itemCount: Int) {
@@ -236,6 +245,57 @@ public func sortedAttentionItems(_ items: [AttentionItem]) -> [AttentionItem] {
         }
 }
 
+/// The priority-flat three, mirroring `activityPriority.ts` in the renderer so
+/// the panel files a row exactly where the desktop popover files it.
+public struct NotchActivitySections: Equatable, Sendable {
+    public let needsYou: [AttentionItem]
+    public let working: [AttentionItem]
+    public let done: [AttentionItem]
+
+    public init(needsYou: [AttentionItem], working: [AttentionItem], done: [AttentionItem]) {
+        self.needsYou = needsYou
+        self.working = working
+        self.done = done
+    }
+
+    public var total: Int { needsYou.count + working.count + done.count }
+    public var isEmpty: Bool { total == 0 }
+
+    /// Rows still doing something, in priority order — what the ticker cycles
+    /// and what the hover strip's live dot counts.
+    public var live: [AttentionItem] { needsYou + working }
+}
+
+/// Mirrors `activitySectionId` in `activityPriority.ts`, including its rule that
+/// an idle roster row is quiet history regardless of the phase it preserved.
+public func notchActivitySectionId(for item: AttentionItem) -> String {
+    if item.isIdleTier { return "done" }
+    let priority = phasePriorities[item.phase] ?? 99
+    if priority <= (phasePriorities["blocked"] ?? 2) { return "needs-you" }
+    if priority <= (phasePriorities["stale"] ?? 4) { return "working" }
+    return "done"
+}
+
+public func notchActivitySections(_ items: [AttentionItem]) -> NotchActivitySections {
+    var needsYou: [AttentionItem] = []
+    var working: [AttentionItem] = []
+    var done: [AttentionItem] = []
+    for item in sortedAttentionItems(items) {
+        switch notchActivitySectionId(for: item) {
+        case "needs-you": needsYou.append(item)
+        case "working": working.append(item)
+        default: done.append(item)
+        }
+    }
+    // Idle roster history is the ambient tail even when its preserved phase has
+    // a numerically higher priority than a fresh completed outcome.
+    return NotchActivitySections(
+        needsYou: needsYou,
+        working: working,
+        done: done.filter { !$0.isIdleTier } + done.filter(\.isIdleTier)
+    )
+}
+
 /// Height of the menu-bar band the hardware notch lives in. The surface's top
 /// `band` points sit *inside* that strip, so compact ends exactly on the
 /// hardware notch's bottom edge and expanded content starts just below it.
@@ -276,7 +336,7 @@ public func notchSurfaceSize(
         case .compact: return NotchSize(width: 272, height: 34)
         case .prehover: return NotchSize(width: 282, height: 38)
         case .peek: return NotchSize(width: 316, height: 76)
-        case .expanded: return NotchSize(width: 396, height: 232)
+        case .expanded: return NotchSize(width: 420, height: 440)
         case .attention: return NotchSize(width: 336, height: 130)
         case .celebration: return NotchSize(width: 352, height: 150)
         }
@@ -298,7 +358,7 @@ public func notchSurfaceSize(
     case .peek:
         return NotchSize(width: compactWidth + 10, height: band + 62)
     case .expanded:
-        return NotchSize(width: max(400, compactWidth + 10), height: band + 232)
+        return NotchSize(width: max(420, compactWidth + 10), height: band + 440)
     case .attention:
         return NotchSize(width: max(384, compactWidth + 10), height: band + 126)
     case .celebration:

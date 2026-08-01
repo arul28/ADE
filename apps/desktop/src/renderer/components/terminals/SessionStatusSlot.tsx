@@ -1,23 +1,10 @@
 import React from "react";
 import {
-  Alarm,
   ArrowUUpLeft,
   Check,
-  CheckCircle,
-  Circle,
-  CircleDashed,
-  Clock,
-  NotePencil,
-  Moon,
 } from "@phosphor-icons/react";
 import type { OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
-import {
-  SESSION_TONE_TEXT_CLASS,
-  formatFutureDuration,
-  formatWorkingDuration,
-  type SessionStatusGlyph,
-  type SessionStatusPresentation,
-} from "../../../shared/sessionStatusPresentation";
+import type { SessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import { isChatToolType } from "../../lib/sessions";
 import {
   canonicalInputFromSummary,
@@ -25,6 +12,7 @@ import {
 } from "../../lib/terminalAttention";
 import { cn } from "../ui/cn";
 import { SessionSnoozeControl } from "./SessionSnoozeControl";
+import { SessionStatusLabel } from "./SessionStatusLabel";
 import {
   settleSession,
   unsettleSession,
@@ -44,81 +32,8 @@ import {
  *
  * This is also the only place a session's status is rendered as words. Every
  * hue and every glyph comes from `sessionStatusPresentation`, so the sidebar,
- * the attention center and iOS cannot drift into three different ambers.
+ * the Activity pane and iOS cannot drift into three different ambers.
  */
-
-/**
- * Glyph identity → Phosphor. Kept here rather than in the shared presentation
- * module: that module is imported by main-process code and must stay free of
- * renderer dependencies.
- */
-function StatusGlyph({ glyph }: { glyph: SessionStatusGlyph }) {
-  switch (glyph) {
-    case "working":
-      return <CircleDashed size={13} weight="bold" aria-hidden className="shrink-0" />;
-    case "planning":
-      return <NotePencil size={13} weight="bold" aria-hidden className="shrink-0" />;
-    case "waiting":
-      return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
-    case "done":
-      return <CheckCircle size={13} weight="bold" aria-hidden className="shrink-0" />;
-    // Filled, not outlined: "your move" is the one state allowed to shout.
-    case "needs-you":
-      return <Circle size={9} weight="fill" aria-hidden className="shrink-0" />;
-    case "stale":
-      return <Clock size={13} weight="regular" aria-hidden className="shrink-0" />;
-    case "woke":
-      return <Alarm size={13} weight="regular" aria-hidden className="shrink-0" />;
-    case "snoozed":
-      return <Moon size={12} weight="fill" aria-hidden className="shrink-0" />;
-    // `failed` deliberately has no glyph — red plus the word is already the
-    // loudest thing on the row.
-    default:
-      return null;
-  }
-}
-
-/**
- * Live elapsed copy for the states where "how long" is the question the row
- * raises. Active chat turns count from their immutable turn-start timestamp;
- * provider activity must not reset them. CLI and stale states retain the
- * last-output clock because they do not have a provider turn boundary.
- */
-function useElapsedLabel(sinceIso: string | null | undefined, enabled: boolean): string {
-  const sinceMs = React.useMemo(() => {
-    const parsed = sinceIso ? Date.parse(sinceIso) : Number.NaN;
-    return Number.isFinite(parsed) ? parsed : null;
-  }, [sinceIso]);
-  const [nowMs, setNowMs] = React.useState(() => Date.now());
-
-  React.useEffect(() => {
-    if (!enabled || sinceMs == null) return undefined;
-    setNowMs(Date.now());
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(intervalId);
-  }, [enabled, sinceMs]);
-
-  if (!enabled || sinceMs == null) return "";
-  return formatWorkingDuration(nowMs - sinceMs);
-}
-
-function useFutureLabel(atIso: string | null | undefined, enabled: boolean): string {
-  const atMs = React.useMemo(() => {
-    const parsed = atIso ? Date.parse(atIso) : Number.NaN;
-    return Number.isFinite(parsed) ? parsed : null;
-  }, [atIso]);
-  const [nowMs, setNowMs] = React.useState(() => Date.now());
-
-  React.useEffect(() => {
-    if (!enabled || atMs == null) return undefined;
-    setNowMs(Date.now());
-    const intervalId = window.setInterval(() => setNowMs(Date.now()), 30_000);
-    return () => window.clearInterval(intervalId);
-  }, [atMs, enabled]);
-
-  if (!enabled || atMs == null) return "";
-  return formatFutureDuration(atMs, nowMs);
-}
 
 /**
  * The row action idiom, shared with `SessionSnoozeControl`'s trigger.
@@ -168,20 +83,10 @@ export function SessionStatusSlot({
     if (!actionsEnabled) setSnoozeMenuOpen(false);
   }, [actionsEnabled]);
 
-  const waiting = presentation?.glyph === "waiting";
-  const future = useFutureLabel(session.nextWakeAt, waiting);
-  const exactWakeTitle = React.useMemo(() => {
-    if (!waiting || !session.nextWakeAt) return undefined;
-    const wakeAt = Date.parse(session.nextWakeAt);
-    return Number.isFinite(wakeAt)
-      ? `Next run ${new Date(wakeAt).toLocaleString()}`
-      : undefined;
-  }, [session.nextWakeAt, waiting]);
   const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
   const elapsedSince = canonicalPhase === "running" && isChatToolType(session.toolType)
     ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
     : session.lastActivityAt ?? session.startedAt;
-  const elapsed = useElapsedLabel(elapsedSince, Boolean(presentation?.showsElapsed));
   const isActivelyRunning = canonicalPhase === "starting"
     || canonicalPhase === "running"
     || canonicalPhase === "stale";
@@ -210,40 +115,13 @@ export function SessionStatusSlot({
           compact ? "text-[10px]" : "text-[11px]",
         )}
       >
-        {presentation ? (
-          <span
-            data-session-status={presentation.label}
-            data-session-tone={presentation.tone}
-            className={cn(
-              "inline-flex items-center gap-1 font-medium",
-              SESSION_TONE_TEXT_CLASS[presentation.tone],
-              // Breathing is reserved for the one state that is actively
-              // changing under you. Motion-safe so it disappears entirely for
-              // users who asked for less movement.
-              presentation.glyph === "working"
-                && presentation.showsElapsed
-                && "motion-safe:animate-[ade-session-working-breathe_2600ms_ease-in-out_infinite]",
-            )}
-          >
-            <StatusGlyph glyph={presentation.glyph} />
-            {/* role="status" sits on the LABEL alone. Putting it on a wrapper
-                that also contains the ticking duration makes screen readers
-                announce the row once per second. */}
-            <span role="status" aria-label={exactWakeTitle}>{presentation.label}</span>
-            {elapsed ? (
-              <span aria-hidden className="tabular-nums">
-                {elapsed}
-              </span>
-            ) : null}
-            {future ? (
-              <span aria-hidden className="tabular-nums">
-                {future}
-              </span>
-            ) : null}
-          </span>
-        ) : (
-          <span className="text-muted-fg/45">{timestampLabel}</span>
-        )}
+        <SessionStatusLabel
+          presentation={presentation}
+          elapsedSince={elapsedSince}
+          futureAt={session.nextWakeAt}
+          timestampLabel={timestampLabel}
+          compact={compact}
+        />
       </span>
 
       {actionsEnabled ? (

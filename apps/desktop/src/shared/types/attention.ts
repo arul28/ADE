@@ -1,35 +1,43 @@
+import { ACTIVITY_EVENT_CATALOG } from "../activityCatalog";
+
 export const ATTENTION_CONTRACT_VERSION = 1 as const;
 
 export type AttentionItemKind = "agent" | "pull_request";
 
-export type AttentionPhase =
-  | "starting"
-  | "running"
-  | "needs_you"
-  | "blocked"
-  | "failed"
-  | "completed"
-  | "stale"
-  | "checks_failing"
-  | "review_requested"
-  | "changes_requested"
-  | "merge_ready"
-  | "open"
-  | "merged"
-  | "closed";
+export const ATTENTION_PHASES = [
+  "starting",
+  "running",
+  "needs_you",
+  "blocked",
+  "failed",
+  "completed",
+  "stale",
+  "checks_failing",
+  "review_requested",
+  "changes_requested",
+  "merge_ready",
+  "open",
+  "merged",
+  "closed",
+] as const;
 
-export type AttentionEventKind =
-  | "agent_running"
-  | "agent_needs_you"
-  | "agent_failed"
-  | "agent_completed"
-  | "pr_checks_failing"
-  | "pr_review_requested"
-  | "pr_changes_requested"
-  | "pr_merge_ready"
-  | "pr_merged"
-  | "pr_opened"
-  | "pr_closed";
+export type AttentionPhase = (typeof ATTENTION_PHASES)[number];
+
+export const ATTENTION_EVENT_KINDS = [
+  "agent_running",
+  "agent_needs_you",
+  "agent_failed",
+  "agent_completed",
+  "pr_checks_failing",
+  "pr_review_requested",
+  "pr_changes_requested",
+  "pr_merge_ready",
+  "pr_merged",
+  "pr_opened",
+  "pr_closed",
+] as const;
+
+export type AttentionEventKind = (typeof ATTENTION_EVENT_KINDS)[number];
 
 export type AttentionDeliveryPolicy = "off" | "ambient" | "notify";
 
@@ -95,6 +103,12 @@ export type AttentionItem = {
   id: string;
   revision: number;
   fingerprint: string;
+  /** Alert eligibility and Activity filing. Absent on legacy items. */
+  activityTier?: "signal" | "ambient" | "idle";
+  /** Stable identity for row-content changes. */
+  contentFingerprint?: string;
+  /** Stable identity for alert deduplication. */
+  alertFingerprint?: string;
   kind: AttentionItemKind;
   eventKind: AttentionEventKind;
   phase: AttentionPhase;
@@ -118,15 +132,75 @@ export type AttentionItem = {
   actions: AttentionAction[];
   occurredAt: string;
   updatedAt: string;
+  /** Immutable timestamp for the current phase, when the publisher has one. */
+  statusSince?: string | null;
   seenAt: string | null;
   dismissedAt: string | null;
   expiresAt: string | null;
 };
 
+/**
+ * Attention's tone vocabulary is `sessionStatusPresentation`'s five hues plus
+ * two that only pull requests ever use. The session five keep their meanings
+ * exactly — see the one-hue-one-meaning rule in
+ * `apps/desktop/src/shared/sessionStatusPresentation.ts`:
+ *
+ *   blue     work is happening, nothing is asked of you
+ *   amber    YOUR MOVE — and nothing else, ever
+ *   emerald  finished cleanly, you have not looked yet
+ *   red      it broke
+ *   neutral  true, but not actionable
+ *
+ * `violet` carries "a human review is outstanding" — neither "your move" (it is
+ * usually someone else's) nor an outcome, and without its own hue it would have
+ * to borrow amber, which is precisely the erosion the rule forbids. `cyan` is
+ * currently unused by any phase; it stays in the union and the stylesheets as
+ * the spare for the next PR-side distinction, and must never be handed to a
+ * session state — those five hues are settled.
+ *
+ * It lives here rather than beside the phase table because the native notch
+ * protocol carries it on the wire (`NotchStatusTone` in `AttentionModels.swift`
+ * mirrors this union), so main-process code has to name it too.
+ */
+export type AttentionTone =
+  | "amber"
+  | "red"
+  | "violet"
+  | "blue"
+  | "cyan"
+  | "emerald"
+  | "neutral";
+
+export const ATTENTION_TONES: readonly AttentionTone[] = [
+  "amber",
+  "red",
+  "violet",
+  "blue",
+  "cyan",
+  "emerald",
+  "neutral",
+];
+
 export type AttentionTombstone = {
   id: string;
   revision: number;
   deletedAt: string;
+};
+
+/**
+ * The whole account's shape, sent alongside a bounded projection of its items.
+ *
+ * Load-bearing: the renderer publishes only the top-priority slice to stay
+ * inside the native pipe's byte budget, so "5 working · 2 need you · 61 total"
+ * can only be honest if the totals travel separately from the rows.
+ */
+export type AttentionCounts = {
+  needsYou: number;
+  working: number;
+  done: number;
+  total: number;
+  machinesOnline: number;
+  machinesTotal: number;
 };
 
 export type AttentionSnapshot = {
@@ -160,6 +234,13 @@ export type AttentionSnapshot = {
   /** Current account-machine presence, returned even when no items changed. */
   machines?: AttentionMachineRef[];
   items: AttentionItem[];
+  itemsTruncated?: boolean;
+  /**
+   * Totals over the full item set, so a surface receiving a truncated
+   * projection can still state how much work the account actually has.
+   * Optional: publishers older than this build omit it.
+   */
+  counts?: AttentionCounts;
   tombstones?: AttentionTombstone[];
 };
 
@@ -182,6 +263,19 @@ export type AttentionPreferenceScope = {
   soundsEnabled: boolean;
   celebrationsEnabled: boolean;
   hideDetails: boolean;
+  dockBadgeScope: "local" | "account";
+  /**
+   * Notch presentation, synced so a second Mac inherits the choice instead of
+   * starting from the shipped default. Optional because every relay and
+   * publisher older than this build omits them, and because localStorage
+   * remains the offline cache of record — readers take the synced value when
+   * it is present and the local one otherwise. The localStorage key strings
+   * are unchanged; only the source of truth moved.
+   */
+  notchRevealMode?: AttentionNotchRevealMode;
+  notchExpandedPanel?: boolean;
+  notchAutomaticReveal?: boolean;
+  notchTicker?: boolean;
   quietHours: {
     enabled: boolean;
     startMinute: number;
@@ -193,6 +287,7 @@ export type AttentionPreferenceScope = {
 export type AttentionPreferences = {
   account: AttentionPreferenceScope;
   devices: Record<string, Partial<AttentionPreferenceScope>>;
+  machines: Record<string, Partial<AttentionPreferenceScope>>;
   projects: Record<string, Partial<AttentionPreferenceScope>>;
   mutedSessionIds: string[];
 };
@@ -227,6 +322,45 @@ export function isAttentionNotchRevealMode(
   );
 }
 
+/**
+ * Per-kind delight for an event that just happened, rendered by the native
+ * surface as a transient rather than a row. `celebration` earns the confetti;
+ * everything else rides the alert layout with a calmer tone.
+ */
+export type AttentionNotchToastTreatment =
+  | "celebration"
+  | "success"
+  | "alert"
+  | "info";
+
+export const ATTENTION_NOTCH_TOAST_TREATMENTS: readonly AttentionNotchToastTreatment[] = [
+  "celebration",
+  "success",
+  "alert",
+  "info",
+];
+
+/**
+ * A one-shot event pushed to the native notch. Unlike every other helper
+ * command this is not state-setting: it is never replayed on restart, because
+ * a toast for something that happened before the crash is a lie.
+ */
+export type AttentionNotchToast = {
+  itemId?: string | null;
+  eventKind: AttentionEventKind;
+  treatment: AttentionNotchToastTreatment;
+  title: string;
+  subtitle?: string | null;
+  /** Host-chosen hue; the native side falls back to the treatment's own. */
+  tone?: AttentionTone | null;
+  /** Natively clamped to 800..15000; out-of-range values are rejected here. */
+  durationMs?: number | null;
+};
+
+/** Matches the native clamp, so the router can reject rather than silently bend. */
+export const ATTENTION_NOTCH_TOAST_MIN_DURATION_MS = 800;
+export const ATTENTION_NOTCH_TOAST_MAX_DURATION_MS = 15_000;
+
 export type AttentionNotchSettings = {
   enabled: boolean;
   revealMode: AttentionNotchRevealMode;
@@ -235,6 +369,10 @@ export type AttentionNotchSettings = {
    * never grow far enough to sit over menu-bar content.
    */
   expandedPanelEnabled: boolean;
+  /** Whether an event may pop the surface out on its own. Defaults true. */
+  automaticRevealEnabled: boolean;
+  /** Whether the pinned strip cycles what each agent is doing. Defaults true. */
+  tickerEnabled: boolean;
   preferredDisplayId?: number | null;
   hideDetails: boolean;
   celebrationsEnabled: boolean;
@@ -264,19 +402,9 @@ export type AttentionNotchAcknowledgeRequest = {
 export const BALANCED_ATTENTION_EVENT_POLICIES: Record<
   AttentionEventKind,
   AttentionDeliveryPolicy
-> = {
-  agent_running: "ambient",
-  agent_needs_you: "notify",
-  agent_failed: "notify",
-  agent_completed: "ambient",
-  pr_checks_failing: "notify",
-  pr_review_requested: "notify",
-  pr_changes_requested: "notify",
-  pr_merge_ready: "notify",
-  pr_merged: "ambient",
-  pr_opened: "ambient",
-  pr_closed: "ambient",
-};
+> = Object.fromEntries(
+  ACTIVITY_EVENT_CATALOG.map(({ kind, defaultPolicy }) => [kind, defaultPolicy]),
+) as Record<AttentionEventKind, AttentionDeliveryPolicy>;
 
 export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
   account: {
@@ -288,6 +416,7 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
     soundsEnabled: false,
     celebrationsEnabled: true,
     hideDetails: false,
+    dockBadgeScope: "local",
     quietHours: {
       enabled: false,
       startMinute: 22 * 60,
@@ -296,11 +425,12 @@ export const DEFAULT_ATTENTION_PREFERENCES: AttentionPreferences = {
     },
   },
   devices: {},
+  machines: {},
   projects: {},
   mutedSessionIds: [],
 };
 
-const ATTENTION_PHASE_PRIORITY: Record<AttentionPhase, number> = {
+export const ATTENTION_PHASE_PRIORITY: Readonly<Record<AttentionPhase, number>> = {
   needs_you: 0,
   failed: 1,
   checks_failing: 1,
@@ -332,6 +462,7 @@ export function sortAttentionItems(items: readonly AttentionItem[]): AttentionIt
 }
 
 export function attentionItemNeedsInbox(item: AttentionItem): boolean {
+  if (activityItemTier(item) === "idle") return false;
   if (item.dismissedAt) return false;
   if (
     item.phase === "needs_you"
@@ -344,6 +475,31 @@ export function attentionItemNeedsInbox(item: AttentionItem): boolean {
     return true;
   }
   return (item.phase === "completed" || item.phase === "merged") && item.seenAt === null;
+}
+
+/**
+ * Legacy snapshots predate the tier field. Derive the old signal/ambient split
+ * from the phase so a mixed-version fleet still files rows consistently.
+ */
+export function activityItemTier(item: AttentionItem): "signal" | "ambient" | "idle" {
+  if (item.activityTier) return item.activityTier;
+  switch (item.phase) {
+    case "needs_you":
+    case "blocked":
+    case "failed":
+    case "checks_failing":
+    case "review_requested":
+    case "changes_requested":
+    case "merge_ready":
+      return "signal";
+    default:
+      return "ambient";
+  }
+}
+
+/** Idle rows are also ambient: neither tier is eligible to interrupt. */
+export function activityItemIsAmbient(item: AttentionItem): boolean {
+  return activityItemTier(item) !== "signal";
 }
 
 export function attentionItemIsLive(item: AttentionItem): boolean {

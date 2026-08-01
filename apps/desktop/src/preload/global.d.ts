@@ -1203,6 +1203,11 @@ declare global {
           accountOwnerId: string,
           preferences: import("../shared/types").AttentionPreferences,
         ) => Promise<void>;
+        putMachinePreferences?: (
+          accountOwnerId: string,
+          machineKey: string,
+          preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
+        ) => Promise<void>;
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;
@@ -1210,6 +1215,11 @@ declare global {
       attentionNotch: {
         publishSnapshot: (
           snapshot: import("../shared/types").AttentionSnapshot,
+        ) => Promise<void>;
+        // Optional like `onRefreshRequested`: the web adapter has no notch at
+        // all, so every call site must optional-chain through it.
+        publishToast?: (
+          toast: import("../shared/types").AttentionNotchToast,
         ) => Promise<void>;
         updateSettings: (
           settings: import("../shared/types").AttentionNotchSettings,
