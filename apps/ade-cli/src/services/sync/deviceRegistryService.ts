@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
-import { execFileSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { resolveAdeLayout } from "../../../../desktop/src/shared/adeLayout";
 import type {
   SyncBrainStatusPayload,
@@ -60,6 +60,7 @@ let tailscaleStatusCache:
       dnsName: string | null;
     }
   | null = null;
+let tailscaleStatusRefreshInFlight: Promise<void> | null = null;
 
 function normalizeDeviceType(value: unknown): SyncPeerDeviceType {
   const raw = typeof value === "string" ? value.trim() : "";
@@ -74,30 +75,50 @@ function normalizePlatform(value: unknown): SyncPeerPlatform {
 }
 
 let cachedDeviceDisplayName: string | null = null;
+let deviceDisplayNameRefreshStarted = false;
+
+function externalIdentityProbesEnabled(): boolean {
+  return process.env.VITEST !== "true" && process.env.NODE_ENV !== "test";
+}
+
+function execFileText(
+  command: string,
+  commandArgs: string[],
+  timeoutMs: number,
+): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(command, commandArgs, {
+      encoding: "utf8",
+      timeout: timeoutMs,
+      maxBuffer: 1024 * 1024,
+    }, (error, stdout) => {
+      resolve(error ? null : String(stdout ?? ""));
+    });
+  });
+}
 
 /**
  * Resolve the human-facing device name from the OS. On macOS this is the
  * ComputerName the user sets in System Settings (e.g. "Arul's Mac Studio"),
  * read via `scutil --get ComputerName`. `os.hostname()` returns the network
  * hostname instead (e.g. "Mac.lan"), which is not what the user recognizes.
- * Falls back to `os.hostname()` on non-darwin platforms or any failure
- * (scutil missing, sandboxed, empty value). Never throws.
+ * The synchronous caller always gets a cached/fallback value immediately;
+ * macOS ComputerName refreshes asynchronously so an unavailable `scutil`
+ * cannot block the brain event loop. Never throws.
  */
 export function resolveDeviceDisplayName(): string {
-  if (cachedDeviceDisplayName != null) return cachedDeviceDisplayName;
   const fallback = os.hostname();
-  if (process.platform !== "darwin") {
-    cachedDeviceDisplayName = fallback;
-    return fallback;
-  }
-  try {
-    const computerName = execFileSync("scutil", ["--get", "ComputerName"], {
-      encoding: "utf8",
-      timeout: 2_000,
-    }).trim();
-    cachedDeviceDisplayName = computerName.length > 0 ? computerName : fallback;
-  } catch {
-    cachedDeviceDisplayName = fallback;
+  if (cachedDeviceDisplayName == null) cachedDeviceDisplayName = fallback;
+  if (
+    process.platform === "darwin"
+    && !deviceDisplayNameRefreshStarted
+    && externalIdentityProbesEnabled()
+  ) {
+    deviceDisplayNameRefreshStarted = true;
+    void execFileText("scutil", ["--get", "ComputerName"], 2_000).then((value) => {
+      const computerName = value?.trim() ?? "";
+      if (computerName) cachedDeviceDisplayName = computerName;
+    });
   }
   return cachedDeviceDisplayName;
 }
@@ -185,23 +206,26 @@ function readLocalTailscaleDnsName(): string | null {
   if (tailscaleStatusCache && tailscaleStatusCache.expiresAt > now) {
     return tailscaleStatusCache.dnsName;
   }
-  let dnsName: string | null = null;
-  try {
-    const raw = execFileSync(resolveTailscaleCliPath(), ["status", "--json"], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: 1_000,
+  const staleDnsName = tailscaleStatusCache?.dnsName ?? null;
+  if (!tailscaleStatusRefreshInFlight && externalIdentityProbesEnabled()) {
+    const refresh = execFileText(
+      resolveTailscaleCliPath(),
+      ["status", "--json"],
+      1_000,
+    ).then((raw) => {
+      const parsed = safeJsonParse<{ Self?: { DNSName?: unknown } }>(raw ?? "", {});
+      tailscaleStatusCache = {
+        expiresAt: Date.now() + TAILSCALE_STATUS_CACHE_MS,
+        dnsName: normalizeTailscaleDnsName(parsed.Self?.DNSName),
+      };
+    }).finally(() => {
+      if (tailscaleStatusRefreshInFlight === refresh) {
+        tailscaleStatusRefreshInFlight = null;
+      }
     });
-    const parsed = safeJsonParse<{ Self?: { DNSName?: unknown } }>(raw, {});
-    dnsName = normalizeTailscaleDnsName(parsed.Self?.DNSName);
-  } catch {
-    dnsName = null;
+    tailscaleStatusRefreshInFlight = refresh;
   }
-  tailscaleStatusCache = {
-    expiresAt: now + TAILSCALE_STATUS_CACHE_MS,
-    dnsName,
-  };
-  return dnsName;
+  return staleDnsName;
 }
 
 function firstPreferredHost(ipAddresses: string[]): string {

@@ -786,7 +786,6 @@ export async function createAdeRuntime(args: {
     const reconcileStaleRunningSessions = (reason: "startup" | "fresh-activity-grace-expired") => {
       const reconciledSessions = sessionService.reconcileStaleRunningSessions({
         status: "detached",
-        excludeToolTypes: ["claude-chat", "codex-chat", "opencode-chat", "cursor", "droid-chat"],
         liveOwnerPids: processRegistry.listLivePids(),
         liveOwnerIdentities: processRegistry.listLiveProcessIdentities(),
         knownOwnerPids: processRegistry.listKnownPids(),

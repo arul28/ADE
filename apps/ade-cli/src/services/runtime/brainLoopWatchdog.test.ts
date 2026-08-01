@@ -5,6 +5,9 @@ import { describe, expect, it, vi } from "vitest";
 import {
   BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE,
   BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE,
+  BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE,
+  BRAIN_LOOP_WATCHDOG_REPORT_FILE,
+  DEFAULT_BRAIN_LOOP_WATCHDOG_MS,
   buildBrainLoopWatchdogWorkerSource,
   evaluateBrainLoopWatchdog,
   readBrainLoopWatchdogLastWedge,
@@ -13,6 +16,10 @@ import {
 } from "./brainLoopWatchdog";
 
 describe("brainLoopWatchdog", () => {
+  it("allows a 30 second event-loop stall before the watchdog terminates the brain", () => {
+    expect(DEFAULT_BRAIN_LOOP_WATCHDOG_MS).toBe(30_000);
+  });
+
   it("builds a valid worker program from the tested watchdog evaluator", () => {
     expect(() => new Function(buildBrainLoopWatchdogWorkerSource())).not.toThrow();
   });
@@ -89,6 +96,65 @@ describe("brainLoopWatchdog", () => {
         fs.readFileSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_WEDGE_FILE), "utf8"),
       )).toEqual(breadcrumb);
       expect(readBrainLoopWatchdogLastWedge(runtimeDir)).toEqual(breadcrumb);
+    } finally {
+      fs.rmSync(runtimeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves watchdog diagnostics and recovers the matching Node report", () => {
+    const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-loop-watchdog-report-"));
+    const breadcrumb = {
+      lastCommand: "idle",
+      blockedMs: 31_250,
+      ts: "2026-08-01T04:11:00.000Z",
+      thresholdMs: 30_000,
+      diagnostics: {
+        capturedAt: "2026-08-01T04:10:29.000Z",
+        heartbeatLagMs: 12,
+        eventLoopDelay: { maxMs: 24, meanMs: 20, p99Ms: 23 },
+        memory: {
+          rss: 1_000,
+          heapTotal: 900,
+          heapUsed: 800,
+          external: 100,
+          arrayBuffers: 50,
+        },
+        resources: {
+          userCpuMicros: 10,
+          systemCpuMicros: 20,
+          maxRssKb: 30,
+          minorPageFaults: 40,
+          majorPageFaults: 50,
+          fsReads: 60,
+          fsWrites: 70,
+          voluntaryContextSwitches: 80,
+          involuntaryContextSwitches: 90,
+        },
+      },
+      diagnosticReportPath: path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE),
+    };
+    fs.writeFileSync(
+      path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_BREADCRUMB_FILE),
+      JSON.stringify(breadcrumb),
+      "utf8",
+    );
+    fs.writeFileSync(
+      path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE),
+      "diagnostic report",
+      "utf8",
+    );
+    try {
+      const recovered = recoverBrainLoopWatchdogBreadcrumb({ runtimeDir, warn: vi.fn() });
+      expect(recovered).toEqual({
+        ...breadcrumb,
+        diagnosticReportPath: path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE),
+      });
+      expect(fs.existsSync(path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_REPORT_FILE))).toBe(false);
+      expect(fs.readFileSync(
+        path.join(runtimeDir, BRAIN_LOOP_WATCHDOG_LAST_REPORT_FILE),
+        "utf8",
+      )).toBe("diagnostic report");
+      expect(readBrainLoopWatchdogLastWedge(runtimeDir)).toEqual(recovered);
     } finally {
       fs.rmSync(runtimeDir, { recursive: true, force: true });
     }

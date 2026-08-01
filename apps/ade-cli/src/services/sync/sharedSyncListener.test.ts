@@ -1,3 +1,4 @@
+import http from "node:http";
 import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
@@ -35,6 +36,43 @@ async function reject(
 }
 
 describe("shared sync listener upgrade policy", () => {
+  it("skips duplicate preferred-port retries when a live process owns the port", async () => {
+    const holder = http.createServer();
+    holder.listen(0, "127.0.0.1");
+    await once(holder, "listening");
+    const address = holder.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP holder.");
+    const logger = { warn: vi.fn() };
+    const inspectPort = vi.fn(async (port: number) => ({
+      port,
+      holders: [{
+        pid: 999_999,
+        command: "/Applications/ADE.app/Contents/MacOS/ADE",
+        startTime: "Fri Aug  1 04:00:00 2026",
+      }],
+    }));
+    const listener = createSharedSyncListener({
+      bindHost: "127.0.0.1",
+      logger,
+      inspectPort,
+      activeServicePid: () => null,
+    });
+    try {
+      const port = await listener.ensureListening([address.port, 0]);
+      expect(port).not.toBe(address.port);
+      expect(inspectPort).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledTimes(1);
+      expect(logger.warn).toHaveBeenCalledWith("sync_listener.bind_port_conflict", expect.objectContaining({
+        attemptedPort: address.port,
+        holderPids: [999_999],
+        retriesSkipped: 7,
+      }));
+    } finally {
+      await listener.close();
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+    }
+  });
+
   it("accepts only the sync root path", async () => {
     const listener = createSharedSyncListener({ bindHost: "127.0.0.1" });
     const port = await listener.ensureListening([0]);

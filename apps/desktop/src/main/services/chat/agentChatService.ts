@@ -8551,10 +8551,12 @@ export function createAgentChatService(args: {
   ): {
     todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"];
     maxEventSequence: number;
+    transcriptEvents: AgentChatEventEnvelope[];
   } => {
     let todoItems: Extract<AgentChatEvent, { type: "todo_update" }>["items"] = [];
     let maxEventSequence = 0;
-    for (const entry of readTranscriptEnvelopes(managed)) {
+    const transcriptEvents = readTranscriptEnvelopes(managed);
+    for (const entry of transcriptEvents) {
       if (entry.event.type === "todo_update") {
         todoItems = entry.event.items;
       }
@@ -8562,7 +8564,11 @@ export function createAgentChatService(args: {
         maxEventSequence = entry.sequence;
       }
     }
-    return { todoItems, maxEventSequence };
+    return {
+      todoItems,
+      maxEventSequence,
+      transcriptEvents,
+    };
   };
 
   /** Runtime-lifetime TaskCreate/TaskUpdate tracker, lazily seeded from the
@@ -9858,6 +9864,11 @@ export function createAgentChatService(args: {
     if (!trimmedId.length) return missingChatEventHistorySnapshot(trimmedId);
     const row = sessionService.get(trimmedId);
     if (!row || !isChatToolType(row.toolType)) return missingChatEventHistorySnapshot(trimmedId);
+    // A brain restart detaches the durable session row but cannot emit the
+    // terminal events for a turn that was in flight when the process died.
+    // Hydrate that selected chat once so the transcript is repaired before it
+    // is returned to the renderer; unopened detached chats stay cold.
+    if (row.status === "detached") ensureManagedSession(trimmedId);
     const { maxEvents, requestedMaxBytes, responseMaxChars } = chatEventHistoryLimits(options);
     const transcriptHistory = await readTranscriptEnvelopesForSessionIdAsync(
       trimmedId,
@@ -10015,6 +10026,30 @@ export function createAgentChatService(args: {
     return latest && (latest.terminalStatus == null || latest.doneStatus == null)
       ? latest
       : null;
+  };
+
+  const emitMissingTurnTerminalPair = (
+    managed: ManagedChatSession,
+    unsettled: UnsettledParentTurn,
+    modelPayload: { model: string; modelId?: string },
+  ): "completed" | "interrupted" | "failed" => {
+    const status = unsettled.terminalStatus ?? unsettled.doneStatus ?? "interrupted";
+    if (!unsettled.terminalStatus) {
+      emitChatEvent(managed, {
+        type: "status",
+        turnStatus: status,
+        turnId: unsettled.turnId,
+      });
+    }
+    if (!unsettled.doneStatus) {
+      emitChatEvent(managed, {
+        type: "done",
+        turnId: unsettled.turnId,
+        status,
+        ...modelPayload,
+      });
+    }
+    return status;
   };
 
   const normalizeEventStatus = (status: string | undefined): string => {
@@ -12584,6 +12619,36 @@ export function createAgentChatService(args: {
 
   const markSessionIdleWithFreshCache = (managed: ManagedChatSession): void => {
     setSessionIdle(managed, { idleSinceAt: nowIso() });
+  };
+
+  const recoverDetachedChatAfterRestart = (
+    managed: ManagedChatSession,
+    unsettled: UnsettledParentTurn | null,
+  ): void => {
+    if (unsettled) {
+      emitChatEvent(managed, {
+        type: "system_notice",
+        noticeKind: "info",
+        message: "ADE restarted while this response was running. The interrupted turn was closed; retry or continue when ready.",
+        turnId: unsettled.turnId,
+      });
+      const status = emitMissingTurnTerminalPair(managed, unsettled, {
+        model: managed.session.model,
+        ...(managed.session.modelId ? { modelId: managed.session.modelId } : {}),
+      });
+      logger.warn("agent_chat.restart_orphan_turn_terminalized", {
+        sessionId: managed.session.id,
+        provider: managed.session.provider,
+        turnId: unsettled.turnId,
+        status,
+      });
+    }
+
+    markSessionIdleWithFreshCache(managed);
+    managed.closed = false;
+    managed.endedNotified = false;
+    sessionService.reopen(managed.session.id);
+    persistChatState(managed);
   };
 
   const cursorDroidTurnStillActive = (managed: ManagedChatSession): boolean => {
@@ -16351,6 +16416,20 @@ export function createAgentChatService(args: {
     refreshReconstructionContext(managed);
 
     managedSessions.set(sessionId, managed);
+    if (row.status === "detached") {
+      try {
+        recoverDetachedChatAfterRestart(
+          managed,
+          findUnsettledParentTurn(managed, transcriptHydration.transcriptEvents),
+        );
+      } catch (error) {
+        logger.warn("agent_chat.restart_recovery_failed", {
+          sessionId,
+          provider,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
     return managed;
   };
 
@@ -28183,7 +28262,7 @@ export function createAgentChatService(args: {
   // process — background_task rows stuck "running", subagent snapshots still
   // open. Nothing will ever settle them, so sweep them to a terminal state and
   // announce it once. Pure event replay; safe to run before the first turn.
-  const findUnsettledClaudeParentTurn = (
+  const findUnsettledParentTurn = (
     managed: ManagedChatSession,
     transcriptEvents = readFullTranscriptEnvelopesForSessionId(managed.session.id),
   ): UnsettledParentTurn | null => {
@@ -28196,25 +28275,14 @@ export function createAgentChatService(args: {
     reason: "restart" | "idle_interrupt",
     candidate?: UnsettledParentTurn | null,
   ): string | null => {
-    const unsettled = candidate === undefined ? findUnsettledClaudeParentTurn(managed) : candidate;
+    const unsettled = candidate === undefined ? findUnsettledParentTurn(managed) : candidate;
     if (!unsettled) return null;
 
-    const status = unsettled.terminalStatus ?? unsettled.doneStatus ?? "interrupted";
-    if (!unsettled.terminalStatus) {
-      emitChatEvent(managed, {
-        type: "status",
-        turnStatus: status,
-        turnId: unsettled.turnId,
-      });
-    }
-    if (!unsettled.doneStatus) {
-      emitChatEvent(managed, {
-        type: "done",
-        turnId: unsettled.turnId,
-        status,
-        ...resolveClaudeTurnModelPayload(managed.session, []),
-      });
-    }
+    const status = emitMissingTurnTerminalPair(
+      managed,
+      unsettled,
+      resolveClaudeTurnModelPayload(managed.session, []),
+    );
     markSessionIdleWithFreshCache(managed);
     persistChatState(managed);
     logger.info("agent_chat.claude_orphan_turn_terminalized", {
@@ -28234,7 +28302,7 @@ export function createAgentChatService(args: {
       const envelopes = readFullTranscriptEnvelopesForSessionId(managed.session.id);
       if (envelopes.length === 0) return;
 
-      const orphanParentTurn = findUnsettledClaudeParentTurn(managed, envelopes);
+      const orphanParentTurn = findUnsettledParentTurn(managed, envelopes);
 
       const orphanBackground = deriveBackgroundItems(envelopes).filter(
         (snapshot) => snapshot.status === "scheduled" || snapshot.status === "running",

@@ -754,8 +754,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `foreignChatProvider`.
 - `sharedSyncListener.ts` — the brain-level WebSocket listener shared
   across per-project host services. Binds once (preferred-port retry:
-  ~8 attempts over ~3.2 s on the saved port before falling back to a
-  port scan, so a brain restart does not drift the port phones saved). WebSocket
+  up to ~8 attempts over ~3.2 s on the saved port before falling back to a
+  port scan, so a transient brain restart does not drift the port phones saved).
+  Port diagnosis uses asynchronous `lsof` / `ps`; once a live holder is
+  confirmed, the listener skips the remaining duplicate retries for that port
+  and emits one conflict warning before advancing. WebSocket
   upgrades are accepted only on the sync root path (`/`). When an Origin header
   is present, it must name the canonical hosted web client
   (`https://app.ade-app.dev`) or one of the explicit local Vite origins;
@@ -957,7 +960,11 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   `syncPeerService.acknowledgeLocalDbVersion()` to advance the
   outbound cursor past the suppressed range, ensuring a fresh viewer
   cannot accidentally erase the authority runtime's registry. See
-  `crdt-model.md` for the underlying suppression mechanism.
+  `crdt-model.md` for the underlying suppression mechanism. Local identity
+  snapshots return cached/fallback values synchronously while macOS
+  `ComputerName` (`scutil`) and the Tailscale DNS name refresh asynchronously;
+  Tailscale status is single-flight and retained for 30 seconds so periodic
+  machine publication cannot block the brain event loop on an external CLI.
 - `syncPairingStore.ts` — validates `pairing_request` envelopes
   against `syncPinStore`, mints the durable per-device secret, and
   persists it into the `paired_devices` row (SQLite). Each

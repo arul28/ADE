@@ -247,7 +247,9 @@ describe("sync loopback collision recovery", () => {
           listenerBound: true,
           loopbackAdeValidated: true,
         });
-        expect(status.routeHealth.listener.lastFailureAt).not.toBeNull();
+        // The occupied preferred port is now skipped before ADE binds or probes
+        // it, so loopback validation has no failure to record.
+        expect(status.routeHealth.listener.lastFailureAt).toBeNull();
         expect(status.localDevice.lastPort).toBe(resolvedPort);
         expect(status.pairingConnectInfo?.port).toBe(resolvedPort);
         expect(status.tailnetDiscovery).toMatchObject({
