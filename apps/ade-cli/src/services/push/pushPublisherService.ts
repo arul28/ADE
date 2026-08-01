@@ -9,6 +9,7 @@ import {
   type AttentionEventKind,
   type AttentionItem,
   type AttentionPhase,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
@@ -2791,6 +2792,18 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       preferences: AttentionPreferences,
     ): Promise<void> {
       await deps.relayClient.putAttentionPreferences?.(accountOwnerId, preferences);
+    },
+
+    async putAttentionMachinePreferences(
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ): Promise<void> {
+      await deps.relayClient.putActivityMachinePreferences?.(
+        accountOwnerId,
+        machineKey,
+        preferences,
+      );
     },
 
     dispose,

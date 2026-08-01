@@ -269,8 +269,22 @@ apps/ios/
 │   │   ├── ADEAgentActivityAttributes.swift # account-wide ActivityKit
 │   │   │                            # content-state + exact machine links +
 │   │   │                            # non-PII ownership-epoch fence
+│   │   ├── ActivityRowPresentation.swift # pure item → label/tone/glyph/elapsed
+│   │   │                            # mapper; the iOS mirror of desktop
+│   │   │                            #   sessionStatusPresentation.ts +
+│   │   │                            #   activityPresentation.ts. No SwiftUI —
+│   │   │                            #   tones are tokens. Compiles into the
+│   │   │                            #   widget extension, so iOS 17 only.
+│   │   ├── ActivityWidgetPresentation.swift # tone → colour binding and the
+│   │   │                            # lock-screen ranking, shared by the app and
+│   │   │                            #   the widget so the two cannot describe the
+│   │   │                            #   same session differently. iOS 17 only.
 │   │   └── AttentionActionIntents.swift # widget actions for approve/deny/restart/retry
 │   ├── Views/
+│   │   ├── Activity/                # ActivityDrawerSheet (global account-wide
+│   │   │                            #   Sessions/Inbox drawer), ActivityDrawerModel
+│   │   │                            #   (snapshot + local dismissals + acks),
+│   │   │                            # ActivityRow, ActivityBellButton
 │   │   ├── Account/                 # account choice/sign-in plus the mobile
 │   │   │                            # access gate and connections section
 │   │   ├── Components/              # ADEDesignSystem (incl. ADEConnectionDot,
@@ -294,7 +308,10 @@ apps/ios/
 │   │   │                            #   (HubInlineComposer — inline keyboard
 │   │   │                            #   composer, not a modal drawer),
 │   │   │                            # HubScreen+ChatNavigation (chat open +
-│   │   │                            #   cross-project quick look)
+│   │   │                            #   cross-project quick look),
+│   │   │                            # HubLiveStrip ("Live now" — agents working
+│   │   │                            #   across every account machine, read from
+│   │   │                            #   ActivityDrawerModel; hidden when empty)
 │   │   ├── PersonalChats/           # Hub-only projectless chat list,
 │   │   │                            # new-chat model composer, and reused
 │   │   │                            # Work transcript destination adapter
@@ -380,7 +397,16 @@ apps/ios/
 │   │   │                            # WorkSessionDestination*,
 │   │   │                            # WorkRootScreen+Selection (multi-select state +
 │   │   │                            #   bulk close/archive/restore/delete/export),
-│   │   │                            # WorkSelectionActionBar, etc.
+│   │   │                            # WorkSelectionActionBar,
+│   │   │                            # WorkLaneOrder (pure lane ordering + the
+│   │   │                            #   singleton/headerless rule; the port of
+│   │   │                            #   desktop workLaneOrder.ts and the
+│   │   │                            #   headerlessLaneIds memo. Models manual
+│   │   │                            #   drag and handoff jobs even though iOS
+│   │   │                            #   has neither yet — they are the two rules
+│   │   │                            #   that decide whether a lane keeps its
+│   │   │                            #   header, and dropping them is how a port
+│   │   │                            #   silently loses a rule later), etc.
 │   │   ├── Linear/                  # LinearPaneSheet, issue list/detail screens,
 │   │   │                            # launch config, brand/logo paths, pane store
 │   │   │                            # and toolbar button. Uses existing cto.* read
@@ -1376,6 +1402,17 @@ Each row uses the shared item destination and actions:
 - **Failed** — exact agent navigation and a locally safe restart affordance.
 - **CI failing / review requested / merge ready** — exact PR tab navigation.
 - **Completed / merged** — retained in Recent until seen or dismissed.
+
+Row vocabulary is derived once, in `Shared/ActivityRowPresentation.swift` — a
+pure item-to-label/tone/glyph/elapsed mapper with no SwiftUI in it — and the
+tone-to-colour binding plus the lock-screen ranking live beside it in
+`Shared/ActivityWidgetPresentation.swift`. Both compile into the widget
+extension as well as the app, which is what keeps the lock screen from
+describing a session in words and colours the app does not use; it also means
+both files are pinned to the extension's iOS 17 deployment target. The Hub's
+"Live now" strip (`Views/Hub/HubLiveStrip.swift`) is a third reader of the same
+model, showing agents working on any account machine and hiding itself entirely
+when none are.
 
 The drawer uses the same one-hue-one-meaning contract as the widget and desktop
 Activity pane. `blocked` is a neutral Working item with an Open action, distinct from the

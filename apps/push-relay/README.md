@@ -47,15 +47,39 @@ its own (single D1 database, no Durable Objects, no queues).
 | POST | `/attention/account/ack` | Mark items seen or dismissed across devices |
 | POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
 | GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
+| PATCH | `/attention/account/preferences/devices/:deviceId` | Merge one device's overrides without rewriting the document |
+| PATCH | `/attention/account/preferences/machines/:machineKey` | Merge one machine's overrides (this is what "mute this Mac" writes) |
 | PATCH | `/attention/account/preferences/devices/:deviceId` | Atomically merge one device's preference override without overwriting concurrent account or other-device changes |
 | PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
 
 ### Account Activity semantics
 
-- Each brain publishes one bounded full snapshot for its machine. The worker
-  merges every linked machine into a revisioned account stream, including
-  tombstones so desktop and iOS converge after removals.
+- The worker merges every linked machine into a revisioned account stream,
+  including tombstones so desktop and iOS converge after removals.
+- **Publish protocol 2.** Every publish response carries `protocol: 2` plus the
+  current `acks`, so a reconnecting brain learns what other devices already
+  dismissed without waiting for its own read. `POST /machines/:key/attention`
+  takes a `mode`: `reconcile` (full roster, paged, `final: true` on the last
+  page), `delta` (changed items only), or `presence` (no items — it holds
+  presence and lets a due alert retry). Each publish stamps a monotonic
+  `rosterEpoch`; a reconcile's `final` page seals it, and anything left on an
+  older epoch for that machine is dropped in one commit. A delta reuses the
+  epoch and so never implies a deletion. A truncating publish answers
+  `itemsTruncated` so the brain schedules a fresh reconcile. Publishers that
+  predate this keep sending full snapshots and still work.
+- **Two fingerprints.** `contentFingerprint` is what the row looks like with
+  progress churn normalized away — an unchanged one skips the write entirely.
+  `alertFingerprint` is the stable identity of one phase entry and survives the
+  item being removed and republished, which is what stops a reconnect from
+  re-alerting. Legacy publishers send neither and fall back to `fingerprint`.
+- **Alerting gates.** Only items whose `activityTier` is `signal` may notify,
+  and only if `updatedAt` is within 15 minutes — so a machine returning from
+  offline never fires its recovered backlog. Sends are claimed by a short-lived
+  delivery receipt, then recorded in `attention_alert_log` (account + alert
+  fingerprint + device, retained 30 days) so a delete-and-republish cannot
+  re-alert after the 7-day receipt is pruned. Alert payloads also set
+  `content-available` as an opportunistic background refresh.
 - Seen and dismissed state belongs to the account, so acknowledging an item on
   iPhone clears it on desktop and vice versa.
 - Routine running/progress state remains ambient. Needs-input, failure,
@@ -67,9 +91,11 @@ its own (single D1 database, no Durable Objects, no queues).
   start that never committed after a transient APNs failure. Once a start
   succeeds, durable state plus the content fingerprint suppress duplicates.
 - Device-registration preferences are compatibility fallbacks. Account
-  preferences override them; only an explicit account
-  `devices[deviceId]` override may supersede the account defaults for one
-  device. Phone settings use the scoped device PATCH, while account/project
+  preferences override them; only an explicit account `devices[deviceId]`
+  override may supersede the account defaults for one device. The document also
+  carries `project` and `machines` scopes — the latter keyed by machine key, so
+  muting one Mac silences its items everywhere rather than muting a category on
+  one phone. Phone settings use the scoped device PATCH, while account/project
   writes omit and preserve `devices`, so concurrent clients cannot erase one
   another's policy.
 - The relay owns one account-wide Live Activity per iPhone. It focuses the

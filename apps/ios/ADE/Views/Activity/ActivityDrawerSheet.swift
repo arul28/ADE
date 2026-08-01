@@ -180,6 +180,21 @@ struct ActivityDrawerSheet: View {
                 }
                 .tint(ADEColor.accent)
             }
+            // Swipe is not an affordance every input method has. Voice Control,
+            // Switch Control, and direct-touch users with limited mobility get
+            // the same two actions here.
+            .contextMenu {
+                Button {
+                    drawer.markSeen(row.id)
+                } label: {
+                    Label("Mark seen", systemImage: "checkmark")
+                }
+                Button(role: .destructive) {
+                    drawer.dismiss(row.id)
+                } label: {
+                    Label("Dismiss", systemImage: "xmark")
+                }
+            }
         }
     }
 
@@ -200,8 +215,9 @@ struct ActivityDrawerSheet: View {
         return VStack(spacing: 14) {
             Spacer()
             Image(systemName: copy.symbol)
-                .font(.system(size: 30, weight: .regular))
+                .font(.system(.largeTitle, design: .rounded).weight(.regular))
                 .foregroundStyle(copy.tint)
+                .accessibilityHidden(true)
             VStack(spacing: 5) {
                 Text(copy.title)
                     .font(.system(.title3, design: .rounded).weight(.semibold))
@@ -211,6 +227,8 @@ struct ActivityDrawerSheet: View {
                     .foregroundStyle(ADEColor.textSecondary)
                     .multilineTextAlignment(.center)
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel("\(copy.title). \(copy.body)")
             if drawer.source == .none {
                 Button {
                     Task { await accountService.refreshAttentionSnapshot() }
@@ -221,6 +239,7 @@ struct ActivityDrawerSheet: View {
                         .padding(.horizontal, 16)
                         .padding(.vertical, 9)
                         .background(ADEColor.accent.opacity(0.14), in: Capsule())
+                        .frame(minWidth: 44, minHeight: 44)
                 }
                 .buttonStyle(.plain)
             }
@@ -229,8 +248,9 @@ struct ActivityDrawerSheet: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .padding(.horizontal, 32)
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(copy.title). \(copy.body)")
+        // `.contain`, not `.combine`: combining here swallowed the "Try again"
+        // button, which is the only recovery path when the source is unreachable.
+        .accessibilityElement(children: .contain)
     }
 
     private var emptyCopy: (symbol: String, tint: Color, title: String, body: String) {
@@ -310,8 +330,9 @@ private struct ActivityErrorBanner: View {
     var body: some View {
         HStack(spacing: 9) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.system(size: 12, weight: .semibold))
+                .font(.system(.caption, design: .rounded).weight(.semibold))
                 .foregroundStyle(ADESharedTheme.warningAmber)
+                .accessibilityHidden(true)
             Text(message)
                 .font(.system(.caption, design: .rounded))
                 .foregroundStyle(ADEColor.textPrimary)
@@ -325,7 +346,8 @@ private struct ActivityErrorBanner: View {
             RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .strokeBorder(ADESharedTheme.warningAmber.opacity(0.28), lineWidth: 0.7)
         )
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Error. \(message)")
     }
 }
 
@@ -475,15 +497,15 @@ private struct ActivityActionLabel: View {
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: systemImage)
-                .font(.system(size: 10, weight: .bold))
+                .font(.system(.caption2, design: .rounded).weight(.bold))
+                .accessibilityHidden(true)
             Text(title)
                 .font(.system(.caption, design: .rounded).weight(.semibold))
                 .lineLimit(1)
                 .minimumScaleFactor(0.76)
         }
         .foregroundStyle(variant.foreground)
-        .frame(maxWidth: .infinity)
-        .padding(.vertical, 8)
+        .frame(maxWidth: .infinity, minHeight: 44)
         .padding(.horizontal, 10)
         .background(variant.background, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(

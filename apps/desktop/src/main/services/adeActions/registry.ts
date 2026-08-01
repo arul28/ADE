@@ -26,6 +26,7 @@ import type {
   AutomationSaveDraftResult,
 } from "../../../shared/types/automations";
 import type {
+  AttentionPreferenceScope,
   AttentionPreferences,
   AttentionPresence,
 } from "../../../shared/types/attention";
@@ -204,6 +205,7 @@ export const ADE_ACTION_CTO_ONLY: Partial<Record<AdeActionDomain, readonly strin
     "reportPresence",
     "getPreferences",
     "putPreferences",
+    "putMachinePreferences",
   ],
   // The CTO's durable memory is injected into every CTO session; only the CTO
   // itself (and the user's own UI, which connects at cto role) may rewrite it.
@@ -321,6 +323,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "reportPresence",
     "getPreferences",
     "putPreferences",
+    "putMachinePreferences",
   ],
   lane: [
     "adoptAttached",
@@ -979,6 +982,11 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       description: "Replace Activity preferences for the signed-in account owner.",
       input: "object { accountOwnerId: string, preferences: AttentionPreferences }",
       example: "ade --role cto actions run attention.putPreferences --input-json '{\"accountOwnerId\":\"user_123\",\"preferences\":{\"account\":{},\"devices\":{},\"projects\":{},\"mutedSessionIds\":[]}}' --json",
+    },
+    putMachinePreferences: {
+      description: "Patch Activity preferences for one machine (e.g. mute its notifications) without replacing the whole document.",
+      input: "object { accountOwnerId: string, machineKey: string, preferences: Partial<AttentionPreferenceScope> }",
+      example: "ade --role cto actions run attention.putMachinePreferences --input-json '{\"accountOwnerId\":\"user_123\",\"machineKey\":\"machine:abc\",\"preferences\":{\"notificationsEnabled\":false}}' --json",
     },
   },
   project_secret: {
@@ -1886,6 +1894,23 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
       return publisher.putAttentionPreferences(
         requireCurrentAccountOwner(args.accountOwnerId),
         args.preferences,
+      );
+    },
+    putMachinePreferences: (args?: {
+      accountOwnerId?: unknown;
+      machineKey?: unknown;
+      preferences?: unknown;
+    }) => {
+      if (typeof args?.machineKey !== "string" || args.machineKey.length === 0) {
+        throw new Error("A machineKey is required.");
+      }
+      if (!args?.preferences || typeof args.preferences !== "object") {
+        throw new Error("A valid Activity machine preferences payload is required.");
+      }
+      return publisher.putAttentionMachinePreferences(
+        requireCurrentAccountOwner(args.accountOwnerId),
+        args.machineKey,
+        args.preferences as Partial<AttentionPreferenceScope>,
       );
     },
   };

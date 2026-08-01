@@ -47,7 +47,7 @@ struct ActivityBellButton: View {
         .animation(.snappy(duration: 0.2), value: drawer.unreadCount)
         .accessibilityLabel(
             hasUnread
-                ? "Activity, \(drawer.unreadCount) need you"
+                ? "Activity, \(drawer.unreadCount) \(drawer.unreadCount == 1 ? "item needs" : "items need") you"
                 : "Activity"
         )
         .accessibilityHint("Opens the Activity drawer.")

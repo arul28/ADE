@@ -4,9 +4,11 @@ import type {
 } from "../../../desktop/src/shared/types/attention";
 import {
   ATTENTION_CONTRACT_VERSION,
+  activityItemTier,
   attentionDestinationDeepLink,
   sortAttentionItems,
 } from "../../../desktop/src/shared/types/attention";
+import { formatRelativePastTime } from "./relativeTime";
 import type { AdeCodeConnection } from "./types";
 
 export type ActivityPaneGroupId =
@@ -227,6 +229,12 @@ export async function acknowledgeActivityItem(
 }
 
 function groupForItem(item: AttentionItem): ActivityPaneGroupId {
+  // Disk-only roster rows are quiet history: an ended chat still carries phase
+  // `completed` with no seenAt, which would otherwise file every session the
+  // account has ever finished under DONE, UNREVIEWED and count it as waiting.
+  // Desktop files the same rows as the ambient tail — see `activitySectionId`
+  // in apps/desktop/src/renderer/components/activity/activityPriority.ts.
+  if (activityItemTier(item) === "idle") return "recent";
   if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") {
     return "needs-you";
   }
@@ -302,6 +310,16 @@ export function buildActivityPaneModel(snapshot: AttentionSnapshot): ActivityPan
 
 export function activityItemDeepLink(item: AttentionItem): string {
   return attentionDestinationDeepLink(item.destination, item);
+}
+
+/**
+ * How long the row has held its current phase. `statusSince` is the publisher's
+ * phase anchor, so a long-running agent reads as "2h ago" for the phase rather
+ * than for its last token; publishers older than this build omit it and
+ * `updatedAt` is the honest fallback.
+ */
+export function activityItemElapsed(item: AttentionItem, nowMs = Date.now()): string {
+  return formatRelativePastTime(item.statusSince ?? item.updatedAt, nowMs);
 }
 
 export function activityItemContext(item: AttentionItem): string {

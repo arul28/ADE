@@ -4,6 +4,7 @@ import { Box, Text } from "ink";
 import type { AttentionItem } from "../../../../desktop/src/shared/types/attention";
 import {
   activityItemContext,
+  activityItemElapsed,
   activityPaneEntries,
 } from "../activityPane";
 import { theme } from "../theme";
@@ -84,6 +85,13 @@ export function ActivityPaneView({
         }
         const selected = entry.itemIndex === selectedIndex;
         const context = activityItemContext(entry.item);
+        // The age is the one fact a row cannot imply, so it keeps its width and
+        // the project/lane/machine trail truncates around it.
+        const elapsed = activityItemElapsed(entry.item);
+        const metaWidth = Math.max(8, inner - 4);
+        const meta = context
+          ? `${endTruncate(context, Math.max(4, metaWidth - elapsed.length - 3))} · ${elapsed}`
+          : elapsed;
         return (
           <Box key={entry.key} flexDirection="column">
             <Text
@@ -94,7 +102,7 @@ export function ActivityPaneView({
               {`${selected ? theme.rail : " "} ${activityGlyph(entry.item)} ${endTruncate(entry.item.title, Math.max(8, inner - 4))}`}
             </Text>
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
-              {`    ${endTruncate(context, Math.max(8, inner - 4))}`}
+              {`    ${endTruncate(meta, metaWidth)}`}
             </Text>
             {!entry.item.machine.online ? (
               <Text color={theme.color.attention} dimColor>

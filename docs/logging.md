@@ -134,8 +134,9 @@ blocked reasons, retries, or scheduled review scans. The existing
 `ade_feature_used` limits cap it at 30 accepted events per minute and 140 per
 UTC day without raising the shared 200-event ceiling.
 
-Opening the account-wide Attention control records the existing
-`ade_feature_used` event with `feature: "attention"`,
+Opening the account-wide Activity control (renamed from "Attention" in the UI;
+the analytics taxonomy deliberately keeps the frozen `attention` keys) records
+the existing `ade_feature_used` event with `feature: "attention"`,
 `action: "header_opened"`, `outcome: "opened"`, and
 `source: "renderer_route"`. The renderer emits no item, machine, project,
 session, notification, or error data. A persisted one-hour deduplication key

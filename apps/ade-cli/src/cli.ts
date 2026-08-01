@@ -2306,7 +2306,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade actions list --text                       Domain-grouped action catalog
     $ ade actions list --domain git --text          Narrow the catalog
     $ ade --role cto actions list --domain attention --text
-                                                    Discover account-wide Attention actions
+                                                    Discover account-wide Activity actions
     $ ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
                                                     Read work across connected machines and projects
     $ ade actions run <domain.action> --input-json '{"key":"value"}'

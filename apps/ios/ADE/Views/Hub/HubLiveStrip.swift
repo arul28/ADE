@@ -26,6 +26,10 @@ struct HubLiveStrip: View {
                     Spacer(minLength: 0)
                 }
                 .padding(.horizontal, 2)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "Live now, \(rows.count) \(rows.count == 1 ? "session" : "sessions")"
+                )
 
                 ScrollView(.horizontal) {
                     HStack(spacing: 10) {
@@ -44,7 +48,10 @@ struct HubLiveStrip: View {
                 }
                 .scrollIndicators(.hidden)
             }
-            .accessibilityLabel("Live now, \(rows.count) sessions")
+            // A container, not a leaf: the header carries the summary and each
+            // card stays individually reachable. A bare `.accessibilityLabel`
+            // here would attach to nothing and never be spoken.
+            .accessibilityElement(children: .contain)
         }
     }
 

@@ -24,6 +24,9 @@ struct ActivityRow: View {
     /// carries the explanation, so the rows only need to stop competing.
     var dimmed: Bool = false
     let onOpen: () -> Void
+    /// The compact card is a fixed width so the strip scrolls predictably; it
+    /// still has to grow with the text inside it or the title clips at AX sizes.
+    @ScaledMetric(relativeTo: .footnote) private var compactCardWidth: CGFloat = 208
 
     var body: some View {
         Button(action: onOpen) {
@@ -37,9 +40,18 @@ struct ActivityRow: View {
         .accessibilityHint(row.isPullRequest ? "Opens the pull request." : "Opens the session.")
     }
 
+    /// Everything the row shows visually, in words. The offline state is carried
+    /// only by `dimmed`'s opacity and the plan bar/status note are dropped by
+    /// `.combine`'s label override, so without them VoiceOver hears strictly
+    /// less than a sighted reader sees.
     private var accessibilityLabel: String {
         var parts = [row.title, row.phaseLabel, row.scopeLabel]
+        if let note = row.statusNote { parts.append(note) }
+        if let progress = row.planProgress, progress.total > 0 {
+            parts.append("step \(progress.completed) of \(progress.total)")
+        }
         if let model = row.modelLabel { parts.append(model) }
+        parts.append(row.machineOnline ? "machine online" : "machine offline")
         return parts.joined(separator: ", ")
     }
 
@@ -63,6 +75,7 @@ struct ActivityRow: View {
                         .font(.system(.subheadline, design: .rounded).weight(.semibold))
                         .foregroundStyle(ADEColor.textPrimary)
                         .lineLimit(1)
+                        .minimumScaleFactor(0.8)
                     Spacer(minLength: 6)
                     ActivityStatusLabel(row: row)
                 }
@@ -130,7 +143,8 @@ struct ActivityRow: View {
                 .lineLimit(1)
         }
         .padding(11)
-        .frame(width: 208, alignment: .leading)
+        .frame(minHeight: 44)
+        .frame(width: compactCardWidth, alignment: .leading)
         .background(ADEColor.cardBackground.opacity(0.62), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 14, style: .continuous)
@@ -245,7 +259,8 @@ struct ActivityMachineChip: View {
     var body: some View {
         HStack(spacing: 4) {
             Image(systemName: online ? "desktopcomputer" : "wifi.slash")
-                .font(.system(size: 8, weight: .semibold))
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
+                .accessibilityHidden(true)
             Text(lastSeenLabel.map { "\(name) · \($0)" } ?? name)
                 .font(.system(.caption2, design: .rounded).weight(.medium))
                 .lineLimit(1)
@@ -254,6 +269,12 @@ struct ActivityMachineChip: View {
         .padding(.horizontal, 6)
         .padding(.vertical, 3)
         .background(ADEColor.surfaceBackground.opacity(online ? 0.7 : 0.45), in: Capsule())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            [name, online ? "online" : "offline", lastSeenLabel.map { "last seen \($0)" }]
+                .compactMap { $0 }
+                .joined(separator: ", ")
+        )
     }
 }
 
@@ -309,7 +330,10 @@ struct ActivityPlanProgressBar: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Plan progress: \(progress.completed) of \(progress.total)")
+        .accessibilityLabel(
+            "Plan progress: \(progress.completed) of \(progress.total)"
+                + (progress.current.flatMap { $0.isEmpty ? nil : ", \($0)" } ?? "")
+        )
     }
 }
 
@@ -323,8 +347,9 @@ struct ActivityOfflineMachineBanner: View {
     var body: some View {
         HStack(spacing: 7) {
             Image(systemName: "wifi.slash")
-                .font(.system(size: 10, weight: .semibold))
+                .font(.system(.caption2, design: .rounded).weight(.semibold))
                 .foregroundStyle(ADEColor.textMuted)
+                .accessibilityHidden(true)
             Text(lastSeenLabel.map { "\(machineName) · \($0)" } ?? machineName)
                 .font(.system(.caption2, design: .rounded).weight(.semibold))
                 .foregroundStyle(ADEColor.textMuted)
@@ -334,6 +359,9 @@ struct ActivityOfflineMachineBanner: View {
                 .frame(height: 1)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(machineName) is offline. \(lastSeenLabel ?? "")")
+        .accessibilityLabel(
+            lastSeenLabel.map { "\(machineName) is offline. Last seen \($0)." }
+                ?? "\(machineName) is offline."
+        )
     }
 }

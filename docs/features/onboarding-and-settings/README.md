@@ -215,7 +215,7 @@ Renderer — settings:
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
   entries. The ten tabs are General, Appearance, Agents & Models,
-  Lanes & Git, Integrations, Activity, Notifications & Sound, Secrets,
+  Lanes & Git, Integrations, Notifications & Sound, Activity, Secrets,
   Storage & Diagnostics, and Stats. Every tab id ADE has ever shipped in
   a URL still resolves via `LEGACY_TAB_ALIASES`
   (`settingsManifest.test.ts` asserts this); the one exception is

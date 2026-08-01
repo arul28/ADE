@@ -296,9 +296,16 @@ Shared types and IPC:
   clamped to the viewport like `SessionContextMenu`, with no document-level
   listener. Already-snoozed rows offer **Wake now** instead of the duration
   list.
+- `apps/desktop/src/renderer/components/terminals/SessionStatusLabel.tsx` —
+  the pure label half of the slot below: shared glyph id to Phosphor icon, tone
+  class, and the elapsed/countdown text. It was extracted so the account-wide
+  Activity card can speak the same status vocabulary **without** inheriting the
+  slot's mutation controls, which act on this Mac's local session service and
+  would be wrong — sometimes destructively so — on a row that belongs to
+  another machine. Anything both surfaces must agree on belongs here.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
-  It maps shared presentation glyph ids to Phosphor icons, ticks active
+  It renders `SessionStatusLabel` and adds the mutations: it ticks active
   chat Working/Planning elapsed time from immutable `currentTurnStartedAt`,
   falling back to last activity for legacy rows, keeps CLI/Stale elapsed time
   on last activity, ticks idle scheduled-work countdowns, and

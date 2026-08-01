@@ -8,6 +8,7 @@ import {
   acknowledgeActivityItem,
   activityItemContext,
   activityItemDeepLink,
+  activityItemElapsed,
   activityPaneEntries,
   buildActivityPaneModel,
   loadActivitySnapshot,
@@ -118,6 +119,34 @@ describe("account-wide Activity pane", () => {
     expect(model.waitingCount).toBe(3);
     expect(model.liveCount).toBe(1);
     expect(model.items.map((entry) => entry.id)).not.toContain("dismissed");
+  });
+
+  it("files idle-tier roster history as recent instead of counting it as waiting", () => {
+    const model = buildActivityPaneModel(snapshot([
+      item({ id: "needs", phase: "needs_you", eventKind: "agent_needs_you" }),
+      item({
+        id: "ended",
+        phase: "completed",
+        eventKind: "agent_completed",
+        activityTier: "idle",
+      }),
+      item({ id: "idle", phase: "stale", activityTier: "idle" }),
+    ]));
+
+    expect(model.groups.map((group) => group.label)).toEqual(["NEEDS YOU", "RECENT"]);
+    expect(model.groups.find((group) => group.label === "RECENT")?.items
+      .map((entry) => entry.id)).toEqual(["idle", "ended"]);
+    expect(model.waitingCount).toBe(1);
+  });
+
+  it("reports how long a row has held its phase, preferring the publisher's anchor", () => {
+    const now = Date.parse("2026-07-29T02:00:00.000Z");
+    expect(activityItemElapsed(
+      item({ statusSince: "2026-07-29T00:00:00.000Z", updatedAt: "2026-07-29T01:59:00.000Z" }),
+      now,
+    )).toBe("2h ago");
+    expect(activityItemElapsed(item({ updatedAt: "2026-07-29T01:30:00.000Z" }), now))
+      .toBe("30m ago");
   });
 
   it("reads Activity through the project-independent machine RPC", async () => {
