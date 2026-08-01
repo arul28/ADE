@@ -230,6 +230,16 @@ The desktop app is a **client of the runtime**. It owns a trusted main process, 
 
 **Multi-window shell.** `main.ts` hosts multiple `BrowserWindow` instances; opening another project opens it in a dedicated window. Each window has its own runtime binding (local pool or a specific remote target). The global `/chats` route surfaces through a real machine-level **Chats** top tab (its existence tracked in session-only `personalChatsTabOpen` app state, active-ness derived from the route) that coexists with project tabs and survives project open/switch/close, or runs inside the current project tab without clearing that binding. Personal-chat IPC therefore targets the local brain from local/no-project windows and the remote brain from an SSH-bound project window. External controllers — for example a `ade code` TUI — can drive desktop window navigation via the `app/navigate` JSON-RPC method against the runtime; the desktop's IPC tracing carries window ID so logs distinguish which renderer surface invoked a channel.
 
+Every desktop `BrowserWindow` installs the shared native editable-control menu
+from `apps/desktop/src/main/editorContextMenu.ts`. Electron supplies spelling
+suggestions, edit capabilities, coordinates, and the originating frame through
+its `context-menu` event; ADE turns those values into the platform menu for
+ordinary editable controls, including the Work composer. Non-editable targets
+are ignored so renderer-owned menus such as file and lane actions keep their
+existing behavior. Because the hook is attached in `createWindow`, local,
+remote-bound, and additional project windows share the same copy/paste,
+undo/redo, select-all, and macOS spelling-dictionary behavior.
+
 **Account Activity is outside the project binding.**
 `attentionAccountCoordinator.ts` is the desktop main-process boundary for
 snapshot, acknowledgment, presence, and preference calls. Signed-in reads go
