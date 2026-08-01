@@ -13,7 +13,7 @@
 | `apps/desktop/src/main/services/runtime/lastFailureStore.ts` | Stores typed project/machine failures, keeps one previous report, counts repeated signatures, and computes crash-loop startup backoff. |
 | `apps/ade-cli/src/services/runtime/failureLogDeduper.ts` | Emits the first repeated brain failure immediately and only periodic occurrence summaries afterward. |
 | `apps/ade-cli/src/services/runtime/runtimeLogMaintenance.ts` | Bounds launchd stdout/stderr with tail-copy plus in-place truncation. |
-| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name; a stall past `ADE_LOOP_WATCHDOG_MS` (15 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb and `SIGKILL`s the brain. On next boot it promotes the breadcrumb to `last-wedge.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. |
+| `apps/ade-cli/src/services/runtime/brainLoopWatchdog.ts` | Worker-thread **event-loop watchdog** for the machine brain. Heartbeats every second with the current command name plus event-loop, memory, and resource diagnostics; a recovered delay over 2 s logs a near-miss. A stall past `ADE_LOOP_WATCHDOG_MS` (30 s default) that is not a sleep/suspend writes an `event-loop-wedge.json` breadcrumb, requests a best-effort Node report, and `SIGKILL`s the brain. On next boot it promotes the evidence to `last-wedge.json` / `last-wedge-report.json`, logs `brain.recovered_from_wedge`, and emits a deduped recovery event. Disable with `ADE_DISABLE_LOOP_WATCHDOG=1`. |
 | `apps/ade-cli/src/services/runtime/brainFreshnessMonitor.ts` | The running brain stats its own CLI entrypoint every 5 min (`ADE_BRAIN_FRESHNESS_INTERVAL_MS`), hashes only after the stat changes, and — when the on-disk hash no longer matches the baked runtime hash — waits for the brain to go idle (bounded) before triggering the brain-update service restart so an in-place upgrade takes effect without interrupting active work. Disable with `ADE_DISABLE_BRAIN_FRESHNESS=1`. |
 | `apps/ade-cli/src/services/runtime/runtimeBuildIdentity.ts` | `computeRuntimeBuildHash` / `computeRuntimeBuildHashAsync` — the SHA-256 of the CLI entrypoint used as the brain build identity by the freshness monitor and the desktop compatibility handshake. |
 | `apps/ade-cli/src/services/runtime/brainLogger.ts` | The machine-brain logger: reuses the desktop `createFileLogger` to write `~/.ade/runtime/brain.jsonl` (10 MiB `.1` rotation) and additionally mirrors timestamped `warn`/`error` lines to stderr so launchd captures them. |
@@ -116,14 +116,17 @@ The machine brain guards its own liveness. The **event-loop watchdog**
 (`brainLoopWatchdog.ts`) runs an unref'd worker thread that the main thread
 heartbeats every second with the name of the command currently running
 (`trackBrainLoopWatchdogCommand`). If the heartbeat stalls past
-`ADE_LOOP_WATCHDOG_MS` (15 s default) — and the gap is a genuine wedge, not a
+`ADE_LOOP_WATCHDOG_MS` (30 s default) — and the gap is a genuine wedge, not a
 laptop sleep/suspend, which the worker distinguishes by comparing wall-clock and
 monotonic deltas — the worker atomically writes an `event-loop-wedge.json`
-breadcrumb (wedged command, blocked ms, timestamp) under the runtime dir and
-`SIGKILL`s the brain so launchd restarts it. A hung command therefore recovers
-in seconds instead of stranding every client.
+breadcrumb (wedged command, blocked ms, threshold, and the latest event-loop,
+memory, and resource snapshot) under the runtime dir, requests a best-effort
+Node diagnostic report, and `SIGKILL`s the brain after a one-second report
+grace so launchd restarts it. A recovered heartbeat delay over 2 s logs
+`brain.event_loop_near_miss` with the same diagnostic shape.
 
-On the next boot the watchdog promotes any breadcrumb to `last-wedge.json`,
+On the next boot the watchdog promotes any breadcrumb and generated report to
+`last-wedge.json` / `last-wedge-report.json`,
 logs `brain.recovered_from_wedge`, and emits a deduped `ade_brain_recovered`
 analytics event. The recovered wedge is exposed to clients through
 `runtimeInfo.lastWedge` (parsed by `adeRuntimeProtocol.parseRuntimeLastWedge`,

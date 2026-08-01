@@ -1,5 +1,5 @@
 import http from "node:http";
-import { spawnSync } from "node:child_process";
+import { execFile } from "node:child_process";
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import { WebSocketServer, WebSocket, type RawData } from "ws";
 import type {
@@ -209,6 +209,14 @@ type ParkedEntry = {
   onError: (error: Error) => void;
   expireTimer: ReturnType<typeof setTimeout>;
 };
+
+function execFileText(command: string, args: string[]): Promise<string | null> {
+  return new Promise((resolve) => {
+    execFile(command, args, { encoding: "utf8", timeout: 200 }, (error, stdout) => {
+      resolve(error ? null : String(stdout ?? ""));
+    });
+  });
+}
 
 function isRetryableListenerBindError(error: unknown): boolean {
   if (isLoopbackShadowedError(error)) return true;
@@ -496,6 +504,8 @@ export function createSharedSyncListener(options: {
     // (each re-bind resolves a different port), so a shadow on one ephemeral
     // port does not short-circuit the remaining fresh-port attempts.
     const shadowedPorts = new Set<number>();
+    const occupiedPorts = new Set<number>();
+    const loggedConflictPorts = new Set<number>();
     const zombieReapedPorts = new Set<number>();
     const portDiagnoses = new Map<number, SyncListenerPortDiagnosis>();
     const diagnosePort = async (
@@ -514,6 +524,7 @@ export function createSharedSyncListener(options: {
       const attemptedPort = attemptPlan[attemptIndex]!;
       if (closed) throw new Error("The shared sync listener has been closed.");
       if (attemptedPort !== 0 && shadowedPorts.has(attemptedPort)) continue;
+      if (attemptedPort !== 0 && occupiedPorts.has(attemptedPort)) continue;
       // The retry delay lets a dying listener free a FIXED port; an ephemeral
       // re-bind gets a fresh port immediately, so skip the delay for port 0.
       if (previousAttemptedPort === attemptedPort && attemptedPort !== 0) {
@@ -611,14 +622,18 @@ export function createSharedSyncListener(options: {
         }
         const retryable = isRetryableListenerBindError(error)
           && (attemptedPort !== 0 || isLoopbackShadowedError(error));
+        let diagnosis: SyncListenerPortDiagnosis | null = null;
+        let reapedStaleHolder = false;
         if (
           (error as NodeJS.ErrnoException | null | undefined)?.code === "EADDRINUSE"
-          && attemptedPort >= DEFAULT_SYNC_HOST_PORT
-          && attemptedPort <= SYNC_HOST_MAX_PORT
+          && attemptedPort > 0
           && !zombieReapedPorts.has(attemptedPort)
         ) {
-          const diagnosis = await diagnosePort(attemptedPort);
-          const staleHolder = findStaleHolder(diagnosis);
+          diagnosis = await diagnosePort(attemptedPort);
+          const staleHolder = attemptedPort >= DEFAULT_SYNC_HOST_PORT
+            && attemptedPort <= SYNC_HOST_MAX_PORT
+            ? findStaleHolder(diagnosis)
+            : null;
           if (staleHolder) {
             // Reconfirm ownership immediately before signaling. The original
             // holder may have exited and its pid may have been reused while
@@ -631,6 +646,7 @@ export function createSharedSyncListener(options: {
             ) {
               zombieReapedPorts.add(attemptedPort);
               await terminatePid(staleHolder.pid);
+              reapedStaleHolder = true;
               logger.info?.("sync_listener.zombie_reaped", {
                 port: attemptedPort,
                 pid: staleHolder.pid,
@@ -640,17 +656,28 @@ export function createSharedSyncListener(options: {
               attemptPlan.splice(attemptIndex + 1, 0, attemptedPort);
             }
           }
+          // A confirmed live holder will not disappear during a 3.2 second
+          // retry loop. Advance immediately to the next candidate instead of
+          // fighting the desktop (or another runtime) and logging eight copies.
+          if (!reapedStaleHolder && diagnosis.holders.length > 0) {
+            occupiedPorts.add(attemptedPort);
+          }
         }
-        logger.warn?.(
-          isLoopbackShadowedError(error)
-            ? "sync_listener.loopback_shadowed"
-            : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed",
-          {
+        const event = isLoopbackShadowedError(error)
+          ? "sync_listener.loopback_shadowed"
+          : retryable ? "sync_listener.bind_port_conflict" : "sync_listener.bind_failed";
+        if (event !== "sync_listener.bind_port_conflict" || !loggedConflictPorts.has(attemptedPort)) {
+          if (event === "sync_listener.bind_port_conflict") loggedConflictPorts.add(attemptedPort);
+          logger.warn?.(event, {
             attemptedPort,
             error: error instanceof Error ? error.message : String(error),
             code: (error as NodeJS.ErrnoException | null | undefined)?.code ?? null,
-          },
-        );
+            ...(diagnosis ? { holderPids: diagnosis.holders.map((holder) => holder.pid) } : {}),
+            retriesSkipped: occupiedPorts.has(attemptedPort)
+              ? attemptPlan.slice(attemptIndex + 1).filter((port) => port === attemptedPort).length
+              : 0,
+          });
+        }
         if (!retryable) throw error;
       }
     }
@@ -822,15 +849,14 @@ export function createSharedSyncListener(options: {
   };
 }
 
-export function inspectSyncListenerPort(port: number): SyncListenerPortDiagnosis {
-  const lsof = spawnSync(
+export async function inspectSyncListenerPort(port: number): Promise<SyncListenerPortDiagnosis> {
+  const lsof = await execFileText(
     "lsof",
     ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
-    { encoding: "utf8", timeout: 200 },
   );
-  if (lsof.status !== 0) return { port, holders: [] };
+  if (lsof == null) return { port, holders: [] };
   const pids = [...new Set(
-    String(lsof.stdout ?? "")
+    lsof
       .split(/\r?\n/)
       .filter((line) => /^p\d+$/.test(line))
       .map((line) => Number(line.slice(1)))
@@ -838,28 +864,18 @@ export function inspectSyncListenerPort(port: number): SyncListenerPortDiagnosis
   )];
   return {
     port,
-    holders: pids.map((pid) => {
-      const commandResult = spawnSync(
-        "ps",
-        ["-p", String(pid), "-o", "command="],
-        { encoding: "utf8", timeout: 200 },
-      );
-      const startResult = spawnSync(
-        "ps",
-        ["-p", String(pid), "-o", "lstart="],
-        { encoding: "utf8", timeout: 200 },
-      );
-      const command = commandResult.status === 0
-        ? String(commandResult.stdout ?? "").trim()
-        : "";
-      const startTime = startResult.status === 0
-        ? String(startResult.stdout ?? "").trim()
-        : "";
+    holders: await Promise.all(pids.map(async (pid) => {
+      const [commandResult, startResult] = await Promise.all([
+        execFileText("ps", ["-p", String(pid), "-o", "command="]),
+        execFileText("ps", ["-p", String(pid), "-o", "lstart="]),
+      ]);
+      const command = commandResult?.trim() ?? "";
+      const startTime = startResult?.trim() ?? "";
       return {
         pid,
         command: command || null,
         startTime: startTime || null,
       };
-    }),
+    })),
   };
 }

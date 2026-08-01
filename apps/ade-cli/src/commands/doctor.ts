@@ -725,11 +725,11 @@ export async function runDoctorCommand<Options extends DoctorCommandOptions>(
   let portDiagnoses: DoctorInput["portDiagnoses"] = [];
   if (brainProbe.brain.running && syncPort != null && syncPort !== DEFAULT_SYNC_HOST_PORT) {
     const { inspectSyncListenerPort } = await import("../services/sync/sharedSyncListener");
-    portDiagnoses = [
+    portDiagnoses = await Promise.all([
       inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT),
       inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 1),
       inspectSyncListenerPort(DEFAULT_SYNC_HOST_PORT + 2),
-    ];
+    ]);
   }
   const wedge = readBrainLoopWatchdogLastWedge(layout.runtimeDir)
     ?? brainProbe.runtimeLastWedge;

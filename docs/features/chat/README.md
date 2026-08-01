@@ -1232,6 +1232,13 @@ Provider connection management lives on the `ade.ai.*` surface (handled in `regi
   summary cannot put the UI back into running/Stop state. Keep every
   renderer rehydration path on this helper so failures always restore a
   sendable composer.
+- **A detached chat must close the turn that died with its runtime.** Brain
+  startup reconciles dead-owner chat rows to `detached`. When that chat is next
+  hydrated, `agentChatService` finds the latest parent turn missing a terminal
+  `status`/`done` pair, appends one provider-neutral `interrupted` close-out plus
+  a restart notice, and reopens the durable session as idle. The repair is
+  idempotent and applies to Claude, Codex, OpenCode, Cursor, and Droid; do not
+  restore chat exclusions in the brain's stale-session reconciliation.
 - **Turn-health events are provider-neutral; the Codex watchdog is the first
   producer.** MCP startup status and moderation notifications are diagnostics,
   not model progress. Do not let them clear the no-first-output watchdog. If

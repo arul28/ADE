@@ -22896,6 +22896,87 @@ describe("createAgentChatService", () => {
   });
 
   describe("getChatEventHistory", () => {
+    it.each([
+      ["claude", "claude-chat"],
+      ["codex", "codex-chat"],
+      ["opencode", "opencode-chat"],
+      ["cursor", "cursor"],
+      ["droid", "droid-chat"],
+    ] as const)("closes an orphaned %s turn when a detached chat hydrates after restart", async (
+      provider,
+      toolType,
+    ) => {
+      installRealTranscriptParser();
+      const original = createService();
+      const session = {
+        id: `restart-${provider}-session`,
+        transcriptPath: path.join(tmpRoot, "transcripts", `restart-${provider}-session.chat.jsonl`),
+      };
+      original.sessionService.create({
+        sessionId: session.id,
+        laneId: "lane-1",
+        toolType,
+        transcriptPath: session.transcriptPath,
+      });
+      const turnId = `restart-${provider}-turn`;
+      writeTestTranscriptEnvelopes(session.id, [
+        {
+          sessionId: session.id,
+          timestamp: "2026-08-01T04:10:00.000Z",
+          sequence: 1,
+          event: {
+            type: "user_message",
+            text: "This turn was interrupted by a brain restart.",
+            turnId,
+            messageId: `restart-${provider}-message`,
+          },
+        },
+        {
+          sessionId: session.id,
+          timestamp: "2026-08-01T04:10:00.100Z",
+          sequence: 2,
+          event: { type: "status", turnStatus: "started", turnId },
+        },
+      ]);
+      original.sessionService.end({ sessionId: session.id, status: "detached" });
+
+      const emitted: AgentChatEventEnvelope[] = [];
+      const restarted = createService({
+        onEvent: (event: AgentChatEventEnvelope) => emitted.push(event),
+      });
+      const firstHistory = await restarted.service.getChatEventHistory(session.id);
+      const secondHistory = await restarted.service.getChatEventHistory(session.id);
+
+      expect(restarted.sessionService.get(session.id)).toMatchObject({
+        status: "running",
+        endedAt: null,
+      });
+      expect(firstHistory.events.filter((entry) =>
+        entry.event.type === "system_notice"
+        && entry.event.turnId === turnId
+        && entry.event.message.includes("ADE restarted")
+      )).toHaveLength(1);
+      expect(firstHistory.events.filter((entry) =>
+        entry.event.type === "status"
+        && entry.event.turnId === turnId
+        && entry.event.turnStatus === "interrupted"
+      )).toHaveLength(1);
+      expect(firstHistory.events.filter((entry) =>
+        entry.event.type === "done"
+        && entry.event.turnId === turnId
+        && entry.event.status === "interrupted"
+      )).toHaveLength(1);
+      expect(secondHistory.events.filter((entry) =>
+        entry.event.type === "done" && entry.event.turnId === turnId
+      )).toHaveLength(1);
+      expect(emitted.filter((entry) =>
+        entry.event.type === "done" && entry.event.turnId === turnId
+      )).toHaveLength(1);
+
+      restarted.service.forceDisposeAll();
+      original.service.forceDisposeAll();
+    });
+
     it("hydrates identical events from a compressed transcript", async () => {
       const { service } = createService();
       const session = await service.createSession({ laneId: "lane-1", provider: "codex", model: "gpt-5.4" });

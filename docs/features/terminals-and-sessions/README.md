@@ -1546,8 +1546,8 @@ runtime and agent chat runtime both layer the same identity envs
 - Chat sessions backed by the Claude/Codex SDK still insert a
   `terminal_sessions` row but they are not attached to a PTY. Guard
   UI code with `isChatToolType(toolType)` before calling PTY-only APIs.
-- `reconcileStaleRunningSessions` accepts `excludeToolTypes` but the
-  main-process startup no longer excludes chat tool types — stale
+- `reconcileStaleRunningSessions` accepts `excludeToolTypes` but desktop and
+  brain startup no longer exclude chat tool types — stale
   `running` chat rows are swept to `detached` like any other orphaned
   row after the startup activity grace expires. If you need a row to
   survive reconciliation, the caller has to pass `excludeToolTypes`
