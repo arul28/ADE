@@ -24,6 +24,26 @@ const electronBuilderWrapper = fs.readFileSync(
   path.join(desktopRoot, "scripts", "run-electron-builder.mjs"),
   "utf8",
 );
+const windowsTestBuild = fs.readFileSync(
+  path.join(desktopRoot, "scripts", "run-windows-test-build.mjs"),
+  "utf8",
+);
+const runtimeValidator = fs.readFileSync(
+  path.join(desktopRoot, "scripts", "validate-runtime-resources.mjs"),
+  "utf8",
+);
+const whisperValidator = fs.readFileSync(
+  path.join(desktopRoot, "scripts", "validate-whisper-resources.mjs"),
+  "utf8",
+);
+const afterPackScript = fs.readFileSync(
+  path.join(desktopRoot, "scripts", "after-pack-runtime-fixes.cjs"),
+  "utf8",
+);
+const windowsServiceManager = fs.readFileSync(
+  path.join(repoRoot, "apps", "ade-cli", "src", "serviceManager", "installWindows.ts"),
+  "utf8",
+);
 const desktopMain = fs.readFileSync(path.join(desktopRoot, "src", "main", "main.ts"), "utf8");
 const registerIpc = fs.readFileSync(
   path.join(desktopRoot, "src", "main", "services", "ipc", "registerIpc.ts"),
@@ -68,6 +88,34 @@ test("electron-builder owns packaged update metadata and preserves the upstream 
     "packaged repository must reach both updater state and release-link IPC",
   );
   assert.match(registerIpc, /buildGithubReleaseUrl\(version, releaseRepository\)/);
+});
+
+test("local Windows test builds omit only cross-platform runtime sidecars", () => {
+  assert.match(pkg.scripts["dist:win:test"], /run-windows-test-build\.mjs/);
+  assert.match(windowsTestBuild, /ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY: "1"/);
+  assert.match(windowsTestBuild, /ADE_WINDOWS_TEST_BUILD: "1"/);
+  assert.match(windowsTestBuild, /npm\.cmd.*"run", "dist:win"/s);
+  assert.match(runtimeValidator, /allTargets\.includes\(hostTarget\) \? \[hostTarget\] : \[\]/);
+  assert.match(winArtifactValidator, /Local test build: skipping macOS\/Linux remote runtime sidecars/);
+  assert.match(whisperValidator, /Local Windows test build: Whisper CLI is not bundled/);
+  assert.match(electronBuilderWrapper, /windowsHide: process\.platform === "win32"/);
+  assert.match(afterPackScript, /Pruned \$\{reason\} OpenCode install shim/);
+  assert.match(winArtifactValidator, /duplicate OpenCode Windows executable/);
+  assert.doesNotMatch(pkg.scripts["dist:win"], /ALLOW_HOST_ONLY/);
+  assert.doesNotMatch(pkg.scripts["dist:win:signed"], /ALLOW_HOST_ONLY/);
+  assert.doesNotMatch(pkg.scripts["dist:win"], /WINDOWS_TEST_BUILD/);
+  assert.doesNotMatch(pkg.scripts["dist:win:signed"], /WINDOWS_TEST_BUILD/);
+});
+
+test("Windows background service registration does not require administrator access", () => {
+  assert.match(windowsServiceManager, /HKCU\\\\Software\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run/);
+  assert.match(windowsServiceManager, /buildWindowsRunKeyAddArgs\(taskName, command\)/);
+  assert.match(windowsServiceManager, /buildWindowsStartLauncherArgs\(launcherPath\)/);
+  const installBlock = windowsServiceManager.slice(
+    windowsServiceManager.indexOf("export function installWindowsService"),
+    windowsServiceManager.indexOf("export function uninstallWindowsService"),
+  );
+  assert.doesNotMatch(installBlock, /buildWindowsCreateTaskArgs\(/);
 });
 
 test("public Windows packaging fails closed on Authenticode signing", () => {
@@ -144,9 +192,14 @@ test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
   assert.match(nsis, /-AppExecutableName "\$\{APP_EXECUTABLE_FILENAME\}"/);
   assert.match(nsis, /-PackageChannel "\$2"/);
   assert.match(nsis, /Abort/);
-  assert.match(cleanup, /serve" "--uninstall-service/);
+  assert.match(cleanup, /"serve", "--uninstall-service"/);
+  assert.match(cleanup, /Start-Process/);
+  assert.match(cleanup, /-Wait/);
+  assert.match(cleanup, /cleanupProcess\.ExitCode/);
   assert.match(cleanup, /ADE_PACKAGE_CHANNEL = \$normalizedPackageChannel/);
   assert.match(cleanup, /ADE_HOME = Join-Path/);
+  assert.match(cleanup, /app\.asar\.unpacked\\node_modules/);
+  assert.match(cleanup, /NODE_PATH = \$nodePathEntries/);
   assert.match(cleanup, /SetEnvironmentVariable\("Path"/);
 });
 

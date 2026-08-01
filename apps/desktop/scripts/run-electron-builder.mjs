@@ -54,6 +54,7 @@ const child = spawn(electronBuilderBin, args, {
   env: process.env,
   stdio: "inherit",
   shell: process.platform === "win32",
+  windowsHide: process.platform === "win32",
 });
 child.once("error", (error) => {
   console.error(`[windows-package] Unable to start electron-builder: ${error.message}`);

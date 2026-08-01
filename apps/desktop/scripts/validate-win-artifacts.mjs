@@ -21,12 +21,15 @@ const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
 // ONNX payloads. The afterPack step now also materializes the bundled ADE
-// runtime's own OpenCode packages (opencode-ai + the platform native package,
-// ~150MB) into app.asar.unpacked so the packaged runtime can launch OpenCode,
-// which raises the legitimate unpacked size. Keep a ceiling to catch runaway
-// bloat, but size it to the current required toolset.
+// runtime's platform-native OpenCode package into app.asar.unpacked so the
+// packaged runtime can launch OpenCode. Keep a ceiling to catch runaway bloat,
+// but size it to the current required toolset.
 const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
 const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const isLocalWindowsTestBuild =
+  process.platform === "win32" &&
+  process.env.ADE_WINDOWS_TEST_BUILD === "1" &&
+  process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const bundledAgentSkills = [
   "ade-cli-control-plane",
   "ade-ios-simulator",
@@ -540,10 +543,11 @@ async function validatePackageHygiene(resourcesPath) {
     "node-pty Windows arm64 conpty payload in Windows x64 package",
   );
   // The afterPack step (ensureOpenCodeRuntimePackages) now deliberately bundles
-  // the on-target OpenCode native package into app.asar.unpacked so opencode-ai
-  // can resolve its sibling `opencode.exe` at runtime. Require it present; the
-  // off-target / baseline / arm64 variants below must still be absent.
+  // the on-target OpenCode native package into app.asar.unpacked. Require it
+  // present; the duplicate opencode-ai install shim and all off-target variants
+  // must be absent.
   await assertPathExists(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "bundled OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "duplicate OpenCode Windows executable");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
@@ -611,7 +615,13 @@ async function validatePackagedRuntime(appDir) {
       fail(`Bundled ADE code TUI references ${token} without an ESM shim`);
     }
   }
-  await assertRemoteRuntimeBundle(resourcesPath);
+  if (isLocalWindowsTestBuild) {
+    console.warn(
+      "[validate-win-artifacts] Local test build: skipping macOS/Linux remote runtime sidecars.",
+    );
+  } else {
+    await assertRemoteRuntimeBundle(resourcesPath);
+  }
   await validatePackagedUpdateAuthority(resourcesPath);
   await validatePackageHygiene(resourcesPath);
 

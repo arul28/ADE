@@ -762,7 +762,7 @@ the General settings tab via `AdeCliSection`:
 3. Register the runtime as a per-user login service so it survives
    reboots. `installServiceBestEffort()` runs `ade serve --install-service`
    once per session; the implementation lives in
-   `apps/ade-cli/src/serviceManager/` (launchd / systemd / schtasks).
+   `apps/ade-cli/src/serviceManager/` (launchd / systemd / Windows per-user startup).
    The result is exposed as `LocalRuntimeStatus.serviceInstall` and
    `serviceHealth` (`unsupported | not_installed | installed | running |
    error | unknown`).

@@ -30,7 +30,11 @@ import {
   buildWindowsDeleteTaskArgs,
   buildWindowsEndTaskArgs,
   buildWindowsQueryTaskArgs,
+  buildWindowsRunKeyAddArgs,
+  buildWindowsRunKeyDeleteArgs,
+  buildWindowsRunKeyQueryArgs,
   buildWindowsRunTaskArgs,
+  buildWindowsStartLauncherArgs,
   getWindowsServiceStatus,
   installWindowsService,
   isWindowsTaskStateRunning,
@@ -989,7 +993,7 @@ describe("systemd service install", () => {
   });
 });
 
-describe("Windows scheduled task helpers", () => {
+describe("Windows background service helpers", () => {
   const serviceCommand: AdeServiceCommand = {
     command: "C:\\Program Files\\ADE\\ade.exe",
     args: ["C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs", "serve"],
@@ -1165,15 +1169,17 @@ describe("Windows scheduled task helpers", () => {
     },
   );
 
-  it("starts the scheduled task immediately after a successful create", () => {
+  it("registers and starts the per-user background service without Task Scheduler", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
-      { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      { status: 0, stdout: "SUCCESS: attempted to run", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-"), "brain-service.ps1");
+    const pidPath = `${launcherPath}.pid.json`;
 
     const result = installWindowsService({
       command: serviceCommand,
@@ -1188,10 +1194,10 @@ describe("Windows scheduled task helpers", () => {
       serviceName,
       action: "install",
       path: taskName,
-      message: "ADE service scheduled task installed and started.",
+      message: "ADE per-user startup entry installed and background service started.",
     });
     expect(fs.readFileSync(launcherPath, "utf8")).toBe(
-      `\uFEFF${renderWindowsServiceLauncher(serviceCommand)}`,
+      `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath })}`,
     );
     const scheduledCommand = renderWindowsCommand({
       command: WINDOWS_POWERSHELL_COMMAND,
@@ -1209,8 +1215,9 @@ describe("Windows scheduled task helpers", () => {
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(scheduledCommand, taskUser, taskName) },
-      { command: "schtasks.exe", args: buildWindowsRunTaskArgs(taskName) },
+      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: "reg.exe", args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsStartLauncherArgs(launcherPath) },
     ]);
   });
 
@@ -1221,8 +1228,9 @@ describe("Windows scheduled task helpers", () => {
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      { status: 0, stdout: "SUCCESS: attempted to run", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-repair-"), "brain-service.ps1");
 
@@ -1241,8 +1249,8 @@ describe("Windows scheduled task helpers", () => {
       { command: "schtasks.exe", args: buildWindowsEndTaskArgs(taskName) },
       { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
-    expect(calls.at(-2)?.args).toEqual(expect.arrayContaining(["/Create", "/TN", taskName]));
-    expect(calls.at(-1)?.args).toEqual(buildWindowsRunTaskArgs(taskName));
+    expect(calls.at(-2)?.args).toEqual(expect.arrayContaining(["ADD", "/V", taskName]));
+    expect(calls.at(-1)?.args).toEqual(buildWindowsStartLauncherArgs(launcherPath));
   });
 
   it("ends and deletes only the exact legacy task before installing the channel task", () => {
@@ -1252,8 +1260,9 @@ describe("Windows scheduled task helpers", () => {
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      { status: 0, stdout: "SUCCESS: attempted to run", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-migrate-"), "brain-service.ps1");
 
@@ -1298,13 +1307,15 @@ describe("Windows scheduled task helpers", () => {
     ]);
   });
 
-  it("surfaces a clear install failure when create succeeds but immediate start fails", () => {
+  it("removes the per-user startup entry when immediate start fails", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-start-fail-"), "brain-service.ps1");
 
@@ -1317,7 +1328,7 @@ describe("Windows scheduled task helpers", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.message).toBe("ADE service scheduled task installed, but failed to start: ERROR: access is denied");
+    expect(result.message).toBe("ADE per-user startup entry was installed, but the background service failed to start: ERROR: access is denied");
     const scheduledCommand = renderWindowsCommand({
       command: WINDOWS_POWERSHELL_COMMAND,
       args: [
@@ -1334,17 +1345,20 @@ describe("Windows scheduled task helpers", () => {
     expect(calls.map((call) => call.args)).toEqual([
       buildWindowsQueryTaskArgs("ADE Runtime"),
       buildWindowsQueryTaskArgs(taskName),
-      buildWindowsCreateTaskArgs(scheduledCommand, taskUser, taskName),
-      buildWindowsRunTaskArgs(taskName),
+      buildWindowsRunKeyQueryArgs(taskName),
+      buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
+      buildWindowsStartLauncherArgs(launcherPath),
+      buildWindowsRunKeyDeleteArgs(taskName),
     ]);
   });
 
-  it("does not try to run the task when create fails", () => {
+  it("does not start the service when per-user registration fails", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
-      { status: 1, stdout: "", stderr: "ERROR: create failed" },
+      { status: 1, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-create-fail-"), "brain-service.ps1");
 
@@ -1357,21 +1371,24 @@ describe("Windows scheduled task helpers", () => {
     });
 
     expect(result.ok).toBe(false);
-    expect(result.message).toBe("ERROR: create failed");
+    expect(result.message).toBe("ERROR: registration failed");
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      expect.objectContaining({ command: "schtasks.exe" }),
+      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
+      expect.objectContaining({ command: "reg.exe", args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
 
-  it("reports successful scheduled task removal", () => {
+  it("removes legacy tasks and the per-user startup entry", () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 0, stdout: "Running", stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
+      { status: 0, stdout: "startup value", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-remove-"), "brain-service.ps1");
@@ -1389,7 +1406,7 @@ describe("Windows scheduled task helpers", () => {
       serviceName,
       action: "uninstall",
       path: taskName,
-      message: "ADE service scheduled task removed.",
+      message: "ADE background service startup entry removed.",
     });
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
@@ -1397,6 +1414,8 @@ describe("Windows scheduled task helpers", () => {
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: "schtasks.exe", args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs("ADE Runtime") },
+      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: "reg.exe", args: buildWindowsRunKeyDeleteArgs(taskName) },
     ]);
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
@@ -1407,6 +1426,7 @@ describe("Windows scheduled task helpers", () => {
       { status: 0, stdout: "Ready", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
     ]);
 
     const result = uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
@@ -1417,6 +1437,7 @@ describe("Windows scheduled task helpers", () => {
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
       { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs(taskName) },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
   });
 
@@ -1425,6 +1446,7 @@ describe("Windows scheduled task helpers", () => {
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
     ]);
     const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
 
@@ -1507,14 +1529,22 @@ describe("Windows scheduled task helpers", () => {
   });
 
   it("distinguishes an absent task from a failed locale-independent status query", () => {
+    const absentCalls: Array<{ command: string; args: string[] }> = [];
     const absent = getWindowsServiceStatus({
       serviceName,
-      spawnSync: () => ({ status: 3, stdout: "", stderr: "" }),
+      spawnSync: spawnSequence(absentCalls, [
+        { status: 3, stdout: "", stderr: "" },
+        { status: 1, stdout: "", stderr: "" },
+      ]),
       userName: taskUser,
     });
+    const failedCalls: Array<{ command: string; args: string[] }> = [];
     const failed = getWindowsServiceStatus({
       serviceName,
-      spawnSync: () => ({ status: 1, stdout: "", stderr: "PowerShell unavailable" }),
+      spawnSync: spawnSequence(failedCalls, [
+        { status: 1, stdout: "", stderr: "PowerShell unavailable" },
+        { status: 1, stdout: "", stderr: "" },
+      ]),
       userName: taskUser,
     });
 

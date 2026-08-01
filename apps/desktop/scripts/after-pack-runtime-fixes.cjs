@@ -128,10 +128,10 @@ function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
 }
 
 function pruneOpenCodeInstallShim(runtimeRoot, platform) {
-  if (platform === "win32") return;
   const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
   if (removeIfPresent(runtimeRoot, shimPath)) {
-    console.log(`[afterPack] Pruned non-target OpenCode install shim: ${shimPath}`);
+    const reason = platform === "win32" ? "duplicate" : "non-target";
+    console.log(`[afterPack] Pruned ${reason} OpenCode install shim: ${shimPath}`);
   }
 }
 

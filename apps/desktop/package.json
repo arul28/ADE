@@ -21,6 +21,7 @@
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
+    "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
     "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win && npm run validate:win:release",
     "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
     "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",

@@ -66,6 +66,7 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
     "  argv: process.argv.slice(2),",
     "  packageChannel: process.env.ADE_PACKAGE_CHANNEL,",
     "  adeHome: process.env.ADE_HOME,",
+    "  nodePath: process.env.NODE_PATH,",
     "}));",
   ].join("\n"));
 
@@ -91,6 +92,7 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
       ...process.env,
       ADE_PACKAGE_CHANNEL: "alpha",
       ADE_HOME: "C:\\wrong-channel-home",
+      NODE_PATH: "C:\\existing-node-modules",
     },
   });
 
@@ -99,4 +101,44 @@ test("Windows uninstall cleanup uses the packaged executable and channel identit
   assert.deepEqual(observed.argv, ["serve", "--uninstall-service"]);
   assert.equal(observed.packageChannel, "beta");
   assert.equal(path.win32.basename(observed.adeHome), ".ade-beta");
+  assert.deepEqual(observed.nodePath.split(path.delimiter), [
+    path.join(installDir, "resources", "app.asar.unpacked", "node_modules"),
+    path.join(installDir, "resources", "app.asar", "node_modules"),
+    "C:\\existing-node-modules",
+  ]);
+});
+
+test("Windows uninstall cleanup reports the packaged executable exit code", {
+  skip: process.platform !== "win32",
+}, (t) => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade failed uninstall "));
+  t.after(() => fs.rmSync(tempRoot, { recursive: true, force: true }));
+  const installDir = path.join(tempRoot, "ADE");
+  const cliRoot = path.join(installDir, "resources", "ade-cli");
+  const cliBinDir = path.join(tempRoot, "empty user bin");
+  fs.mkdirSync(cliRoot, { recursive: true });
+  fs.mkdirSync(cliBinDir, { recursive: true });
+
+  const appExecutableName = "ADE.exe";
+  fs.copyFileSync(process.execPath, path.join(installDir, appExecutableName));
+  fs.writeFileSync(path.join(cliRoot, "cli.cjs"), "process.exitCode = 19;\n");
+
+  const result = spawnSync("powershell.exe", [
+    "-NoProfile",
+    "-NonInteractive",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    cleanupScript,
+    "-InstallDir",
+    installDir,
+    "-AppExecutableName",
+    appExecutableName,
+    "-CliBinDir",
+    cliBinDir,
+    "-SkipUserPathUpdate",
+  ], { encoding: "utf8" });
+
+  assert.notEqual(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.match(result.stderr, /cleanup command exited with code 19/i);
 });

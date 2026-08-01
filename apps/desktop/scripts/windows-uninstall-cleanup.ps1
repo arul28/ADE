@@ -80,21 +80,36 @@ if (-not $SkipServiceRemoval) {
   $previousPackageChannel = $env:ADE_PACKAGE_CHANNEL
   $adeHomePresent = Test-Path Env:ADE_HOME
   $previousAdeHome = $env:ADE_HOME
+  $nodePathPresent = Test-Path Env:NODE_PATH
+  $previousNodePath = $env:NODE_PATH
   try {
     $env:ELECTRON_RUN_AS_NODE = "1"
     $env:ADE_DISABLE_CLI_AUTO_INSTALL = "1"
     $env:ADE_PACKAGE_CHANNEL = $normalizedPackageChannel
     $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
     $env:ADE_HOME = Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
-    & $appExe $cliPath "serve" "--uninstall-service"
-    if ($LASTEXITCODE -ne 0) {
-      throw "The ADE background service cleanup command exited with code $LASTEXITCODE."
+    $resourcesDir = Join-Path $resolvedInstallDir "resources"
+    $nodePathEntries = @(
+      (Join-Path $resourcesDir "app.asar.unpacked\node_modules")
+      (Join-Path $resourcesDir "app.asar\node_modules")
+      if (-not [string]::IsNullOrWhiteSpace($previousNodePath)) { $previousNodePath }
+    )
+    $env:NODE_PATH = $nodePathEntries -join [System.IO.Path]::PathSeparator
+    $cleanupProcess = Start-Process `
+      -FilePath $appExe `
+      -ArgumentList @("`"$cliPath`"", "serve", "--uninstall-service") `
+      -WindowStyle Hidden `
+      -Wait `
+      -PassThru
+    if ($cleanupProcess.ExitCode -ne 0) {
+      throw "The ADE background service cleanup command exited with code $($cleanupProcess.ExitCode)."
     }
   } finally {
     Restore-EnvironmentValue "ELECTRON_RUN_AS_NODE" $electronRunAsNode $electronRunAsNodePresent
     Restore-EnvironmentValue "ADE_DISABLE_CLI_AUTO_INSTALL" $disableCliInstall $disableCliInstallPresent
     Restore-EnvironmentValue "ADE_PACKAGE_CHANNEL" $previousPackageChannel $packageChannelPresent
     Restore-EnvironmentValue "ADE_HOME" $previousAdeHome $adeHomePresent
+    Restore-EnvironmentValue "NODE_PATH" $previousNodePath $nodePathPresent
   }
 }
 

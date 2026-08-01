@@ -406,7 +406,10 @@ function powerShellSingleQuotedLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-export function renderWindowsServiceLauncher(command: AdeServiceCommand): string {
+export function renderWindowsServiceLauncher(
+  command: AdeServiceCommand,
+  options: { pidPath?: string } = {},
+): string {
   const environment = Object.entries(command.env ?? {}).sort(([left], [right]) =>
     left.localeCompare(right),
   );
@@ -417,6 +420,26 @@ export function renderWindowsServiceLauncher(command: AdeServiceCommand): string
     return `[System.Environment]::SetEnvironmentVariable(${powerShellSingleQuotedLiteral(key)}, ${powerShellSingleQuotedLiteral(value)}, 'Process')`;
   });
   const commandLine = command.args.map(cmdQuote).join(" ");
+  const processLines = options.pidPath
+    ? [
+        "$process = [System.Diagnostics.Process]::Start($startInfo)",
+        "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+        "$pidRecord = '{\"supervisorPid\":' + $PID.ToString([Globalization.CultureInfo]::InvariantCulture) + ',\"runtimePid\":' + $process.Id.ToString([Globalization.CultureInfo]::InvariantCulture) + '}'",
+        `[IO.File]::WriteAllText(${powerShellSingleQuotedLiteral(options.pidPath)}, $pidRecord, [Text.Encoding]::ASCII)`,
+        "try {",
+        "  $process.WaitForExit()",
+        "  $exitCode = $process.ExitCode",
+        "} finally {",
+        `  Remove-Item -LiteralPath ${powerShellSingleQuotedLiteral(options.pidPath)} -Force -ErrorAction SilentlyContinue`,
+        "}",
+        "exit $exitCode",
+      ]
+    : [
+        "$process = [System.Diagnostics.Process]::Start($startInfo)",
+        "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
+        "$process.WaitForExit()",
+        "exit $process.ExitCode",
+      ];
 
   return [
     "$ErrorActionPreference = 'Stop'",
@@ -427,10 +450,7 @@ export function renderWindowsServiceLauncher(command: AdeServiceCommand): string
     "$startInfo.UseShellExecute = $false",
     "$startInfo.CreateNoWindow = $true",
     "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
-    "$process = [System.Diagnostics.Process]::Start($startInfo)",
-    "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
-    "$process.WaitForExit()",
-    "exit $process.ExitCode",
+    ...processLines,
     "",
   ].join("\r\n");
 }

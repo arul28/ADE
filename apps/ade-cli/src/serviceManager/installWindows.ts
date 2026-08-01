@@ -18,12 +18,20 @@ import { resolveMachineAdeDir } from "../services/projects/machineLayout";
 
 export const TASK_NAME = "ADE Runtime";
 export const WINDOWS_POWERSHELL_COMMAND = "powershell.exe";
+export const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const TASK_NOT_FOUND_EXIT_CODE = 3;
+const REGISTRY_VALUE_NOT_FOUND_EXIT_CODE = 1;
+
+export type WindowsServicePidRecord = {
+  supervisorPid: number;
+  runtimePid: number;
+};
 
 type WindowsServiceManagerDeps = {
   command?: AdeServiceCommand;
   env?: NodeJS.ProcessEnv;
   launcherPath?: string;
+  pidPath?: string;
   serviceName?: string;
   spawnSync?: ServiceManagerSpawnSync;
   userName?: string;
@@ -32,7 +40,7 @@ type WindowsServiceManagerDeps = {
 export function resolveWindowsTaskUser(env: NodeJS.ProcessEnv = process.env): string {
   const username = env.USERNAME?.trim() || os.userInfo().username.trim();
   if (!username) {
-    throw new Error("Unable to resolve current Windows user for scheduled task registration.");
+    throw new Error("Unable to resolve the current Windows user for background-service registration.");
   }
   const domain = env.USERDOMAIN?.trim();
   if (domain && !username.includes("\\")) {
@@ -75,6 +83,31 @@ export function resolveWindowsServiceLauncherPath(args: {
     "runtime",
     `brain-service-${shortHash(serviceName.trim().toLowerCase())}.ps1`,
   );
+}
+
+export function resolveWindowsServicePidPath(args: {
+  env?: NodeJS.ProcessEnv;
+  serviceName?: string;
+} = {}): string {
+  return `${resolveWindowsServiceLauncherPath(args)}.pid.json`;
+}
+
+export function readWindowsServicePidRecord(args: {
+  env?: NodeJS.ProcessEnv;
+  serviceName?: string;
+  pidPath?: string;
+} = {}): WindowsServicePidRecord | null {
+  const pidPath = args.pidPath ?? resolveWindowsServicePidPath(args);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(pidPath, "utf8")) as Partial<WindowsServicePidRecord>;
+    const supervisorPid = Number(parsed.supervisorPid);
+    const runtimePid = Number(parsed.runtimePid);
+    if (!Number.isInteger(supervisorPid) || supervisorPid <= 0) return null;
+    if (!Number.isInteger(runtimePid) || runtimePid <= 0) return null;
+    return { supervisorPid, runtimePid };
+  } catch {
+    return null;
+  }
 }
 
 export function buildWindowsCreateTaskArgs(
@@ -133,6 +166,52 @@ export function buildWindowsDeleteTaskArgs(
   taskName = resolveWindowsTaskName(),
 ): string[] {
   return ["/Delete", "/TN", taskName, "/F"];
+}
+
+export function buildWindowsRunKeyQueryArgs(valueName: string): string[] {
+  return ["QUERY", WINDOWS_RUN_KEY, "/V", valueName];
+}
+
+export function buildWindowsRunKeyAddArgs(valueName: string, command: string): string[] {
+  return ["ADD", WINDOWS_RUN_KEY, "/V", valueName, "/T", "REG_SZ", "/D", command, "/F"];
+}
+
+export function buildWindowsRunKeyDeleteArgs(valueName: string): string[] {
+  return ["DELETE", WINDOWS_RUN_KEY, "/V", valueName, "/F"];
+}
+
+export function buildWindowsStartLauncherArgs(launcherPath: string): string[] {
+  const childArgs = [
+    "-NoProfile",
+    "-NonInteractive",
+    "-WindowStyle",
+    "Hidden",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    launcherPath,
+  ];
+  const startCommand = [
+    `$process = Start-Process -FilePath ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)}`,
+    `-ArgumentList @(${childArgs.map(powerShellSingleQuotedLiteral).join(", ")})`,
+    "-WindowStyle Hidden -PassThru",
+  ].join(" ");
+  const command = `${startCommand}; [Console]::Out.Write($process.Id)`;
+  return ["-NoProfile", "-NonInteractive", "-Command", command];
+}
+
+export function buildWindowsSupervisorQueryArgs(pid: number, launcherPath: string): string[] {
+  const launcherLiteral = powerShellSingleQuotedLiteral(launcherPath);
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `$process = Get-CimInstance Win32_Process -Filter ${powerShellSingleQuotedLiteral(`ProcessId = ${pid}`)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $process) { exit 3 }",
+    "$commandLine = [string]$process.CommandLine",
+    `$matchesLauncher = $commandLine.IndexOf(${launcherLiteral}, [StringComparison]::OrdinalIgnoreCase) -ge 0`,
+    "if (-not $matchesLauncher -or $process.Name -notmatch '^powershell(?:\\.exe)?$') { exit 4 }",
+    "[Console]::Out.Write($process.ProcessId)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
 export function isWindowsTaskStateRunning(output: string | Buffer | null | undefined): boolean {
@@ -204,6 +283,84 @@ function windowsLauncherCommand(launcherPath: string): string {
   });
 }
 
+function queryWindowsSupervisor(
+  run: ServiceManagerSpawnSync,
+  launcherPath: string,
+  pidPath: string,
+): { running: boolean; pid: number | null; error: string | null } {
+  const record = readWindowsServicePidRecord({ pidPath });
+  if (!record) return { running: false, pid: null, error: null };
+  const result = run(
+    WINDOWS_POWERSHELL_COMMAND,
+    buildWindowsSupervisorQueryArgs(record.supervisorPid, launcherPath),
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (result.status === 0) {
+    return { running: true, pid: record.supervisorPid, error: null };
+  }
+  if (result.status === 3 || result.status === 4) {
+    try { fs.rmSync(pidPath, { force: true }); } catch { /* advisory record */ }
+    return { running: false, pid: null, error: null };
+  }
+  return {
+    running: false,
+    pid: null,
+    error: serviceManagerResultText(result) || "Unable to inspect the ADE startup process.",
+  };
+}
+
+function removeWindowsRunEntryIfPresent(
+  run: ServiceManagerSpawnSync,
+  valueName: string,
+  launcherPath: string,
+  pidPath: string,
+): WindowsTaskRemovalResult {
+  const query = run("reg.exe", buildWindowsRunKeyQueryArgs(valueName), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  const installed = query.status === 0;
+  if (!installed && query.status !== REGISTRY_VALUE_NOT_FOUND_EXIT_CODE) {
+    return {
+      ok: false,
+      message: `Unable to query the ADE per-user startup entry: ${serviceManagerResultText(query) || "reg query failed."}`,
+    };
+  }
+
+  const supervisor = queryWindowsSupervisor(run, launcherPath, pidPath);
+  if (supervisor.error) return { ok: false, message: supervisor.error };
+  if (supervisor.running && supervisor.pid) {
+    const stop = run("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (stop.status !== 0) {
+      const recheck = queryWindowsSupervisor(run, launcherPath, pidPath);
+      if (recheck.running || recheck.error) {
+        return {
+          ok: false,
+          message: `Unable to stop the ADE startup process: ${serviceManagerResultText(stop) || recheck.error || "taskkill failed."}`,
+        };
+      }
+    }
+  }
+
+  if (installed) {
+    const remove = run("reg.exe", buildWindowsRunKeyDeleteArgs(valueName), {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (remove.status !== 0) {
+      return {
+        ok: false,
+        message: `Unable to delete the ADE per-user startup entry: ${serviceManagerResultText(remove) || "reg delete failed."}`,
+      };
+    }
+  }
+  try { fs.rmSync(pidPath, { force: true }); } catch { /* advisory record */ }
+  return { ok: true, removed: installed || supervisor.running };
+}
+
 export function installWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
@@ -223,9 +380,10 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
+  const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand)}`, {
+    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath })}`, {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -268,32 +426,51 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
       message: currentRemoval.message,
     };
   }
-  const command = windowsLauncherCommand(launcherPath);
-  const result = run(
-    "schtasks.exe",
-    buildWindowsCreateTaskArgs(command, userName, taskName),
-    { encoding: "utf8", windowsHide: true },
+  const startupRemoval = removeWindowsRunEntryIfPresent(
+    run,
+    taskName,
+    launcherPath,
+    pidPath,
   );
-  if (result.status !== 0) {
+  if (!startupRemoval.ok) {
     return {
       ok: false,
       serviceName,
       action: "install",
       path: taskName,
-      message: serviceManagerResultText(result) || "schtasks create failed.",
+      message: startupRemoval.message,
     };
   }
-  const start = run("schtasks.exe", buildWindowsRunTaskArgs(taskName), {
+  const command = windowsLauncherCommand(launcherPath);
+  const registration = run(
+    "reg.exe",
+    buildWindowsRunKeyAddArgs(taskName, command),
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (registration.status !== 0) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      message: serviceManagerResultText(registration) || "Unable to create the ADE per-user startup entry.",
+    };
+  }
+  const start = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsStartLauncherArgs(launcherPath), {
     encoding: "utf8",
     windowsHide: true,
   });
   if (start.status !== 0) {
+    run("reg.exe", buildWindowsRunKeyDeleteArgs(taskName), {
+      encoding: "utf8",
+      windowsHide: true,
+    });
     return {
       ok: false,
       serviceName,
       action: "install",
       path: taskName,
-      message: `ADE service scheduled task installed, but failed to start: ${serviceManagerResultText(start) || "schtasks run failed."}`,
+      message: `ADE per-user startup entry was installed, but the background service failed to start: ${serviceManagerResultText(start) || "PowerShell launch failed."}`,
     };
   }
   return {
@@ -301,7 +478,7 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
     serviceName,
     action: "install",
     path: taskName,
-    message: "ADE service scheduled task installed and started.",
+    message: "ADE per-user startup entry installed and background service started.",
   };
 }
 
@@ -322,6 +499,8 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
     };
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
+  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
+  const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   const currentRemoval = removeWindowsTaskIfPresent(
     run,
     taskName,
@@ -334,7 +513,13 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
       TASK_NAME,
       "legacy ADE Runtime scheduled task",
     );
-  const removalErrors = [currentRemoval, legacyRemoval]
+  const startupRemoval = removeWindowsRunEntryIfPresent(
+    run,
+    taskName,
+    launcherPath,
+    pidPath,
+  );
+  const removalErrors = [currentRemoval, legacyRemoval, startupRemoval]
     .filter((result): result is Extract<WindowsTaskRemovalResult, { ok: false }> => !result.ok)
     .map((result) => result.message);
   if (removalErrors.length > 0) {
@@ -346,7 +531,6 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
       message: removalErrors.join(" "),
     };
   }
-  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
   try {
     fs.rmSync(launcherPath, { force: true });
   } catch (error) {
@@ -355,7 +539,7 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
       serviceName,
       action: "uninstall",
       path: launcherPath,
-      message: `ADE service scheduled task was removed, but its launcher could not be deleted: ${
+      message: `ADE startup entry was removed, but its launcher could not be deleted: ${
         error instanceof Error ? error.message : String(error)
       }`,
     };
@@ -365,12 +549,12 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
     serviceName,
     action: "uninstall",
     path: taskName,
-    message: "ADE service scheduled task removed.",
+    message: "ADE background service startup entry removed.",
   };
 }
 
 export function getWindowsServiceStatus(
-  deps: Pick<WindowsServiceManagerDeps, "env" | "serviceName" | "spawnSync" | "userName"> = {},
+  deps: Pick<WindowsServiceManagerDeps, "env" | "launcherPath" | "pidPath" | "serviceName" | "spawnSync" | "userName"> = {},
 ): ServiceManagerStatusResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
@@ -390,23 +574,47 @@ export function getWindowsServiceStatus(
     };
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
-  const result = run(
+  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
+  const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
+  const taskResult = run(
     WINDOWS_POWERSHELL_COMMAND,
     buildWindowsQueryTaskArgs(taskName),
     { encoding: "utf8", windowsHide: true },
   );
-  if (result.status === TASK_NOT_FOUND_EXIT_CODE) {
+  if (taskResult.status === 0) {
+    const running = isWindowsTaskStateRunning(taskResult.stdout);
     return {
       ok: true,
       serviceName,
       action: "status",
-      installed: false,
-      running: false,
+      installed: true,
+      running,
       path: taskName,
-      message: serviceManagerResultText(result) || "ADE service scheduled task is not installed.",
+      message: running
+        ? "ADE service scheduled task is running."
+        : "ADE service scheduled task is installed.",
     };
   }
-  if (result.status !== 0) {
+  const startupResult = run("reg.exe", buildWindowsRunKeyQueryArgs(taskName), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (startupResult.status === 0) {
+    const supervisor = queryWindowsSupervisor(run, launcherPath, pidPath);
+    return {
+      ok: supervisor.error == null,
+      serviceName,
+      action: "status",
+      installed: true,
+      running: supervisor.error ? null : supervisor.running,
+      path: taskName,
+      message: supervisor.error
+        ?? (supervisor.running
+          ? "ADE per-user background service is running."
+          : "ADE per-user startup entry is installed, but the background service is not running."),
+    };
+  }
+  if (taskResult.status !== TASK_NOT_FOUND_EXIT_CODE) {
     return {
       ok: false,
       serviceName,
@@ -414,19 +622,27 @@ export function getWindowsServiceStatus(
       installed: null,
       running: null,
       path: taskName,
-      message: serviceManagerResultText(result) || "Unable to query the ADE service scheduled task.",
+      message: serviceManagerResultText(taskResult) || "Unable to query the legacy ADE scheduled task.",
     };
   }
-  const running = isWindowsTaskStateRunning(result.stdout);
+  if (startupResult.status !== REGISTRY_VALUE_NOT_FOUND_EXIT_CODE) {
+    return {
+      ok: false,
+      serviceName,
+      action: "status",
+      installed: null,
+      running: null,
+      path: taskName,
+      message: serviceManagerResultText(startupResult) || "Unable to query the ADE per-user startup entry.",
+    };
+  }
   return {
     ok: true,
     serviceName,
     action: "status",
-    installed: true,
-    running,
+    installed: false,
+    running: false,
     path: taskName,
-    message: running
-      ? "ADE service scheduled task is running."
-      : "ADE service scheduled task is installed.",
+    message: "ADE background service startup entry is not installed.",
   };
 }

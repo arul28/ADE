@@ -29,10 +29,10 @@ rendering or TypeScript compilation.
 The code changes recommended by this evaluation are now implemented on the
 working branch:
 
-- The Windows brain runs through a per-user/channel Scheduled Task and a
-  BOM-marked PowerShell launcher that restores the complete resolved runtime
-  environment. Task status is locale-independent, legacy-task cleanup fails
-  closed, and runtime/desktop-bridge named pipes are isolated by canonical ADE
+- The Windows brain runs through a per-user/channel current-user startup entry
+  and a BOM-marked PowerShell launcher that restores the complete resolved
+  runtime environment without requiring administrator access. Legacy Scheduled
+  Task cleanup fails closed, and runtime/desktop-bridge named pipes are isolated by canonical ADE
   home, channel, and current user. Windows IPC servers explicitly retain
   Node's intended-user-only named-pipe access flags; effective cross-account
   access remains a clean-VM proof gate.
@@ -73,7 +73,7 @@ working branch:
   developer interrupts the command, so a failed or closed dev session does
   not leave a polling runtime behind.
 - Windows background probes and worker processes are created with hidden
-  console windows. This includes the Scheduled Task status query that the
+  console windows. This includes background-service status checks that the
   desktop polls every two seconds, provider/auth/usage/Git/Tailscale probes,
   runtime and PTY workers, and service install/uninstall operations. The Unix
   `ps` resource sampler now reports `unsupported-platform` on Windows without
@@ -103,13 +103,9 @@ and website-enable procedure.
 Four source follow-ups are explicitly outside this preview boundary:
 `ade brain update` continues to reject Windows because Windows as a standalone
 remote brain is deferred; `ade doctor` does not yet discover an installed
-Windows desktop version; and the Scheduled Task manager does not expose a
-reliable service-main PID, so singleton ownership relies on the other
-same-user/channel guards. Scheduled Task replacement is also retry-safe but
-not transactional: a create/start failure after removing an existing task can
-leave the brain stopped until installation is retried. None is required to
-install and run the local Windows desktop preview, but each should be resolved
-before calling Windows a first-class remote-brain/operations platform.
+Windows desktop version. None is required to install and run the local Windows
+desktop preview, but each should be resolved before calling Windows a
+first-class remote-brain/operations platform.
 
 ## Current readiness
 
@@ -119,7 +115,7 @@ before calling Windows a first-class remote-brain/operations platform.
 | Native dependencies | `win-unpacked` smoke loads ConPTY/provider payloads and performs a real `crsqlite.dll` CRR mutation | Repeat from an installed signed build |
 | Projects, lanes, Git, files | Windows-aware paths, Git, and junction code exist | Clean-VM functional testing |
 | Terminal/PTY | Structured Windows launch/resume, runtime-host materialization, and taskkill cleanup are implemented | Installed provider/ConPTY matrix |
-| Background brain | Per-user/channel Scheduled Task launcher and NSIS uninstall cleanup are implemented | Logoff/reboot/update/uninstall proof |
+| Background brain | No-admin per-user/channel startup launcher and NSIS uninstall cleanup are implemented | Logoff/reboot/update/uninstall proof |
 | Updater | Fork authority and fail-closed signing/publication gates are implemented | Validate automatic updating after two signed Windows releases exist |
 | Windows developer loop | Per-user runtime pipe, successful-build-gated Electron launch, hidden background probes, and owned-runtime cleanup are implemented and host-tested | Repeat from a clean clone |
 | Sync/iPhone pairing | Intended to work | CRR roundtrip and firewall testing |
@@ -138,7 +134,7 @@ accurately lists the foundations, but its release claims are stale.
 The sections below preserve the static-evaluation rationale that shaped the
 implementation. Each release-blocking source finding below has an
 implementation on this branch; effective named-pipe access, clean-VM
-Scheduled Task behavior, and signed-update behavior still require the
+login-startup behavior, and signed-update behavior still require the
 external proof gates above.
 
 ### 1. The scheduled background brain drops required environment variables
@@ -165,24 +161,17 @@ The PR should install a dedicated service launcher or safely serialize all
 required environment variables, then prove install, start, logoff/logon,
 update, and uninstall on a clean machine without Node installed.
 
-### 2. Scheduled tasks are not channel- or locale-safe
+### 2. Background-service registration must not require administrator access
 
-[`installWindows.ts`](apps/ade-cli/src/serviceManager/installWindows.ts) uses
-the fixed name `ADE Runtime` for Stable, Beta, and Alpha, even though service
-identities and ADE homes are channel-specific. Installing one channel can
-overwrite another.
+Windows Task Scheduler rejects task creation from a standard user. ADE's
+per-user installer must not require elevation merely to start its background
+runtime at login.
 
-The status parser also searches for the English field `Status:`. It will
-misreport task state on localized Windows installations.
-
-Required changes:
-
-- Use channel-qualified and preferably per-user task names.
-- Query status through locale-independent Task Scheduler APIs, XML, or
-  PowerShell objects.
-- Add tests for local, Microsoft, and domain accounts.
-- Explicitly document that the task runs only while the user is signed in,
-  because `/IT` is currently used.
+The implementation now writes a channel- and user-qualified value under the
+current user's normal Windows startup registry key. A hidden PowerShell
+supervisor starts the packaged runtime, records its process identity, and lets
+status and uninstall stop only that ADE-owned process tree. Old Scheduled Task
+registrations are removed during migration.
 
 ### 3. The Windows package cannot satisfy its own validator
 
