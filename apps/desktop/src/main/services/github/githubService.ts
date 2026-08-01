@@ -13,6 +13,7 @@ import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
   GitHubAutolink,
+  GitHubCredentialVerification,
   GitHubRateLimitState,
   GitHubRepoRef,
   GitHubStatus,
@@ -28,6 +29,7 @@ import {
   resolveGithubOperationCredentialCandidate,
   resolveGithubStatusCredentials,
   selectGithubOperationCredential,
+  verifyGithubCredentialSource,
   type GithubOperationCredentialCapability,
 } from "../../../shared/githubOperationCredential";
 import {
@@ -1710,7 +1712,7 @@ export function createGithubService({
         ? await readSharedGithubStatusProbe(candidate, repo, opts.forceRefresh === true)
         : await computeGithubStatusProbe(candidate, repo, opts.forceRefresh === true)
     );
-    const { active, activeWriteSource, failures } = await resolveGithubStatusCredentials({
+    const { active, activeWrite, failures } = await resolveGithubStatusCredentials({
       readCandidates,
       writeCandidates,
       cooldown: statusCooldown,
@@ -1742,6 +1744,7 @@ export function createGithubService({
         }
       },
     });
+    const activeWriteSource = activeWrite?.source ?? null;
     const readCredentialFailures = [
       ...inventory.failures,
       ...failures.map((failure) => ({
@@ -1780,6 +1783,7 @@ export function createGithubService({
         storageScope: "app",
         authSource: candidate.source,
         writeAuthSource: activeWriteSource ?? "none",
+        writeUserLogin: activeWrite?.value.validated.userLogin ?? null,
         tokenType: validated.tokenType,
         repo,
         hasOrigin,
@@ -1875,6 +1879,49 @@ export function createGithubService({
     } finally {
       if (statusInFlight === work) statusInFlight = null;
     }
+  };
+
+  const verifyStoredPat = async (
+    status?: GitHubStatus,
+  ): Promise<GitHubCredentialVerification> => {
+    const [inventory, origin] = await Promise.all([
+      readCredentialInventory(),
+      detectOrigin().catch(() => ({ repo: null, hasOrigin: false })),
+    ]);
+    const candidate = inventory.candidates.find((entry) => entry.source === "pat") ?? null;
+    return await verifyGithubCredentialSource({
+      source: "pat",
+      status,
+      candidate,
+      cooldown: (entry) => githubCredentialRateLimitCooldown(
+        entry,
+        Date.now(),
+        { resource: "core" },
+      ),
+      probe: (entry) => computeGithubStatusProbe(entry, origin.repo, true),
+      capabilities: (entry, value) => validatedCredentialCapabilities(entry, value, origin.repo),
+      userLogin: (value) => value.validated.userLogin,
+      rateLimit: (value) => value.validated.rateLimit,
+      isRepositoryAccessFailure: (result) => result.authFailure.kind === "permission_denied"
+        && result.value?.repoAccessOk === false,
+      onAuthenticatedProbe: (entry, value) => {
+        registerGithubCredentialIdentity(entry, value.validated.userLogin);
+      },
+      onUsableProbe: (entry, value) => {
+        recordGithubCredentialProbeSuccess(
+          entry,
+          value.validated.rateLimit,
+          value.validated.userLogin,
+        );
+      },
+      onRejectedProbe: (entry, result, repositoryAccessFailure) => {
+        if (!repositoryAccessFailure) {
+          recordGithubCredentialFailure(entry, result.authFailure, result.rateLimit);
+        }
+      },
+      missingMessage: "No personal access token is stored.",
+      missingPermissionMessage: "This personal access token does not grant the required GitHub write access.",
+    });
   };
 
   const listRepoLabels = async (owner: string, name: string): Promise<GitHubLabel[]> => {
@@ -2305,6 +2352,7 @@ export function createGithubService({
     getRemoteStatus: detectOrigin,
 
     getStatus,
+    verifyStoredPat,
 
     async getBackgroundRequestPauseUntilMs(): Promise<number | null> {
       const inventory = await readCredentialInventory();

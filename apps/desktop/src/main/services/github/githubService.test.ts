@@ -1413,6 +1413,62 @@ describe("githubService.getStatus", () => {
     await expect(service.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
   });
 
+  it("preserves the validated identity of a different active write credential", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.token.v1", "ghp_backup_token");
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(200, { login: "alice" }))
+      .mockResolvedValueOnce(jsonResponse(200, { full_name: "acme/ade" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { login: "bob" }, { "x-oauth-scopes": "repo, workflow" }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse(200, { login: "carol" }, { "x-oauth-scopes": "repo, workflow" }),
+      );
+
+    const service = makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+    const status = await service.getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "app",
+      userLogin: "alice",
+      writeAuthSource: "gh",
+      writeUserLogin: "bob",
+      connected: true,
+    });
+    await expect(service.verifyStoredPat(status)).resolves.toMatchObject({
+      source: "pat",
+      capabilities: ["read", "write"],
+      userLogin: "carol",
+      failure: null,
+    });
+    expect(mockFetch).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        headers: expect.objectContaining({ authorization: "Bearer ghp_backup_token" }),
+      }),
+    );
+  });
+
   it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
     stubOriginRemote();
     const credentialStore = new MemoryCredentialStore();

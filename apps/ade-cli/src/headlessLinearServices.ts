@@ -29,6 +29,7 @@ import type {
   GitHubAppDeviceAuthPollResult,
   GitHubAppDeviceAuthStartResult,
   GitHubAppUserAuthStatus,
+  GitHubCredentialVerification,
   GitHubRepoRef,
   GitHubRateLimitState,
   GitHubStatus,
@@ -69,9 +70,11 @@ import { EncryptedFileCredentialStore } from "./services/credentials/credentialS
 import {
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
+  githubOperationCredentialPrecedence,
   resolveGithubOperationCredentialCandidate,
   resolveGithubStatusCredentials,
   selectGithubOperationCredential,
+  verifyGithubCredentialSource,
   type GithubOperationCredentialCapability,
 } from "../../desktop/src/shared/githubOperationCredential";
 import {
@@ -311,6 +314,12 @@ type HeadlessGitHubTokenCandidate = HeadlessGitHubTokenLookup & GithubCredential
 type HeadlessGitHubCredentialInventory = {
   candidates: HeadlessGitHubTokenCandidate[];
   availableSources: Set<HeadlessGitHubTokenCandidate["source"]>;
+  failures: Array<{
+    source: Exclude<HeadlessGitHubStatus["authSource"], "none">;
+    authFailure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  }>;
+  appTokenStored: boolean;
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
@@ -726,12 +735,24 @@ export function createHeadlessGitHubService(
     const patTokenStored = Boolean(patToken);
     const environmentToken = envToken("ADE_GITHUB_TOKEN", "GITHUB_TOKEN", "GH_TOKEN");
     const appStatus = appUserAuth.getAuthStatus();
-    const [appToken, gh] = await Promise.all([
+    const [appResult, gh] = await Promise.all([
       appStatus.tokenStored
-        ? appUserAuth.getValidTokenForRelay().catch(() => null)
-        : Promise.resolve(null),
+        ? appUserAuth.getValidTokenForRelay()
+            .then((token) => ({ token, failure: null }))
+            .catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              const failure = classifyGitHubAuthFailure({ message });
+              logger.warn("github.app_user_token_refresh_failed", {
+                error: message,
+                kind: failure.authFailure.kind,
+                retryAt: failure.authFailure.retryAt,
+              });
+              return { token: null, failure };
+            })
+        : Promise.resolve({ token: null, failure: null }),
       Promise.resolve(options.ghAuthTokenProvider?.() ?? ghAuthTokenAsync()),
     ]);
+    const appToken = appResult.token;
     const candidates: HeadlessGitHubTokenCandidate[] = [];
     if (environmentToken) {
       candidates.push({
@@ -777,6 +798,10 @@ export function createHeadlessGitHubService(
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
+      failures: appResult.failure
+        ? [{ source: "app", ...appResult.failure }]
+        : [],
+      appTokenStored: appToken != null || appStatus.tokenStored,
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
@@ -1037,6 +1062,50 @@ export function createHeadlessGitHubService(
         : classifyGitHubAuthFailure({ message });
       return { ok: false, error: message, ...classified };
     }
+  };
+
+  const verifyStoredPat = async (
+    status?: HeadlessGitHubStatus,
+  ): Promise<GitHubCredentialVerification> => {
+    const [origin, inventory] = await Promise.all([
+      readGitOriginAsync(projectRoot),
+      readCredentialInventoryAsync(),
+    ]);
+    const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
+    const candidate = inventory.candidates.find((entry) => entry.source === "pat") ?? null;
+    return await verifyGithubCredentialSource({
+      source: "pat",
+      status,
+      candidate,
+      cooldown: (entry) => githubCredentialRateLimitCooldown(
+        entry,
+        Date.now(),
+        { resource: "core" },
+      ),
+      probe: (entry) => probeCandidate(entry, repo, true),
+      capabilities: (entry, value) => validatedCredentialCapabilities(entry, value, repo),
+      userLogin: (value) => value.validated.userLogin,
+      rateLimit: (value) => value.validated.rateLimit,
+      isRepositoryAccessFailure: (result) => result.authFailure.kind === "permission_denied"
+        && result.value?.repoAccessOk === false,
+      onAuthenticatedProbe: (entry, value) => {
+        registerGithubCredentialIdentity(entry, value.validated.userLogin);
+      },
+      onUsableProbe: (entry, value) => {
+        recordGithubCredentialProbeSuccess(
+          entry,
+          value.validated.rateLimit,
+          value.validated.userLogin,
+        );
+      },
+      onRejectedProbe: (entry, result, repositoryAccessFailure) => {
+        if (!repositoryAccessFailure) {
+          recordGithubCredentialFailure(entry, result.authFailure, result.rateLimit);
+        }
+      },
+      missingMessage: "No personal access token is stored.",
+      missingPermissionMessage: "This personal access token does not grant the required GitHub write access.",
+    });
   };
 
   const conditionalRequestCache = createGithubConditionalRequestCache();
@@ -1510,6 +1579,7 @@ export function createHeadlessGitHubService(
   };
 
   service = {
+    verifyStoredPat,
     async getStatus(opts: { forceRefresh?: boolean } = {}) {
       if (opts.forceRefresh) {
         invalidateStatusCache();
@@ -1520,6 +1590,9 @@ export function createHeadlessGitHubService(
       ]);
       const repo = parseGitHubRepoFromRemoteUrl(origin ?? "");
       const hasOrigin = Boolean(origin);
+      const inventoryFailuresBySource = new Map(
+        inventory.failures.map((failure) => [failure.source, failure] as const),
+      );
       const binding = `${githubCredentialInventoryKey(inventory.candidates)}:${repo?.owner ?? ""}/${repo?.name ?? ""}`;
       const now = Date.now();
       if (
@@ -1565,6 +1638,7 @@ export function createHeadlessGitHubService(
             credentialStates: githubCredentialStates({
               candidates: inventory.candidates,
               availableSources: inventory.availableSources,
+              sourceFailures: inventoryFailuresBySource,
               activeReadSource: cachedStatus.authSource === "none"
                 ? null
                 : cachedStatus.authSource,
@@ -1595,12 +1669,13 @@ export function createHeadlessGitHubService(
           : githubCredentialCooldown(candidate, Date.now(), { resource: "core" });
         const primaryCandidate = readCandidates[0] ?? null;
         if (!primaryCandidate) {
+          const failure = inventory.failures[0] ?? null;
           return {
-            tokenStored: false,
+            tokenStored: inventory.appTokenStored,
             patTokenStored: inventory.patTokenStored,
             tokenDecryptionFailed,
             storageScope: "app",
-            authSource: "none",
+            authSource: failure?.source ?? "none",
             writeAuthSource: "none",
             tokenType: "unknown",
             repo,
@@ -1610,11 +1685,12 @@ export function createHeadlessGitHubService(
             ghCliPath: inventory.ghCliPath,
             ghAuthError: inventory.ghAuthError,
             checkedAt: null,
-            authFailure: null,
-            rateLimit: null,
+            authFailure: failure?.authFailure ?? null,
+            rateLimit: failure?.rateLimit ?? null,
             credentialStates: githubCredentialStates({
               candidates: inventory.candidates,
               availableSources: inventory.availableSources,
+              sourceFailures: inventoryFailuresBySource,
               activeReadSource: null,
               activeWriteSource: null,
             }),
@@ -1626,7 +1702,7 @@ export function createHeadlessGitHubService(
           };
         }
 
-        const { active, activeWriteSource, failures } = await resolveGithubStatusCredentials({
+        const { active, activeWrite, failures } = await resolveGithubStatusCredentials({
           readCandidates,
           writeCandidates,
           cooldown: statusCooldown,
@@ -1662,10 +1738,28 @@ export function createHeadlessGitHubService(
             }
           },
         });
+        const activeWriteSource = activeWrite?.source ?? null;
+        const credentialFailures = [
+          ...inventory.failures,
+          ...failures.map((failure) => ({
+            source: failure.candidate.source,
+            authFailure: failure.authFailure,
+            rateLimit: failure.rateLimit,
+          })),
+        ];
         const pauseUntilMs = githubBackgroundRequestPauseUntilMs(Date.now(), readCandidates);
         if (active) {
           const { candidate, value } = active;
           const { validated, repoAccessOk, repoAccessError } = value;
+          const failuresBySource = new Map(
+            credentialFailures.map((failure) => [failure.source, failure] as const),
+          );
+          const activePrecedenceIndex = githubOperationCredentialPrecedence("read")
+            .indexOf(candidate.source);
+          const fallbackFailure = githubOperationCredentialPrecedence("read")
+            .slice(0, activePrecedenceIndex)
+            .map((source) => failuresBySource.get(source) ?? null)
+            .find((failure) => failure != null) ?? null;
           return {
             tokenStored: true,
             patTokenStored: inventory.patTokenStored,
@@ -1673,6 +1767,7 @@ export function createHeadlessGitHubService(
             storageScope: "app",
             authSource: candidate.source,
             writeAuthSource: activeWriteSource ?? "none",
+            writeUserLogin: activeWrite?.value.validated.userLogin ?? null,
             tokenType: validated.tokenType,
             repo,
             hasOrigin,
@@ -1686,16 +1781,17 @@ export function createHeadlessGitHubService(
             credentialStates: githubCredentialStates({
               candidates: inventory.candidates,
               availableSources: inventory.availableSources,
+              sourceFailures: inventoryFailuresBySource,
               activeReadSource: candidate.source,
               activeWriteSource,
             }),
-            credentialFallback: failures[0] && failures[0].candidate.source !== candidate.source
+            credentialFallback: fallbackFailure
               ? {
                   capability: "read",
-                  fromSource: failures[0].candidate.source,
+                  fromSource: fallbackFailure.source,
                   toSource: candidate.source,
-                  reason: failures[0].authFailure.kind,
-                  retryAt: failures[0].authFailure.retryAt,
+                  reason: fallbackFailure.authFailure.kind,
+                  retryAt: fallbackFailure.authFailure.retryAt,
                 }
               : null,
             backgroundRefreshPausedUntil: pauseUntilMs == null
@@ -1707,11 +1803,10 @@ export function createHeadlessGitHubService(
           };
         }
 
-        const failure = failures.find((entry) => entry.authFailure.kind === "rate_limited")
-          ?? failures[0]
+        const failure = credentialFailures.find((entry) => entry.authFailure.kind === "rate_limited")
+          ?? credentialFailures[0]
           ?? {
-            candidate: primaryCandidate,
-            error: "GitHub authentication could not be verified.",
+            source: primaryCandidate.source,
             authFailure: classifyGitHubAuthFailure({ message: "GitHub authentication could not be verified." }).authFailure,
             rateLimit: null,
           };
@@ -1735,6 +1830,7 @@ export function createHeadlessGitHubService(
           credentialStates: githubCredentialStates({
             candidates: inventory.candidates,
             availableSources: inventory.availableSources,
+            sourceFailures: inventoryFailuresBySource,
             activeReadSource: null,
             activeWriteSource: null,
           }),

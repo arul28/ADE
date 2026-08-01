@@ -18,6 +18,7 @@ import {
 } from "@phosphor-icons/react";
 import { motion, AnimatePresence } from "motion/react";
 import { extractError } from "../../lib/format";
+import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 import type {
   CloneProjectInput,
   CloneProjectResult,
@@ -685,7 +686,12 @@ function ConnectGithubPrompt({
     setPending(true);
     setError(null);
     try {
-      await window.ade.github.setToken(trimmed);
+      const result = await window.ade.github.setToken(trimmed);
+      const verification = describeGithubPatVerification(result);
+      if (!verification.verified) {
+        setError(verification.message);
+        return;
+      }
       onConnected();
     } catch (err) {
       setError(extractError(err));

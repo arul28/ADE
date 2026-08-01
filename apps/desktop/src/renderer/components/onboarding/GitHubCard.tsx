@@ -7,6 +7,7 @@ import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
 import { BRAND, CARD_BASE, SECTION_LABEL, logoTile, statusDot } from "./onboardingTheme";
+import { describeGithubPatVerification } from "../../lib/githubIntegrationStatus";
 
 export function GitHubCard() {
   const [status, setStatus] = useState<GitHubStatus | null>(null);
@@ -28,8 +29,8 @@ export function GitHubCard() {
     try {
       const next = await window.ade.github.setToken(token);
       setStatus(next as GitHubStatus);
-      const ok = (next as GitHubStatus).connected;
-      return { ok, message: ok ? "Connected" : (next as GitHubStatus).ghAuthError ?? "Token rejected" };
+      const verification = describeGithubPatVerification(next);
+      return { ok: verification.verified, message: verification.message };
     } catch (e) {
       return { ok: false, message: e instanceof Error ? e.message : String(e) };
     }

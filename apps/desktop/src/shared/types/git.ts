@@ -327,6 +327,14 @@ export type GitHubCredentialState = {
   rateLimit: GitHubRateLimitState | null;
 };
 
+export type GitHubCredentialVerification = {
+  source: GitHubCredentialSource;
+  capabilities: GitHubCredentialCapability[];
+  userLogin: string | null;
+  failure: GitHubAuthFailure | null;
+  rateLimit: GitHubRateLimitState | null;
+};
+
 export type GitHubCredentialFallback = {
   capability: GitHubCredentialCapability;
   fromSource: GitHubCredentialSource;
@@ -362,6 +370,7 @@ export type GitHubStatus = {
   // Optional for compatibility with older runtimes. These fields describe the
   // operation credential chain without exposing credential material.
   writeAuthSource?: Exclude<GitHubStatus["authSource"], "app">;
+  writeUserLogin?: string | null;
   credentialStates?: GitHubCredentialState[];
   credentialFallback?: GitHubCredentialFallback | null;
   backgroundRefreshPausedUntil?: string | null;
@@ -373,6 +382,10 @@ export type GitHubStatus = {
   // Single source of truth for "GitHub reads are usable here". Write surfaces
   // additionally require writeAuthSource !== "none".
   connected: boolean;
+};
+
+export type GitHubSetTokenResult = GitHubStatus & {
+  credentialVerification: GitHubCredentialVerification;
 };
 
 export type GitHubAppInstallationStatus = {

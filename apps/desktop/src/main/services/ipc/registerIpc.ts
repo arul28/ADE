@@ -245,6 +245,7 @@ import type {
   GitHubAppUserAuthStatus,
   GitHubAutolink,
   GitHubRepoRef,
+  GitHubSetTokenResult,
   GitHubStatus,
   AdeAccountStatus,
   AdeAccountLoginStart,
@@ -9124,12 +9125,14 @@ export function registerIpc({
     return await ctx.githubService.getRemoteStatus();
   });
 
-  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubStatus> => {
+  ipcMain.handle(IPC.githubSetToken, async (_event, arg: { token: string }): Promise<GitHubSetTokenResult> => {
     const ctx = getCtx();
     ctx.githubService.setToken(arg.token);
     const status = await ctx.githubService.getStatus();
-    broadcastGithubStatus(status);
-    return status;
+    const credentialVerification = await ctx.githubService.verifyStoredPat(status);
+    const verifiedStatus = { ...status, credentialVerification };
+    broadcastGithubStatus(verifiedStatus);
+    return verifiedStatus;
   });
 
   ipcMain.handle(IPC.githubClearToken, async (): Promise<GitHubStatus> => {

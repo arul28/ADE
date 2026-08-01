@@ -1395,6 +1395,169 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("reports the validated identity of a different headless write credential", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-write-identity-", {
+      emptyGhConfig: true,
+    });
+    storeHeadlessAppUserToken();
+    new EncryptedFileCredentialStore().setSync("github.token.v1", "ghp_backup_token");
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization");
+      const login = authorization === "Bearer gho_cli_token"
+        ? "bob"
+        : authorization === "Bearer ghp_backup_token"
+          ? "carol"
+          : "alice";
+      return new Response(JSON.stringify({ login }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-oauth-scopes": authorization === "Bearer ghu_app_user_token"
+            ? ""
+            : "repo, workflow",
+        },
+      });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      const status = await githubService.getStatus({ forceRefresh: true });
+      expect(status).toMatchObject({
+        authSource: "app",
+        userLogin: "alice",
+        writeAuthSource: "gh",
+        writeUserLogin: "bob",
+        connected: true,
+      });
+      await expect(githubService.verifyStoredPat(status)).resolves.toMatchObject({
+        source: "pat",
+        capabilities: ["read", "write"],
+        userLogin: "carol",
+        failure: null,
+      });
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("preserves a stored GitHub App refresh failure in headless status", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-", {
+      emptyGhConfig: true,
+    });
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({
+      error: "bad_verification_code",
+      error_description: "Bad credentials",
+    }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    })) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({ token: null, ghCliPath: null, ghAuthError: null }),
+      },
+    );
+
+    try {
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        tokenStored: true,
+        authSource: "app",
+        connected: false,
+        authFailure: expect.objectContaining({ kind: "invalid_token" }),
+        credentialStates: expect.arrayContaining([
+          expect.objectContaining({
+            source: "app",
+            available: false,
+            state: "cooldown",
+            failure: expect.objectContaining({ kind: "invalid_token" }),
+          }),
+        ]),
+      });
+    } finally {
+      environment.restore();
+    }
+  });
+
+  it("reports headless fallback when App refresh fails and GitHub CLI remains usable", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-app-refresh-fallback-", {
+      emptyGhConfig: true,
+    });
+    new EncryptedFileCredentialStore().setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    globalThis.fetch = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        error: "bad_verification_code",
+        error_description: "Bad credentials",
+      }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ login: "bob" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-oauth-scopes": "repo, workflow",
+        },
+      })) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
+        authSource: "gh",
+        writeAuthSource: "gh",
+        writeUserLogin: "bob",
+        connected: true,
+        credentialFallback: {
+          capability: "read",
+          fromSource: "app",
+          toSource: "gh",
+          reason: "invalid_token",
+        },
+      });
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("uses a stored PAT instead of the App token for headless Git transport", async () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-transport-", {
       emptyGhConfig: true,

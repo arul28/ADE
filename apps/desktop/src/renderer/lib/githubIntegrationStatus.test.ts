@@ -4,7 +4,9 @@ import {
   deriveGithubRepoConnectionState,
   describeGithubAuthFailure,
   describeGithubCliBanner,
+  describeGithubPatVerification,
   githubCredentialPresentation,
+  githubStatusHasUsablePat,
   isGithubRateLimitMessage,
   isGithubRepoAccessPending,
 } from "./githubIntegrationStatus";
@@ -170,6 +172,60 @@ describe("describeGithubCliBanner", () => {
 
     expect(copy?.detail).toContain("Open Settings for the exact error");
     expect(copy?.settingsDetail).toBe("GitHub returned an unexpected enterprise policy response.");
+  });
+});
+
+describe("githubStatusHasUsablePat", () => {
+  it("requires the saved PAT itself to be ready for writes", () => {
+    expect(githubStatusHasUsablePat({
+      ...makeCliStatus({ authSource: "app", writeAuthSource: "gh", connected: true }),
+      credentialVerification: {
+        source: "pat",
+        capabilities: ["read", "write"],
+        userLogin: "octocat",
+        failure: null,
+        rateLimit: null,
+      },
+    })).toBe(true);
+
+    expect(githubStatusHasUsablePat({
+      ...makeCliStatus({ authSource: "app", writeAuthSource: "gh", connected: true }),
+      credentialVerification: {
+        source: "pat",
+        capabilities: [],
+        userLogin: null,
+        failure: {
+          kind: "invalid_token",
+          message: "Bad credentials",
+          retryAt: null,
+        },
+        rateLimit: null,
+      },
+    })).toBe(false);
+  });
+
+  it.each([
+    ["invalid_token", "authentication failed"],
+    ["rate_limited", "temporarily paused verification"],
+    ["permission_denied", "cannot use it for write actions"],
+    ["network", "could not reach GitHub"],
+    ["unknown", "could not verify it for GitHub write actions"],
+  ] as const)("uses clear shared copy for %s failures", (kind, message) => {
+    const result = {
+      ...makeCliStatus({ repo: { owner: "acme", name: "ade" } }),
+      credentialVerification: {
+        source: "pat" as const,
+        capabilities: [],
+        userLogin: null,
+        failure: { kind, message: "backend detail", retryAt: null },
+        rateLimit: null,
+      },
+    };
+
+    expect(describeGithubPatVerification(result)).toMatchObject({
+      verified: false,
+      message: expect.stringContaining(message),
+    });
   });
 });
 

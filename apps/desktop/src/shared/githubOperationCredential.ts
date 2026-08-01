@@ -2,7 +2,9 @@ import type {
   GitHubAuthFailure,
   GitHubCredentialCapability,
   GitHubCredentialSource,
+  GitHubCredentialVerification,
   GitHubRateLimitState,
+  GitHubStatus,
   GitHubTokenType,
 } from "./types/git";
 import { getGitHubTokenAccessState } from "./githubScopes";
@@ -129,6 +131,114 @@ export type GithubStatusCredentialProbeResult<Probe> =
       value?: Probe;
     };
 
+export async function verifyGithubCredentialSource<
+  Candidate extends {
+    source: GithubOperationCredentialSource;
+    token: string;
+  },
+  Probe,
+>(args: {
+  source: GithubOperationCredentialSource;
+  status?: GitHubStatus;
+  candidate: Candidate | null;
+  cooldown: (candidate: Candidate) => {
+    failure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  } | null;
+  probe: (candidate: Candidate) => Promise<GithubStatusCredentialProbeResult<Probe>>;
+  capabilities: (candidate: Candidate, probe: Probe) => Readonly<{ read: boolean; write: boolean }>;
+  userLogin: (probe: Probe) => string | null;
+  rateLimit: (probe: Probe) => GitHubRateLimitState | null;
+  isRepositoryAccessFailure: (
+    result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
+  ) => boolean;
+  onAuthenticatedProbe: (candidate: Candidate, probe: Probe) => void;
+  onUsableProbe: (candidate: Candidate, probe: Probe) => void;
+  onRejectedProbe: (
+    candidate: Candidate,
+    result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
+    repositoryAccessFailure: boolean,
+  ) => void;
+  missingMessage: string;
+  missingPermissionMessage: string;
+}): Promise<GitHubCredentialVerification> {
+  const { source, status, candidate } = args;
+  if (status?.writeAuthSource === source) {
+    const state = status.credentialStates?.find((entry) => entry.source === source);
+    return {
+      source,
+      capabilities: state?.capabilities ?? ["read", "write"],
+      userLogin: status.writeUserLogin
+        ?? (status.authSource === source ? status.userLogin : null),
+      failure: null,
+      rateLimit: state?.rateLimit ?? status.rateLimit ?? null,
+    };
+  }
+  if (!candidate) {
+    return {
+      source,
+      capabilities: [],
+      userLogin: null,
+      failure: { kind: "invalid_token", message: args.missingMessage, retryAt: null },
+      rateLimit: null,
+    };
+  }
+  const cooldown = args.cooldown(candidate);
+  if (cooldown) {
+    return {
+      source,
+      capabilities: [],
+      userLogin: null,
+      failure: cooldown.failure,
+      rateLimit: cooldown.rateLimit,
+    };
+  }
+  const result = await args.probe(candidate);
+  if (!result.ok) {
+    if (result.value) args.onAuthenticatedProbe(candidate, result.value);
+    args.onRejectedProbe(candidate, result, args.isRepositoryAccessFailure(result));
+    return {
+      source,
+      capabilities: [],
+      userLogin: result.value ? args.userLogin(result.value) : null,
+      failure: result.authFailure,
+      rateLimit: result.rateLimit,
+    };
+  }
+  const capabilities = args.capabilities(candidate, result.value);
+  args.onAuthenticatedProbe(candidate, result.value);
+  if (!capabilities.write) {
+    const authFailure: GitHubAuthFailure = {
+      kind: "permission_denied",
+      message: args.missingPermissionMessage,
+      retryAt: null,
+    };
+    const rejected = {
+      ok: false as const,
+      error: authFailure.message,
+      authFailure,
+      rateLimit: args.rateLimit(result.value),
+      value: result.value,
+    };
+    args.onRejectedProbe(candidate, rejected, false);
+    return {
+      source,
+      capabilities: capabilities.read ? ["read"] : [],
+      userLogin: args.userLogin(result.value),
+      failure: authFailure,
+      rateLimit: rejected.rateLimit,
+    };
+  }
+  args.onUsableProbe(candidate, result.value);
+  return {
+    source,
+    capabilities: capabilities.read ? ["read", "write"] : ["write"],
+    userLogin: args.userLogin(result.value),
+    failure: null,
+    rateLimit: args.rateLimit(result.value),
+  };
+}
+
 export async function resolveGithubStatusCredentials<
   Candidate extends {
     source: GithubOperationCredentialSource;
@@ -159,7 +269,11 @@ export async function resolveGithubStatusCredentials<
   ) => void;
 }): Promise<{
   active: { candidate: Candidate; value: Probe } | null;
-  activeWriteSource: Exclude<GithubOperationCredentialSource, "app"> | null;
+  activeWrite: {
+    source: Exclude<GithubOperationCredentialSource, "app">;
+    candidate: Candidate;
+    value: Probe;
+  } | null;
   failures: Array<{
     candidate: Candidate;
     error: string;
@@ -240,7 +354,11 @@ export async function resolveGithubStatusCredentials<
     break;
   }
 
-  let activeWriteSource: Exclude<GithubOperationCredentialSource, "app"> | null = null;
+  let activeWrite: {
+    source: Exclude<GithubOperationCredentialSource, "app">;
+    candidate: Candidate;
+    value: Probe;
+  } | null = null;
   if (active) {
     for (const candidate of args.writeCandidates) {
       if (candidate.source === "app" || args.cooldown(candidate)) continue;
@@ -259,13 +377,13 @@ export async function resolveGithubStatusCredentials<
         args.onUsableProbe(candidate, result.value);
       }
       if (args.capabilities(candidate, result.value).write) {
-        activeWriteSource = candidate.source;
+        activeWrite = { source: candidate.source, candidate, value: result.value };
         break;
       }
     }
   }
 
-  return { active, activeWriteSource, failures };
+  return { active, activeWrite, failures };
 }
 
 type CredentialResolvers<T> = Record<

@@ -8641,7 +8641,15 @@ export function createPrService({
   /** The account that performed the merge is the authenticated viewer. */
   const resolveViewerLoginForMerge = async (): Promise<string | null> => {
     try {
-      return (await githubService.getStatus()).userLogin ?? null;
+      const status = await githubService.getStatus();
+      if (status.writeUserLogin) return status.writeUserLogin;
+      const effectiveWriteSource = status.writeAuthSource
+        ?? (status.authSource === "app" || status.authSource === "none"
+          ? "none"
+          : status.authSource);
+      return effectiveWriteSource === status.authSource
+        ? status.userLogin ?? null
+        : null;
     } catch {
       return null;
     }

@@ -19,6 +19,7 @@ import { getGitHubTokenAccessState, REQUIRED_GITHUB_CLASSIC_SCOPES } from "../..
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, LABEL_STYLE, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { GitHubAppInstallPanel } from "../github/GitHubAppInstallPanel";
 import {
+  describeGithubPatVerification,
   describeGithubAuthFailure,
   githubCredentialPresentation,
 } from "../../lib/githubIntegrationStatus";
@@ -154,23 +155,13 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
       .then((status) => {
         setGithubStatus(status);
         setGithubTokenDraft("");
-        if (status.connected) {
+        const verification = describeGithubPatVerification(status);
+        if (verification.verified) {
           setShowPatSetup(false);
-          setSaveNotice("Personal access token saved and verified.");
+          setSaveNotice(verification.message);
           return;
         }
-        if (!status.userLogin) {
-          setActionError("Token saved, but authentication failed. Re-check the token value.");
-        } else if (status.tokenType === "fine-grained" && status.repoAccessOk === false) {
-          const repoLabel = status.repo ? `${status.repo.owner}/${status.repo.name}` : "this repo";
-          setActionError(
-            `Token saved, but it cannot access ${repoLabel}` +
-              (status.repoAccessError ? ` (${status.repoAccessError})` : "") +
-              ". Grant this repo Contents, Pull requests, Metadata, Actions, and Workflows permissions.",
-          );
-        } else {
-          setActionError("Token saved, but it is missing required permissions. See the diagnostic below.");
-        }
+        setActionError(verification.message);
       })
       .catch((err) => setActionError(err instanceof Error ? err.message : String(err)))
       .finally(() => setGithubBusy(false));

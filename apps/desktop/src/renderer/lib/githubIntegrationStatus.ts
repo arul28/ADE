@@ -1,6 +1,7 @@
 import type {
   GitHubAppInstallationStatus,
   GitHubAppUserAuthStatus,
+  GitHubSetTokenResult,
   GitHubStatus,
 } from "../../shared/types";
 
@@ -244,6 +245,54 @@ export function githubStatusHasWriteCredential(status: GitHubStatus | null): boo
   return status.connected
     && status.authSource !== "app"
     && status.authSource !== "none";
+}
+
+export function githubStatusHasUsablePat(result: GitHubSetTokenResult | null): boolean {
+  const pat = result?.credentialVerification;
+  return Boolean(
+    pat?.source === "pat"
+    && pat.failure == null
+    && pat.capabilities.includes("write")
+  );
+}
+
+export function describeGithubPatVerification(result: GitHubSetTokenResult): {
+  verified: boolean;
+  message: string;
+} {
+  if (githubStatusHasUsablePat(result)) {
+    return { verified: true, message: "Personal access token saved and verified." };
+  }
+  const failure = result.credentialVerification.failure;
+  if (failure?.kind === "invalid_token") {
+    return {
+      verified: false,
+      message: "Token saved, but authentication failed. Re-check the token value.",
+    };
+  }
+  if (failure?.kind === "rate_limited") {
+    return {
+      verified: false,
+      message: "Token saved, but GitHub temporarily paused verification. ADE will try it again when needed.",
+    };
+  }
+  if (failure?.kind === "permission_denied") {
+    const repoLabel = result.repo ? `${result.repo.owner}/${result.repo.name}` : "this repository";
+    return {
+      verified: false,
+      message: `Token saved, but ADE cannot use it for write actions on ${repoLabel}. Check the token's repository access and write permissions.`,
+    };
+  }
+  if (failure?.kind === "network") {
+    return {
+      verified: false,
+      message: "Token saved, but ADE could not reach GitHub to verify it. Try again.",
+    };
+  }
+  return {
+    verified: false,
+    message: "Token saved, but ADE could not verify it for GitHub write actions. Check the token and its repository permissions.",
+  };
 }
 
 export function describeGithubCliBanner(status: GitHubStatus): {

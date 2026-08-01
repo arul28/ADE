@@ -4872,6 +4872,70 @@ describe("prService.land", () => {
     expect(githubService.apiRequest).not.toHaveBeenCalledWith(expect.objectContaining({ method: "PUT" }));
   });
 
+  it("attributes a successful merge to the active write credential", async () => {
+    const row = makePrRow({ id: "pr-write-identity", github_pr_number: 95 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => makeGithubStatus({
+        authSource: "app",
+        userLogin: "alice",
+        writeAuthSource: "gh",
+        writeUserLogin: "bob",
+      })),
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/95")) {
+          return { data: makeGitHubPull({ number: 95, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (args.method === "PUT" && args.path.endsWith("/pulls/95/merge")) {
+          return { data: { sha: "merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({
+      success: true,
+      mergeCommitSha: "merge-sha",
+    });
+
+    const outcomeWrite = db.run.mock.calls.find(([sql]: unknown[]) =>
+      String(sql).includes("merged_by_login = coalesce"));
+    expect(outcomeWrite?.[1]).toEqual(expect.arrayContaining(["bob"]));
+  });
+
+  it("preserves merge attribution from a legacy writable GitHub status", async () => {
+    const row = makePrRow({ id: "pr-legacy-write-identity", github_pr_number: 96 });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    const githubService = makeGithubService({
+      getStatus: vi.fn(async () => {
+        const status = makeGithubStatus({ authSource: "gh", userLogin: "octocat" });
+        return { ...status, writeAuthSource: undefined };
+      }),
+      apiRequest: vi.fn(async (args: { method: string; path: string }) => {
+        if (args.method === "GET" && args.path.endsWith("/pulls/96")) {
+          return { data: makeGitHubPull({ number: 96, mergeable: true, mergeable_state: "clean" }) };
+        }
+        if (args.method === "PUT" && args.path.endsWith("/pulls/96/merge")) {
+          return { data: { sha: "legacy-merge-sha" } };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    await expect(service.land({ prId: row.id, method: "squash" })).resolves.toMatchObject({
+      success: true,
+      mergeCommitSha: "legacy-merge-sha",
+    });
+
+    const outcomeWrite = db.run.mock.calls.find(([sql]: unknown[]) =>
+      String(sql).includes("merged_by_login = coalesce"));
+    expect(outcomeWrite?.[1]).toEqual(expect.arrayContaining(["octocat"]));
+  });
+
   // Helper: a minimal stand-in for a child_process.ChildProcess that the runGh
   // promise consumes (stdout/stderr `.on`, top-level `.on`, `.kill`).
   function makeFakeGhChild() {

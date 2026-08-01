@@ -48,7 +48,7 @@ describe("githubOperationCredential", () => {
     });
 
     expect(result.active?.candidate.source).toBe("gh");
-    expect(result.activeWriteSource).toBe("gh");
+    expect(result.activeWrite?.source).toBe("gh");
     expect(result.failures.map((failure) => failure.candidate.source)).toEqual(["app"]);
     expect(rejected).toHaveBeenCalledWith(
       app,
@@ -92,7 +92,7 @@ describe("githubOperationCredential", () => {
     });
 
     expect(result.active?.candidate).toBe(gh);
-    expect(result.activeWriteSource).toBe("gh");
+    expect(result.activeWrite?.source).toBe("gh");
     expect(probe).toHaveBeenCalledTimes(2);
   });
 
