@@ -1935,7 +1935,6 @@ describe("registerIpc sync bridge", () => {
       logger,
     };
     const secondRequest = handler?.(eventForSender()) as Promise<unknown>;
-    await Promise.resolve();
 
     expect(firstDispose).not.toHaveBeenCalled();
     expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(1);
@@ -2020,7 +2019,6 @@ describe("registerIpc sync bridge", () => {
       logger,
     };
     const secondStart = startHandler?.(eventForSender()) as Promise<unknown>;
-    await Promise.resolve();
     expect(createLinearOAuthServiceMock).toHaveBeenCalledTimes(1);
 
     releaseFirstStart();

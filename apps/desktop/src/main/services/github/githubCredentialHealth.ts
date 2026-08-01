@@ -318,6 +318,10 @@ export function clearGithubCredentialHealth(token?: string): void {
 export function githubCredentialStates(args: {
   candidates: readonly GithubCredentialCandidate[];
   availableSources: ReadonlySet<GitHubCredentialSource>;
+  sourceFailures: ReadonlyMap<GitHubCredentialSource, {
+    authFailure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  }>;
   activeReadSource: GitHubCredentialSource | null;
   activeWriteSource: Exclude<GitHubCredentialSource, "app"> | null;
 }): GitHubCredentialState[] {
@@ -327,13 +331,14 @@ export function githubCredentialStates(args: {
     const candidate = bySource.get(source) ?? null;
     const health = candidate ? healthFor(candidate) : null;
     const cooling = candidate ? githubCredentialCooldown(candidate) : null;
+    const sourceFailure = args.sourceFailures.get(source) ?? null;
     const capabilities = [...githubOperationCredentialCapabilities(source)];
     const activeFor: GitHubCredentialCapability[] = [];
     if (args.activeReadSource === source) activeFor.push("read");
     if (args.activeWriteSource === source) activeFor.push("write");
     let state: GitHubCredentialState["state"] = "unavailable";
     if (args.availableSources.has(source)) state = "ready";
-    if (cooling) state = "cooldown";
+    if (cooling || sourceFailure) state = "cooldown";
     if (activeFor.length > 0) state = "active";
     return {
       source,
@@ -341,9 +346,10 @@ export function githubCredentialStates(args: {
       capabilities,
       activeFor,
       state,
-      failure: cooling?.failure ?? null,
+      failure: cooling?.failure ?? sourceFailure?.authFailure ?? null,
       rateLimit: cooling?.rateLimit
         ?? [...(health?.resources.values() ?? [])].find((entry) => entry.rateLimit)?.rateLimit
+        ?? sourceFailure?.rateLimit
         ?? null,
     };
   });

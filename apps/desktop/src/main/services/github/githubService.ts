@@ -24,6 +24,7 @@ import type { SyncCredentialStore } from "../../../../../ade-cli/src/services/cr
 import {
   evaluateGithubCredentialCapabilities,
   githubOperationCredentialCandidates,
+  githubOperationCredentialPrecedence,
   resolveGithubOperationCredentialCandidate,
   resolveGithubStatusCredentials,
   selectGithubOperationCredential,
@@ -182,6 +183,12 @@ type GitHubTokenCandidate = GitHubTokenLookup & GithubCredentialCandidate & {
 type GitHubCredentialInventory = {
   candidates: GitHubTokenCandidate[];
   availableSources: Set<GitHubTokenCandidate["source"]>;
+  failures: Array<{
+    source: GitHubTokenCandidate["source"];
+    authFailure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  }>;
+  appTokenStored: boolean;
   patTokenStored: boolean;
   ghCliPath: string | null;
   ghAuthError: string | null;
@@ -804,12 +811,25 @@ export function createGithubService({
     const patTokenStored = Boolean(patLookup);
     const environment = readEnvironmentAuthToken();
     const appStatus = appUserAuth.getAuthStatus();
-    const [appToken, gh] = await Promise.all([
+    const [appResult, gh] = await Promise.all([
       appStatus.tokenStored
-        ? appUserAuth.getValidTokenForRelay().catch(() => null)
-        : Promise.resolve(null),
+        ? appUserAuth.getValidTokenForRelay()
+            .then((token) => ({ token, failure: null }))
+            .catch((error: unknown) => {
+              const message = error instanceof Error ? error.message : String(error);
+              const failure = classifyGitHubAuthFailure({ message });
+              logger.warn("github.app_user_token_refresh_failed", {
+                error: message,
+                kind: failure.authFailure.kind,
+                retryAt: failure.authFailure.retryAt,
+              });
+              return { token: null, failure };
+            })
+        : Promise.resolve({ token: null, failure: null }),
       readGhAuthToken(),
     ]);
+    const appToken = appResult.token;
+    const appTokenStored = appToken != null || appUserAuth.getAuthStatus().tokenStored;
     const candidates: GitHubTokenCandidate[] = [];
     if (environment?.token) {
       candidates.push({
@@ -851,6 +871,10 @@ export function createGithubService({
     return {
       candidates,
       availableSources: new Set(candidates.map((candidate) => candidate.source)),
+      failures: appResult.failure
+        ? [{ source: "app", ...appResult.failure }]
+        : [],
+      appTokenStored,
       patTokenStored,
       ghCliPath: gh.ghCliPath,
       ghAuthError: gh.ghAuthError,
@@ -1585,16 +1609,20 @@ export function createGithubService({
     const primaryCandidate = readCandidates[0] ?? null;
     const writeCandidates = githubOperationCredentialCandidates(inventory.candidates, "write");
     const credentialInventoryKey = githubCredentialInventoryKey(inventory.candidates);
+    const inventoryFailuresBySource = new Map(
+      inventory.failures.map((failure) => [failure.source, failure] as const),
+    );
     const statusCooldown = (candidate: GitHubTokenCandidate) => opts.forceRefresh === true
       ? githubCredentialRateLimitCooldown(candidate, Date.now(), { resource: "core" })
       : githubCredentialCooldown(candidate, Date.now(), { resource: "core" });
     if (!primaryCandidate) {
+      const failure = inventory.failures[0] ?? null;
       cachedStatus = {
-        tokenStored: false,
+        tokenStored: inventory.appTokenStored,
         patTokenStored: inventory.patTokenStored,
         tokenDecryptionFailed,
         storageScope: "app",
-        authSource: "none",
+        authSource: failure?.source ?? "none",
         writeAuthSource: "none",
         tokenType: "unknown",
         repo,
@@ -1604,11 +1632,12 @@ export function createGithubService({
         ghCliPath: inventory.ghCliPath,
         ghAuthError: inventory.ghAuthError,
         checkedAt: null,
-        authFailure: null,
-        rateLimit: null,
+        authFailure: failure?.authFailure ?? null,
+        rateLimit: failure?.rateLimit ?? null,
         credentialStates: githubCredentialStates({
           candidates: inventory.candidates,
           availableSources: inventory.availableSources,
+          sourceFailures: inventoryFailuresBySource,
           activeReadSource: null,
           activeWriteSource: null,
         }),
@@ -1665,6 +1694,7 @@ export function createGithubService({
           credentialStates: githubCredentialStates({
             candidates: inventory.candidates,
             availableSources: inventory.availableSources,
+            sourceFailures: inventoryFailuresBySource,
             activeReadSource,
             activeWriteSource,
           }),
@@ -1712,10 +1742,27 @@ export function createGithubService({
         }
       },
     });
+    const readCredentialFailures = [
+      ...inventory.failures,
+      ...failures.map((failure) => ({
+        source: failure.candidate.source,
+        authFailure: failure.authFailure,
+        rateLimit: failure.rateLimit,
+      })),
+    ];
     const pauseUntilMs = githubBackgroundRequestPauseUntilMs(Date.now(), readCandidates);
     if (active) {
       const { candidate, value } = active;
       const { validated, repoAccessOk, repoAccessError } = value;
+      const readFailuresBySource = new Map(
+        readCredentialFailures.map((failure) => [failure.source, failure] as const),
+      );
+      const activePrecedenceIndex = githubOperationCredentialPrecedence("read")
+        .indexOf(candidate.source);
+      const fallbackFailure = githubOperationCredentialPrecedence("read")
+        .slice(0, activePrecedenceIndex)
+        .map((source) => readFailuresBySource.get(source) ?? null)
+        .find((failure) => failure != null) ?? null;
       // Classic PATs and gh OAuth tokens expose scopes in the /user response.
       // Fine-grained tokens do not expose selected repos and need a repo probe.
       if (repo && validated.tokenType === "fine-grained" && repoAccessOk === false) {
@@ -1746,16 +1793,17 @@ export function createGithubService({
         credentialStates: githubCredentialStates({
           candidates: inventory.candidates,
           availableSources: inventory.availableSources,
+          sourceFailures: inventoryFailuresBySource,
           activeReadSource: candidate.source,
           activeWriteSource,
         }),
-        credentialFallback: failures[0] && failures[0].candidate.source !== candidate.source
+        credentialFallback: fallbackFailure
           ? {
               capability: "read",
-              fromSource: failures[0].candidate.source,
+              fromSource: fallbackFailure.source,
               toSource: candidate.source,
-              reason: failures[0].authFailure.kind,
-              retryAt: failures[0].authFailure.retryAt,
+              reason: fallbackFailure.authFailure.kind,
+              retryAt: fallbackFailure.authFailure.retryAt,
             }
           : null,
         backgroundRefreshPausedUntil: pauseUntilMs == null
@@ -1771,11 +1819,10 @@ export function createGithubService({
       return status;
     }
 
-    const failure = failures.find((entry) => entry.authFailure.kind === "rate_limited")
-      ?? failures[0]
+    const failure = readCredentialFailures.find((entry) => entry.authFailure.kind === "rate_limited")
+      ?? readCredentialFailures[0]
       ?? {
-        candidate: primaryCandidate,
-        error: "GitHub authentication could not be verified.",
+        source: primaryCandidate.source,
         authFailure: classifyGitHubAuthFailure({ message: "GitHub authentication could not be verified." }).authFailure,
         rateLimit: null,
       };
@@ -1799,6 +1846,7 @@ export function createGithubService({
       credentialStates: githubCredentialStates({
         candidates: inventory.candidates,
         availableSources: inventory.availableSources,
+        sourceFailures: inventoryFailuresBySource,
         activeReadSource: null,
         activeWriteSource: null,
       }),

@@ -89,19 +89,29 @@ function writeResponse(
   contentType: string,
   body: string,
 ): Promise<void> {
-  return new Promise((resolve) => {
+  return new Promise((resolve, reject) => {
     let settled = false;
+    const cleanup = () => {
+      response.off("finish", finish);
+      response.off("close", finish);
+    };
     const finish = () => {
       if (settled) return;
       settled = true;
-      response.off("finish", finish);
-      response.off("close", finish);
+      cleanup();
       resolve();
     };
     response.once("finish", finish);
     response.once("close", finish);
-    response.writeHead(status, { "content-type": contentType });
-    response.end(body);
+    try {
+      response.writeHead(status, { "content-type": contentType });
+      response.end(body);
+    } catch (error) {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    }
   });
 }
 
@@ -171,10 +181,8 @@ export function createLinearOAuthService(args: {
     },
   ): Promise<void> => {
     markSessionTerminal(session, patch);
-    const work = writeResponse(response, reply.status, reply.contentType, reply.body)
-      .then(() => beginServerClose(session));
-    session.closePromise = work;
-    return work;
+    return writeResponse(response, reply.status, reply.contentType, reply.body)
+      .then(() => closeSessionServer(session));
   };
 
   const respondAlreadyFinished = (response: http.ServerResponse): Promise<void> => (
@@ -185,6 +193,22 @@ export function createLinearOAuthService(args: {
       "This Linear sign-in has already finished. Return to ADE to continue.",
     )
   );
+
+  const respondAlreadyFinishedAndClose = async (
+    session: LinearOAuthSessionState,
+    response: http.ServerResponse,
+  ): Promise<void> => {
+    try {
+      await respondAlreadyFinished(response);
+    } catch (error) {
+      args.logger?.warn("linear_sync.oauth_callback_fallback_response_failed", {
+        sessionId: session.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      await forceCloseSessionServer(session);
+    }
+  };
 
   const respondCallbackInProgress = (response: http.ServerResponse): Promise<void> => (
     writeResponse(
@@ -410,7 +434,7 @@ export function createLinearOAuthService(args: {
 
         await exchangeCode(session, code, session.abortController.signal);
         if (session.status !== "pending") {
-          await respondAlreadyFinished(res);
+          await respondAlreadyFinishedAndClose(session, res);
           return;
         }
         await respondAndFinalizeSession(
@@ -425,7 +449,7 @@ export function createLinearOAuthService(args: {
         );
       } catch (error) {
         if (session.status !== "pending") {
-          await respondAlreadyFinished(res);
+          await respondAlreadyFinishedAndClose(session, res);
           return;
         }
         const message = error instanceof Error ? error.message : "OAuth callback failed.";

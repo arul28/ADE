@@ -1413,6 +1413,177 @@ describe("githubService.getStatus", () => {
     await expect(service.getReadTokenOrThrowAsync()).resolves.toBe("ghu_app_user_token");
   });
 
+  it("reports a GitHub App refresh failure instead of treating authorization as missing", async () => {
+    stubOriginRemote();
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch.mockResolvedValueOnce(jsonResponse(400, {
+      error: "bad_verification_code",
+      error_description: "Bad credentials",
+    }));
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status).toMatchObject({
+      tokenStored: true,
+      authSource: "app",
+      connected: false,
+      authFailure: {
+        kind: "invalid_token",
+        message: "Bad credentials",
+        retryAt: null,
+      },
+      credentialStates: expect.arrayContaining([
+        expect.objectContaining({
+          source: "app",
+          available: false,
+          state: "cooldown",
+          failure: expect.objectContaining({ kind: "invalid_token" }),
+        }),
+      ]),
+    });
+  });
+
+  it("reports GitHub App refresh fallback when gh remains usable", async () => {
+    stubOriginRemote();
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(400, {
+        error: "bad_verification_code",
+        error_description: "Bad credentials",
+      }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+      );
+
+    const status = await makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "gh",
+      connected: true,
+      credentialFallback: {
+        capability: "read",
+        fromSource: "app",
+        toSource: "gh",
+        reason: "invalid_token",
+        retryAt: null,
+      },
+      credentialStates: expect.arrayContaining([
+        expect.objectContaining({
+          source: "app",
+          available: false,
+          failure: expect.objectContaining({ kind: "invalid_token" }),
+        }),
+      ]),
+    });
+  });
+
+  it("does not report fallback from a lower-precedence App failure", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(400, {
+        error: "bad_verification_code",
+        error_description: "Bad credentials",
+      }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+      );
+
+    const status = await makeService({ credentialStore }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "environment",
+      connected: true,
+      credentialFallback: null,
+    });
+  });
+
+  it("reports the highest-precedence failed read credential when falling back", async () => {
+    stubOriginRemote();
+    process.env.GITHUB_TOKEN = "ghp_invalid_environment_token";
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    const credentialStore = new MemoryCredentialStore();
+    credentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_expiring_app_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 10_000).toISOString(),
+      refreshToken: "ghr_refresh_token",
+      refreshTokenExpiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      userLogin: "alice",
+      updatedAt: new Date().toISOString(),
+    }));
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(400, {
+        error: "bad_verification_code",
+        error_description: "Bad credentials",
+      }))
+      .mockResolvedValueOnce(jsonResponse(401, { message: "Bad credentials" }))
+      .mockResolvedValueOnce(
+        jsonResponse(200, { login: "alice" }, { "x-oauth-scopes": "repo, workflow" }),
+      );
+
+    const status = await makeService({
+      credentialStore,
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    }).getStatus();
+
+    expect(status).toMatchObject({
+      authSource: "gh",
+      connected: true,
+      credentialFallback: {
+        capability: "read",
+        fromSource: "environment",
+        toSource: "gh",
+        reason: "invalid_token",
+        retryAt: null,
+      },
+    });
+  });
+
   it("does not advertise an unvalidated lower-precedence write credential", async () => {
     stubOriginRemote();
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;

@@ -517,6 +517,125 @@ describe("linearOAuthService", () => {
     });
   });
 
+  it("settles the callback when writing the first response throws synchronously", async () => {
+    const credentials = createCredentialsMock();
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: "linear-access-token-123" }),
+      })) as any,
+    });
+    activeServices.push(service);
+    const { sessionId, authUrl, redirectUri } = await service.startSession();
+    const state = new URL(authUrl).searchParams.get("state")!;
+    const originalWriteHead = http.ServerResponse.prototype.writeHead;
+    let writeAttempts = 0;
+    const writeHeadSpy = vi.spyOn(http.ServerResponse.prototype, "writeHead").mockImplementation(function (
+      this: http.ServerResponse,
+      ...args: Parameters<http.ServerResponse["writeHead"]>
+    ) {
+      writeAttempts += 1;
+      if (writeAttempts === 1) throw new Error("response write failed");
+      return Reflect.apply(originalWriteHead, this, args);
+    } as http.ServerResponse["writeHead"]);
+
+    try {
+      const response = await Promise.race([
+        httpGet(`${redirectUri}?code=test-code&state=${state}`),
+        waitMs(1_000).then(() => {
+          throw new Error("OAuth callback response did not settle");
+        }),
+      ]);
+
+      expect(response.statusCode).toBe(409);
+      expect(writeAttempts).toBe(2);
+      expect(service.getSession(sessionId).status).toBe("completed");
+      expect(credentials.setOAuthToken).toHaveBeenCalledTimes(1);
+    } finally {
+      writeHeadSpy.mockRestore();
+    }
+  });
+
+  it("closes the callback listener when both the primary and fallback responses throw", async () => {
+    const credentials = createCredentialsMock();
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: "linear-access-token-123" }),
+      })) as any,
+    });
+    activeServices.push(service);
+    const { authUrl, redirectUri } = await service.startSession();
+    const state = new URL(authUrl).searchParams.get("state")!;
+    const writeHeadSpy = vi.spyOn(http.ServerResponse.prototype, "writeHead")
+      .mockImplementation(() => {
+        throw new Error("response write failed");
+      });
+
+    try {
+      await expect(httpGet(`${redirectUri}?code=test-code&state=${state}`)).resolves.toMatchObject({
+        statusCode: 0,
+      });
+      await expect(service.startSession()).resolves.toMatchObject({
+        redirectUri: expect.stringContaining(":19836/oauth/callback"),
+      });
+    } finally {
+      writeHeadSpy.mockRestore();
+    }
+  });
+
+  it("waits for the callback listener to close when disposal races a failed response write", async () => {
+    const credentials = createCredentialsMock();
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: "linear-access-token-123" }),
+      })) as any,
+    });
+    activeServices.push(service);
+    const { authUrl, redirectUri } = await service.startSession();
+    const state = new URL(authUrl).searchParams.get("state")!;
+    const originalWriteHead = http.ServerResponse.prototype.writeHead;
+    let disposePromise: Promise<void> | null = null;
+    let writeAttempts = 0;
+    const writeHeadSpy = vi.spyOn(http.ServerResponse.prototype, "writeHead").mockImplementation(function (
+      this: http.ServerResponse,
+      ...args: Parameters<http.ServerResponse["writeHead"]>
+    ) {
+      writeAttempts += 1;
+      if (writeAttempts === 1) {
+        disposePromise = service.dispose();
+        throw new Error("response write failed");
+      }
+      return Reflect.apply(originalWriteHead, this, args);
+    } as http.ServerResponse["writeHead"]);
+
+    try {
+      await httpGet(`${redirectUri}?code=test-code&state=${state}`);
+      await expect(disposePromise).resolves.toBeUndefined();
+
+      const replacement = createLinearOAuthService({
+        credentials: createCredentialsMock() as any,
+        logger: createLogger(),
+      });
+      activeServices.push(replacement);
+      await expect(replacement.startSession()).resolves.toMatchObject({
+        redirectUri: expect.stringContaining(":19836/oauth/callback"),
+      });
+    } finally {
+      writeHeadSpy.mockRestore();
+    }
+  });
+
   it("lets only one concurrent callback exchange the single-use authorization code", async () => {
     const credentials = createCredentialsMock();
     let resolveExchange!: (response: {
