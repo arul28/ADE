@@ -70,6 +70,7 @@ import { smartLinkChipMarkSvg } from "./smartLinkChipMark";
 import { LinearIssueSelectModal } from "../app/LinearIssueSelectModal";
 import { LinearMark, LINEAR_BRAND } from "../lanes/linearBrand";
 import { AskQuestionComposer } from "./AskQuestionComposer";
+import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
@@ -438,8 +439,9 @@ export type ParallelComposerControlSlot = {
 
 function getComposerInputLockMessage(pendingInput: PendingInputRequest | null | undefined): string | null {
   if (!pendingInput) return null;
-  if (pendingInput.kind === "question" || pendingInput.kind === "structured_question") {
-    return "Answer the question card above, or decline it.";
+  // B13: the card IS the composer now, so there is nothing "above" to answer.
+  if (isAskQuestionRequest(pendingInput)) {
+    return "Answer the question in the composer, or decline it.";
   }
   return "Resolve the pending request above before sending another message.";
 }
@@ -3895,7 +3897,7 @@ export function AgentChatComposer({
    * and wearing a sign saying so.
    */
   const askQuestionRequest = pendingInput
-    && (pendingInput.kind === "question" || pendingInput.kind === "structured_question")
+    && isAskQuestionRequest(pendingInput)
     && pendingInput.questions.length > 0
     ? pendingInput
     : null;
@@ -4198,7 +4200,32 @@ export function AgentChatComposer({
                   <button type="button" disabled={approvalResponding} className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none" onClick={() => onApproval("decline")}>{isMcpElicitation ? "Deny" : "Decline"}</button>
                 </div>
               </>
-            ) : null}
+            ) : (
+              /* Escape hatch for a gate that renders no controls of its own —
+                 in practice a question kind whose questions all failed to parse
+                 (`readPendingInputQuestion` drops empty text, so a whitespace
+                 -only askUser lands here). `composerInputLocked` is already
+                 true, so without a Decline this is a dead composer with no way
+                 out: exactly the failure this redesign exists to remove. The
+                 "answer in the card above" copy is what we wanted gone, not the
+                 button. */
+              <>
+                <div className="mb-2 font-mono text-[length:calc(var(--chat-font-size)*11/14)] leading-relaxed text-fg/68">
+                  {pendingInput.description ?? pendingInput.questions[0]?.question ?? "The agent is waiting for input."}
+                </div>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={approvalResponding}
+                    data-testid="pending-input-fallback-decline"
+                    className="rounded-[var(--chat-radius-pill)] border border-border/20 px-3 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-wider text-fg/40 transition-colors hover:bg-border/10 disabled:opacity-40 disabled:pointer-events-none"
+                    onClick={() => onApproval("decline")}
+                  >
+                    Decline
+                  </button>
+                </div>
+              </>
+            )}
           </div>
         )
       ) : undefined}
@@ -4521,7 +4548,23 @@ export function AgentChatComposer({
           ) : null}
         </>
       }
-      footer={askQuestionRequest ? undefined : (
+      footer={askQuestionRequest ? (
+        /* Hiding the model / permission / effort row while a question blocks is
+           the point; hiding the whole footer took the interrupt with it. A
+           question always arrives mid-turn, and handleKeyDown (which owns
+           Cmd+.) is bound to the textarea that is no longer rendered — so
+           without this the user's only exit from a running turn is Decline. */
+        turnActive ? (
+          <div className="ade-chat-composer-footer flex items-center justify-end px-2 py-1 sm:px-2.5">
+            <ActiveTurnStopButton
+              mode={activeTurnStopMode}
+              allowQueueChoice={sessionProvider === "claude"}
+              onModeChange={updateActiveTurnStopMode}
+              onStop={() => onInterrupt(activeTurnStopMode)}
+            />
+          </div>
+        ) : undefined
+      ) : (
         <div className="ade-chat-composer-footer flex flex-col gap-2 px-2 py-1 sm:px-2.5">
           {parallelChatMode ? (
             <div className="rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[color:color-mix(in_srgb,var(--chat-accent)_06%,transparent)] p-3">

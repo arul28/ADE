@@ -4023,6 +4023,7 @@ describe("AgentChatMessageList question receipts", () => {
   // AskQuestionComposer.test.tsx). The transcript keeps only the record.
   const buildStructuredApprovalEvent = (overrides: {
     questions: Array<Record<string, unknown>>;
+    options?: Array<Record<string, unknown>>;
   }): AgentChatEventEnvelope => ({
     sessionId: "session-ask",
     timestamp: "2026-04-20T10:00:00.000Z",
@@ -4041,6 +4042,7 @@ describe("AgentChatMessageList question receipts", () => {
           title: "Choose plan",
           description: "Which plan should we follow?",
           questions: overrides.questions,
+          ...(overrides.options ? { options: overrides.options } : {}),
           allowsFreeform: true,
           blocking: true,
           canProceedWithoutAnswer: false,
@@ -4109,6 +4111,29 @@ describe("AgentChatMessageList question receipts", () => {
     expect(detail.textContent ?? "").toContain("only if CI is green");
   });
 
+  it("regression: labels legacy request-level option answers as picks, not notes", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [{
+          id: "plan_choice",
+          header: "Plan",
+          question: "Which plan should we follow?",
+          options: [],
+          allowsFreeform: false,
+        }],
+        options: [{ label: "Rebase", value: "rebase" }],
+      }),
+      resolvedEvent("accepted", { plan_choice: "rebase" }),
+    ]);
+
+    const receipt = screen.getByTestId("answered-question-receipt");
+    expect(receipt.textContent ?? "").toContain("Rebase");
+    fireEvent.click(screen.getByTestId("answered-question-receipt-toggle"));
+    const detail = screen.getByTestId("answered-question-receipt-detail");
+    expect(detail.textContent ?? "").toContain("Rebase");
+    expect(detail.textContent ?? "").not.toContain("note:");
+  });
+
   it("records a declined request rather than dropping it", () => {
     renderMessageList([
       buildStructuredApprovalEvent({ questions: planQuestions }),
@@ -4135,6 +4160,22 @@ describe("AgentChatMessageList question receipts", () => {
     fireEvent.click(screen.getByTestId("answered-question-receipt-toggle"));
     const receipt = screen.getByTestId("answered-question-receipt");
     expect(receipt.textContent ?? "").toContain("answer hidden");
+  });
+
+  it("regression: a declined secret question is unanswered, not hidden", () => {
+    renderMessageList([
+      buildStructuredApprovalEvent({
+        questions: [
+          { id: "token", header: "Token", question: "Paste the deploy token", isSecret: true, allowsFreeform: true },
+        ],
+      }),
+      resolvedEvent("declined"),
+    ]);
+
+    fireEvent.click(screen.getByTestId("answered-question-receipt-toggle"));
+    const detail = screen.getByTestId("answered-question-receipt-detail");
+    expect(detail.textContent ?? "").toContain("unanswered");
+    expect(detail.textContent ?? "").not.toContain("answer hidden");
   });
 
   it("degrades to a bare answered receipt on a transcript with no recorded answers", () => {

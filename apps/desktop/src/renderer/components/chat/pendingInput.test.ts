@@ -5,7 +5,7 @@ import type { AgentChatEventEnvelope, PendingInputRequest } from "../../../share
 import {
   derivePendingInputRequests,
   getPendingInputQuestionCount,
-  hasPendingInputOptions,
+  readPendingInputRequest,
 } from "./pendingInput";
 
 // ---------------------------------------------------------------------------
@@ -145,7 +145,22 @@ describe("derivePendingInputRequests", () => {
     } satisfies PendingInputRequest;
 
     expect(getPendingInputQuestionCount(request)).toBe(2);
-    expect(hasPendingInputOptions(request)).toBe(true);
+  });
+
+  // An explicit `allowsFreeform: false` has to survive the parser: collapsing it
+  // to undefined makes "the provider declined freeform" indistinguishable from
+  // "unspecified", and the composer renders a note row for unspecified.
+  it("regression: preserves allowsFreeform in both directions", () => {
+    const build = (allowsFreeform: boolean) => readPendingInputRequest({
+      requestId: "req-freeform",
+      source: "ade",
+      kind: "structured_question",
+      questions: [{ id: "q1", question: "Pick one", allowsFreeform }],
+      blocking: true,
+    });
+
+    expect(build(true)?.questions[0]?.allowsFreeform).toBe(true);
+    expect(build(false)?.questions[0]?.allowsFreeform).toBe(false);
   });
 
   it("preserves Cursor structured permission requests", () => {
@@ -878,7 +893,11 @@ describe("derivePendingInputRequests", () => {
     const q = result[0]!.request.questions[0]!;
     expect(q.header).toBeUndefined();
     expect(q.multiSelect).toBeUndefined();
-    expect(q.allowsFreeform).toBeUndefined();
+    // `allowsFreeform: false` is PROVIDED, not absent: the provider is saying it
+    // declined freeform, which the composer has to be able to see. Only
+    // `multiSelect`/`isSecret` collapse, because there "false" and "unspecified"
+    // mean the same thing.
+    expect(q.allowsFreeform).toBe(false);
     expect(q.isSecret).toBeUndefined();
     expect(q.defaultAssumption).toBeUndefined();
     expect(q.impact).toBeUndefined();

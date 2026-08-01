@@ -38,8 +38,11 @@ import type {
   AgentChatStopMode,
   ClaudeActiveGoal,
   CodexThreadGoal,
-  PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
+import {
+  isStoredQuestionAnswered,
+  ownQuestionValue,
+} from "../../../desktop/src/shared/pendingInputAnswers";
 import type { AiSettingsStatus, OpenCodeRuntimeSnapshot } from "../../../desktop/src/shared/types/config";
 import type { DiffLineStats, GitConflictState } from "../../../desktop/src/shared/types/git";
 import type {
@@ -330,7 +333,6 @@ import {
   type FeedbackType,
 } from "./feedbackForm";
 import {
-  answerForQuestion,
   buildPendingInputAnswers,
   cancelPendingQuestionDigitSelection,
   convertPendingQuestionDigitSelectionToText,
@@ -340,6 +342,7 @@ import {
   movePendingQuestionFocus,
   movePendingQuestionOption,
   optionsForPendingQuestion,
+  pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   pendingQuestionSelectionValue,
   selectPendingQuestionDigit,
@@ -8685,6 +8688,19 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       return;
     }
+    const builtAnswers = buildPendingInputAnswers(
+      approval.request,
+      trimmed,
+      pendingQuestionStateRef.current?.itemId === approval.itemId ? pendingQuestionStateRef.current : null,
+    );
+    if (!builtAnswers || pendingQuestionAnsweredCount(approval.request, builtAnswers) === 0) {
+      const firstQuestion = approval.request?.questions[0];
+      addNotice(
+        pendingQuestionAnswerGuidance(approval.request, firstQuestion, 0),
+        "info",
+      );
+      return;
+    }
     await respondToInput({
       connection: conn,
       sessionId,
@@ -8692,11 +8708,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       decision: "accept",
       // Pass the live selection state so a typed note rides alongside whatever
       // the user had already marked instead of replacing it.
-      answers: buildPendingInputAnswers(
-        approval.request,
-        trimmed,
-        pendingQuestionStateRef.current?.itemId === approval.itemId ? pendingQuestionStateRef.current : null,
-      ),
+      answers: builtAnswers,
       responseText: trimmed,
     });
     addNotice("Answered request.", "success");
@@ -8722,23 +8734,27 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     // note, selection first. Letting the note replace the pick was the TUI half
     // of the divergence `shared/pendingInputAnswers` now settles.
     const typed = typedAnswer?.trim() ?? "";
-    // Only the first question inherits the request-level `options` fallback, so
-    // drop it when the active question is not that one.
-    const singleQuestionRequest: PendingInputRequest = {
-      ...request,
-      questions: [activeQuestion],
-      ...(baseState.activeQuestionIndex === 0 ? {} : { options: [] }),
-    };
-    const activeAnswer: string | string[] | null = buildPendingInputAnswers(
-      singleQuestionRequest,
-      typed,
-      baseState,
-    )?.[activeQuestion.id] ?? null;
+    // Enter with nothing typed IS the confirmation of the highlighted row, so
+    // that path still sends the highlight even though the highlight alone is
+    // not a pick (see `touchedQuestionIds`). Enter with text goes through the
+    // shared contract, where an untouched cursor contributes nothing.
+    const activeAnswer: string | string[] | null = typed.length
+      ? ownQuestionValue(
+          buildPendingInputAnswers(request, typed, baseState, baseState.activeQuestionIndex),
+          activeQuestion.id,
+        ) ?? null
+      : pendingQuestionSelectionValue(request, baseState);
     if (activeAnswer == null || (typeof activeAnswer === "string" && activeAnswer.length === 0)) {
-      addNotice("Type an answer in the prompt for this question.", "info");
+      addNotice(
+        pendingQuestionAnswerGuidance(request, activeQuestion, baseState.activeQuestionIndex),
+        "info",
+      );
       return true;
     }
-    const answers = { ...baseState.answers, [activeQuestion.id]: activeAnswer };
+    const answers = Object.fromEntries([
+      ...Object.entries(baseState.answers),
+      [activeQuestion.id, activeAnswer],
+    ]) as Record<string, string | string[]>;
     const answeredCount = pendingQuestionAnsweredCount(request, answers);
     if (answeredCount >= questions.length) {
       const conn = connectionRef.current;
@@ -8751,7 +8767,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         decision: "accept",
         answers,
         responseText: questions.map((question) => {
-          const answer = answers[question.id];
+          const answer = ownQuestionValue(answers, question.id);
           return `${question.header?.trim() || question.id}: ${Array.isArray(answer) ? answer.join(", ") : answer ?? ""}`;
         }).join("\n"),
       });
@@ -8763,7 +8779,10 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       await refreshState();
       return true;
     }
-    const nextUnansweredIndex = questions.findIndex((question) => !Object.prototype.hasOwnProperty.call(answers, question.id));
+    const nextUnansweredIndex = questions.findIndex((question) => !isStoredQuestionAnswered(
+      question,
+      ownQuestionValue(answers, question.id),
+    ));
     const nextState = {
       ...baseState,
       answers,
@@ -16089,10 +16108,6 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
               );
               pendingQuestionStateRef.current = next;
               setPendingQuestionState(next);
-              if (question.multiSelect !== true) {
-                void submitSelectedPendingQuestion(pendingApproval)
-                  .catch((err) => addNotice(err instanceof Error ? err.message : String(err), "error"));
-              }
             },
             zIndex: 8,
           });

@@ -7,12 +7,19 @@ import { useHoveredHitId } from "../hitTestRegistry";
 import { SectionHeader, Pill, StatusDot, KeyHints, Rule } from "./designKit";
 import {
   optionsForPendingQuestion,
+  pendingQuestionAnswerGuidance,
   pendingQuestionAnsweredCount,
   selectedValuesForQuestion,
   type PendingQuestionSelectionState,
 } from "../pendingInput";
 import { pendingInputHeaderLabel } from "../../../../desktop/src/shared/pendingInputLabels";
-import { notePlaceholder, sendLabel } from "../../../../desktop/src/shared/pendingInputAnswers";
+import {
+  isQuestionAnswered,
+  isStoredQuestionAnswered,
+  notePlaceholder,
+  ownQuestionValue,
+  sendLabel,
+} from "../../../../desktop/src/shared/pendingInputAnswers";
 
 // Default inner widths. The parent never passes a width, so the card sizes
 // itself: a fixed, centered column when modal (high-stakes), and a comfortable
@@ -122,8 +129,19 @@ export function ApprovalPrompt({
   if (!approval) return null;
 
   const question = approval.request?.questions[0] ?? null;
-  const options = question?.options?.length ? question.options : approval.request?.options ?? [];
+  const options = optionsForPendingQuestion(approval.request, question ?? undefined, 0);
   const questions = approval.request?.questions ?? [];
+  const activeQuestionIndex = questionState?.activeQuestionIndex ?? 0;
+  const activeQuestion = questions[activeQuestionIndex] ?? null;
+  const activeAllowsFreeform = activeQuestion?.allowsFreeform !== false;
+  const activeOptions = optionsForPendingQuestion(approval.request, activeQuestion ?? undefined, activeQuestionIndex);
+  const activeHasDefault = Boolean(activeQuestion?.defaultAssumption?.trim());
+  const activeUnanswerable = Boolean(
+    activeQuestion
+    && activeOptions.length === 0
+    && !activeAllowsFreeform
+    && !activeHasDefault,
+  );
   const highStakes = approval.highStakes;
   const isQuestion = approval.mode === "question";
   const kind = approval.request?.kind;
@@ -209,8 +227,15 @@ export function ApprovalPrompt({
   const showChips = !isQuestion && !highStakes;
 
   // Footer hints, keyed to the real bindings in app input handling.
+  const questionHints: Array<[string, string]> = [];
+  if (activeOptions.length > 0) questionHints.push(["↑↓", "choose"]);
+  if (questions.length > 1) questionHints.push(["←→", "question"]);
+  if (activeOptions.length > 0) questionHints.push(["1-9", "pick"]);
+  if (!activeUnanswerable) questionHints.push(["enter", "next/send"]);
+  if (activeAllowsFreeform) questionHints.push(["type", "custom"]);
+  questionHints.push(["deny", "decline"]);
   const hints: Array<[string, string]> = isQuestion
-    ? [["↑↓", "choose"], ["←→", "question"], ["1-9", "pick"], ["enter", "next/send"], ["type", "custom"], ["deny", "decline"]]
+    ? questionHints
     : highStakes
       ? [["approve", "allow"], ["deny", "decline"], ["enter", "confirm"]]
       : [["a", "approve"], ["d", "deny"]];
@@ -227,11 +252,8 @@ export function ApprovalPrompt({
    * pressing Enter will actually send. Both come from
    * `shared/pendingInputAnswers`, so the TUI cannot drift from the payload.
    */
-  const activeQuestionIndex = questionState?.activeQuestionIndex ?? 0;
-  const activeQuestion = questions[activeQuestionIndex] ?? null;
-  const activeOptions = optionsForPendingQuestion(approval.request, activeQuestion ?? undefined, activeQuestionIndex);
   const activePicks = selectedValuesForQuestion(approval.request, questionState, activeQuestionIndex);
-  const noteHint = isQuestion && activeQuestion
+  const noteHint = isQuestion && activeQuestion && activeAllowsFreeform
     ? notePlaceholder({
         hasOptions: activeOptions.length > 0,
         picks: activePicks,
@@ -239,13 +261,19 @@ export function ApprovalPrompt({
       })
     : null;
   const activeAlreadyBanked = activeQuestion
-    ? Object.prototype.hasOwnProperty.call(questionState?.answers ?? {}, activeQuestion.id)
+    ? isStoredQuestionAnswered(
+        activeQuestion,
+        ownQuestionValue(questionState?.answers, activeQuestion.id),
+      )
     : false;
-  const activeContributes = activePicks.length > 0 || draft.trim().length > 0;
-  const sendHint = isQuestion && activeQuestion
+  const activeContributes = isQuestionAnswered(
+    activePicks,
+    activeAllowsFreeform ? draft : "",
+  );
+  const sendHint = isQuestion && activeQuestion && !activeUnanswerable
     ? sendLabel({
         picks: activePicks,
-        note: draft,
+        note: activeAllowsFreeform ? draft : "",
         isLast: activeQuestionIndex === questions.length - 1,
         totalAnswered: answeredCount + (!activeAlreadyBanked && activeContributes ? 1 : 0),
         totalQuestions: questions.length,
@@ -326,23 +354,31 @@ export function ApprovalPrompt({
       {isQuestion && questions.length ? (
         <Box flexDirection="column" marginTop={1}>
           {questions.map((entry, questionIndex) => {
-            const activeQuestion = (questionState?.activeQuestionIndex ?? 0) === questionIndex;
+            const isActive = (questionState?.activeQuestionIndex ?? 0) === questionIndex;
             const questionOptions = optionsForPendingQuestion(approval.request, entry, questionIndex);
-            const selectedIndex = questionState?.optionIndexByQuestionId[entry.id] ?? 0;
-            const selectedValues = questionState?.selectedValuesByQuestionId[entry.id] ?? [];
-            const answered = Object.prototype.hasOwnProperty.call(questionState?.answers ?? {}, entry.id);
+            const selectedIndex = ownQuestionValue(questionState?.optionIndexByQuestionId, entry.id) ?? 0;
+            const selectedValues = selectedValuesForQuestion(approval.request, questionState, questionIndex);
+            const answered = isStoredQuestionAnswered(
+              entry,
+              ownQuestionValue(questionState?.answers, entry.id),
+            );
             const header = entry.header?.trim() || `Question ${questionIndex + 1}`;
             return (
               <Box key={entry.id} flexDirection="column" marginTop={questionIndex === 0 ? 0 : 1}>
-                <Text color={activeQuestion ? theme.color.violet : theme.color.t3} bold={activeQuestion}>
-                  {`${activeQuestion ? "›" : " "} ${questionIndex + 1}/${questions.length} ${header}${answered ? " ✓" : ""}`}
+                <Text color={isActive ? theme.color.violet : theme.color.t3} bold={isActive}>
+                  {`${isActive ? "›" : " "} ${questionIndex + 1}/${questions.length} ${header}${answered ? " ✓" : ""}`}
                 </Text>
-                <Text color={theme.color.t1} bold={activeQuestion} wrap="truncate-end">
+                <Text color={theme.color.t1} bold={isActive} wrap="truncate-end">
                   {truncateEnd(entry.question, textWidth)}
                 </Text>
                 {entry.impact ? (
                   <Text color={theme.color.t3} dimColor wrap="truncate-end">
                     {truncateEnd(entry.impact, textWidth)}
+                  </Text>
+                ) : null}
+                {entry.defaultAssumption ? (
+                  <Text color={theme.color.t3} dimColor wrap="truncate-end">
+                    {truncateEnd(`Default: ${entry.defaultAssumption}`, textWidth)}
                   </Text>
                 ) : null}
                 {questionOptions.length ? (
@@ -351,8 +387,8 @@ export function ApprovalPrompt({
                       const optionId = `approval:question-option:${questionIndex}:${option.value}:${index}`;
                       const hovered = hoveredId === optionId;
                       const highlighted = index === selectedIndex;
-                      const selected = entry.multiSelect ? selectedValues.includes(option.value) : highlighted;
-                      const active = activeQuestion && (hovered || highlighted);
+                      const selected = selectedValues.includes(option.value);
+                      const active = isActive && (hovered || highlighted);
                       const detail = option.description ? ` - ${option.description}` : "";
                       const line = `${option.label}${detail}`;
                       return (
@@ -361,7 +397,7 @@ export function ApprovalPrompt({
                             <Text color={active ? theme.color.violet : selected ? theme.color.attention2 : theme.color.t4} bold={active}>
                               {entry.multiSelect ? `${selected ? "☑" : "☐"} ` : `${selected ? "●" : "○"} `}
                             </Text>
-                            <Text color={active ? theme.color.violet : theme.color.t2} bold={active} dimColor={!activeQuestion} wrap="truncate-end">
+                            <Text color={active ? theme.color.violet : theme.color.t2} bold={active} dimColor={!isActive} wrap="truncate-end">
                               {truncateEnd(line, Math.max(8, textWidth - 2))}
                             </Text>
                           </Box>
@@ -380,7 +416,9 @@ export function ApprovalPrompt({
                   </Box>
                 ) : (
                   <Text color={theme.color.t3} dimColor>
-                    Type an answer in the prompt.
+                    {entry.allowsFreeform === false
+                      ? pendingQuestionAnswerGuidance(approval.request, entry, questionIndex)
+                      : "Type an answer in the prompt."}
                   </Text>
                 )}
               </Box>

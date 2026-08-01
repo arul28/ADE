@@ -91,6 +91,16 @@ describe("buildAnswers", () => {
     expect(built.one).toEqual(["alpha", "actually beta-ish"]);
     expect(built.one).not.toBe("actually beta-ish");
   });
+
+  it.each(["__proto__", "toString"])(
+    "regression: provider question id %s remains an own serialized answer key",
+    (id) => {
+      const built = buildAnswers([question({ id })], Object.fromEntries([[id, ["safe"]]]), {});
+      expect(Object.prototype.hasOwnProperty.call(built, id)).toBe(true);
+      expect(built[id]).toBe("safe");
+      expect(JSON.parse(JSON.stringify(built))).toEqual({ [id]: "safe" });
+    },
+  );
 });
 
 describe("notePlaceholder", () => {
@@ -181,16 +191,62 @@ describe("sanitizeAnswersForTranscript", () => {
     expect(sanitizeAnswersForTranscript(questions, { token: "hunter2" })).toBeUndefined();
   });
 
+  it("regression: an unknown answer key cannot bypass a secret question id", () => {
+    const questions = [question({ id: "token", isSecret: true })];
+    expect(sanitizeAnswersForTranscript(questions, {
+      response: "sk-live-under-the-wrong-key",
+    })).toBeUndefined();
+  });
+
   it("returns undefined for a decline with no answers", () => {
     expect(sanitizeAnswersForTranscript([question({ id: "a" })], undefined)).toBeUndefined();
     expect(sanitizeAnswersForTranscript([question({ id: "a" })], {})).toBeUndefined();
   });
 
+  // The cap is a BYTE ceiling, not a character count. Measuring String.length
+  // under-counts CJK by 3x and emoji by 4x, which is how a nominal 2 KB cap
+  // persisted 6 KB.
+  const persistedBytes = (value: unknown): number => new TextEncoder().encode(JSON.stringify(value)).length;
+
   it("caps the persisted payload and marks the truncation", () => {
     const questions = [question({ id: "essay" })];
     const sanitized = sanitizeAnswersForTranscript(questions, { essay: "x".repeat(10_000) });
-    expect(JSON.stringify(sanitized).length).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
     expect(String(sanitized?.essay)).toContain(TRUNCATED_ANSWER_MARKER);
+  });
+
+  it("regression: caps multi-byte answers by bytes, not code units", () => {
+    for (const [label, filler] of [["CJK", "中"], ["emoji", "🙂"], ["accented", "é"]] as const) {
+      const sanitized = sanitizeAnswersForTranscript(
+        [question({ id: "essay" })],
+        { essay: filler.repeat(20_000) },
+      );
+      expect(persistedBytes(sanitized), label).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+    }
+  });
+
+  it("regression: never splits a surrogate pair when truncating", () => {
+    const sanitized = sanitizeAnswersForTranscript(
+      [question({ id: "essay" })],
+      { essay: "🙂".repeat(5_000) },
+    );
+    const value = String(sanitized?.essay);
+    // A lone surrogate would survive this round trip as U+FFFD.
+    expect(value).not.toContain("\uFFFD");
+    expect(JSON.parse(JSON.stringify(value))).toBe(value);
+  });
+
+  it("regression: a pathological question id cannot blow the budget", () => {
+    const id = "x".repeat(50_000);
+    const sanitized = sanitizeAnswersForTranscript([question({ id })], { [id]: "short" });
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+  });
+
+  it("regression: many answers stay under the cap in aggregate", () => {
+    const questions = Array.from({ length: 400 }, (_, index) => question({ id: `q${index}` }));
+    const answers = Object.fromEntries(questions.map((entry) => [entry.id, "an answer of some length"]));
+    const sanitized = sanitizeAnswersForTranscript(questions, answers);
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
   });
 
   it("keeps a key for every question when several are oversized", () => {
@@ -200,7 +256,15 @@ describe("sanitizeAnswersForTranscript", () => {
       two: "b".repeat(4000),
     });
     expect(Object.keys(sanitized ?? {})).toEqual(["one", "two"]);
-    expect(JSON.stringify(sanitized).length).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
+  });
+
+  it("caps an oversized array answer too", () => {
+    const questions = [question({ id: "many" })];
+    const sanitized = sanitizeAnswersForTranscript(questions, {
+      many: Array.from({ length: 50 }, () => "中".repeat(500)),
+    });
+    expect(persistedBytes(sanitized)).toBeLessThanOrEqual(RESOLVED_ANSWERS_MAX_BYTES);
   });
 
   it("leaves an in-budget payload untouched", () => {

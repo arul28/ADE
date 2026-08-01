@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { Chat, ChatCircleDots, Check, Prohibit } from "@phosphor-icons/react";
-import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
+import type { PendingInputRequest } from "../../../shared/types";
 import { pendingInputHeaderLabel, providerDisplayName } from "../../../shared/pendingInputLabels";
+import { ownQuestionValue, splitAnswerForQuestion } from "../../../shared/pendingInputAnswers";
 import { cn } from "../ui/cn";
 import {
   CHAT_CARD_MICRO_TEXT,
@@ -30,40 +31,23 @@ import {
  * that event, so it renders as "answer hidden" — the absence is the feature.
  */
 
-/**
- * Split one question's stored answer into the option labels that were picked
- * and the free text that was typed alongside them. Values that match an
- * offered option are picks; anything else is the note, which is exactly the
- * ordering `buildAnswers` guarantees (selection first, note last).
- */
-export function splitAnswerIntoPicksAndNote(
-  question: Pick<PendingInputQuestion, "options">,
-  value: string | string[] | undefined,
-): { picks: string[]; note: string } {
-  const values = Array.isArray(value) ? value : value ? [value] : [];
-  const byValue = new Map((question.options ?? []).map((option) => [option.value, option.label]));
-  const picks: string[] = [];
-  const notes: string[] = [];
-  for (const entry of values) {
-    const label = byValue.get(entry);
-    if (label != null) picks.push(label);
-    else notes.push(entry);
-  }
-  return { picks, note: notes.join(" ") };
-}
-
 function answerSummary(
-  questions: readonly PendingInputQuestion[],
+  request: PendingInputRequest,
   answers: Record<string, string | string[]> | undefined,
 ): string {
   const parts: string[] = [];
-  for (const question of questions) {
+  for (const [questionIndex, question] of request.questions.entries()) {
     if (question.isSecret) {
       parts.push("answer hidden");
       continue;
     }
-    const { picks, note } = splitAnswerIntoPicksAndNote(question, answers?.[question.id]);
-    const first = picks[0] ?? note;
+    const { pickLabels, note } = splitAnswerForQuestion(
+      request,
+      question,
+      questionIndex,
+      ownQuestionValue(answers, question.id),
+    );
+    const first = pickLabels[0] ?? note;
     if (first) parts.push(first);
   }
   return parts.join(" · ");
@@ -84,7 +68,7 @@ export function AnsweredQuestionReceipt({
   const questions = request.questions;
   const provider = providerDisplayName(request.source);
   const label = headerLabel ?? pendingInputHeaderLabel(request.source, request.kind);
-  const summary = resolution === "accepted" ? answerSummary(questions, answers) : "";
+  const summary = resolution === "accepted" ? answerSummary(request, answers) : "";
 
   const meta = resolution === "accepted"
     ? (open ? "hide" : "answered")
@@ -123,24 +107,29 @@ export function AnsweredQuestionReceipt({
           data-testid="answered-question-receipt-detail"
           className="ml-[26px] mt-1 border-l border-white/[0.06] pl-3"
         >
-          {questions.map((question) => {
-            const { picks, note } = question.isSecret
-              ? { picks: [], note: "" }
-              : splitAnswerIntoPicksAndNote(question, answers?.[question.id]);
+          {questions.map((question, questionIndex) => {
+            const { pickLabels, note } = question.isSecret
+              ? { pickLabels: [] as string[], note: "" }
+              : splitAnswerForQuestion(
+                  request,
+                  question,
+                  questionIndex,
+                  ownQuestionValue(answers, question.id),
+                );
             return (
               <div key={question.id} className="py-1">
                 <div className={cn("font-mono font-bold uppercase tracking-[0.16em] text-fg/26", CHAT_CARD_MICRO_TEXT)}>
                   {question.header?.trim() || question.question}
                 </div>
-                {question.isSecret ? (
+                {question.isSecret && resolution === "accepted" ? (
                   <div className="mt-0.5 flex items-center gap-1.5 text-[length:calc(var(--chat-font-size)*12/14)] text-fg/40">
                     <Chat size={11} weight="regular" /> answer hidden
                   </div>
                 ) : (
                   <>
-                    {picks.length ? (
+                    {pickLabels.length ? (
                       <div className="mt-0.5 text-[length:calc(var(--chat-font-size)*12/14)] text-fg/72">
-                        {picks.join(" · ")}
+                        {pickLabels.join(" · ")}
                       </div>
                     ) : null}
                     {note ? (
@@ -148,7 +137,7 @@ export function AnsweredQuestionReceipt({
                         note: “{note}”
                       </div>
                     ) : null}
-                    {!picks.length && !note ? (
+                    {!pickLabels.length && !note ? (
                       <div className="mt-0.5 text-[length:calc(var(--chat-font-size)*12/14)] text-fg/26">
                         {resolution === "accepted" ? "no answer recorded" : "unanswered"}
                       </div>

@@ -639,7 +639,7 @@ that could not work without it.
   semantics](#answer-semantics). Multi-select questions render a toggle ledger
   plus a fixed-height preview pane (sanitised via `ReactMarkdown` +
   `rehype-raw` + `rehype-sanitize` + `remark-gfm`), disclosed by an explicit
-  click rather than hover.
+  click rather than hover or keyboard focus.
 - **Composer lock while pending input is unresolved.** When
   `pendingInput.blocking` is set, the composer hard-locks: the textarea
   / rich editor are disabled, attachment, slash-command, and edit

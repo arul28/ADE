@@ -4,6 +4,7 @@ import type {
   PendingInputQuestion,
   PendingInputRequest,
 } from "../../../shared/types";
+import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { readRecord } from "./chatTranscriptRows";
 
 export type DerivedPendingInput = {
@@ -14,13 +15,6 @@ export type DerivedPendingInput = {
 
 export function getPendingInputQuestionCount(request: PendingInputRequest | null | undefined): number {
   return request?.questions?.length ?? 0;
-}
-
-export function hasPendingInputOptions(request: PendingInputRequest | null | undefined): boolean {
-  if (!request) return false;
-  if (Array.isArray(request.options) && request.options.length > 0) return true;
-  return Array.isArray(request.questions)
-    && request.questions.some((question) => Array.isArray(question.options) && question.options.length > 0);
 }
 
 function readPendingInputOption(value: unknown): PendingInputOption | null {
@@ -56,7 +50,11 @@ function readPendingInputQuestion(value: unknown): PendingInputQuestion | null {
     question,
     ...(typeof record.header === "string" && record.header.trim().length ? { header: record.header.trim() } : {}),
     ...(record.multiSelect === true ? { multiSelect: true } : {}),
-    ...(record.allowsFreeform === true ? { allowsFreeform: true } : {}),
+    // Preserve an explicit `false`. Collapsing it to undefined made "the
+    // provider declined freeform" indistinguishable from "unspecified", and the
+    // composer defaults unspecified to a note row — so we rendered a note field
+    // for a question that refused one and sent text it never agreed to accept.
+    ...(typeof record.allowsFreeform === "boolean" ? { allowsFreeform: record.allowsFreeform } : {}),
     ...(record.isSecret === true ? { isSecret: true } : {}),
     ...(typeof record.defaultAssumption === "string" && record.defaultAssumption.trim().length
       ? { defaultAssumption: record.defaultAssumption.trim() }
@@ -202,8 +200,7 @@ export function derivePendingInputRequests(events: AgentChatEventEnvelope[]): De
       for (const [itemId, entry] of pending) {
         if ((entry.request.turnId ?? null) !== event.turnId) continue;
         const keepAfterCompletedTurn =
-          entry.request.kind === "question"
-          || entry.request.kind === "structured_question"
+          isAskQuestionRequest(entry.request)
           || entry.request.kind === "plan_approval";
         if (!keepAfterCompletedTurn) {
           pending.delete(itemId);

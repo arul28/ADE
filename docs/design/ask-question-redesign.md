@@ -142,8 +142,11 @@ No disabled state, no mode switch.
   current, green = answered) to jump back. `N / M` in the footer.
 - **Previews open on an explicit disclosure click only.** The click neither selects the
   option nor advances the question.
-- **Hover mutates no state.** Preview follows keyboard focus and explicit clicks only.
-  This is half the jitter fix; the other half is the fixed-height preview viewport.
+- **Hover mutates no state.** Preview follows an **explicit disclosure click only** —
+  not keyboard focus. An earlier draft of this section said "keyboard focus and explicit
+  clicks"; that was wrong. Arrow-key navigation opening and closing previews reintroduces
+  exactly the height change that causes the jitter, so focus moves the ring and nothing
+  else. This is half the jitter fix; the other half is the fixed-height preview viewport.
 - **Compare** stays: a fixed-height 2-up split when ≥2 options carry previews.
 - **Keyboard:** `1-9` pick, `↵` next/send, `←→` page, `esc` decline. Already mostly
   present on desktop and in the TUI; keep and make consistent.

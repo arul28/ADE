@@ -6,7 +6,10 @@ import {
   answeredQuestionCount,
   buildAnswers,
   foldedSummary,
+  isQuestionAnswered,
   notePlaceholder,
+  optionsForQuestion,
+  ownQuestionValue,
   sendLabel,
 } from "../../../shared/pendingInputAnswers";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
@@ -195,9 +198,9 @@ function OptionRow({
       {expanded && option.preview ? (
         <div
           data-testid={`ask-question-preview-${questionId}-${option.value}`}
-          /* Fixed viewport with internal scroll: opening a preview changes this
-             element's height by at most nothing, because the space is
-             reserved. */
+          /* The containing option-list viewport reserves its height whenever
+             previews exist. This panel scrolls internally; disclosure changes
+             content inside that fixed viewport, never the composer's height. */
           className={cn("mb-3 ml-[50px] mr-3.5 max-h-[168px] overflow-auto rounded-lg border bg-black/[0.28] px-3 py-2.5", HAIRLINE)}
         >
           <QuestionOptionPreview preview={option.preview} previewFormat={option.previewFormat} />
@@ -231,12 +234,12 @@ export function AskQuestionComposer({
 
   const safePage = Math.min(Math.max(page, 0), Math.max(questions.length - 1, 0));
   const question = questions[safePage];
-  const picks = useMemo(() => (question ? picksById[question.id] ?? [] : []), [picksById, question]);
-  const note = question ? notesById[question.id] ?? "" : "";
+  const picks = useMemo(() => (question ? ownQuestionValue(picksById, question.id) ?? [] : []), [picksById, question]);
+  const note = question ? ownQuestionValue(notesById, question.id) ?? "" : "";
   const isLast = safePage === questions.length - 1;
   const options = useMemo(
-    () => question?.options ?? (safePage === 0 ? request.options ?? [] : []),
-    [question, request.options, safePage],
+    () => optionsForQuestion(request, question, safePage),
+    [question, request, safePage],
   );
 
   const answered = answeredQuestionCount(questions, picksById, notesById);
@@ -248,7 +251,7 @@ export function AskQuestionComposer({
   const toggle = useCallback((value: string) => {
     if (!question) return;
     setPicks((prev) => {
-      const current = prev[question.id] ?? [];
+      const current = ownQuestionValue(prev, question.id) ?? [];
       if (question.multiSelect) {
         return {
           ...prev,
@@ -279,19 +282,33 @@ export function AskQuestionComposer({
      and rendered on its own line rather than floating, so the count can never
      cover a row the user meant to click. */
   const optionsRef = useRef<HTMLDivElement | null>(null);
+  const [optionsNode, setOptionsNode] = useState<HTMLDivElement | null>(null);
   const [hiddenBelow, setHiddenBelow] = useState(0);
   const attachOptions = useCallback((node: HTMLDivElement | null) => {
     optionsRef.current = node;
-    if (!node || typeof window === "undefined") return;
+    setOptionsNode(node);
+  }, []);
+  // An effect rather than work inside the ref callback: the callback's teardown
+  // call passes `null`, so anything registered against the old node has to be
+  // torn down from a closure that still holds it. Registering there once leaked
+  // a live ResizeObserver and scroll listener per resolved question, each still
+  // calling setState on an unmounted tree.
+  useEffect(() => {
+    if (!optionsNode || typeof window === "undefined") return;
     const check = () => {
-      const fold = node.getBoundingClientRect().bottom;
-      const rows = [...node.querySelectorAll("[data-ask-question-option-row]")];
+      const fold = optionsNode.getBoundingClientRect().bottom;
+      const rows = [...optionsNode.querySelectorAll("[data-ask-question-option-row]")];
       setHiddenBelow(rows.filter((row) => row.getBoundingClientRect().top >= fold - 4).length);
     };
     check();
-    node.addEventListener("scroll", check, { passive: true });
-    if (typeof ResizeObserver !== "undefined") new ResizeObserver(check).observe(node);
-  }, []);
+    optionsNode.addEventListener("scroll", check, { passive: true });
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(check) : null;
+    observer?.observe(optionsNode);
+    return () => {
+      optionsNode.removeEventListener("scroll", check);
+      observer?.disconnect();
+    };
+  }, [optionsNode, options, question?.id]);
 
   const previewable = options.filter((option) => option.preview);
   const canCompare = previewable.length >= 2;
@@ -322,7 +339,12 @@ export function AskQuestionComposer({
         : Math.max(prev - 1, 0)));
       return;
     }
-    if (event.key === "Enter" && !event.shiftKey) {
+    // `!inField` is load-bearing, not symmetry with the branches above: the note
+    // input handles its own Enter, and `preventDefault` does not stop
+    // propagation — without this guard the same keystroke advances twice and
+    // sends two `chat.respondToInput` for one itemId (Codex answers the second
+    // with "That request is no longer active"; OpenCode throws).
+    if (event.key === "Enter" && !event.shiftKey && !inField) {
       event.preventDefault();
       if (isLast ? canSend : canProceed) advance();
     }
@@ -385,8 +407,10 @@ export function AskQuestionComposer({
         {questions.length > 1 ? (
           <span role="tablist" aria-label="Questions" className="flex items-center gap-1.5">
             {questions.map((entry, index) => {
-              const entryAnswered = (picksById[entry.id]?.length ?? 0) > 0
-                || (notesById[entry.id] ?? "").trim().length > 0;
+              const entryAnswered = isQuestionAnswered(
+                ownQuestionValue(picksById, entry.id) ?? [],
+                ownQuestionValue(notesById, entry.id) ?? "",
+              );
               return (
                 <button
                   key={entry.id}
@@ -448,6 +472,16 @@ export function AskQuestionComposer({
           {request.description}
         </div>
       ) : null}
+      {question.impact ? (
+        <div data-testid="ask-question-impact" className="-mt-1.5 px-3.5 pb-2.5 text-[length:calc(var(--chat-font-size)*11.5/14)] leading-relaxed text-fg/55">
+          {question.impact}
+        </div>
+      ) : null}
+      {question.defaultAssumption ? (
+        <div data-testid="ask-question-default-assumption" className="-mt-1 px-3.5 pb-2.5 text-[length:calc(var(--chat-font-size)*10.5/14)] text-fg/40">
+          Default: {question.defaultAssumption}
+        </div>
+      ) : null}
       {question.multiSelect ? (
         <div className={cn("mx-3.5 mb-2.5 inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/40", HAIRLINE)}>
           <ListChecks size={10} weight="bold" /> Pick all that apply
@@ -455,61 +489,71 @@ export function AskQuestionComposer({
       ) : null}
 
       <div className={cn("border-t", HAIRLINE)}>
-        {/* Only this region scrolls. Note row and footer stay pinned below it. */}
         <div
-          ref={attachOptions}
-          role={question.multiSelect ? "group" : "radiogroup"}
-          aria-label={question.question}
-          data-testid={`ask-question-options-${question.id}`}
-          className="overflow-y-auto overscroll-contain"
-          style={{ maxHeight: optionsMaxHeight }}
+          data-testid={`ask-question-options-viewport-${question.id}`}
+          className={previewable.length ? "flex flex-col" : undefined}
+          /* Preview disclosure can also make the "N more" affordance appear.
+             Keep the list and that row inside one fixed wrapper so either one
+             may resize internally without changing the composer. Questions
+             without previews keep their natural short-list height. */
+          style={previewable.length ? { height: optionsMaxHeight } : undefined}
         >
-          {options.map((option, index) => (
-            <OptionRow
-              key={option.value}
-              index={index}
-              option={option}
-              questionId={question.id}
-              multi={question.multiSelect === true}
-              checked={picks.includes(option.value)}
-              expanded={openPreview === option.value && !comparing}
-              disabled={responding}
-              onToggle={() => toggle(option.value)}
-              onTogglePreview={() => setOpenPreview((prev) => (prev === option.value ? null : option.value))}
-            />
-          ))}
-          {comparing && comparePair.length === 2 ? (
-            <div
-              data-testid="ask-question-compare"
-              className={cn("m-3 ml-[50px] grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-[color:color-mix(in_srgb,white_6.5%,transparent)]", HAIRLINE)}
+          {/* Only this region scrolls. Note row and footer stay pinned below it. */}
+          <div
+            ref={attachOptions}
+            role={question.multiSelect ? "group" : "radiogroup"}
+            aria-label={question.question}
+            data-testid={`ask-question-options-${question.id}`}
+            className={cn("overflow-y-auto overscroll-contain", previewable.length ? "min-h-0 flex-1" : null)}
+            style={previewable.length ? undefined : { maxHeight: optionsMaxHeight }}
+          >
+            {options.map((option, index) => (
+              <OptionRow
+                key={option.value}
+                index={index}
+                option={option}
+                questionId={question.id}
+                multi={question.multiSelect === true}
+                checked={picks.includes(option.value)}
+                expanded={openPreview === option.value && !comparing}
+                disabled={responding}
+                onToggle={() => toggle(option.value)}
+                onTogglePreview={() => setOpenPreview((prev) => (prev === option.value ? null : option.value))}
+              />
+            ))}
+            {comparing && comparePair.length === 2 ? (
+              <div
+                data-testid="ask-question-compare"
+                className={cn("m-3 ml-[50px] grid grid-cols-2 gap-px overflow-hidden rounded-lg border bg-[color:color-mix(in_srgb,white_6.5%,transparent)]", HAIRLINE)}
+              >
+                {comparePair.map((option) => (
+                  <div key={option.value} className="min-w-0 bg-black/[0.28]">
+                    <div className={cn("truncate border-b px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.13em] text-fg/26", HAIRLINE)}>
+                      {option.label}
+                    </div>
+                    <div className="max-h-[140px] overflow-auto px-2.5 py-2">
+                      <QuestionOptionPreview preview={option.preview ?? ""} previewFormat={option.previewFormat} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </div>
+
+          {hiddenBelow > 0 ? (
+            <button
+              type="button"
+              data-testid="ask-question-more-options"
+              onClick={() => optionsRef.current?.scrollBy({
+                top: optionsRef.current.clientHeight - 40,
+                behavior: "smooth",
+              })}
+              className={cn("block w-full flex-none border-t py-1.5 pl-[50px] pr-3.5 text-left font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-[0.14em] text-fg/26 transition-colors hover:bg-white/[0.03] hover:text-fg/62", HAIRLINE)}
             >
-              {comparePair.map((option) => (
-                <div key={option.value} className="min-w-0 bg-black/[0.28]">
-                  <div className={cn("truncate border-b px-2.5 py-1.5 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.13em] text-fg/26", HAIRLINE)}>
-                    {option.label}
-                  </div>
-                  <div className="max-h-[140px] overflow-auto px-2.5 py-2">
-                    <QuestionOptionPreview preview={option.preview ?? ""} previewFormat={option.previewFormat} />
-                  </div>
-                </div>
-              ))}
-            </div>
+              ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
+            </button>
           ) : null}
         </div>
-
-        {hiddenBelow > 0 ? (
-          <button
-            type="button"
-            data-testid="ask-question-more-options"
-            onClick={() => optionsRef.current?.scrollBy({
-              top: optionsRef.current.clientHeight - 40,
-              behavior: "smooth",
-            })}
-            className={cn("block w-full border-t py-1.5 pl-[50px] pr-3.5 text-left font-mono text-[length:calc(var(--chat-font-size)*9.5/14)] font-bold uppercase tracking-[0.14em] text-fg/26 transition-colors hover:bg-white/[0.03] hover:text-fg/62", HAIRLINE)}
-          >
-            ⌄ {hiddenBelow} more {hiddenBelow === 1 ? "option" : "options"}
-          </button>
-        ) : null}
 
         {question.allowsFreeform !== false ? (
           <div className={cn("grid grid-cols-[26px_minmax(0,1fr)] items-center gap-2.5 border-t px-3.5 py-1", HAIRLINE)}>

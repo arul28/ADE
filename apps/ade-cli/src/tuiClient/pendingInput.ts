@@ -4,7 +4,13 @@ import type {
   PendingInputQuestion,
   PendingInputRequest,
 } from "../../../desktop/src/shared/types/chat";
-import { buildAnswers } from "../../../desktop/src/shared/pendingInputAnswers";
+import {
+  buildAnswers,
+  isAskQuestionRequest,
+  isStoredQuestionAnswered,
+  optionsForQuestion,
+  ownQuestionValue,
+} from "../../../desktop/src/shared/pendingInputAnswers";
 import { renderObject } from "./format";
 import type { PendingApproval } from "./types";
 
@@ -30,7 +36,9 @@ function requestFromApprovalEvent(event: Record<string, unknown>): PendingInputR
 }
 
 function isApprovalMode(request: PendingInputRequest | undefined): boolean {
-  return !request || request.kind === "approval" || request.kind === "permissions" || request.kind === "plan_approval";
+  // The inverse of the shared question-kind rule, so the TUI cannot decide
+  // "this is a question" differently from the desktop composer.
+  return !request || !isAskQuestionRequest(request);
 }
 
 export function latestPendingApproval(events: AgentChatEventEnvelope[]): PendingApproval | null {
@@ -71,29 +79,29 @@ function optionMatches(input: string, option: PendingInputOption, index: number)
     || normalized === option.label.toLowerCase();
 }
 
-export function answerForQuestion(question: PendingInputQuestion, text: string): string | string[] {
-  const trimmed = text.trim();
-  if (!question.options?.length) return trimmed;
-  const values = trimmed.split(",").map((entry) => entry.trim()).filter(Boolean);
-  const matched = values.map((value) => {
-    const option = question.options?.find((candidate, index) => optionMatches(value, candidate, index));
-    return option?.value ?? value;
-  });
-  if (question.multiSelect) return matched;
-  return matched[0] ?? trimmed;
-}
-
 export type PendingQuestionSelectionState = {
   itemId: string;
   activeQuestionIndex: number;
   answers: Record<string, string | string[]>;
   optionIndexByQuestionId: Record<string, number>;
   selectedValuesByQuestionId: Record<string, string[]>;
+  /**
+   * Questions whose highlight the user has actually moved or picked.
+   *
+   * `optionIndexByQuestionId` is seeded with a default (the recommended option,
+   * else the first) so the list opens with a cursor somewhere. That cursor is
+   * NOT an answer: preselecting the recommended option was considered and
+   * explicitly dropped (spec section 6), so a seeded index must never travel in
+   * a payload. Only an index the user moved to — or a multi-select value they
+   * toggled — counts as a pick.
+   */
+  touchedQuestionIds: Record<string, true>;
   pendingDigitSelection: {
     questionId: string;
     digit: string;
     previousOptionIndex: number;
     previousSelectedValues: string[];
+    previousTouched: boolean;
   } | null;
 };
 
@@ -101,14 +109,25 @@ export function optionsForPendingQuestion(
   request: PendingInputRequest | undefined,
   question: PendingInputQuestion | undefined,
   questionIndex: number,
-): PendingInputOption[] {
-  if (question?.options?.length) return question.options;
-  // Only the first question inherits the request-level `options` fallback (the
-  // legacy single-question shape); later questions must carry their own options.
-  return questionIndex === 0 ? request?.options ?? [] : [];
+): readonly PendingInputOption[] {
+  return optionsForQuestion(request, question, questionIndex);
 }
 
-function defaultOptionIndex(options: PendingInputOption[]): number {
+/** Guidance when the active question still has no answer to submit. */
+export function pendingQuestionAnswerGuidance(
+  request: PendingInputRequest | undefined,
+  question: PendingInputQuestion | undefined,
+  questionIndex: number,
+): string {
+  if (question?.allowsFreeform !== false) return "Type an answer in the prompt for this question.";
+  if (optionsForPendingQuestion(request, question, questionIndex).length > 0) {
+    return "Select one of the offered options.";
+  }
+  if (question.defaultAssumption?.trim()) return "Press Enter to use the default assumption.";
+  return "No answer options are available. Decline this request.";
+}
+
+function defaultOptionIndex(options: readonly PendingInputOption[]): number {
   if (!options.length) return -1;
   const recommendedIndex = options.findIndex((option) => option.recommended);
   return recommendedIndex >= 0 ? recommendedIndex : 0;
@@ -121,16 +140,17 @@ export function createPendingQuestionSelectionState(
   const request = approval.request;
   const questions = request?.questions ?? [];
   if (!questions.length) return null;
-  const optionIndexByQuestionId: Record<string, number> = {};
+  const optionIndexByQuestionId = Object.create(null) as Record<string, number>;
   questions.forEach((question, index) => {
     optionIndexByQuestionId[question.id] = defaultOptionIndex(optionsForPendingQuestion(request, question, index));
   });
   return {
     itemId: approval.itemId,
     activeQuestionIndex: 0,
-    answers: {},
+    answers: Object.create(null) as Record<string, string | string[]>,
     optionIndexByQuestionId,
-    selectedValuesByQuestionId: {},
+    selectedValuesByQuestionId: Object.create(null) as Record<string, string[]>,
+    touchedQuestionIds: Object.create(null) as Record<string, true>,
     pendingDigitSelection: null,
   };
 }
@@ -144,6 +164,7 @@ export function ensurePendingQuestionSelectionState(
     return {
       ...previous,
       selectedValuesByQuestionId: previous.selectedValuesByQuestionId ?? {},
+      touchedQuestionIds: previous.touchedQuestionIds ?? {},
       pendingDigitSelection: previous.pendingDigitSelection ?? null,
     };
   }
@@ -154,7 +175,13 @@ export function pendingQuestionAnsweredCount(
   request: PendingInputRequest | undefined,
   answers: Record<string, string | string[]>,
 ): number {
-  return (request?.questions ?? []).filter((question) => Object.prototype.hasOwnProperty.call(answers, question.id)).length;
+  // Routed through the shared predicate so "2 of 3 answered" cannot mean one
+  // thing here and another on desktop. A banked answer counts when it actually
+  // carries a pick or a note, not merely because its key exists.
+  return (request?.questions ?? []).filter((question) => isStoredQuestionAnswered(
+    question,
+    ownQuestionValue(answers, question.id),
+  )).length;
 }
 
 export function pendingQuestionSelectionValue(
@@ -166,10 +193,10 @@ export function pendingQuestionSelectionValue(
   if (!question) return null;
   const options = optionsForPendingQuestion(request, question, questionIndex);
   if (question.multiSelect) {
-    const selectedValues = state.selectedValuesByQuestionId[question.id] ?? [];
+    const selectedValues = ownQuestionValue(state.selectedValuesByQuestionId, question.id) ?? [];
     return selectedValues.length ? selectedValues : null;
   }
-  const selectedIndex = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const selectedIndex = ownQuestionValue(state.optionIndexByQuestionId, question.id) ?? defaultOptionIndex(options);
   const option = options[selectedIndex] ?? null;
   return option?.value ?? question.defaultAssumption ?? null;
 }
@@ -191,6 +218,9 @@ export function setPendingQuestionOptionIndex(
       ...state.optionIndexByQuestionId,
       [question.id]: clamped,
     },
+    // Moving the cursor is the user touching this question; from here its
+    // highlight is a real selection rather than the seeded default.
+    touchedQuestionIds: { ...state.touchedQuestionIds, [question.id]: true },
   };
 }
 
@@ -207,7 +237,7 @@ export function selectPendingQuestionOptionIndex(
   const clamped = Math.max(0, Math.min(options.length - 1, optionIndex));
   const option = options[clamped];
   if (!option) return highlighted;
-  const current = highlighted.selectedValuesByQuestionId[question.id] ?? [];
+  const current = ownQuestionValue(highlighted.selectedValuesByQuestionId, question.id) ?? [];
   const toggled = current.includes(option.value)
     ? current.filter((value) => value !== option.value)
     : [...current, option.value];
@@ -218,6 +248,7 @@ export function selectPendingQuestionOptionIndex(
       ...highlighted.selectedValuesByQuestionId,
       [question.id]: ordered,
     },
+    touchedQuestionIds: { ...highlighted.touchedQuestionIds, [question.id]: true },
   };
 }
 
@@ -234,8 +265,9 @@ export function selectPendingQuestionDigit(
   const optionIndex = Number(digit) - 1;
   if (!options[optionIndex]) return { state, selected: false };
   const baseline = restorePendingQuestionDigitSelection(state);
-  const previousOptionIndex = baseline.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
-  const previousSelectedValues = [...(baseline.selectedValuesByQuestionId[question.id] ?? [])];
+  const previousOptionIndex = ownQuestionValue(baseline.optionIndexByQuestionId, question.id) ?? defaultOptionIndex(options);
+  const previousSelectedValues = [...(ownQuestionValue(baseline.selectedValuesByQuestionId, question.id) ?? [])];
+  const previousTouched = ownQuestionValue(baseline.touchedQuestionIds, question.id) === true;
   const next = question.multiSelect
     ? selectPendingQuestionOptionIndex(request, baseline, optionIndex)
     : setPendingQuestionOptionIndex(request, baseline, optionIndex);
@@ -248,6 +280,7 @@ export function selectPendingQuestionDigit(
         digit,
         previousOptionIndex,
         previousSelectedValues,
+        previousTouched,
       },
     },
   };
@@ -285,7 +318,7 @@ export function movePendingQuestionOption(
   if (!question) return state;
   const options = optionsForPendingQuestion(request, question, state.activeQuestionIndex);
   if (!options.length) return state;
-  const current = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  const current = ownQuestionValue(state.optionIndexByQuestionId, question.id) ?? defaultOptionIndex(options);
   const next = (current + delta + options.length) % options.length;
   return setPendingQuestionOptionIndex(request, state, next);
 }
@@ -307,9 +340,12 @@ export function movePendingQuestionFocus(
  * The values the user has actually marked for a question, in the order the
  * options were offered.
  *
- * For a multi-select that is the toggled set; for a single-select it is the
- * highlighted row, which in this TUI *is* the selection — arrow keys move it
- * and Enter sends it.
+ * For a multi-select that is the toggled set. For a single-select it is the
+ * highlighted row — but only once the user has moved or picked it. A list opens
+ * with its cursor on the recommended option; treating that seeded cursor as an
+ * answer would attach a phantom pick to every free-text reply ("neither, squash
+ * it" arriving as *rebase, with a caveat*), which is both the divergence class
+ * this module exists to end and a behaviour spec section 6 explicitly dropped.
  */
 export function selectedValuesForQuestion(
   request: PendingInputRequest | undefined,
@@ -321,10 +357,11 @@ export function selectedValuesForQuestion(
   const options = optionsForPendingQuestion(request, question, questionIndex);
   if (!options.length) return [];
   if (question.multiSelect) {
-    const selected = state.selectedValuesByQuestionId[question.id] ?? [];
+    const selected = ownQuestionValue(state.selectedValuesByQuestionId, question.id) ?? [];
     return options.map((option) => option.value).filter((value) => selected.includes(value));
   }
-  const index = state.optionIndexByQuestionId[question.id] ?? defaultOptionIndex(options);
+  if (ownQuestionValue(state.touchedQuestionIds, question.id) !== true) return [];
+  const index = ownQuestionValue(state.optionIndexByQuestionId, question.id) ?? defaultOptionIndex(options);
   const option = options[index];
   return option ? [option.value] : [];
 }
@@ -339,30 +376,56 @@ export function selectedValuesForQuestion(
  */
 function foldTypedAnswer(
   question: PendingInputQuestion,
-  options: PendingInputOption[],
+  options: readonly PendingInputOption[],
   picks: string[],
   typed: string,
 ): { picks: string[]; note: string } {
   const trimmed = typed.trim();
   if (!trimmed.length) return { picks, note: "" };
-  if (!options.length) return { picks, note: trimmed };
-  const resolved = answerForQuestion(question, trimmed);
-  const values = Array.isArray(resolved) ? resolved : [resolved];
-  const optionValues = new Set(options.map((option) => option.value));
-  const typedPicks = values.filter((value) => optionValues.has(value));
-  const residue = values.filter((value) => !optionValues.has(value));
-  if (!typedPicks.length) return { picks, note: residue.join(", ") };
-  const merged = question.multiSelect
-    ? options.map((option) => option.value).filter((value) => picks.includes(value) || typedPicks.includes(value))
-    : typedPicks.slice(0, 1);
-  return { picks: merged, note: residue.join(", ") };
+  if (!options.length) return { picks, note: question.allowsFreeform === false ? "" : trimmed };
+
+  // Whole-string match first: `2`, `manual`, or `Manual` is a pick.
+  const whole = options.find((option, index) => optionMatches(trimmed, option, index));
+  if (whole) {
+    const merged = question.multiSelect
+      ? options.map((option) => option.value).filter((value) => picks.includes(value) || value === whole.value)
+      : [whole.value];
+    return { picks: merged, note: "" };
+  }
+
+  // Only a multi-select comma-splits, because only there does a comma mean "and
+  // also". For a single-select the text is prose and must survive verbatim:
+  // splitting it would truncate "neither, squash it" to "neither" and send the
+  // user a different answer than the one they typed.
+  if (!question.multiSelect) {
+    return { picks, note: question.allowsFreeform === false ? "" : trimmed };
+  }
+
+  const segments = trimmed.split(",").map((segment) => segment.trim()).filter(Boolean);
+  const typedPicks: string[] = [];
+  const residue: string[] = [];
+  for (const segment of segments) {
+    const match = options.find((option, index) => optionMatches(segment, option, index));
+    if (match) typedPicks.push(match.value);
+    else residue.push(segment);
+  }
+  if (!typedPicks.length) {
+    return { picks, note: question.allowsFreeform === false ? "" : trimmed };
+  }
+  const merged = options
+    .map((option) => option.value)
+    .filter((value) => picks.includes(value) || typedPicks.includes(value));
+  return {
+    picks: merged,
+    note: question.allowsFreeform === false ? "" : residue.join(", "),
+  };
 }
 
 /**
  * The answer payload for `chat.respondToInput`.
  *
- * This used to hand the typed text straight to `answerForQuestion` and return
- * it as the whole answer, so a note the user typed alongside a selection threw
+ * This used to treat the typed text as the whole answer, so a note the user
+ * typed alongside a selection threw
  * that selection away — the exact divergence
  * `shared/pendingInputAnswers.buildAnswers` exists to end. Both travel now,
  * selection values first and the note last, identically to desktop and the web
@@ -372,17 +435,31 @@ export function buildPendingInputAnswers(
   request: PendingInputRequest | undefined,
   text: string,
   state?: PendingQuestionSelectionState | null,
+  /**
+   * Restrict the payload to a single question, identified by its index in the
+   * request. Callers used to fabricate a synthetic one-question request to get
+   * this, which meant re-deriving the "only question 0 inherits
+   * request.options" rule at the call site — the exact kind of private copy
+   * this module exists to prevent.
+   */
+  onlyQuestionIndex?: number,
 ): Record<string, string | string[]> | undefined {
-  const questions = request?.questions ?? [];
+  const allQuestions = request?.questions ?? [];
+  const questions = onlyQuestionIndex == null
+    ? allQuestions
+    : allQuestions[onlyQuestionIndex] ? [allQuestions[onlyQuestionIndex]!] : [];
   if (questions.length === 0) return undefined;
   const lines = questions.length > 1
     ? text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
     : [];
-  const picksById: Record<string, string[]> = {};
-  const notesById: Record<string, string> = {};
-  questions.forEach((question, index) => {
+  const picksById = Object.create(null) as Record<string, string[]>;
+  const notesById = Object.create(null) as Record<string, string>;
+  questions.forEach((question, offset) => {
+    // Index within the REQUEST, not within the slice — the options fallback and
+    // the selection state are both keyed off the real position.
+    const index = onlyQuestionIndex ?? offset;
     const options = optionsForPendingQuestion(request, question, index);
-    const typed = questions.length === 1 ? text : lines[index] ?? text;
+    const typed = questions.length === 1 ? text : lines[offset] ?? text;
     const folded = foldTypedAnswer(
       question,
       options,
@@ -414,10 +491,16 @@ function restorePendingQuestionDigitSelection(state: PendingQuestionSelectionSta
   } else {
     delete selectedValuesByQuestionId[pending.questionId];
   }
+  // Rolling the digit back rolls the touch back with it: `2` followed by more
+  // characters was never a pick, so it must not leave one behind.
+  const touchedQuestionIds = { ...state.touchedQuestionIds };
+  if (pending.previousTouched) touchedQuestionIds[pending.questionId] = true;
+  else delete touchedQuestionIds[pending.questionId];
   return {
     ...state,
     optionIndexByQuestionId,
     selectedValuesByQuestionId,
+    touchedQuestionIds,
     pendingDigitSelection: null,
   };
 }

@@ -65,6 +65,19 @@ describe("AskQuestionComposer rendering", () => {
     expect(screen.getByTestId("ask-question-option-plan_choice-merge")).toBeTruthy();
   });
 
+  it("regression: preserves impact and the default assumption in the composer", () => {
+    renderComposer(buildRequest([
+      planQuestion({
+        impact: "This changes every existing lane.",
+        defaultAssumption: "Keep the current lane layout.",
+      }),
+    ]));
+
+    expect(screen.getByTestId("ask-question-impact").textContent).toContain("changes every existing lane");
+    expect(screen.getByTestId("ask-question-default-assumption").textContent)
+      .toContain("Default: Keep the current lane layout.");
+  });
+
   it("preserves exact structured option values when submitting", () => {
     const { onSubmit } = renderComposer(buildRequest([
       planQuestion({ options: [{ label: "  Rebase  ", value: " rebase " }], allowsFreeform: false }),
@@ -74,6 +87,32 @@ describe("AskQuestionComposer rendering", () => {
     fireEvent.click(screen.getByTestId("ask-question-send"));
     expect(onSubmit).toHaveBeenCalledWith({ plan_choice: " rebase " });
   });
+
+  it("regression: uses legacy request-level options when the first question has none", () => {
+    const { onSubmit } = renderComposer(buildRequest(
+      [planQuestion({ options: [], allowsFreeform: false })],
+      { options: [{ label: "Rebase", value: "rebase" }] },
+    ));
+
+    fireEvent.click(screen.getByTestId("ask-question-option-plan_choice-rebase"));
+    fireEvent.click(screen.getByTestId("ask-question-send"));
+    expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "rebase" });
+  });
+
+  it.each(["__proto__", "toString"])(
+    "regression: provider question id %s cannot collide with object state",
+    (id) => {
+      const { onSubmit } = renderComposer(buildRequest([
+        planQuestion({ id, allowsFreeform: false }),
+      ]));
+
+      fireEvent.click(screen.getByTestId(`ask-question-option-${id}-rebase`));
+      fireEvent.click(screen.getByTestId("ask-question-send"));
+      const answers = vi.mocked(onSubmit).mock.calls[0]?.[0];
+      expect(Object.prototype.hasOwnProperty.call(answers, id)).toBe(true);
+      expect(answers?.[id]).toBe("rebase");
+    },
+  );
 });
 
 describe("AskQuestionComposer answer semantics", () => {
@@ -216,6 +255,16 @@ describe("AskQuestionComposer previews", () => {
     expect(onSubmit).not.toHaveBeenCalled();
   });
 
+  it("regression: reserves a fixed option viewport before preview disclosure", () => {
+    renderComposer(strategyRequest);
+    const viewport = screen.getByTestId("ask-question-options-viewport-strategy");
+    const heightBefore = viewport.style.height;
+
+    expect(heightBefore).not.toBe("");
+    fireEvent.click(screen.getByTestId("ask-question-preview-toggle-strategy-squash"));
+    expect(viewport.style.height).toBe(heightBefore);
+  });
+
   // Bug 3. Hover used to set the focused option, which swapped the preview,
   // which changed the card height, which made the virtualizer re-measure and
   // reconcile scroll — so the row walked out from under the cursor.
@@ -285,6 +334,33 @@ describe("AskQuestionComposer keyboard", () => {
 
     fireEvent.keyDown(card, { key: "Enter" });
     expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "rebase" });
+  });
+
+  // B1. The note input handles its own Enter; `preventDefault` does not stop
+  // propagation, so an unguarded root handler ran `advance()` a second time in
+  // the same dispatch — two chat.respondToInput for one itemId.
+  it("regression: Enter in the note field submits exactly once", () => {
+    const { onSubmit } = renderComposer(buildRequest([planQuestion()]));
+
+    fireEvent.change(screen.getByTestId("ask-question-note-plan_choice"), { target: { value: "just this" } });
+    fireEvent.keyDown(screen.getByTestId("ask-question-note-plan_choice"), { key: "Enter" });
+
+    expect(onSubmit).toHaveBeenCalledTimes(1);
+    expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "just this" });
+  });
+
+  it("regression: Enter in the note field advances a paged set exactly once", () => {
+    const { onSubmit } = renderComposer(buildRequest([
+      planQuestion(),
+      { id: "scope", header: "Scope", question: "How wide?", allowsFreeform: true },
+    ]));
+
+    fireEvent.change(screen.getByTestId("ask-question-note-plan_choice"), { target: { value: "rebase-ish" } });
+    fireEvent.keyDown(screen.getByTestId("ask-question-note-plan_choice"), { key: "Enter" });
+
+    // One advance, not two: we land on question 2, not past the end.
+    expect(screen.getByText("How wide?")).toBeTruthy();
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("escape declines", () => {
@@ -373,6 +449,55 @@ describe("AskQuestionComposer minimize", () => {
     fireEvent.click(screen.getByTestId("ask-question-composer-folded").querySelector("button")!);
     fireEvent.click(screen.getByTestId("ask-question-send"));
     expect(onSubmit).toHaveBeenCalledWith({ plan_choice: "rebase" });
+  });
+});
+
+describe("AskQuestionComposer teardown", () => {
+  // The ref callback's teardown call passes null, so anything registered
+  // against the old node has to be disconnected from a closure that still holds
+  // it. Registering in the callback leaked a live ResizeObserver and scroll
+  // listener per resolved question, each still calling setState on an unmounted
+  // tree.
+  it("regression: disconnects its observers on unmount", () => {
+    const disconnect = vi.fn();
+    const observe = vi.fn();
+    const original = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class {
+      observe = observe;
+      disconnect = disconnect;
+      unobserve = vi.fn();
+    } as unknown as typeof ResizeObserver;
+
+    try {
+      const view = render(
+        <AskQuestionComposer
+          request={buildRequest([planQuestion()])}
+          onSubmit={vi.fn()}
+          onDecline={vi.fn()}
+        />,
+      );
+      expect(observe).toHaveBeenCalled();
+      view.unmount();
+      expect(disconnect).toHaveBeenCalled();
+    } finally {
+      globalThis.ResizeObserver = original;
+    }
+  });
+});
+
+describe("AskQuestionComposer freeform opt-out", () => {
+  // A provider that declined freeform must not be shown a note field, or we
+  // send it text it never agreed to accept.
+  it("regression: renders no note row when allowsFreeform is explicitly false", () => {
+    renderComposer(buildRequest([planQuestion({ allowsFreeform: false })]));
+    expect(screen.queryByTestId("ask-question-note-plan_choice")).toBeNull();
+  });
+
+  it("renders the note row when allowsFreeform is unspecified", () => {
+    const question = planQuestion();
+    delete (question as { allowsFreeform?: boolean }).allowsFreeform;
+    renderComposer(buildRequest([question]));
+    expect(screen.getByTestId("ask-question-note-plan_choice")).toBeTruthy();
   });
 });
 

@@ -1428,6 +1428,58 @@ describe("AgentChatComposer", () => {
     expect(screen.queryByText(/Answer in the inline question card/)).toBeNull();
   });
 
+  // A question whose questions all fail to parse (readPendingInputQuestion drops
+  // empty text, so a whitespace-only askUser produces this) renders no card —
+  // and composerInputLocked is already true. Without a Decline that is a dead
+  // composer with no way out: the exact failure this redesign removes.
+  it("regression: a question with no parsable questions still offers a Decline", () => {
+    const props = renderComposer({
+      pendingInput: {
+        requestId: "req-empty",
+        itemId: "item-empty",
+        source: "claude",
+        kind: "question",
+        title: "Input needed",
+        description: "The agent asked something unparseable.",
+        questions: [],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.queryByTestId("ask-question-composer")).toBeNull();
+    const decline = screen.getByTestId("pending-input-fallback-decline");
+    expect(decline).toBeTruthy();
+    fireEvent.click(decline);
+    expect(props.onApproval).toHaveBeenCalledWith("decline");
+  });
+
+  // Hiding the model/permission/effort row is the point; hiding the whole
+  // footer took the only mid-turn interrupt with it.
+  it("regression: the turn stop control survives a question gate", () => {
+    renderComposer({
+      turnActive: true,
+      pendingInput: {
+        requestId: "req-stop",
+        itemId: "item-stop",
+        source: "claude",
+        kind: "question",
+        title: "Input needed",
+        description: "What next?",
+        questions: [{ id: "answer", header: "Q", question: "What next?", allowsFreeform: true }],
+        allowsFreeform: true,
+        blocking: true,
+        canProceedWithoutAnswer: false,
+        turnId: null,
+      },
+    });
+
+    expect(screen.getByTestId("ask-question-composer")).toBeTruthy();
+    expect(screen.getByLabelText(/stop/i)).toBeTruthy();
+  });
+
   it("locks the prompt box while a pending question is waiting", () => {
     const props = renderComposer({
       pendingInput: {

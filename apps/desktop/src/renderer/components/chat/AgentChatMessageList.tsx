@@ -72,7 +72,6 @@ import { ChatAttachmentTray } from "./ChatAttachmentTray";
 import { getToolMeta } from "./chatToolAppearance";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo } from "../terminals/ToolLogos";
 import { ModelRowLogo, ProviderLogo } from "../shared/ProviderLogos";
-import { ChatMarkdown } from "./chatMarkdown";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
 import type { ChatSubagentSnapshot } from "./chatExecutionSummary";
 import {
@@ -128,8 +127,8 @@ import {
   resolveRowAnchorAtScrollTop,
 } from "./chatUserMinimap.logic";
 import { readPendingInputRequest, buildLegacyPendingInputFromApprovalEvent } from "./pendingInput";
-import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./AnsweredQuestionReceipt";
-import type { PendingInputQuestion, PendingInputRequest } from "../../../shared/types";
+import { AnsweredQuestionReceipt, OpenQuestionReceipt } from "./QuestionReceipts";
+import { isAskQuestionRequest } from "../../../shared/pendingInputAnswers";
 import { CodexPlanCard } from "./codex/CodexPlanCard";
 import { CodexImageGenerationCard } from "./codex/CodexImageGenerationCard";
 import { CodexImageViewLine } from "./codex/CodexImageViewLine";
@@ -3725,7 +3724,7 @@ function renderEvent(
     const detailTool = typeof detail?.tool === "string" ? detail.tool.trim() : "";
     const question = typeof detail?.question === "string" ? detail.question.trim() : "";
     const normalizedTool = detailTool.toLowerCase();
-    const isQuestionRequest = requestKind === "question" || requestKind === "structured_question";
+    const isQuestionRequest = isAskQuestionRequest({ kind: requestKind });
     const isPermissionRequest = requestKind === "permissions";
     const isPlanApproval = requestKind === "plan_approval";
     const isAskUser = ((normalizedTool === "askuser" || normalizedTool === "ask_user") && question.length > 0) || isQuestionRequest;
