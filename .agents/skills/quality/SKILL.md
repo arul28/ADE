@@ -121,8 +121,9 @@ are handled by the synthesis step below, not a separate phase.
    do it here, in this run, not "as a follow-up".
 7. **Re-review until clean.** If step 6 changed code, re-run Track A on the *new*
    diff. New accepted findings → verify (4), apply (6), re-check. Stop when a
-   pass yields no new accepted findings (cap 2 extra passes; anything still open
-   goes to the gate). Catches fix-induced regressions before `/test` or `/ship`.
+   pass yields no new accepted findings. A re-review count is never a reason to
+   defer a verified finding or move it to the gate. This catches fix-induced
+   regressions before `/test` or `/ship`.
 8. **Gate — the narrow exception, not the escape hatch.** Only two kinds of
    accepted finding may go to the gate unfixed:
    - it needs a **product decision you cannot make** (which of two valid
@@ -164,6 +165,9 @@ Only two reasons belong here: a product decision you cannot make, or a fix that
 is not behavior-preserving on a branch that was not asked to change behavior.
 Empty is the expected outcome. "Structural / large / out of scope" is not a
 gate reason — those get fixed above.
+
+When empty, print `- Empty.` and omit the table. Never leave an example or
+placeholder row that another skill could mistake for a live gate.
 
 | Severity | file:line | Finding | Which gate reason | Decision needed |
 |---|---|---|---|---|

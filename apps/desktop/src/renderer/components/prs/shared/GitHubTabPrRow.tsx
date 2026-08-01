@@ -10,6 +10,7 @@ import { formatTimeAgoCompact } from "./prFormatters";
 import { PrCiRunningIndicator } from "./prVisuals";
 import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
+import { branchNameFromRef } from "../tabs/githubPrBranch";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -17,8 +18,6 @@ import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel
  * state — `useLaneColorById` reads the store directly — so the tab is left as a
  * coordinator rather than a coordinator plus 450 lines of row markup.
  */
-
-import { branchNameFromRef } from "../tabs/githubPrBranch";
 
 /* -- Color-coded state badge with distinct colors per state -- */
 function stateColor(state: string): { bg: string; border: string; text: string } {

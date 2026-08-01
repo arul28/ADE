@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, ChatText, CheckCircle, CircleNotch, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
+import { CircleNotch, GitBranch, GitMerge, GithubLogo, Warning, XCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
 import { useVirtualizer } from "@tanstack/react-virtual";
@@ -19,17 +19,13 @@ import type {
 import { syntheticGithubPrId } from "../../../../shared/types/prs";
 import { EmptyState } from "../../ui/EmptyState";
 import { ResizeGutter } from "../../ui/ResizeGutter";
-import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
-import { LaneAccentDot } from "../../lanes/LaneAccentDot";
+import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, cardStyle, outlineButton, primaryButton } from "../../lanes/laneDesignTokens";
 import { selectActiveProjectRoot, useAppStore, useAppStoreApi } from "../../../state/appStore";
 import { PrDetailPane, type UnmappedAffordance } from "../detail/PrDetailPane";
-import { formatTimeAgoCompact } from "../shared/prFormatters";
-import { PrCiRunningIndicator } from "../shared/prVisuals";
 import { usePrs } from "../state/PrsContext";
 import type { PrDetailRouteTab } from "../prsRouteState";
 import { GitHubRepoSyncBar } from "../shared/GitHubRepoSyncBar";
 import { GitHubPrSearchInput } from "../shared/GitHubPrSearchInput";
-import { GitHubStackBadge } from "../shared/GitHubStackBadge";
 import { GitHubStackInspector } from "../shared/GitHubStackInspector";
 import { getGitHubSnapshotCoalesced } from "../../../lib/prReadCache";
 import { isTerminalPrState } from "../../../lib/prState";
@@ -37,9 +33,7 @@ import { GitHubTabPrRow, PrListGroupHeaderRow } from "../shared/GitHubTabPrRow";
 import { branchNameFromRef } from "./githubPrBranch";
 import {
   buildPrListRows,
-  formatPrListGroupDiff,
   prListHeaderIndices,
-  type PrListGroupHeader as PrListGroupHeaderModel,
   type PrListRow,
 } from "../shared/prListGrouping";
 
@@ -629,7 +623,6 @@ export function GitHubTab({
   const appStore = useAppStoreApi();
   const {
     prs,
-    mergeContextByPrId,
     detailStatus,
     detailChecks,
     detailReviews,
@@ -1957,4 +1950,3 @@ function activeHeaderFor(headerIndices: number[], startIndex: number): number | 
   }
   return active;
 }
-

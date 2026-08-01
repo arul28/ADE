@@ -117,14 +117,9 @@ export function deletePullRequestRowsByIds(db: DbLike, projectId: string, prIds:
  * Storage does not grow: the heavy snapshot columns are nulled here, which frees more
  * than the retained row costs. `commit_count` / `changed_files` are lifted onto the row
  * first so the merged view survives the purge.
- */
-/**
- * Apply the detach mutation to an explicit set of PR ids.
  *
- * Taking ids rather than a SQL predicate keeps one parameter list for all four
- * statements below; an earlier version threaded a predicate string plus a params array
- * that every statement had to agree with positionally, which is a bug waiting to happen
- * for no benefit.
+ * The mutation takes explicit PR ids rather than a SQL predicate, keeping one parameter
+ * list for all four statements below instead of making them agree positionally.
  */
 function detachRows(
   db: ReadableDbLike,

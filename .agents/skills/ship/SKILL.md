@@ -48,8 +48,8 @@ a behavior change this branch was not asked to make. Both need the author.
 
 - Gate rows exist → do not merge. Surface them, state the decision needed, and
   stop with `blocked`. Do not merge and mention them afterwards.
-- If `/quality` was never run on this lane, say so plainly rather than assuming
-  the gate is empty.
+- If `/quality` was never run on this lane, or its final gate result is not
+  available in the lane handoff, stop with `blocked`; unknown is not empty.
 
 Severity is irrelevant here: a Medium in the gate blocks exactly as hard as a
 Blocker, because presence in the gate means it needed a human, not that it was

@@ -143,13 +143,16 @@ Ship is a **pure merge loop** — it does NOT run `/quality`, `/test`, or
 reaching ship. Ship assumes the lane is already reviewed, tested, and
 (optionally) finalized; it never generates tests or simplifies code itself.
 
-Sanity-check only here:
+Preconditions here:
 
 - `git status` must be clean of foreign changes. If uncommitted changes belong
   to this lane, commit them with `ship: checkpoint before ship`. If they're
   unrelated, exit `blocked` with `exitReason: "dirty-working-tree"`.
-- If the lane was never run through `/quality` or `/test`, that's the author's
-  call — ship does not block on it, but note it in the first iteration summary.
+- The lane must have completed `/quality` and `/test`. Read the final quality
+  result from the current conversation or lane handoff. A non-empty gate, a
+  missing result, or an ambiguous placeholder row blocks ship; set
+  `exitReason: "quality-gate-nonempty"` or `"quality-result-missing"` rather
+  than assuming unknown means clean. Ship does not run either skill itself.
 
 ### 0.3 Commit + push + create PR
 
@@ -477,6 +480,11 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 
 Runs when Phase 2 routes here (everything terminal, no fix work, not behind, not already merged). The point of this playbook is "PR-to-merge", not "PR-to-green" — once green, the lane lands.
 
+Before resolving merge style, re-read the lane's final `/quality` result. The
+gate must still be explicitly empty. If it is non-empty or unavailable, exit
+`blocked` with `quality-gate-nonempty` or `quality-result-missing`; never merge
+and disclose deferred findings afterwards.
+
 ### 3c.1 Resolve repo merge style
 
 ```bash
@@ -679,7 +687,7 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 | --- | --- | --- |
 | `done-clean` | PR merged on `main` (Phase 3c succeeded, possibly after Phase 3d force-finalize) | clear state file; print summary |
 | `done-max` | 5 normal iterations + 1 force-finalize iteration exhausted AND Phase 3c could not merge (policy block + no admin + no auto-merge) | leave state file; post PR handoff comment to human |
-| `blocked` | Unrecoverable conflict, gate failure, API error, or `force-finalize-ci-failed` (iteration 6 could not turn CI green) | leave state file; post PR comment with reason |
+| `blocked` | Unrecoverable conflict, missing/non-empty quality gate, API error, or `force-finalize-ci-failed` (iteration 6 could not turn CI green) | leave state file; post PR comment with reason |
 
 ## Summary output (always print on exit)
 

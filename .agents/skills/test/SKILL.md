@@ -1,6 +1,6 @@
 ---
 name: test
-description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn each /quality Blocker/High finding into a named regression test, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
+description: 'Prove the new code works: enforce the logging/PostHog ground truth, prune dead tests, consolidate fragments, add only tests that prove new contracts, turn accepted /quality correctness findings into named regression tests, then run CI-mirrored shards. Also keeps docs/mobile/CLI/TUI parity in lockstep.'
 ---
 
 # /test — Test Suite Steward
@@ -17,7 +17,15 @@ The suite has bloated for three reasons. You exist to fight all three:
 
 Every run does three passes in this order: **PRUNE → CONSOLIDATE → ADD**. You may finish at any pass — adding is optional.
 
-**Consume the `/quality` gate.** If `/quality` ran on this lane, take its Summary's **Gate** section — every finding it surfaced but did not fix, at any severity (a Medium in the gate got there because it needed a human, not because it was minor). Each is a named regression-test target for the ADD pass: a test that fails on the bug and passes once it's fixed. A finding isn't "handled" until a test pins it. No gate available → derive the same targets from the diff.
+**Consume the `/quality` result.** A non-empty `/quality` gate blocks this skill:
+the branch still contains a verified finding awaiting an author decision, and
+committing a knowingly failing test is not a substitute for fixing it. Resume
+after the decision and the corresponding `/quality` fix. From the completed
+quality summary, turn accepted correctness findings into named regression-test
+targets when a test can pin the public contract. Structural maintainability
+findings do not require artificial tests when existing coverage already proves
+the behavior-preserving move. No quality result available → derive the same
+targets from the diff and state that quality evidence was unavailable.
 
 **Run the way CI would.** After the suite work, run only the affected shards, never the full suite (that's `/finalize`'s local gate and `/ship`'s remote CI). Verify every new/edited test file matches a vitest workspace glob so CI actually picks it up.
 
