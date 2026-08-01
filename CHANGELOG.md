@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.48] - 2026-08-01
+
+### Questions and settings
+
+- Move blocking questions into a shared composer-anchored surface across desktop, the hosted web client, and ADE Code, with natural-height options, previews, validation, and expandable resolved-answer receipts.
+- Reorganize Settings into nine task-focused tabs with per-setting `Cmd-K` search and quieter notification controls.
+
+### Multi-machine and agent work
+
+- Identify local and foreign machines consistently across session rows, command search, lane labels, and running composers, including offline state and handoff guidance.
+- Require explicit spawned-agent relationships, report causal completion summaries and delivery failures, and support bounded inspection of registered project chats.
+- Keep CTO-launched work off the primary worktree, wire live operator tools across providers, require explicit lanes for mutating Git operations, seed the first CTO turn, and surface CTO attention on iOS.
+
+### Reliability and shipped history
+
+- Terminalize orphaned chat turns after runtime restart, persist brain watchdog diagnostics, and remove periodic identity and port probes from the event loop.
+- Heal the account-pairing deadlock between a signed-in iPhone and a previously QR/PIN-paired Mac while preserving valid pinned device trust and restoring failed machine switches.
+- Preserve merged and closed PR provenance, merge facts, CI and review context, and frozen lane metadata after lane deletion across desktop and iOS.
+- Require every verified quality finding to be fixed or explicitly gated before shipping.
+
 ## [1.2.47] - 2026-07-31
 
 ### Multi-machine Work
@@ -1280,7 +1300,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Initial public release.
 
-[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.47...HEAD
+[Unreleased]: https://github.com/arul28/ADE/compare/v1.2.48...HEAD
+[1.2.48]: https://github.com/arul28/ADE/compare/v1.2.47...v1.2.48
 [1.2.47]: https://github.com/arul28/ADE/compare/v1.2.46...v1.2.47
 [1.2.46]: https://github.com/arul28/ADE/compare/v1.2.45...v1.2.46
 [1.2.45]: https://github.com/arul28/ADE/compare/v1.2.44...v1.2.45

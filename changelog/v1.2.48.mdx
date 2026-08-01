@@ -1,0 +1,27 @@
+---
+title: "v1.2.48"
+description: "Release notes for ADE v1.2.48 - August 1, 2026"
+---
+
+v1.2.48 moves blocking questions into the composer across desktop, web, and ADE Code, reorganizes Settings around searchable tasks, preserves shipped PR history after lane cleanup, and makes multi-machine and agent work easier to identify and recover.
+
+---
+
+## Questions and settings stay in context
+
+- **Questions live where answers happen.** Blocking prompts now open above the composer with shared option, selection, preview, and validation behavior across desktop, the hosted web client, and ADE Code.
+- **Resolved answers remain readable.** Transcript receipts preserve the non-secret answer and expand on demand without leaving a stale blocking card behind.
+- **Settings follow the job at hand.** Nine focused tabs replace the previous broad sections, with `Cmd-K` search that jumps directly to individual settings and quieter notification controls.
+
+## Multi-machine and agent work is explicit
+
+- **Remote work identifies its machine.** Session rows, command search, lane labels, and running composers distinguish local and foreign machines, including offline state and handoff guidance.
+- **Spawned work reports back.** Agent launches declare `subagent` or `peer` intent, deliver causal completion summaries, expose delivery failures, and support bounded cross-chat inspection.
+- **CTO operations avoid the primary worktree.** CTO-launched tasks create dedicated lanes, live operator tools are wired across providers, mutating Git actions require an explicit lane, and CTO attention reaches iOS.
+
+## Recovery and shipped history are more durable
+
+- **Interrupted chats return to idle.** Runtime recovery terminalizes orphaned turns, raises the brain watchdog threshold, records diagnostics, and removes periodic probes that could block the event loop.
+- **Existing phone pairings heal safely.** A signed-in iPhone can reuse a valid prior QR/PIN pairing without deadlocking against a legacy Mac record, while failed machine switches restore the previous connection.
+- **Merged PRs keep their provenance.** Deleting a lane now preserves detached PR history, merge facts, review and CI context, and lane provenance across desktop and iOS.
+- **Quality findings must be resolved.** The quality and ship skills now require every verified finding to be fixed or explicitly gated before merge.

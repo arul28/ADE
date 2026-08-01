@@ -179,6 +179,7 @@
             "expanded": true,
             "pages": [
               "changelog",
+              "changelog/v1.2.48",
               "changelog/v1.2.47",
               "changelog/v1.2.46",
               "changelog/v1.2.45",
