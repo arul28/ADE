@@ -2719,7 +2719,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(await screen.findByLabelText("Waiting for your input")).toBeTruthy();
   });
 
-  it("blocks the composer prompt while a pending input request is active", async () => {
+  it("replaces the composer prompt with the pending question surface", async () => {
     const session = buildSession("session-1");
     const { send, steer } = installAdeMocks({
       transcript: buildPendingInputTranscript(session.sessionId),
@@ -2727,13 +2727,15 @@ describe("AgentChatPane submit recovery", () => {
 
     renderPane(session);
 
-    expect(await screen.findByText("Answer in the inline question card, or decline.")).toBeTruthy();
-    const textbox = screen.getByPlaceholderText("Answer the question card above, or decline it.") as HTMLTextAreaElement;
+    expect(await screen.findByTestId("ask-question-composer")).toBeTruthy();
+    expect(screen.getByText("Which branch should I use?")).toBeTruthy();
+    const answerInput = screen.getByRole("textbox") as HTMLInputElement;
+    const sendAnswer = screen.getByTestId("ask-question-send") as HTMLButtonElement;
 
-    expect(textbox.disabled).toBe(true);
-    expect(textbox.placeholder).toBe("Answer the question card above, or decline it.");
+    expect(answerInput.disabled).toBe(false);
+    expect(sendAnswer.disabled).toBe(true);
 
-    fireEvent.keyDown(textbox, { key: "Enter" });
+    fireEvent.keyDown(answerInput, { key: "Enter" });
 
     await new Promise((resolve) => setTimeout(resolve, 0));
     expect(send).not.toHaveBeenCalled();

@@ -4413,7 +4413,8 @@ final class ADETests: XCTestCase {
         "type": "pending_input_resolved",
         "itemId": "approval-1",
         "resolution": "accepted",
-        "turnId": "turn-1"
+        "turnId": "turn-1",
+        "answers": {"answer": "Take the safe path."}
       }
     }
     """

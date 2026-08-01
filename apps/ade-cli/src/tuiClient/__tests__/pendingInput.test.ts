@@ -498,11 +498,12 @@ describe("pendingInput", () => {
     expect(converted ? pendingQuestionSelectionValue(request, converted.state) : null).toBe("one");
   });
 
-  it("keeps direct option selection immediate for click-style callers", () => {
+  it("regression: pointer-style option selection only marks and never banks an answer", () => {
     const initial = createPendingQuestionSelectionState(questionApproval())!;
     const selected = selectPendingQuestionOptionIndex(baseRequest, initial, 1);
 
     expect(pendingQuestionSelectionValue(baseRequest, selected)).toBe("manual");
+    expect(selected.answers).toEqual({});
     expect(selected.pendingDigitSelection).toBeNull();
   });
 });
