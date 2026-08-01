@@ -29,6 +29,7 @@ type LinearOAuthSessionState = {
   createdAt: number;
   status: CtoGetLinearOAuthSessionResult["status"];
   error: string | null;
+  callbackClaimed: boolean;
   server: http.Server;
   abortController: AbortController;
   closePromise: Promise<void> | null;
@@ -42,6 +43,7 @@ type LinearExternalOAuthSessionState = {
   codeVerifier: string;
   createdAt: number;
   expiresAt: string;
+  completionInFlight: Promise<LinearExternalOAuthCompleteResult> | null;
 };
 
 export type LinearExternalOAuthStartResult = {
@@ -181,6 +183,15 @@ export function createLinearOAuthService(args: {
       409,
       "text/plain; charset=utf-8",
       "This Linear sign-in has already finished. Return to ADE to continue.",
+    )
+  );
+
+  const respondCallbackInProgress = (response: http.ServerResponse): Promise<void> => (
+    writeResponse(
+      response,
+      409,
+      "text/plain; charset=utf-8",
+      "This Linear sign-in is already being completed. Return to ADE to continue.",
     )
   );
 
@@ -357,6 +368,14 @@ export function createLinearOAuthService(args: {
           await respondAlreadyFinished(res);
           return;
         }
+        if (session.callbackClaimed) {
+          await respondCallbackInProgress(res);
+          return;
+        }
+        // Authorization codes are single-use. Claim the callback synchronously
+        // before the token exchange yields so a duplicate request cannot race
+        // the owning callback or change its terminal outcome.
+        session.callbackClaimed = true;
 
         if (error) {
           await respondAndFinalizeSession(
@@ -499,6 +518,7 @@ export function createLinearOAuthService(args: {
       createdAt: Date.now(),
       status: "pending",
       error: null,
+      callbackClaimed: false,
       server,
       abortController: new AbortController(),
       closePromise: null,
@@ -568,6 +588,7 @@ export function createLinearOAuthService(args: {
       codeVerifier: pkce.verifier,
       createdAt,
       expiresAt,
+      completionInFlight: null,
     });
 
     return { sessionId, authorizeUrl, expiresAt };
@@ -596,21 +617,28 @@ export function createLinearOAuthService(args: {
         message: "Linear OAuth state did not match the active sign-in. Start a new sign-in and try again.",
       };
     }
+    if (session.completionInFlight) return session.completionInFlight;
 
-    try {
-      await exchangeCode(session, input.code);
-      externalSessions.delete(session.id);
-      return { ok: true };
-    } catch (error) {
-      const message = error instanceof Error && error.message
-        ? error.message
-        : "Linear OAuth token exchange failed.";
-      args.logger?.warn("linear_sync.external_oauth_exchange_failed", {
-        sessionId: session.id,
-        error: message,
+    const completion = exchangeCode(session, input.code)
+      .then<LinearExternalOAuthCompleteResult>(() => {
+        externalSessions.delete(session.id);
+        return { ok: true };
+      })
+      .catch<LinearExternalOAuthCompleteResult>((error: unknown) => {
+        const message = error instanceof Error && error.message
+          ? error.message
+          : "Linear OAuth token exchange failed.";
+        args.logger?.warn("linear_sync.external_oauth_exchange_failed", {
+          sessionId: session.id,
+          error: message,
+        });
+        return { ok: false, message };
+      })
+      .finally(() => {
+        if (session.completionInFlight === completion) session.completionInFlight = null;
       });
-      return { ok: false, message };
-    }
+    session.completionInFlight = completion;
+    return completion;
   };
 
   return {

@@ -517,15 +517,15 @@ describe("linearOAuthService", () => {
     });
   });
 
-  it("ends concurrent callbacks after one completes the OAuth session", async () => {
+  it("lets only one concurrent callback exchange the single-use authorization code", async () => {
     const credentials = createCredentialsMock();
-    const exchangeResolvers: Array<(response: {
+    let resolveExchange!: (response: {
       ok: boolean;
       status: number;
       json: () => Promise<{ access_token: string }>;
-    }) => void> = [];
+    }) => void;
     const mockFetch = vi.fn(() => new Promise((resolve) => {
-      exchangeResolvers.push(resolve);
+      resolveExchange = resolve;
     })) as any;
     const service = createLinearOAuthService({
       credentials: credentials as any,
@@ -539,15 +539,13 @@ describe("linearOAuthService", () => {
     const callbackUrl = `${redirectUri}?code=test-code&state=${stateParam}`;
     const firstCallback = httpGet(callbackUrl);
     const secondCallback = httpGet(callbackUrl);
-    await vi.waitFor(() => expect(exchangeResolvers).toHaveLength(2));
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
 
-    for (const resolveExchange of exchangeResolvers) {
-      resolveExchange({
-        ok: true,
-        status: 200,
-        json: async () => ({ access_token: "linear-access-token-123" }),
-      });
-    }
+    resolveExchange({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "linear-access-token-123" }),
+    });
 
     const responses = await Promise.race([
       Promise.all([firstCallback, secondCallback]),
@@ -556,9 +554,13 @@ describe("linearOAuthService", () => {
       }),
     ]);
     expect(responses.map((response) => response.statusCode).sort()).toEqual([200, 409]);
+    expect(responses.find((response) => response.statusCode === 409)?.body).toContain(
+      "already being completed",
+    );
+    expect(credentials.setOAuthToken).toHaveBeenCalledTimes(1);
   });
 
-  it("ends an exchanging callback when a concurrent error callback finishes the session", async () => {
+  it("does not let a duplicate error callback abort the callback exchanging the code", async () => {
     const credentials = createCredentialsMock();
     let markExchangeStarted!: () => void;
     const exchangeStarted = new Promise<void>((resolve) => {
@@ -588,18 +590,23 @@ describe("linearOAuthService", () => {
     const errorCallback = httpGet(
       `${redirectUri}?error=access_denied&error_description=User+declined&state=${stateParam}`,
     );
-    await expect(errorCallback).resolves.toMatchObject({ statusCode: 400 });
+    await expect(errorCallback).resolves.toMatchObject({
+      statusCode: 409,
+      body: expect.stringContaining("already being completed"),
+    });
 
     releaseExchange({
       ok: true,
       status: 200,
       json: async () => ({ access_token: "linear-access-token-123" }),
     });
-    await expect(exchangingCallback).resolves.toMatchObject({ statusCode: 409 });
+    await expect(exchangingCallback).resolves.toMatchObject({ statusCode: 200 });
     expect(service.getSession(sessionId)).toMatchObject({
-      status: "failed",
-      error: "User declined",
+      status: "completed",
+      error: null,
     });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(credentials.setOAuthToken).toHaveBeenCalledTimes(1);
   });
 
   it("handles OAuth callback with error parameter from Linear", async () => {
@@ -959,6 +966,95 @@ describe("linearOAuthService", () => {
       ok: false,
       message: expect.stringContaining("not found or has expired"),
     });
+  });
+
+  it("coalesces concurrent external OAuth completions onto one code exchange", async () => {
+    const credentials = createCredentialsMock({ clientSecret: null, clientSource: "ade-app" });
+    let resolveExchange!: (response: {
+      ok: boolean;
+      status: number;
+      json: () => Promise<{ access_token: string }>;
+    }) => void;
+    const mockFetch = vi.fn(() => new Promise((resolve) => {
+      resolveExchange = resolve;
+    })) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const started = await service.startExternalSession({
+      redirectUri: LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+    });
+    const state = new URL(started.authorizeUrl).searchParams.get("state")!;
+    const firstCompletion = service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "mobile-authorization-code",
+      state,
+    });
+    const duplicateCompletion = service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "mobile-authorization-code",
+      state,
+    });
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1));
+
+    resolveExchange({
+      ok: true,
+      status: 200,
+      json: async () => ({ access_token: "linear-mobile-access-token" }),
+    });
+    const [firstResult, duplicateResult] = await Promise.all([
+      firstCompletion,
+      duplicateCompletion,
+    ]);
+
+    expect(firstResult).toEqual({ ok: true });
+    expect(duplicateResult).toEqual({ ok: true });
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(credentials.setOAuthToken).toHaveBeenCalledTimes(1);
+  });
+
+  it("allows an external OAuth completion retry after a failed coalesced exchange", async () => {
+    const credentials = createCredentialsMock({ clientSecret: null, clientSource: "ade-app" });
+    const mockFetch = vi.fn()
+      .mockResolvedValueOnce({
+        ok: false,
+        status: 400,
+        json: async () => ({ error: "invalid_grant" }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ access_token: "linear-mobile-access-token" }),
+      }) as any;
+    const service = createLinearOAuthService({
+      credentials: credentials as any,
+      logger: createLogger(),
+      fetchImpl: mockFetch,
+    });
+    activeServices.push(service);
+
+    const started = await service.startExternalSession({
+      redirectUri: LINEAR_MOBILE_OAUTH_REDIRECT_URI,
+    });
+    const state = new URL(started.authorizeUrl).searchParams.get("state")!;
+
+    await expect(service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "first-code",
+      state,
+    })).resolves.toEqual({ ok: false, message: "invalid_grant" });
+    await expect(service.completeExternalSession({
+      sessionId: started.sessionId,
+      code: "replacement-code",
+      state,
+    })).resolves.toEqual({ ok: true });
+
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    expect(credentials.setOAuthToken).toHaveBeenCalledTimes(1);
   });
 });
 
