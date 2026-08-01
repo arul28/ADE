@@ -15989,6 +15989,17 @@ async function runServe(
       personalChatScope,
     }),
   );
+  // Shared by mobile roster delivery and protocol-2 Activity publishing. The
+  // closure is evaluated only after `scopeRegistry` has been assigned.
+  const activityRosterProvider = {
+    buildSnapshot: () =>
+      buildRosterSnapshot({
+        projectRegistry,
+        scopeRegistry,
+        hostProjectId: preferredSyncProjectId,
+        logger: headlessProjectLogger,
+      }),
+  };
   scopeRegistry = new ProjectScopeRegistry(projectRegistry, {
     syncRuntime: {
       enabled: syncEnabled,
@@ -16008,15 +16019,8 @@ async function runServe(
       // which is assigned by this very `new ProjectScopeRegistry(...)` call —
       // safe because `buildSnapshot` only runs later (on `roster_subscribe`),
       // by which point the binding is set (mirrors machineProjectCatalogProvider).
-      rosterProvider: {
-        buildSnapshot: () =>
-          buildRosterSnapshot({
-            projectRegistry,
-            scopeRegistry,
-            hostProjectId: preferredSyncProjectId,
-            logger: headlessProjectLogger,
-          }),
-      },
+      rosterProvider: activityRosterProvider,
+      activityRosterProvider,
       // Cross-project chat "quick look": lets the phone stream a foreign
       // project's chat transcript read-only without a project switch. Reads
       // straight off that project's `.ade` transcripts dir (registry-validated,

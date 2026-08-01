@@ -138,7 +138,7 @@ import type { BuiltInBrowserDesktopBridgeClient } from "./services/builtInBrowse
 import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { createPushRegistrationStore } from "./services/push/pushRegistrationStore";
 import { createPushRelayClient } from "./services/push/pushRelayClient";
-import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherService } from "./services/push/pushPublisherService";
+import { getSharedPushPublisherService, resolvePushRelayStateFile, type PushPrNotification, type PushPublisherDeps, type PushPublisherService } from "./services/push/pushPublisherService";
 import type { createFileService } from "../../desktop/src/main/services/files/fileService";
 import type { AppNavigationRequest, AppNavigationResult, PortLease } from "../../desktop/src/shared/types";
 import type { PrEventPayload } from "../../desktop/src/shared/types/prs";
@@ -235,6 +235,7 @@ export type AdeRuntimeSyncOptions = {
   phonePairingStateDir?: string;
   projectCatalogProvider?: Parameters<typeof createSyncService>[0]["projectCatalogProvider"];
   rosterProvider?: Parameters<typeof createSyncService>[0]["rosterProvider"];
+  activityRosterProvider?: PushPublisherDeps["activityRosterProvider"];
   foreignChatProvider?: Parameters<typeof createSyncService>[0]["foreignChatProvider"];
   personalChatScope?: Parameters<typeof createSyncService>[0]["personalChatScope"];
   remoteCommandExecutor?: Parameters<typeof createSyncService>[0]["remoteCommandExecutor"];
@@ -1530,8 +1531,12 @@ export async function createAdeRuntime(args: {
         }
         return { machineKey, deviceId };
       },
+      activityRosterProvider: resolvedArgs.syncRuntime?.activityRosterProvider,
     };
   });
+  pushPublisherService.setActivityRosterProvider(
+    resolvedArgs.syncRuntime?.activityRosterProvider ?? null,
+  );
   const detachPushSources = publishPushEvents
     ? pushPublisherService.attachSources(projectId, {
         // The lightweight no-agent headless chat stub intentionally exposes
