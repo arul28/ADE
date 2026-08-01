@@ -1,42 +1,3 @@
-import { createCtoOperatorTools, type CtoOperatorToolDeps } from "../ai/tools/ctoOperatorTools";
-
-type ToolPreviewDeps = CtoOperatorToolDeps & {
-  previewSessionToolNames: (args: { provider?: string; model?: string; identityKey?: string }) => string[];
-};
-
-const previewDeps = {
-  currentSessionId: "preview-cto-session",
-  defaultLaneId: "preview-lane",
-  defaultModelId: null,
-  defaultReasoningEffort: null,
-  resolveExecutionLane: async () => "preview-lane",
-  laneService: null,
-  prService: null,
-  fileService: null,
-  testService: null,
-  ptyService: null,
-  automationService: null,
-  gitService: null,
-  conflictService: null,
-  steerChat: undefined,
-  cancelSteer: undefined,
-  handoffChat: undefined,
-  listSubagents: undefined,
-  approveToolUse: undefined,
-  issueTracker: null,
-  ctoStateService: null,
-  listChats: async () => [],
-  getChatStatus: async () => null,
-  getChatTranscript: async () => null,
-  createChat: async () => ({ id: "preview-chat" }),
-  updateChatSession: async () => undefined,
-  sendChatMessage: async () => undefined,
-  interruptChat: async () => undefined,
-  sessionService: { updateMeta: async () => undefined },
-  ensureCtoSession: async () => ({ id: "preview-cto-session", laneId: "preview-lane" }),
-  previewSessionToolNames: () => [],
-} as unknown as ToolPreviewDeps;
-
 /**
  * Onboarding step id that records the CTO's opening turn. Not a user-facing
  * setup step — it lives in the same list so it is persisted and so
@@ -57,24 +18,11 @@ export const CTO_INTRO_PROMPT = [
   "Keep it short.",
 ].join(" ");
 
-function compactDescription(description: string): string {
-  return description
-    .replace(/\s+/g, " ")
-    .trim()
-    .replace(/\.$/, "");
-}
-
 export function buildCtoCapabilityManifest(): string {
-  const tools = createCtoOperatorTools(previewDeps);
-  const lines = Object.entries(tools)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([name, definition]) => `  ${name} — ${compactDescription(definition.description)}`);
   return [
-    "# ADE Operator Tools (generated reference)",
+    "# ADE Operator Tools",
     "",
-    "Generated from ctoOperatorTools.ts so prompt capability docs stay aligned with the registered tool surface.",
-    "",
-    ...lines,
+    "Use the registered ADE operator tool schemas as the authoritative capability reference. Their schemas are always loaded for CTO sessions, so their descriptions are not duplicated here.",
     "",
     "# Operating Rules",
     "",

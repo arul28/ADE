@@ -8041,7 +8041,7 @@ describe("createAgentChatService", () => {
         const before = sessionService.list({}).length;
         const attention = await service.getCtoAttention();
 
-        expect(attention).toEqual({ awaitingInput: false, since: null });
+        expect(attention).toEqual({ status: "idle", awaitingInput: false, since: null });
         // The invariant that matters: drawing a badge must not materialize a
         // lane and a chat session as a side effect.
         expect(sessionService.list({}).length).toBe(before);
@@ -8054,7 +8054,7 @@ describe("createAgentChatService", () => {
         const { service, sessionService } = createService({ ctoStateService, ctoMemoryService });
         const session = await service.ensureIdentitySession({ identityKey: "cto", laneId: "lane-1" });
 
-        expect(await service.getCtoAttention()).toEqual({ awaitingInput: false, since: null });
+        expect(await service.getCtoAttention()).toEqual({ status: "idle", awaitingInput: false, since: null });
 
         // `ade chat ask` raises a hand on the backing session row — a separate
         // signal from the chat-level `awaitingInput` waiter, and the one a
@@ -8064,6 +8064,7 @@ describe("createAgentChatService", () => {
         row.attentionRequestedAt = new Date().toISOString();
         const attention = await service.getCtoAttention();
 
+        expect(attention.status).toBe("awaiting-input");
         expect(attention.awaitingInput).toBe(true);
         expect(attention.since).toBeTruthy();
 
@@ -8083,8 +8084,25 @@ describe("createAgentChatService", () => {
         row.attentionRequestedAt = null;
         const attention = await service.getCtoAttention();
 
+        expect(attention.status).toBe("idle");
         expect(attention.awaitingInput).toBe(false);
         expect(attention.since).toBeNull();
+
+        db.close();
+      });
+
+      it("reports unknown instead of falsely clearing when the session scan fails", async () => {
+        const { db, ctoStateService, ctoMemoryService } = await createCtoServices();
+        const { service, sessionService } = createService({ ctoStateService, ctoMemoryService });
+        vi.spyOn(sessionService, "list").mockImplementationOnce(() => {
+          throw new Error("temporary session store failure");
+        });
+
+        await expect(service.getCtoAttention()).resolves.toEqual({
+          status: "unknown",
+          awaitingInput: false,
+          since: null,
+        });
 
         db.close();
       });

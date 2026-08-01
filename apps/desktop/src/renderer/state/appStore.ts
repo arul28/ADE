@@ -237,6 +237,7 @@ const EMPTY_TERMINAL_ATTENTION: TerminalAttentionSnapshot = {
  * question silently.
  */
 const EMPTY_CTO_ATTENTION: CtoAttentionState = {
+  status: "idle",
   awaitingInput: false,
   since: null
 };

@@ -13,6 +13,7 @@ import type {
   AutomationRunListArgs,
   GitPullArgs,
   OperatorNavigationSuggestion,
+  PtyCreateArgs,
   SessionSettleOverride,
   SessionWakeReason,
   TestRunSummary,
@@ -62,7 +63,7 @@ export interface CtoOperatorToolDeps {
     getLogTail: (args: { runId: string; maxBytes?: number }) => string;
   } | null;
   ptyService?: {
-    create: (args: { laneId: string; title?: string; cols?: number; rows?: number; tracked?: boolean; toolType?: "shell"; startupCommand?: string }) => Promise<{ ptyId: string; sessionId: string }>;
+    create: (args: PtyCreateArgs) => Promise<{ ptyId: string; sessionId: string }>;
   } | null;
   automationService?: {
     list: () => AutomationRuleSummary[];

@@ -19290,7 +19290,7 @@ extension SyncService {
     guard supportsRemoteAction("cto.getAttention") else {
       // Older brain: never light the dot, and clear a value left over from a
       // newer host we were previously paired with.
-      if ctoAttention.awaitingInput { ctoAttention = .idle }
+      if ctoAttention.isAwaitingInput { ctoAttention = .idle }
       return
     }
     guard canSendLiveRequests() else { return }
@@ -19302,13 +19302,10 @@ extension SyncService {
       defer { self.ctoAttentionTask = nil }
       do {
         let next = try await self.fetchCtoAttention()
-        self.ctoAttention = next
+        self.ctoAttention = self.ctoAttention.updating(with: next)
       } catch {
-        // Keep the last known state on a TRANSPORT failure — dropping a pending
-        // question is worse than a stale dot. Note this does not cover a
-        // host-side probe failure: `getCtoAttention` swallows those into
-        // `idle`, so the badge would clear. Distinguishing them needs an
-        // explicit "unknown" in CtoAttentionState across all three transports.
+        // Keep the last known state on a transport failure. Host-side probe
+        // failures arrive as explicit `unknown` and are ignored above.
       }
     }
   }

@@ -33,6 +33,7 @@ import type {
   GitHubRepoRef,
   GitHubRateLimitState,
   GitHubStatus,
+  CtoAttentionState,
 } from "../../desktop/src/shared/types";
 import type {
   GithubService,
@@ -188,7 +189,7 @@ type HeadlessLinearServices = {
       sessionId: string,
     ) => Promise<Record<string, unknown> | null>;
     /** Mirrors the desktop chat service so `cto_state.getAttention` resolves headlessly. */
-    getCtoAttention: () => Promise<{ awaitingInput: boolean; since: string | null }>;
+    getCtoAttention: () => Promise<CtoAttentionState>;
     getChatTranscript: (args: {
       sessionId: string;
       limit?: number;
@@ -2707,7 +2708,7 @@ function createHeadlessAgentChatService(
       // `ade actions run cto_state.getAttention` throws a TypeError. Headless
       // sessions never block on user input — there is no turn loop to block —
       // so "not waiting" is the truthful answer, not a placeholder.
-      return { awaitingInput: false, since: null };
+      return { status: "idle", awaitingInput: false, since: null };
     },
     async getChatTranscript({
       sessionId,

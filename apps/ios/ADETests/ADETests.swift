@@ -16898,23 +16898,29 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testCtoAttentionDecodesHostIdleAndWaitingPayloads() throws {
-    // `cto.getAttention` returns `{ awaitingInput, since }` and the host sends
+  func testCtoAttentionDecodesLegacyAndExplicitStatesAndRetainsUnknownProbe() throws {
+    // `cto.getAttention` returns `{ status, awaitingInput, since }` and the host sends
     // JSON `null` for `since` whenever nothing is waiting — a non-optional
     // `since` would throw there and the tab badge would silently never light.
     let waitingData = try JSONSerialization.data(withJSONObject: [
+      "status": "awaiting-input",
       "awaitingInput": true,
       "since": "2026-07-31T00:00:00Z",
     ])
     let waiting = try JSONDecoder().decode(CtoAttention.self, from: waitingData)
+    XCTAssertEqual(waiting.effectiveStatus, .awaitingInput)
+    XCTAssertTrue(waiting.isAwaitingInput)
     XCTAssertTrue(waiting.awaitingInput)
     XCTAssertEqual(waiting.since, "2026-07-31T00:00:00Z")
 
     let idleData = try JSONSerialization.data(withJSONObject: [
+      "status": "idle",
       "awaitingInput": false,
       "since": NSNull(),
     ])
     let idle = try JSONDecoder().decode(CtoAttention.self, from: idleData)
+    XCTAssertEqual(idle.effectiveStatus, .idle)
+    XCTAssertFalse(idle.isAwaitingInput)
     XCTAssertFalse(idle.awaitingInput)
     XCTAssertNil(idle.since)
     XCTAssertEqual(idle, CtoAttention.idle)
@@ -16922,8 +16928,23 @@ final class ADETests: XCTestCase {
     // An older/leaner host may omit the key entirely rather than send null.
     let omittedData = try JSONSerialization.data(withJSONObject: ["awaitingInput": true])
     let omitted = try JSONDecoder().decode(CtoAttention.self, from: omittedData)
+    XCTAssertEqual(omitted.effectiveStatus, .awaitingInput)
+    XCTAssertTrue(omitted.isAwaitingInput)
     XCTAssertTrue(omitted.awaitingInput)
     XCTAssertNil(omitted.since)
+
+    let unknownData = try JSONSerialization.data(withJSONObject: [
+      "status": "unknown",
+      "awaitingInput": false,
+      "since": NSNull(),
+    ])
+    let unknown = try JSONDecoder().decode(CtoAttention.self, from: unknownData)
+    XCTAssertEqual(unknown.effectiveStatus, .unknown)
+    XCTAssertFalse(unknown.isAwaitingInput)
+
+    XCTAssertEqual(waiting.updating(with: unknown), waiting)
+    XCTAssertEqual(waiting.updating(with: idle), idle)
+    XCTAssertEqual(idle.updating(with: waiting), waiting)
   }
 
   func testCtoOnboardingDismissedOnDesktopDoesNotBlockIosTab() {

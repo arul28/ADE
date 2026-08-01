@@ -86,6 +86,30 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("forwards the CTO attention probe through the paired web transport", async () => {
+    fake.descriptors = descriptors(["cto.getAttention"]);
+    fake.commandResults.set("cto.getAttention", {
+      status: "awaiting-input",
+      awaitingInput: true,
+      since: "2026-08-01T12:00:00.000Z",
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+
+    await expect(adapter.ade.cto!.getAttention()).resolves.toEqual({
+      status: "awaiting-input",
+      awaitingInput: true,
+      since: "2026-08-01T12:00:00.000Z",
+    });
+    expect(fake.commandCalls).toContainEqual({
+      action: "cto.getAttention",
+      args: {},
+      opts: { projectId: "project-1" },
+    });
+
+    adapter.dispose();
+  });
+
   it("keeps distinct argument values in distinct stable cache keys", () => {
     const sparse: unknown[] = [];
     sparse.length = 1;
