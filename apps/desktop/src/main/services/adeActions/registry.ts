@@ -1863,7 +1863,7 @@ function buildCtoStateDomainService(runtime: AdeRuntime): OpaqueService | null {
      */
     getAttention: async (): Promise<CtoAttentionState> =>
       (await runtime.agentChatService?.getCtoAttention())
-      ?? { awaitingInput: false, since: null },
+      ?? { status: "unknown", awaitingInput: false, since: null },
   };
 }
 

@@ -50,6 +50,10 @@ import { buildClaudeV2MessageAsync, inferAttachmentMediaType } from "./buildClau
 import { listPromptStashAttachmentPaths } from "./promptStashService";
 import { ClaudeInputPump } from "./claudeInputPump";
 import {
+  normalizeClaudeInterruptReceipt,
+  normalizeClaudeRewindSkippedLinks,
+} from "./claudeSdkCompat";
+import {
   createClaudeStructuredActivityState,
   finalizeClaudeStructuredActivities,
   mapClaudeStructuredActivityBlock,
@@ -8384,12 +8388,7 @@ export function createAgentChatService(args: {
             reuseExisting,
             permissionMode: "full-auto",
           }),
-    // The cast covers one remaining structural gap: `CtoOperatorToolDeps`
-    // restates `ptyService.create` with optional cols/rows/title while the real
-    // `PtyCreateArgs` requires them (the pty service clamps to 80x24). Harmless
-    // while these tool bodies were unreachable; now that they execute, it is
-    // worth reconciling — tracked as a follow-up rather than widened blind here.
-    } as Parameters<typeof createCtoOperatorTools>[0];
+    };
   };
 
   /**
@@ -13262,12 +13261,7 @@ export function createAgentChatService(args: {
     stopMode: AgentChatStopMode = "stop_and_clear",
   ): void => {
     if (!response) return;
-    const stillQueuedUuids = (Array.isArray(response.still_queued) ? response.still_queued : [])
-      .filter((uuid): uuid is string => typeof uuid === "string" && uuid.trim().length > 0)
-      .map((uuid) => uuid.trim());
-    const cancelledUuids = (Array.isArray(response.cancelled) ? response.cancelled : [])
-      .filter((uuid): uuid is string => typeof uuid === "string" && uuid.trim().length > 0)
-      .map((uuid) => uuid.trim());
+    const { stillQueuedUuids, cancelledUuids } = normalizeClaudeInterruptReceipt(response);
     if (!stillQueuedUuids.length && !cancelledUuids.length) return;
     emitChatEvent(managed, {
       type: "interrupt_receipt",
@@ -15684,14 +15678,6 @@ export function createAgentChatService(args: {
     managed.httpMcpServers[toolSet] = lease;
     return lease;
   };
-
-  const ensureOrchestrationHttpMcpServer = (
-    managed: ManagedChatSession,
-  ): Promise<HttpMcpLease | null> => ensureHttpMcpServer(managed, "orchestration");
-
-  const ensureCtoHttpMcpServer = (
-    managed: ManagedChatSession,
-  ): Promise<HttpMcpLease | null> => ensureHttpMcpServer(managed, "cto");
 
   /**
    * Resolves every tool set that has a live HTTP lease, in table order. The
@@ -36697,7 +36683,9 @@ export function createAgentChatService(args: {
         });
       }
     }
-    const preserveQueryForQueuedMessages = (interruptResponse?.still_queued?.length ?? 0) > 0;
+    const normalizedInterrupt = normalizeClaudeInterruptReceipt(interruptResponse);
+    const preserveQueryForQueuedMessages = normalizedInterrupt.stillQueuedUuids.length > 0;
+    const providerCancelledUuids = normalizedInterrupt.cancelledUuids;
     if (!preserveQueryForQueuedMessages) {
       // Invalidate the idle reader and any already-issued `next()` promise as
       // part of the same reset. Clearing only query/inputPump lets that stale
@@ -36706,8 +36694,8 @@ export function createAgentChatService(args: {
     }
     if (mode === "stop_and_clear") {
       const localQueuedCount = localQueuedForRecovery.length;
-      result.cancelledQueuedCount = localQueuedCount + (interruptResponse?.cancelled?.length ?? 0);
-      const providerCancelledSteers = (interruptResponse?.cancelled ?? []).flatMap((uuid) => {
+      result.cancelledQueuedCount = localQueuedCount + providerCancelledUuids.length;
+      const providerCancelledSteers = providerCancelledUuids.flatMap((uuid) => {
         const steer = knownQueuedMessagesAtInterrupt.get(uuid)?.steer;
         return steer ? [steer] : [];
       });
@@ -38568,21 +38556,26 @@ export function createAgentChatService(args: {
    * ask`), which is a separate signal from `awaitingInput`.
    */
   const getCtoAttention = async (): Promise<CtoAttentionState> => {
-    const idle: CtoAttentionState = { awaitingInput: false, since: null };
+    const idle: CtoAttentionState = { status: "idle", awaitingInput: false, since: null };
     try {
       const cto = (await listIdentitySessions("cto"))[0];
       if (!cto) return idle;
       const handRaisedAt = sessionService.get(cto.sessionId)?.attentionRequestedAt ?? null;
       const awaitingInput = Boolean(cto.awaitingInput || cto.pendingInputItemId || handRaisedAt);
       if (!awaitingInput) return idle;
-      return { awaitingInput: true, since: handRaisedAt ?? cto.lastActivityAt ?? null };
+      return {
+        status: "awaiting-input",
+        awaitingInput: true,
+        since: handRaisedAt ?? cto.lastActivityAt ?? null,
+      };
     } catch (error) {
-      // A probe failure must not break the caller; the renderer keeps its last
-      // known state rather than falsely clearing a pending question.
+      // A probe failure must not break the caller or masquerade as idle. Every
+      // transport forwards `unknown` so clients can retain their last known
+      // badge state rather than falsely clearing a pending question.
       logger.warn("agent_chat.cto_attention_probe_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
-      return idle;
+      return { status: "unknown", awaitingInput: false, since: null };
     }
   };
 
@@ -41856,15 +41849,18 @@ export function createAgentChatService(args: {
   const normalizeClaudeRewindFilesResult = (
     result: ClaudeRewindFilesResult,
     dryRun: boolean,
-  ): AgentChatRewindFilesResult => ({
-    canRewind: result.canRewind === true,
-    ...(typeof result.error === "string" && result.error.trim().length ? { error: result.error.trim() } : {}),
-    filesChanged: Array.isArray(result.filesChanged) ? result.filesChanged.filter((file): file is string => typeof file === "string" && file.trim().length > 0) : [],
-    insertions: Number.isFinite(result.insertions) ? Math.max(0, result.insertions ?? 0) : 0,
-    deletions: Number.isFinite(result.deletions) ? Math.max(0, result.deletions ?? 0) : 0,
-    ...(Number.isFinite(result.skippedLinks) ? { skippedLinks: Math.max(0, result.skippedLinks ?? 0) } : {}),
-    dryRun,
-  });
+  ): AgentChatRewindFilesResult => {
+    const skippedLinks = normalizeClaudeRewindSkippedLinks(result);
+    return {
+      canRewind: result.canRewind === true,
+      ...(typeof result.error === "string" && result.error.trim().length ? { error: result.error.trim() } : {}),
+      filesChanged: Array.isArray(result.filesChanged) ? result.filesChanged.filter((file): file is string => typeof file === "string" && file.trim().length > 0) : [],
+      insertions: Number.isFinite(result.insertions) ? Math.max(0, result.insertions ?? 0) : 0,
+      deletions: Number.isFinite(result.deletions) ? Math.max(0, result.deletions ?? 0) : 0,
+      ...(skippedLinks != null ? { skippedLinks } : {}),
+      dryRun,
+    };
+  };
 
   type CodexRewindFileRestore = {
     path: string;

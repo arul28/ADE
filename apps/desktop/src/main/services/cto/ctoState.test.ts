@@ -275,9 +275,10 @@ describe("ctoStateService", () => {
     expect(preview.sections[4]?.content).toContain("Model Selection");
     expect(preview.sections[4]?.content).toContain("ade actions run <domain.action>");
     expect(preview.sections[4]?.content).toContain("bundled `ade-*` skills");
-    // Capabilities section: organized tool reference with descriptions
-    expect(preview.sections[5]?.content).toContain("ADE Operator Tools");
-    expect(preview.sections[5]?.content).toContain("listLanes");
+    // Capabilities section: schema authority plus cross-tool operating rules
+    expect(preview.sections[5]?.content).toContain("ADE operator tools");
+    expect(preview.sections[5]?.content).toContain("registered ADE operator tool schemas");
+    expect(preview.sections[5]?.content).not.toContain("listLanes —");
     expect(preview.sections[5]?.content).toContain("UI navigation is suggestion-only.");
     expect(preview.prompt).toContain("Immutable ADE doctrine");
     expect(preview.prompt).toContain("Selected personality overlay");
@@ -310,9 +311,8 @@ describe("ctoStateService", () => {
     fixture.db.close();
   });
 
-  // The capability manifest is the CTO's live lane-routing lever: its operator
-  // tool bodies are not registered on a running session, so the prompt is what
-  // actually steers where CTO-launched work lands. It used to instruct
+  // The capability manifest keeps the cross-tool operating rules in one place.
+  // It used to instruct
   // "always default laneId to the CTO's current lane" — the CTO's lane is the
   // project's primary lane, so every agent it launched ran against the primary
   // worktree.
@@ -324,11 +324,12 @@ describe("ctoStateService", () => {
     expect(manifest).toMatch(/primary lane/i);
   });
 
-  it("generates the manifest from the registered operator tool surface", () => {
+  it("does not duplicate registered tool descriptions in the manifest", () => {
     const manifest = buildCtoCapabilityManifest();
 
-    expect(manifest).toContain("spawnChat");
-    expect(manifest).toContain("createLane");
+    expect(manifest).toContain("registered ADE operator tool schemas");
+    expect(manifest).not.toContain("spawnChat —");
+    expect(manifest).not.toContain("createLane —");
     expect(manifest).toContain("# Operating Rules");
   });
 });

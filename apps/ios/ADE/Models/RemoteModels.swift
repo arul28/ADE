@@ -1239,10 +1239,33 @@ struct CtoSnapshot: Codable, Hashable {
 /// deliberately excluded from every session list — so it has to ask. `since` is
 /// optional because the host sends JSON `null` when nothing is waiting.
 struct CtoAttention: Codable, Hashable {
+  enum Status: String, Codable {
+    case idle
+    case awaitingInput = "awaiting-input"
+    case unknown
+  }
+
+  /// Optional for compatibility with hosts released before the explicit
+  /// unknown state. A missing status is inferred from `awaitingInput`.
+  var status: Status?
   var awaitingInput: Bool
   var since: String?
 
-  static let idle = CtoAttention(awaitingInput: false, since: nil)
+  var effectiveStatus: Status {
+    status ?? (awaitingInput ? .awaitingInput : .idle)
+  }
+
+  var isAwaitingInput: Bool {
+    effectiveStatus == .awaitingInput
+  }
+
+  /// Applies a successful host probe without letting an indeterminate result
+  /// erase the last known badge state.
+  func updating(with probe: CtoAttention) -> CtoAttention {
+    probe.effectiveStatus == .unknown ? self : probe
+  }
+
+  static let idle = CtoAttention(status: .idle, awaitingInput: false, since: nil)
 }
 
 /// Returned by the `cto.getMemory` sync command: the durable facts the CTO

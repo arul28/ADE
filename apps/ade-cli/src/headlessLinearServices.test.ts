@@ -612,6 +612,7 @@ describe("headlessLinearServices", () => {
     const session = await services.agentChatService.createSession({ laneId: "lane-1" });
 
     expect(await services.agentChatService.getCtoAttention()).toEqual({
+      status: "idle",
       awaitingInput: false,
       since: null,
     });

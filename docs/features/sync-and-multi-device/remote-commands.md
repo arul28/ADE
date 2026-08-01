@@ -503,8 +503,10 @@ a boolean.
   drawing a badge cannot materialize a primary lane and a CTO chat session
   as a side effect. The phone needs its own command here because the CTO
   chat is excluded from every session roster and cannot be derived from the
-  chat list. It is an **optional** mobile capability (see the compatibility
-  note above).
+  chat list. The result is `idle`, `awaiting-input`, or `unknown`; mobile and
+  hosted-web clients retain their last known badge state on `unknown` instead
+  of treating a failed host scan as idle. It is an **optional** mobile
+  capability (see the compatibility note above).
 - `getLinearConnectionStatus`, `getLinearQuickView`,
   `getLinearIssuePickerData`, `searchLinearIssues`, `getLinearIssueComments`
   — the Linear read surface. The former worker-management commands

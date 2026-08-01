@@ -207,7 +207,11 @@ function createMockAgentChatService() {
       summary: null,
     }),
     getChatTranscript: vi.fn().mockResolvedValue([]),
-    getCtoAttention: vi.fn().mockResolvedValue({ awaitingInput: true, since: "2026-01-01T00:00:00.000Z" }),
+    getCtoAttention: vi.fn().mockResolvedValue({
+      status: "awaiting-input",
+      awaitingInput: true,
+      since: "2026-01-01T00:00:00.000Z",
+    }),
     createSession: vi.fn().mockResolvedValue({
       id: "chat-1",
       laneId: "lane-1",
@@ -2529,7 +2533,11 @@ describe("createSyncRemoteCommandService", () => {
 
       // The phone cannot derive this from its chat roster — the CTO chat is
       // excluded from every session list — so this is its only source.
-      expect(result).toEqual({ awaitingInput: true, since: "2026-01-01T00:00:00.000Z" });
+      expect(result).toEqual({
+        status: "awaiting-input",
+        awaitingInput: true,
+        since: "2026-01-01T00:00:00.000Z",
+      });
       expect(service.getSupportedActions()).toContain("cto.getAttention");
     });
 

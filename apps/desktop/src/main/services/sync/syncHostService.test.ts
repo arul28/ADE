@@ -273,7 +273,7 @@ function createStubChatService() {
       };
     }),
     interrupt: vi.fn().mockResolvedValue(undefined),
-    steer: vi.fn().mockResolvedValue(undefined),
+    steerUserMessage: vi.fn().mockResolvedValue(undefined),
     approveToolUse: vi.fn().mockResolvedValue(undefined),
     respondToInput: vi.fn().mockResolvedValue(undefined),
     resumeSession: vi.fn().mockResolvedValue(baseSession),
@@ -2775,7 +2775,7 @@ describe.skipIf(!isCrsqliteAvailable())("syncHostService", () => {
       args: { sessionId: "session-1", text: "Please continue." },
     });
     expect((steer.result.payload as { ok: boolean }).ok).toBe(true);
-    expect(chatService.service.steer).toHaveBeenCalledWith({ sessionId: "session-1", text: "Please continue." });
+    expect(chatService.service.steerUserMessage).toHaveBeenCalledWith({ sessionId: "session-1", text: "Please continue." });
 
     const approve = await sendCommand(secondClient.ws, secondClient.queue, {
       commandId: "chat-approve",

@@ -3,7 +3,7 @@ import type { CtoAttentionState } from "../../shared/types";
 import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
-const IDLE: CtoAttentionState = { awaitingInput: false, since: null };
+const IDLE: CtoAttentionState = { status: "idle", awaitingInput: false, since: null };
 
 /**
  * Keeps the CTO tab's "needs you" dot fresh.
@@ -46,6 +46,7 @@ export function useCtoAttention(): void {
       try {
         const next = await window.ade?.cto?.getAttention?.();
         if (cancelled || !next) return;
+        if (next.status === "unknown") return;
         setCtoAttention(next);
       } catch {
         // Best effort: a failed probe leaves the last known state rather than

@@ -285,14 +285,14 @@ struct ContentView: View {
         // never reach the tab-bar button VoiceOver actually focuses.
         Label("CTO", systemImage: "brain")
           .accessibilityLabel(
-            syncService.ctoAttention.awaitingInput ? "CTO, waiting on you" : "CTO"
+            syncService.ctoAttention.isAwaitingInput ? "CTO, waiting on you" : "CTO"
           )
       }
       // The CTO chat is excluded from every session roster, so it cannot borrow
       // the Work badge above — a question from the CTO would otherwise surface
       // nowhere on the phone. A string badge renders as a dot-sized marker and
       // hides itself when nil.
-      .badge(syncService.ctoAttention.awaitingInput ? "!" : nil)
+      .badge(syncService.ctoAttention.isAwaitingInput ? "!" : nil)
   }
 }
 

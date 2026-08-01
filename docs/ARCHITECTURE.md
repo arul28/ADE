@@ -1077,9 +1077,12 @@ rows. `useCtoAttention` reads it separately through the read-only
 draws the dot on `/cto`, and `useAppWideSessionAttention` folds that one flag
 into its badge count so it remains the single writer of `setDockBadgeCount`. iOS
 reaches the same `agentChatService.getCtoAttention()` implementation through the
-optional `cto.getAttention` sync command and badges its CTO tab. The probe must
-stay side-effect-free on every transport — creating the CTO session to draw a
-badge would materialize a primary lane. See
+optional `cto.getAttention` sync command and badges its CTO tab; the hosted web
+adapter forwards the same command into the renderer hook. The probe returns
+`idle`, `awaiting-input`, or `unknown`, and clients retain their last known badge
+on `unknown` so a transient host scan failure cannot falsely clear it. The probe
+must stay side-effect-free on every transport — creating the CTO session to draw
+a badge would materialize a primary lane. See
 [features/cto/README.md](./features/cto/README.md#hidden-from-rosters-but-never-silent).
 
 ### 8.3 ADE CLI auth + API-key storage

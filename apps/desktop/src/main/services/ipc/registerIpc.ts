@@ -10339,7 +10339,7 @@ export function registerIpc({
     const service = getCtx().agentChatService;
     return service
       ? await service.getCtoAttention()
-      : { awaitingInput: false, since: null };
+      : { status: "unknown", awaitingInput: false, since: null };
   });
 
   ipcMain.handle(IPC.ctoEnsureSession, async (_event, arg: CtoEnsureSessionArgs = {}): Promise<AgentChatSession> => {

@@ -1,6 +1,7 @@
 import {
   peerToRuntimeDeviceState,
   type AiConfig,
+  type CtoAttentionState,
   type GitHubStatus,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
@@ -592,6 +593,11 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
 
 function createCtoNamespace(call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>): NonNullable<Window["ade"]["cto"]> {
   return {
+    getAttention: () => call<CtoAttentionState>(
+      "cto.getAttention",
+      {},
+      { status: "unknown", awaitingInput: false, since: null },
+    ),
     getLinearProjects: () => call("cto.getLinearProjects", {}, []),
     getLinearQuickView: () => call("cto.getLinearQuickView", {}, null),
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),

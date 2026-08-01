@@ -5133,6 +5133,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       }),
     },
     cto: {
+      getAttention: resolved({ status: "idle", awaitingInput: false, since: null }),
       getState: resolvedArg({
         identity: ADE_DB_SNAPSHOT?.ctoState?.identity ?? {
           name: "CTO",

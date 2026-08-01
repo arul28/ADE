@@ -299,8 +299,17 @@ export type CtoSearchMemoryResult = {
  * attention dot — this is the one signal that keeps a hidden thread from going
  * silent when it asks a question.
  */
-export type CtoAttentionState = {
-  awaitingInput: boolean;
-  /** When the thread started waiting; null when it is not waiting. Tooltip copy. */
-  since: string | null;
-};
+export type CtoAttentionState =
+  | { status: "idle"; awaitingInput: false; since: null }
+  | {
+      status: "awaiting-input";
+      awaitingInput: true;
+      /** When the thread started waiting; null when the exact time is unavailable. */
+      since: string | null;
+    }
+  | {
+      /** Clients retain their last known badge state when inspection fails. */
+      status: "unknown";
+      awaitingInput: false;
+      since: null;
+    };
