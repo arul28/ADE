@@ -5,13 +5,13 @@ import type {
 } from "../../../../desktop/src/shared/types/attention";
 import type { AdeCodeConnection } from "../types";
 import {
-  acknowledgeAttentionItem,
-  attentionItemContext,
-  attentionItemDeepLink,
-  attentionPaneEntries,
-  buildAttentionPaneModel,
-  loadAttentionSnapshot,
-} from "../attentionPane";
+  acknowledgeActivityItem,
+  activityItemContext,
+  activityItemDeepLink,
+  activityPaneEntries,
+  buildActivityPaneModel,
+  loadActivitySnapshot,
+} from "../activityPane";
 
 function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
   return {
@@ -36,7 +36,7 @@ function item(overrides: Partial<AttentionItem> = {}): AttentionItem {
     laneId: "lane-1",
     laneName: "attention",
     title: "Codex is working",
-    preview: "Implementing account Attention",
+    preview: "Implementing account Activity",
     privacyPreview: "Agent is working",
     destination: {
       kind: "session",
@@ -59,7 +59,7 @@ function snapshot(items: AttentionItem[]): AttentionSnapshot {
     scope: "account",
     availability: {
       state: "ready",
-      title: "Account Attention",
+      title: "Account Activity",
       message: "Live across your ADE account.",
       recovery: null,
     },
@@ -99,9 +99,9 @@ function asRequest(
     await implementation(method, params) as T;
 }
 
-describe("account-wide Attention pane", () => {
+describe("account-wide Activity pane", () => {
   it("groups waiting, failure, unreviewed, and live work without counting live as waiting", () => {
-    const model = buildAttentionPaneModel(snapshot([
+    const model = buildActivityPaneModel(snapshot([
       item({ id: "needs", phase: "needs_you", eventKind: "agent_needs_you" }),
       item({ id: "failed", phase: "failed", eventKind: "agent_failed" }),
       item({ id: "done", phase: "completed", eventKind: "agent_completed" }),
@@ -120,7 +120,7 @@ describe("account-wide Attention pane", () => {
     expect(model.items.map((entry) => entry.id)).not.toContain("dismissed");
   });
 
-  it("reads Attention through the project-independent machine RPC", async () => {
+  it("reads Activity through the project-independent machine RPC", async () => {
     const accountSnapshot = snapshot([item()]);
     const request = vi.fn(async (method: string, params?: unknown) => {
       if (method === "account.call") return { result: { signedIn: true } };
@@ -129,7 +129,7 @@ describe("account-wide Attention pane", () => {
       return accountSnapshot;
     });
 
-    await expect(loadAttentionSnapshot(connection(asRequest(request)))).resolves.toMatchObject({
+    await expect(loadActivitySnapshot(connection(asRequest(request)))).resolves.toMatchObject({
       scope: "account",
       streamId: "account-1",
     });
@@ -146,7 +146,7 @@ describe("account-wide Attention pane", () => {
       return { ...snapshot([item()]), scope: "machine" };
     });
 
-    const result = await loadAttentionSnapshot(connection(asRequest(request)));
+    const result = await loadActivitySnapshot(connection(asRequest(request)));
     expect(result).toMatchObject({
       scope: "machine",
       availability: {
@@ -159,7 +159,7 @@ describe("account-wide Attention pane", () => {
 
   it("acknowledges machine fallback items through the machine-scoped contract", async () => {
     const request = vi.fn(async () => null);
-    await acknowledgeAttentionItem(
+    await acknowledgeActivityItem(
       connection(asRequest(request)),
       { id: "machine-item", revision: 7 },
       "machine",
@@ -181,10 +181,10 @@ describe("account-wide Attention pane", () => {
   it("names an old signed-out host instead of fabricating an empty machine fallback", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "account.call") return { result: { signedIn: false } };
-      throw new Error("Unsupported Attention method: attention.call");
+      throw new Error("Unsupported Activity method: attention.call");
     });
 
-    await expect(loadAttentionSnapshot(
+    await expect(loadActivitySnapshot(
       connection(asRequest(request)),
       { hostName: "Mac Studio" },
     )).resolves.toMatchObject({
@@ -203,14 +203,14 @@ describe("account-wide Attention pane", () => {
     const request = vi.fn(async (method: string, params?: unknown) => {
       if (method === "account.call") return { result: { signedIn: true } };
       if ((params as { action?: string })?.action === "getSnapshot") {
-        throw new Error("Unsupported Attention method: attention.call");
+        throw new Error("Unsupported Activity method: attention.call");
       }
       if ((params as { action?: string })?.action === "getMachineSnapshot") {
         return machine;
       }
       throw new Error(`unexpected ${method}`);
     });
-    const result = await loadAttentionSnapshot(connection(asRequest(request)), {
+    const result = await loadActivitySnapshot(connection(asRequest(request)), {
       hostName: "Mac Studio",
     });
     expect(result).toMatchObject({
@@ -227,7 +227,7 @@ describe("account-wide Attention pane", () => {
   it("never falls back through the selected-project action namespace", async () => {
     const request = vi.fn(async (method: string) => {
       if (method === "account.call") return { result: { signedIn: true } };
-      throw new Error("Account Attention snapshot failed: unauthorized");
+      throw new Error("Account Activity snapshot failed: unauthorized");
     });
     const selectedProjectActionCalls = vi.fn();
     const selectedProjectAction: AdeCodeConnection["action"] = async <T>(
@@ -238,7 +238,7 @@ describe("account-wide Attention pane", () => {
       selectedProjectActionCalls(domain, action, args);
       throw new Error("selected-project action must not run");
     };
-    const result = await loadAttentionSnapshot(
+    const result = await loadActivitySnapshot(
       connection(asRequest(request), selectedProjectAction),
     );
 
@@ -260,17 +260,17 @@ describe("account-wide Attention pane", () => {
         lastSeenAt: "2026-07-28T20:00:00.000Z",
       },
     });
-    expect(attentionItemDeepLink(target)).toBe(
+    expect(activityItemDeepLink(target)).toBe(
       "ade://session/session-1?item=message-1&accountMachineKey=account-machine-2&projectId=project-1",
     );
-    expect(attentionItemContext(target)).toBe("ADE · attention · MacBook Pro");
+    expect(activityItemContext(target)).toBe("ADE · attention · MacBook Pro");
   });
 
   it("keeps the keyboard selection visible in a bounded pane window", () => {
     const items = Array.from({ length: 20 }, (_, index) =>
       item({ id: `item-${index}`, phase: index < 10 ? "needs_you" : "running" }));
-    const model = buildAttentionPaneModel(snapshot(items));
-    const window = attentionPaneEntries(model, 18, 8);
+    const model = buildActivityPaneModel(snapshot(items));
+    const window = activityPaneEntries(model, 18, 8);
     expect(window.entries.some((entry) => entry.kind === "item" && entry.itemIndex === 18)).toBe(true);
     expect(window.hiddenBefore).toBeGreaterThan(0);
   });

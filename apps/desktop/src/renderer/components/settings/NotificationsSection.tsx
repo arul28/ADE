@@ -6,7 +6,7 @@ import {
   type AttentionPreferences,
 } from "../../../shared/types/attention";
 import { ACTIVITY_EVENT_CATALOG } from "../../../shared/activityCatalog";
-import { normalizeAttentionPreferences } from "../attention/attentionNotchLocalSettings";
+import { normalizeActivityPreferences } from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
 import { DEFAULT_LANE_BANNER_BUDGET } from "../../../shared/types/config";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -100,7 +100,7 @@ export function NotificationsSection() {
     void api.getPreferences(accountOwnerId)
       .then((next) => {
         if (cancelled || !mounted.current) return;
-        setPreferences(normalizeAttentionPreferences(next));
+        setPreferences(normalizeActivityPreferences(next));
       })
       .catch((error: unknown) => {
         if (cancelled || !mounted.current) return;
@@ -188,7 +188,7 @@ export function NotificationsSection() {
         <SettingsCard
           anchor="notification-events"
           title="Notify me about"
-          description="Ambient events appear in the attention list without interrupting. Notify sends a real notification."
+          description="Ambient events appear in Activity without interrupting. Notify sends a real notification."
           scope="machine"
           stacked
         >
@@ -228,7 +228,7 @@ export function NotificationsSection() {
         <SettingsCard
           anchor="focus-suppression"
           title="Stay quiet while ADE is focused"
-          description="If you're already looking at ADE, hold notifications back and let the attention list carry it."
+          description="If you're already looking at ADE, hold notifications back and let Activity carry it."
           control={
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <SavedFlash state={saveState} />

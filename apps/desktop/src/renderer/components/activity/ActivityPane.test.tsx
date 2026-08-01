@@ -10,9 +10,9 @@ import {
   type AttentionItem,
 } from "../../../shared/types";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { ActivityPane } from "./ActivityPane";
 
@@ -95,7 +95,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -123,7 +123,7 @@ describe("ActivityPane", () => {
       eventKind: "agent_running",
       title: "Task running",
     });
-    attentionStore.setState({ itemsById: { approval: needsYou, running } });
+    activityStore.setState({ itemsById: { approval: needsYou, running } });
 
     render(<ActivityPane open onClose={() => {}} />);
 
@@ -137,7 +137,7 @@ describe("ActivityPane", () => {
   });
 
   it("never offers the placeholder copy the old center apologised with", () => {
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={() => {}} />);
 
     expect(screen.queryByText(/Ready when you are/i)).toBeNull();
@@ -154,7 +154,7 @@ describe("ActivityPane", () => {
   });
 
   it("holds placeholders rather than claiming all-clear before the first snapshot", () => {
-    attentionStore.setState({ syncStatus: "syncing" });
+    activityStore.setState({ syncStatus: "syncing" });
     render(<ActivityPane open onClose={() => {}} />);
 
     // "All agents idle" is a claim, and before a snapshot lands it is one ADE
@@ -166,7 +166,7 @@ describe("ActivityPane", () => {
   });
 
   it("slides the detail over the columns with the item's real content", () => {
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={() => {}} />);
 
     openDetail("Task approval");
@@ -189,7 +189,7 @@ describe("ActivityPane", () => {
 
   it("closes the detail before the pane, one layer per Escape", () => {
     const onClose = vi.fn();
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={onClose} />);
 
     openDetail("Task approval");
@@ -215,7 +215,7 @@ describe("ActivityPane", () => {
 
   it("keeps clicks inside the pane from closing it", () => {
     const onClose = vi.fn();
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={onClose} />);
 
     fireEvent.mouseDown(screen.getByTestId("activity-pane"));
@@ -227,7 +227,7 @@ describe("ActivityPane", () => {
       throw new Error("Studio Mac stopped responding.");
     });
     installAde({ openItem });
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={() => {}} />);
 
     openDetail("Task approval");
@@ -236,14 +236,14 @@ describe("ActivityPane", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert").textContent).toContain("Studio Mac stopped responding.");
     });
-    expect(attentionStore.getState().itemsById.approval?.seenAt).toBeNull();
+    expect(activityStore.getState().itemsById.approval?.seenAt).toBeNull();
   });
 
   it("marks an item seen only once its destination resolved", async () => {
     const onClose = vi.fn();
     const openItem = vi.fn(async () => {});
     installAde({ openItem });
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={onClose} />);
 
     openDetail("Task approval");
@@ -251,13 +251,13 @@ describe("ActivityPane", () => {
 
     await waitFor(() => {
       expect(openItem).toHaveBeenCalledWith(expect.objectContaining({ id: "approval" }));
-      expect(attentionStore.getState().itemsById.approval?.seenAt).not.toBeNull();
+      expect(activityStore.getState().itemsById.approval?.seenAt).not.toBeNull();
     });
     expect(onClose).toHaveBeenCalled();
   });
 
   it("disables remote actions for last-known state from an offline machine", () => {
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         offline: item("offline", {
           machine: {
@@ -284,7 +284,7 @@ describe("ActivityPane", () => {
   });
 
   it("files an offline machine's sessions under a last-seen divider", () => {
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         here: item("here"),
         gone: item("gone", {
@@ -313,7 +313,7 @@ describe("ActivityPane", () => {
   it("dismisses one inbox row without touching the rest", async () => {
     const acknowledge = vi.fn(async () => {});
     installAde({ acknowledge });
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: { first: item("first"), second: item("second") },
     });
     render(<ActivityPane open onClose={() => {}} />);
@@ -321,15 +321,15 @@ describe("ActivityPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Dismiss Task first" }));
 
     await waitFor(() => {
-      expect(attentionStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+      expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
     });
-    expect(attentionStore.getState().itemsById.second?.dismissedAt).toBeNull();
+    expect(activityStore.getState().itemsById.second?.dismissedAt).toBeNull();
     expect(acknowledge).toHaveBeenCalledTimes(1);
   });
 
   it("clears the whole inbox from its header", async () => {
     installAde();
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: { first: item("first"), second: item("second") },
     });
     render(<ActivityPane open onClose={() => {}} />);
@@ -337,13 +337,13 @@ describe("ActivityPane", () => {
     fireEvent.click(screen.getByRole("button", { name: "Clear all" }));
 
     await waitFor(() => {
-      expect(attentionStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
-      expect(attentionStore.getState().itemsById.second?.dismissedAt).not.toBeNull();
+      expect(activityStore.getState().itemsById.first?.dismissedAt).not.toBeNull();
+      expect(activityStore.getState().itemsById.second?.dismissedAt).not.toBeNull();
     });
   });
 
   it("filters both columns by machine and says so when nothing matches", async () => {
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         studio: item("studio"),
         laptop: item("laptop", {
@@ -369,7 +369,7 @@ describe("ActivityPane", () => {
   });
 
   it("explains an empty column as a filter result, not as all-clear", async () => {
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         studio: item("studio", { model: "GPT-5" }),
       },
@@ -388,7 +388,7 @@ describe("ActivityPane", () => {
   });
 
   it("counts machines and sessions in the header", () => {
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         studio: item("studio"),
         cloud: item("cloud", {
@@ -407,19 +407,19 @@ describe("ActivityPane", () => {
   });
 
   it("renders nothing at all when closed", () => {
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open={false} onClose={() => {}} />);
 
     expect(screen.queryByTestId("activity-pane")).toBeNull();
   });
 
   it("drops the detail when its item leaves the snapshot", async () => {
-    attentionStore.setState({ itemsById: { approval: item("approval") } });
+    activityStore.setState({ itemsById: { approval: item("approval") } });
     render(<ActivityPane open onClose={() => {}} />);
     openDetail("Task approval");
 
     act(() => {
-      attentionStore.setState({ itemsById: {} });
+      activityStore.setState({ itemsById: {} });
     });
 
     await waitFor(() => {

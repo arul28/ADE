@@ -42,7 +42,7 @@ docs/
     ├── remote-runtime/                    # local runtime + SSH remote machines
     ├── search/                            # universal FTS5 index + ⌘K/TUI/CLI search
     ├── storage-and-recovery/              # disk pressure, durable state, diagnosis, repair
-    ├── sync-and-multi-device/             # CRDT sync, account Attention, iOS, remote commands, session handoff
+    ├── sync-and-multi-device/             # CRDT sync, account Activity, iOS, remote commands, session handoff
     ├── terminals-and-sessions/            # PTY, sessions, and UI surfaces
     ├── web-client/                        # owner-only hosted browser client over sync WebSocket
     └── workspace-graph/                   # React Flow canvas + data sources

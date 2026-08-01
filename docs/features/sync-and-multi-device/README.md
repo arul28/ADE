@@ -26,7 +26,7 @@ does and does not travel, and the layers that implement it. Deep-dives:
 - `cross-machine-session-handoff.md` — the clean/published Git contract,
   bounded context capsule, destination setup, route confirmation, and
   idempotent recovery used by **Send to machine**.
-- `push-notifications.md` — ADE Attention's account-wide source of truth and
+- `push-notifications.md` — Activity's account-wide source of truth and
   its APNs + Live Activity pipeline: machine publishers, the Cloudflare
   consolidation relay, desktop/web/ADE Code/iOS reads, native Mac presentation,
   per-device policy, exact routing, acknowledgments, and ownership fences.
@@ -40,7 +40,7 @@ commands, file requests, and chat/terminal streams. Browser environments paired
 before this release can still reconnect over their saved local/direct routes,
 but the hosted client no longer creates non-account pairings.
 
-Account Attention deliberately does **not** follow that selected machine or
+Account Activity deliberately does **not** follow that selected machine or
 project binding. Every signed-in brain publishes all of its active projects to
 the account relay, while signed-in desktop, hosted web, ADE Code, and iOS read
 the consolidated account stream through an account-scoped path. Navigation and
@@ -1172,7 +1172,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   handoff is idempotent. Legacy peers that do not advertise renewal close at
   token expiry; capable peers have only the advertised short grace window.
 
-Account Attention and push:
+Account Activity and push:
 
 - `apps/ade-cli/src/services/push/pushPublisherService.ts` — derives one
   bounded machine contribution across every project hosted by the brain,
@@ -1191,16 +1191,17 @@ Account Attention and push:
   runtime only as an explicitly labeled fallback.
 - `apps/desktop/src/shared/types/attention.ts` — cross-client item, snapshot,
   destination, availability, preference, and native-presentation contract.
-- `apps/desktop/src/renderer/components/attention/` and
-  `apps/desktop/src/renderer/state/attentionStore.ts` — global header control,
-  compact drawer, full history center, account-switch/revision-safe mutations,
-  and renderer-to-native snapshot feed.
+- `apps/desktop/src/renderer/components/activity/` and
+  `apps/desktop/src/renderer/state/activityStore.ts` — global header popover,
+  two-column Activity pane, account-switch/revision-safe mutations, and
+  renderer-to-native snapshot feed.
 - `apps/desktop/src/renderer/webclient/adapter/attention.ts` — direct browser
   account-relay reader plus signed-out paired-host fallback through
   `attention.getMachineSnapshot` / `attention.acknowledgeMachine`.
-- `apps/ade-cli/src/tuiClient/attentionPane.ts` and
-  `components/AttentionPaneView.tsx` — ADE Code's machine-global `/attention`
-  pane and exact-destination acknowledgment flow.
+- `apps/ade-cli/src/tuiClient/activityPane.ts` and
+  `components/ActivityPaneView.tsx` — ADE Code's machine-global `/activity`
+  pane and exact-destination acknowledgment flow. The hidden `/attention`
+  alias and `attention.call` RPC remain for compatibility.
 - `apps/push-relay/src/attention.ts` and `attentionAuth.ts` — account merge,
   Clerk verification, acknowledgments, presence/preferences, APNs fan-out, and
   one account-wide Live Activity per phone.

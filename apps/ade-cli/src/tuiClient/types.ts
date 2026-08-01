@@ -28,7 +28,7 @@ import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
 import type { UsageProviderSource, UsageProviderState } from "../../../desktop/src/shared/types/usage";
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
-import type { AttentionPaneModel } from "./attentionPane";
+import type { ActivityPaneModel } from "./activityPane";
 
 export type RuntimeMode = "attached" | "embedded";
 
@@ -258,7 +258,7 @@ export interface FeedbackContextMeta {
 export type RightPaneContent =
   | { kind: "empty" }
   | ModelPickerRightPaneContent
-  | { kind: "attention"; model: AttentionPaneModel }
+  | { kind: "activity"; model: ActivityPaneModel }
   | {
       kind: "help";
       title: string;

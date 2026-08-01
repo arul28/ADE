@@ -451,7 +451,7 @@ export function ChatProofTimeline({
 /**
  * A drawer tile. The rail is ~322px wide, so this is a two-up thumbnail with
  * the label underneath rather than the full timeline card at reduced height —
- * that layout truncated every title to "ADE Attention Cen…" and collapsed the
+ * that layout truncated every title to "ADE Activity…" and collapsed the
  * metadata line to "screens… · 7h ago".
  */
 function DrawerProofTile({

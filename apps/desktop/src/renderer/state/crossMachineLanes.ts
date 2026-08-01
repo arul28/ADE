@@ -196,7 +196,7 @@ export type CrossMachineUnion = {
  * implicit in a second component.
  *
  * The glyph is amber, in an amber pill. Amber is machine identity everywhere in
- * ADE (top bar, connections panel, attention center, session hover card), and
+ * ADE (top bar, connections panel, Activity pane, session hover card), and
  * `SessionCard` states the rule directly: amber appears exactly once per row, on
  * the machine tower, because that glyph is identity and never status.
  */

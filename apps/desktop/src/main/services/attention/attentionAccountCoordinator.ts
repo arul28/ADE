@@ -161,7 +161,7 @@ export class AttentionAccountCoordinator {
             : {
                 state: "signed_out",
                 title: `Showing ${machineName}`,
-                message: "Sign in to combine Attention across every ADE machine.",
+                message: "Sign in to combine Activity across every ADE machine.",
                 recovery: "sign_in",
                 hostName: machineName,
               },
@@ -174,7 +174,7 @@ export class AttentionAccountCoordinator {
           throw new Error(
             accountFailure
               ? (
-                  "Account Attention could not connect, and this Mac cannot provide a fallback. "
+                  "Account Activity could not connect, and this Mac cannot provide a fallback. "
                   + compatibilityMessage
                 )
               : compatibilityMessage,
@@ -192,7 +192,7 @@ export class AttentionAccountCoordinator {
       );
     }
     throw new Error(
-      "Attention cannot reach this Mac's ADE brain. Restart ADE on this Mac, then try again.",
+      "Activity cannot reach this Mac's ADE brain. Restart ADE on this Mac, then try again.",
     );
   }
 
@@ -206,7 +206,7 @@ export class AttentionAccountCoordinator {
         .slice(0, 64)
       : [];
     if (itemIds.length === 0) {
-      throw new Error("At least one Attention item id is required.");
+      throw new Error("At least one Activity item id is required.");
     }
     const acknowledgment = {
       itemIds,
@@ -218,7 +218,7 @@ export class AttentionAccountCoordinator {
     const currentAccountOwnerId = this.currentAccountOwnerId();
     if (this.lastSnapshotAccountOwnerId !== currentAccountOwnerId) {
       throw new Error(
-        "The ADE account changed after Attention loaded. Refresh Attention, then try again.",
+        "The ADE account changed after Activity loaded. Refresh Activity, then try again.",
       );
     }
     if (this.lastSnapshotScope === "machine") {
@@ -245,11 +245,11 @@ export class AttentionAccountCoordinator {
         || requestedAccountOwnerId !== this.lastSnapshotAccountOwnerId
       ) {
         throw new Error(
-          "The machine Attention account scope changed after this item loaded. Refresh and try again.",
+          "The machine Activity account scope changed after this item loaded. Refresh and try again.",
         );
       }
       if (!this.options.localRuntimeConnectionPool) {
-        throw new Error("Machine Attention is unavailable until this Mac's ADE brain is ready.");
+        throw new Error("Machine Activity is unavailable until this Mac's ADE brain is ready.");
       }
       await this.options.localRuntimeConnectionPool.callAttention<void>(
         "acknowledge",
@@ -263,7 +263,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (this.lastSnapshotScope !== "account") {
-      throw new Error("Refresh Attention before acknowledging this item.");
+      throw new Error("Refresh Activity before acknowledging this item.");
     }
     if (currentAccountOwnerId && this.options.accountAttentionClient) {
       const requestedAccountOwnerId =
@@ -302,13 +302,13 @@ export class AttentionAccountCoordinator {
       }
       return;
     }
-    throw new Error("Sign in again, refresh Attention, then try to acknowledge this item.");
+    throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
   }
 
   async reportPresence(input: unknown): Promise<void> {
     const presence = isRecord(input) ? input : null;
     if (!presence || typeof presence.deviceId !== "string" || !presence.deviceId.trim()) {
-      throw new Error("A valid Attention presence payload is required.");
+      throw new Error("A valid Activity presence payload is required.");
     }
     if (this.currentAccountOwnerId() && this.options.accountAttentionClient) {
       await this.options.accountAttentionClient.reportAttentionPresence(
@@ -341,7 +341,7 @@ export class AttentionAccountCoordinator {
   async putPreferences(input: unknown): Promise<void> {
     const request = isRecord(input) ? input as AttentionPreferenceUpdateRequest : null;
     if (!request || !isRecord(request.preferences)) {
-      throw new Error("A valid Attention preferences payload is required.");
+      throw new Error("A valid Activity preferences payload is required.");
     }
     const accountOwnerId = this.requireCurrentAccountOwner(request.accountOwnerId);
     if (this.options.accountAttentionClient) {
@@ -352,7 +352,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw new Error("Account Attention is unavailable until this Mac's ADE brain is ready.");
+      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
     }
     await this.options.localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
@@ -410,10 +410,10 @@ export class AttentionAccountCoordinator {
   private requireCurrentAccountOwner(value: unknown): string {
     const accountOwnerId = typeof value === "string" ? value.trim() : "";
     if (!accountOwnerId) {
-      throw new Error("A valid Attention account owner is required.");
+      throw new Error("A valid Activity account owner is required.");
     }
     if (this.currentAccountOwnerId() !== accountOwnerId) {
-      throw new Error("The ADE account changed before Attention preferences could be used.");
+      throw new Error("The ADE account changed before Activity preferences could be used.");
     }
     return accountOwnerId;
   }
@@ -434,7 +434,7 @@ export class AttentionAccountCoordinator {
       });
     }
     return (
-      "Account Attention requires a newer connected ADE brain. "
+      "Account Activity requires a newer connected ADE brain. "
       + "Update and restart ADE on the host machine so the notch can receive account-wide work."
     );
   }
@@ -447,20 +447,20 @@ export class AttentionAccountCoordinator {
         title: "Account session needs attention",
         message:
           "ADE could not verify your account after refreshing the session. "
-          + "Sign out and back in to restore account-wide Attention.",
+          + "Sign out and back in to restore account-wide Activity.",
         recovery: "sign_in",
       };
     }
     if (error instanceof PushRelayRequestError && error.status === 503) {
       return {
-        title: "Account Attention is temporarily unavailable",
+        title: "Account Activity is temporarily unavailable",
         message:
           "ADE's account service is not ready. Machine-scoped work remains available while it recovers.",
         recovery: "retry",
       };
     }
     return {
-      title: "Account Attention is reconnecting",
+      title: "Account Activity is reconnecting",
       message:
         "ADE cannot reach the account stream right now. Machine-scoped work remains available.",
       recovery: "retry",

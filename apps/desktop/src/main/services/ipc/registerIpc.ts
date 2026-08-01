@@ -3210,19 +3210,19 @@ export function registerIpc({
 
   ipcMain.handle(IPC.attentionNotchPublishSnapshot, async (_event, input: unknown) => {
     const snapshot = parseAttentionNotchSnapshot(input);
-    if (!snapshot) throw new Error("Invalid Attention Notch snapshot.");
+    if (!snapshot) throw new Error("Invalid ADE Notch snapshot.");
     publishAttentionNotchSnapshot?.(snapshot);
   });
 
   ipcMain.handle(IPC.attentionNotchPublishToast, async (_event, input: unknown) => {
     const toast = parseAttentionNotchToast(input);
-    if (!toast) throw new Error("Invalid Attention Notch toast.");
+    if (!toast) throw new Error("Invalid ADE Notch toast.");
     publishAttentionNotchToast?.(toast);
   });
 
   ipcMain.handle(IPC.attentionNotchUpdateSettings, async (_event, input: unknown) => {
     const settings = parseAttentionNotchSettings(input);
-    if (!settings) throw new Error("Invalid Attention Notch settings.");
+    if (!settings) throw new Error("Invalid ADE Notch settings.");
     updateAttentionNotchSettings?.(settings);
   });
 
@@ -3303,7 +3303,7 @@ export function registerIpc({
       tombstones: [],
     });
     const item = snapshot?.items[0] ?? null;
-    if (!item) throw new Error("Invalid Attention item.");
+    if (!item) throw new Error("Invalid Activity item.");
     await openAttentionItem?.(item);
   });
 
@@ -10604,7 +10604,7 @@ export function registerIpc({
       windowId: number | null;
     }) {
       const machineKey = args.machineKey.trim();
-      if (!machineKey) throw new Error("Attention machine identity is required.");
+      if (!machineKey) throw new Error("Activity machine identity is required.");
       let targetId = runtimeBridge.resolveTargetIdForMachineKey(machineKey);
       if (!targetId) {
         targetId = (await accountBridge.pairMachine(machineKey)).targetId;

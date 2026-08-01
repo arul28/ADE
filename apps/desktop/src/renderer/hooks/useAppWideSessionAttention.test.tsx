@@ -9,7 +9,7 @@ import {
   type AttentionItem,
   type AttentionPhase,
 } from "../../shared/types";
-import { attentionStore, resetAttentionStoreForTests } from "../state/attentionStore";
+import { activityStore, resetActivityStoreForTests } from "../state/activityStore";
 import { useAppStore } from "../state/appStore";
 
 const listSessionsCached = vi.fn(async () => [] as unknown[]);
@@ -63,7 +63,7 @@ function needsYouItem(id: string, phase: AttentionPhase = "needs_you"): Attentio
 }
 
 function readyAccountFeed(items: AttentionItem[]): void {
-  attentionStore.setState({
+  activityStore.setState({
     itemsById: Object.fromEntries(items.map((item) => [item.id, item])),
     availability: {
       state: "ready",
@@ -75,7 +75,7 @@ function readyAccountFeed(items: AttentionItem[]): void {
 }
 
 function useAccountScope(): void {
-  attentionStore.setState({
+  activityStore.setState({
     preferences: {
       ...DEFAULT_ATTENTION_PREFERENCES,
       account: { ...DEFAULT_ATTENTION_PREFERENCES.account, dockBadgeScope: "account" },
@@ -118,7 +118,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   useAppStore.setState({ showWelcome: true, project: null });
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -170,7 +170,7 @@ describe("useAppWideSessionAttention dock badge scope", () => {
    */
   it("falls back to the local count while the account feed is not ready", async () => {
     useAccountScope();
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: { a: needsYouItem("a"), b: needsYouItem("b"), c: needsYouItem("c") },
       availability: {
         state: "degraded",

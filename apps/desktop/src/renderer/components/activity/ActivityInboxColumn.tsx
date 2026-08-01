@@ -20,7 +20,7 @@ import {
 } from "../../../shared/types";
 import { relativeWhen } from "../../lib/format";
 import { cn } from "../ui/cn";
-import { activityItemPresentation } from "./attentionPresentation";
+import { activityItemPresentation } from "./activityPresentation";
 
 const INITIAL_ROW_BUDGET = 60;
 const ROW_BUDGET_STEP = 60;

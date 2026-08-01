@@ -1,6 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { TerminalSessionSummary } from "../../shared/types";
-import { activityBadgeCount } from "../components/attention/activityPriority";
+import { activityBadgeCount } from "../components/activity/activityPriority";
 import { shouldRefreshSessionListForChatEvent } from "../lib/chatSessionEvents";
 import {
   invalidateSessionListCache,
@@ -8,10 +8,10 @@ import {
 } from "../lib/sessionListCache";
 import { summarizeTerminalAttention } from "../lib/terminalAttention";
 import {
-  attentionStore,
+  activityStore,
   selectDockBadgeScope,
-  useAttentionStore,
-} from "../state/attentionStore";
+  useActivityStore,
+} from "../state/activityStore";
 import { selectActiveProjectRoot, useAppStore } from "../state/appStore";
 
 const EMPTY_TERMINAL_ATTENTION = {
@@ -31,7 +31,7 @@ const EMPTY_TERMINAL_ATTENTION = {
  * falls back to the local count instead.
  */
 function accountDockBadgeCount(): number | null {
-  const state = attentionStore.getState();
+  const state = activityStore.getState();
   if (state.availability?.state !== "ready") return null;
   return activityBadgeCount(state.itemsById);
 }
@@ -47,7 +47,7 @@ export function useAppWideSessionAttention(): void {
   const ctoAwaitingInput = useAppStore((state) => state.ctoAttention.awaitingInput);
   // Account scope is a synced preference, so it can flip from another device
   // mid-session; the badge has to follow without a reload.
-  const dockBadgeScope = useAttentionStore(selectDockBadgeScope);
+  const dockBadgeScope = useActivityStore(selectDockBadgeScope);
   const lastDockBadgeCountRef = useRef<number | null>(null);
   const trackedProjectRoot = showWelcome ? null : currentProjectRoot;
 
@@ -69,7 +69,7 @@ export function useAppWideSessionAttention(): void {
       }
       if (dockBadgeScope !== "account") return;
       // Keep following the account feed while no project is open.
-      return attentionStore.subscribe(() => {
+      return activityStore.subscribe(() => {
         const count = accountDockBadgeCount();
         const next = count == null ? 0 : count + (ctoAwaitingInput ? 1 : 0);
         if (lastDockBadgeCountRef.current === next) return;
@@ -101,7 +101,7 @@ export function useAppWideSessionAttention(): void {
     };
 
     const unsubscribeAttention = dockBadgeScope === "account"
-      ? attentionStore.subscribe(pushDockBadge)
+      ? activityStore.subscribe(pushDockBadge)
       : () => {};
 
     const refreshTerminalAttention = async () => {

@@ -2,7 +2,7 @@ import React from "react";
 import { describe, expect, it } from "vitest";
 import { render } from "ink-testing-library";
 import type { AttentionItem } from "../../../../desktop/src/shared/types/attention";
-import { buildAttentionPaneModel } from "../attentionPane";
+import { buildActivityPaneModel } from "../activityPane";
 import { RightPane } from "../components/RightPane";
 
 function attentionItem(): AttentionItem {
@@ -36,9 +36,9 @@ function attentionItem(): AttentionItem {
   };
 }
 
-describe("AttentionPane", () => {
+describe("ActivityPane", () => {
   it("renders scope, urgency, ownership, offline honesty, and keyboard help", () => {
-    const model = buildAttentionPaneModel({
+    const model = buildActivityPaneModel({
       contractVersion: 1,
       scope: "machine",
       availability: {
@@ -55,14 +55,14 @@ describe("AttentionPane", () => {
     });
     const view = render(
       <RightPane
-        content={{ kind: "attention", model }}
+        content={{ kind: "activity", model }}
         selectedIndex={0}
         focused
         width={52}
       />,
     ).lastFrame() ?? "";
 
-    expect(view).toContain("ATTENTION");
+    expect(view).toContain("ACTIVITY");
     expect(view).toContain("THIS MACHINE");
     expect(view).toContain("Showing this machine while you retry.");
     expect(view).toContain("NEEDS YOU");

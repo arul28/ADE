@@ -956,12 +956,12 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
   },
   attention: {
     getSnapshot: {
-      description: "Read the account-wide Attention stream across every connected machine and project.",
+      description: "Read the account-wide Activity stream across every connected machine and project.",
       input: "object { since?: non-negative integer, streamId?: string | null }",
       example: "ade --role cto actions run attention.getSnapshot --input-json '{\"since\":0}' --json",
     },
     acknowledge: {
-      description: "Mark up to 64 Attention items as seen or dismissed across account surfaces.",
+      description: "Mark up to 64 Activity items as seen or dismissed across account surfaces.",
       input: "object { itemIds: string[], seenAt?: ISO timestamp, dismissedAt?: ISO timestamp | null }",
       example: "ade --role cto actions run attention.acknowledge --input-json '{\"itemIds\":[\"attention-item-1\"],\"seenAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
     },
@@ -971,12 +971,12 @@ const ADE_ACTION_INPUT_CONTRACTS: Partial<Record<AdeActionDomain, Partial<Record
       example: "ade --role cto actions run attention.reportPresence --input-json '{\"deviceId\":\"mac-1\",\"deviceName\":\"MacBook Pro\",\"platform\":\"macOS\",\"appForeground\":true,\"ambientSurfaceVisible\":true,\"visibleItemIds\":[],\"observedAt\":\"2026-07-28T12:00:00.000Z\"}' --json",
     },
     getPreferences: {
-      description: "Read account, device, project, and muted-session Attention preferences for the signed-in owner.",
+      description: "Read account, device, project, and muted-session Activity preferences for the signed-in owner.",
       input: "object { accountOwnerId: string }",
       example: "ade --role cto actions run attention.getPreferences --input-json '{\"accountOwnerId\":\"user_123\"}' --json",
     },
     putPreferences: {
-      description: "Replace Attention preferences for the signed-in account owner.",
+      description: "Replace Activity preferences for the signed-in account owner.",
       input: "object { accountOwnerId: string, preferences: AttentionPreferences }",
       example: "ade --role cto actions run attention.putPreferences --input-json '{\"accountOwnerId\":\"user_123\",\"preferences\":{\"account\":{},\"devices\":{},\"projects\":{},\"mutedSessionIds\":[]}}' --json",
     },
@@ -1832,7 +1832,7 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
     const status = runtime.accountAuthService?.getStatus();
     const currentOwnerId = status?.signedIn ? status.userId?.trim() || null : null;
     if (!accountOwnerId || currentOwnerId !== accountOwnerId) {
-      throw new Error("The ADE account changed before Attention preferences could be used.");
+      throw new Error("The ADE account changed before Activity preferences could be used.");
     }
     return accountOwnerId;
   };
@@ -1868,7 +1868,7 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
     },
     reportPresence: (args?: AttentionPresence) => {
       if (!args || typeof args.deviceId !== "string") {
-        throw new Error("A valid Attention presence payload is required.");
+        throw new Error("A valid Activity presence payload is required.");
       }
       return publisher.reportAttentionPresence(args);
     },
@@ -1881,7 +1881,7 @@ function buildAttentionDomainService(runtime: AdeRuntime): OpaqueService | null 
       preferences?: AttentionPreferences;
     }) => {
       if (!args?.preferences || typeof args.preferences !== "object") {
-        throw new Error("A valid Attention preferences payload is required.");
+        throw new Error("A valid Activity preferences payload is required.");
       }
       return publisher.putAttentionPreferences(
         requireCurrentAccountOwner(args.accountOwnerId),

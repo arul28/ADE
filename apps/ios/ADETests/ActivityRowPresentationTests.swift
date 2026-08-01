@@ -4,7 +4,7 @@ import XCTest
 /// The anti-drift test for the iOS half of the status vocabulary. Every
 /// expectation here is transcribed from
 /// `apps/desktop/src/shared/sessionStatusPresentation.ts` (session phases) and
-/// `renderer/components/attention/attentionPresentation.ts`
+/// `renderer/components/activity/activityPresentation.ts`
 /// (`NON_SESSION_PRESENTATION` + `NON_SESSION_STATUS_DETAILS`). If a hue or a
 /// word moves on desktop and not here, this fails — which is the whole point.
 final class ActivityRowPresentationTests: XCTestCase {

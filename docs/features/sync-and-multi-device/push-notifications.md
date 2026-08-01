@@ -1,16 +1,18 @@
-# Attention, notifications, and Live Activities
+# Activity, notifications, and Live Activities
 
-ADE uses one account-wide Attention contract for agent work and pull requests
-across every signed-in machine and project. Desktop Attention, ADE Notch, the
-iOS Attention Center, APNs notifications, Lock Screen widgets, and Live
+ADE uses one account-wide Activity stream for agent work and pull requests
+across every signed-in machine and project. Desktop Activity, ADE Notch, the
+iOS Activity drawer, APNs notifications, Lock Screen widgets, and Live
 Activities all render the same items and route to the same destination.
 
-The product name for the shared system is **ADE Attention**. The compact native
-macOS presentation is **ADE Notch**.
+The product name for the shared system is **Activity**. The compact native
+macOS presentation is **ADE Notch**. Compatibility contracts still use
+`attention` names, including `AttentionItem`, relay routes, IPC channels,
+persistence fields, analytics/log identifiers, and the native helper product.
 
 ## Product rules
 
-- Running work is ambient. It belongs in Attention, ADE Notch, widgets, and
+- Running work is ambient. It belongs in Activity, ADE Notch, widgets, and
   Live Activities, not in a stream of toast or push interruptions.
 - `needs_you`, failures, failing checks, changes requested, and review requests
   can notify according to the user's policy.
@@ -53,7 +55,7 @@ account/device preferences. Exact destinations still identify the owning
 machine, project, session, event, or PR tab.
 
 The legacy paired-machine push routes remain available for older clients. Once
-an account Attention publish succeeds, the brain suppresses duplicate legacy
+an account Activity publish succeeds, the brain suppresses duplicate legacy
 alerts and the legacy per-machine Live Activity.
 
 ## Shared contract
@@ -230,7 +232,7 @@ hours, muted sessions, preview privacy, sound, and exact deep links are applied
 before APNs fan-out. `needs_you` can use time-sensitive interruption; other
 notifying events use active interruption.
 
-## Desktop Attention
+## Desktop Activity
 
 `AttentionAccountCoordinator` in Electron main owns desktop reads and
 mutations. For a signed-in user it talks directly to the account relay; it does
@@ -246,24 +248,25 @@ the same local-only path and offers sign-in. If neither source is safe, the
 surface reports which component failed and how to recover rather than inventing
 an empty account.
 
-`useAttentionSync` remains mounted in `AppShell`, so the global-header control
-and ADE Notch stay truthful across project switches and while `/attention` is
+`useActivitySync` remains mounted in `AppShell`, so the global-header control
+and ADE Notch stay truthful across project switches and while `/activity` is
 closed. The header count represents work waiting on the user (`needs_you`,
 failed/blocked, and done-but-unreviewed); live work is an ambient pulse rather
-than an inflated inbox count. Its keyboard-accessible popover groups Needs you,
-Failing or blocked, Done unreviewed, and Live now across machines/projects. The
-full Attention Center is the secondary Open all/history destination.
+than an inflated inbox count. Its keyboard-accessible popover previews the two
+Activity buckets: Sessions, prioritized as Needs you → Working → Done, and
+Inbox for PR/CI and other outcomes. Open all leads to the larger two-column
+Activity pane with filters, settings, and an exact item-detail sheet.
 
 The full route provides:
 
-- Needs-you/inbox, live, and recent views;
+- Sessions and Inbox columns, with Needs you, Working, and Done session groups;
 - all-machine, machine, and project scopes;
 - a machine → project → item roster;
 - an exact detail view with plan progress, recent activity, safe actions,
   seen/dismiss state, offline explanation, and retryable acknowledgment;
 - account delivery/privacy controls.
 
-Presence reports include foreground state, whether an ambient Attention surface
+Presence reports include foreground state, whether an ambient Activity surface
 is visible, and the currently visible item ids. They are posted every 30 s while
 the ADE window is visible and every 120 s while it is hidden, plus immediately
 on focus, on blur, and on becoming visible again: a hidden window still has to
@@ -282,12 +285,12 @@ stream it is standing in for. Above it, the renderer races a 75 s backstop,
 sized to clear a 15 s relay request, one forced 401 retry, and that 30 s
 fallback in sequence — a shorter race would discard a slow-but-successful
 snapshot and replace a real host error with a generic timeout. When the backstop
-wins, Attention reports that it took too long and offers a retry instead of
+wins, Activity reports that it took too long and offers a retry instead of
 leaving the header pinned on syncing.
 
-## Hosted web Attention
+## Hosted web Activity
 
-The hosted browser adapter reads account Attention directly from the relay with
+The hosted browser adapter reads account Activity directly from the relay with
 its in-memory Clerk access token, independently of the paired machine and
 selected project used for Work, Files, and PR commands. It validates the entire
 snapshot/preferences contract at the network boundary and performs at most one
@@ -300,15 +303,16 @@ from their explicitly paired host through the viewer-allowed
 revision. An older host that lacks those actions produces an Update host state;
 the adapter never converts an unsupported call into an empty list. If the
 browser account changes after a snapshot loads, opening or acknowledging that
-snapshot is rejected until Attention refreshes under the new owner.
+snapshot is rejected until Activity refreshes under the new owner.
 
-## ADE Code Attention
+## ADE Code Activity
 
-`/attention` opens an account-wide right pane grouped by needs-you, failures,
+`/activity` opens an account-wide right pane grouped by needs-you, failures,
 done-but-unreviewed, live, and recent work. The TUI calls machine-global
 `attention.call`, not the selected project's action scope, so changing lanes or
 projects does not change the account source. Enter opens the exact ADE
 destination first and only then sends the revision/owner-fenced seen mutation.
+`/attention` remains an unadvertised compatibility alias.
 
 When signed out, ADE Code asks the connected host for its real machine snapshot
 and labels the subset. Account failure may degrade to that same connected-host
@@ -368,7 +372,7 @@ Interaction rules:
 - Reveal on hover is dormant until the pointer enters a bounded top-edge or
   status-item hot zone; Click only never grows on hover;
 - right-click anywhere on the physical surface or the menu-bar item opens the
-  same native menu: Open Attention Center, Refresh, presentation mode, expanded
+  same native menu: Open Activity, Refresh, presentation mode, expanded
   panel policy, and a confirmed Hide action with restore guidance;
 - ordinary running work and needs-you changes update status without overriding
   the user's reveal policy;
@@ -381,12 +385,12 @@ Interaction rules:
 The helper sends open and acknowledgment requests back through typed IPC. Exact
 ADE destinations are validated before the desktop navigates.
 
-## iOS Attention Center
+## iOS Activity drawer
 
 The mobile app stores the account snapshot in the App Group container using the
 same delta/tombstone/expiry rules as desktop.
 
-The global Attention Center shows all signed-in machines and projects. Project
+The global Activity drawer shows all signed-in machines and projects. Project
 drawers are lenses over that same account model, not separate notification
 inboxes. Tapping an item follows its exact destination. Remote items expose only
 actions that are safe without assuming the currently paired host owns them.

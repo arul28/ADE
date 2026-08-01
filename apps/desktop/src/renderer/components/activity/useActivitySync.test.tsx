@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 // React hook integration coverage is kept under a distinct basename so TypeScript
-// includes it alongside the transport-only useAttentionSync tests.
+// includes it alongside the transport-only useActivitySync tests.
 
 import React from "react";
 import { act, cleanup, render, waitFor } from "@testing-library/react";
@@ -14,21 +14,21 @@ import {
   type AttentionSnapshot,
 } from "../../../shared/types";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import {
-  attentionNotchSettingsFromPreferences,
-  attentionNotchSnapshotSignature,
-  attentionToastForTransition,
-  materializeAttentionNotchSnapshot,
-  refreshAttentionSnapshot,
-  useAttentionSync,
+  activityNotchSettingsFromPreferences,
+  activityNotchSnapshotSignature,
+  activityToastForTransition,
+  materializeActivityNotchSnapshot,
+  refreshActivitySnapshot,
+  useActivitySync,
   MAX_NOTCH_PROJECTION_ITEMS,
   TOAST_ITEM_COOLDOWN_MS,
   TOAST_MIN_INTERVAL_MS,
-} from "./useAttentionSync";
+} from "./useActivitySync";
 
 const originalAde = window.ade;
 const originalVisibilityState = Object.getOwnPropertyDescriptor(
@@ -56,7 +56,7 @@ const runningItem: AttentionItem = {
     rootPath: "/projects/ADE",
   },
   title: "Running",
-  preview: "Implementing Attention",
+  preview: "Implementing Activity",
   privacyPreview: "Agent is working",
   destination: {
     kind: "session",
@@ -101,7 +101,7 @@ function liveItem(): AttentionItem {
 }
 
 function Harness({ surfaceVisible = true }: { surfaceVisible?: boolean }) {
-  useAttentionSync(surfaceVisible);
+  useActivitySync(surfaceVisible);
   return null;
 }
 
@@ -117,7 +117,7 @@ afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
   vi.useRealTimers();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -131,7 +131,7 @@ afterEach(() => {
   }
 });
 
-describe("useAttentionSync", () => {
+describe("useActivitySync", () => {
   it("applies privacy settings before publishing the first native snapshot", async () => {
     publishAccountStatus({
       signedIn: true,
@@ -202,7 +202,7 @@ describe("useAttentionSync", () => {
       availability: {
         state: "signed_out",
         title: "This machine only",
-        message: "Sign in to combine Attention across every ADE machine.",
+        message: "Sign in to combine Activity across every ADE machine.",
         recovery: "sign_in",
       },
       streamId: "machine:studio",
@@ -325,7 +325,7 @@ describe("useAttentionSync", () => {
         scope: "account",
         availability: {
           state: "ready",
-          title: "Account Attention",
+          title: "Account Activity",
           message: "Live across your ADE account.",
           recovery: null,
         },
@@ -358,12 +358,12 @@ describe("useAttentionSync", () => {
 
     render(<Harness />);
 
-    await waitFor(() => expect(attentionStore.getState().itemsById["live-account-item"]).toBeTruthy());
+    await waitFor(() => expect(activityStore.getState().itemsById["live-account-item"]).toBeTruthy());
     shouldFail = true;
     await act(async () => {
-      await refreshAttentionSnapshot();
+      await refreshActivitySnapshot();
     });
-    await waitFor(() => expect(attentionStore.getState().availability).toMatchObject({
+    await waitFor(() => expect(activityStore.getState().availability).toMatchObject({
       state: "degraded",
       recovery: "retry",
     }));
@@ -374,7 +374,7 @@ describe("useAttentionSync", () => {
         items: [expect.objectContaining({ id: "live-account-item" })],
       }),
     ));
-    expect(attentionStore.getState().syncStatus).toBe("error");
+    expect(activityStore.getState().syncStatus).toBe("error");
   });
 
   it("times out a wedged snapshot as retryable degradation and allows a later refresh", async () => {
@@ -404,25 +404,25 @@ describe("useAttentionSync", () => {
       },
     });
 
-    const timedOutRefresh = refreshAttentionSnapshot();
-    expect(attentionStore.getState().syncStatus).toBe("syncing");
+    const timedOutRefresh = refreshActivitySnapshot();
+    expect(activityStore.getState().syncStatus).toBe("syncing");
 
     await vi.advanceTimersByTimeAsync(75_000);
     await timedOutRefresh;
 
-    expect(attentionStore.getState()).toMatchObject({
+    expect(activityStore.getState()).toMatchObject({
       syncStatus: "error",
-      syncError: "Attention took too long to respond. Retry to restore live updates.",
+      syncError: "Activity took too long to respond. Retry to restore live updates.",
       availability: {
         state: "degraded",
         recovery: "retry",
       },
     });
 
-    await refreshAttentionSnapshot();
+    await refreshActivitySnapshot();
 
     expect(getSnapshot).toHaveBeenCalledTimes(2);
-    expect(attentionStore.getState()).toMatchObject({
+    expect(activityStore.getState()).toMatchObject({
       syncStatus: "ready",
       syncError: null,
       revision: 1,
@@ -638,7 +638,7 @@ describe("useAttentionSync", () => {
 
   it("requests incremental snapshots from the latest account cursor", async () => {
     const current = liveItem();
-    attentionStore.setState({
+    activityStore.setState({
       revision: 9,
       itemsById: { [current.id]: current },
     });
@@ -664,11 +664,11 @@ describe("useAttentionSync", () => {
       },
     });
 
-    await refreshAttentionSnapshot();
+    await refreshActivitySnapshot();
 
     expect(getSnapshot).toHaveBeenCalledWith(9, null);
-    expect(attentionStore.getState().itemsById[current.id]).toBe(current);
-    expect(attentionStore.getState().revision).toBe(10);
+    expect(activityStore.getState().itemsById[current.id]).toBe(current);
+    expect(activityStore.getState().revision).toBe(10);
   });
 
   it("hydrates the account snapshot and counts a running native notch as visible presence", async () => {
@@ -753,7 +753,7 @@ describe("useAttentionSync", () => {
 
     await waitFor(() => {
       expect(getSnapshot).toHaveBeenCalledWith(0, null);
-      expect(attentionStore.getState().itemsById["live-account-item"]).toBeTruthy();
+      expect(activityStore.getState().itemsById["live-account-item"]).toBeTruthy();
     });
     await waitFor(() => {
       expect(reportPresence).toHaveBeenCalled();
@@ -846,22 +846,22 @@ describe("useAttentionSync", () => {
   });
 });
 
-describe("Attention Notch renderer bridge", () => {
-  beforeEach(() => resetAttentionStoreForTests());
+describe("Activity renderer-to-notch bridge", () => {
+  beforeEach(() => resetActivityStoreForTests());
 
   it("materializes the merged renderer state rather than forwarding a delta", () => {
-    attentionStore.setState({
+    activityStore.setState({
       revision: 8,
       generatedAt: "2026-07-28T12:00:02.000Z",
       itemsById: { [runningItem.id]: runningItem },
     });
-    expect(materializeAttentionNotchSnapshot()).toEqual({
+    expect(materializeActivityNotchSnapshot()).toEqual({
       contractVersion: 1,
       scope: "machine",
       availability: {
         state: "signed_out",
         title: "This machine only",
-        message: "Sign in to combine Attention across every ADE machine.",
+        message: "Sign in to combine Activity across every ADE machine.",
         recovery: "sign_in",
       },
       streamId: null,
@@ -883,7 +883,7 @@ describe("Attention Notch renderer bridge", () => {
   });
 
   it("maps account privacy, celebration, sound, and local presentation settings", () => {
-    expect(attentionNotchSettingsFromPreferences({
+    expect(activityNotchSettingsFromPreferences({
       ...DEFAULT_ATTENTION_PREFERENCES,
       account: {
         ...DEFAULT_ATTENTION_PREFERENCES.account,
@@ -915,7 +915,7 @@ describe("Attention Notch renderer bridge", () => {
       scope: "account",
       availability: {
         state: "ready",
-        title: "Account Attention",
+        title: "Account Activity",
         message: "Live across your ADE account.",
         recovery: null,
       },
@@ -943,16 +943,16 @@ describe("Attention Notch renderer bridge", () => {
       ...base,
       availability: {
         state: "degraded" as const,
-        title: "Account Attention is reconnecting",
+        title: "Account Activity is reconnecting",
         message: "Last-known work remains available.",
         recovery: "retry" as const,
       },
     };
 
-    expect(attentionNotchSnapshotSignature(routingChanged))
-      .not.toBe(attentionNotchSnapshotSignature(base));
-    expect(attentionNotchSnapshotSignature(availabilityChanged))
-      .not.toBe(attentionNotchSnapshotSignature(base));
+    expect(activityNotchSnapshotSignature(routingChanged))
+      .not.toBe(activityNotchSnapshotSignature(base));
+    expect(activityNotchSnapshotSignature(availabilityChanged))
+      .not.toBe(activityNotchSnapshotSignature(base));
     expect(routingChanged.items[0]?.machine.accountMachineKey)
       .toBe("canonical-machine-1");
   });
@@ -982,13 +982,13 @@ describe("Attention Notch renderer bridge", () => {
         activityTier: "signal",
       };
     }
-    attentionStore.setState({
+    activityStore.setState({
       revision: 9,
       generatedAt: "2026-07-28T12:00:02.000Z",
       itemsById,
     });
 
-    const snapshot = materializeAttentionNotchSnapshot();
+    const snapshot = materializeActivityNotchSnapshot();
     expect(snapshot.items).toHaveLength(MAX_NOTCH_PROJECTION_ITEMS);
     expect(snapshot.itemsTruncated).toBe(true);
     // Needs-you first, always: the slice is the top of Activity's own order.
@@ -1004,8 +1004,8 @@ describe("Attention Notch renderer bridge", () => {
       expect(entry).not.toHaveProperty("recentActivity");
     }
     // The store's own objects must be untouched by the projection.
-    expect(attentionStore.getState().itemsById["working-000"]?.preview).toHaveLength(400);
-    expect(attentionStore.getState().itemsById["working-000"]?.recentActivity)
+    expect(activityStore.getState().itemsById["working-000"]?.preview).toHaveLength(400);
+    expect(activityStore.getState().itemsById["working-000"]?.recentActivity)
       .toHaveLength(2);
     // Counts describe the whole account, not the 48 rows that travelled.
     expect(snapshot.counts).toEqual({
@@ -1019,8 +1019,8 @@ describe("Attention Notch renderer bridge", () => {
   });
 
   it("republishes when only the counts changed", () => {
-    const base = materializeAttentionNotchSnapshot();
-    expect(attentionNotchSnapshotSignature({
+    const base = materializeActivityNotchSnapshot();
+    expect(activityNotchSnapshotSignature({
       ...base,
       counts: {
         needsYou: 1,
@@ -1030,11 +1030,11 @@ describe("Attention Notch renderer bridge", () => {
         machinesOnline: 1,
         machinesTotal: 1,
       },
-    })).not.toBe(attentionNotchSnapshotSignature({ ...base, counts: undefined }));
+    })).not.toBe(activityNotchSnapshotSignature({ ...base, counts: undefined }));
   });
 });
 
-describe("Attention Notch toast decisions", () => {
+describe("Activity notch toast decisions", () => {
   const signalItem: AttentionItem = {
     ...runningItem,
     id: "agent-needs-you",
@@ -1047,8 +1047,8 @@ describe("Attention Notch toast decisions", () => {
   };
 
   const decide = (
-    overrides: Partial<Parameters<typeof attentionToastForTransition>[0]> = {},
-  ) => attentionToastForTransition({
+    overrides: Partial<Parameters<typeof activityToastForTransition>[0]> = {},
+  ) => activityToastForTransition({
     items: [signalItem],
     previousPhases: new Map([[signalItem.id, "running"]]),
     lastToastAtByItem: new Map(),
@@ -1154,4 +1154,3 @@ describe("Attention Notch toast decisions", () => {
     })).toMatchObject({ treatment: "celebration" });
   });
 });
-

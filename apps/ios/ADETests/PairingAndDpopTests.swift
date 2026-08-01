@@ -205,7 +205,7 @@ final class PairingAndDpopTests: XCTestCase {
           "laneName": "Primary",
           "provider": "codex",
           "model": "gpt-5",
-          "title": "Polish mobile Attention",
+          "title": "Polish mobile Activity",
           "preview": "Type checking widgets",
           "privacyPreview": "Agent working",
           "detail": null,

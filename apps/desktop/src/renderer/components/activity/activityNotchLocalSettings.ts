@@ -23,7 +23,7 @@ const ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT = "ade:attention-notch-settings-cha
  * chrome, so it stays beside the enabled flag rather than in account
  * preferences that follow the user to every machine.
  */
-export type AttentionNotchPresentation = {
+export type ActivityNotchPresentation = {
   revealMode: AttentionNotchRevealMode;
   expandedPanelEnabled: boolean;
   automaticRevealEnabled: boolean;
@@ -31,7 +31,7 @@ export type AttentionNotchPresentation = {
 };
 
 /** What a Mac that has never been configured gets: today's behaviour. */
-export const DEFAULT_ATTENTION_NOTCH_PRESENTATION: AttentionNotchPresentation = {
+export const DEFAULT_ACTIVITY_NOTCH_PRESENTATION: ActivityNotchPresentation = {
   revealMode: DEFAULT_ATTENTION_NOTCH_REVEAL_MODE,
   expandedPanelEnabled: true,
   automaticRevealEnabled: true,
@@ -57,29 +57,29 @@ function writeLocalItem(key: string, value: string): void {
   }
 }
 
-export function readAttentionNotchEnabled(): boolean {
+export function readActivityNotchEnabled(): boolean {
   return readLocalItem(ATTENTION_NOTCH_ENABLED_KEY) !== "false";
 }
 
-export function writeAttentionNotchEnabled(enabled: boolean): void {
+export function writeActivityNotchEnabled(enabled: boolean): void {
   writeLocalItem(ATTENTION_NOTCH_ENABLED_KEY, String(enabled));
 }
 
 /** A value this build has never heard of falls back to the shipped behaviour. */
-export function readAttentionNotchPresentation(): AttentionNotchPresentation {
+export function readActivityNotchPresentation(): ActivityNotchPresentation {
   const revealMode = readLocalItem(ATTENTION_NOTCH_REVEAL_MODE_KEY);
   return {
     revealMode: isAttentionNotchRevealMode(revealMode)
       ? revealMode
-      : DEFAULT_ATTENTION_NOTCH_PRESENTATION.revealMode,
+      : DEFAULT_ACTIVITY_NOTCH_PRESENTATION.revealMode,
     expandedPanelEnabled: readLocalItem(ATTENTION_NOTCH_EXPANDED_PANEL_KEY) !== "false",
     automaticRevealEnabled: readLocalItem(ATTENTION_NOTCH_AUTO_REVEAL_KEY) !== "false",
     tickerEnabled: readLocalItem(ATTENTION_NOTCH_TICKER_KEY) !== "false",
   };
 }
 
-export function writeAttentionNotchPresentation(
-  presentation: AttentionNotchPresentation,
+export function writeActivityNotchPresentation(
+  presentation: ActivityNotchPresentation,
 ): void {
   writeLocalItem(ATTENTION_NOTCH_REVEAL_MODE_KEY, presentation.revealMode);
   writeLocalItem(
@@ -99,10 +99,10 @@ export function writeAttentionNotchPresentation(
  * signed-out or not-yet-loaded window still shows the choice this Mac made
  * rather than snapping back to the shipped default for a frame.
  */
-export function resolveAttentionNotchPresentation(
+export function resolveActivityNotchPresentation(
   preferences: AttentionPreferences | null | undefined,
-  local: AttentionNotchPresentation = readAttentionNotchPresentation(),
-): AttentionNotchPresentation {
+  local: ActivityNotchPresentation = readActivityNotchPresentation(),
+): ActivityNotchPresentation {
   const account = preferences?.account;
   return {
     revealMode: isAttentionNotchRevealMode(account?.notchRevealMode)
@@ -121,9 +121,9 @@ export function resolveAttentionNotchPresentation(
 }
 
 /** The account half of a write-both. The caller still writes localStorage. */
-export function attentionPreferencesWithNotchPresentation(
+export function activityPreferencesWithNotchPresentation(
   preferences: AttentionPreferences,
-  presentation: AttentionNotchPresentation,
+  presentation: ActivityNotchPresentation,
 ): AttentionPreferences {
   return {
     ...preferences,
@@ -137,11 +137,11 @@ export function attentionPreferencesWithNotchPresentation(
   };
 }
 
-export function persistAttentionNotchSettings(
+export function persistActivityNotchSettings(
   settings: AttentionNotchSettings,
 ): void {
-  writeAttentionNotchEnabled(settings.enabled);
-  writeAttentionNotchPresentation({
+  writeActivityNotchEnabled(settings.enabled);
+  writeActivityNotchPresentation({
     revealMode: settings.revealMode,
     expandedPanelEnabled: settings.expandedPanelEnabled,
     automaticRevealEnabled: settings.automaticRevealEnabled,
@@ -155,7 +155,7 @@ export function persistAttentionNotchSettings(
   }
 }
 
-export function onAttentionNotchSettingsChanged(
+export function onActivityNotchSettingsChanged(
   callback: (settings: AttentionNotchSettings) => void,
 ): () => void {
   if (typeof window === "undefined") return () => {};
@@ -168,7 +168,7 @@ export function onAttentionNotchSettingsChanged(
     window.removeEventListener(ATTENTION_NOTCH_SETTINGS_CHANGED_EVENT, listener);
 }
 
-export function normalizeAttentionPreferences(
+export function normalizeActivityPreferences(
   preferences: AttentionPreferences,
 ): AttentionPreferences {
   return {
@@ -193,12 +193,12 @@ export function normalizeAttentionPreferences(
   };
 }
 
-export function attentionNotchSettingsFromPreferences(
+export function activityNotchSettingsFromPreferences(
   preferences: AttentionPreferences,
-  enabled = readAttentionNotchEnabled(),
-  presentation: AttentionNotchPresentation = readAttentionNotchPresentation(),
+  enabled = readActivityNotchEnabled(),
+  presentation: ActivityNotchPresentation = readActivityNotchPresentation(),
 ): AttentionNotchSettings {
-  const normalized = normalizeAttentionPreferences(preferences);
+  const normalized = normalizeActivityPreferences(preferences);
   return {
     enabled,
     revealMode: presentation.revealMode,

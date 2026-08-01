@@ -3,7 +3,7 @@ import SwiftUI
 import ADEAttentionNotchCore
 
 /// ADE design tokens, mirrored from `apps/desktop/src/renderer/index.css` and
-/// the Attention center's tone system. Values are duplicated rather than
+/// the Activity pane's tone system. Values are duplicated rather than
 /// derived because the helper is a separate process with no access to the
 /// renderer stylesheet; keep them in step with the CSS custom properties named
 /// in each comment.

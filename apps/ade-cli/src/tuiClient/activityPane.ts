@@ -9,22 +9,22 @@ import {
 } from "../../../desktop/src/shared/types/attention";
 import type { AdeCodeConnection } from "./types";
 
-export type AttentionPaneGroupId =
+export type ActivityPaneGroupId =
   | "needs-you"
   | "failing"
   | "done"
   | "live"
   | "recent";
 
-export type AttentionPaneGroup = {
-  id: AttentionPaneGroupId;
+export type ActivityPaneGroup = {
+  id: ActivityPaneGroupId;
   label: string;
   items: AttentionItem[];
 };
 
-export type AttentionPaneModel = {
+export type ActivityPaneModel = {
   snapshot: AttentionSnapshot;
-  groups: AttentionPaneGroup[];
+  groups: ActivityPaneGroup[];
   items: AttentionItem[];
   title: string;
   message: string;
@@ -33,7 +33,7 @@ export type AttentionPaneModel = {
   liveCount: number;
 };
 
-export type AttentionPaneEntry =
+export type ActivityPaneEntry =
   | { kind: "heading"; key: string; label: string }
   | { kind: "item"; key: string; item: AttentionItem; itemIndex: number };
 
@@ -64,7 +64,7 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isUnsupportedAttentionError(error: unknown): boolean {
+function isUnsupportedActivityError(error: unknown): boolean {
   return /unknown (?:ade )?action|unknown attention action|method not found|unsupported.*attention|attention\.call.*not (?:available|found)/i
     .test(errorMessage(error));
 }
@@ -111,12 +111,12 @@ async function machineFallback(
 }
 
 /**
- * Reads account Attention from the machine-global RPC rather than from the
+ * Reads account Activity from the machine-global RPC rather than from the
  * TUI's selected project action scope. A signed-out or temporarily unavailable
  * account falls back to this connected machine without pretending that the
  * result is account-wide.
  */
-export async function loadAttentionSnapshot(
+export async function loadActivitySnapshot(
   connection: AdeCodeConnection,
   options: { hostName?: string | null } = {},
 ): Promise<AttentionSnapshot> {
@@ -132,19 +132,19 @@ export async function loadAttentionSnapshot(
       });
     } catch (error) {
       const hostName = options.hostName?.trim() || "this ADE host";
-      if (isUnsupportedAttentionError(error)) {
+      if (isUnsupportedActivityError(error)) {
         return emptySnapshot({
           state: "incompatible",
           title: `Update ${hostName}`,
           message:
-            "This host cannot provide machine Attention yet. Update ADE, restart its brain, then retry.",
+            "This host cannot provide machine Activity yet. Update ADE, restart its brain, then retry.",
           recovery: "update_host",
           hostName,
         });
       }
       return emptySnapshot({
         state: "unavailable",
-        title: "Machine Attention is unavailable",
+        title: "Machine Activity is unavailable",
         message: `ADE Code could not read work from ${hostName}. Reconnect to the host, then retry.`,
         recovery: "retry",
         hostName,
@@ -163,19 +163,19 @@ export async function loadAttentionSnapshot(
       scope: snapshot.scope ?? "account",
       availability: snapshot.availability ?? {
         state: "ready",
-        title: "Account Attention",
+        title: "Account Activity",
         message: "Live across your ADE account.",
         recovery: null,
       },
     };
   } catch (error) {
     const hostName = options.hostName?.trim() || "this ADE host";
-    if (isUnsupportedAttentionError(error)) {
+    if (isUnsupportedActivityError(error)) {
       try {
         return await machineFallback(connection, {
           state: "incompatible",
           title: `Update ${hostName}`,
-          message: "This host cannot read account-wide Attention yet. Update ADE, then restart its brain. Local work remains available.",
+          message: "This host cannot read account-wide Activity yet. Update ADE, then restart its brain. Local work remains available.",
           recovery: "update_host",
           hostName,
         });
@@ -184,7 +184,7 @@ export async function loadAttentionSnapshot(
           state: "incompatible",
           title: `Update ${hostName}`,
           message:
-            "This host cannot provide Attention yet. Update ADE, restart its brain, then retry.",
+            "This host cannot provide Activity yet. Update ADE, restart its brain, then retry.",
           recovery: "update_host",
           hostName,
         });
@@ -201,7 +201,7 @@ export async function loadAttentionSnapshot(
     } catch {
       return emptySnapshot({
         state: "unavailable",
-        title: "Attention is unavailable",
+        title: "Activity is unavailable",
         message:
           "ADE Code could not read the account stream or this host. Reconnect to the host, then retry.",
         recovery: "retry",
@@ -211,7 +211,7 @@ export async function loadAttentionSnapshot(
   }
 }
 
-export async function acknowledgeAttentionItem(
+export async function acknowledgeActivityItem(
   connection: AdeCodeConnection,
   item: Pick<AttentionItem, "id" | "revision">,
   scope: AttentionSnapshot["scope"] = "account",
@@ -226,7 +226,7 @@ export async function acknowledgeAttentionItem(
   });
 }
 
-function groupForItem(item: AttentionItem): AttentionPaneGroupId {
+function groupForItem(item: AttentionItem): ActivityPaneGroupId {
   if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") {
     return "needs-you";
   }
@@ -247,7 +247,7 @@ function groupForItem(item: AttentionItem): AttentionPaneGroupId {
   return "recent";
 }
 
-const GROUP_LABELS: Record<AttentionPaneGroupId, string> = {
+const GROUP_LABELS: Record<ActivityPaneGroupId, string> = {
   "needs-you": "NEEDS YOU",
   failing: "FAILING OR BLOCKED",
   done: "DONE, UNREVIEWED",
@@ -255,20 +255,20 @@ const GROUP_LABELS: Record<AttentionPaneGroupId, string> = {
   recent: "RECENT",
 };
 
-export function buildAttentionPaneModel(snapshot: AttentionSnapshot): AttentionPaneModel {
+export function buildActivityPaneModel(snapshot: AttentionSnapshot): ActivityPaneModel {
   const visible = sortAttentionItems(
     snapshot.items.filter((item) => item.dismissedAt === null),
   );
-  const buckets = new Map<AttentionPaneGroupId, AttentionItem[]>();
+  const buckets = new Map<ActivityPaneGroupId, AttentionItem[]>();
   for (const item of visible) {
     const group = groupForItem(item);
     const bucket = buckets.get(group) ?? [];
     bucket.push(item);
     buckets.set(group, bucket);
   }
-  const order: AttentionPaneGroupId[] = ["needs-you", "failing", "done", "live", "recent"];
+  const order: ActivityPaneGroupId[] = ["needs-you", "failing", "done", "live", "recent"];
   const groups = order
-    .map((id): AttentionPaneGroup => ({
+    .map((id): ActivityPaneGroup => ({
       id,
       label: GROUP_LABELS[id],
       items: buckets.get(id) ?? [],
@@ -281,7 +281,7 @@ export function buildAttentionPaneModel(snapshot: AttentionSnapshot): AttentionP
   const liveCount = groups.find((group) => group.id === "live")?.items.length ?? 0;
   const availability = snapshot.availability ?? {
     state: snapshot.scope === "machine" ? "degraded" as const : "ready" as const,
-    title: snapshot.scope === "machine" ? "This machine only" : "Account Attention",
+    title: snapshot.scope === "machine" ? "This machine only" : "Account Activity",
     message: snapshot.scope === "machine"
       ? "Account sync is unavailable. Showing connected-machine work."
       : "Live across your ADE account.",
@@ -300,22 +300,22 @@ export function buildAttentionPaneModel(snapshot: AttentionSnapshot): AttentionP
   };
 }
 
-export function attentionItemDeepLink(item: AttentionItem): string {
+export function activityItemDeepLink(item: AttentionItem): string {
   return attentionDestinationDeepLink(item.destination, item);
 }
 
-export function attentionItemContext(item: AttentionItem): string {
+export function activityItemContext(item: AttentionItem): string {
   return [item.project.name, item.laneName, item.machine.name]
     .filter((value): value is string => Boolean(value?.trim()))
     .join(" · ");
 }
 
-export function attentionPaneEntries(
-  model: AttentionPaneModel,
+export function activityPaneEntries(
+  model: ActivityPaneModel,
   selectedIndex: number,
   maxRows = 20,
-): { entries: AttentionPaneEntry[]; hiddenBefore: number; hiddenAfter: number } {
-  const all: AttentionPaneEntry[] = [];
+): { entries: ActivityPaneEntry[]; hiddenBefore: number; hiddenAfter: number } {
+  const all: ActivityPaneEntry[] = [];
   let itemIndex = 0;
   for (const group of model.groups) {
     all.push({ kind: "heading", key: `heading:${group.id}`, label: group.label });

@@ -1496,7 +1496,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: itemPages[page] ?? [],
         tombstones: tombstonePages[page] ?? [],
       });
-      if (!result) throw new Error("Attention relay became unavailable during reconcile.");
+      if (!result) throw new Error("Activity relay became unavailable during reconcile.");
       const response = recordActivityPublishResponse(result, nowMs, page === 0);
       if (response.protocol < 2) return "legacy";
       capShrunk = capShrunk || response.capShrunk;
@@ -1558,7 +1558,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: [],
         tombstones: [],
       });
-      if (!result) throw new Error("Attention relay became unavailable during presence publish.");
+      if (!result) throw new Error("Activity relay became unavailable during presence publish.");
       const response = recordActivityPublishResponse(result, nowMs);
       return response.protocol >= 2 ? "unchanged" : "legacy";
     }
@@ -1587,7 +1587,7 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
         items: pageItems,
         tombstones: pageTombstones,
       });
-      if (!result) throw new Error("Attention relay became unavailable during delta publish.");
+      if (!result) throw new Error("Activity relay became unavailable during delta publish.");
       const response = recordActivityPublishResponse(result, nowMs, page === 0);
       if (response.protocol < 2) return "legacy";
       unchanged = unchanged && (result.unchanged === true || result.suppressed === true);
@@ -2664,12 +2664,12 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       const expectedAccountOwnerId = args.expectedAccountOwnerId?.trim() || null;
       if (expectedAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "The ADE account changed after this machine Attention snapshot loaded. Refresh and try again.",
+          "The ADE account changed after this machine Activity snapshot loaded. Refresh and try again.",
         );
       }
       if (lastMachineSnapshotAccountOwnerId !== currentAccountOwnerId) {
         throw new Error(
-          "Refresh machine Attention after changing ADE accounts, then try again.",
+          "Refresh machine Activity after changing ADE accounts, then try again.",
         );
       }
       const items = args.itemIds.flatMap((itemId) => {
@@ -2678,26 +2678,26 @@ export function createPushPublisherService(deps: PushPublisherDeps) {
       });
       if (items.length !== args.itemIds.length) {
         throw new Error(
-          "This machine can only acknowledge items from its latest Attention snapshot. Refresh and try again.",
+          "This machine can only acknowledge items from its latest Activity snapshot. Refresh and try again.",
         );
       }
       const staleItem = items.find((item) =>
         args.sourceRevisions[item.id] !== item.revision);
       if (staleItem) {
         throw new Error(
-          "This Attention item changed after it loaded. Refresh before acknowledging the newer state.",
+          "This Activity item changed after it loaded. Refresh before acknowledging the newer state.",
         );
       }
       const updatedAt = new Date(now()).toISOString();
       const seenAt = args.seenAt?.trim() || updatedAt;
       if (Number.isNaN(Date.parse(seenAt))) {
-        throw new Error("Attention seenAt must be an ISO timestamp.");
+        throw new Error("Activity seenAt must be an ISO timestamp.");
       }
       if (
         typeof args.dismissedAt === "string"
         && Number.isNaN(Date.parse(args.dismissedAt))
       ) {
-        throw new Error("Attention dismissedAt must be an ISO timestamp.");
+        throw new Error("Activity dismissedAt must be an ISO timestamp.");
       }
       deps.store.recordAttentionAcknowledgments?.({
         items: items.map((item) => ({ id: item.id, revision: item.revision })),

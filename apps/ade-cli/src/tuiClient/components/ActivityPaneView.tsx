@@ -3,9 +3,9 @@ import { Box, Text } from "ink";
 
 import type { AttentionItem } from "../../../../desktop/src/shared/types/attention";
 import {
-  attentionItemContext,
-  attentionPaneEntries,
-} from "../attentionPane";
+  activityItemContext,
+  activityPaneEntries,
+} from "../activityPane";
 import { theme } from "../theme";
 import type { RightPaneContent } from "../types";
 
@@ -15,7 +15,7 @@ function endTruncate(value: string, max: number): string {
   return `${value.slice(0, max - 1)}…`;
 }
 
-function attentionTone(item: AttentionItem): string {
+function activityTone(item: AttentionItem): string {
   if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") {
     return theme.color.attention;
   }
@@ -34,7 +34,7 @@ function attentionTone(item: AttentionItem): string {
   return theme.color.t2;
 }
 
-function attentionGlyph(item: AttentionItem): string {
+function activityGlyph(item: AttentionItem): string {
   if (item.phase === "needs_you" || item.phase === "review_requested" || item.phase === "merge_ready") return "!";
   if (item.phase === "failed" || item.phase === "checks_failing" || item.phase === "changes_requested") return "×";
   if (item.phase === "blocked" || item.phase === "stale") return "◆";
@@ -43,12 +43,12 @@ function attentionGlyph(item: AttentionItem): string {
   return "·";
 }
 
-export function AttentionPaneView({
+export function ActivityPaneView({
   content,
   selectedIndex,
   width,
 }: {
-  content: Extract<RightPaneContent, { kind: "attention" }>;
+  content: Extract<RightPaneContent, { kind: "activity" }>;
   selectedIndex: number;
   width: number;
 }) {
@@ -59,7 +59,7 @@ export function AttentionPaneView({
     : availability?.state === "signed_out"
       ? theme.color.attention
       : theme.color.error;
-  const window = attentionPaneEntries(model, selectedIndex, 11);
+  const window = activityPaneEntries(model, selectedIndex, 11);
   const inner = Math.max(18, width - 4);
   return (
     <Box flexDirection="column">
@@ -83,15 +83,15 @@ export function AttentionPaneView({
           );
         }
         const selected = entry.itemIndex === selectedIndex;
-        const context = attentionItemContext(entry.item);
+        const context = activityItemContext(entry.item);
         return (
           <Box key={entry.key} flexDirection="column">
             <Text
-              color={selected ? theme.color.violet : attentionTone(entry.item)}
+              color={selected ? theme.color.violet : activityTone(entry.item)}
               bold={selected}
               wrap="truncate-end"
             >
-              {`${selected ? theme.rail : " "} ${attentionGlyph(entry.item)} ${endTruncate(entry.item.title, Math.max(8, inner - 4))}`}
+              {`${selected ? theme.rail : " "} ${activityGlyph(entry.item)} ${endTruncate(entry.item.title, Math.max(8, inner - 4))}`}
             </Text>
             <Text color={theme.color.t4} dimColor wrap="truncate-end">
               {`    ${endTruncate(context, Math.max(8, inner - 4))}`}

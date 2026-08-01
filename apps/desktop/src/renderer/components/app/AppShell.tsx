@@ -83,8 +83,8 @@ import {
 } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
-import { ActivityPane } from "../attention/ActivityPane";
-import { useAttentionSync } from "../attention/useAttentionSync";
+import { ActivityPane } from "../activity/ActivityPane";
+import { useActivitySync } from "../activity/useActivitySync";
 import { isActivityRoute } from "../../lib/legacyRoutes";
 
 type PrToast = {
@@ -383,7 +383,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   useAppWideSessionAttention();
   useCtoAttention();
-  useAttentionSync(activityPaneOpen);
+  useActivitySync(activityPaneOpen);
 
   useEffect(() => {
     isLanesRouteRef.current = isLanesRoute;

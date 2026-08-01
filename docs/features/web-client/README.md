@@ -365,7 +365,7 @@ Reused desktop renderer (web-mode adaptation):
   `WelcomeVideoGate.tsx`) reads this flag to hide native window controls, the
   updater, the onboarding tour, and tabs with no sync-protocol backing instead
   of rendering broken affordances.
-- `apps/desktop/src/renderer/components/attention/HeaderActivityControl.tsx`
+- `apps/desktop/src/renderer/components/activity/HeaderActivityControl.tsx`
   and `ActivityPane.tsx` - the project-independent header popover and the
   expanded pane its "Open all" raises. Activity is a global utility surface, not
   another selected-machine tab, so it is intentionally separate from
@@ -790,7 +790,7 @@ refresh hints rather than replicated state.
 
 Because there is no local replica, project/runtime reads are live transport
 round-trips to the active project binding's machine — where the desktop renderer would hit its
-in-process cr-sqlite. Account Attention is the deliberate exception: a
+in-process cr-sqlite. Account Activity is the deliberate exception: a
 signed-in browser reads the consolidated push-relay stream directly, so changing
 the active machine/project cannot narrow or block the account inbox. Two
 adapter-side measures keep ordinary machine reads from turning routine UI into

@@ -6812,7 +6812,7 @@ app.whenReady().then(async () => {
     if (requiresRemoteMachine && !remoteWindow) {
       const win = await attentionWindow();
       if (!win || win.isDestroyed() || !attentionIpcBridge) {
-        throw new Error("ADE could not open the remote Attention destination.");
+        throw new Error("ADE could not open the remote Activity destination.");
       }
       const binding = await attentionIpcBridge.openAttentionProject({
         machineKey: accountMachineKey,

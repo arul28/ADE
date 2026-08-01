@@ -18,7 +18,7 @@ import "./Activity.css";
 /**
  * The gear in the Activity header popover and pane.
  *
- * It replaces `AttentionSettingsPopover`, whose three toggles sat behind a Save
+ * It replaces the old settings popover, whose three toggles sat behind a Save
  * button while the settings page saved instantly — the same preference,
  * two different contracts. Every row here comes from
  * `settings/ActivitySettingsControls`, mounted in its `popover` variant, and
@@ -99,11 +99,11 @@ export function ActivitySettingsPopover() {
   };
 
   return (
-    <div ref={rootRef} className="attention-settings-wrap">
+    <div ref={rootRef} className="activity-settings-wrap">
       <button
         ref={triggerRef}
         type="button"
-        className="attention-settings-trigger"
+        className="activity-settings-trigger"
         aria-label="Activity settings"
         aria-haspopup="dialog"
         aria-expanded={open}
@@ -120,7 +120,7 @@ export function ActivitySettingsPopover() {
       >
         {open ? (
           <motion.div
-            className="attention-settings-popover"
+            className="activity-settings-popover"
             role="dialog"
             aria-label="Activity settings"
             tabIndex={-1}
@@ -132,7 +132,7 @@ export function ActivitySettingsPopover() {
           >
             <header>
               <div>
-                <span className="attention-settings-heading-icon">
+                <span className="activity-settings-heading-icon">
                   <BellRinging size={17} weight="duotone" />
                 </span>
                 <span>
@@ -140,11 +140,11 @@ export function ActivitySettingsPopover() {
                   <small>Account delivery and this Mac’s notch</small>
                 </span>
               </div>
-              <span className="attention-settings-account-badge">Account</span>
+              <span className="activity-settings-account-badge">Account</span>
             </header>
 
             {model.loading ? (
-              <div className="attention-settings-loading">
+              <div className="activity-settings-loading">
                 <span />
                 Loading your preferences…
               </div>
@@ -153,7 +153,7 @@ export function ActivitySettingsPopover() {
             )}
 
             {model.error ? (
-              <div className="attention-settings-error" role="alert">
+              <div className="activity-settings-error" role="alert">
                 <WarningCircle size={14} weight="fill" />
                 <span>{model.error}</span>
               </div>
@@ -167,7 +167,7 @@ export function ActivitySettingsPopover() {
               */}
               <button
                 type="button"
-                className="attention-settings-open-full"
+                className="activity-settings-open-full"
                 onClick={() => {
                   closePopover(true);
                   navigateToAppTarget({ kind: "settings", tab: "activity" });

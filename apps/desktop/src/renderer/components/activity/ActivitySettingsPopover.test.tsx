@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
-import { resetAttentionStoreForTests } from "../../state/attentionStore";
+import { resetActivityStoreForTests } from "../../state/activityStore";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 
 const originalAde = window.ade;
@@ -49,7 +49,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   Object.defineProperty(window, "ade", {
     configurable: true,

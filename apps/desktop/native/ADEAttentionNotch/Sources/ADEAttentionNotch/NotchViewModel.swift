@@ -7,7 +7,7 @@ import ADEAttentionNotchCore
 ///
 /// The helper used to synthesise its own alerts by diffing item fingerprints,
 /// which fired on every cosmetic republish. The renderer now owns that decision
-/// (`useAttentionSync`'s toast emitter) because only it can see the account's
+/// (`useActivitySync`'s toast emitter) because only it can see the account's
 /// delivery policy, the per-item 10-minute cooldown, and the global rate limit.
 /// The machinery below is unchanged; the trigger moved.
 @MainActor

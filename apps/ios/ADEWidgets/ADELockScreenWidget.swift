@@ -224,7 +224,7 @@ private struct LockScreenPriorityStatus {
         self = .init(
             kind: presentation.kind,
             title: hideDetails
-                ? (privateTitle.isEmpty ? "Attention update" : privateTitle)
+                ? (privateTitle.isEmpty ? "Activity update" : privateTitle)
                 : focus.title,
             detail: hideDetails ? "Across your signed-in machines" : scope,
             inlineText: attentionCount > 0

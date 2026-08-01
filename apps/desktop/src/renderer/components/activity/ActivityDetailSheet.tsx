@@ -18,7 +18,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { SessionStatusLabel } from "../terminals/SessionStatusLabel";
 import { cn } from "../ui/cn";
 import { activityCardPreview } from "./ActivityCard";
-import { activityItemPresentation, attentionActionTone } from "./attentionPresentation";
+import { activityItemPresentation, activityActionTone } from "./activityPresentation";
 
 function actionIcon(action: AttentionAction): React.ElementType {
   if (action.kind === "approve") return Check;
@@ -193,7 +193,7 @@ export function ActivityDetailSheet({
                       key={action.id}
                       type="button"
                       className="activity-action"
-                      data-tone={attentionActionTone(action.kind)}
+                      data-tone={activityActionTone(action.kind)}
                       disabled={blocked || pendingActionId === action.id}
                       title={blocked ? `${item.machine.name} is offline` : action.label}
                       onClick={() => onAction(item, action)}

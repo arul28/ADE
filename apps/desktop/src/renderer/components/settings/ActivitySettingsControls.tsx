@@ -18,18 +18,18 @@ import {
   type AttentionPreferences,
 } from "../../../shared/types";
 import {
-  attentionNotchSettingsFromPreferences,
-  attentionPreferencesWithNotchPresentation,
-  normalizeAttentionPreferences,
-  onAttentionNotchSettingsChanged,
-  readAttentionNotchEnabled,
-  resolveAttentionNotchPresentation,
-  writeAttentionNotchEnabled,
-  writeAttentionNotchPresentation,
-  type AttentionNotchPresentation,
-} from "../attention/attentionNotchLocalSettings";
+  activityNotchSettingsFromPreferences,
+  activityPreferencesWithNotchPresentation,
+  normalizeActivityPreferences,
+  onActivityNotchSettingsChanged,
+  readActivityNotchEnabled,
+  resolveActivityNotchPresentation,
+  writeActivityNotchEnabled,
+  writeActivityNotchPresentation,
+  type ActivityNotchPresentation,
+} from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
-import { useAttentionStore } from "../../state/attentionStore";
+import { useActivityStore } from "../../state/activityStore";
 import { isWebHiddenCapability } from "../../webclient/adapter";
 import { SettingsCard, SettingsGroup, SettingsSelect, SettingsToggle } from "./primitives";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -94,12 +94,12 @@ export type ActivitySettingsModel = ReturnType<typeof useActivitySettings>;
 export function useActivitySettings() {
   const { status: accountStatus } = useAccountStatus();
   const accountOwnerId = accountStatus.signedIn ? accountStatus.userId : null;
-  const itemsById = useAttentionStore((state) => state.itemsById);
+  const itemsById = useActivityStore((state) => state.itemsById);
 
   const [preferences, setPreferences] = useState<AttentionPreferences>(
     DEFAULT_ATTENTION_PREFERENCES,
   );
-  const [notchEnabled, setNotchEnabled] = useState(() => readAttentionNotchEnabled());
+  const [notchEnabled, setNotchEnabled] = useState(() => readActivityNotchEnabled());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
@@ -115,9 +115,9 @@ export function useActivitySettings() {
   }, []);
 
   // The native context menu can change reveal mode behind the app's back.
-  useEffect(() => onAttentionNotchSettingsChanged((settings) => {
+  useEffect(() => onActivityNotchSettingsChanged((settings) => {
     setNotchEnabled(settings.enabled);
-    setPreferences((current) => attentionPreferencesWithNotchPresentation(current, {
+    setPreferences((current) => activityPreferencesWithNotchPresentation(current, {
       revealMode: settings.revealMode,
       expandedPanelEnabled: settings.expandedPanelEnabled,
       automaticRevealEnabled: settings.automaticRevealEnabled,
@@ -136,7 +136,7 @@ export function useActivitySettings() {
     void api.getPreferences(accountOwnerId)
       .then((next) => {
         if (cancelled || !mounted.current) return;
-        setPreferences(normalizeAttentionPreferences(next));
+        setPreferences(normalizeActivityPreferences(next));
         setError(null);
       })
       .catch((loadError: unknown) => {
@@ -178,11 +178,11 @@ export function useActivitySettings() {
       // localStorage stays the offline cache of record for notch presentation:
       // a signed-out or offline launch still opens the notch the way this Mac
       // last had it rather than snapping back to the shipped default.
-      const presentation = resolveAttentionNotchPresentation(next);
-      writeAttentionNotchEnabled(nextNotchEnabled);
-      writeAttentionNotchPresentation(presentation);
+      const presentation = resolveActivityNotchPresentation(next);
+      writeActivityNotchEnabled(nextNotchEnabled);
+      writeActivityNotchPresentation(presentation);
       await window.ade?.attentionNotch?.updateSettings(
-        attentionNotchSettingsFromPreferences(next, nextNotchEnabled, presentation),
+        activityNotchSettingsFromPreferences(next, nextNotchEnabled, presentation),
       );
       if (!mounted.current) return;
       setError(null);
@@ -204,9 +204,9 @@ export function useActivitySettings() {
     void persist(next);
   }, [persist, preferences]);
 
-  const setNotchPresentation = useCallback((patch: Partial<AttentionNotchPresentation>) => {
-    const next = attentionPreferencesWithNotchPresentation(preferences, {
-      ...resolveAttentionNotchPresentation(preferences),
+  const setNotchPresentation = useCallback((patch: Partial<ActivityNotchPresentation>) => {
+    const next = activityPreferencesWithNotchPresentation(preferences, {
+      ...resolveActivityNotchPresentation(preferences),
       ...patch,
     });
     setPreferences(next);
@@ -272,7 +272,7 @@ export function useActivitySettings() {
     return [...byKey.values()].sort((left, right) => left.name.localeCompare(right.name));
   }, [itemsById]);
 
-  const notchPresentation = resolveAttentionNotchPresentation(preferences);
+  const notchPresentation = resolveActivityNotchPresentation(preferences);
 
   return {
     accountOwnerId,
@@ -311,11 +311,11 @@ function PopoverRow({
   control: React.ReactNode;
 }) {
   return (
-    <div className="attention-settings-row" data-disabled={disabled || undefined}>
-      <span className="attention-settings-row-icon" aria-hidden>
+    <div className="activity-settings-row" data-disabled={disabled || undefined}>
+      <span className="activity-settings-row-icon" aria-hidden>
         <Icon size={16} weight="duotone" />
       </span>
-      <span className="attention-settings-row-copy">
+      <span className="activity-settings-row-copy">
         <span>
           <strong>{label}</strong>
           {badge ? <small>{badge}</small> : null}
@@ -345,7 +345,7 @@ function PopoverSwitch({
       aria-label={label}
       aria-checked={checked}
       disabled={disabled}
-      className="attention-settings-switch"
+      className="activity-settings-switch"
       onClick={() => onChange(!checked)}
     >
       <span />
@@ -535,7 +535,7 @@ export function ActivitySettingsControls({
         {machines.length > 0 ? (
           <section>
             <h3>Machines</h3>
-            <div className="attention-settings-machines">
+            <div className="activity-settings-machines">
               {machines.map((machine) => (
                 <PopoverRow
                   key={machine.machineKey}

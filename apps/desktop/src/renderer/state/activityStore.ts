@@ -11,22 +11,22 @@ import {
   type AttentionTombstone,
 } from "../../shared/types";
 
-export type AttentionView = "live" | "inbox" | "recent";
+export type ActivityView = "live" | "inbox" | "recent";
 
-export type AttentionScope =
+export type ActivityScope =
   | { kind: "all" }
   | { kind: "machine"; machineKey: string; label: string }
   | { kind: "project"; projectId: string; label: string; machineKey?: string | null };
 
-export type AttentionSyncStatus = "idle" | "syncing" | "ready" | "error";
+export type ActivitySyncStatus = "idle" | "syncing" | "ready" | "error";
 
-type PendingAttentionAcknowledgement = {
+type PendingActivityAcknowledgement = {
   previous: AttentionItem;
   seenAt: string;
   dismissedAt?: string;
 };
 
-export type AttentionStoreState = {
+export type ActivityStoreState = {
   snapshotScope: AttentionSnapshot["scope"] | null;
   accountOwnerId: string | null;
   availability: AttentionSnapshot["availability"] | null;
@@ -35,8 +35,8 @@ export type AttentionStoreState = {
   generatedAt: string | null;
   itemsById: Record<string, AttentionItem>;
   tombstonesById: Record<string, AttentionTombstone>;
-  view: AttentionView;
-  scope: AttentionScope;
+  view: ActivityView;
+  scope: ActivityScope;
   selectedItemId: string | null;
   headerSurfaceVisible: boolean;
   /**
@@ -45,27 +45,27 @@ export type AttentionStoreState = {
    * "the user turned it off" — see `selectActivityHideDetails`.
    */
   preferences: AttentionPreferences | null;
-  syncStatus: AttentionSyncStatus;
+  syncStatus: ActivitySyncStatus;
   syncError: string | null;
-  pendingAcknowledgements: Record<string, PendingAttentionAcknowledgement>;
+  pendingAcknowledgements: Record<string, PendingActivityAcknowledgement>;
   acknowledgementErrors: Record<string, string>;
   resetStream: () => void;
   setPreferences: (preferences: AttentionPreferences | null) => void;
   applySnapshot: (snapshot: AttentionSnapshot) => void;
   upsertItem: (item: AttentionItem) => void;
   removeItem: (tombstone: AttentionTombstone) => void;
-  setView: (view: AttentionView) => void;
-  setScope: (scope: AttentionScope) => void;
+  setView: (view: ActivityView) => void;
+  setScope: (scope: ActivityScope) => void;
   selectItem: (itemId: string | null) => void;
   setHeaderSurfaceVisible: (visible: boolean) => void;
-  setSyncStatus: (status: AttentionSyncStatus, error?: string | null) => void;
+  setSyncStatus: (status: ActivitySyncStatus, error?: string | null) => void;
   markSeen: (itemId: string, seenAt?: string) => void;
   dismiss: (itemId: string, dismissedAt?: string) => void;
 };
 
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1_000;
 
-function itemMatchesScope(item: AttentionItem, scope: AttentionScope): boolean {
+function itemMatchesScope(item: AttentionItem, scope: ActivityScope): boolean {
   if (scope.kind === "all") return true;
   if (scope.kind === "machine") return item.machine.machineKey === scope.machineKey;
   return item.project.projectId === scope.projectId
@@ -93,8 +93,8 @@ function sortRecentItems(items: readonly AttentionItem[]): AttentionItem[] {
   });
 }
 
-export function selectAttentionItems(
-  state: Pick<AttentionStoreState, "itemsById" | "scope" | "view">,
+export function selectActivityItems(
+  state: Pick<ActivityStoreState, "itemsById" | "scope" | "view">,
   now = Date.now(),
 ): AttentionItem[] {
   const scoped = Object.values(state.itemsById).filter(
@@ -109,10 +109,10 @@ export function selectAttentionItems(
   return sortRecentItems(scoped.filter((item) => isRecentItem(item, now)));
 }
 
-export function selectAttentionCounts(
-  state: Pick<AttentionStoreState, "itemsById" | "scope">,
+export function selectActivityCounts(
+  state: Pick<ActivityStoreState, "itemsById" | "scope">,
   now = Date.now(),
-): Record<AttentionView, number> {
+): Record<ActivityView, number> {
   const scoped = Object.values(state.itemsById).filter(
     (item) => itemMatchesScope(item, state.scope) && !isExpiredItem(item, now),
   );
@@ -129,10 +129,10 @@ export function selectAttentionCounts(
  * defaulting a *display* choice to "hidden" would make every surface look
  * broken for the seconds before the account load lands. The native notch takes
  * the opposite default because it paints over the menu bar of a locked-away
- * Mac — see `failClosedAttentionNotchSettings` in `useAttentionSync.ts`.
+ * Mac — see `failClosedActivityNotchSettings` in `useActivitySync.ts`.
  */
 export function selectActivityHideDetails(
-  state: Pick<AttentionStoreState, "preferences">,
+  state: Pick<ActivityStoreState, "preferences">,
 ): boolean {
   return state.preferences?.account?.hideDetails === true;
 }
@@ -143,13 +143,13 @@ export function selectActivityHideDetails(
  * synced choice.
  */
 export function selectDockBadgeScope(
-  state: Pick<AttentionStoreState, "preferences">,
+  state: Pick<ActivityStoreState, "preferences">,
 ): "local" | "account" {
   return state.preferences?.account?.dockBadgeScope === "account" ? "account" : "local";
 }
 
-export function selectAttentionUnseenCount(
-  state: Pick<AttentionStoreState, "itemsById">,
+export function selectActivityUnseenCount(
+  state: Pick<ActivityStoreState, "itemsById">,
 ): number {
   const now = Date.now();
   return Object.values(state.itemsById).filter(
@@ -158,7 +158,7 @@ export function selectAttentionUnseenCount(
 }
 
 function createInitialState(): Pick<
-  AttentionStoreState,
+  ActivityStoreState,
   | "streamId"
   | "snapshotScope"
   | "accountOwnerId"
@@ -198,7 +198,7 @@ function createInitialState(): Pick<
   };
 }
 
-export const attentionStore = createStore<AttentionStoreState>((set) => ({
+export const activityStore = createStore<ActivityStoreState>((set) => ({
   ...createInitialState(),
   resetStream: () =>
     set((state) => ({
@@ -336,46 +336,46 @@ export const attentionStore = createStore<AttentionStoreState>((set) => ({
     }),
 }));
 
-export function useAttentionStore<T>(selector: (state: AttentionStoreState) => T): T {
-  return useStore(attentionStore, selector);
+export function useActivityStore<T>(selector: (state: ActivityStoreState) => T): T {
+  return useStore(activityStore, selector);
 }
 
-export function applyAttentionSnapshot(snapshot: AttentionSnapshot): void {
-  attentionStore.getState().applySnapshot(snapshot);
+export function applyActivitySnapshot(snapshot: AttentionSnapshot): void {
+  activityStore.getState().applySnapshot(snapshot);
 }
 
-export function upsertAttentionItem(item: AttentionItem): void {
-  attentionStore.getState().upsertItem(item);
+export function upsertActivityItem(item: AttentionItem): void {
+  activityStore.getState().upsertItem(item);
 }
 
-export function removeAttentionItem(tombstone: AttentionTombstone): void {
-  attentionStore.getState().removeItem(tombstone);
+export function removeActivityItem(tombstone: AttentionTombstone): void {
+  activityStore.getState().removeItem(tombstone);
 }
 
-export function resetAttentionStoreForTests(): void {
-  attentionStore.setState(createInitialState());
+export function resetActivityStoreForTests(): void {
+  activityStore.setState(createInitialState());
 }
 
-function attentionErrorMessage(error: unknown): string {
+function activityErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim()) return error.message.trim();
-  return "ADE couldn’t update this attention item.";
+  return "ADE couldn’t update this Activity item.";
 }
 
-export async function acknowledgeAttentionItem(
+export async function acknowledgeActivityItem(
   itemId: string,
   kind: "seen" | "dismiss",
 ): Promise<void> {
-  const before = attentionStore.getState();
+  const before = activityStore.getState();
   const item = before.itemsById[itemId];
   if (!item || before.pendingAcknowledgements[itemId]) return;
 
   const timestamp = new Date().toISOString();
-  const pending: PendingAttentionAcknowledgement = {
+  const pending: PendingActivityAcknowledgement = {
     previous: item,
     seenAt: timestamp,
     ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
   };
-  attentionStore.setState((state) => {
+  activityStore.setState((state) => {
     const acknowledgementErrors = { ...state.acknowledgementErrors };
     delete acknowledgementErrors[itemId];
     return {
@@ -386,8 +386,8 @@ export async function acknowledgeAttentionItem(
       acknowledgementErrors,
     };
   });
-  if (kind === "dismiss") attentionStore.getState().dismiss(itemId, timestamp);
-  else attentionStore.getState().markSeen(itemId, timestamp);
+  if (kind === "dismiss") activityStore.getState().dismiss(itemId, timestamp);
+  else activityStore.getState().markSeen(itemId, timestamp);
 
   try {
     const api = typeof window !== "undefined" ? window.ade?.attention : null;
@@ -400,14 +400,14 @@ export async function acknowledgeAttentionItem(
         ...(kind === "dismiss" ? { dismissedAt: timestamp } : {}),
       });
     }
-    attentionStore.setState((state) => {
+    activityStore.setState((state) => {
       const pendingAcknowledgements = { ...state.pendingAcknowledgements };
       delete pendingAcknowledgements[itemId];
       return { pendingAcknowledgements };
     });
   } catch (error) {
-    const message = attentionErrorMessage(error);
-    attentionStore.setState((state) => {
+    const message = activityErrorMessage(error);
+    activityStore.setState((state) => {
       const currentPending = state.pendingAcknowledgements[itemId];
       if (!currentPending || currentPending.seenAt !== timestamp) return state;
       const current = state.itemsById[itemId];

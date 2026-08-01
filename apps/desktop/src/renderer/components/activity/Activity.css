@@ -842,11 +842,11 @@ button.activity-pane-freshness {
    Moved verbatim (bar the tokens it used to inherit from the center's page
    scope) so the gear behaves the same wherever it is mounted. */
 
-.attention-settings-wrap {
+.activity-settings-wrap {
   position: relative;
 }
 
-.attention-settings-trigger {
+.activity-settings-trigger {
   display: inline-flex;
   width: 24px;
   height: 24px;
@@ -859,18 +859,18 @@ button.activity-pane-freshness {
   transition: color 140ms ease, border-color 140ms ease, background 140ms ease, transform 140ms ease;
 }
 
-.attention-settings-trigger:hover,
-.attention-settings-trigger[aria-expanded="true"] {
+.activity-settings-trigger:hover,
+.activity-settings-trigger[aria-expanded="true"] {
   color: var(--color-fg);
   border-color: color-mix(in srgb, var(--color-accent) 24%, var(--color-border));
   background: color-mix(in srgb, var(--color-accent) 8%, var(--color-card));
 }
 
-.attention-settings-trigger:active {
+.activity-settings-trigger:active {
   transform: scale(0.94);
 }
 
-.attention-settings-popover {
+.activity-settings-popover {
   position: absolute;
   top: calc(100% + 9px);
   right: 0;
@@ -887,11 +887,11 @@ button.activity-pane-freshness {
   color: var(--color-fg);
 }
 
-.attention-settings-popover:focus {
+.activity-settings-popover:focus {
   outline: none;
 }
 
-.attention-settings-popover > header {
+.activity-settings-popover > header {
   position: sticky;
   top: 0;
   z-index: 1;
@@ -905,32 +905,32 @@ button.activity-pane-freshness {
   background: color-mix(in srgb, var(--color-card) 96%, var(--color-bg));
 }
 
-.attention-settings-popover > header > div {
+.activity-settings-popover > header > div {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 9px;
 }
 
-.attention-settings-popover > header > div > span:last-child {
+.activity-settings-popover > header > div > span:last-child {
   display: flex;
   min-width: 0;
   flex-direction: column;
 }
 
-.attention-settings-popover > header strong {
+.activity-settings-popover > header strong {
   font-size: 12px;
   font-weight: 660;
   letter-spacing: -0.01em;
 }
 
-.attention-settings-popover > header small {
+.activity-settings-popover > header small {
   margin-top: 2px;
   color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
   font-size: 11px;
 }
 
-.attention-settings-heading-icon {
+.activity-settings-heading-icon {
   display: inline-flex;
   width: 31px;
   height: 31px;
@@ -943,7 +943,7 @@ button.activity-pane-freshness {
   color: var(--color-accent-bright, var(--color-accent));
 }
 
-.attention-settings-account-badge {
+.activity-settings-account-badge {
   flex: 0 0 auto;
   padding: 3px 7px;
   border: 1px solid color-mix(in srgb, var(--color-accent) 22%, transparent);
@@ -955,16 +955,16 @@ button.activity-pane-freshness {
   letter-spacing: 0.02em;
 }
 
-.attention-settings-popover section {
+.activity-settings-popover section {
   padding: 10px 10px 6px;
 }
 
-.attention-settings-popover section + section {
+.activity-settings-popover section + section {
   padding-top: 9px;
   border-top: 1px solid color-mix(in srgb, var(--color-border) 68%, transparent);
 }
 
-.attention-settings-popover section h3 {
+.activity-settings-popover section h3 {
   margin: 0 0 5px 3px;
   color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
   font-size: 10px;
@@ -973,7 +973,7 @@ button.activity-pane-freshness {
   text-transform: uppercase;
 }
 
-.attention-settings-row {
+.activity-settings-row {
   display: grid;
   min-height: 44px;
   grid-template-columns: 30px minmax(0, 1fr) auto;
@@ -984,15 +984,15 @@ button.activity-pane-freshness {
   transition: background 130ms ease;
 }
 
-.attention-settings-row:hover {
+.activity-settings-row:hover {
   background: color-mix(in srgb, var(--color-fg) 4%, transparent);
 }
 
-.attention-settings-row[data-disabled] {
+.activity-settings-row[data-disabled] {
   opacity: 0.5;
 }
 
-.attention-settings-row-icon {
+.activity-settings-row-icon {
   display: inline-flex;
   width: 29px;
   height: 29px;
@@ -1004,25 +1004,25 @@ button.activity-pane-freshness {
   color: color-mix(in srgb, var(--color-accent) 43%, var(--color-muted-fg));
 }
 
-.attention-settings-row-copy {
+.activity-settings-row-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
 }
 
-.attention-settings-row-copy > span {
+.activity-settings-row-copy > span {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 6px;
 }
 
-.attention-settings-row-copy strong {
+.activity-settings-row-copy strong {
   font-size: 12px;
   font-weight: 630;
 }
 
-.attention-settings-row-copy small {
+.activity-settings-row-copy small {
   flex: 0 0 auto;
   padding: 2px 5px;
   border-radius: 4px;
@@ -1032,7 +1032,7 @@ button.activity-pane-freshness {
   font-weight: 650;
 }
 
-.attention-settings-row-copy em {
+.activity-settings-row-copy em {
   margin-top: 3px;
   color: color-mix(in srgb, var(--color-muted-fg) 88%, transparent);
   font-size: 11px;
@@ -1040,7 +1040,7 @@ button.activity-pane-freshness {
   line-height: 1.35;
 }
 
-.attention-settings-row select {
+.activity-settings-row select {
   width: 148px;
   height: 27px;
   padding: 0 7px;
@@ -1052,7 +1052,7 @@ button.activity-pane-freshness {
   font-size: 11px;
 }
 
-.attention-settings-switch {
+.activity-settings-switch {
   position: relative;
   width: 32px;
   height: 19px;
@@ -1064,7 +1064,7 @@ button.activity-pane-freshness {
   transition: border-color 150ms ease, background 150ms ease;
 }
 
-.attention-settings-switch > span {
+.activity-settings-switch > span {
   position: absolute;
   top: 2px;
   left: 2px;
@@ -1076,23 +1076,23 @@ button.activity-pane-freshness {
   transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), background 150ms ease;
 }
 
-.attention-settings-switch[aria-checked="true"] {
+.activity-settings-switch[aria-checked="true"] {
   border-color: color-mix(in srgb, var(--color-accent) 50%, transparent);
   background: color-mix(in srgb, var(--color-accent) 62%, var(--color-accent-deep, var(--color-accent)));
 }
 
-.attention-settings-switch[aria-checked="true"] > span {
+.activity-settings-switch[aria-checked="true"] > span {
   background: #fff;
   transform: translateX(13px);
 }
 
-.attention-settings-machines {
+.activity-settings-machines {
   display: flex;
   flex-direction: column;
   gap: 1px;
 }
 
-.attention-settings-loading {
+.activity-settings-loading {
   display: flex;
   min-height: 180px;
   align-items: center;
@@ -1102,7 +1102,7 @@ button.activity-pane-freshness {
   font-size: 13px;
 }
 
-.attention-settings-loading > span {
+.activity-settings-loading > span {
   width: 14px;
   height: 14px;
   border: 2px solid color-mix(in srgb, var(--color-accent) 18%, transparent);
@@ -1111,7 +1111,7 @@ button.activity-pane-freshness {
   animation: activity-spin 700ms linear infinite;
 }
 
-.attention-settings-error {
+.activity-settings-error {
   display: flex;
   align-items: flex-start;
   gap: 7px;
@@ -1125,12 +1125,12 @@ button.activity-pane-freshness {
   line-height: 1.4;
 }
 
-.attention-settings-error svg {
+.activity-settings-error svg {
   flex: 0 0 auto;
   margin-top: 1px;
 }
 
-.attention-settings-popover > footer {
+.activity-settings-popover > footer {
   position: sticky;
   bottom: 0;
   display: flex;
@@ -1142,7 +1142,7 @@ button.activity-pane-freshness {
   background: color-mix(in srgb, var(--color-card) 96%, var(--color-bg));
 }
 
-.attention-settings-popover > footer > span {
+.activity-settings-popover > footer > span {
   display: inline-flex;
   min-width: 0;
   flex: 1;
@@ -1152,7 +1152,7 @@ button.activity-pane-freshness {
   font-size: 11px;
 }
 
-.attention-settings-open-full {
+.activity-settings-open-full {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1169,8 +1169,8 @@ button.activity-pane-freshness {
   transition: background 120ms ease, color 120ms ease;
 }
 
-.attention-settings-open-full:hover,
-.attention-settings-open-full:focus-visible {
+.activity-settings-open-full:hover,
+.activity-settings-open-full:focus-visible {
   color: var(--color-fg);
   background: color-mix(in srgb, var(--color-fg) 8%, transparent);
   outline: none;

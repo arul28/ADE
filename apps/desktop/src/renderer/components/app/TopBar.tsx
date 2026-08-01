@@ -75,7 +75,7 @@ import {
   type ConnectionsPanelTab,
 } from "../../lib/connectionsPanel";
 import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
-import { HeaderActivityControl } from "../attention/HeaderActivityControl";
+import { HeaderActivityControl } from "../activity/HeaderActivityControl";
 import { HeaderUsageControl } from "../usage/HeaderUsageControl";
 import { GlobalVoiceCaptureIndicator } from "../voice/GlobalVoiceCaptureIndicator";
 import { appResourcePressureLevel, getAppResourceUsageCoalesced, resourcePressureDescription } from "../../lib/resourcePressure";

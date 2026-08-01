@@ -10,9 +10,9 @@ import {
   type AttentionItem,
 } from "../../../shared/types/attention";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { ActivitySection } from "./ActivitySection";
 import { settingsEntriesForTab } from "./settingsManifest";
 
@@ -64,7 +64,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   delete (window as unknown as { ade?: unknown }).ade;
 });
 
@@ -139,7 +139,7 @@ describe("ActivitySection", () => {
 
   it("mutes one machine through the per-machine route", async () => {
     const { putMachinePreferences, putPreferences } = installAdeMock();
-    attentionStore.setState({
+    activityStore.setState({
       itemsById: {
         a: machineItem("studio", "Studio Mac"),
         b: machineItem("laptop", "MacBook", false),

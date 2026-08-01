@@ -32,7 +32,7 @@ import {
  *
  * This is also the only place a session's status is rendered as words. Every
  * hue and every glyph comes from `sessionStatusPresentation`, so the sidebar,
- * the attention center and iOS cannot drift into three different ambers.
+ * the Activity pane and iOS cannot drift into three different ambers.
  */
 
 /**

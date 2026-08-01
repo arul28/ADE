@@ -141,7 +141,7 @@ public struct WorkspaceSnapshot: Codable, Hashable, Sendable {
     public let generatedAt: Date
     /// All live chat sessions — running, awaiting-input, and idle. The
     /// lock-screen widget narrows this to currently-producing sessions so old /
-    /// pending sessions don't pollute the glance; the in-app Attention Drawer
+    /// pending sessions don't pollute the glance; the in-app Activity drawer
     /// reads the full set.
     public let agents: [AgentSnapshot]
     public let prs: [PrSnapshot]
@@ -359,7 +359,7 @@ public enum AccountAttentionPhase: RawRepresentable, Codable, Hashable, Sendable
         return true
     }
 
-    /// Row copy for the Attention Drawer. Same words as `AgentRunPhase.label`
+    /// Row copy for the Activity drawer. Same words as `AgentRunPhase.label`
     /// and the desktop sidebar — "Working", not "Running"; "Done", not
     /// "Completed" — so one device never describes one session two ways.
     public var displayLabel: String {

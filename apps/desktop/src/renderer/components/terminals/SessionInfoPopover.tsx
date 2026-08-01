@@ -161,7 +161,7 @@ export function SessionInfoPopover({
   const isChat = isChatToolType(session.toolType);
 
   /* The "State" row reads through the ONE presentation vocabulary, same as the
-     sidebar row, the attention center and iOS: `running` → "Working",
+     sidebar row, the Activity pane and iOS: `running` → "Working",
      `ready`/`idle` → "Done", amber only for "your move", `stopped` neutral
      rather than red. This popover used to keep its own table and was the last
      surface in the app still saying "Completed".
@@ -252,7 +252,7 @@ export function SessionInfoPopover({
                   session.attentionRequestedAt
                     || session.pendingInputItemId
                     || session.attentionSource === "provider_structured"
-                    ? ["Attention source", lifecycleSourceLabel(session.attentionSource)]
+                    ? ["Activity source", lifecycleSourceLabel(session.attentionSource)]
                     : null,
                   session.settledAt || session.settleOverride === "settled"
                     ? ["Settlement source", lifecycleSourceLabel(session.settleSource)]

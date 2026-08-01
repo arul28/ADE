@@ -7,7 +7,7 @@ import { ProviderLogo } from "../shared/ProviderLogos";
 import { SessionStatusLabel } from "../terminals/SessionStatusLabel";
 import { LaneIcon } from "../ui/vcsIcons";
 import { cn } from "../ui/cn";
-import { activityItemPresentation } from "./attentionPresentation";
+import { activityItemPresentation } from "./activityPresentation";
 // The row carries its own chrome and the shared tone table, so every surface
 // that can render an `ActivityCard` gets both without importing a stylesheet
 // it does not otherwise use.

@@ -4,30 +4,30 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../shared/types";
 import {
-  attentionNotchSettingsFromPreferences,
-  attentionPreferencesWithNotchPresentation,
-  onAttentionNotchSettingsChanged,
-  persistAttentionNotchSettings,
-  readAttentionNotchEnabled,
-  readAttentionNotchPresentation,
-  resolveAttentionNotchPresentation,
-  writeAttentionNotchEnabled,
-  writeAttentionNotchPresentation,
-} from "./attentionNotchLocalSettings";
+  activityNotchSettingsFromPreferences,
+  activityPreferencesWithNotchPresentation,
+  onActivityNotchSettingsChanged,
+  persistActivityNotchSettings,
+  readActivityNotchEnabled,
+  readActivityNotchPresentation,
+  resolveActivityNotchPresentation,
+  writeActivityNotchEnabled,
+  writeActivityNotchPresentation,
+} from "./activityNotchLocalSettings";
 
 /**
  * These key strings are the regression guard for the Attention → Activity
  * rename. Every symbol around them moved; renaming one of these would silently
  * reset the notch on every Mac that has ever configured it.
  */
-describe("attention notch local settings", () => {
+describe("Activity notch local settings", () => {
   beforeEach(() => {
     window.localStorage.clear();
   });
 
   it("defaults safely and falls back from an unreadable reveal mode", () => {
-    expect(readAttentionNotchEnabled()).toBe(true);
-    expect(readAttentionNotchPresentation()).toEqual({
+    expect(readActivityNotchEnabled()).toBe(true);
+    expect(readActivityNotchPresentation()).toEqual({
       revealMode: "hover",
       expandedPanelEnabled: true,
       automaticRevealEnabled: true,
@@ -35,27 +35,27 @@ describe("attention notch local settings", () => {
     });
 
     window.localStorage.setItem("ade:attention:notch-reveal-mode", "telepathy");
-    expect(readAttentionNotchPresentation().revealMode).toBe("hover");
+    expect(readActivityNotchPresentation().revealMode).toBe("hover");
   });
 
   it("round-trips every presentation mode independently from full disable", () => {
     for (const revealMode of ["minimal", "hover", "click"] as const) {
-      writeAttentionNotchPresentation({
+      writeActivityNotchPresentation({
         revealMode,
         expandedPanelEnabled: false,
         automaticRevealEnabled: false,
         tickerEnabled: true,
       });
-      expect(readAttentionNotchPresentation()).toEqual({
+      expect(readActivityNotchPresentation()).toEqual({
         revealMode,
         expandedPanelEnabled: false,
         automaticRevealEnabled: false,
         tickerEnabled: true,
       });
     }
-    writeAttentionNotchEnabled(false);
+    writeActivityNotchEnabled(false);
 
-    expect(attentionNotchSettingsFromPreferences(DEFAULT_ATTENTION_PREFERENCES))
+    expect(activityNotchSettingsFromPreferences(DEFAULT_ATTENTION_PREFERENCES))
       .toMatchObject({
         enabled: false,
         revealMode: "click",
@@ -64,11 +64,11 @@ describe("attention notch local settings", () => {
   });
 
   it("persists native context-menu changes and notifies the renderer", () => {
-    let observed: ReturnType<typeof attentionNotchSettingsFromPreferences> | null = null;
-    const unsubscribe = onAttentionNotchSettingsChanged((settings) => {
+    let observed: ReturnType<typeof activityNotchSettingsFromPreferences> | null = null;
+    const unsubscribe = onActivityNotchSettingsChanged((settings) => {
       observed = settings;
     });
-    persistAttentionNotchSettings({
+    persistActivityNotchSettings({
       enabled: false,
       revealMode: "minimal",
       expandedPanelEnabled: false,
@@ -80,8 +80,8 @@ describe("attention notch local settings", () => {
       soundsEnabled: false,
     });
 
-    expect(readAttentionNotchEnabled()).toBe(false);
-    expect(readAttentionNotchPresentation()).toEqual({
+    expect(readActivityNotchEnabled()).toBe(false);
+    expect(readActivityNotchPresentation()).toEqual({
       revealMode: "minimal",
       expandedPanelEnabled: false,
       automaticRevealEnabled: false,
@@ -96,7 +96,7 @@ describe("attention notch local settings", () => {
   });
 
   it("prefers the synced presentation and falls back to this Mac's cache", () => {
-    writeAttentionNotchPresentation({
+    writeActivityNotchPresentation({
       revealMode: "click",
       expandedPanelEnabled: false,
       automaticRevealEnabled: false,
@@ -105,20 +105,20 @@ describe("attention notch local settings", () => {
 
     // Nothing synced yet: the local cache is the whole answer, so an offline or
     // signed-out launch opens the notch the way this Mac last had it.
-    expect(resolveAttentionNotchPresentation(null)).toEqual({
+    expect(resolveActivityNotchPresentation(null)).toEqual({
       revealMode: "click",
       expandedPanelEnabled: false,
       automaticRevealEnabled: false,
       tickerEnabled: false,
     });
 
-    const synced = attentionPreferencesWithNotchPresentation(DEFAULT_ATTENTION_PREFERENCES, {
+    const synced = activityPreferencesWithNotchPresentation(DEFAULT_ATTENTION_PREFERENCES, {
       revealMode: "minimal",
       expandedPanelEnabled: true,
       automaticRevealEnabled: true,
       tickerEnabled: true,
     });
-    expect(resolveAttentionNotchPresentation(synced)).toEqual({
+    expect(resolveActivityNotchPresentation(synced)).toEqual({
       revealMode: "minimal",
       expandedPanelEnabled: true,
       automaticRevealEnabled: true,
@@ -127,7 +127,7 @@ describe("attention notch local settings", () => {
   });
 
   it("ignores a synced reveal mode this build has never heard of", () => {
-    writeAttentionNotchPresentation({
+    writeActivityNotchPresentation({
       revealMode: "minimal",
       expandedPanelEnabled: true,
       automaticRevealEnabled: true,
@@ -141,6 +141,6 @@ describe("attention notch local settings", () => {
       },
     };
 
-    expect(resolveAttentionNotchPresentation(preferences).revealMode).toBe("minimal");
+    expect(resolveActivityNotchPresentation(preferences).revealMode).toBe("minimal");
   });
 });

@@ -20,11 +20,11 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import {
-  acknowledgeAttentionItem,
-  attentionStore,
+  acknowledgeActivityItem,
+  activityStore,
   selectActivityHideDetails,
-  useAttentionStore,
-} from "../../state/attentionStore";
+  useActivityStore,
+} from "../../state/activityStore";
 import { ActivityDetailSheet } from "./ActivityDetailSheet";
 import {
   ActivityFilters,
@@ -37,7 +37,7 @@ import { ActivityInboxColumn } from "./ActivityInboxColumn";
 import { ActivitySessionsColumn } from "./ActivitySessionsColumn";
 import { ActivitySettingsPopover } from "./ActivitySettingsPopover";
 import { summarizeActivity } from "./activityPriority";
-import { refreshAttentionSnapshot } from "./useAttentionSync";
+import { refreshActivitySnapshot } from "./useActivitySync";
 import "./Activity.css";
 
 function navigationErrorMessage(error: unknown): string {
@@ -67,13 +67,13 @@ export function ActivityPane({
   open: boolean;
   onClose: () => void;
 }) {
-  const itemsById = useAttentionStore((state) => state.itemsById);
-  const syncStatus = useAttentionStore((state) => state.syncStatus);
-  const syncError = useAttentionStore((state) => state.syncError);
-  const generatedAt = useAttentionStore((state) => state.generatedAt);
-  const availability = useAttentionStore((state) => state.availability);
-  const acknowledgementErrors = useAttentionStore((state) => state.acknowledgementErrors);
-  const hideDetails = useAttentionStore(selectActivityHideDetails);
+  const itemsById = useActivityStore((state) => state.itemsById);
+  const syncStatus = useActivityStore((state) => state.syncStatus);
+  const syncError = useActivityStore((state) => state.syncError);
+  const generatedAt = useActivityStore((state) => state.generatedAt);
+  const availability = useActivityStore((state) => state.availability);
+  const acknowledgementErrors = useActivityStore((state) => state.acknowledgementErrors);
+  const hideDetails = useActivityStore(selectActivityHideDetails);
 
   const paneRef = useRef<HTMLDivElement | null>(null);
   const [now, setNow] = useState(() => Date.now());
@@ -94,7 +94,7 @@ export function ActivityPane({
     if (!open) return;
     setNavigationError(null);
     setNow(Date.now());
-    void refreshAttentionSnapshot();
+    void refreshActivitySnapshot();
     const timer = window.setInterval(() => setNow(Date.now()), 30_000);
     return () => window.clearInterval(timer);
   }, [open]);
@@ -103,8 +103,8 @@ export function ActivityPane({
   // say the user is looking at Activity.
   useEffect(() => {
     if (!open) return;
-    attentionStore.getState().setHeaderSurfaceVisible(true);
-    return () => attentionStore.getState().setHeaderSurfaceVisible(false);
+    activityStore.getState().setHeaderSurfaceVisible(true);
+    return () => activityStore.getState().setHeaderSurfaceVisible(false);
   }, [open]);
 
   // An embedded BrowserView paints above the DOM, so tell it to step aside.
@@ -124,7 +124,7 @@ export function ActivityPane({
       if (event.key !== "Escape") return;
       // The settings popover is a dialog inside this one and owns its own
       // Escape; closing both at once would be a single key undoing two steps.
-      if (document.querySelector(".attention-settings-popover")) return;
+      if (document.querySelector(".activity-settings-popover")) return;
       event.preventDefault();
       // Escape peels one layer: the detail sheet first, the pane only once
       // nothing is stacked on top of it.
@@ -160,7 +160,7 @@ export function ActivityPane({
       return;
     }
     // Only a destination that actually resolved earns the item leaving unseen.
-    await acknowledgeAttentionItem(item.id, "seen").catch(() => {});
+    await acknowledgeActivityItem(item.id, "seen").catch(() => {});
     onClose();
   }, [onClose]);
 
@@ -173,7 +173,7 @@ export function ActivityPane({
     setPendingActionId(action.id);
     try {
       if (action.kind === "dismiss" || action.kind === "mark_seen") {
-        await acknowledgeAttentionItem(
+        await acknowledgeActivityItem(
           item.id,
           action.kind === "dismiss" ? "dismiss" : "seen",
         );
@@ -185,7 +185,7 @@ export function ActivityPane({
         await openItem(item);
       }
     } catch {
-      // `acknowledgeAttentionItem` rolls its own optimistic state back and
+      // `acknowledgeActivityItem` rolls its own optimistic state back and
       // records the message in the store; the sheet renders it.
     } finally {
       setPendingActionId(null);
@@ -193,12 +193,12 @@ export function ActivityPane({
   }, [closeSheet, openItem, pendingActionId]);
 
   const dismissItem = useCallback((item: AttentionItem) => {
-    void acknowledgeAttentionItem(item.id, "dismiss").catch(() => {});
+    void acknowledgeActivityItem(item.id, "dismiss").catch(() => {});
   }, []);
 
   const clearInbox = useCallback((items: readonly AttentionItem[]) => {
     for (const item of items) {
-      void acknowledgeAttentionItem(item.id, "dismiss").catch(() => {});
+      void acknowledgeActivityItem(item.id, "dismiss").catch(() => {});
     }
   }, []);
 
@@ -252,7 +252,7 @@ export function ActivityPane({
               <button
                 type="button"
                 className="activity-pane-freshness is-error"
-                onClick={() => void refreshAttentionSnapshot()}
+                onClick={() => void refreshActivitySnapshot()}
                 title={availability?.message ?? syncError ?? "Retry Activity sync"}
               >
                 <WifiSlash size={11} />
@@ -272,7 +272,7 @@ export function ActivityPane({
           <button
             type="button"
             className="activity-pane-icon-button"
-            onClick={() => void refreshAttentionSnapshot()}
+            onClick={() => void refreshActivitySnapshot()}
             aria-label="Refresh Activity"
             title="Refresh"
           >

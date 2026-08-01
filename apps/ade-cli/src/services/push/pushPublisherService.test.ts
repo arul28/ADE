@@ -1098,7 +1098,7 @@ describe("createPushPublisherService flush", () => {
       itemIds: ["agent:other-machine:unknown"],
       sourceRevisions: { "agent:other-machine:unknown": 1 },
       expectedAccountOwnerId: "owner-a",
-    })).rejects.toThrow(/latest Attention snapshot/i);
+    })).rejects.toThrow(/latest Activity snapshot/i);
 
     const current = (await publisher.getMachineAttentionSnapshot()).items[0]!;
     setAccountOwnerId("owner-b");
@@ -3177,7 +3177,7 @@ describe("createPushRelayClient", () => {
     });
 
     await expect(client.getAttentionSnapshot()).rejects.toThrow(
-      /invalid Attention snapshot/i,
+      /invalid Activity snapshot/i,
     );
   });
 

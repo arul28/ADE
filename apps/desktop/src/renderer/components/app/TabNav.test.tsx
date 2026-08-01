@@ -99,7 +99,7 @@ describe("TabNav", () => {
 
     // Deliberate: deleting this assertion is the quiet path to a tenth tab
     // nobody agreed to. Activity lives in the header and opens as a modal.
-    expect(screen.queryByRole("link", { name: "Attention" })).toBeNull();
+    expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
     expect(screen.queryByRole("link", { name: "Activity" })).toBeNull();
   });
 });

@@ -227,7 +227,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("reads account Attention directly and refreshes one rejected browser token", async () => {
+  it("reads account Activity directly and refreshes one rejected browser token", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -287,7 +287,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects malformed account Attention responses at the relay boundary", async () => {
+  it("rejects malformed account Activity responses at the relay boundary", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -322,7 +322,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("validates account Attention preferences before exposing them to the renderer", async () => {
+  it("validates account Activity preferences before exposing them to the renderer", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_in",
       userId: "account-a",
@@ -411,7 +411,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("loads real machine Attention from the paired host while signed out", async () => {
+  it("loads real machine Activity from the paired host while signed out", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_out",
       userId: null,
@@ -471,7 +471,7 @@ describe("createAdeWebAdapter", () => {
         },
         project: { projectId: "project-host", name: "Host Project" },
         title: "Agent is working",
-        preview: "Implementing account Attention",
+        preview: "Implementing account Activity",
         privacyPreview: "Agent is working",
         destination: { kind: "session", sessionId: "session-host" },
         actions: [],
@@ -564,7 +564,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("rejects malformed signed-out machine Attention from the paired host", async () => {
+  it("rejects malformed signed-out machine Activity from the paired host", async () => {
     const snapshot: BrowserAccountSnapshot = {
       state: "signed_out",
       userId: null,
@@ -599,7 +599,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("connects the owning account machine before opening an Attention destination", async () => {
+  it("connects the owning account machine before opening an Activity destination", async () => {
     const ownerMachine = {
       machineKey: "account-machine-studio",
       deviceId: "host-studio",

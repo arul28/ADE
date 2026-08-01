@@ -214,8 +214,8 @@ Renderer — settings:
   container. It renders; it does not decide. Tabs, ordering, deep-link
   resolution, and search all resolve through
   `settings/settingsManifest.ts`, which is also what generates the Cmd-K
-  entries. The nine tabs are General, Appearance, Agents & Models,
-  Lanes & Git, Integrations, Notifications & Sound, Secrets,
+  entries. The ten tabs are General, Appearance, Agents & Models,
+  Lanes & Git, Integrations, Activity, Notifications & Sound, Secrets,
   Storage & Diagnostics, and Stats. Every tab id ADE has ever shipped in
   a URL still resolves via `LEGACY_TAB_ALIASES`
   (`settingsManifest.test.ts` asserts this); the one exception is

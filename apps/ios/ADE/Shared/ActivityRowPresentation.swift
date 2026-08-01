@@ -1,7 +1,7 @@
 import Foundation
 
 /// The iOS mirror of `apps/desktop/src/shared/sessionStatusPresentation.ts` and
-/// the PR half of `renderer/components/attention/attentionPresentation.ts`.
+/// the PR half of `renderer/components/activity/activityPresentation.ts`.
 ///
 /// One item in, one row's worth of vocabulary out: what it is called, which hue
 /// it wears, which glyph it carries, and whether the label is followed by a

@@ -320,6 +320,12 @@ Failed keep full weight. Only canonical `needs_you` contributes to the Work-tab
 highlight, notifications, and Dock badge. `useAppWideSessionAttention` owns
 that count at `AppShell`, so it remains live outside Work.
 
+The same canonical session phase feeds the account-wide Activity UI: its
+header popover and two-column pane group sessions as Needs you, Working, and
+Done, while ADE Notch can toast the highest-priority transition. The hook and
+wire-level `attention` vocabulary remain compatibility names; user-facing
+surfaces call the feature Activity.
+
 ## Work view: `WorkViewArea.tsx`
 
 Owns the render target for open sessions. Supports three modes tied to

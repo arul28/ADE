@@ -11,9 +11,9 @@ import {
   type AttentionPhase,
 } from "../../../shared/types";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { HeaderActivityControl } from "./HeaderActivityControl";
 
@@ -40,9 +40,9 @@ beforeEach(() => {
   captureAnalytics = vi.fn(async () => ({ accepted: true, reason: "accepted" }));
   getSnapshot = vi.fn(async () => ({
     contractVersion: ATTENTION_CONTRACT_VERSION,
-    revision: attentionStore.getState().revision,
+    revision: activityStore.getState().revision,
     generatedAt: "2026-08-01T12:00:00.000Z",
-    items: Object.values(attentionStore.getState().itemsById),
+    items: Object.values(activityStore.getState().itemsById),
   }));
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -66,7 +66,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
-  resetAttentionStoreForTests();
+  resetActivityStoreForTests();
   publishAccountStatus(SIGNED_OUT_ACCOUNT);
   Object.defineProperty(window, "ade", {
     configurable: true,
@@ -113,7 +113,7 @@ function item(
 }
 
 function seedItems(items: AttentionItem[]): void {
-  attentionStore.setState({
+  activityStore.setState({
     itemsById: Object.fromEntries(items.map((entry) => [entry.id, entry])),
     generatedAt: "2026-08-01T12:00:00.000Z",
     syncStatus: "ready",
@@ -178,7 +178,7 @@ describe("HeaderActivityControl", () => {
     renderControl();
     const dialog = openPanel();
 
-    expect(attentionStore.getState().headerSurfaceVisible).toBe(true);
+    expect(activityStore.getState().headerSurfaceVisible).toBe(true);
     const sections = Array.from(
       dialog.querySelectorAll<HTMLElement>("[data-activity-section]"),
     ).map((section) => section.getAttribute("data-activity-section"));
@@ -232,7 +232,7 @@ describe("HeaderActivityControl", () => {
 
     const head = dialog.querySelector(".activity-hdr-panel-head");
     expect(head?.querySelector("p")).toBeNull();
-    expect(dialog.textContent).not.toContain("Attention is live");
+    expect(dialog.textContent).not.toContain("Activity is live");
     expect(dialog.textContent).not.toContain("Across every machine");
   });
 
@@ -260,7 +260,7 @@ describe("HeaderActivityControl", () => {
     expect(screen.queryByRole("dialog")).toBeNull();
   });
 
-  it("opens the exact destination through the attention bridge, then marks it seen", async () => {
+  it("opens the exact destination through the Activity bridge, then marks it seen", async () => {
     seedItems([item("a", "needs_you")]);
     renderControl();
     openPanel();
@@ -290,7 +290,7 @@ describe("HeaderActivityControl", () => {
       expect(screen.getByRole("alert").textContent).toContain("Studio Mac is offline"),
     );
     expect(acknowledge).not.toHaveBeenCalled();
-    expect(attentionStore.getState().itemsById.a?.seenAt).toBeNull();
+    expect(activityStore.getState().itemsById.a?.seenAt).toBeNull();
     expect(screen.getByRole("dialog")).toBeTruthy();
   });
 
@@ -321,7 +321,7 @@ describe("HeaderActivityControl", () => {
 
   it("hides agent text on every row when the account asks for hide-details", () => {
     seedItems([item("a", "needs_you")]);
-    attentionStore.setState({
+    activityStore.setState({
       preferences: {
         ...DEFAULT_ATTENTION_PREFERENCES,
         account: { ...DEFAULT_ATTENTION_PREFERENCES.account, hideDetails: true },
@@ -341,7 +341,7 @@ describe("HeaderActivityControl", () => {
 
     fireEvent.click(screen.getByTestId("header-activity-trigger"));
     const retry = await screen.findByRole("button", {
-      name: /Attention is unavailable · Retry/,
+      name: /Activity is unavailable · Retry/,
     });
     expect(getSnapshot).toHaveBeenCalledTimes(1);
 
@@ -401,7 +401,7 @@ describe("HeaderActivityControl", () => {
   it("keeps machine-local work visible while signed out", () => {
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
     seedItems([item("local", "needs_you")]);
-    attentionStore.setState({
+    activityStore.setState({
       snapshotScope: "machine",
       availability: {
         state: "signed_out",

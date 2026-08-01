@@ -1,9 +1,13 @@
 # ADE Push Relay
 
-Cloudflare Worker that consolidates ADE attention state across a signed-in
-account, then fans it out to desktop Attention Center, iPhone, APNs, and Live
+Cloudflare Worker that consolidates ADE Activity state across a signed-in
+account, then fans it out to desktop Activity, iPhone, APNs, and Live
 Activities. ADE machine runtimes publish sanitized state; signed-in clients
 read and acknowledge the account stream directly.
+
+The product surface is Activity. Relay routes, schema, payloads, and stored
+fields retain their established `attention` names for wire and persistence
+compatibility.
 
 This is a **separate worker** from `apps/webhook-relay` (the GitHub webhook
 relay): different trust model, different lifecycle, and free-plan compatible on
@@ -22,7 +26,7 @@ its own (single D1 database, no Durable Objects, no queues).
   making the machine secret an account credential.
 - Account routes require a Clerk bearer token whose issuer and
   audience/authorized-party match this deployment.
-- The machine secret is scoped to push publishing only. Account Attention
+- The machine secret is scoped to push publishing only. Account Activity
   stores bounded, sanitized presentation metadata (titles, previews,
   destinations, progress, and acknowledgements), never transcripts, prompts,
   diffs, or artifact contents. Entries expire and tombstones are pruned.
@@ -38,8 +42,8 @@ its own (single D1 database, no Durable Objects, no queues).
 | GET | `/machines/:key/devices` | List registrations (diagnostics) |
 | POST | `/machines/:key/live-activity-tokens` | Upsert/remove a per-activity update token (`deviceId`, `activityId`, `token`; empty token removes) |
 | POST | `/machines/:key/publish` | Publish `notifications` (alert pushes) and/or `liveActivity` events |
-| POST | `/machines/:key/attention` | Publish the machine's complete account Attention snapshot (HMAC + Clerk bearer) |
-| GET | `/attention/account/snapshot?since=<revision>` | Read account Attention changes |
+| POST | `/machines/:key/attention` | Publish the machine's complete account Activity snapshot (HMAC + Clerk bearer) |
+| GET | `/attention/account/snapshot?since=<revision>` | Read account Activity changes |
 | POST | `/attention/account/ack` | Mark items seen or dismissed across devices |
 | POST | `/attention/account/presence` | Report foreground/ambient-surface presence for desktop-first escalation |
 | GET, PUT | `/attention/account/preferences` | Read or replace account notification preferences |
@@ -47,7 +51,7 @@ its own (single D1 database, no Durable Objects, no queues).
 | PUT, DELETE | `/attention/account/devices/:deviceId` | Register or remove an account APNs destination. JSON must include a positive monotonic `ownershipEpoch`; stale account requests receive `409` with the latest `ownershipEpoch`. Omitting `pushToStartToken` preserves it; `clearPushToStartToken: true` removes it. DELETE retains the ownership epoch so delayed requests cannot reclaim the install. |
 | PUT, DELETE | `/attention/account/devices/:deviceId/activities/:activityId` | Register or remove an account Live Activity update token |
 
-### Account Attention semantics
+### Account Activity semantics
 
 - Each brain publishes one bounded full snapshot for its machine. The worker
   merges every linked machine into a revisioned account stream, including
@@ -153,7 +157,7 @@ TestFlight/App Store builds register `production`), and uses the registration's
 Until `APNS_KEY`/`APNS_KEY_ID`/`APNS_TEAM_ID` are set, registration endpoints
 work but `publish` returns 503 (`/health` reports `apnsConfigured: false`).
 
-### Clerk verification (required for account Attention)
+### Clerk verification (required for account Activity)
 
 Configure the same Clerk instance and ADE OAuth client used by desktop and iOS:
 
@@ -164,7 +168,7 @@ npx wrangler secret put CLERK_OAUTH_CLIENT_ID
 ```
 
 If these are absent, legacy machine-scoped push routes continue to work, while
-account Attention routes fail closed with an actionable `503`. A rejected
+account Activity routes fail closed with an actionable `503`. A rejected
 session token returns `401` separately, so configuration outages are not
 misdiagnosed as a user sign-in problem.
 

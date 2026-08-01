@@ -20,7 +20,7 @@ import {
  */
 export type { AttentionTone };
 
-export type AttentionPhasePresentation = {
+export type ActivityPhasePresentation = {
   label: string;
   tone: AttentionTone;
   /**
@@ -53,16 +53,16 @@ const SESSION_PHASE_BY_ATTENTION_PHASE = {
   stale: "stale",
 } as const satisfies Partial<Record<AttentionPhase, CanonicalSessionPhase>>;
 
-export type SessionDerivedAttentionPhase = keyof typeof SESSION_PHASE_BY_ATTENTION_PHASE;
+export type SessionDerivedActivityPhase = keyof typeof SESSION_PHASE_BY_ATTENTION_PHASE;
 
 /**
  * Every session-derived attention phase, exported so the regression test that
  * guards the one-hue rule enumerates the real list instead of a copy that can
  * silently fall behind.
  */
-export const SESSION_DERIVED_ATTENTION_PHASES = Object.keys(
+export const SESSION_DERIVED_ACTIVITY_PHASES = Object.keys(
   SESSION_PHASE_BY_ATTENTION_PHASE,
-) as SessionDerivedAttentionPhase[];
+) as SessionDerivedActivityPhase[];
 
 /**
  * Only these pulse: a session that is in motion or is actively holding for the
@@ -87,8 +87,8 @@ function requireSessionPresentation(phase: CanonicalSessionPhase): SessionStatus
 }
 
 function sessionDerivedPresentation(
-  phase: SessionDerivedAttentionPhase,
-): AttentionPhasePresentation {
+  phase: SessionDerivedActivityPhase,
+): ActivityPhasePresentation {
   const presentation = requireSessionPresentation(SESSION_PHASE_BY_ATTENTION_PHASE[phase]);
   // This annotated assignment is what enforces `SessionStatusTone ⊆ AttentionTone`
   // at compile time: add a hue to the session vocabulary that Attention has no
@@ -99,8 +99,8 @@ function sessionDerivedPresentation(
 }
 
 const SESSION_DERIVED_PRESENTATION = Object.fromEntries(
-  SESSION_DERIVED_ATTENTION_PHASES.map((phase) => [phase, sessionDerivedPresentation(phase)]),
-) as Record<SessionDerivedAttentionPhase, AttentionPhasePresentation>;
+  SESSION_DERIVED_ACTIVITY_PHASES.map((phase) => [phase, sessionDerivedPresentation(phase)]),
+) as Record<SessionDerivedActivityPhase, ActivityPhasePresentation>;
 
 /**
  * Phases with no session counterpart — the pull-request lifecycle. Amber does
@@ -129,8 +129,8 @@ const SESSION_DERIVED_PRESENTATION = Object.fromEntries(
  * no producer. Its tone stays neutral here, so it can never paint amber.
  */
 const NON_SESSION_PRESENTATION: Record<
-  Exclude<AttentionPhase, SessionDerivedAttentionPhase>,
-  AttentionPhasePresentation & { tone: SessionStatusTone }
+  Exclude<AttentionPhase, SessionDerivedActivityPhase>,
+  ActivityPhasePresentation & { tone: SessionStatusTone }
 > = {
   blocked: { label: "Blocked", tone: "neutral", active: false },
   checks_failing: { label: "Checks failing", tone: "red", active: false },
@@ -142,17 +142,17 @@ const NON_SESSION_PRESENTATION: Record<
   closed: { label: "Closed", tone: "neutral", active: false },
 };
 
-const PHASE_PRESENTATION: Record<AttentionPhase, AttentionPhasePresentation> = {
+const PHASE_PRESENTATION: Record<AttentionPhase, ActivityPhasePresentation> = {
   ...SESSION_DERIVED_PRESENTATION,
   ...NON_SESSION_PRESENTATION,
 };
 
-export function attentionPhasePresentation(phase: AttentionPhase): AttentionPhasePresentation {
+export function activityPhasePresentation(phase: AttentionPhase): ActivityPhasePresentation {
   return PHASE_PRESENTATION[phase];
 }
 
 const NON_SESSION_STATUS_DETAILS: Record<
-  Exclude<AttentionPhase, SessionDerivedAttentionPhase>,
+  Exclude<AttentionPhase, SessionDerivedActivityPhase>,
   Pick<SessionStatusPresentation, "glyph" | "showsElapsed" | "prominent">
 > = {
   blocked: { glyph: null, showsElapsed: false, prominent: false },
@@ -174,7 +174,7 @@ const NON_SESSION_STATUS_DETAILS: Record<
 export function activityItemPresentation(
   item: AttentionItem,
 ): SessionStatusPresentation | null {
-  if (attentionPhaseIsSessionDerived(item.phase)) {
+  if (activityPhaseIsSessionDerived(item.phase)) {
     return requireSessionPresentation(SESSION_PHASE_BY_ATTENTION_PHASE[item.phase]);
   }
   const presentation = NON_SESSION_PRESENTATION[item.phase];
@@ -189,13 +189,13 @@ export function activityItemPresentation(
   };
 }
 
-export function attentionPhaseIsSessionDerived(
+export function activityPhaseIsSessionDerived(
   phase: AttentionPhase,
-): phase is SessionDerivedAttentionPhase {
+): phase is SessionDerivedActivityPhase {
   return phase in SESSION_PHASE_BY_ATTENTION_PHASE;
 }
 
-export function attentionActionTone(
+export function activityActionTone(
   kind: AttentionActionKind,
 ): "primary" | "danger" | "secondary" | "ghost" {
   if (kind === "approve" || kind === "answer" || kind === "rerun_checks") return "primary";
@@ -204,7 +204,7 @@ export function attentionActionTone(
   return "ghost";
 }
 
-export function attentionViewEmptyCopy(view: "live" | "inbox" | "recent"): {
+export function activityViewEmptyCopy(view: "live" | "inbox" | "recent"): {
   title: string;
   body: string;
 } {

@@ -8,13 +8,13 @@ import {
 import type { CanonicalSessionPhase } from "../../../shared/sessionCanonicalState";
 import { sessionStatusPresentation } from "../../../shared/sessionStatusPresentation";
 import {
-  attentionPhaseIsSessionDerived,
-  attentionPhasePresentation,
-  attentionViewEmptyCopy,
+  activityPhaseIsSessionDerived,
+  activityPhasePresentation,
+  activityViewEmptyCopy,
   activityItemPresentation,
-  SESSION_DERIVED_ATTENTION_PHASES,
+  SESSION_DERIVED_ACTIVITY_PHASES,
   type AttentionTone,
-} from "./attentionPresentation";
+} from "./activityPresentation";
 
 /**
  * Written as an exhaustive record rather than an array so a new `AttentionPhase`
@@ -46,7 +46,7 @@ const ALL_ATTENTION_PHASES = Object.keys({
  */
 const AMBER_ALLOWLIST: AttentionPhase[] = ["needs_you"];
 
-describe("attention phase presentation", () => {
+describe("Activity phase presentation", () => {
   it("speaks the sidebar's words for every session-derived phase", () => {
     // Not a hand-copied table: each expectation is the phase's canonical
     // counterpart, so a wording change in sessionStatusPresentation.ts either
@@ -60,12 +60,12 @@ describe("attention phase presentation", () => {
       stale: "stale",
     };
 
-    expect(SESSION_DERIVED_ATTENTION_PHASES.slice().sort())
+    expect(SESSION_DERIVED_ACTIVITY_PHASES.slice().sort())
       .toEqual(Object.keys(bridge).sort());
 
     for (const [attentionPhase, canonicalPhase] of Object.entries(bridge)) {
       const canonical = sessionStatusPresentation(canonicalPhase);
-      const attention = attentionPhasePresentation(attentionPhase as AttentionPhase);
+      const attention = activityPhasePresentation(attentionPhase as AttentionPhase);
       expect(canonical).not.toBeNull();
       expect(attention.label).toBe(canonical?.label);
       expect(attention.tone).toBe(canonical?.tone);
@@ -90,12 +90,12 @@ describe("attention phase presentation", () => {
 
   it("returns a complete status presentation for every PR-only phase", () => {
     for (const phase of ALL_ATTENTION_PHASES.filter(
-      (candidate) => !attentionPhaseIsSessionDerived(candidate),
+      (candidate) => !activityPhaseIsSessionDerived(candidate),
     )) {
       const presentation = activityItemPresentation({ phase } as AttentionItem);
       expect(presentation).toMatchObject({
-        label: attentionPhasePresentation(phase).label,
-        tone: attentionPhasePresentation(phase).tone,
+        label: activityPhasePresentation(phase).label,
+        tone: activityPhasePresentation(phase).tone,
         showsElapsed: false,
       });
     }
@@ -106,20 +106,20 @@ describe("attention phase presentation", () => {
     // well as via the bridge above, because these exact words appear in
     // notification copy and in the iOS mirror — a silent drift here desyncs
     // three surfaces at once.
-    expect(attentionPhasePresentation("running")).toEqual({
+    expect(activityPhasePresentation("running")).toEqual({
       label: "Working",
       tone: "blue",
       active: true,
     });
-    expect(attentionPhasePresentation("completed")).toEqual({
+    expect(activityPhasePresentation("completed")).toEqual({
       label: "Done",
       tone: "emerald",
       active: false,
     });
-    expect(attentionPhasePresentation("starting").label).toBe("Starting");
-    expect(attentionPhasePresentation("needs_you").label).toBe("Needs you");
-    expect(attentionPhasePresentation("failed").label).toBe("Failed");
-    expect(attentionPhasePresentation("stale").label).toBe("Stale");
+    expect(activityPhasePresentation("starting").label).toBe("Starting");
+    expect(activityPhasePresentation("needs_you").label).toBe("Needs you");
+    expect(activityPhasePresentation("failed").label).toBe("Failed");
+    expect(activityPhasePresentation("stale").label).toBe("Stale");
   });
 
   /**
@@ -130,54 +130,54 @@ describe("attention phase presentation", () => {
    */
   it("spends amber only on states that need the user to act", () => {
     const amberPhases = ALL_ATTENTION_PHASES.filter(
-      (phase) => attentionPhasePresentation(phase).tone === "amber",
+      (phase) => activityPhasePresentation(phase).tone === "amber",
     );
     expect(amberPhases.sort()).toEqual(AMBER_ALLOWLIST.slice().sort());
   });
 
   it("keeps every session-derived phase out of amber unless it is a raised hand", () => {
-    for (const phase of SESSION_DERIVED_ATTENTION_PHASES) {
+    for (const phase of SESSION_DERIVED_ACTIVITY_PHASES) {
       if (phase === "needs_you") {
-        expect(attentionPhasePresentation(phase).tone).toBe("amber");
+        expect(activityPhasePresentation(phase).tone).toBe("amber");
         continue;
       }
-      expect(attentionPhasePresentation(phase).tone).not.toBe("amber");
+      expect(activityPhasePresentation(phase).tone).not.toBe("amber");
     }
   });
 
   it("keeps the deliberate deviations from the old vocabulary", () => {
     // `completed` is emerald, not amber: "finished, go look" must not wear the
     // same colour as "blocked, go act".
-    expect(attentionPhasePresentation("completed").tone).toBe("emerald");
+    expect(activityPhasePresentation("completed").tone).toBe("emerald");
     // `stale` is neutral, not amber and not blue: a silent process is true but
     // not actionable, and calling it live was the lie the old green dot told.
-    expect(attentionPhasePresentation("stale").tone).toBe("neutral");
-    expect(attentionPhasePresentation("stale").active).toBe(false);
+    expect(activityPhasePresentation("stale").tone).toBe("neutral");
+    expect(activityPhasePresentation("stale").active).toBe(false);
     // `failed` keeps red, so red still means exactly one thing: it broke.
-    expect(attentionPhasePresentation("failed").tone).toBe("red");
+    expect(activityPhasePresentation("failed").tone).toBe("red");
   });
 
   it("returns a presentation for every phase and pulses only live ones", () => {
     const active = ALL_ATTENTION_PHASES.filter(
-      (phase) => attentionPhasePresentation(phase).active,
+      (phase) => activityPhasePresentation(phase).active,
     );
     expect(active.sort()).toEqual(["needs_you", "running", "starting"]);
     for (const phase of ALL_ATTENTION_PHASES) {
-      expect(attentionPhasePresentation(phase).label.length).toBeGreaterThan(0);
+      expect(activityPhasePresentation(phase).label.length).toBeGreaterThan(0);
     }
   });
 
   it("knows which phases came from a session and which are pull-request only", () => {
-    expect(attentionPhaseIsSessionDerived("running")).toBe(true);
-    expect(attentionPhaseIsSessionDerived("completed")).toBe(true);
-    expect(attentionPhaseIsSessionDerived("merge_ready")).toBe(false);
-    expect(attentionPhaseIsSessionDerived("blocked")).toBe(false);
+    expect(activityPhaseIsSessionDerived("running")).toBe(true);
+    expect(activityPhaseIsSessionDerived("completed")).toBe(true);
+    expect(activityPhaseIsSessionDerived("merge_ready")).toBe(false);
+    expect(activityPhaseIsSessionDerived("blocked")).toBe(false);
   });
 
   it("never colours a pull-request phase amber", () => {
     const prTones: AttentionTone[] = ALL_ATTENTION_PHASES
-      .filter((phase) => !attentionPhaseIsSessionDerived(phase))
-      .map((phase) => attentionPhasePresentation(phase).tone);
+      .filter((phase) => !activityPhaseIsSessionDerived(phase))
+      .map((phase) => activityPhasePresentation(phase).tone);
     expect(prTones).not.toContain("amber");
   });
 
@@ -185,7 +185,7 @@ describe("attention phase presentation", () => {
     // `blocked` is the phase most likely to be re-promoted to amber by someone
     // reading the word alone. Its priority tier is the argument against that:
     // it sits with review_requested and merge_ready, not with needs_you.
-    expect(attentionPhasePresentation("blocked")).toEqual({
+    expect(activityPhasePresentation("blocked")).toEqual({
       label: "Blocked",
       tone: "neutral",
       active: false,
@@ -197,7 +197,7 @@ describe("attention phase presentation", () => {
   });
 
   it("uses the row's own word for finished work in empty-state copy", () => {
-    const recent = attentionViewEmptyCopy("recent");
+    const recent = activityViewEmptyCopy("recent");
     expect(recent.body).toContain("Done");
     expect(recent.body).not.toMatch(/completed/i);
   });

@@ -313,9 +313,9 @@ struct AccountAttentionRelayClient {
       switch self {
       case .unauthorized: return "Your session expired. Sign in again."
       case .staleOwnership: return "A newer device owner has already been registered."
-      case .server(let status): return "Attention service error (\(status))."
-      case .transport: return "Couldn't reach the Attention service."
-      case .invalidSnapshot: return "The Attention service returned unreadable data."
+      case .server(let status): return "Activity service error (\(status))."
+      case .transport: return "Couldn't reach the Activity service."
+      case .invalidSnapshot: return "The Activity service returned unreadable data."
       }
     }
   }

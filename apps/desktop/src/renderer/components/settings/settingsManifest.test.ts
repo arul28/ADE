@@ -67,7 +67,7 @@ describe("settings manifest", () => {
     }
   });
 
-  it("follows the Attention → Activity move for links already in the wild", () => {
+  it("follows the legacy Activity-settings aliases already in the wild", () => {
     // `?tab=notifications#attention-notch` shipped in tour steps and deeplinks
     // before Activity had a tab of its own. Landing those on Notifications —
     // which no longer holds the card — would be an invisible dead end.

@@ -247,7 +247,7 @@ Shared types and IPC:
   null (iOS) send the string.
 - `apps/desktop/src/shared/sessionStatusPresentation.ts` — the shared
   phase-to-label/glyph/tone/prominence vocabulary consumed by the Work sidebar
-  and Attention Center and mirrored by iOS widgets/Attention Drawer. Blue means
+  and Activity surfaces and mirrored by iOS widgets/Activity drawer. Blue means
   work in flight, amber is reserved exclusively for `Needs you`, emerald is a
   clean unseen outcome, red is failure, and neutral is true but non-actionable.
   It also owns the short working-duration formatter; renderer icon components

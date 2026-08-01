@@ -9,9 +9,9 @@ import { applyShellHeaderInset } from "../../lib/zoom";
 import { openConnectionsPanel } from "../../lib/connectionsPanel";
 import { useAppStore } from "../../state/appStore";
 import {
-  attentionStore,
-  resetAttentionStoreForTests,
-} from "../../state/attentionStore";
+  activityStore,
+  resetActivityStoreForTests,
+} from "../../state/activityStore";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
@@ -412,7 +412,7 @@ describe("TopBar", () => {
     } else {
       globalThis.window.__adeWebClient = originalWebClientMode;
     }
-    resetAttentionStoreForTests();
+    resetActivityStoreForTests();
     publishAccountStatus(SIGNED_OUT_ACCOUNT);
   });
 
@@ -445,7 +445,7 @@ describe("TopBar", () => {
       dismissedAt: null,
       expiresAt: null,
     };
-    attentionStore.setState({ itemsById: { [needsYou.id]: needsYou } });
+    activityStore.setState({ itemsById: { [needsYou.id]: needsYou } });
     publishAccountStatus({
       signedIn: true,
       userId: "account-a",

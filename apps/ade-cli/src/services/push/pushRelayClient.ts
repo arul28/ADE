@@ -269,7 +269,7 @@ export function createPushRelayClient(args: {
       throw new PushRelayRequestError(
         "getAttentionSnapshot",
         502,
-        "relay returned an invalid Attention snapshot",
+        "relay returned an invalid Activity snapshot",
       );
     }
     return body as unknown as AttentionSnapshot;
@@ -399,7 +399,7 @@ export function createPushRelayClient(args: {
         : acknowledgment.expectedAccountOwnerId?.trim() || null;
       if (expectedAccountUserId !== currentAccountUserId) {
         throw new Error(
-          "The ADE account changed before the Attention acknowledgment could sync.",
+          "The ADE account changed before the Activity acknowledgment could sync.",
         );
       }
       if (!currentAccountUserId) return null;

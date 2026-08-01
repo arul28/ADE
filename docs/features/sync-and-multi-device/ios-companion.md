@@ -1264,7 +1264,7 @@ contract) is documented in
   signed-in or paired phone registers ActivityKit's push-to-start token even
   when ordinary notification permission is denied and no alert APNs token
   exists. Signed-in phones send APNs and push-to-start routing directly to the
-  account Attention relay. `AccountService` serializes
+  account Activity relay. `AccountService` serializes
   account device PUTs, coalesces queued token/preferences refreshes, and sends a
   persisted monotonic `ownershipEpoch` on every device PUT/DELETE. Sign-out
   commits an unowned epoch before revocation; a direct account switch commits
@@ -1295,7 +1295,7 @@ contract) is documented in
   tap while the app is dead queues in the registry and drains on the next
   launch / foreground. Remote account rows navigate to the exact machine and
   pending item instead of executing a current-host intent.
-- **App-icon badge.** Account Attention delivery stamps the account-wide
+- **App-icon badge.** Account Activity delivery stamps the account-wide
   unresolved attention count on alerts and badge-only refreshes. The phone clears the badge
   on every foreground transition (`PushNotificationService.clearAppBadge`,
   called from `ADEApp`'s scene-phase handler) so a lingering count never
@@ -1352,20 +1352,22 @@ contract) is documented in
 - `UIImpactFeedbackGenerator` and `UINotificationFeedbackGenerator`
   on message send, intervention approval, worker launch, PR merge.
 
-### Attention Drawer
+### Activity drawer
 
-Source: `apps/ios/ADE/Views/AttentionDrawer/`.
+Source: `apps/ios/ADE/Views/Activity/`.
 
-The navigation-bar bell opens one global account-wide Attention Center
-(`AttentionDrawerSheet`). The signed-in app reads the Clerk-authenticated
+The navigation-bar bell opens one global account-wide Activity drawer
+(`ActivityDrawerSheet`). The signed-in app reads the Clerk-authenticated
 relay snapshot incrementally and persists it in the App Group container with
 the same source-revision, account-cursor, tombstone, and expiry rules as
 desktop. The existing per-project drawer is a project lens over that model; it
 is not a separate inbox.
 
-The sheet has **Needs you**, **Live**, and **Recent** views, a project lens
-picker, and machine/project context on every item. It remains useful when the
-phone is account-signed-in but not directly paired to a machine.
+The sheet has two buckets: **Sessions**, ordered as Needs you → Working → Done,
+and **Inbox** for PR/CI work and unseen outcomes. It includes project filtering
+and machine/project context on every item, and remains useful when the phone is
+account-signed-in but not directly paired to a machine. Rows can be dismissed
+with a swipe; account fallback and offline states remain explicit.
 
 Each row uses the shared item destination and actions:
 
@@ -1376,7 +1378,7 @@ Each row uses the shared item destination and actions:
 - **Completed / merged** — retained in Recent until seen or dismissed.
 
 The drawer uses the same one-hue-one-meaning contract as the widget and desktop
-sidebar. `blocked` is a neutral Live item with an Open action, distinct from the
+Activity pane. `blocked` is a neutral Working item with an Open action, distinct from the
 amber `awaitingInput` kind; running uses the shared dotted-circle glyph, and a
 stale run says `Stale` with a clock rather than claiming the host is offline.
 
@@ -1634,7 +1636,7 @@ rows use the hollow status ring, lower opacity, stay openable, and render
 `statusNote` as `done: …`; an explicit attention request instead puts its
 question in the preview line. Ready/idle rows remain in Your move without a
 capsule, while `Needs you` is the loud tier used by awaiting counts, the
-attention drawer, push, and attention-first roster behavior. A settled chat
+  Activity drawer, push, and attention-first roster behavior. A settled chat
 woken by unattended scheduled work shows Running during the turn and returns
 to Settled at idle because only user activity clears its declaration.
 

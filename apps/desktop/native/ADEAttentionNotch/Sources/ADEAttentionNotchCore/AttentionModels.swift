@@ -380,7 +380,7 @@ public struct AttentionItemPresentation: Equatable, Sendable {
 }
 
 /// Mirrors the renderer's `AttentionTone` union so a phase reads as the same
-/// colour in the notch as it does in the Attention center and header control.
+/// colour in the notch as it does in the Activity pane and header control.
 public enum NotchStatusTone: String, Equatable, Sendable {
     case blue
     case amber
@@ -392,7 +392,7 @@ public enum NotchStatusTone: String, Equatable, Sendable {
 }
 
 /// Mirrors `PHASE_PRESENTATION` in
-/// `apps/desktop/src/renderer/components/attention/attentionPresentation.ts`.
+/// `apps/desktop/src/renderer/components/activity/activityPresentation.ts`.
 public func notchStatusTone(for phase: String?) -> NotchStatusTone {
     switch phase {
     case "starting", "running", "open":
@@ -486,7 +486,7 @@ private func problemPresentation(
     let symbolName: String
     switch availability.state {
     case .degraded:
-        fallbackTitle = "Attention is out of sync"
+        fallbackTitle = "Activity is out of sync"
         compactLabel = "Reconnecting"
         tone = .amber
         symbolName = "antenna.radiowaves.left.and.right.slash"
@@ -496,7 +496,7 @@ private func problemPresentation(
         tone = .amber
         symbolName = "person.crop.circle.badge.exclamationmark"
     case .unavailable:
-        fallbackTitle = "Attention is unavailable"
+        fallbackTitle = "Activity is unavailable"
         compactLabel = "Unavailable"
         tone = .red
         symbolName = "exclamationmark.triangle.fill"
@@ -506,7 +506,7 @@ private func problemPresentation(
         tone = .red
         symbolName = "arrow.up.circle"
     case .unknown, .ready:
-        fallbackTitle = "Attention status unknown"
+        fallbackTitle = "Activity status unknown"
         compactLabel = "Degraded"
         tone = .amber
         symbolName = "questionmark.circle"
@@ -514,7 +514,7 @@ private func problemPresentation(
 
     let fallbackMessage = itemCount > 0
         ? "Showing the last state ADE received."
-        : "ADE can't reach your account attention stream."
+        : "ADE can't reach your account Activity stream."
 
     return NotchStatusPresentation(
         title: availability.title.notchNonEmpty ?? fallbackTitle,
@@ -538,7 +538,7 @@ private func recoveryHint(
     case .retry:
         return "Retry from ADE to reconnect."
     case .signIn:
-        return "Sign in to ADE to restore account attention."
+        return "Sign in to ADE to restore account Activity."
     case .updateHost:
         return host.map { "Update ADE on \($0)." } ?? "Update ADE to continue."
     case .restartHost:

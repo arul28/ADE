@@ -24,11 +24,11 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
 import {
-  acknowledgeAttentionItem,
-  attentionStore,
+  acknowledgeActivityItem,
+  activityStore,
   selectActivityHideDetails,
-  useAttentionStore,
-} from "../../state/attentionStore";
+  useActivityStore,
+} from "../../state/activityStore";
 import { useDialogFocusTrap } from "../app/HeaderSheet";
 import { cn } from "../ui/cn";
 import { ActivityCard } from "./ActivityCard";
@@ -39,7 +39,7 @@ import {
   summarizeActivity,
   type ActivitySection,
 } from "./activityPriority";
-import { refreshAttentionSnapshot } from "./useAttentionSync";
+import { refreshActivitySnapshot } from "./useActivitySync";
 import "./HeaderActivityControl.css";
 
 /**
@@ -113,12 +113,12 @@ export function HeaderActivityControl({
   /** Opens the full Activity surface — the shell owns how. */
   onOpenPane: () => void;
 }) {
-  const itemsById = useAttentionStore((state) => state.itemsById);
-  const syncStatus = useAttentionStore((state) => state.syncStatus);
-  const syncError = useAttentionStore((state) => state.syncError);
-  const generatedAt = useAttentionStore((state) => state.generatedAt);
-  const availability = useAttentionStore((state) => state.availability);
-  const hideDetails = useAttentionStore(selectActivityHideDetails);
+  const itemsById = useActivityStore((state) => state.itemsById);
+  const syncStatus = useActivityStore((state) => state.syncStatus);
+  const syncError = useActivityStore((state) => state.syncError);
+  const generatedAt = useActivityStore((state) => state.generatedAt);
+  const availability = useActivityStore((state) => state.availability);
+  const hideDetails = useActivityStore(selectActivityHideDetails);
   const { status: accountStatus, loading: accountLoading } = useAccountStatus();
   const signedIn = accountStatus.signedIn;
 
@@ -176,16 +176,16 @@ export function HeaderActivityControl({
   useEffect(() => {
     if (!open) return;
     setNavigationError(null);
-    void refreshAttentionSnapshot();
+    void refreshActivitySnapshot();
     void window.ade?.attentionNotch?.getHealth?.()
       .then(setNotchHealth)
       .catch(() => setNotchHealth(null));
   }, [open]);
 
   useEffect(() => {
-    attentionStore.getState().setHeaderSurfaceVisible(open);
+    activityStore.getState().setHeaderSurfaceVisible(open);
     return () => {
-      attentionStore.getState().setHeaderSurfaceVisible(false);
+      activityStore.getState().setHeaderSurfaceVisible(false);
     };
   }, [open]);
 
@@ -216,7 +216,7 @@ export function HeaderActivityControl({
       return;
     }
     // Only a destination that actually resolved earns the item leaving unseen.
-    await acknowledgeAttentionItem(item.id, "seen").catch(() => {});
+    await acknowledgeActivityItem(item.id, "seen").catch(() => {});
     setOpen(false);
   }, []);
 
@@ -230,7 +230,7 @@ export function HeaderActivityControl({
       // The settings popover is a dialog of its own inside this one. While
       // focus is in it, its keys are its business — otherwise Escape would
       // close both at once and an arrow key would yank focus out to a row.
-      if ((event.target as HTMLElement | null)?.closest?.(".attention-settings-popover")) {
+      if ((event.target as HTMLElement | null)?.closest?.(".activity-settings-popover")) {
         return;
       }
       const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;
@@ -373,7 +373,7 @@ export function HeaderActivityControl({
               >
                 <header className="activity-hdr-panel-head">
                   {/* No sub-caption. The line that used to sit here only ever
-                      restated the surface's own name ("Account Attention is
+                      restated the surface's own name ("Account Activity is
                       live"), and a header that describes itself is a header
                       that has nothing to say. */}
                   <h2 id="activity-hdr-title">Activity</h2>
@@ -382,7 +382,7 @@ export function HeaderActivityControl({
                       <button
                         type="button"
                         className="activity-hdr-freshness is-error"
-                        onClick={() => void refreshAttentionSnapshot()}
+                        onClick={() => void refreshActivitySnapshot()}
                         title={availability?.message ?? syncError ?? "Retry Activity sync"}
                       >
                         <WifiSlash size={11} />

@@ -3,15 +3,21 @@ import { commandPlacement, parseCommand, paletteCommands } from "../commands";
 import { buildLinearToolRequest, parseLinearArgs } from "../linearCommands";
 
 describe("commands", () => {
-  it("routes account Attention to the keyboard-accessible right pane", () => {
-    const parsed = parseCommand("/attention");
-    expect(parsed?.name).toBe("/attention");
+  it("routes account Activity to the keyboard-accessible right pane", () => {
+    const parsed = parseCommand("/activity");
+    expect(parsed?.name).toBe("/activity");
     expect(parsed ? commandPlacement(parsed) : null).toBe("right");
-    expect(paletteCommands("/att")).toContainEqual(expect.objectContaining({
-      name: "/attention",
+    expect(paletteCommands("/act")).toContainEqual(expect.objectContaining({
+      name: "/activity",
       source: "ade",
       description: "Show account-wide work that needs you",
     }));
+  });
+
+  it("keeps the old Attention command as a non-advertised alias", () => {
+    const parsed = parseCommand("/attention");
+    expect(parsed?.name).toBe("/activity");
+    expect(paletteCommands("/attention")).toEqual([]);
   });
 
   it("parses multi-word ADE commands before generic slash commands", () => {
