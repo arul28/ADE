@@ -335,13 +335,15 @@ export type GitHubCredentialFallback = {
   retryAt: string | null;
 };
 
+export type GitHubTokenType = "classic" | "fine-grained" | "oauth" | "unknown";
+
 export type GitHubStatus = {
   tokenStored: boolean;
   patTokenStored: boolean;
   tokenDecryptionFailed: boolean;
   storageScope: "app";
   authSource: "app" | "pat" | "environment" | "gh" | "none";
-  tokenType?: "classic" | "fine-grained" | "oauth" | "unknown";
+  tokenType?: GitHubTokenType;
   repo: GitHubRepoRef | null;
   // True when the project has any `origin` remote, even non-GitHub. Distinct
   // from `repo != null`, which is only true for GitHub origins. The Publish

@@ -675,7 +675,7 @@ describe("headlessLinearServices", () => {
       status: 200,
       headers: {
         "content-type": "application/json",
-        "x-oauth-scopes": "repo, workflow",
+        "x-oauth-scopes": "repo",
       },
     })) as unknown as typeof fetch;
     globalThis.fetch = fetchImpl;
@@ -689,6 +689,7 @@ describe("headlessLinearServices", () => {
       await expect(githubService.getStatus({ forceRefresh: true })).resolves.toMatchObject({
         authSource: "environment",
         connected: true,
+        writeAuthSource: "none",
         patTokenStored: true,
         userLogin: "octocat",
       });
@@ -877,7 +878,64 @@ describe("headlessLinearServices", () => {
     }
   });
 
-  it("keeps App-only headless reads connected while writes remain unavailable", async () => {
+  it("limits headless 404 fallback to repository-scoped requests", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-404-"));
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    const authorizations: string[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+      if (authorizations.length === 2) {
+        return new Response(JSON.stringify([{ id: 1 }]), { status: 200 });
+      }
+      if (authorizations.length === 3) {
+        return new Response(JSON.stringify([{ number: 2 }]), { status: 200 });
+      }
+      return new Response(JSON.stringify({ message: "Not Found" }), { status: 404 });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+    try {
+      await expect(githubService.apiRequest({ method: "GET", path: "/repos/acme/ade/issues" }))
+        .resolves.toMatchObject({ data: [{ id: 1 }] });
+      await expect(githubService.apiRequest({ method: "GET", path: "/repos/acme/ade/pulls" }))
+        .resolves.toMatchObject({ data: [{ number: 2 }] });
+      await expect(githubService.apiRequest({ method: "GET", path: "/user/emails" }))
+        .rejects.toThrow("Not Found");
+      expect(authorizations).toEqual([
+        "Bearer ghu_app_user_token",
+        "Bearer gho_cli_token",
+        "Bearer ghu_app_user_token",
+        "Bearer ghu_app_user_token",
+      ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
+  it("keeps App reads connected without advertising an invalid GitHub CLI writer", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
     const previousGitHubToken = process.env.GITHUB_TOKEN;
@@ -900,15 +958,26 @@ describe("headlessLinearServices", () => {
       userLogin: "octocat",
       updatedAt: new Date().toISOString(),
     }));
-    globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ login: "octocat" }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    })) as unknown as typeof fetch;
+    const authorizations: string[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      authorizations.push(authorization);
+      return authorization === "Bearer ghu_app_user_token"
+        ? new Response(JSON.stringify({ login: "octocat" }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          })
+        : new Response(JSON.stringify({ message: "Bad credentials" }), { status: 401 });
+    }) as unknown as typeof fetch;
     const githubService = createHeadlessGitHubService(
       "/tmp/ade-project",
       { debug() {}, info() {}, warn() {}, error() {} } as any,
       {
-        ghAuthTokenProvider: () => ({ token: null, ghCliPath: null, ghAuthError: null }),
+        ghAuthTokenProvider: () => ({
+          token: "gho_invalid_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
       },
     );
 
@@ -919,7 +988,10 @@ describe("headlessLinearServices", () => {
         connected: true,
         userLogin: "octocat",
       });
-      await expect(githubService.getTokenOrThrowAsync()).rejects.toThrow("GitHub auth missing");
+      expect(authorizations).toEqual([
+        "Bearer ghu_app_user_token",
+        "Bearer gho_invalid_cli_token",
+      ]);
     } finally {
       globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
@@ -932,6 +1004,83 @@ describe("headlessLinearServices", () => {
       else process.env.GH_TOKEN = previousGhToken;
       if (previousGhConfigDir == null) delete process.env.GH_CONFIG_DIR;
       else process.env.GH_CONFIG_DIR = previousGhConfigDir;
+    }
+  });
+
+  it("drops a cached headless writer when that credential disappears", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousAdeGitHubToken = process.env.ADE_GITHUB_TOKEN;
+    const previousGitHubToken = process.env.GITHUB_TOKEN;
+    const previousGhToken = process.env.GH_TOKEN;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-cache-"));
+    delete process.env.ADE_GITHUB_TOKEN;
+    delete process.env.GITHUB_TOKEN;
+    delete process.env.GH_TOKEN;
+    const machineCredentialStore = new EncryptedFileCredentialStore();
+    machineCredentialStore.setSync("github.appUserToken.v1", JSON.stringify({
+      accessToken: "ghu_app_user_token",
+      tokenType: "bearer",
+      scope: null,
+      expiresAt: new Date(Date.now() + 60 * 60_000).toISOString(),
+      refreshToken: null,
+      refreshTokenExpiresAt: null,
+      userLogin: "octocat",
+      updatedAt: new Date().toISOString(),
+    }));
+    let ghToken: string | null = "gho_cli_token";
+    const authorizations: string[] = [];
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization") ?? "");
+      return new Response(JSON.stringify({ login: "octocat" }), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          "x-oauth-scopes": authorizations.at(-1) === "Bearer gho_cli_token"
+            ? "repo, workflow"
+            : "",
+        },
+      });
+    }) as unknown as typeof fetch;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: ghToken,
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(githubService.getStatus()).resolves.toMatchObject({
+        authSource: "app",
+        writeAuthSource: "gh",
+        connected: true,
+      });
+      ghToken = null;
+      await expect(githubService.getStatus()).resolves.toMatchObject({
+        authSource: "app",
+        writeAuthSource: "none",
+        connected: true,
+      });
+      expect(authorizations).toEqual([
+        "Bearer ghu_app_user_token",
+        "Bearer gho_cli_token",
+        "Bearer ghu_app_user_token",
+      ]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+      if (previousAdeGitHubToken == null) delete process.env.ADE_GITHUB_TOKEN;
+      else process.env.ADE_GITHUB_TOKEN = previousAdeGitHubToken;
+      if (previousGitHubToken == null) delete process.env.GITHUB_TOKEN;
+      else process.env.GITHUB_TOKEN = previousGitHubToken;
+      if (previousGhToken == null) delete process.env.GH_TOKEN;
+      else process.env.GH_TOKEN = previousGhToken;
     }
   });
 

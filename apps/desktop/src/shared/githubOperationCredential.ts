@@ -1,7 +1,11 @@
 import type {
+  GitHubAuthFailure,
   GitHubCredentialCapability,
   GitHubCredentialSource,
+  GitHubRateLimitState,
+  GitHubTokenType,
 } from "./types/git";
+import { getGitHubTokenAccessState } from "./githubScopes";
 
 export type GithubOperationCredentialSource = GitHubCredentialSource;
 export type GithubOperationCredentialCapability = GitHubCredentialCapability;
@@ -63,6 +67,160 @@ export function githubOperationCredentialCandidates<
       seenTokens.add(candidate.token);
       return true;
     });
+}
+
+export function evaluateGithubCredentialCapabilities(args: {
+  source: GithubOperationCredentialSource;
+  tokenType: GitHubTokenType;
+  scopes: readonly string[];
+  userLogin: string | null;
+  repositoryPresent: boolean;
+  repositoryReadValidated: boolean | null;
+}): Readonly<{ read: boolean; write: boolean }> {
+  if (!args.userLogin) return { read: false, write: false };
+
+  const repositoryReadAvailable = !args.repositoryPresent
+    || args.repositoryReadValidated === true;
+  if (args.source === "app") {
+    return { read: repositoryReadAvailable, write: false };
+  }
+  if (args.tokenType === "fine-grained") {
+    // GitHub does not expose fine-grained token permissions during validation.
+    // A successful repository probe establishes that the user-selected token
+    // can target this repo; actual write requests still fail over on 403.
+    return { read: repositoryReadAvailable, write: repositoryReadAvailable };
+  }
+  if (
+    args.tokenType === "classic"
+    || args.tokenType === "oauth"
+    || args.scopes.length > 0
+  ) {
+    const access = getGitHubTokenAccessState(args.scopes);
+    return {
+      read: access.requirements.repo.present,
+      write: access.hasRequiredAccess,
+    };
+  }
+  return { read: true, write: true };
+}
+
+export type GithubStatusCredentialProbeResult<Probe> =
+  | { ok: true; value: Probe }
+  | {
+      ok: false;
+      error: string;
+      authFailure: GitHubAuthFailure;
+      rateLimit: GitHubRateLimitState | null;
+      value?: Probe;
+    };
+
+export async function resolveGithubStatusCredentials<
+  Candidate extends {
+    source: GithubOperationCredentialSource;
+    token: string;
+  },
+  Probe,
+>(args: {
+  readCandidates: readonly Candidate[];
+  writeCandidates: readonly Candidate[];
+  cooldown: (candidate: Candidate) => {
+    failure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  } | null;
+  probe: (candidate: Candidate) => Promise<GithubStatusCredentialProbeResult<Probe>>;
+  capabilities: (
+    candidate: Candidate,
+    probe: Probe,
+  ) => Readonly<{ read: boolean; write: boolean }>;
+  isRepositoryAccessFailure: (
+    result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
+  ) => boolean;
+  onAcceptedProbe: (
+    candidate: Candidate,
+    probe: Probe,
+    validated: boolean,
+  ) => void;
+  onRejectedProbe: (
+    candidate: Candidate,
+    result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
+    context: { repositoryAccessFailure: boolean; phase: "read" | "write" },
+  ) => void;
+}): Promise<{
+  active: { candidate: Candidate; value: Probe } | null;
+  activeWriteSource: Exclude<GithubOperationCredentialSource, "app"> | null;
+  failures: Array<{
+    candidate: Candidate;
+    error: string;
+    authFailure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  }>;
+}> {
+  const failures: Array<{
+    candidate: Candidate;
+    error: string;
+    authFailure: GitHubAuthFailure;
+    rateLimit: GitHubRateLimitState | null;
+  }> = [];
+  const successfulProbes = new Map<string, Probe>();
+  let active: { candidate: Candidate; value: Probe } | null = null;
+
+  for (const [candidateIndex, candidate] of args.readCandidates.entries()) {
+    const cooldown = args.cooldown(candidate);
+    if (cooldown) {
+      failures.push({
+        candidate,
+        error: cooldown.failure.message,
+        authFailure: cooldown.failure,
+        rateLimit: cooldown.rateLimit,
+      });
+      continue;
+    }
+    const result = await args.probe(candidate);
+    if (!result.ok) {
+      const repositoryAccessFailure = args.isRepositoryAccessFailure(result);
+      const hasFallback = args.readCandidates
+        .slice(candidateIndex + 1)
+        .some((fallback) => !args.cooldown(fallback));
+      if (repositoryAccessFailure && result.value && !hasFallback) {
+        active = { candidate, value: result.value };
+        successfulProbes.set(candidate.token, result.value);
+        args.onAcceptedProbe(candidate, result.value, false);
+        break;
+      }
+      failures.push({ candidate, ...result });
+      args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "read" });
+      if (result.authFailure.kind === "network" || result.authFailure.kind === "unknown") break;
+      continue;
+    }
+    active = { candidate, value: result.value };
+    successfulProbes.set(candidate.token, result.value);
+    args.onAcceptedProbe(candidate, result.value, true);
+    break;
+  }
+
+  let activeWriteSource: Exclude<GithubOperationCredentialSource, "app"> | null = null;
+  if (active) {
+    for (const candidate of args.writeCandidates) {
+      if (candidate.source === "app" || args.cooldown(candidate)) continue;
+      const existingProbe = successfulProbes.get(candidate.token);
+      const result = existingProbe
+        ? { ok: true as const, value: existingProbe }
+        : await args.probe(candidate);
+      if (!result.ok) {
+        const repositoryAccessFailure = args.isRepositoryAccessFailure(result);
+        args.onRejectedProbe(candidate, result, { repositoryAccessFailure, phase: "write" });
+        continue;
+      }
+      successfulProbes.set(candidate.token, result.value);
+      if (!existingProbe) args.onAcceptedProbe(candidate, result.value, true);
+      if (args.capabilities(candidate, result.value).write) {
+        activeWriteSource = candidate.source;
+        break;
+      }
+    }
+  }
+
+  return { active, activeWriteSource, failures };
 }
 
 type CredentialResolvers<T> = Record<

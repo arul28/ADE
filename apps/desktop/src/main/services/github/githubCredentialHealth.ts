@@ -5,6 +5,7 @@ import type {
   GitHubCredentialSource,
   GitHubCredentialState,
   GitHubRateLimitState,
+  GitHubRepoRef,
 } from "../../../shared/types";
 import {
   githubRateLimitRetryAtMs,
@@ -17,6 +18,7 @@ import {
 
 const FALLBACK_COOLDOWN_MS = 5 * 60_000;
 const SECONDARY_RATE_LIMIT_COOLDOWN_MS = 60_000;
+const REPOSITORY_ACCESS_TTL_MS = 2 * 60_000;
 export const GITHUB_BACKGROUND_RATE_LIMIT_RESERVE = 500;
 
 export type GithubCredentialCandidate = {
@@ -38,9 +40,55 @@ type CredentialHealth = {
 };
 
 const healthByTokenDigest = new Map<string, CredentialHealth>();
+const repositoryAccessByTokenAndRepo = new Map<string, {
+  accessible: boolean;
+  expiresAtMs: number;
+}>();
 
 export function githubCredentialTokenDigest(token: string): string {
   return createHash("sha256").update(token).digest("hex");
+}
+
+export function githubCredentialInventoryKey(
+  candidates: readonly GithubCredentialCandidate[],
+): string {
+  return candidates
+    .map((candidate) => `${candidate.source}:${githubCredentialTokenDigest(candidate.token)}`)
+    .join("|");
+}
+
+function repositoryAccessKey(
+  candidate: GithubCredentialCandidate,
+  repo: GitHubRepoRef,
+): string {
+  return `${githubCredentialTokenDigest(candidate.token)}:${repo.owner.trim().toLowerCase()}/${repo.name.trim().toLowerCase()}`;
+}
+
+export function githubCredentialRepositoryAccess(
+  candidate: GithubCredentialCandidate,
+  repo: GitHubRepoRef,
+  nowMs = Date.now(),
+): boolean | null {
+  const key = repositoryAccessKey(candidate, repo);
+  const entry = repositoryAccessByTokenAndRepo.get(key);
+  if (!entry) return null;
+  if (entry.expiresAtMs <= nowMs) {
+    repositoryAccessByTokenAndRepo.delete(key);
+    return null;
+  }
+  return entry.accessible;
+}
+
+export function recordGithubCredentialRepositoryAccess(
+  candidate: GithubCredentialCandidate,
+  repo: GitHubRepoRef,
+  accessible: boolean,
+  nowMs = Date.now(),
+): void {
+  repositoryAccessByTokenAndRepo.set(repositoryAccessKey(candidate, repo), {
+    accessible,
+    expiresAtMs: nowMs + REPOSITORY_ACCESS_TTL_MS,
+  });
 }
 
 function normalizedLogin(login: string | null | undefined): string | null {
@@ -188,10 +236,15 @@ export function githubCredentialCooldown(
 
 export function clearGithubCredentialHealth(token?: string): void {
   if (token) {
-    healthByTokenDigest.delete(githubCredentialTokenDigest(token));
+    const digest = githubCredentialTokenDigest(token);
+    healthByTokenDigest.delete(digest);
+    for (const key of repositoryAccessByTokenAndRepo.keys()) {
+      if (key.startsWith(`${digest}:`)) repositoryAccessByTokenAndRepo.delete(key);
+    }
     return;
   }
   healthByTokenDigest.clear();
+  repositoryAccessByTokenAndRepo.clear();
 }
 
 export function githubCredentialStates(args: {
