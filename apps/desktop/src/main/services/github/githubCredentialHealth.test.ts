@@ -4,7 +4,9 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubCredentialRateLimitCooldown,
   recordGithubCredentialFailure,
+  recordGithubOperationFailure,
   recordGithubCredentialSuccess,
   registerGithubCredentialIdentity,
   type GithubCredentialCandidate,
@@ -127,7 +129,7 @@ describe("githubCredentialHealth", () => {
       retryAt: null,
     }, null);
     expect(githubCredentialCooldown(appCandidate)).not.toBeNull();
-    expect(githubCredentialCooldown(appCandidate, Date.now(), { failurePolicy: "rate-limit-only" }))
+    expect(githubCredentialRateLimitCooldown(appCandidate, Date.now()))
       .toBeNull();
 
     recordGithubCredentialFailure(appCandidate, {
@@ -141,7 +143,17 @@ describe("githubCredentialHealth", () => {
       resetAt: new Date(Date.now() + 60_000).toISOString(),
       resource: "core",
     });
-    expect(githubCredentialCooldown(appCandidate, Date.now(), { failurePolicy: "rate-limit-only" })
+    expect(githubCredentialRateLimitCooldown(appCandidate, Date.now())
       ?.failure.kind).toBe("rate_limited");
+  });
+
+  it("does not globally cool a credential after an operation-level permission denial", () => {
+    recordGithubOperationFailure(appCandidate, {
+      kind: "permission_denied",
+      message: "Resource protected by organization policy",
+      retryAt: null,
+    }, null);
+
+    expect(githubCredentialCooldown(appCandidate)).toBeNull();
   });
 });

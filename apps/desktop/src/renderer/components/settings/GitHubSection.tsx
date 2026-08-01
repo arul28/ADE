@@ -102,6 +102,12 @@ function credentialStateLabel(state: GitHubCredentialState): string {
   return state.available ? "Fallback" : "Not set up";
 }
 
+function credentialStateColor(state: GitHubCredentialState): string {
+  if (state.state === "active") return COLORS.success;
+  if (state.state === "cooldown") return COLORS.warning;
+  return state.available ? COLORS.textSecondary : COLORS.textDim;
+}
+
 export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const [saveNotice, setSaveNotice] = useState<string | null>(null);
@@ -215,6 +221,9 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
     && tokenAuthenticated
     && hasInspectableScopes
     && !accessState.hasRequiredAccess;
+  let readsWithLabel = authSourceLabel(githubStatus);
+  if (authFailure?.kind === "rate_limited") readsWithLabel = "Paused";
+  if (activeReadCredential) readsWithLabel = credentialSourceLabel(activeReadCredential.source);
   let statusColor: string;
   let statusLabel: string;
   if (isConnected && credentialFallback) {
@@ -391,11 +400,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
           >
             {summaryCell("USER", githubStatus?.userLogin ?? null)}
             {summaryCell("REPOSITORY", githubStatus?.repo ? `${githubStatus.repo.owner}/${githubStatus.repo.name}` : null)}
-            {summaryCell("READS WITH", activeReadCredential
-              ? credentialSourceLabel(activeReadCredential.source)
-              : authFailure?.kind === "rate_limited"
-                ? "Paused"
-                : authSourceLabel(githubStatus))}
+            {summaryCell("READS WITH", readsWithLabel)}
             {summaryCell("WRITES WITH", credentialSourceLabel(effectiveWriteAuthSource))}
           </div>
 
@@ -427,13 +432,7 @@ export function GitHubSection({ embedded = false }: { embedded?: boolean }) {
               <div style={{ ...LABEL_STYLE, marginBottom: 8 }}>CONNECTION ORDER</div>
               <div style={{ border: `1px solid ${COLORS.border}`, background: COLORS.recessedBg }}>
                 {credentialStates.map((credential, index) => {
-                  const stateColor = credential.state === "active"
-                    ? COLORS.success
-                    : credential.state === "cooldown"
-                      ? COLORS.warning
-                      : credential.available
-                        ? COLORS.textSecondary
-                        : COLORS.textDim;
+                  const stateColor = credentialStateColor(credential);
                   return (
                     <div
                       key={credential.source}

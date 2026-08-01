@@ -419,6 +419,37 @@ describe("githubService.apiRequest", () => {
       });
   });
 
+  it("retries a credential on later operations after an endpoint-level 403", async () => {
+    delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    mockFetch
+      .mockResolvedValueOnce(jsonResponse(403, {
+        message: "Resource protected by organization policy",
+      }))
+      .mockResolvedValueOnce(jsonResponse(200, [{ id: 1 }]))
+      .mockResolvedValueOnce(jsonResponse(200, [{ id: 2 }]));
+    const service = makeService({
+      ghAuthTokenProvider: () => ({
+        token: "gho_cli_token",
+        ghCliPath: "/opt/homebrew/bin/gh",
+        ghAuthError: null,
+      }),
+    });
+
+    await expect(service.apiRequest({ method: "GET", path: "/user/emails" }))
+      .resolves.toMatchObject({ data: [{ id: 1 }] });
+    await expect(service.apiRequest({ method: "GET", path: "/user/emails" }))
+      .resolves.toMatchObject({ data: [{ id: 2 }] });
+
+    expect(mockFetch.mock.calls.map(([, init]) => (
+      (init?.headers as Record<string, string> | undefined)?.authorization
+    ))).toEqual([
+      "Bearer ghp_environment_token",
+      "Bearer gho_cli_token",
+      "Bearer ghp_environment_token",
+    ]);
+  });
+
   it("retries manual-redirect requests with the next healthy credential", async () => {
     delete process.env.ADE_DISABLE_GH_AUTH_FALLBACK;
     const credentialStore = new MemoryCredentialStore();

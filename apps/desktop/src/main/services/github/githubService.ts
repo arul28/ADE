@@ -56,11 +56,14 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubCredentialNonRateLimitCooldown,
+  githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
   githubCredentialRepositoryAccess,
   githubCredentialStates,
   githubCredentialTokenDigest,
   recordGithubCredentialFailure,
+  recordGithubOperationFailure,
   recordGithubCredentialProbeSuccess,
   recordGithubCredentialRepositoryAccess,
   recordGithubCredentialSuccess,
@@ -880,7 +883,6 @@ export function createGithubService({
 
   const readAuthToken = async (
     capability: GithubOperationCredentialCapability = "read",
-    failurePolicy: "all" | "non-rate-limit-only" = "all",
   ): Promise<GitHubTokenLookup> => {
     const inventory = await readCredentialInventory();
     const resolved = resolveGithubOperationCredentialCandidate({
@@ -889,10 +891,29 @@ export function createGithubService({
       isAvailable: (candidate) => !githubCredentialCooldown(
         candidate,
         Date.now(),
-        { resource: "core", failurePolicy },
+        { resource: "core" },
       ),
     });
     return resolved ?? {
+      token: null,
+      source: "none",
+      patTokenStored: inventory.patTokenStored,
+      ghCliPath: inventory.ghCliPath,
+      ghAuthError: inventory.ghAuthError,
+    };
+  };
+
+  const readGitTransportAuthToken = async (): Promise<GitHubTokenLookup> => {
+    const inventory = await readCredentialInventory();
+    return resolveGithubOperationCredentialCandidate({
+      candidates: inventory.candidates,
+      capability: "write",
+      isAvailable: (candidate) => !githubCredentialNonRateLimitCooldown(
+        candidate,
+        Date.now(),
+        { resource: "core" },
+      ),
+    }) ?? {
       token: null,
       source: "none",
       patTokenStored: inventory.patTokenStored,
@@ -1394,7 +1415,7 @@ export function createGithubService({
         const { repositoryNotFound, ambiguousRepositoryNotFound } =
           repositoryFallback.classifyFailure(candidate, response.status);
         if (!repositoryNotFound) {
-          recordGithubCredentialFailure(candidate, failure.authFailure, failure.rateLimit);
+          recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
         const attemptError = new GithubCredentialAttemptError(
           message + detail,
@@ -1438,7 +1459,7 @@ export function createGithubService({
           graphqlFailure.status,
         );
         if (!repositoryNotFound) {
-          recordGithubCredentialFailure(
+          recordGithubOperationFailure(
             candidate,
             graphqlFailure.authFailure,
             graphqlFailure.rateLimit,
@@ -1564,14 +1585,9 @@ export function createGithubService({
     const primaryCandidate = readCandidates[0] ?? null;
     const writeCandidates = githubOperationCredentialCandidates(inventory.candidates, "write");
     const credentialInventoryKey = githubCredentialInventoryKey(inventory.candidates);
-    const statusCooldown = (candidate: GitHubTokenCandidate) => githubCredentialCooldown(
-      candidate,
-      Date.now(),
-      {
-        resource: "core",
-        failurePolicy: opts.forceRefresh === true ? "rate-limit-only" : "all",
-      },
-    );
+    const statusCooldown = (candidate: GitHubTokenCandidate) => opts.forceRefresh === true
+      ? githubCredentialRateLimitCooldown(candidate, Date.now(), { resource: "core" })
+      : githubCredentialCooldown(candidate, Date.now(), { resource: "core" });
     if (!primaryCandidate) {
       cachedStatus = {
         tokenStored: false,
@@ -1672,15 +1688,15 @@ export function createGithubService({
       capabilities: (candidate, value) => validatedCredentialCapabilities(candidate, value, repo),
       isRepositoryAccessFailure: (result) => result.authFailure.kind === "permission_denied"
         && result.value?.repoAccessOk === false,
-      onAcceptedProbe: (candidate, value, validated) => {
+      onAuthenticatedProbe: (candidate, value) => {
         registerGithubCredentialIdentity(candidate, value.validated.userLogin);
-        if (validated) {
-          recordGithubCredentialProbeSuccess(
-            candidate,
-            value.validated.rateLimit,
-            value.validated.userLogin,
-          );
-        }
+      },
+      onUsableProbe: (candidate, value) => {
+        recordGithubCredentialProbeSuccess(
+          candidate,
+          value.validated.rateLimit,
+          value.validated.userLogin,
+        );
       },
       onRejectedProbe: (candidate, result, context) => {
         if (!context.repositoryAccessFailure) {
@@ -2321,7 +2337,7 @@ export function createGithubService({
     },
 
     async getGitTransportTokenOrThrowAsync(): Promise<string> {
-      const token = (await readAuthToken("write", "non-rate-limit-only")).token;
+      const token = (await readGitTransportAuthToken()).token;
       if (!token) throw new Error("GitHub auth missing. Run `gh auth login -h github.com -s repo -s workflow` or add a personal access token in Settings.");
       return token;
     },

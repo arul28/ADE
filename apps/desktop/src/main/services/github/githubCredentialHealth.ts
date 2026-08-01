@@ -163,21 +163,15 @@ export function recordGithubCredentialProbeSuccess(
   });
 }
 
-export function recordGithubCredentialFailure(
+function recordGithubFailure(
   candidate: GithubCredentialCandidate,
   failure: GitHubAuthFailure,
   rateLimit: GitHubRateLimitState | null,
+  cooldownUntilMs: number,
 ): void {
-  const now = Date.now();
   const digest = githubCredentialTokenDigest(candidate.token);
   const existing = healthByTokenDigest.get(digest);
   const userLogin = normalizedLogin(candidate.userLogin ?? existing?.userLogin);
-  const retryAtMs = githubRateLimitRetryAtMs(failure, rateLimit);
-  const cooldownUntilMs = failure.kind === "rate_limited"
-    ? Math.max(now + SECONDARY_RATE_LIMIT_COOLDOWN_MS, retryAtMs ?? 0)
-    : failure.kind === "invalid_token" || failure.kind === "permission_denied"
-      ? now + FALLBACK_COOLDOWN_MS
-      : 0;
   const next: CredentialHealth = {
     resources: updateResourceHealth(existing, rateLimit, (current) => ({
       failure,
@@ -209,13 +203,45 @@ export function recordGithubCredentialFailure(
   }
 }
 
-export function githubCredentialCooldown(
+export function recordGithubCredentialFailure(
+  candidate: GithubCredentialCandidate,
+  failure: GitHubAuthFailure,
+  rateLimit: GitHubRateLimitState | null,
+): void {
+  const now = Date.now();
+  const cooldownUntilMs = failure.kind === "rate_limited"
+    ? Math.max(
+        now + SECONDARY_RATE_LIMIT_COOLDOWN_MS,
+        githubRateLimitRetryAtMs(failure, rateLimit) ?? 0,
+      )
+    : failure.kind === "invalid_token" || failure.kind === "permission_denied"
+      ? now + FALLBACK_COOLDOWN_MS
+      : 0;
+  recordGithubFailure(candidate, failure, rateLimit, cooldownUntilMs);
+}
+
+export function recordGithubOperationFailure(
+  candidate: GithubCredentialCandidate,
+  failure: GitHubAuthFailure,
+  rateLimit: GitHubRateLimitState | null,
+): void {
+  const now = Date.now();
+  const cooldownUntilMs = failure.kind === "rate_limited"
+    ? Math.max(
+        now + SECONDARY_RATE_LIMIT_COOLDOWN_MS,
+        githubRateLimitRetryAtMs(failure, rateLimit) ?? 0,
+      )
+    : failure.kind === "invalid_token"
+      ? now + FALLBACK_COOLDOWN_MS
+      : 0;
+  recordGithubFailure(candidate, failure, rateLimit, cooldownUntilMs);
+}
+
+function githubCredentialCooldownMatching(
   candidate: GithubCredentialCandidate,
   nowMs = Date.now(),
-  options: {
-    resource?: string | null;
-    failurePolicy?: "all" | "rate-limit-only" | "non-rate-limit-only";
-  } = {},
+  options: { resource?: string | null } = {},
+  matches: (failure: GitHubAuthFailure) => boolean,
 ): { failure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } | null {
   const health = healthFor(candidate);
   if (!health) return null;
@@ -223,20 +249,49 @@ export function githubCredentialCooldown(
   const entries = requestedResource
     ? [health.resources.get(requestedResource), health.resources.get("unknown")]
     : [...health.resources.values()];
-  const failurePolicy = options.failurePolicy ?? "all";
   const cooling = entries
     .filter((entry): entry is NonNullable<typeof entry> => Boolean(
       entry?.failure
       && entry.cooldownUntilMs > nowMs
-      && (
-        failurePolicy === "all"
-        || (failurePolicy === "rate-limit-only" && entry.failure.kind === "rate_limited")
-        || (failurePolicy === "non-rate-limit-only" && entry.failure.kind !== "rate_limited")
-      ),
+      && matches(entry.failure),
     ))
     .sort((left, right) => right.cooldownUntilMs - left.cooldownUntilMs)[0];
   if (!cooling?.failure) return null;
   return { failure: cooling.failure, rateLimit: cooling.rateLimit };
+}
+
+export function githubCredentialCooldown(
+  candidate: GithubCredentialCandidate,
+  nowMs = Date.now(),
+  options: { resource?: string | null } = {},
+): { failure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } | null {
+  return githubCredentialCooldownMatching(candidate, nowMs, options, () => true);
+}
+
+export function githubCredentialRateLimitCooldown(
+  candidate: GithubCredentialCandidate,
+  nowMs = Date.now(),
+  options: { resource?: string | null } = {},
+): { failure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } | null {
+  return githubCredentialCooldownMatching(
+    candidate,
+    nowMs,
+    options,
+    (failure) => failure.kind === "rate_limited",
+  );
+}
+
+export function githubCredentialNonRateLimitCooldown(
+  candidate: GithubCredentialCandidate,
+  nowMs = Date.now(),
+  options: { resource?: string | null } = {},
+): { failure: GitHubAuthFailure; rateLimit: GitHubRateLimitState | null } | null {
+  return githubCredentialCooldownMatching(
+    candidate,
+    nowMs,
+    options,
+    (failure) => failure.kind !== "rate_limited",
+  );
 }
 
 export function clearGithubCredentialHealth(token?: string): void {
@@ -268,18 +323,16 @@ export function githubCredentialStates(args: {
     const activeFor: GitHubCredentialCapability[] = [];
     if (args.activeReadSource === source) activeFor.push("read");
     if (args.activeWriteSource === source) activeFor.push("write");
+    let state: GitHubCredentialState["state"] = "unavailable";
+    if (args.availableSources.has(source)) state = "ready";
+    if (cooling) state = "cooldown";
+    if (activeFor.length > 0) state = "active";
     return {
       source,
       available: args.availableSources.has(source),
       capabilities,
       activeFor,
-      state: activeFor.length > 0
-        ? "active"
-        : cooling
-          ? "cooldown"
-          : args.availableSources.has(source)
-            ? "ready"
-            : "unavailable",
+      state,
       failure: cooling?.failure ?? null,
       rateLimit: cooling?.rateLimit
         ?? [...(health?.resources.values() ?? [])].find((entry) => entry.rateLimit)?.rateLimit

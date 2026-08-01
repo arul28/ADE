@@ -934,10 +934,13 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           hostedAuth?.ok ? "github-app-user-token" : "account-token",
         );
       }
+      let remoteProjectId: string | null = null;
+      if (useLegacyProjectRoute) remoteProjectId = config.remoteProjectId;
+      else if (repo) remoteProjectId = `${repo.owner}/${repo.name}`;
       updateGithubRelayStatus({
         configured: true,
         apiBaseUrl: config.apiBaseUrl,
-        remoteProjectId: useLegacyProjectRoute ? config.remoteProjectId : repo ? `${repo.owner}/${repo.name}` : null,
+        remoteProjectId,
         status: "polling",
       });
 
@@ -965,11 +968,8 @@ export function createAutomationIngressService(args: AutomationIngressServiceArg
           let responseMessage = responseText.trim();
           try {
             const parsed = JSON.parse(responseText) as { error?: unknown; message?: unknown };
-            responseMessage = typeof parsed.error === "string"
-              ? parsed.error
-              : typeof parsed.message === "string"
-                ? parsed.message
-                : responseMessage;
+            if (typeof parsed.error === "string") responseMessage = parsed.error;
+            else if (typeof parsed.message === "string") responseMessage = parsed.message;
           } catch {
             // Keep the plain-text response.
           }

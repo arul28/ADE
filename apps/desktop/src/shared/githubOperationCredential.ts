@@ -150,11 +150,8 @@ export async function resolveGithubStatusCredentials<
   isRepositoryAccessFailure: (
     result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
   ) => boolean;
-  onAcceptedProbe: (
-    candidate: Candidate,
-    probe: Probe,
-    validated: boolean,
-  ) => void;
+  onAuthenticatedProbe: (candidate: Candidate, probe: Probe) => void;
+  onUsableProbe: (candidate: Candidate, probe: Probe) => void;
   onRejectedProbe: (
     candidate: Candidate,
     result: Extract<GithubStatusCredentialProbeResult<Probe>, { ok: false }>,
@@ -198,7 +195,7 @@ export async function resolveGithubStatusCredentials<
         .some((fallback) => !args.cooldown(fallback));
       if (repositoryAccessFailure && result.value && !hasFallback) {
         active = { candidate, value: result.value };
-        args.onAcceptedProbe(candidate, result.value, false);
+        args.onAuthenticatedProbe(candidate, result.value);
         break;
       }
       failures.push({ candidate, ...result });
@@ -206,9 +203,40 @@ export async function resolveGithubStatusCredentials<
       if (result.authFailure.kind === "network" || result.authFailure.kind === "unknown") break;
       continue;
     }
+    const candidateCapabilities = args.capabilities(candidate, result.value);
+    if (!candidateCapabilities.read) {
+      successfulProbes.set(candidate.token, result.value);
+      const hasFallback = args.readCandidates
+        .slice(candidateIndex + 1)
+        .some((fallback) => !args.cooldown(fallback));
+      if (!hasFallback) {
+        active = { candidate, value: result.value };
+        args.onAuthenticatedProbe(candidate, result.value);
+        break;
+      }
+      const capabilityFailure = {
+        ok: false as const,
+        error: "This credential does not grant GitHub repository read access.",
+        authFailure: {
+          kind: "permission_denied" as const,
+          message: "This credential does not grant GitHub repository read access.",
+          retryAt: null,
+        },
+        rateLimit: null,
+        value: result.value,
+      };
+      failures.push({ candidate, ...capabilityFailure });
+      args.onAuthenticatedProbe(candidate, result.value);
+      args.onRejectedProbe(candidate, capabilityFailure, {
+        repositoryAccessFailure: false,
+        phase: "read",
+      });
+      continue;
+    }
     active = { candidate, value: result.value };
     successfulProbes.set(candidate.token, result.value);
-    args.onAcceptedProbe(candidate, result.value, true);
+    args.onAuthenticatedProbe(candidate, result.value);
+    args.onUsableProbe(candidate, result.value);
     break;
   }
 
@@ -226,7 +254,10 @@ export async function resolveGithubStatusCredentials<
         continue;
       }
       successfulProbes.set(candidate.token, result.value);
-      if (!existingProbe) args.onAcceptedProbe(candidate, result.value, true);
+      if (!existingProbe) {
+        args.onAuthenticatedProbe(candidate, result.value);
+        args.onUsableProbe(candidate, result.value);
+      }
       if (args.capabilities(candidate, result.value).write) {
         activeWriteSource = candidate.source;
         break;

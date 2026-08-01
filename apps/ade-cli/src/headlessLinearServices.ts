@@ -84,11 +84,14 @@ import {
   clearGithubCredentialHealth,
   githubBackgroundRequestPauseUntilMs,
   githubCredentialCooldown,
+  githubCredentialNonRateLimitCooldown,
+  githubCredentialRateLimitCooldown,
   githubCredentialInventoryKey,
   githubCredentialRepositoryAccess,
   githubCredentialStates,
   githubCredentialTokenDigest,
   recordGithubCredentialFailure,
+  recordGithubOperationFailure,
   recordGithubCredentialProbeSuccess,
   recordGithubCredentialRepositoryAccess,
   recordGithubCredentialSuccess,
@@ -782,7 +785,6 @@ export function createHeadlessGitHubService(
 
   const readTokenAsync = async (
     capability: GithubOperationCredentialCapability = "write",
-    failurePolicy: "all" | "non-rate-limit-only" = "all",
   ): Promise<HeadlessGitHubTokenLookup> => {
     const inventory = await readCredentialInventoryAsync();
     return resolveGithubOperationCredentialCandidate({
@@ -791,7 +793,7 @@ export function createHeadlessGitHubService(
       isAvailable: (candidate) => !githubCredentialCooldown(
         candidate,
         Date.now(),
-        { resource: "core", failurePolicy },
+        { resource: "core" },
       ),
     })
       ?? {
@@ -801,6 +803,25 @@ export function createHeadlessGitHubService(
         ghCliPath: inventory.ghCliPath,
         ghAuthError: inventory.ghAuthError,
       };
+  };
+
+  const readGitTransportTokenAsync = async (): Promise<HeadlessGitHubTokenLookup> => {
+    const inventory = await readCredentialInventoryAsync();
+    return resolveGithubOperationCredentialCandidate({
+      candidates: inventory.candidates,
+      capability: "write",
+      isAvailable: (candidate) => !githubCredentialNonRateLimitCooldown(
+        candidate,
+        Date.now(),
+        { resource: "core" },
+      ),
+    }) ?? {
+      token: null,
+      source: "none",
+      patTokenStored: inventory.patTokenStored,
+      ghCliPath: inventory.ghCliPath,
+      ghAuthError: inventory.ghAuthError,
+    };
   };
 
   const getToken = (): string => readToken().token ?? "";
@@ -1171,7 +1192,7 @@ export function createHeadlessGitHubService(
         const { repositoryNotFound, ambiguousRepositoryNotFound } =
           repositoryFallback.classifyFailure(candidate, response.status);
         if (!repositoryNotFound) {
-          recordGithubCredentialFailure(candidate, failure.authFailure, failure.rateLimit);
+          recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
         }
         const attemptError = new HeadlessGithubCredentialAttemptError(
           message,
@@ -1215,7 +1236,7 @@ export function createHeadlessGitHubService(
           graphqlFailure.status,
         );
         if (!repositoryNotFound) {
-          recordGithubCredentialFailure(
+          recordGithubOperationFailure(
             candidate,
             graphqlFailure.authFailure,
             graphqlFailure.rateLimit,
@@ -1569,14 +1590,9 @@ export function createHeadlessGitHubService(
       const lookup = (async (): Promise<HeadlessGitHubStatus> => {
         const readCandidates = githubOperationCredentialCandidates(inventory.candidates, "read");
         const writeCandidates = githubOperationCredentialCandidates(inventory.candidates, "write");
-        const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => githubCredentialCooldown(
-          candidate,
-          Date.now(),
-          {
-            resource: "core",
-            failurePolicy: opts.forceRefresh === true ? "rate-limit-only" : "all",
-          },
-        );
+        const statusCooldown = (candidate: HeadlessGitHubTokenCandidate) => opts.forceRefresh === true
+          ? githubCredentialRateLimitCooldown(candidate, Date.now(), { resource: "core" })
+          : githubCredentialCooldown(candidate, Date.now(), { resource: "core" });
         const primaryCandidate = readCandidates[0] ?? null;
         if (!primaryCandidate) {
           return {
@@ -1622,15 +1638,15 @@ export function createHeadlessGitHubService(
           ),
           isRepositoryAccessFailure: (result) => result.authFailure.kind === "permission_denied"
             && result.value?.repoAccessOk === false,
-          onAcceptedProbe: (candidate, value, validated) => {
+          onAuthenticatedProbe: (candidate, value) => {
             registerGithubCredentialIdentity(candidate, value.validated.userLogin);
-            if (validated) {
-              recordGithubCredentialProbeSuccess(
-                candidate,
-                value.validated.rateLimit,
-                value.validated.userLogin,
-              );
-            }
+          },
+          onUsableProbe: (candidate, value) => {
+            recordGithubCredentialProbeSuccess(
+              candidate,
+              value.validated.rateLimit,
+              value.validated.userLogin,
+            );
           },
           onRejectedProbe: (candidate, result, context) => {
             if (!context.repositoryAccessFailure) {
@@ -1839,7 +1855,7 @@ export function createHeadlessGitHubService(
       return token;
     },
     async getGitTransportTokenOrThrowAsync() {
-      const token = (await readTokenAsync("write", "non-rate-limit-only")).token ?? "";
+      const token = (await readGitTransportTokenAsync()).token ?? "";
       if (!token) {
         throw new Error(
           "GitHub auth missing. Set ADE_GITHUB_TOKEN/GITHUB_TOKEN, run `gh auth login -h github.com -s repo -s workflow`, or add a PAT in Settings.",

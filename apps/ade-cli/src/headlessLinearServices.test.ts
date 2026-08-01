@@ -1055,6 +1055,53 @@ describe("headlessLinearServices", () => {
     }
   });
 
+  it("retries a headless credential on later operations after an endpoint-level 403", async () => {
+    const environment = isolateHeadlessGithubAuth("ade-headless-github-operation-403-", {
+      emptyGhConfig: true,
+    });
+    process.env.GITHUB_TOKEN = "ghp_environment_token";
+    const authorizations: string[] = [];
+    let environmentAttempts = 0;
+    globalThis.fetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const authorization = new Headers(init?.headers).get("authorization") ?? "";
+      authorizations.push(authorization);
+      if (authorization === "Bearer ghp_environment_token" && environmentAttempts++ === 0) {
+        return new Response(JSON.stringify({
+          message: "Resource protected by organization policy",
+        }), { status: 403 });
+      }
+      return new Response(JSON.stringify([{ id: authorizations.length }]), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }) as unknown as typeof fetch;
+    const service = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+      {
+        ghAuthTokenProvider: () => ({
+          token: "gho_cli_token",
+          ghCliPath: "/opt/homebrew/bin/gh",
+          ghAuthError: null,
+        }),
+      },
+    );
+
+    try {
+      await expect(service.apiRequest({ method: "GET", path: "/user/emails" }))
+        .resolves.toMatchObject({ data: [{ id: 2 }] });
+      await expect(service.apiRequest({ method: "GET", path: "/user/emails" }))
+        .resolves.toMatchObject({ data: [{ id: 3 }] });
+      expect(authorizations).toEqual([
+        "Bearer ghp_environment_token",
+        "Bearer gho_cli_token",
+        "Bearer ghp_environment_token",
+      ]);
+    } finally {
+      environment.restore();
+    }
+  });
+
   it("preserves an earlier headless GraphQL rate limit after fallback permission failure", async () => {
     const environment = isolateHeadlessGithubAuth("ade-headless-github-graphql-rate-precedence-", {
       emptyGhConfig: true,

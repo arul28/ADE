@@ -14,7 +14,7 @@ import type {
 import {
   githubCredentialCooldown,
   githubCredentialRepositoryAccess,
-  recordGithubCredentialFailure,
+  recordGithubOperationFailure,
   recordGithubCredentialRepositoryAccess,
   recordGithubCredentialSuccess,
   type GithubCredentialCandidate,
@@ -155,7 +155,7 @@ export async function requestGithubRawWithCredentialFallback(args: GithubRawRequ
       headers: response.headers,
     });
     if (!repositoryNotFound) {
-      recordGithubCredentialFailure(candidate, failure.authFailure, failure.rateLimit);
+      recordGithubOperationFailure(candidate, failure.authFailure, failure.rateLimit);
     }
     const attemptError = new GithubRawCredentialAttemptError(
       message,
