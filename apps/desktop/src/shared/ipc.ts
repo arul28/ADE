@@ -50,6 +50,7 @@ export const IPC = {
   attentionReportPresence: "ade.attention.reportPresence",
   attentionGetPreferences: "ade.attention.getPreferences",
   attentionPutPreferences: "ade.attention.putPreferences",
+  attentionPutMachinePreferences: "ade.attention.putMachinePreferences",
   attentionOpenItem: "ade.attention.openItem",
   analyticsCapture: "ade.analytics.capture",
   analyticsGetStatus: "ade.analytics.getStatus",

@@ -101,7 +101,24 @@ describe("Attention Notch routing", () => {
   });
 
   it("accepts bounded canonical snapshots and settings", () => {
-    expect(parseAttentionNotchSnapshot(snapshot())).toEqual(snapshot());
+    const activitySnapshot = {
+      ...snapshot(item({
+        activityTier: "signal",
+        contentFingerprint: "content-v2",
+        alertFingerprint: "alert-v2",
+        statusSince: "2026-07-28T12:00:01.000Z",
+      })),
+      itemsTruncated: true,
+    } satisfies AttentionSnapshot;
+    expect(parseAttentionNotchSnapshot(activitySnapshot)).toEqual(activitySnapshot);
+    expect(parseAttentionNotchSnapshot({
+      ...activitySnapshot,
+      itemsTruncated: "yes",
+    })).toBeNull();
+    expect(parseAttentionNotchSnapshot({
+      ...activitySnapshot,
+      items: [{ ...activitySnapshot.items[0], activityTier: "urgent" }],
+    })).toBeNull();
     expect(parseAttentionNotchSettings({
       enabled: true,
       revealMode: "click",

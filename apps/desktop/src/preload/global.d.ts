@@ -1203,6 +1203,11 @@ declare global {
           accountOwnerId: string,
           preferences: import("../shared/types").AttentionPreferences,
         ) => Promise<void>;
+        putMachinePreferences?: (
+          accountOwnerId: string,
+          machineKey: string,
+          preferences: Partial<import("../shared/types").AttentionPreferenceScope>,
+        ) => Promise<void>;
         openItem: (
           item: import("../shared/types").AttentionItem,
         ) => Promise<void>;

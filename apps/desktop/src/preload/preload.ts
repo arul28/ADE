@@ -6,6 +6,7 @@ import {
   type AttentionItem,
   type AttentionNotchAcknowledgeRequest,
   type AttentionNotchSettings,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
@@ -4873,6 +4874,16 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<void> =>
       ipcRenderer.invoke(IPC.attentionPutPreferences, {
         accountOwnerId,
+        preferences,
+      }),
+    putMachinePreferences: async (
+      accountOwnerId: string,
+      machineKey: string,
+      preferences: Partial<AttentionPreferenceScope>,
+    ): Promise<void> =>
+      ipcRenderer.invoke(IPC.attentionPutMachinePreferences, {
+        accountOwnerId,
+        machineKey,
         preferences,
       }),
     openItem: async (item: AttentionItem): Promise<void> => {

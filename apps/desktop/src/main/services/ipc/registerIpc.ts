@@ -1628,6 +1628,7 @@ export function registerIpc({
     | "reportAttentionPresence"
     | "getAttentionPreferences"
     | "putAttentionPreferences"
+    | "putActivityMachinePreferences"
   > | null;
 }) {
   // Process-scoped by design: renderer reloads and additional windows in the
@@ -3255,6 +3256,24 @@ export function registerIpc({
   ipcMain.handle(
     IPC.attentionPutPreferences,
     async (_event, input: unknown) => attentionAccountCoordinator.putPreferences(input),
+  );
+
+  ipcMain.handle(
+    IPC.attentionPutMachinePreferences,
+    async (_event, input: unknown) => {
+      const request = input && typeof input === "object" && !Array.isArray(input)
+        ? input as {
+            accountOwnerId?: unknown;
+            machineKey?: unknown;
+            preferences?: unknown;
+          }
+        : {};
+      return attentionAccountCoordinator.putActivityMachinePreferences(
+        request.machineKey,
+        request.preferences,
+        request.accountOwnerId,
+      );
+    },
   );
 
   ipcMain.handle(IPC.attentionOpenItem, async (_event, input: unknown) => {

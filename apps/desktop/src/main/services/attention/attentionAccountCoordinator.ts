@@ -2,6 +2,7 @@ import type { PushRelayClient } from "../../../../../ade-cli/src/services/push/p
 import { PushRelayRequestError } from "../../../../../ade-cli/src/services/push/pushRelayClient";
 import {
   DEFAULT_ATTENTION_PREFERENCES,
+  type AttentionPreferenceScope,
   type AttentionPreferences,
   type AttentionPresence,
   type AttentionSnapshot,
@@ -16,7 +17,7 @@ type AccountAttentionClient = Pick<
   | "reportAttentionPresence"
   | "getAttentionPreferences"
   | "putAttentionPreferences"
->;
+> & Partial<Pick<PushRelayClient, "putActivityMachinePreferences">>;
 
 type AttentionAccountCoordinatorOptions = {
   getLogger: () => Pick<Logger, "warn">;
@@ -46,6 +47,17 @@ type AttentionPreferenceUpdateRequest = AttentionPreferenceRequest & {
   preferences?: unknown;
 };
 
+export class ActivityAcknowledgmentStaleError extends Error {
+  readonly code = "activity_acknowledgment_stale" as const;
+
+  constructor(readonly staleItemIds: string[]) {
+    super(
+      "One or more Activity items changed after they loaded. Refresh Activity, then try again.",
+    );
+    this.name = "ActivityAcknowledgmentStaleError";
+  }
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
@@ -54,7 +66,7 @@ export class AttentionAccountCoordinator {
   private loggedRuntimeCompatibilityFailure = false;
   private lastSnapshotScope: AttentionSnapshot["scope"] | null = null;
   private lastSnapshotAccountOwnerId: string | null = null;
-  private readonly lastMachineItemRevisions = new Map<string, number>();
+  private readonly lastSnapshotItemRevisions = new Map<string, number>();
 
   constructor(private readonly options: AttentionAccountCoordinatorOptions) {}
 
@@ -83,8 +95,8 @@ export class AttentionAccountCoordinator {
             accountOwnerId,
             availability: {
               state: "ready",
-              title: "Account Attention is live",
-              message: "Work from every signed-in ADE machine is available.",
+              title: "",
+              message: "",
               recovery: null,
             },
           };
@@ -107,12 +119,30 @@ export class AttentionAccountCoordinator {
             "getMachineSnapshot",
             {},
           );
-        const machineName = snapshot.machines?.[0]?.name?.trim() || "this Mac";
+        const generatedAt = new Date().toISOString();
+        const hostMachineKey = snapshot.streamId?.startsWith("machine:")
+          ? snapshot.streamId.slice("machine:".length)
+          : null;
+        const keyedHostMachine = hostMachineKey
+          ? snapshot.machines?.find((machine) => machine.machineKey === hostMachineKey)
+          : null;
+        const hostMachine = keyedHostMachine ?? snapshot.machines?.[0];
+        const resolvedHostMachineKey = hostMachine?.machineKey ?? hostMachineKey;
+        const stampHostMachine = <T extends { machineKey: string }>(machine: T): T =>
+          machine.machineKey === resolvedHostMachineKey
+            ? { ...machine, online: true, lastSeenAt: generatedAt }
+            : machine;
+        const machineName = hostMachine?.name?.trim() || "this Mac";
         const accountAvailability = accountFailure
           ? this.describeAccountFailure(accountFailure)
           : null;
         const machineSnapshot: AttentionSnapshot = {
           ...snapshot,
+          machines: snapshot.machines?.map(stampHostMachine),
+          items: snapshot.items.map((item) =>
+            item.machine && typeof item.machine.machineKey === "string"
+              ? { ...item, machine: stampHostMachine(item.machine) }
+              : item),
           scope: "machine",
           accountOwnerId,
           availability: accountOwnerId
@@ -199,7 +229,7 @@ export class AttentionAccountCoordinator {
           )
         : {};
       const staleItemIds = itemIds.filter((itemId) =>
-        sourceRevisions[itemId] !== this.lastMachineItemRevisions.get(itemId));
+        sourceRevisions[itemId] !== this.lastSnapshotItemRevisions.get(itemId));
       if (staleItemIds.length > 0) {
         throw new Error(
           "This machine can only acknowledge the exact item revision that was loaded. Refresh and try again.",
@@ -236,7 +266,40 @@ export class AttentionAccountCoordinator {
       throw new Error("Refresh Attention before acknowledging this item.");
     }
     if (currentAccountOwnerId && this.options.accountAttentionClient) {
-      await this.options.accountAttentionClient.acknowledgeAttention(acknowledgment);
+      const requestedAccountOwnerId =
+        request.expectedAccountOwnerId === null
+        || typeof request.expectedAccountOwnerId === "string"
+          ? request.expectedAccountOwnerId?.trim() || null
+          : undefined;
+      if (
+        requestedAccountOwnerId === undefined
+        || requestedAccountOwnerId !== this.lastSnapshotAccountOwnerId
+      ) {
+        throw new Error(
+          "The account Activity scope changed after this item loaded. Refresh and try again.",
+        );
+      }
+      const sourceRevisions = Object.fromEntries(
+        itemIds.flatMap((itemId) => {
+          const revision = this.lastSnapshotItemRevisions.get(itemId);
+          return revision === undefined ? [] : [[itemId, revision]];
+        }),
+      );
+      const staleItemIds = itemIds.filter((itemId) => sourceRevisions[itemId] === undefined);
+      if (staleItemIds.length > 0) {
+        throw new ActivityAcknowledgmentStaleError(staleItemIds);
+      }
+      const result = await this.options.accountAttentionClient.acknowledgeAttention({
+        ...acknowledgment,
+        sourceRevisions,
+        expectedAccountOwnerId: requestedAccountOwnerId,
+      });
+      if (!result) {
+        throw new Error("Sign in again, refresh Activity, then try to acknowledge this item.");
+      }
+      if (result.stale.length > 0) {
+        throw new ActivityAcknowledgmentStaleError(result.stale);
+      }
       return;
     }
     throw new Error("Sign in again, refresh Attention, then try to acknowledge this item.");
@@ -300,6 +363,34 @@ export class AttentionAccountCoordinator {
     );
   }
 
+  async putActivityMachinePreferences(
+    machineKey: unknown,
+    partial: unknown,
+    expectedAccountOwnerId?: unknown,
+  ): Promise<void> {
+    const normalizedMachineKey = typeof machineKey === "string" ? machineKey.trim() : "";
+    if (!normalizedMachineKey || !isRecord(partial)) {
+      throw new Error("A valid Activity machine preference update is required.");
+    }
+    const accountOwnerId = expectedAccountOwnerId === undefined
+      ? this.currentAccountOwnerId()
+      : this.requireCurrentAccountOwner(expectedAccountOwnerId);
+    if (!accountOwnerId) {
+      throw new Error("Sign in before changing Activity machine preferences.");
+    }
+    if (
+      !this.options.accountAttentionClient
+      || !this.options.accountAttentionClient.putActivityMachinePreferences
+    ) {
+      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
+    }
+    await this.options.accountAttentionClient.putActivityMachinePreferences(
+      accountOwnerId,
+      normalizedMachineKey,
+      partial as Partial<AttentionPreferenceScope>,
+    );
+  }
+
   private currentAccountOwnerId(): string | null {
     return this.options.getCurrentAccountOwnerId()?.trim() || null;
   }
@@ -310,11 +401,9 @@ export class AttentionAccountCoordinator {
   ): void {
     this.lastSnapshotScope = snapshot.scope ?? null;
     this.lastSnapshotAccountOwnerId = accountOwnerId;
-    this.lastMachineItemRevisions.clear();
-    if (snapshot.scope === "machine") {
-      for (const item of snapshot.items) {
-        this.lastMachineItemRevisions.set(item.id, item.revision);
-      }
+    this.lastSnapshotItemRevisions.clear();
+    for (const item of snapshot.items) {
+      this.lastSnapshotItemRevisions.set(item.id, item.revision);
     }
   }
 

@@ -159,6 +159,14 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     || !Number.isSafeInteger(value.revision)
     || Number(value.revision) < 0
     || !isNonEmptyString(value.fingerprint, 1_024)
+    || (
+      value.activityTier !== undefined
+      && value.activityTier !== "signal"
+      && value.activityTier !== "ambient"
+      && value.activityTier !== "idle"
+    )
+    || (value.contentFingerprint !== undefined && !isNonEmptyString(value.contentFingerprint, 1_024))
+    || (value.alertFingerprint !== undefined && !isNonEmptyString(value.alertFingerprint, 1_024))
     || (value.kind !== "agent" && value.kind !== "pull_request")
     || typeof value.eventKind !== "string"
     || !ATTENTION_EVENTS.has(value.eventKind)
@@ -220,6 +228,7 @@ function isAttentionItem(value: unknown): value is AttentionItem {
     || !value.actions.every(isAttentionAction)
     || !isNonEmptyString(value.occurredAt, 128)
     || !isNonEmptyString(value.updatedAt, 128)
+    || !isNullableString(value.statusSince, 128)
     || !isNullableString(value.seenAt, 128)
     || !isNullableString(value.dismissedAt, 128)
     || !isNullableString(value.expiresAt, 128)
@@ -245,6 +254,7 @@ export function parseAttentionNotchSnapshot(input: unknown): AttentionSnapshot |
     || !Array.isArray(input.items)
     || input.items.length > MAX_NOTCH_ITEMS
     || !input.items.every(isAttentionItem)
+    || (input.itemsTruncated !== undefined && typeof input.itemsTruncated !== "boolean")
   ) {
     return null;
   }
