@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
+import { killWindowsProcessTree } from "../shared/processExecution";
 
 type SpawnRequest = {
   type: "spawn";
@@ -555,6 +556,17 @@ class SupervisedPtyHost {
       this.clearKillTimer(ptyId);
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
+      if (process.platform === "win32" && remote && remote.pid > 0) {
+        killWindowsProcessTree(remote.pid, (detail) => {
+          this.logger.warn("pty.host_orphan_tree_cleanup_failed", {
+            ptyId,
+            pid: detail.pid,
+            status: detail.status,
+            stderr: detail.stderr,
+            error: detail.error instanceof Error ? detail.error.message : String(detail.error ?? ""),
+          });
+        });
+      }
       remote?.markHostExited(exitCode);
     }
     childState.ptyIds.clear();

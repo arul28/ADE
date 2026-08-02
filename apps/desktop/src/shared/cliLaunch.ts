@@ -45,6 +45,68 @@ export type CleanShellLaunchFields = {
   env?: Record<string, string>;
 };
 
+function unquoteWindowsShellPath(value: string | null | undefined): string {
+  const trimmed = value?.trim() ?? "";
+  if (trimmed.length >= 2 && trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    return trimmed.slice(1, -1).trim();
+  }
+  return trimmed;
+}
+
+type WindowsShellKind = "powershell" | "cmd" | "git-bash";
+export type WindowsShellLaunchMode = "interactive" | "clean" | "login";
+
+function windowsShellKind(command: string): WindowsShellKind | null {
+  const normalized = command.replace(/\//g, "\\");
+  if (/^\\\\(?:wsl\$|wsl\.localhost)\\/i.test(normalized)) return null;
+  const basename = normalized.split("\\").pop()?.toLowerCase() ?? "";
+  if (basename === "powershell" || basename === "powershell.exe" || basename === "pwsh" || basename === "pwsh.exe") {
+    return "powershell";
+  }
+  if (basename === "cmd" || basename === "cmd.exe") return "cmd";
+  if (
+    (basename === "bash" || basename === "bash.exe")
+    && /^(?:[a-z]:\\|\\\\).+\\(?:bin|usr\\bin)\\bash(?:\.exe)?$/i.test(normalized)
+  ) {
+    return "git-bash";
+  }
+  return null;
+}
+
+/**
+ * Resolve an explicitly configured native Windows shell. `bash.exe` is only
+ * accepted from a Git for Windows installation: the Windows App Execution
+ * Alias historically used that name to enter WSL, which ADE intentionally
+ * does not support as a local runtime.
+ */
+export function resolveWindowsShellLaunchFields(
+  value: string | null | undefined,
+  options: { mode?: WindowsShellLaunchMode } = {},
+): CleanShellLaunchFields | null {
+  const command = unquoteWindowsShellPath(value);
+  if (!command) return null;
+  const kind = windowsShellKind(command);
+  const mode = options.mode ?? "interactive";
+  if (kind === "powershell") {
+    return {
+      command,
+      args: mode === "clean" ? ["-NoLogo", "-NoProfile"] : [],
+    };
+  }
+  if (kind === "cmd") {
+    return {
+      command,
+      args: mode === "clean" ? ["/d"] : [],
+    };
+  }
+  if (kind === "git-bash") {
+    return mode === "clean"
+      ? { command, args: ["--noprofile", "--norc"], env: { BASH_ENV: "" } }
+      : { command, args: mode === "login" ? ["--login"] : [] };
+  }
+  return null;
+}
+
 export type PtyContinuationLaunchFields = Pick<
   PtySendToSessionArgs,
   | "model"
@@ -289,21 +351,16 @@ export function resolveCleanShellLaunchFields(args: {
   comSpec?: string | null;
 }): CleanShellLaunchFields {
   if (args.platform === "win32") {
-    const shell = args.shell?.trim() || "";
-    const comSpec = args.comSpec?.trim() || "";
-    const powershellPathPattern = /(?:^|[\\/])(?:powershell|pwsh)(?:\.exe)?$/i;
-    let command: string;
-    if (powershellPathPattern.test(shell)) {
-      command = shell;
-    } else if (powershellPathPattern.test(comSpec)) {
-      command = comSpec;
-    } else {
-      command = "powershell.exe";
+    const shell = resolveWindowsShellLaunchFields(args.shell, { mode: "clean" });
+    if (shell) return shell;
+    const comSpec = resolveWindowsShellLaunchFields(args.comSpec, { mode: "clean" });
+    // ComSpec is normally cmd.exe even when ADE was launched from PowerShell.
+    // Preserve PowerShell as ADE's default, while still honoring an explicitly
+    // configured PowerShell executable in ComSpec.
+    if (comSpec && windowsShellKind(comSpec.command) === "powershell") {
+      return comSpec;
     }
-    return {
-      command,
-      args: ["-NoLogo", "-NoProfile"],
-    };
+    return { command: "powershell.exe", args: ["-NoLogo", "-NoProfile"] };
   }
 
   const shell = args.shell?.trim() || "";

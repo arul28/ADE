@@ -13,6 +13,18 @@ const reportProviderRuntimeAuthFailureMock = vi.fn();
 const reportProviderRuntimeFailureMock = vi.fn();
 const reportProviderRuntimeReadyMock = vi.fn();
 
+vi.mock("node:path", async () => {
+  const actual = await vi.importActual<typeof import("node:path")>("node:path");
+  const dynamicDefault = new Proxy({} as typeof actual, {
+    get(_target, property) {
+      const implementation = process.platform === "win32" ? actual.win32 : actual.posix;
+      const value = implementation[property as keyof typeof implementation];
+      return typeof value === "function" ? value.bind(implementation) : value;
+    },
+  });
+  return { ...actual, default: dynamicDefault };
+});
+
 /** Helper: create a fake ChildProcess that immediately emits close with the given result. */
 function fakeChild(result: { status: number | null; stdout?: string; stderr?: string }) {
   const child = new EventEmitter() as any;
@@ -38,6 +50,20 @@ function fakeError() {
     child.emit("error", new Error("spawn ENOENT"));
   });
   return child;
+}
+
+function commandBasename(command: string): string {
+  return command.replace(/\\/g, "/").split("/").pop() ?? command;
+}
+
+function withExecutableMode(stat: fs.Stats): fs.Stats {
+  return new Proxy(stat, {
+    get(target, property, receiver) {
+      if (property === "mode") return target.mode | 0o111;
+      const value = Reflect.get(target, property, receiver);
+      return typeof value === "function" ? value.bind(target) : value;
+    },
+  });
 }
 
 vi.mock("node:child_process", async () => {
@@ -131,7 +157,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
+      if (commandBasename(command) === "claude" && args[0] === "auth") {
         return fakeChild({ status: 1, stderr: "Not logged in. Run `claude auth login`." });
       }
       return fakeChild({ status: 1 });
@@ -159,7 +185,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
+      if (commandBasename(command) === "claude" && args[0] === "auth") {
         throw new Error("auth probe should not run");
       }
       return fakeChild({ status: 1 });
@@ -181,6 +207,40 @@ describe("authDetector", () => {
     })).toBe(false);
   });
 
+  it("detects and probes a Windows cursor-agent.cmd outside PATH", async () => {
+    setPlatform("win32");
+    tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-auth-win-"));
+    const npmBin = path.join(tempHomeDir, "npm");
+    const cursorAgentPath = path.join(npmBin, "cursor-agent.cmd");
+    fs.mkdirSync(npmBin, { recursive: true });
+    fs.writeFileSync(cursorAgentPath, "@echo off\r\n", "utf8");
+    process.env.APPDATA = tempHomeDir;
+    process.env.PATH = "C:\\Windows\\System32";
+    process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+
+    spawnMock.mockImplementation((command: string, args: string[] = []) => {
+      const commandLine = args.join(" ").toLowerCase();
+      if (command.toLowerCase().endsWith("cmd.exe") && commandLine.includes("cursor-agent.cmd")) {
+        if (commandLine.includes("--version")) return fakeChild({ status: 0, stdout: "1.0.0\n" });
+        if (commandLine.includes("status")) {
+          return fakeChild({ status: 0, stdout: '{"authenticated":true,"plan":"pro"}\n' });
+        }
+      }
+      if (command === "where") return fakeChild({ status: 1 });
+      return fakeError();
+    });
+
+    const statuses = await detectCliAuthStatuses({ force: true });
+    expect(statuses.find((entry) => entry.cli === "cursor")).toMatchObject({
+      cli: "cursor",
+      installed: true,
+      authenticated: true,
+      verified: true,
+      paidPlan: true,
+    });
+    expect(statuses.find((entry) => entry.cli === "cursor")?.path?.toLowerCase()).toBe(cursorAgentPath.toLowerCase());
+  });
+
   it("merges config, store, env, and local endpoint auth sources", async () => {
     getAllApiKeysMock.mockReturnValue({
       anthropic: "store-anthropic",
@@ -199,7 +259,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if ((command === "claude" || command.endsWith("/claude")) && args[0] === "auth") {
+      if (commandBasename(command) === "claude" && args[0] === "auth") {
         return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
       }
       return fakeChild({ status: 1 });
@@ -294,20 +354,20 @@ describe("authDetector", () => {
 
     spawnMock.mockImplementation((command: string, args: string[] = []) => {
       if (args[0] === "--version") {
-        if (command === "droid" || command.endsWith("/droid")) return fakeChild({ status: 0, stdout: "0.70.0\n" });
+        if (commandBasename(command) === "droid") return fakeChild({ status: 0, stdout: "0.70.0\n" });
         return fakeError();
       }
       if (command === "which") {
         if (args[0] === "droid") return fakeChild({ status: 0, stdout: `${fakeDroidPath}\n` });
         return fakeChild({ status: 1 });
       }
-      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "exec" && args[1] === "--list-tools") {
+      if (commandBasename(command) === "droid" && args[0] === "exec" && args[1] === "--list-tools") {
         return fakeChild({ status: 0, stdout: "Available tools for Claude Opus 4.6\n" });
       }
-      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "account") {
+      if (commandBasename(command) === "droid" && args[0] === "account") {
         return fakeChild({ status: 1, stderr: "unknown command 'account'\n" });
       }
-      if ((command === "droid" || command.endsWith("/droid")) && args[0] === "whoami") {
+      if (commandBasename(command) === "droid" && args[0] === "whoami") {
         return fakeChild({ status: 1, stderr: "unknown command 'whoami'\n" });
       }
       return fakeChild({ status: 1 });
@@ -333,31 +393,40 @@ describe("authDetector", () => {
     const fakeDroidPath = path.join(droidBinDir, "droid");
     fs.writeFileSync(fakeDroidPath, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
     process.env.PATH = "";
+    const realStatSync = fs.statSync.bind(fs);
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
+      const stat = realStatSync(candidatePath, options as fs.StatOptions | undefined);
+      return String(candidatePath) === fakeDroidPath ? withExecutableMode(stat) : stat;
+    }) as typeof fs.statSync);
 
-    spawnMock.mockImplementation((command: string, _args: string[] = []) => {
-      if (command === "which") {
-        return fakeChild({ status: 1 });
-      }
-      return fakeError();
-    });
+    try {
+      spawnMock.mockImplementation((command: string, _args: string[] = []) => {
+        if (command === "which") {
+          return fakeChild({ status: 1 });
+        }
+        return fakeError();
+      });
 
-    const statuses = await detectCliAuthStatuses();
-    const droid = statuses.find((entry) => entry.cli === "droid");
+      const statuses = await detectCliAuthStatuses();
+      const droid = statuses.find((entry) => entry.cli === "droid");
 
-    expect(droid).toEqual({
-      cli: "droid",
-      installed: true,
-      path: fakeDroidPath,
-      authenticated: false,
-      verified: false,
-    });
-    const droidDeepProbeCalls = spawnMock.mock.calls.filter(([command, args]) => {
-      const commandText = String(command);
-      const argv = Array.isArray(args) ? args as string[] : [];
-      return (commandText === "droid" || commandText.endsWith("/droid"))
-        && (argv[0] === "exec" || argv[0] === "account" || argv[0] === "whoami");
-    });
-    expect(droidDeepProbeCalls).toHaveLength(0);
+      expect(droid).toEqual({
+        cli: "droid",
+        installed: true,
+        path: fakeDroidPath,
+        authenticated: false,
+        verified: false,
+      });
+      const droidDeepProbeCalls = spawnMock.mock.calls.filter(([command, args]) => {
+        const commandText = String(command);
+        const argv = Array.isArray(args) ? args as string[] : [];
+        return commandBasename(commandText) === "droid"
+          && (argv[0] === "exec" || argv[0] === "account" || argv[0] === "whoami");
+      });
+      expect(droidDeepProbeCalls).toHaveLength(0);
+    } finally {
+      statSpy.mockRestore();
+    }
   });
 
   it("does not report openai-compatible local providers when no models are loaded", async () => {
@@ -427,7 +496,7 @@ describe("authDetector", () => {
         if (args[0] === "claude") return fakeChild({ status: 0, stdout: "/usr/local/bin/claude\n" });
         return fakeChild({ status: 1 });
       }
-      if (command === "claude" || command.endsWith("/claude")) {
+      if (commandBasename(command) === "claude") {
         return fakeChild({ status: 1, stderr: "unknown command 'auth'" });
       }
       return fakeChild({ status: 1 });
@@ -453,12 +522,13 @@ describe("authDetector", () => {
     const realStatSync = fs.statSync.bind(fs);
     const statSpy = vi.spyOn(fs, "statSync").mockImplementation(((candidatePath: fs.PathLike, options?: fs.StatOptions) => {
       const resolved = String(candidatePath);
-      if (resolved.endsWith("/codex") && resolved !== preferredCodexPath) {
+      if (commandBasename(resolved) === "codex" && resolved !== preferredCodexPath) {
         const error = new Error(`ENOENT: no such file or directory, stat '${resolved}'`) as NodeJS.ErrnoException;
         error.code = "ENOENT";
         throw error;
       }
-      return realStatSync(candidatePath, options as fs.StatOptions | undefined);
+      const stat = realStatSync(candidatePath, options as fs.StatOptions | undefined);
+      return resolved === preferredCodexPath ? withExecutableMode(stat) : stat;
     }) as typeof fs.statSync);
 
     try {
@@ -471,7 +541,7 @@ describe("authDetector", () => {
         if (command === "which") {
           return fakeChild({ status: 1 });
         }
-        if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
+        if (commandBasename(command) === "codex" && args[0] === "login" && args[1] === "status") {
           return fakeChild({ status: 0, stdout: "Authenticated as test-user\n" });
         }
         return fakeChild({ status: 1 });
@@ -519,7 +589,7 @@ describe("authDetector", () => {
         }
         return fakeChild({ status: 1 });
       }
-      if ((command === "codex" || command.endsWith("/codex")) && args[0] === "login" && args[1] === "status") {
+      if (commandBasename(command) === "codex" && args[0] === "login" && args[1] === "status") {
         return fakeChild({ status: 0, stdout: "Logged in using ChatGPT\n" });
       }
       return fakeChild({ status: 1 });

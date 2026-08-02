@@ -2247,31 +2247,36 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneId: "lane-1",
-        cols: 120,
-        rows: 36,
-        tracked: true,
-        toolType: "claude-orchestrated",
-        command: claudePath,
-        args: expect.arrayContaining(["--model", "claude-sonnet-5", "--permission-mode", "default"]),
-        env: expect.objectContaining({
-          ADE_DEFAULT_ROLE: "agent",
-        }),
-      })
-    );
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      cols: 120,
+      rows: 36,
+      tracked: true,
+      toolType: "claude-orchestrated",
+      env: expect.objectContaining({ ADE_DEFAULT_ROLE: "agent" }),
+    }));
+    const createCall = (fixture.runtime.ptyService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as {
+      command?: string;
+      args?: string[];
+      startupCommand?: string;
+    };
+    if (process.platform === "win32") {
+      expect(createCall.command).toBeUndefined();
+      expect(createCall.startupCommand).toContain("claude --model claude-sonnet-5 --permission-mode default");
+    } else {
+      expect(createCall.command).toBe(claudePath);
+      expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-sonnet-5", "--permission-mode", "default"]));
+    }
     // The final arg concatenates ADE_CLI_INLINE_GUIDANCE with the user prompt; assert
     // it ends with the user prompt and carries the inline guidance preamble.
-    const createCall = (fixture.runtime.ptyService.create as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as { args: string[] };
-    const finalArg = createCall.args[createCall.args.length - 1];
-    expect(finalArg).toContain("CLI controls ADE state");
-    expect(finalArg).toContain("PRs, proof, apps");
-    expect(finalArg).toContain("clean up started processes");
-    expect(finalArg).toContain("ade chat note");
-    expect(finalArg).toContain("ade chat ask");
-    expect(finalArg).toContain("You cannot settle or unsettle a session");
-    expect(finalArg.endsWith("Implement API wiring")).toBe(true);
+    const launchText = createCall.args?.at(-1) ?? createCall.startupCommand ?? "";
+    expect(launchText).toContain("CLI controls ADE state");
+    expect(launchText).toContain("PRs, proof, apps");
+    expect(launchText).toContain("clean up started processes");
+    expect(launchText).toContain("ade chat note");
+    expect(launchText).toContain("ade chat ask");
+    expect(launchText).toContain("You cannot settle or unsettle a session");
+    expect(launchText).toContain("Implement API wiring");
     expect(response.structuredContent.startupCommand).toContain("claude");
     expect(response.structuredContent.startupCommand).toContain("--model");
     expect(response.structuredContent.startupCommand).toContain("--permission-mode");
@@ -2298,12 +2303,12 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { args?: string[]; startupCommand?: string };
-    expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
-    const finalArg = createCall.args?.at(-1) ?? "";
-    expect(finalArg).toContain("ade chat note");
-    expect(finalArg).toContain("ade chat ask");
-    expect(finalArg).toContain("You cannot settle or unsettle a session");
-    expect(createCall.args).not.toContain("--full-auto");
+    const launchText = createCall.args?.join(" ") ?? createCall.startupCommand ?? "";
+    expect(launchText).toContain("--sandbox workspace-write --ask-for-approval on-request");
+    expect(launchText).toContain("ade chat note");
+    expect(launchText).toContain("ade chat ask");
+    expect(launchText).toContain("You cannot settle or unsettle a session");
+    expect(launchText).not.toContain("--full-auto");
     expect(createCall.startupCommand).toContain("--sandbox workspace-write --ask-for-approval on-request");
     expect(createCall.startupCommand).not.toContain("--full-auto");
   });
@@ -2521,16 +2526,24 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        laneId: "lane-1",
-        title: "Shell",
-        toolType: "shell",
-        command: "/bin/zsh",
-        args: ["-f"],
-        env: { ZDOTDIR: "/var/empty" },
-      }),
-    );
+    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(expect.objectContaining(
+      process.platform === "win32"
+        ? {
+            laneId: "lane-1",
+            title: "Shell",
+            toolType: "shell",
+            command: "powershell.exe",
+            args: ["-NoLogo", "-NoProfile"],
+          }
+        : {
+            laneId: "lane-1",
+            title: "Shell",
+            toolType: "shell",
+            command: "/bin/zsh",
+            args: ["-f"],
+            env: { ZDOTDIR: "/var/empty" },
+          },
+    ));
   });
 
   it("starts Codex spawn_agent with current default permission flags", async () => {
@@ -2549,13 +2562,18 @@ describe("adeRpcServer", () => {
     });
 
     expect(response?.isError).toBeUndefined();
-    expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        command: expect.stringMatching(/codex$/),
-        args: expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]),
-        startupCommand: expect.stringContaining("codex --sandbox workspace-write --ask-for-approval on-request"),
-      }),
-    );
+    const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as {
+      command?: string;
+      args?: string[];
+      startupCommand?: string;
+    };
+    expect(createCall.startupCommand).toContain("codex --sandbox workspace-write --ask-for-approval on-request");
+    if (process.platform === "win32") {
+      expect(createCall.command).toBeUndefined();
+    } else {
+      expect(createCall.command).toMatch(/codex$/);
+      expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
+    }
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
   });
 
@@ -2794,11 +2812,15 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     expect(response.structuredContent.startupCommand).toContain("claude");
-    expect(response.structuredContent.startupCommand).toContain("ADE_RUN_ID=run-1");
-    expect(response.structuredContent.startupCommand).toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+    if (process.platform === "win32") {
+      expect(response.structuredContent.startupCommand).not.toContain("ADE_RUN_ID=run-1");
+      expect(response.structuredContent.startupCommand).not.toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+    } else {
+      expect(response.structuredContent.startupCommand).toContain("ADE_RUN_ID=run-1");
+      expect(response.structuredContent.startupCommand).toContain("ADE_ATTEMPT_ID=attempt-workspace-roots");
+    }
     expect(fixture.runtime.ptyService.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        command: claudePath,
         env: expect.objectContaining({
           ADE_RUN_ID: "run-1",
           ADE_ATTEMPT_ID: "attempt-workspace-roots",
@@ -2806,6 +2828,9 @@ describe("adeRpcServer", () => {
         }),
       })
     );
+    const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { command?: string };
+    if (process.platform === "win32") expect(createCall.command).toBeUndefined();
+    else expect(createCall.command).toBe(claudePath);
   });
 
   it("keeps spawn_agent on shell startup when the provider executable cannot be resolved", async () => {
@@ -2947,7 +2972,7 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.startupCommand).toContain("CLI controls ADE state");
     const contextPath = response.structuredContent.contextRef?.path as string | null;
     expect(contextPath).toBeTruthy();
-    expect(contextPath?.includes("/.ade/cache/orchestrator/agent-context/run-123/")).toBe(true);
+    expect(contextPath?.replace(/\\/g, "/")).toContain("/.ade/cache/orchestrator/agent-context/run-123/");
     if (!contextPath) {
       throw new Error("Expected context manifest path");
     }

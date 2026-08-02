@@ -1,9 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { classifyAgentCliError } from "./agentRegistry";
 
+const originalPlatform = process.platform;
+
+function setPlatform(value: NodeJS.Platform): void {
+  Object.defineProperty(process, "platform", { value, configurable: true });
+}
+
+afterEach(() => setPlatform(originalPlatform));
+
 describe("classifyAgentCliError", () => {
-  it("classifies missing agent CLIs with install/auth commands", () => {
-    expect(classifyAgentCliError("spawn codex ENOENT")).toMatchObject({
+  it("classifies missing agent CLIs with POSIX install/auth commands", async () => {
+    setPlatform("linux");
+    vi.resetModules();
+    const { classifyAgentCliError: classifyForLinux } = await import("./agentRegistry");
+    expect(classifyForLinux("spawn codex ENOENT")).toMatchObject({
       agent: "codex",
       displayName: "Codex CLI",
       category: "missing",
@@ -11,6 +22,24 @@ describe("classifyAgentCliError", () => {
         ? "npm install -g @openai/codex"
         : 'mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g @openai/codex',
       authCommand: "codex login",
+    });
+  });
+
+  it("uses Windows-native recovery commands without POSIX shell setup", async () => {
+    setPlatform("win32");
+    vi.resetModules();
+    const { classifyAgentCliError: classifyForWindows } = await import("./agentRegistry");
+    expect(classifyForWindows("spawn codex ENOENT")).toMatchObject({
+      agent: "codex",
+      category: "missing",
+      installCommand: "npm install -g @openai/codex",
+      authCommand: "codex login",
+    });
+    expect(classifyForWindows("spawn cursor-agent ENOENT", "cursor")).toMatchObject({
+      agent: "cursor",
+      category: "missing",
+      installCommand: `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`,
+      authCommand: "cursor-agent login",
     });
   });
 
@@ -29,6 +58,19 @@ describe("classifyAgentCliError", () => {
       displayName: "Claude Code",
       category: "unauthenticated",
       authCommand: "claude auth login",
+    });
+  });
+
+  it("uses the installed legacy Cursor alias for authentication recovery", () => {
+    expect(classifyAgentCliError("agent failed: login required", "cursor")).toMatchObject({
+      agent: "cursor",
+      category: "unauthenticated",
+      authCommand: "agent login",
+    });
+    expect(classifyAgentCliError("Cursor agent failed: login required", "cursor")).toMatchObject({
+      agent: "cursor",
+      category: "unauthenticated",
+      authCommand: "cursor-agent login",
     });
   });
 

@@ -27,9 +27,19 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { resolveCliSpawnInvocation, shouldUseWindowsCmdWrapper } from "../shared/processExecution";
+import {
+  resolveCliSpawnInvocation,
+  shouldUseWindowsCmdWrapper,
+  windowsTaskkillInvocation,
+} from "../shared/processExecution";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
-import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
+import {
+  augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
+  resolveExecutableFromKnownLocations,
+  setPathEnvValue,
+  splitPathEntries,
+} from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -67,6 +77,7 @@ import {
   PTY_SEND_PRE_DELIVERY_ERROR_CODE,
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
   buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
@@ -77,8 +88,10 @@ import {
   shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
   type TrackedCliLaunchCommand,
+  type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
   withCodexNoAltScreen,
+  resolveWindowsShellLaunchFields,
 } from "../../../shared/cliLaunch";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -822,25 +835,15 @@ function terminatePtyProcessTree(
     return;
   }
   if (process.platform === "win32") {
-    try {
-      entry.pty.kill(signal);
-    } catch {
-      killPidBestEffort(rootPid, signal);
-    }
-    if (signal === "SIGKILL") return;
-    const timer = setTimeout(() => {
-      try {
-        process.kill(rootPid, 0);
-      } catch {
-        return;
-      }
+    const runTaskkill = (force: boolean): void => {
+      const invocation = windowsTaskkillInvocation(rootPid, { force });
       try {
         execFile(
-          "taskkill",
-          ["/pid", String(rootPid), "/T", "/F"],
+          invocation.command,
+          invocation.args,
           { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
           (error) => {
-            if (error) return;
+            if (error || !force) return;
             logger.warn("pty.process_tree_force_killed", {
               sessionId: entry.sessionId,
               toolType: entry.toolTypeHint,
@@ -850,8 +853,22 @@ function terminatePtyProcessTree(
           },
         );
       } catch {
-        // taskkill may be unavailable; the initial node-pty signal still ran.
+        // taskkill may be unavailable; node-pty's own kill path still runs.
       }
+    };
+
+    // Capture the process tree while the ConPTY leader still exists. Waiting
+    // until after node-pty kills the leader can orphan descendants, at which
+    // point `taskkill /PID <leader> /T` can no longer discover them.
+    runTaskkill(signal === "SIGKILL");
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    if (signal === "SIGKILL") return;
+    const timer = setTimeout(() => {
+      runTaskkill(true);
     }, PTY_PROCESS_TREE_KILL_DELAY_MS);
     timer.unref?.();
     return;
@@ -958,17 +975,24 @@ function loginShellSpec(file: string): ShellSpec {
   return { file, args: [] };
 }
 
-function resolveShellCandidates(options: { clean?: boolean; login?: boolean } = {}): ShellSpec[] {
+function resolveShellCandidates(mode: WindowsShellLaunchMode = "interactive"): ShellSpec[] {
   if (process.platform === "win32") {
-    return options.clean
-      ? [
-          { file: "powershell.exe", args: ["-NoLogo", "-NoProfile"] },
-          { file: "cmd.exe", args: ["/d"] },
-        ]
-      : [
-          { file: "powershell.exe", args: [] },
-          { file: "cmd.exe", args: [] },
-        ];
+    const explicit = resolveWindowsShellLaunchFields(process.env.SHELL, { mode });
+    const fallbacks = [
+      resolveWindowsShellLaunchFields("powershell.exe", { mode }),
+      resolveWindowsShellLaunchFields("pwsh.exe", { mode }),
+      resolveWindowsShellLaunchFields("cmd.exe", { mode }),
+    ];
+    const seen = new Set<string>();
+    return [explicit, ...fallbacks]
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+      .filter((candidate) => {
+        const key = candidate.command.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map(({ command: file, args, env }) => ({ file, args, ...(env ? { env } : {}) }));
   }
   const candidates: string[] = [];
   const fromEnv = process.env.SHELL?.trim();
@@ -976,8 +1000,8 @@ function resolveShellCandidates(options: { clean?: boolean; login?: boolean } = 
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
   const uniq = Array.from(new Set(candidates.filter(Boolean)));
   return uniq.map((file) => {
-    if (options.clean) return cleanShellSpec(file);
-    if (options.login) return loginShellSpec(file);
+    if (mode === "clean") return cleanShellSpec(file);
+    if (mode === "login") return loginShellSpec(file);
     return { file, args: [] };
   });
 }
@@ -1015,6 +1039,26 @@ function isOpenCodeCommandName(command: string): boolean {
 function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolType | null): string {
   if (!isOpenCodeToolType(toolType) || !isOpenCodeCommandName(command)) return command;
   return resolveOpenCodeBinaryPath() ?? command;
+}
+
+function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
+  const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
+  if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
+  if (toolType !== "cursor" && toolType !== "cursor-cli") return command;
+  const trimmedCommand = command.trim();
+  const basename = trimmedCommand.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (/[\\/]/.test(trimmedCommand)) return command;
+  if (basename !== "cursor-agent" && basename !== "cursor-agent.exe" && basename !== "cursor-agent.cmd" && basename !== "cursor-agent.bat") {
+    return command;
+  }
+  // Cursor has shipped both `cursor-agent` and the legacy `agent` shim on
+  // Windows. Resolve the executable at the PTY boundary so fresh launches and
+  // durable resume metadata work with either installation layout.
+  for (const candidate of CURSOR_CLI_EXECUTABLES.launchCandidates) {
+    const resolved = resolveExecutableFromKnownLocations(candidate)?.path;
+    if (resolved) return resolved;
+  }
+  return command;
 }
 
 function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
@@ -4797,7 +4841,7 @@ export function createPtyService({
       }
 
       const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
-      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
+      const directCommand = resolveDirectProviderCommand(requestedDirectCommand, toolTypeHint);
       let directArgs = Array.isArray(effectiveArgs.args)
         ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
         : [];
@@ -4894,10 +4938,10 @@ export function createPtyService({
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
       const useLoginInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
-      const shellCandidates = resolveShellCandidates({
-        clean: Boolean(directCommand || startupCommand),
-        login: useLoginInteractiveShell,
-      });
+      let shellMode: WindowsShellLaunchMode = "interactive";
+      if (directCommand || startupCommand) shellMode = "clean";
+      else if (useLoginInteractiveShell) shellMode = "login";
+      const shellCandidates = resolveShellCandidates(shellMode);
       let launchedDirectCommand = false;
       try {
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();

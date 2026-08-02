@@ -207,8 +207,8 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      `/bin/bash`, `/bin/sh`, or Windows equivalents), retrying across
      candidates if the first spawn fails. Plain interactive shell
      sessions (`toolType === "shell"` with no direct command and no
-     startup command) opt into the **clean shell** candidate set:
-     `resolveShellCandidates({ clean: true })` returns the same shell
+     startup command) use login configuration. Command-backed and provider
+     fallback shells use `resolveShellCandidates("clean")`, which returns the same shell
      binaries but pinned to `args` + `env` overlays that skip user
      init files (zsh `-f` with `ZDOTDIR=/var/empty`, bash
      `--noprofile --norc` with `BASH_ENV=""`, fish `--no-config`,
@@ -362,12 +362,14 @@ known groups and sends `SIGKILL` to anything still reachable. If that final
 scan cannot complete, ADE force-kills the known PTY/root groups and initial
 members rather than treating scan failure as proof that the tree exited.
 
-Windows first uses node-pty's normal kill path and, if the root still exists
-after the same grace period, uses bounded `taskkill /T /F` as the tree fallback.
-This keeps termination off the main thread's former synchronous recursive
-`pgrep` path while ensuring a `SIGTERM` on a tracked agent CLI also reaches
-language servers, dev servers, and other child processes instead of leaving
-them orphaned.
+Windows snapshots and terminates the ConPTY tree with bounded
+`taskkill /PID <root> /T` while the leader still exists, then invokes
+node-pty's normal kill path. After the grace period it always attempts
+`taskkill /PID <root> /T /F`; checking only the leader at that point would miss
+descendants orphaned when the leader exited. An isolated PTY-host crash uses
+the same forced tree cleanup against every provider PID owned by that worker.
+This ensures a `SIGTERM`, cancellation, or worker crash also reaches language
+servers, dev servers, and other child processes.
 
 ### Live session row resync
 

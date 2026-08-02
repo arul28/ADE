@@ -213,6 +213,28 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+vi.mock("node:path", async () => {
+  const actual = await vi.importActual<typeof import("node:path")>("node:path");
+  const dynamicDefault = new Proxy({} as typeof actual, {
+    get(_target, property) {
+      const implementation = process.platform === "win32" ? actual.win32 : actual.posix;
+      const value = implementation[property as keyof typeof implementation];
+      return typeof value === "function" ? value.bind(implementation) : value;
+    },
+  });
+  return { ...actual, default: dynamicDefault };
+});
+
+vi.mock("node:os", async () => {
+  const actual = await vi.importActual<typeof import("node:os")>("node:os");
+  const homedir = () => process.platform === "win32" ? actual.homedir() : "/Users/ade-test";
+  return {
+    ...actual,
+    homedir,
+    default: { ...actual, homedir },
+  };
+});
+
 vi.mock("node:fs", () => ({
   default: {
     existsSync: mocks.existsSync,
@@ -308,6 +330,8 @@ import {
 import { resolveBuiltInBrowserActorCapability } from "../builtInBrowser/builtInBrowserActorCapabilities";
 
 const originalPlatform = process.platform;
+const originalHome = process.env.HOME;
+const originalShell = process.env.SHELL;
 
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, "platform", {
@@ -654,10 +678,21 @@ function createDetachedResumableSession(
 describe("ptyService", () => {
   afterEach(() => {
     setPlatform(originalPlatform);
+    if (originalHome == null) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalShell == null) delete process.env.SHELL;
+    else process.env.SHELL = originalShell;
   });
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Most fixtures below exercise the long-standing POSIX PTY contract. Keep
+    // that platform explicit so running the suite on Windows does not silently
+    // turn every default shell/process-group assertion into a ConPTY one.
+    // Windows-native cases opt back into win32 with setPlatform("win32").
+    setPlatform("linux");
+    process.env.HOME = "/Users/ade-test";
+    process.env.SHELL = "/bin/zsh";
     mocks.existsSyncResults.clear();
     mocks.realpathOverrides.clear();
     mocks.dirEntries.clear();
@@ -991,6 +1026,58 @@ describe("ptyService", () => {
         if (previousPath == null) delete process.env.PATH;
         else process.env.PATH = previousPath;
         mocks.execFileSync.mockImplementation(() => "");
+      }
+    });
+
+    it("honors cmd.exe for native Windows shell sessions", async () => {
+      const previousShell = process.env.SHELL;
+      setPlatform("win32");
+      process.env.SHELL = "cmd.exe";
+      try {
+        const { service, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Command Prompt",
+          cols: 80,
+          rows: 24,
+          toolType: "shell",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith("cmd.exe", [], expect.any(Object));
+      } finally {
+        setPlatform(originalPlatform);
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
+      }
+    });
+
+    it("starts configured Git Bash cleanly without routing through WSL", async () => {
+      const previousShell = process.env.SHELL;
+      setPlatform("win32");
+      process.env.SHELL = "C:\\Program Files\\Git\\bin\\bash.exe";
+      try {
+        const { service, loadPty } = createHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Git Bash command",
+          cols: 80,
+          rows: 24,
+          toolType: "shell",
+          startupCommand: "npm test",
+        });
+
+        const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith(
+          "C:\\Program Files\\Git\\bin\\bash.exe",
+          ["--noprofile", "--norc"],
+          expect.objectContaining({ env: expect.objectContaining({ BASH_ENV: "" }) }),
+        );
+        expect(ptyLib.spawn).not.toHaveBeenCalledWith("wsl.exe", expect.anything(), expect.anything());
+      } finally {
+        setPlatform(originalPlatform);
+        if (previousShell == null) delete process.env.SHELL;
+        else process.env.SHELL = previousShell;
       }
     });
 
@@ -3033,6 +3120,61 @@ describe("ptyService", () => {
         '/d /s /c ""npm.cmd" "run" "dev""',
         expect.any(Object),
       );
+    });
+
+    it("launches Cursor through the legacy Windows agent.cmd alias when needed", async () => {
+      setPlatform("win32");
+      const previousAppData = process.env.APPDATA;
+      const previousComSpec = process.env.ComSpec;
+      const appData = "C:\\Users\\ADE User\\AppData\\Roaming";
+      const agentPath = path.join(appData, "npm", "agent.cmd");
+      process.env.APPDATA = appData;
+      process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+      mocks.fileStats.set(agentPath, { isDirectory: false, size: 1 });
+      try {
+        const harness = createHarness();
+        await harness.service.create({
+          laneId: "lane-1",
+          title: "Cursor CLI",
+          cols: 80,
+          rows: 24,
+          command: "cursor-agent",
+          args: ["--resume", "chat with spaces & unicode-Ã©"],
+          toolType: "cursor-cli",
+        });
+
+        const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        expect(ptyLib.spawn).toHaveBeenCalledWith(
+          "C:\\Windows\\System32\\cmd.exe",
+          expect.stringContaining(`"${agentPath}"`),
+          expect.any(Object),
+        );
+        expect(ptyLib.spawn.mock.calls[0]?.[1]).toContain("chat with spaces & unicode-Ã©");
+      } finally {
+        if (previousAppData == null) delete process.env.APPDATA;
+        else process.env.APPDATA = previousAppData;
+        if (previousComSpec == null) delete process.env.ComSpec;
+        else process.env.ComSpec = previousComSpec;
+      }
+    });
+
+    it("preserves an explicit Windows Cursor executable override", async () => {
+      setPlatform("win32");
+      const explicitPath = "D:\\Custom Tools\\Cursor\\cursor-agent.cmd";
+      const harness = createHarness();
+
+      await harness.service.create({
+        laneId: "lane-1",
+        title: "Custom Cursor CLI",
+        cols: 80,
+        rows: 24,
+        command: explicitPath,
+        args: ["--resume", "chat-123"],
+        toolType: "cursor-cli",
+      });
+
+      const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn.mock.calls[0]?.[1]).toContain(`"${explicitPath}"`);
     });
 
     it("registers the session via sessionService.create", async () => {
@@ -5643,6 +5785,17 @@ describe("ptyService", () => {
       expect(mockPty.resize).toHaveBeenCalledWith(20, 6);
     });
 
+    it("forwards Windows ConPTY resize dimensions without shell translation", async () => {
+      setPlatform("win32");
+      const { service, mockPty } = createHarness();
+      const { ptyId } = await service.create({ laneId: "lane-1", title: "ConPTY resize", cols: 80, rows: 24 });
+
+      service.resize({ ptyId, cols: 132, rows: 43 });
+
+      expect(mockPty.resize).toHaveBeenCalledOnce();
+      expect(mockPty.resize).toHaveBeenCalledWith(132, 43);
+    });
+
     it("silently ignores resize on unknown pty ids", () => {
       const { service } = createHarness();
       expect(() => service.resize({ ptyId: "non-existent", cols: 80, rows: 24 })).not.toThrow();
@@ -8113,12 +8266,17 @@ describe("ptyService", () => {
           signal: "SIGTERM",
         });
         expect(mockPty.kill).toHaveBeenCalledWith("SIGTERM");
+        expect(mocks.execFile).toHaveBeenCalledWith(
+          "taskkill.exe",
+          ["/PID", "12345", "/T"],
+          expect.objectContaining({ windowsHide: true }),
+          expect.any(Function),
+        );
 
         await vi.advanceTimersByTimeAsync(1_500);
-        expect(kill).toHaveBeenCalledWith(12345, 0);
         expect(mocks.execFile).toHaveBeenCalledWith(
-          "taskkill",
-          ["/pid", "12345", "/T", "/F"],
+          "taskkill.exe",
+          ["/PID", "12345", "/T", "/F"],
           expect.objectContaining({ windowsHide: true }),
           expect.any(Function),
         );
@@ -8127,6 +8285,64 @@ describe("ptyService", () => {
         setPlatform(originalPlatform);
         kill.mockRestore();
         vi.useRealTimers();
+      }
+    });
+
+    it("still force-kills Windows descendants after the ConPTY leader exits", async () => {
+      vi.useFakeTimers();
+      setPlatform("win32");
+      const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+        throw new Error("ESRCH");
+      });
+      try {
+        const { service } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-windows-orphan",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-windows-orphan", signal: "SIGTERM" });
+        await vi.advanceTimersByTimeAsync(1_500);
+
+        expect(mocks.execFile).toHaveBeenCalledWith(
+          "taskkill.exe",
+          ["/PID", "12345", "/T", "/F"],
+          expect.objectContaining({ windowsHide: true }),
+          expect.any(Function),
+        );
+      } finally {
+        setPlatform(originalPlatform);
+        kill.mockRestore();
+        vi.useRealTimers();
+      }
+    });
+
+    it("uses taskkill tree semantics for an immediate Windows SIGKILL", async () => {
+      setPlatform("win32");
+      try {
+        const { service, mockPty } = createChatHarness();
+        await service.create({
+          laneId: "lane-1",
+          title: "Signal",
+          cols: 80,
+          rows: 24,
+          chatSessionId: "chat-signal-windows-kill",
+        });
+
+        service.signalTerminal({ chatSessionId: "chat-signal-windows-kill", signal: "SIGKILL" });
+
+        expect(mockPty.kill).toHaveBeenCalledWith("SIGKILL");
+        expect(mocks.execFile).toHaveBeenCalledWith(
+          "taskkill.exe",
+          ["/PID", "12345", "/T", "/F"],
+          expect.objectContaining({ windowsHide: true }),
+          expect.any(Function),
+        );
+      } finally {
+        setPlatform(originalPlatform);
       }
     });
 

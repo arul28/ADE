@@ -310,7 +310,7 @@ describe("headlessLinearServices", () => {
     }
   });
 
-  it("coalesces concurrent forced GitHub status lookups", async () => {
+  it("coalesces concurrent forced GitHub status lookups and lets ordinary callers join", async () => {
     const previousAdeHome = process.env.ADE_HOME;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-coalesce-"));
     let resolveResponse: ((response: Response) => void) | undefined;
@@ -325,10 +325,15 @@ describe("headlessLinearServices", () => {
     );
     try {
       githubService.setToken("ghp_test_token");
-      const lookups = Array.from(
-        { length: 16 },
-        () => githubService.getStatus({ forceRefresh: true }),
-      );
+      const firstForcedLookup = githubService.getStatus({ forceRefresh: true });
+      const lookups = [
+        firstForcedLookup,
+        githubService.getStatus(),
+        ...Array.from(
+          { length: 14 },
+          () => githubService.getStatus({ forceRefresh: true }),
+        ),
+      ];
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
       // The callers independently resolve the repository and credential inventory
       // before joining the shared HTTP probe. Keep that probe pending long enough
@@ -349,6 +354,48 @@ describe("headlessLinearServices", () => {
       );
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     } finally {
+      if (previousAdeHome == null) delete process.env.ADE_HOME;
+      else process.env.ADE_HOME = previousAdeHome;
+    }
+  });
+
+  it("does not let a forced GitHub status lookup join an older ordinary lookup", async () => {
+    const previousAdeHome = process.env.ADE_HOME;
+    const previousFetch = globalThis.fetch;
+    process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-force-order-"));
+    const responseResolvers: Array<(response: Response) => void> = [];
+    const fetchImpl = vi.fn(async () => await new Promise<Response>((resolve) => {
+      responseResolvers.push(resolve);
+    })) as unknown as typeof fetch;
+    globalThis.fetch = fetchImpl;
+    const githubService = createHeadlessGitHubService(
+      "/tmp/ade-project",
+      { debug() {}, info() {}, warn() {}, error() {} } as any,
+    );
+    const responseFor = (login: string): Response => new Response(JSON.stringify({ login }), {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "x-oauth-scopes": "repo, workflow",
+      },
+    });
+
+    try {
+      githubService.setToken("ghp_test_token");
+      const ordinaryLookup = githubService.getStatus();
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+
+      const forcedLookup = githubService.getStatus({ forceRefresh: true });
+      await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2));
+      responseResolvers[1]?.(responseFor("forced-user"));
+      await expect(forcedLookup).resolves.toMatchObject({ userLogin: "forced-user" });
+
+      responseResolvers[0]?.(responseFor("ordinary-user"));
+      await expect(ordinaryLookup).resolves.toMatchObject({ userLogin: "ordinary-user" });
+      await expect(githubService.getStatus()).resolves.toMatchObject({ userLogin: "forced-user" });
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+    } finally {
+      globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
     }

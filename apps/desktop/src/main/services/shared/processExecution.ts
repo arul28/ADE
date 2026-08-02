@@ -95,13 +95,21 @@ export function resolveCliSpawnInvocation(
   };
 }
 
+export function windowsTaskkillInvocation(pid: number, options: { force?: boolean } = {}): SpawnInvocation {
+  return {
+    command: "taskkill.exe",
+    args: ["/PID", String(pid), "/T", ...(options.force ? ["/F"] : [])],
+  };
+}
+
 export function killWindowsProcessTree(
   pid: number,
   onFailure?: (detail: ProcessTreeFailureDetail) => void,
 ): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    const out = spawnSync("taskkill.exe", ["/T", "/F", "/PID", String(pid)], { windowsHide: true });
+    const invocation = windowsTaskkillInvocation(pid, { force: true });
+    const out = spawnSync(invocation.command, invocation.args, { windowsHide: true });
     if (!out.error && out.status === 0) return true;
     onFailure?.({
       pid,

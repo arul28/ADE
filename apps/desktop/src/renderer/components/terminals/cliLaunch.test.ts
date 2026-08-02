@@ -352,6 +352,56 @@ describe("resolveCleanShellLaunchFields", () => {
       args: ["-NoLogo", "-NoProfile"],
     });
   });
+
+  it("honors native PowerShell 7, cmd, and Git Bash shell selections", () => {
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    })).toEqual({
+      command: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "cmd.exe" })).toEqual({
+      command: "cmd.exe",
+      args: ["/d"],
+    });
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: '"C:\\Program Files\\Git\\bin\\bash.exe"',
+    })).toEqual({
+      command: "C:\\Program Files\\Git\\bin\\bash.exe",
+      args: ["--noprofile", "--norc"],
+      env: { BASH_ENV: "" },
+    });
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: "D:\\PortableGit\\usr\\bin\\bash.exe",
+    })).toEqual({
+      command: "D:\\PortableGit\\usr\\bin\\bash.exe",
+      args: ["--noprofile", "--norc"],
+      env: { BASH_ENV: "" },
+    });
+  });
+
+  it("does not treat WSL or an ambiguous bash alias as a native Windows shell", () => {
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "wsl.exe" })).toEqual({
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "bash.exe" })).toEqual({
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    for (const shell of [
+      "\\\\wsl$\\Ubuntu\\usr\\bin\\bash.exe",
+      "\\\\wsl.localhost\\Ubuntu\\usr\\bin\\bash.exe",
+    ]) {
+      expect(resolveCleanShellLaunchFields({ platform: "win32", shell })).toEqual({
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile"],
+      });
+    }
+  });
 });
 
 describe("buildTrackedCliStartupCommand", () => {

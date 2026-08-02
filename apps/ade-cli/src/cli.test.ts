@@ -5951,6 +5951,30 @@ describe("ADE CLI", () => {
     }
   });
 
+  it("does not reuse a Stable executable when ADE Beta was requested", () => {
+    const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-windows-beta-desktop-"));
+    const stableRoot = path.join(installRoot, "Programs", "ADE");
+    const stablePath = path.join(stableRoot, "ADE.exe");
+    const stableEntryPath = path.join(stableRoot, "resources", "ade-cli", "cli.cjs");
+    const betaPath = path.join(installRoot, "Programs", "ADE Beta", "ADE Beta.exe");
+    fs.mkdirSync(path.dirname(stableEntryPath), { recursive: true });
+    fs.writeFileSync(stablePath, "");
+    fs.writeFileSync(stableEntryPath, "");
+    fs.mkdirSync(path.dirname(betaPath), { recursive: true });
+    fs.writeFileSync(betaPath, "");
+
+    try {
+      expect(resolveWindowsDesktopExecutable({
+        appName: "ADE Beta",
+        env: { LOCALAPPDATA: installRoot },
+        execPath: stablePath,
+        entryPath: stableEntryPath,
+      })).toBe(betaPath);
+    } finally {
+      fs.rmSync(installRoot, { recursive: true, force: true });
+    }
+  });
+
   it("renders a compact lane graph", () => {
     const graph = renderLaneGraph({
       lanes: [

@@ -3,8 +3,8 @@
 type ShellPlatform = NodeJS.Platform | "browser";
 
 function currentShellPlatform(): ShellPlatform {
-  if (typeof navigator !== "undefined" && /win/i.test(navigator.platform)) return "win32";
   if (typeof process !== "undefined" && typeof process.platform === "string") return process.platform;
+  if (typeof navigator !== "undefined" && /win/i.test(navigator.platform)) return "win32";
   return "browser";
 }
 

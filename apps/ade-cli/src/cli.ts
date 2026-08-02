@@ -32,6 +32,7 @@ export { readInstalledDesktopVersion } from "./commands/doctor";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
+import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -12940,7 +12941,7 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     claude: commandExists("claude"),
     codex: commandExists("codex"),
     opencode: commandExists("opencode"),
-    cursor: commandExists("agent") || commandExists("cursor-agent"),
+    cursor: CURSOR_CLI_EXECUTABLES.launchCandidates.some((command) => commandExists(command)),
     droid: commandExists("droid"),
   };
   const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
@@ -15559,19 +15560,15 @@ export function resolveWindowsDesktopExecutable(args: {
     : requestedName;
   const executableName = `${appBaseName}.exe`;
   const execBaseName = path.basename(execPath);
-  const currentExecutableIsAde =
-    execBaseName.toLowerCase() === executableName.toLowerCase()
-    || /^ade(?: beta| alpha)?\.exe$/i.test(execBaseName);
+  const currentExecutableMatchesRequest =
+    execBaseName.toLowerCase() === executableName.toLowerCase();
   const candidates: Array<string | null> = [
     env.ADE_DESKTOP_APP_PATH?.trim() || null,
-    currentExecutableIsAde
+    currentExecutableMatchesRequest
       ? execPath
       : null,
     entryPath
       ? path.resolve(path.dirname(entryPath), "..", "..", executableName)
-      : null,
-    entryPath && executableName.toLowerCase() !== "ade.exe"
-      ? path.resolve(path.dirname(entryPath), "..", "..", "ADE.exe")
       : null,
     env.LOCALAPPDATA
       ? path.join(env.LOCALAPPDATA, "Programs", appBaseName, executableName)
