@@ -56,9 +56,12 @@ ade-cli modules — there is no second implementation to keep in sync.
 ## Desktop / daemon: native loadable extension
 
 Both the Electron main process and the `ade serve` daemon open SQLite
-through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS),
-`crsqlite.so` (Linux), or `crsqlite.dll` (Windows x64) as a loadable
-extension. A fresh connection runs
+through `node:sqlite` and load a vendored `crsqlite.dylib` (macOS) or
+`crsqlite.dll` (Windows x64) as a loadable extension. No extension is
+vendored for Linux: a Linux host is a remote runtime target that a macOS or
+Windows desktop drives, not a sync peer. Its brain logs
+`db.crsqlite_unavailable`, disables CRR triggers, and holds no replicated
+state. A fresh connection runs
 `SELECT load_extension(...)` once, then `AdeDb` marks every eligible
 non-virtual table as a CRR at startup:
 
