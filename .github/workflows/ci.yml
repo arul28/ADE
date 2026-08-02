@@ -574,7 +574,7 @@ jobs:
       - name: Record Stable installer
         shell: pwsh
         run: |
-          $installers = @(Get-ChildItem apps/desktop/release/ADE-*-win-x64.exe -File)
+          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected exactly one Stable Windows installer, found $($installers.Count)." }
           "ADE_STABLE_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
@@ -589,7 +589,7 @@ jobs:
       - name: Test Stable and Beta installed-product lifecycles
         shell: pwsh
         run: |
-          $betaInstallers = @(Get-ChildItem "apps/desktop/release/ADE Beta-*-win-x64.exe" -File)
+          $betaInstallers = @(Get-ChildItem "apps/desktop/release/ADE-Beta-[0-9]*-win-x64.exe" -File)
           if ($betaInstallers.Count -ne 1) { throw "Expected exactly one Beta Windows installer, found $($betaInstallers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 `
             -InstallerPath $env:ADE_STABLE_INSTALLER `

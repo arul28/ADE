@@ -339,7 +339,7 @@ jobs:
       - name: Test installed signed Windows product lifecycle
         shell: pwsh
         run: |
-          $installers = @(Get-ChildItem apps/desktop/release/ADE-*-win-x64.exe -File)
+          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
 

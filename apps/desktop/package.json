@@ -337,7 +337,7 @@
         ],
         "rfc3161TimeStampServer": "http://timestamp.digicert.com"
       },
-      "artifactName": "${productName}-${version}-win-${arch}.${ext}",
+      "artifactName": "ADE-${version}-win-${arch}.${ext}",
       "extraResources": [
         {
           "from": "scripts/windows-install-setup.ps1",

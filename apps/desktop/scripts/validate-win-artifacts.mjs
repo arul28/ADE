@@ -9,7 +9,9 @@ import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import { createAuthenticodeProbe } from "./windows-authenticode.mjs";
 import {
+  isGithubSafeAssetName,
   resolveWindowsPackageIdentity,
+  windowsInstallerArtifactName,
   windowsInstallerPattern,
 } from "./windows-package-identity.mjs";
 
@@ -278,6 +280,17 @@ function validatePreflight() {
   }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
+  }
+  // ${productName} expands to "ADE Beta" on channel builds. electron-builder
+  // would then write the installer with a space while rewriting latest.yml's
+  // url/path to the space-free name it would have used for its own GitHub
+  // upload, and `gh release upload` publishes the on-disk name instead - so the
+  // updater feed would point at a file that was never published.
+  const stableArtifactName = windowsInstallerArtifactName(resolveWindowsPackageIdentity("stable"));
+  if (pkg.build?.win?.artifactName !== stableArtifactName) {
+    fail(
+      `package.json build.win.artifactName must be ${stableArtifactName} so the installer name never inherits a space from productName`,
+    );
   }
   if (
     pkg.build?.nsis?.oneClick !== false
@@ -863,6 +876,13 @@ async function validateReleaseArtifacts() {
 
   await assertPathExists(releaseDir, "release output directory");
   await assertPathExists(installerPath, "Windows installer");
+  const installerName = path.basename(installerPath);
+  if (!isGithubSafeAssetName(installerName)) {
+    fail(
+      `Windows installer name must contain only letters, digits, dots, dashes, and underscores so the built file, `
+        + `latest.yml, and the published GitHub release asset stay byte-identical: ${installerName}`,
+    );
+  }
   await assertPathExists(installerBlockmapPath, "Windows installer blockmap");
   await assertPathExists(appDir, "win-unpacked app directory");
   await validateLatestYaml(latestPath, installerPath);

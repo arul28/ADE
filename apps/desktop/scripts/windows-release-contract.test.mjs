@@ -6,7 +6,9 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
 import {
+  isGithubSafeAssetName,
   resolveWindowsPackageIdentity,
+  windowsInstallerArtifactName,
   windowsInstallerPattern,
 } from "./windows-package-identity.mjs";
 
@@ -187,16 +189,59 @@ test("Windows packaging rejects unknown channels before electron-builder", () =>
 });
 
 test("Beta validation selects only Beta artifacts when Stable files are retained", () => {
+  const stable = resolveWindowsPackageIdentity("stable");
   const beta = resolveWindowsPackageIdentity("beta");
   const artifacts = [
     "ADE-1.2.3-win-x64.exe",
-    "ADE Beta-1.2.3-win-x64.exe",
+    "ADE-Beta-1.2.3-win-x64.exe",
   ];
   assert.equal(beta.executableName, "ADE Beta.exe");
   assert.deepEqual(artifacts.filter((name) => windowsInstallerPattern(beta).test(name)), [
-    "ADE Beta-1.2.3-win-x64.exe",
+    "ADE-Beta-1.2.3-win-x64.exe",
+  ]);
+  assert.deepEqual(artifacts.filter((name) => windowsInstallerPattern(stable).test(name)), [
+    "ADE-1.2.3-win-x64.exe",
   ]);
   assert.match(winArtifactValidator, /windowsInstallerPattern\(packageIdentity\)/);
+});
+
+test("Windows installer names stay GitHub-safe so latest.yml matches the published asset", () => {
+  const stable = resolveWindowsPackageIdentity("stable");
+  const beta = resolveWindowsPackageIdentity("beta");
+  const alpha = resolveWindowsPackageIdentity("alpha");
+  // electron-builder writes the installer from ${productName} but rewrites
+  // latest.yml's url/path to a space-free "safe" name for GitHub, and
+  // release-core.yml publishes the on-disk file through `gh release upload`,
+  // where GitHub normalizes disallowed characters again. Any space in the
+  // artifact name therefore points the updater feed at a file nobody published.
+  for (const identity of [stable, beta, alpha]) {
+    const rendered = windowsInstallerArtifactName(identity)
+      .replace("${version}", "1.2.3")
+      .replace("${arch}", "x64")
+      .replace("${ext}", "exe");
+    assert.ok(
+      isGithubSafeAssetName(rendered),
+      `${identity.packageChannel} installer name must be GitHub-safe, got ${rendered}`,
+    );
+    assert.ok(windowsInstallerPattern(identity).test(rendered));
+  }
+  assert.equal(stable.artifactBaseName, "ADE");
+  assert.equal(beta.artifactBaseName, "ADE-Beta");
+  assert.equal(pkg.build.win.artifactName, windowsInstallerArtifactName(stable));
+  assert.doesNotMatch(pkg.build.win.artifactName, /\$\{productName\}/);
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.artifactName=\$\{windowsInstallerArtifactName\(channelIdentity\)\}/,
+  );
+  assert.match(winArtifactValidator, /isGithubSafeAssetName\(installerName\)/);
+  assert.match(winArtifactValidator, /build\.win\.artifactName must be/);
+  // The Stable glob must not depend on step ordering to avoid selecting the
+  // Beta installer once both live in apps/desktop/release.
+  const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
+  assert.match(packageJob, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
+  assert.match(packageJob, /release\/ADE-Beta-\[0-9\]\*-win-x64\.exe/);
+  assert.doesNotMatch(packageJob, /ADE Beta-/);
+  assert.match(releaseWorkflow, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
 });
 
 test("standalone Windows runtime signing uses only canonical credentials and validates publisher identity", () => {

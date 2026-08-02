@@ -2,7 +2,10 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { resolveWindowsPackageIdentity } from "./windows-package-identity.mjs";
+import {
+  resolveWindowsPackageIdentity,
+  windowsInstallerArtifactName,
+} from "./windows-package-identity.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -63,6 +66,11 @@ const args = [
   `--config.appId=${channelIdentity.appId}`,
   `--config.productName=${channelIdentity.productName}`,
   `--config.win.executableName=${channelIdentity.productName}`,
+  // The product name carries a space on channel builds ("ADE Beta"), which
+  // would leave the installer, latest.yml, and the published GitHub asset with
+  // three different names. Pin the artifact name to the space-free channel base
+  // so the updater feed can only ever reference the file published beside it.
+  `--config.win.artifactName=${windowsInstallerArtifactName(channelIdentity)}`,
   `--config.fileAssociations.name=${channelIdentity.fileClass}`,
   `--config.fileAssociations.description=${configuredFileAssociation.description ?? "ADE files"}`,
   ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
