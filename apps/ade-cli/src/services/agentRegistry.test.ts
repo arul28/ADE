@@ -7,7 +7,9 @@ describe("classifyAgentCliError", () => {
       agent: "codex",
       displayName: "Codex CLI",
       category: "missing",
-      installCommand: 'mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g @openai/codex',
+      installCommand: process.platform === "win32"
+        ? "npm install -g @openai/codex"
+        : 'mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g @openai/codex',
       authCommand: "codex login",
     });
   });

@@ -614,7 +614,11 @@ function parseNextGitHubLink(linkHeader: string | null): string | null {
 
 const GITHUB_API_TIMEOUT_MS = 20_000;
 
-async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Response> {
+async function fetchGitHub(
+  input: string | URL,
+  init: RequestInit,
+  fetchImpl: typeof fetch = fetch,
+): Promise<Response> {
   const controller = new AbortController();
   const upstreamSignal = init.signal;
   const abortFromUpstream = (): void => controller.abort(upstreamSignal?.reason);
@@ -622,7 +626,7 @@ async function fetchGitHub(input: string | URL, init: RequestInit): Promise<Resp
   else upstreamSignal?.addEventListener("abort", abortFromUpstream, { once: true });
   const timer = setTimeout(() => controller.abort(), GITHUB_API_TIMEOUT_MS);
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetchImpl(input, { ...init, signal: controller.signal });
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(
@@ -647,13 +651,16 @@ export function createHeadlessGitHubService(
       HeadlessGitHubTokenLookup,
       "token" | "ghCliPath" | "ghAuthError"
     >) | null;
+    fetchImpl?: typeof fetch;
   } = {},
 ): HeadlessGitHubService {
+  const requestGitHub = (input: string | URL, init: RequestInit): Promise<Response> =>
+    fetchGitHub(input, init, options.fetchImpl);
   const credentialStore = new EncryptedFileCredentialStore();
   const appUserAuth = createGitHubAppUserAuthService({
     credentialStore,
     logger,
-    fetchImpl: (input, init) => fetchGitHub(input, init ?? {}),
+    fetchImpl: (input, init) => requestGitHub(input, init ?? {}),
     userAgent: "ade-cli",
   });
   const tokenKey = "github.token.v1";
@@ -877,7 +884,7 @@ export function createHeadlessGitHubService(
     tokenType: NonNullable<HeadlessGitHubStatus["tokenType"]>;
     rateLimit: GitHubRateLimitState | null;
   }> => {
-    const response = await fetchGitHub("https://api.github.com/user", {
+    const response = await requestGitHub("https://api.github.com/user", {
       method: "GET",
       headers: {
         accept: "application/vnd.github+json",
@@ -969,7 +976,7 @@ export function createHeadlessGitHubService(
       };
     }
     try {
-      const response = await fetchGitHub(
+      const response = await requestGitHub(
         `https://api.github.com/repos/${encodeURIComponent(repo.owner)}/${encodeURIComponent(repo.name)}`,
         {
           method: "GET",
@@ -1220,7 +1227,7 @@ export function createHeadlessGitHubService(
       }
       let response: Response;
       try {
-        response = await fetchGitHub(url, {
+        response = await requestGitHub(url, {
           method: args.method,
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),
@@ -1236,7 +1243,7 @@ export function createHeadlessGitHubService(
           return { data: cached.data as T, response, linkHeader: cached.linkHeader };
         }
         delete headers["if-none-match"];
-        response = await fetchGitHub(url, {
+        response = await requestGitHub(url, {
           method: args.method,
           headers,
           body: args.body == null ? undefined : JSON.stringify(args.body),

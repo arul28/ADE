@@ -405,6 +405,56 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
+  # Native Windows source gate for the filesystem, process, IPC, SQLite, and
+  # capability contracts that Linux-hosted unit jobs cannot exercise.
+  windows-foundation:
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install ADE CLI dependencies
+        run: npm --prefix apps/ade-cli ci
+
+      - name: Install desktop dependencies
+        run: npm --prefix apps/desktop ci
+
+      - name: Typecheck Windows runtime foundations
+        run: |
+          npm --prefix apps/ade-cli run typecheck
+          npm --prefix apps/desktop run typecheck
+
+      - name: Test Windows service, layout, and IPC contracts
+        run: >-
+          cd apps/ade-cli && npx vitest run
+          src/bootstrap.test.ts
+          src/serviceManager/common.test.ts
+          src/serviceManager/installWindows.test.ts
+          src/serviceManager/windowsSupervisor.test.ts
+          src/services/builtInBrowser/desktopBridgeClient.test.ts
+          src/services/modelPickerStore.test.ts
+          src/services/projects/machineLayout.test.ts
+          src/services/projects/projectIconResolver.test.ts
+          src/services/projects/projectRegistry.test.ts
+          src/services/sync/syncHostSingleton.test.ts
+          src/services/sync/syncLoopbackCollision.test.ts
+          src/services/sync/syncService.test.ts
+
+      - name: Test intended-user named-pipe listener contracts
+        run: >-
+          cd apps/ade-cli && npx vitest run src/cli.test.ts
+          -t "declares intended-user-only access|hosts headless RPC on a Windows named pipe"
+
+      - name: Test Windows desktop, SQLite, and capability contracts
+        run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
+
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
@@ -449,6 +499,7 @@ jobs:
       - test-account-directory
       - build
       - build-runtime-binaries
+      - windows-foundation
       - validate-docs
     runs-on: ubuntu-latest
     steps:

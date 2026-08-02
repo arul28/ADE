@@ -312,17 +312,16 @@ describe("headlessLinearServices", () => {
 
   it("coalesces concurrent forced GitHub status lookups", async () => {
     const previousAdeHome = process.env.ADE_HOME;
-    const previousFetch = globalThis.fetch;
     process.env.ADE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "ade-headless-github-status-coalesce-"));
     let resolveResponse: ((response: Response) => void) | undefined;
     const response = new Promise<Response>((resolve) => {
       resolveResponse = resolve;
     });
     const fetchImpl = vi.fn(async () => await response) as unknown as typeof fetch;
-    globalThis.fetch = fetchImpl;
     const githubService = createHeadlessGitHubService(
       "/tmp/ade-project",
       { debug() {}, info() {}, warn() {}, error() {} } as any,
+      { fetchImpl },
     );
     try {
       githubService.setToken("ghp_test_token");
@@ -331,6 +330,10 @@ describe("headlessLinearServices", () => {
         () => githubService.getStatus({ forceRefresh: true }),
       );
       await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
+      // The callers independently resolve the repository and credential inventory
+      // before joining the shared HTTP probe. Keep that probe pending long enough
+      // for every already-started caller to reach the coalescing boundary.
+      await new Promise((resolve) => setTimeout(resolve, 1_000));
       resolveResponse?.(new Response(JSON.stringify({ login: "octocat" }), {
         status: 200,
         headers: {
@@ -341,10 +344,11 @@ describe("headlessLinearServices", () => {
 
       const statuses = await Promise.all(lookups);
       expect(statuses).toHaveLength(16);
-      expect(statuses.every((status) => status.userLogin === "octocat")).toBe(true);
+      expect(statuses.map((status) => status.userLogin)).toEqual(
+        Array.from({ length: 16 }, () => "octocat"),
+      );
       expect(fetchImpl).toHaveBeenCalledTimes(1);
     } finally {
-      globalThis.fetch = previousFetch;
       if (previousAdeHome == null) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
     }

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -30,12 +31,19 @@ type ServerHandle = {
   close: () => Promise<void>;
 };
 
+function createBridgeSocketPath(prefix = "ade-bridge-test"): string {
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\${prefix}-${process.pid}-${randomUUID()}`;
+  }
+  return path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), `${prefix}-`)),
+    "bridge.sock",
+  );
+}
+
 async function startBridgeServer(
   handler: (request: JsonRpcRequest) => Promise<unknown>,
-  socketPath = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-")),
-    "bridge.sock",
-  ),
+  socketPath = createBridgeSocketPath(),
 ): Promise<ServerHandle> {
   const stopHandles = new Set<() => void>();
   const sockets = new Set<net.Socket>();
@@ -302,10 +310,7 @@ describe("createBuiltInBrowserDesktopBridgeClient", () => {
   });
 
   it("forgets a cached bridge connection when the socket closes", async () => {
-    const socketPath = path.join(
-      fs.mkdtempSync(path.join(os.tmpdir(), "ade-bridge-test-restart-")),
-      "bridge.sock",
-    );
+    const socketPath = createBridgeSocketPath("ade-bridge-test-restart");
     let generation = 1;
     server = await startBridgeServer(async () => ({ generation }), socketPath);
     const client = createBuiltInBrowserDesktopBridgeClient({

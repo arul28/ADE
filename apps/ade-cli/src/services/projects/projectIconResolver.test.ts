@@ -7,6 +7,7 @@ import {
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   resolveRemoteProjectIcon,
 } from "./projectIconResolver";
+import { createTestDirectoryLink, removeTestTree } from "../../test/filesystem";
 
 const tempRoots = new Set<string>();
 
@@ -29,9 +30,9 @@ function decodeDataUrl(dataUrl: string): { mime: string; bytes: Buffer } {
   return { mime: match[1], bytes: Buffer.from(match[2], "base64") };
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const root of tempRoots) {
-    fs.rmSync(root, { recursive: true, force: true });
+    await removeTestTree(root);
   }
   tempRoots.clear();
 });
@@ -142,7 +143,7 @@ describe("resolveRemoteProjectIcon", () => {
     fs.writeFileSync(path.join(outsideDir, "favicon.png"), Buffer.from([0xca, 0xfe]));
     // `public` is a symlink escaping the root; the public/favicon.png candidate
     // must not be read.
-    fs.symlinkSync(outsideDir, path.join(root, "public"));
+    createTestDirectoryLink(outsideDir, path.join(root, "public"));
 
     const icon = resolveRemoteProjectIcon(root);
 

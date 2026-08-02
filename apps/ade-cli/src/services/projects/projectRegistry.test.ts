@@ -7,6 +7,7 @@ import {
   deriveProjectId,
   isDisallowedProjectRoot,
 } from "./projectRegistry";
+import { createTestDirectoryLink, removeTestTree } from "../../test/filesystem";
 
 const spawnSyncMock = vi.hoisted(() => vi.fn());
 
@@ -22,10 +23,10 @@ function makeTempRoot(prefix = "ade-project-registry-"): string {
   return root;
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const root of tempRoots) {
-    fs.rmSync(root, { recursive: true, force: true });
+    await removeTestTree(root);
   }
   tempRoots.clear();
 });
@@ -283,7 +284,7 @@ describe("ProjectRegistry", () => {
     const aliasRoot = path.join(homeDir, "ADE-link");
     fs.mkdirSync(rawProjectRoot, { recursive: true });
     const projectRoot = fs.realpathSync.native(rawProjectRoot);
-    fs.symlinkSync(projectRoot, aliasRoot, "dir");
+    createTestDirectoryLink(projectRoot, aliasRoot);
 
     expect(deriveProjectId(aliasRoot)).toBe(deriveProjectId(projectRoot));
   });
