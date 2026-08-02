@@ -52,27 +52,70 @@ automatically.
 
 ### 1. Configure signing
 
-The current workflow supports a password-protected PFX/P12 signing certificate. If you choose a signing service that does not provide one, such as Microsoft Artifact Signing, adapt the workflow to that service before continuing.
+Windows signing runs on [Azure Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview), the service Microsoft previously called Trusted Signing.
 
-Add these GitHub Actions secrets:
+There is no certificate file to hold. Since June 2023 the CA/Browser Forum has required code-signing private keys to live on FIPS-validated hardware, so exportable `.pfx` delivery ended for OV and EV certificates alike, and this service never releases the certificate at all: [*"All certificates are securely stored within the service and are accessible only at the time of signing."*](https://learn.microsoft.com/en-us/azure/artifact-signing/faq) The build authenticates as a Microsoft Entra service principal and the service signs on its behalf.
 
-- `WINDOWS_CSC_LINK`: the PFX/P12 file encoded as Base64 text, or a private HTTPS URL that returns it.
-- `WINDOWS_CSC_KEY_PASSWORD`: the certificate password.
-- `WINDOWS_SIGNING_EXPECTED_SUBJECT`: the certificate's complete Subject value exactly as Windows reports it, such as `CN=Publisher, O=Company, C=US`.
-- `WINDOWS_SIGNING_EXPECTED_THUMBPRINT`: the approved certificate fingerprint.
+**Certificates rotate.** Azure Artifact Signing [renews the certificate daily and issues it with a 72-hour validity](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management). Two consequences run through this whole guide:
 
-Set the complete Subject value, the fingerprint, or both. If both are set, both must match.
+- The approved publisher is pinned by **certificate Subject**, never by thumbprint. A pinned thumbprint would stop matching within days. `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` is not merely unused — every layer of the pipeline refuses to run while it is set, so the pin cannot quietly become meaningless.
+- Every signature is RFC3161 timestamped against `http://timestamp.acs.microsoft.com`. Without that countersignature a shipped installer would stop verifying three days after it was built.
+
+#### The Azure resources
+
+These already exist. Recreate them only if the account is rebuilt.
+
+| | |
+| --- | --- |
+| Signing account | `arulsigning` |
+| Resource group | `rg-signing` |
+| Region | East US |
+| Signing endpoint | `https://eus.codesigning.azure.net` |
+| Certificate profile | `adePublicTrust` (Public Trust) |
+| Certificate subject | `CN=Arul Sharma, O=Arul Sharma, L=Greensboro, S=nc, C=US` |
+
+The signing service principal is `ade-signing-ci`. It holds the **Artifact Signing Certificate Profile Signer** role scoped to the signing account; without that role signing fails with HTTP 403.
+
+The endpoint, account name, and certificate profile are not secrets. They are pinned in `run-electron-builder.mjs` and `sign-windows-runtime.ps1` so a maintainer running a signed build locally uses the same values CI does. `WINDOWS_SIGNING_ENDPOINT`, `WINDOWS_SIGNING_ACCOUNT_NAME`, and `WINDOWS_SIGNING_CERTIFICATE_PROFILE` override them for a fork or a migrated account.
+
+#### The GitHub Actions secrets
+
+Add these four:
+
+- `AZURE_TENANT_ID`: the Microsoft Entra tenant (directory) ID.
+- `AZURE_CLIENT_ID`: the `ade-signing-ci` app registration's client (application) ID.
+- `AZURE_CLIENT_SECRET`: a client secret generated for that app registration.
+- `WINDOWS_SIGNING_EXPECTED_SUBJECT`: the certificate profile's complete Subject, exactly as Windows reports it — `CN=Arul Sharma, O=Arul Sharma, L=Greensboro, S=nc, C=US`.
 
 ```bash
-gh secret set WINDOWS_CSC_LINK --repo arul28/ADE
-gh secret set WINDOWS_CSC_KEY_PASSWORD --repo arul28/ADE
+gh secret set AZURE_TENANT_ID --repo arul28/ADE
+gh secret set AZURE_CLIENT_ID --repo arul28/ADE
+gh secret set AZURE_CLIENT_SECRET --repo arul28/ADE
 gh secret set WINDOWS_SIGNING_EXPECTED_SUBJECT --repo arul28/ADE
-gh secret set WINDOWS_SIGNING_EXPECTED_THUMBPRINT --repo arul28/ADE
 ```
 
 Each command asks for the secret without printing it in the command.
 
+The three `AZURE_*` names are exactly what Azure.Identity's `EnvironmentCredential` reads. On a GitHub-hosted runner that matters: `EnvironmentCredential` is first in the `DefaultAzureCredential` chain, so a complete service-principal triple is resolved before any managed-identity probe against an Azure instance-metadata endpoint the runner does not have. Microsoft's [FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq) gives the same guidance for non-Azure hosts and notes that when the chain does reach managed identity off-Azure it raises `Azure.Identity.CredentialUnavailableException`. An incomplete triple therefore fails slowly and confusingly rather than cleanly, which is why `verify` requires all three up front.
+
+If `WINDOWS_SIGNING_EXPECTED_SUBJECT` is missing, or if a leftover `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` secret still exists, the run fails in `verify` about a minute in. Delete the thumbprint secret if it is still present:
+
+```bash
+gh secret delete WINDOWS_SIGNING_EXPECTED_THUMBPRINT --repo arul28/ADE
+```
+
+`CSC_LINK` and `CSC_KEY_PASSWORD` are the macOS Developer ID secrets. Windows signing does not read them, and the packaging wrapper strips both from the electron-builder environment so they can never be picked up as a Windows signing identity.
+
 Keep `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` unset or `0` until Step 5.
+
+#### What actually signs
+
+`electron-builder` 26.8.1 has first-class support for this service through `win.azureSignOptions`. `run-electron-builder.mjs` supplies it on the `--require-signing` path only. That choice matters: electron-builder selects the Azure signing manager above the single chokepoint every Windows artifact passes through, so one configuration covers the packaged `ADE.exe` and its bundled DLLs, the NSIS installer, and the uninstaller. A separate post-build signing step — for example Microsoft's `Azure/artifact-signing-action` — runs after packaging, and could only sign the finished installer, leaving the `ADE.exe` already embedded inside it unsigned unless the installer were unpacked and rebuilt.
+
+Under the hood electron-builder 26 installs the `TrustedSigning` PowerShell module from PSGallery on the runner and calls `Invoke-TrustedSigning` per file. `sign-windows-runtime.ps1` signs the standalone `ade-win32-x64.exe` the same way, so both Windows artifacts share one signing path. Two things follow from that:
+
+- The runner needs outbound access to PSGallery and nuget.org on every signed build. There is no vendored copy.
+- Microsoft's successor module is `ArtifactSigning` / `Invoke-ArtifactSigning`. electron-builder pins the older `TrustedSigning` module and only moves off it in v27, which replaces the module with `signtool /dlib`. Migrate the desktop build and the runtime signer together so the two Windows artifacts never diverge.
 
 ### 2. Run the signed proof build in GitHub Actions
 
@@ -229,8 +272,11 @@ Signing stays mandatory and machine-enforced whenever Windows builds. The
 `build-win-release` job requires the signing secrets before it packages
 anything, `run-electron-builder.mjs` runs with `--require-signing`, and
 `validate-win-artifacts.mjs` runs `--require-signed` Authenticode verification:
-valid signature status, a trusted RFC3161 timestamp, and the pinned subject or
-thumbprint. There is no unsigned Windows publication path.
+valid signature status, a trusted RFC3161 timestamp, and the pinned publisher
+Subject. It additionally requires that the installer and the `ADE.exe` it
+installs carry the same certificate, which proves both came from one signing
+operation rather than only sharing a Subject. There is no unsigned Windows
+publication path.
 
 ### Required GitHub Actions settings
 
@@ -243,10 +289,10 @@ name below is required unless marked optional.
 
 | Secret | Required when | Meaning |
 | --- | --- | --- |
-| `WINDOWS_CSC_LINK` | Signed Windows builds | Base64 PFX/P12 or a private HTTPS URL returning it. Step 1. |
-| `WINDOWS_CSC_KEY_PASSWORD` | Signed Windows builds | Certificate password. Step 1. |
-| `WINDOWS_SIGNING_EXPECTED_SUBJECT` | Signed Windows builds, unless the thumbprint is set | Pinned certificate Subject. Step 1. |
-| `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` | Signed Windows builds, unless the subject is set | Pinned certificate fingerprint. Step 1. |
+| `AZURE_TENANT_ID` | Signed Windows builds | Microsoft Entra tenant ID of the Azure Artifact Signing account. Step 1. |
+| `AZURE_CLIENT_ID` | Signed Windows builds | Client ID of the `ade-signing-ci` service principal. Step 1. |
+| `AZURE_CLIENT_SECRET` | Signed Windows builds | Client secret for that service principal. Step 1. |
+| `WINDOWS_SIGNING_EXPECTED_SUBJECT` | Signed Windows builds | Pinned certificate Subject, and the `publisherName` the packaged updater verifies. Step 1. |
 | `CSC_LINK` | Every release | Existing macOS Developer ID certificate. Not used by Windows signing. |
 | `CSC_KEY_PASSWORD` | Every release | Existing macOS certificate password. |
 | `MACOS_DEVELOPER_ID_PROFILE_B64` | Every release | Existing macOS Developer ID provisioning profile. |
@@ -256,7 +302,14 @@ name below is required unless marked optional.
 | `ADE_POSTHOG_PROJECT_TOKEN` | Optional | Analytics token baked into packaged builds. |
 | `ADE_POSTHOG_HOST` | Optional | Analytics host baked into packaged builds. |
 
-`prepare-release.yml` reads the four `WINDOWS_*` signing secrets directly when
+`WINDOWS_SIGNING_EXPECTED_THUMBPRINT` is not in this table because it is not
+supported. Azure Artifact Signing renews the certificate daily and expires it
+after 72 hours, so a thumbprint pin would fail every release within days.
+`verify`, `prepare-release.yml`, `run-electron-builder.mjs`,
+`validate-win-artifacts.mjs`, and `sign-windows-runtime.ps1` each fail while that
+secret exists, rather than ignoring it and leaving the release apparently pinned.
+
+`prepare-release.yml` reads the four Windows signing secrets directly when
 `windows_proof` is set, and passes everything else through with
 `secrets: inherit`.
 
@@ -275,11 +328,12 @@ Confirm:
 - The normal `ci-pass` check succeeded for that exact commit.
 - The version tag does not already exist.
 - `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`.
-- The four Windows signing secrets are still present. With the gate on and a
-  secret missing, the tagged run stops about a minute in, in `verify`, with
-  `Windows releases require the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD
-  secrets.` or `Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT or
-  WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret to pin the approved publisher.` See
+- The four Windows signing secrets are still present, and the
+  `ade-signing-ci` client secret has not expired. With the gate on and a secret
+  missing, the tagged run stops about a minute in, in `verify`, with
+  `Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and
+  AZURE_CLIENT_SECRET secrets.` or `Windows releases require the
+  WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher.` See
   [Required GitHub Actions settings](#required-github-actions-settings).
 
 Confirm the current value before tagging:
@@ -412,7 +466,22 @@ public signed release as an ongoing regression check.
 - Problem found after publication: hide the website link, set
   `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0`, fix and test a higher version, then
   set it back to `1` before tagging that version.
-- Signing certificate changes: update the signing secrets and repeat the signed installer tests.
+- Signing certificate changes: the certificate rotates on its own and needs no
+  action. Update `WINDOWS_SIGNING_EXPECTED_SUBJECT` and repeat the signed
+  installer tests only if the certificate profile's Subject itself changes.
+- `Windows installer and packaged executable were signed by different
+  certificates`: the build straddled the service's daily certificate rotation.
+  Nothing is wrong with the configuration. Rerun the build.
+- Signing fails with HTTP 403: the `ade-signing-ci` service principal has lost
+  the **Artifact Signing Certificate Profile Signer** role on the `arulsigning`
+  account, or its client secret expired.
+- Signing fails with `CredentialUnavailableException` or hangs before signing:
+  one of `AZURE_TENANT_ID`, `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET` is missing
+  or wrong, so the credential chain fell past `EnvironmentCredential` and tried
+  to reach an Azure instance-metadata endpoint the runner does not have.
+- The build fails installing the `TrustedSigning` module: the runner could not
+  reach PSGallery or nuget.org. The signing toolchain is downloaded per build
+  and is not vendored.
 - Release workflow is rerun after publication: the workflow stops instead of replacing public files. Publish a higher version for any correction.
 
 Never put a certificate, private key, password, private certificate URL, or access token in the repository, logs, release notes, or test record.
@@ -428,6 +497,7 @@ WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later.
 - [Package scripts](../../apps/desktop/package.json)
 - [Windows packaging script](../../apps/desktop/scripts/run-electron-builder.mjs)
 - [Windows release-file checker](../../apps/desktop/scripts/validate-win-artifacts.mjs)
+- [Standalone Windows runtime signer](../../apps/ade-cli/scripts/sign-windows-runtime.ps1)
 - [Windows uninstall cleanup](../../apps/desktop/scripts/windows-uninstall-cleanup.ps1)
 - [Non-publishing workflow](../../.github/workflows/prepare-release.yml)
 - [Tag-triggered release workflow](../../.github/workflows/release.yml)
@@ -440,8 +510,13 @@ WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later.
 
 ## References
 
+- [Azure Artifact Signing overview](https://learn.microsoft.com/en-us/azure/artifact-signing/overview)
+- [Azure Artifact Signing certificate management](https://learn.microsoft.com/en-us/azure/artifact-signing/concept-certificate-management)
+- [Azure Artifact Signing signing integrations](https://learn.microsoft.com/en-us/azure/artifact-signing/how-to-signing-integrations)
+- [Azure Artifact Signing role assignment](https://learn.microsoft.com/en-us/azure/artifact-signing/tutorial-assign-roles)
+- [Azure Artifact Signing FAQ](https://learn.microsoft.com/en-us/azure/artifact-signing/faq)
+- [Azure Identity credential chains](https://learn.microsoft.com/en-us/dotnet/azure/sdk/authentication/credential-chains)
 - [electron-builder Windows signing](https://www.electron.build/docs/features/code-signing/code-signing-win/)
 - [GitHub Actions secrets](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/use-secrets)
 - [Microsoft code-signing options](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/code-signing-options)
 - [Microsoft SmartScreen reputation](https://learn.microsoft.com/en-us/windows/apps/package-and-deploy/smartscreen-reputation)
-- [Microsoft Artifact Signing](https://learn.microsoft.com/en-us/azure/artifact-signing/overview)
