@@ -4,28 +4,40 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  ADE_RUNTIME_SERVICE_NAME,
   type AdeServiceCommand,
+  cmdQuote,
   renderWindowsCommand,
-  renderWindowsServiceLauncher,
   resolveAdeServeCommand,
+  resolveRuntimeServiceName,
   serviceManagerResultText,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
 } from "./common";
-import { resolveMachineAdeDir } from "../services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import {
+  defaultWindowsRuntimeReadiness,
+  queryWindowsSupervisor,
+  readWindowsServicePidRecord as readWindowsSupervisorPidRecord,
+  renderWindowsServiceLauncher,
+  waitForWindowsRuntimeReadiness,
+  WINDOWS_POWERSHELL_COMMAND,
+  type WindowsRuntimeReadinessProbe,
+  type WindowsServicePidRecord,
+} from "./windowsSupervisor";
+
+export {
+  buildWindowsRuntimeQueryArgs,
+  buildWindowsSupervisorQueryArgs,
+  renderWindowsServiceLauncher,
+  WINDOWS_POWERSHELL_COMMAND,
+  type WindowsServicePidRecord,
+} from "./windowsSupervisor";
 
 export const TASK_NAME = "ADE Runtime";
-export const WINDOWS_POWERSHELL_COMMAND = "powershell.exe";
 export const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const TASK_NOT_FOUND_EXIT_CODE = 3;
 const REGISTRY_VALUE_NOT_FOUND_EXIT_CODE = 1;
-
-export type WindowsServicePidRecord = {
-  supervisorPid: number;
-  runtimePid: number;
-};
 
 type WindowsServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -35,7 +47,23 @@ type WindowsServiceManagerDeps = {
   serviceName?: string;
   spawnSync?: ServiceManagerSpawnSync;
   userName?: string;
+  readPidRecord?: (pidPath: string) => WindowsServicePidRecord | null;
+  readinessProbe?: WindowsRuntimeReadinessProbe;
+  handoverTimeoutMs?: number;
+  handoverPollMs?: number;
+  sleep?: (ms: number) => Promise<void>;
 };
+
+function resolvedServiceName(
+  deps: Pick<WindowsServiceManagerDeps, "env" | "serviceName">,
+  command?: AdeServiceCommand,
+): string {
+  if (deps.serviceName?.trim()) return deps.serviceName.trim();
+  return resolveRuntimeServiceName({
+    ...(deps.env ?? process.env),
+    ...(command?.env ?? {}),
+  });
+}
 
 export function resolveWindowsTaskUser(env: NodeJS.ProcessEnv = process.env): string {
   const username = env.USERNAME?.trim() || os.userInfo().username.trim();
@@ -65,7 +93,7 @@ export function resolveWindowsTaskName(args: {
   serviceName?: string;
   userName?: string;
 } = {}): string {
-  const serviceName = args.serviceName ?? ADE_RUNTIME_SERVICE_NAME;
+  const serviceName = args.serviceName ?? resolveRuntimeServiceName();
   const userName = args.userName ?? resolveWindowsTaskUser();
   const identity = `${serviceName.trim().toLowerCase()}\0${userName.trim().toLowerCase()}`;
   return `${TASK_NAME} (${serviceChannelLabel(serviceName)}-${shortHash(identity)})`;
@@ -76,7 +104,7 @@ export function resolveWindowsServiceLauncherPath(args: {
   serviceName?: string;
 } = {}): string {
   const env = args.env ?? process.env;
-  const serviceName = args.serviceName ?? ADE_RUNTIME_SERVICE_NAME;
+  const serviceName = args.serviceName ?? resolveRuntimeServiceName(env);
   const adeDir = path.win32.resolve(env.ADE_HOME?.trim() || resolveMachineAdeDir(env));
   return path.win32.join(
     adeDir,
@@ -98,16 +126,7 @@ export function readWindowsServicePidRecord(args: {
   pidPath?: string;
 } = {}): WindowsServicePidRecord | null {
   const pidPath = args.pidPath ?? resolveWindowsServicePidPath(args);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(pidPath, "utf8")) as Partial<WindowsServicePidRecord>;
-    const supervisorPid = Number(parsed.supervisorPid);
-    const runtimePid = Number(parsed.runtimePid);
-    if (!Number.isInteger(supervisorPid) || supervisorPid <= 0) return null;
-    if (!Number.isInteger(runtimePid) || runtimePid <= 0) return null;
-    return { supervisorPid, runtimePid };
-  } catch {
-    return null;
-  }
+  return readWindowsSupervisorPidRecord(pidPath);
 }
 
 export function buildWindowsCreateTaskArgs(
@@ -191,27 +210,18 @@ export function buildWindowsStartLauncherArgs(launcherPath: string): string[] {
     "-File",
     launcherPath,
   ];
-  const startCommand = [
-    `$process = Start-Process -FilePath ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)}`,
-    `-ArgumentList @(${childArgs.map(powerShellSingleQuotedLiteral).join(", ")})`,
-    "-WindowStyle Hidden -PassThru",
-  ].join(" ");
-  const command = `${startCommand}; [Console]::Out.Write($process.Id)`;
-  return ["-NoProfile", "-NonInteractive", "-Command", command];
-}
-
-export function buildWindowsSupervisorQueryArgs(pid: number, launcherPath: string): string[] {
-  const launcherLiteral = powerShellSingleQuotedLiteral(launcherPath);
-  const query = [
-    "$ErrorActionPreference = 'Stop'",
-    `$process = Get-CimInstance Win32_Process -Filter ${powerShellSingleQuotedLiteral(`ProcessId = ${pid}`)} -ErrorAction SilentlyContinue`,
-    "if ($null -eq $process) { exit 3 }",
-    "$commandLine = [string]$process.CommandLine",
-    `$matchesLauncher = $commandLine.IndexOf(${launcherLiteral}, [StringComparison]::OrdinalIgnoreCase) -ge 0`,
-    "if (-not $matchesLauncher -or $process.Name -notmatch '^powershell(?:\\.exe)?$') { exit 4 }",
-    "[Console]::Out.Write($process.ProcessId)",
+  const childCommandLine = childArgs.map(cmdQuote).join(" ");
+  const command = [
+    "$startInfo = New-Object System.Diagnostics.ProcessStartInfo",
+    `$startInfo.FileName = ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)}`,
+    `$startInfo.Arguments = ${powerShellSingleQuotedLiteral(childCommandLine)}`,
+    "$startInfo.UseShellExecute = $true",
+    "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
+    "$process = [System.Diagnostics.Process]::Start($startInfo)",
+    "if ($null -eq $process) { throw 'Windows failed to start the ADE brain supervisor.' }",
+    "[Console]::Out.Write($process.Id)",
   ].join("; ");
-  return ["-NoProfile", "-NonInteractive", "-Command", query];
+  return ["-NoProfile", "-NonInteractive", "-Command", command];
 }
 
 export function isWindowsTaskStateRunning(output: string | Buffer | null | undefined): boolean {
@@ -283,32 +293,6 @@ function windowsLauncherCommand(launcherPath: string): string {
   });
 }
 
-function queryWindowsSupervisor(
-  run: ServiceManagerSpawnSync,
-  launcherPath: string,
-  pidPath: string,
-): { running: boolean; pid: number | null; error: string | null } {
-  const record = readWindowsServicePidRecord({ pidPath });
-  if (!record) return { running: false, pid: null, error: null };
-  const result = run(
-    WINDOWS_POWERSHELL_COMMAND,
-    buildWindowsSupervisorQueryArgs(record.supervisorPid, launcherPath),
-    { encoding: "utf8", windowsHide: true },
-  );
-  if (result.status === 0) {
-    return { running: true, pid: record.supervisorPid, error: null };
-  }
-  if (result.status === 3 || result.status === 4) {
-    try { fs.rmSync(pidPath, { force: true }); } catch { /* advisory record */ }
-    return { running: false, pid: null, error: null };
-  }
-  return {
-    running: false,
-    pid: null,
-    error: serviceManagerResultText(result) || "Unable to inspect the ADE startup process.",
-  };
-}
-
 function removeWindowsRunEntryIfPresent(
   run: ServiceManagerSpawnSync,
   valueName: string,
@@ -327,7 +311,7 @@ function removeWindowsRunEntryIfPresent(
     };
   }
 
-  const supervisor = queryWindowsSupervisor(run, launcherPath, pidPath);
+  const supervisor = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
   if (supervisor.error) return { ok: false, message: supervisor.error };
   if (supervisor.running && supervisor.pid) {
     const stop = run("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
@@ -335,7 +319,7 @@ function removeWindowsRunEntryIfPresent(
       windowsHide: true,
     });
     if (stop.status !== 0) {
-      const recheck = queryWindowsSupervisor(run, launcherPath, pidPath);
+      const recheck = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
       if (recheck.running || recheck.error) {
         return {
           ok: false,
@@ -361,11 +345,13 @@ function removeWindowsRunEntryIfPresent(
   return { ok: true, removed: installed || supervisor.running };
 }
 
-export function installWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
+export async function installWindowsService(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
-  const serviceName = deps.serviceName ?? ADE_RUNTIME_SERVICE_NAME;
   const serviceCommand = deps.command ?? resolveAdeServeCommand();
+  const serviceName = resolvedServiceName(deps, serviceCommand);
   let userName: string;
   try {
     userName = deps.userName ?? resolveWindowsTaskUser(env);
@@ -379,8 +365,10 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
     };
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
-  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
+  const runtimeEnv = { ...env, ...(serviceCommand.env ?? {}) };
+  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
+  const socketPath = resolveMachineAdeLayout(runtimeEnv, "win32").socketPath;
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
     fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath })}`, {
@@ -473,19 +461,44 @@ export function installWindowsService(deps: WindowsServiceManagerDeps = {}): Ser
       message: `ADE per-user startup entry was installed, but the background service failed to start: ${serviceManagerResultText(start) || "PowerShell launch failed."}`,
     };
   }
+  const readiness = await waitForWindowsRuntimeReadiness({
+    command: serviceCommand,
+    launcherPath,
+    pidPath,
+    socketPath,
+    spawnSync: run,
+    readPidRecord: deps.readPidRecord
+      ?? ((target) => readWindowsServicePidRecord({ pidPath: target })),
+    readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
+    timeoutMs: deps.handoverTimeoutMs ?? 15_000,
+    pollMs: deps.handoverPollMs ?? 100,
+    sleep: deps.sleep,
+  });
+  if (!readiness.ready) {
+    return {
+      ok: false,
+      serviceName,
+      action: "install",
+      path: taskName,
+      failureStep: "replacement_responsive",
+      message:
+        `ADE per-user startup entry was installed, but the channel brain did not become ready on ${socketPath}: `
+        + readiness.diagnostic,
+    };
+  }
   return {
     ok: true,
     serviceName,
     action: "install",
     path: taskName,
-    message: "ADE per-user startup entry installed and background service started.",
+    message: "ADE per-user startup entry installed and channel brain is ready.",
   };
 }
 
 export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
-  const serviceName = deps.serviceName ?? ADE_RUNTIME_SERVICE_NAME;
+  const serviceName = resolvedServiceName(deps);
   let userName: string;
   try {
     userName = deps.userName ?? resolveWindowsTaskUser(env);
@@ -554,11 +567,23 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
 }
 
 export function getWindowsServiceStatus(
-  deps: Pick<WindowsServiceManagerDeps, "env" | "launcherPath" | "pidPath" | "serviceName" | "spawnSync" | "userName"> = {},
+  deps: Pick<
+    WindowsServiceManagerDeps,
+    | "command"
+    | "env"
+    | "launcherPath"
+    | "pidPath"
+    | "readinessProbe"
+    | "readPidRecord"
+    | "serviceName"
+    | "spawnSync"
+    | "userName"
+  > = {},
 ): ServiceManagerStatusResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
-  const serviceName = deps.serviceName ?? ADE_RUNTIME_SERVICE_NAME;
+  const command = deps.command ?? resolveAdeServeCommand();
+  const serviceName = resolvedServiceName(deps, command);
   let userName: string;
   try {
     userName = deps.userName ?? resolveWindowsTaskUser(env);
@@ -574,7 +599,8 @@ export function getWindowsServiceStatus(
     };
   }
   const taskName = resolveWindowsTaskName({ serviceName, userName });
-  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env, serviceName });
+  const runtimeEnv = { ...env, ...(command.env ?? {}) };
+  const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   const taskResult = run(
     WINDOWS_POWERSHELL_COMMAND,
@@ -582,17 +608,15 @@ export function getWindowsServiceStatus(
     { encoding: "utf8", windowsHide: true },
   );
   if (taskResult.status === 0) {
-    const running = isWindowsTaskStateRunning(taskResult.stdout);
     return {
       ok: true,
       serviceName,
       action: "status",
       installed: true,
-      running,
+      running: false,
       path: taskName,
-      message: running
-        ? "ADE service scheduled task is running."
-        : "ADE service scheduled task is installed.",
+      message:
+        "A legacy ADE Scheduled Task is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
     };
   }
   const startupResult = run("reg.exe", buildWindowsRunKeyQueryArgs(taskName), {
@@ -600,18 +624,55 @@ export function getWindowsServiceStatus(
     windowsHide: true,
   });
   if (startupResult.status === 0) {
-    const supervisor = queryWindowsSupervisor(run, launcherPath, pidPath);
+    const readPidRecord = deps.readPidRecord
+      ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
+    const supervisor = queryWindowsSupervisor({
+      spawnSync: run,
+      launcherPath,
+      pidPath,
+      readPidRecord,
+    });
+    if (supervisor.error) {
+      return {
+        ok: false,
+        serviceName,
+        action: "status",
+        installed: true,
+        running: null,
+        path: taskName,
+        message: supervisor.error,
+      };
+    }
+    if (!supervisor.running || !supervisor.record) {
+      return {
+        ok: true,
+        serviceName,
+        action: "status",
+        installed: true,
+        running: false,
+        path: taskName,
+        message: supervisor.diagnostic
+          ?? "ADE per-user startup entry is installed, but the supervisor is not running.",
+      };
+    }
+    const socketPath = resolveMachineAdeLayout(runtimeEnv, "win32").socketPath;
+    const readiness = (deps.readinessProbe ?? defaultWindowsRuntimeReadiness)({
+      command,
+      launcherPath,
+      pidRecord: supervisor.record,
+      socketPath,
+      spawnSync: run,
+    });
     return {
-      ok: supervisor.error == null,
+      ok: true,
       serviceName,
       action: "status",
       installed: true,
-      running: supervisor.error ? null : supervisor.running,
+      running: readiness.ready,
       path: taskName,
-      message: supervisor.error
-        ?? (supervisor.running
-          ? "ADE per-user background service is running."
-          : "ADE per-user startup entry is installed, but the background service is not running."),
+      message: readiness.ready
+        ? `ADE per-user channel brain is ready on ${socketPath}.`
+        : readiness.diagnostic,
     };
   }
   if (taskResult.status !== TASK_NOT_FOUND_EXIT_CODE) {

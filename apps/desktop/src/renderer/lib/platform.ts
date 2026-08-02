@@ -25,7 +25,16 @@ export function supportsNativeNotchPlatform(platformValue = getPlatformValue()):
   return isMacPlatform(platformValue);
 }
 
+export function supportsIosSimulatorPlatform(platformValue = getPlatformValue()): boolean {
+  return isMacPlatform(platformValue);
+}
+
 export const isMac = isMacPlatform();
 export const supportsNativeNotch = supportsNativeNotchPlatform();
-export const revealLabel = isMac ? "Reveal in Finder" : "Reveal in File Explorer";
+const rendererPlatform = rendererPlatformAttribute();
+export const revealLabel = isMac
+  ? "Reveal in Finder"
+  : rendererPlatform === "win32"
+    ? "Reveal in File Explorer"
+    : "Reveal in file manager";
 export const modifierKeyLabel = isMac ? "Cmd" : "Ctrl";

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   isMacPlatform,
   rendererPlatformAttribute,
+  supportsIosSimulatorPlatform,
   supportsNativeNotchPlatform,
 } from "./platform";
 
@@ -23,5 +24,11 @@ describe("renderer platform helpers", () => {
     expect(supportsNativeNotchPlatform("MacIntel")).toBe(true);
     expect(supportsNativeNotchPlatform("Win32")).toBe(false);
     expect(supportsNativeNotchPlatform("Linux x86_64")).toBe(false);
+  });
+
+  it("limits the iOS simulator capability to macOS", () => {
+    expect(supportsIosSimulatorPlatform("MacIntel")).toBe(true);
+    expect(supportsIosSimulatorPlatform("Win32")).toBe(false);
+    expect(supportsIosSimulatorPlatform("Linux x86_64")).toBe(false);
   });
 });

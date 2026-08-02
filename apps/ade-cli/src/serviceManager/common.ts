@@ -33,7 +33,7 @@ export type AdeServiceCommand = {
   env?: Record<string, string>;
 };
 
-function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env): string {
+export function resolveRuntimeServiceName(env: NodeJS.ProcessEnv = process.env): string {
   const explicit = env.ADE_RUNTIME_SERVICE_NAME?.trim();
   if (explicit) return explicit;
   const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
@@ -399,61 +399,6 @@ export function renderWindowsCommand(command: AdeServiceCommand): string {
   return [command.command, ...command.args].map(cmdQuote).join(" ");
 }
 
-function powerShellSingleQuotedLiteral(value: string): string {
-  if (value.includes("\0")) {
-    throw new Error("Windows service command values cannot contain NUL bytes.");
-  }
-  return `'${value.replace(/'/g, "''")}'`;
-}
-
-export function renderWindowsServiceLauncher(
-  command: AdeServiceCommand,
-  options: { pidPath?: string } = {},
-): string {
-  const environment = Object.entries(command.env ?? {}).sort(([left], [right]) =>
-    left.localeCompare(right),
-  );
-  const environmentLines = environment.map(([key, value]) => {
-    if (!key || key.includes("=") || key.includes("\0")) {
-      throw new Error(`Invalid Windows service environment variable name: ${JSON.stringify(key)}.`);
-    }
-    return `[System.Environment]::SetEnvironmentVariable(${powerShellSingleQuotedLiteral(key)}, ${powerShellSingleQuotedLiteral(value)}, 'Process')`;
-  });
-  const commandLine = command.args.map(cmdQuote).join(" ");
-  const processLines = options.pidPath
-    ? [
-        "$process = [System.Diagnostics.Process]::Start($startInfo)",
-        "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
-        "$pidRecord = '{\"supervisorPid\":' + $PID.ToString([Globalization.CultureInfo]::InvariantCulture) + ',\"runtimePid\":' + $process.Id.ToString([Globalization.CultureInfo]::InvariantCulture) + '}'",
-        `[IO.File]::WriteAllText(${powerShellSingleQuotedLiteral(options.pidPath)}, $pidRecord, [Text.Encoding]::ASCII)`,
-        "try {",
-        "  $process.WaitForExit()",
-        "  $exitCode = $process.ExitCode",
-        "} finally {",
-        `  Remove-Item -LiteralPath ${powerShellSingleQuotedLiteral(options.pidPath)} -Force -ErrorAction SilentlyContinue`,
-        "}",
-        "exit $exitCode",
-      ]
-    : [
-        "$process = [System.Diagnostics.Process]::Start($startInfo)",
-        "if ($null -eq $process) { throw 'Windows failed to start the ADE brain process.' }",
-        "$process.WaitForExit()",
-        "exit $process.ExitCode",
-      ];
-
-  return [
-    "$ErrorActionPreference = 'Stop'",
-    ...environmentLines,
-    "$startInfo = New-Object System.Diagnostics.ProcessStartInfo",
-    `$startInfo.FileName = ${powerShellSingleQuotedLiteral(command.command)}`,
-    `$startInfo.Arguments = ${powerShellSingleQuotedLiteral(commandLine)}`,
-    "$startInfo.UseShellExecute = $false",
-    "$startInfo.CreateNoWindow = $true",
-    "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
-    ...processLines,
-    "",
-  ].join("\r\n");
-}
 
 function streamToText(value: string | Buffer | null | undefined): string {
   if (typeof value === "string") return value.trim();
