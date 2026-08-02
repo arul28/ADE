@@ -98,8 +98,8 @@ Do these to move from “runs on Windows” to “first-class for Windows users�
    the public-release and installed-update-proof gates are both enabled. Only
    then may a maintainer enable public release and website flags.
 
-The complete maintainer procedure is
-[Windows signed release and publication](../playbooks/windows-signed-release.md).
+The cumulative release-proof layer adds the complete Windows signed-release
+and publication procedure before this stack can be considered ready.
 
 ## Suggested validation commands (from repo root)
 
