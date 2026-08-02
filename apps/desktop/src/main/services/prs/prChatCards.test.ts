@@ -83,9 +83,10 @@ function check(name: string, overrides: Partial<PrCheck> = {}): PrCheck {
     detailsUrl: null,
     startedAt: null,
     completedAt: null,
-    // Unattributed by default: that is what a preview/review bot looks like to
-    // the card, and it must never land in the CI group.
-    appSlug: null,
+    // Default to a real CI producer. An ABSENT slug is deliberately treated as
+    // CI-eligible (legacy rows carry no slug at all), so a fixture that means
+    // "preview/review bot" has to say which bot — exactly as GitHub does.
+    appSlug: "github-actions",
     ...overrides,
   };
 }
@@ -122,7 +123,7 @@ describe("PR chat cards", () => {
   });
 
   it("builds one live CI episode keyed by head and attempt", () => {
-    const card = buildPrCiCard({ pr: pr(), runs: [run()], checks: [check("external")] });
+    const card = buildPrCiCard({ pr: pr(), runs: [run()], checks: [check("external", { appSlug: "vercel" })] });
     expect(card).toMatchObject({
       cardId: "pr-ci:pr-7:abc123:2",
       variant: "pr_ci",
@@ -142,7 +143,7 @@ describe("PR chat cards", () => {
     const card = buildPrCiCard({
       pr: pr({ checksStatus: "not_run" }),
       runs: [],
-      checks: [check("Vercel"), check("CodeRabbit"), check("coverage-bot")],
+      checks: [check("Vercel", { appSlug: "vercel" }), check("CodeRabbit", { appSlug: "coderabbitai" }), check("coverage-bot", { appSlug: "mintlify" })],
     });
     expect(card.state).toBe("terminal");
     expect(card.title).toBe("CI has not run");
@@ -160,7 +161,7 @@ describe("PR chat cards", () => {
     const card = buildPrCiCard({
       pr: pr({ checksStatus: "passing" }),
       runs: [],
-      checks: [check("buildkite/ci", { id: null, appSlug: "commit_status" }), check("Vercel")],
+      checks: [check("buildkite/ci", { id: null, appSlug: "commit_status" }), check("Vercel", { appSlug: "vercel" })],
     });
     expect(card.progress).toEqual({ passed: 1, failed: 0, running: 0, queued: 0 });
     expect(card.metrics).toContainEqual({ label: "other checks", value: "1", tone: "neutral" });
@@ -224,7 +225,7 @@ describe("PR chat cards", () => {
         checksReason: "3 checks reported, none from a CI provider. CI has not run on this commit.",
       }),
       runs: [],
-      checks: [check("Vercel"), check("CodeRabbit")],
+      checks: [check("Vercel", { appSlug: "vercel" }), check("CodeRabbit", { appSlug: "coderabbitai" })],
     });
     expect(notRun.title).toBe("CI has not run");
     expect(notRun.subtitle).toContain("none from a CI provider");

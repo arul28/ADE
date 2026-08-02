@@ -633,6 +633,36 @@ describe("Drawer PR pill", () => {
     expect(frame).toContain("[#168 ≋2/3 ·4/6]");
   });
 
+  // ADE-135: the counts are producer-blind, so a PR whose only checks are
+  // preview/review bots arrives here as N/N. The pill must not spend a number
+  // on that at all — "no ci" is the fact.
+  it("renders no-ci in the PR pill when the rollup says nothing verified the commit", () => {
+    const frame = stripAnsi(render(
+      <Drawer
+        lanes={[lane("lane-1", "opt prs tab", "ade/opt-prs-tab", "2026-05-12T11:55:00.000Z")]}
+        sessions={[]}
+        activeLaneId={null}
+        activeSessionId={null}
+        browsingLaneId={null}
+        selectedLaneIndex={0}
+        selectedChatIndex={-1}
+        panelHeight={20}
+        prByLaneId={{
+          "lane-1": {
+            number: 988,
+            state: "open",
+            checksPassed: 3,
+            checksTotal: 3,
+            checksStatus: "not_run",
+          },
+        }}
+      />,
+    ).lastFrame() ?? "");
+
+    expect(frame).toContain("[#988 ·no ci]");
+    expect(frame).not.toContain("3/3");
+  });
+
   it("does not render closed or merged PR pills", () => {
     for (const state of ["closed", "merged"] as const) {
       const frame = stripAnsi(render(

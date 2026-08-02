@@ -442,6 +442,7 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
       <PrChecksCard
         fill
         missingRequired={pr.checksMissingRequired}
+        checksStatus={pr.checksStatus}
         checks={checks}
         actionRuns={actionRuns}
         onSelectCheck={onSelectCheck}

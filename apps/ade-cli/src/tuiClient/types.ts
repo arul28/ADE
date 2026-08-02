@@ -25,6 +25,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../desktop/src/shared/types/externalSessions";
 import type { LaneSummary } from "../../../desktop/src/shared/types/lanes";
+import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import type { UsageProviderSource, UsageProviderState } from "../../../desktop/src/shared/types/usage";
 import type { BufferedEvent } from "../eventBuffer";
 import type { HelpGroup } from "./helpIndex";
@@ -170,6 +171,8 @@ export type ChatInfoPrSummary = {
   state: "open" | "merged" | "closed";
   checksPassed: number;
   checksTotal: number;
+  /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
+  checksStatus?: PrChecksStatus;
 };
 
 export type ChatInfoSnapshot = {
@@ -376,6 +379,8 @@ export type RightPaneContent =
         checksTotal: number;
         checksPending: number;
         checksFailed: number;
+        /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
+        checksStatus?: PrChecksStatus;
       } | null;
       chats: {
         active: number;

@@ -260,4 +260,22 @@ describe("buildDefaultCommitMessage", () => {
     expect(result.title).toBe("");
     expect(result.body).toBe("");
   });
+
+  it("does not claim all checks passed when nothing verified the commit", () => {
+    // ADE-135: summarizeChecks is producer-blind, so three third-party
+    // successes reported passing: 3 and this row said "All 3 checks passed" —
+    // on the surface a reader trusts most.
+    const items = buildMergeChecklist({
+      pr: makePr({ checksStatus: "not_run" }),
+      status: null,
+      checks: [
+        { name: "CodeRabbit", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "coderabbitai" },
+        { name: "Vercel", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "vercel" },
+      ],
+      reviews: [],
+    });
+    const checksRow = items.find((item) => item.id === "checks");
+    expect(checksRow?.label).toBe("No CI has run on this commit");
+    expect(checksRow?.state).not.toBe("pass");
+  });
 });

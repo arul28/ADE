@@ -69,15 +69,16 @@ CLI and agent entry points:
 | File | Responsibility |
 |------|---------------|
 | `apps/ade-cli/src/cli.ts` | User-facing `ade prs` commands and text formatters. `ade prs create --text` prints both the GitHub PR URL and the ADE HTTPS PR URL when repo owner/name and PR number are available. |
-| `apps/ade-cli/src/adeRpcServer.ts` | Private action/RPC wrapper for PR tools. `create_pr_from_lane` returns `{ pr, githubUrl, adeUrl }` so agents can include both links in closeout. |
+| `apps/ade-cli/src/adeRpcServer.ts` | Private action/RPC wrapper for PR tools. `create_pr_from_lane` returns `{ pr, githubUrl, adeUrl }` so agents can include both links in closeout. Its `summarizePrChecks` delegates to the shared `rollupPrChecks` rather than carrying its own pass/fail rule, so the agent-facing `overall` is the full `PrChecksStatus` (including `not_run`) and a PR with zero checks no longer reads green. |
 | `apps/desktop/src/main/services/ai/tools/workflowTools.ts`, `ctoOperatorTools.ts` | Managed chat/CTO PR creation tools return both `githubUrl` and `adeUrl` alongside the PR object. |
 
 Service files (`apps/desktop/src/main/services/prs/`):
 
 | File | Responsibility |
 |------|---------------|
-| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. `reconcileOnFocus({ force? })` is the catch-up safety net for the pollerless brain (in-memory 90 s throttle + single-flight, bounded merged-heal, 30-min `state:"all"` closed-sweep) and `syncLanePr(laneId)` is the manual per-badge sync; both heal merged/unmapped lane PRs and emit a `pr-reconcile` event. See [Keeping PR status fresh](#keeping-pr-status-fresh). |
+| `prService.ts` | PR CRUD, GitHub sync, merge context, draft descriptions, check/review/comment hydration, cached detail snapshots (`listSnapshots`), commit snapshots (`getCommits`), integration proposals, merge-into-existing-lane adoption, merge bypass, post-merge cleanup, standalone PR branch cleanup (`cleanupBranch`), deployment listing, review-thread reply/resolve/react mutations for the timeline, the aggregate `getMobileSnapshot` that powers the iOS PRs tab, and `listOpenPullRequests` — a paginated `/repos/{owner}/{name}/pulls?state=open` fetch returning `BranchPullRequest[]` for the lane-creation branch picker. `getForLane(laneId)` resolves through `getDisplayCandidateForCurrentLaneBranch`: it returns the best PR whose head branch matches the lane's current branch ref, considering both mapped `pull_requests` rows and unmapped `github_pr_projections` rows (folded in as synthetic `gh:owner/repo#num` summaries with `unmapped: true`), ranked open/draft → merged → closed then most-recently-updated / created / highest PR number, so a freshly merged PR still shows in lane-scoped UI instead of disappearing the moment GitHub flips the state — and a lane whose PR was created outside ADE still badges from the projection alone. A primary lane whose branch equals its base is excluded. `listPrsByLane()` walks `laneService.list` and applies the same candidate selection over one shared read of mapped rows + projection rows. `getGitHubSnapshot` fetches repo PRs, backfills same-repo lane PR rows by branch, and performs a capped per-branch fallback (`head=<owner>:<branch>`) for active lane branches missing from the repo snapshot window so old merged/closed externally-created PRs can still badge lanes. On PR open, `publishLinearPrCardsForLane` combines the lane's own Linear references with `collectLinearPrIssueReferencesForLaneSessions(laneId)` — issues attached only to a chat/CLI session in the lane (via `laneService.listLinearIssuesForLaneSessions`, authoritative for sessions whose lane mirror never landed) — deduped via `dedupeLinearPrIssueReferences`, so a session-only issue still gets a PR attachment. When the optional live-status round-trip is enabled (`getLinearLiveStatusService`, gated by `ADE_LINEAR_LIVE_STATUS_ROUNDTRIP=1`) it also posts a PR-link comment back to each linked issue. See [Linear integration](../linear-integration/README.md#session-scoped-issue-attachment-and-cli-context-injection). `computeStatus` / `getStatusByGithub` fetch the authoritative GitHub merge box over GraphQL (`mergeStateStatus`, `reviewDecision`, required/approving review counts, `viewerPermission` for bypass) and fold it into `PrStatus`; `getStatusByGithub` does the same for unmapped GitHub-tab PRs keyed only on `owner/repo#num` coords. `computeStatus` is also the single derivation of `checksStatus` / `checksReason` / `checksMissingRequired`: it normalizes check runs and legacy combined statuses, resolves required contexts through `requiredChecks.ts`, and calls `rollupChecks` — the webhook path re-enters here rather than trusting the delivered payload. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). `land` takes an editable commit title/body (`commit_title`/`commit_message`, `--subject`/`--body` on the admin retry; ignored for `rebase`) and an `expectedHeadSha` stale-head guard, and `updateBranch` brings a behind branch up to date via GitHub's `update-branch` API (`merge` strategy) or ADE's local lane rebase + force-with-lease push (`rebase` strategy, conflict-aware). Review-thread reply/resolve/react mutations work on unmapped GitHub-tab PRs through synthetic `gh:owner/repo#num` ids (`parseSyntheticGithubPrId` resolves the repo; `assertThreadBelongsToPr` still verifies thread ownership). Commit rows carry an avatar URL — the linked GitHub avatar when present, else a Gravatar identicon derived from the commit-author email. `reconcileOnFocus({ force? })` is the catch-up safety net for the pollerless brain (in-memory 90 s throttle + single-flight, bounded merged-heal, 30-min `state:"all"` closed-sweep) and `syncLanePr(laneId)` is the manual per-badge sync; both heal merged/unmapped lane PRs and emit a `pr-reconcile` event. See [Keeping PR status fresh](#keeping-pr-status-fresh). |
 | `prService.test.ts` | Feature-level service coverage, including mobile snapshot aggregation, paged GitHub history and exact state totals, webhook invalidation, unmapped mobile detail, and integration proposal behavior. |
+| `requiredChecks.ts` | Three-tier resolver for a base branch's required status-check contexts, cached per `(repo, base branch)` behind a 5-minute TTL. Tier 1 is `/repos/{owner}/{repo}/rules/branches/{branch}` (repository rulesets) — read access is enough, so it answers for every credential source ADE supports. Tier 2 is `/branches/{branch}/protection` (classic protection), admin-only and therefore a 403 for most contributors, but the only source for repos that never migrated to rulesets. Tier 3 is `mergeStateStatus === "blocked"`, already fetched for the merge box: it cannot name contexts and conflates missing checks with review-required and out-of-date branches, so it is corroboration only — enough to strengthen a not-run finding, never enough to contradict a genuine pass. When all three come up empty the result is `null` contexts meaning **unknown**, never "none required". See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
 | `prAsync.test.ts` | Shared bounded-concurrency and async helper coverage, plus the `prMergeAutoSettlementService` regression suite. |
 | `pullRequestRowCleanup.ts` | The only writer of the detach columns. `detachPullRequestRowsForLane` (lane delete) and `detachPullRequestRowsByIds` (branch switch / rename-with-branch-change) stamp `detached_at` + the frozen lane identity and provenance, lift `commit_count` / `changed_files` off the snapshot, null the bulky snapshot JSON columns, and drop lane-scoped group membership. `countLaneProvenance` must run *before* the caller deletes the lane's sessions / artifacts / checkpoints. `deletePullRequestRowsByIds` remains for the genuinely destructive paths. See [Detached PR rows](#detached-pr-rows). |
 | `prPollingService.ts` | Webhook-first PR freshness plus the direct-GitHub safety net. `reconcilePrs(prIds)` coalesces webhook-linked ids and refreshes only those rows immediately. A healthy relay suppresses hot polling and reduces broad refreshes to a 15-minute safety sweep; an unhealthy relay uses the configurable 60 s fallback (clamped to 5 s–5 min) and user-driven hot windows of 15 s for the first minute, then 30 s until the three-minute cap. Empty-cache discovery runs at most every 30 minutes with a healthy relay or 10 minutes without one. Before every network refresh, the poller honors credential cooldown/reset state and preserves the final 500 core/GraphQL requests for foreground actions. It writes `last_polled_at` per PR for delta polling. The ADE daemon owns an instance (created + started + disposed in `apps/ade-cli/src/bootstrap.ts`) for runtime-bound windows; the desktop main process owns the local-bound instance. |
@@ -137,15 +138,16 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `shared/PrDetailMergeRail.tsx` | Merge readiness panel. Hosts the GitHub-style `PrMergeChecklist` (one row per requirement, with the inline "Update branch" split button on the behind-base row), the primary "Merge" button that opens the portaled `PrMergeDialog`, the branch-cleanup affordance, and the inline lane-management entry. Owns the per-PR live-status re-poll loop that keeps `mergeStateStatus` fresh and clears the "Checking mergeability…" state. Calls helpers from `prMergeRailUtils.ts` to build the checklist and derive merge-method labels. Once merged, the rail's banner carries `PrShippedSummary`: merger + merge method + merge time, then commit/file counts and how long the PR was open, then the frozen `was: <lane>` provenance line. Every line is independently omitted, so a PR merged before ADE recorded this shows less rather than showing blanks. |
 | `shared/PrMergeDialog.tsx` | Portaled merge dialog (in `LaneDialogShell`, so its method dropdown is never clipped by the rail). Method picker (`squash` / `merge` / `rebase`, remembered default), editable commit title/body seeded from `buildDefaultCommitMessage` with a "reset to GitHub default" affordance (hidden for `rebase`), collapsible command-line instructions, a stale-head guard that re-seeds defaults if the PR head advances while open, and an admin "Override & merge" path (two-click arm/confirm) shown only when the viewer `canBypass` and the merge box is `blocked`. Returns `{ method, commitTitle, commitBody, bypassRules, expectedHeadSha }`. |
 | `shared/PrMergeChecklist.tsx` | GitHub-parity requirement checklist for the merge surface: a header pill (`Checking mergeability…` while `mergeabilityComputing`, `Draft`, `Merging is blocked`, or `Ready to merge`) over a row per requirement (conflicts, behind base, checks, review). Renders approving-review avatars on the review row and the inline update-branch split button (merge commit / rebase) on the behind row. |
-| `shared/PrDetailRightMetadataRail.tsx` | Right-rail stack for reviewers/labels/participants plus the checks summary. Review actions are folded into the reviewer section; the checks section grows to consume remaining height instead of leaving a dead lower gutter. Also owns the "Request AI review" and review-submit dialogs. |
+| `shared/PrDetailRightMetadataRail.tsx` | Right-rail stack for reviewers/labels/participants plus the checks summary. It feeds `shared/PrChecksCard.tsx`, which renders required contexts from `checksMissingRequired` that never reported as dimmed ghost rows above the reported checks, and gates its own header on `checksStatus` so a producer-blind row count cannot claim a pass. Review actions are folded into the reviewer section; the checks section grows to consume remaining height instead of leaving a dead lower gutter. Also owns the "Request AI review" and review-submit dialogs. |
 | `shared/PrCommitRail.tsx` | Commit list rail. Reused inside both the left timeline rail (pane layout) and standalone surfaces (rail layout); resolves commit selection via `activeSha` + `onSelectCommit`. |
 | `shared/PrFilesChangedCard.tsx` | Capped lower-left summary of changed files and additions/deletions; opens the Files tab without competing with the growing commit pane. |
 | `shared/PrCheckLogDrawer.tsx` | On-demand failing-step log surface shared by the checks workspace: bounded excerpt, failure headline, copy/full-log, job-scoped rerun, and Fix in chat. It never fetches until opened. |
 | `shared/prListGrouping.ts` | Pure day/week grouping for the terminal buckets. `buildPrListRows(items, { grouped })` interleaves `PrListGroupHeader` rows into an already-sorted, newest-first item array without reordering it; `prListGroupLabel` names the period (`Today`, `Yesterday`, `This week`, `Last week`, a Monday-anchored `Jul 21 – 27` range within the same year, else `July 2026`); `prListGroupTimestamp` files a row under `mergedAt` → `updatedAt` → `createdAt`; `prListHeaderIndices` feeds sticky-header pinning; `formatPrListGroupDiff` renders the per-period `+1.2k −380` aggregate. Open PRs are deliberately ungrouped — a work queue reads better flat. iOS mirrors the same rules in `PrHelpers.swift`. |
 | `shared/prCheckList.tsx` | Pure compact check rendering and live-duration math shared by PR summary surfaces. |
-| `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildMergeChecklist` (the per-requirement rows driven by `mergeStateStatus` + `reviewDecision`), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge dialog, checklist, metadata rail, and the timeline composer plumbing. |
+| `shared/prMergeRailUtils.ts` | Shared merge-rail helpers: `mergeMethodLabel` / `mergeMethodShortLabel`, `canAttemptMerge` (prefers `status.mergeStateStatus`, falls back to the legacy boolean), `buildMergeChecklist` (the per-requirement rows driven by `mergeStateStatus` + `reviewDecision`), `buildDefaultCommitMessage` (GitHub-style default merge/squash commit title + body), `deriveMergeBlockers`, `buildMergeCommandLineInstructions`, `deriveParticipants`, `reviewStateForLogin`, `isBotLogin`. Consumed by the merge dialog, checklist, metadata rail, and the timeline composer plumbing. `buildMergeChecklist` and `deriveMergeBlockers` both take the verdict from the canonical rollup (`status.checksStatus ?? pr.checksStatus`) rather than from `summarizeChecks`' row counts, which are producer-blind; a `not_run` rollup becomes a neutral "No CI has run on this commit" row instead of "All 3 checks passed". |
 | `shared/prUnifiedChecks.ts` | Reconciler between GitHub `PrCheck` rows and `PrActionRun.jobs`. Produces `UnifiedCheckItem[]` so the Checks sub-tab can display Actions jobs and named checks in a single list with steps + duration + details URL. |
 | `apps/desktop/src/shared/prPipelineState.ts` | Canonical status/conclusion → pipeline-state mapping and worst-state ranking used by service graphing, chat cards, and renderer rollups so cancelled/unknown/running jobs cannot be classified differently by surface. |
+| `apps/desktop/src/shared/prChecksRollup.ts` | The canonical checks rollup — the single answer to "was this commit verified?". Two entry points: `rollupChecks(input)` for the service, which sees check runs, legacy commit statuses and required contexts separately; and `rollupPrChecks(rows)` for surfaces that only hold a flattened `PrCheck[]` (the ADE CLI, the `ade code` TUI, chat toolbars). State mapping delegates to `prPipelineState`, so the rollup can never disagree with the per-job rows rendered beneath it. Also exports `NON_CI_PRODUCER_APP_SLUGS`' predicates (`isCiProducerAppSlug`, `isCiProducerCheck`), the `COMMIT_STATUS_APP_SLUG` sentinel, `NO_CI_REASON`, and `CI_PENDING_GRACE_MS`. See [Checks rollup](#checks-rollup-what-counts-as-a-pass). |
 | `shared/PrCommentComposer.tsx` | Inline comment composer used at the bottom of the timeline view; thin wrapper around `ChatComposerShell` with Enter-to-submit semantics. |
 | `shared/PrReviewSubmitModal.tsx` | Modal that captures the optional review body and `Approve` / `Request changes` / `Comment` event before submitting through `ade.prs.submitReview`. |
 | `shared/PrRequestAiReviewDialog.tsx` | "Request AI review" launcher rendered from the metadata rail; opens `LaneDialogShell`, picks a default Codex model + reasoning, and dispatches `startReviewRun`. |
@@ -203,7 +205,9 @@ type PrSummary = {
   state: PrState;          // open | closed | merged
   baseBranch: string;
   headBranch: string;
-  checksStatus: PrChecksStatus;    // passing | failing | pending | unknown
+  checksStatus: PrChecksStatus;    // passing | failing | pending | none | not_run
+  checksReason?: string | null;         // one sentence explaining a non-obvious rollup
+  checksMissingRequired?: string[] | null; // required contexts that never reported
   reviewStatus: PrReviewStatus;    // approved | changes_requested | review_required | ...
   labels: PrLabel[];
   isBot: boolean;
@@ -222,6 +226,105 @@ type PrSummary = {
 is the synthetic `gh:owner/repo#num` coordinate (`syntheticGithubPrId`), and
 consumers that need a DB-backed PR (chat live-refresh, `getChecks`) skip
 unmapped summaries. See [Lane PR resolution](#lane-pr-resolution-mapped--unmapped).
+
+## Checks rollup (what counts as a pass)
+
+`apps/desktop/src/shared/prChecksRollup.ts` is the only place that decides
+whether a commit was verified. Every surface — PR rows, Lanes, the workspace
+graph, PR detail, the Work-chat `pr_ci` card, iOS, and the `ade code` TUI —
+reads that verdict instead of counting rows itself.
+
+The rollup answers **"was this code verified?"**, not "did anything succeed?".
+Counting successes is producer-blind: three third-party apps can each report
+`success` — a review bot that bailed while rate-limited, a preview deploy that
+was cancelled by an ignored-build step, a comment bot — while GitHub Actions
+registers no check suite at all, and a row count reads that as a green pipeline.
+
+Three rules govern a green:
+
+1. **State mapping goes through `prPipelineState`.** `skipped` and `neutral`
+   cannot masquerade as success, and the rollup cannot classify a job
+   differently from the per-job row rendered beneath it.
+2. **A CI producer must have succeeded.** Producers are identified by a
+   **denylist** (`NON_CI_PRODUCER_APP_SLUGS`: `coderabbitai`, `vercel`,
+   `netlify`, `mintlify`, `greptile-apps`, `railway-app`, `graphite-app`,
+   `cursor`, `sonarcloud`, `renovate`, `dependabot`, and friends) rather than an
+   allowlist. An Actions-only allowlist was wrong in the dangerous direction:
+   CircleCI, Buildkite, Azure Pipelines, Semaphore and Travis all report through
+   the **Checks API** under their own slugs, so an allowlist marked those repos
+   permanently unverified, silently and forever. The denylist's residual — an
+   unrecognised bot can still carry a green — is caught by rule 3 wherever
+   branch protection is readable.
+3. **Required contexts that never reported hold the rollup back.** A satisfied
+   branch-protection gate (`allRequiredPassed`) overrides the producer guess,
+   because a repo whose CI is an app ADE does not recognise is still verified
+   when its own merge gate is green. That override is evaluated **after** the
+   in-flight check, so it can never claim "passed" while a job is still running.
+
+Precedence inside `rollupChecks`: a real failure outranks everything (the
+actionable fact is the red job, not the absent one) → anything in flight →
+missing required contexts → satisfied required gate → any CI pass → CI producers
+that all skipped → non-CI producers only, or a `blocked` merge state → nothing
+at all.
+
+`PrCheck.appSlug` carries the producing GitHub App's slug. Legacy combined-status
+contexts get the literal `commit_status`, and those **are** CI — Jenkins,
+Buildkite and CircleCI report that way. An absent slug is treated as CI by
+`isCiProducerCheck` (the flattened-row path) because persisted rows, older hosts
+and TUI action payloads predate the field; failing those closed would report "CI
+has not run" for every legacy payload whose CI genuinely passed. The
+payload-level predicate `isCiProducerAppSlug` is stricter and refuses to vouch
+for an unattributed run.
+
+### `not_run` vs `none`
+
+`PrChecksStatus` has five values. `none` means nothing was observed **and**
+nothing led ADE to expect anything — a repo without CI stays quiet. `not_run`
+means something was expected and nothing verified the commit; it is the only one
+of the two that is a finding. It reads muted everywhere — never the danger colour: a hollow dashed ring on desktop PR rows and PR detail and on iOS, and a muted dot or label on Lanes, the workspace graph, the `pr_ci` chat card, and the TUI.
+the danger colour — absence is not failure) on desktop PR rows, Lanes, the
+workspace graph, PR detail, the Work-chat `pr_ci` card, iOS, and the TUI. The
+merge checklist and `deriveMergeBlockers` surface it as a neutral "No CI has run
+on this commit" row rather than a pass.
+
+### Grace window
+
+`CI_PENDING_GRACE_MS` (5 minutes) holds the rollup at `pending` right after a
+push, so a commit whose suite has not registered yet does not flash a spurious
+"CI has not run". The clock is the earliest check `started_at` / status `created_at` whenever anything reported, and falls back to the PR's `updated_at` only when nothing has
+including the comments posted by the very bots whose presence is the finding —
+which reset a months-old unverified commit back to "hasn't run *yet*". A check's
+own start time cannot be moved by a comment.
+
+### Persistence and freshness
+
+`pull_requests` (a `PHONE_CRITICAL` cr-sqlite CRR table) carries two columns for
+the rollup:
+
+- `checks_reason` — one generated sentence explaining a non-obvious rollup
+  ("3 checks reported, none from a CI provider. CI has not run on this commit.").
+  Null when the state speaks for itself. Surfaces render this instead of
+  re-deriving an explanation. On `PrSummary` the field is both optional *and*
+  nullable, and the difference is load-bearing at the upsert: absent means "leave
+  the stored value alone" (partial summaries flow through `upsertRow` constantly),
+  null means "clear it".
+- `checks_missing_required` — JSON array of required contexts that never
+  reported, in GitHub's declared order, rendered as dimmed ghost rows in the PR
+  detail check list.
+
+Both ALTERs go through `crrAwareDb`, which wraps them in `crsql_begin_alter` /
+`crsql_commit_alter`, so the columns replicate to phones and other machines.
+A change in the reason string or the missing-context list counts as a material
+change for change detection even when `checksStatus` itself holds, because both
+drive rendered content.
+
+Both ingestion paths converge on one derivation: `ingestGithubWebhook` uses the
+webhook payload only to resolve *which* PR changed, then hands those ids to the
+poller (`onPrStateIngested` → `reconcilePrs`), which re-derives through
+`computeStatus` — the same function the scheduled poll calls.
+fetch preserves the previous rollup rather than persisting a false `not_run` —
+the best-effort fetch returns `[]` on a 403, which is indistinguishable from
+"this commit has no checks".
 
 ## IPC surface
 
@@ -931,7 +1034,13 @@ unresolved-thread count. Every card carries a PR `navTarget`; CI targets include
 `detailTab: "checks"` on desktop, iOS, and TUI/deeplink fallback.
 
 CI detail ranks failed → running → queued → unknown → skipped → passed and
-shows at most three rows, followed by `+N more`. A rejected GitHub runs/checks
+shows at most three rows, followed by `+N more`. Rows are split into a **CI**
+group and an **Other** group using the same `isCiProducerCheck` predicate as the
+rollup, so preview deploys and review bots read as context rather than as the
+headline; the non-CI group is capped at two rows. Required contexts that never
+reported are named inline (up to three, then `+N more`), and the card's headline
+is the canonical `checksStatus` — it never says "CI passed" off a row count. A
+rejected GitHub runs/checks
 request is kept distinct from a genuine empty result. If one source still
 returns jobs, the card renders that real detail. If both leave the card empty,
 the payload carries `degradedReason`, no false status metric, and a Retry

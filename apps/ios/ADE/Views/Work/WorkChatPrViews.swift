@@ -59,7 +59,7 @@ struct WorkChatPrActivePopup: View {
   private var accessibilityText: String {
     var parts = [badge.label, lanePrStateLabel(badge.state)]
     if badge.checksStatus == "not_run" {
-      parts.append(badge.checksReason ?? "No CI has run on this commit.")
+      parts.append(badge.checksReason ?? noCIReasonText)
     } else if let checksStatus = badge.checksStatus, !checksStatus.isEmpty {
       parts.append("checks \(checksStatus)")
     }
@@ -129,13 +129,20 @@ struct WorkChatPrDetailsSheet: View {
     (tag?.githubUrl ?? pr?.githubUrl ?? summary?.githubUrl ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
   }
 
-  private var checksStatus: String? {
-    snapshot?.status?.checksStatus ?? pr?.checksStatus ?? summary?.checksStatus
+  /// ADE-135: status and reason must come from the SAME source. Resolving them
+  /// as two independent `??` chains let a status from `pr` be captioned with a
+  /// stale sentence from `summary` — the reason no longer explaining the state
+  /// it sits next to. Pick the source once, then read both off it.
+  private var checks: (status: String?, reason: String?) {
+    if let status = snapshot?.status { return (status.checksStatus, status.checksReason) }
+    if let pr { return (pr.checksStatus, pr.checksReason) }
+    if let summary { return (summary.checksStatus, summary.checksReason) }
+    return (nil, nil)
   }
 
-  private var checksReason: String? {
-    snapshot?.status?.checksReason ?? pr?.checksReason ?? summary?.checksReason
-  }
+  private var checksStatus: String? { checks.status }
+
+  private var checksReason: String? { checks.reason }
 
   private var additions: Int {
     pr?.additions ?? summary?.additions ?? 0
@@ -426,7 +433,7 @@ private struct WorkChatPrChecksMetricCard: View {
   /// carries the host's one-line explanation with it.
   private var detail: String? {
     guard normalized == "not_run" else { return nil }
-    return reason ?? "No CI has run on this commit."
+    return reason ?? noCIReasonText
   }
 
   var body: some View {

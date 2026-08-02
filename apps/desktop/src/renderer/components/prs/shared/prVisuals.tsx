@@ -27,10 +27,10 @@ export function getPrChecksBadge(status: PrChecksStatus): PrBadgeSpec {
   if (status === "passing") return { label: "CI", ...colorBadge(COLORS.success) };
   if (status === "failing") return { label: "CI", ...colorBadge(COLORS.danger) };
   if (status === "pending") return { label: "CI", ...colorBadge(COLORS.warning) };
-  // ADE-135: `not_run` is absence, not failure — nothing verified the commit,
-  // so it reads muted like the quiet default rather than borrowing the danger
-  // colour. It is separated from `none` only so the branch is explicit here.
-  if (status === "not_run") return { label: "CI", ...colorBadge(COLORS.textMuted) };
+  // ADE-135: `not_run` and `none` both land here. Absence is not failure —
+  // nothing verified the commit, so it reads muted rather than borrowing the
+  // danger colour. Anything that is not explicitly green above must fall here;
+  // a new state reaching the success branch by accident is this ticket's bug.
   return { label: "CI", ...colorBadge(COLORS.textMuted) };
 }
 
@@ -66,8 +66,9 @@ export function getPrCiDotColor(args: {
 }): string {
   if (args.ciRunning || args.checksStatus === "pending") return COLORS.info;
   if (args.checksStatus === "failing") return COLORS.danger;
-  if (args.checksStatus === "not_run") return COLORS.textMuted;
   if (args.checksStatus === "passing") return COLORS.success;
+  // `not_run`/`none`: nothing verified the commit, so it stays muted. Only an
+  // explicit `passing` above earns green.
   return COLORS.textMuted;
 }
 

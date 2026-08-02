@@ -20,6 +20,7 @@ import {
 import type {
   PrActionRun,
   PrCheck,
+  PrChecksStatus,
   PrCheckLogExcerpt,
   PrPipelineState,
   PrRerunChecksTarget,
@@ -469,6 +470,12 @@ export type PrChecksTabProps = {
   actionRuns: PrActionRun[];
   actionBusy: boolean;
   /**
+   * The canonical rollup. `buckets` folds `graph.externalChecks` into its
+   * counts, so with no Actions run three preview-bot successes rendered
+   * "Passed 3/3" in green — contradicting the header pill on the same screen.
+   */
+  checksStatus?: PrChecksStatus | null;
+  /**
    * True for GitHub-tab PRs with no `pull_requests` row. The workflow-graph and
    * log-excerpt endpoints are row-based and reject for these, so we never call
    * them — the tab degrades to the swimlane fallback built from `checks`.
@@ -488,6 +495,7 @@ export function PrChecksTab({
   checks,
   actionRuns,
   actionBusy,
+  checksStatus,
   unmapped = false,
   onRerunChecks,
   focusedCheckId,
@@ -795,9 +803,13 @@ export function PrChecksTab({
         </div>
         <StripSegment label="Elapsed" value={elapsed ?? "—"} color={anythingRunning ? COLORS.warning : undefined} />
         <StripSegment
-          label="Passed"
-          color={COLORS.checkPass}
-          value={<>{buckets.passed}<small className="text-[11px] font-medium" style={{ color: COLORS.textMuted }}>/{buckets.total}</small></>}
+          label={checksStatus === "not_run" ? "Verified" : "Passed"}
+          color={checksStatus === "not_run" ? COLORS.textMuted : COLORS.checkPass}
+          value={
+            checksStatus === "not_run"
+              ? <>0<small className="text-[11px] font-medium" style={{ color: COLORS.textMuted }}>/{buckets.total}</small></>
+              : <>{buckets.passed}<small className="text-[11px] font-medium" style={{ color: COLORS.textMuted }}>/{buckets.total}</small></>
+          }
         />
         <StripSegment label="Failed" value={buckets.failed} color={buckets.failed > 0 ? COLORS.danger : COLORS.textMuted} />
         <StripSegment label="Running" value={buckets.running} color={buckets.running > 0 ? COLORS.warning : COLORS.textMuted} />

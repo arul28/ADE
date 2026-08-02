@@ -445,7 +445,7 @@ extension PrRowCard {
         return CIIndicator(
           glyph: .hollowRing,
           color: PrsGlass.textMuted,
-          title: checksReason ?? "No CI has run on this commit."
+          title: checksReason ?? noCIReasonText
         )
       default:
         return nil

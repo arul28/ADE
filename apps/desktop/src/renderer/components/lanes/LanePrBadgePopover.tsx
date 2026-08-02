@@ -14,6 +14,7 @@ import {
 } from "../prs/shared/prVisuals";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -180,11 +181,7 @@ export function LanePrBadgePopover({
                     // The rollup's own sentence when it has one ("2 required
                     // checks have not reported: …"), so the muted caption is
                     // explainable without opening the PRs tab.
-                    title={
-                      pr.checksStatus === "not_run"
-                        ? pr.checksReason ?? "No CI has run on this commit."
-                        : pr.checksReason ?? undefined
-                    }
+                    title={pr.checksReason ?? (pr.checksStatus === "not_run" ? NO_CI_REASON : undefined)}
                   >
                     {checksCaption(pr.checksStatus!)}
                   </span>

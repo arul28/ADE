@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+/// ADE-135: fallback when the host sent no `checksReason` (older host, or a row
+/// written before the column existed). Shared because it had been pasted into
+/// six files and one copy had already lost its full stop.
+let noCIReasonText = "No CI has run on this commit."
+
+
 private let prIsoFormatter: ISO8601DateFormatter = {
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

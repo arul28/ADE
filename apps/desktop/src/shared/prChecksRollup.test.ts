@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { rollupChecks, isCiProducerAppSlug, CI_PENDING_GRACE_MS } from "./prChecksRollup";
+import { rollupChecks, rollupPrChecks, isCiProducerAppSlug, CI_PENDING_GRACE_MS } from "./prChecksRollup";
 import type { ChecksRollupCheckRun, ChecksRollupInput } from "./prChecksRollup";
 import { ADE_MAIN_REQUIRED_CONTEXTS, PR988_CHECK_RUNS } from "./__fixtures__/pr988CheckRuns";
 
@@ -8,7 +8,6 @@ function input(overrides: Partial<ChecksRollupInput> = {}): ChecksRollupInput {
     checkRuns: [],
     commitStatuses: [],
     requiredContexts: null,
-    requiredSource: "unavailable",
     mergeStateBlocked: false,
     headCommitAgeMs: null,
     ...overrides,
@@ -38,7 +37,6 @@ describe("rollupChecks — ADE-135 regression", () => {
       input({
         checkRuns: [...PR988_CHECK_RUNS],
         requiredContexts: [...ADE_MAIN_REQUIRED_CONTEXTS],
-        requiredSource: "rulesets",
         headCommitAgeMs: 6 * 60 * 60 * 1000,
       }),
     );
@@ -115,7 +113,6 @@ describe("rollupChecks — required contexts", () => {
       input({
         checkRuns: [actionsRun("install", "success")],
         requiredContexts: ["install", "ci-pass"],
-        requiredSource: "rulesets",
       }),
     );
 
@@ -128,7 +125,6 @@ describe("rollupChecks — required contexts", () => {
       input({
         checkRuns: [actionsRun("install", "success"), actionsRun("ci-pass", "success")],
         requiredContexts: ["install", "ci-pass"],
-        requiredSource: "rulesets",
       }),
     );
 
@@ -139,7 +135,6 @@ describe("rollupChecks — required contexts", () => {
     const result = rollupChecks(
       input({
         requiredContexts: ["test-desktop (2)", "install", "test-desktop (1)"],
-        requiredSource: "rulesets",
       }),
     );
 
@@ -156,7 +151,6 @@ describe("rollupChecks — required contexts", () => {
       input({
         checkRuns: [actionsRun("test", "failure")],
         requiredContexts: ["ci-pass"],
-        requiredSource: "rulesets",
       }),
     );
 
@@ -169,7 +163,6 @@ describe("rollupChecks — required contexts", () => {
       input({
         checkRuns: [actionsRun("test", "success")],
         requiredContexts: null,
-        requiredSource: "unavailable",
       }),
     );
 
@@ -233,5 +226,165 @@ describe("rollupChecks — in-flight", () => {
     );
 
     expect(result.status).toBe("pending");
+  });
+});
+
+describe("rollupChecks — non-Actions CI providers (ADE-135 regression)", () => {
+  it("does not mark a CircleCI repo permanently not-run", () => {
+    // CircleCI, Buildkite, Azure Pipelines and Semaphore report through the
+    // Checks API with their own app slugs, not the commit-status API. An
+    // Actions-only allowlist marked every one of those repos unverified
+    // forever — the original bug, pointing the other way.
+    const result = rollupChecks(
+      input({
+        checkRuns: [
+          { name: "ci/circleci: build", status: "completed", conclusion: "success", appSlug: "circleci-checks" },
+        ],
+      }),
+    );
+
+    expect(result.status).toBe("passing");
+  });
+
+  it("still refuses a green from a known preview/review bot", () => {
+    const result = rollupChecks(
+      input({
+        checkRuns: [
+          { name: "CodeRabbit", status: "completed", conclusion: "success", appSlug: "coderabbitai" },
+          { name: "Vercel", status: "completed", conclusion: "success", appSlug: "vercel" },
+        ],
+      }),
+    );
+
+    expect(result.status).toBe("not_run");
+  });
+
+  it("accepts branch protection as proof regardless of producer", () => {
+    // If every required context reported and passed, the commit was verified —
+    // whichever app ran it. This is the safety net for CI we do not recognise.
+    const result = rollupChecks(
+      input({
+        checkRuns: [
+          { name: "custom-ci", status: "completed", conclusion: "success", appSlug: "some-unknown-enterprise-ci" },
+        ],
+        requiredContexts: ["custom-ci"],
+      }),
+    );
+
+    expect(result.status).toBe("passing");
+  });
+});
+
+describe("rollupChecks — in-flight statuses and fresh pushes", () => {
+  it("treats waiting/requested/pending as in flight, not as terminal-unknown", () => {
+    // A deployment-approval gate reports `waiting` with a null conclusion.
+    // Coercing that to `completed` made it "unknown" and the PR read not-run.
+    for (const status of ["waiting", "requested", "pending"]) {
+      const result = rollupChecks(
+        input({ checkRuns: [{ name: "deploy", status, conclusion: null, appSlug: "github-actions" }] }),
+      );
+      expect(result.status, status).toBe("pending");
+    }
+  });
+
+  it("holds at pending inside the grace window after a fresh push", () => {
+    // GitHub takes seconds to register a suite; calling that "CI has not run"
+    // flashed a spurious card on every push.
+    const result = rollupChecks(
+      input({
+        checkRuns: [{ name: "Vercel", status: "completed", conclusion: "success", appSlug: "vercel" }],
+        headCommitAgeMs: 10_000,
+      }),
+    );
+
+    expect(result.status).toBe("pending");
+  });
+
+  it("treats unknown commit age as stale so a finding is never hidden", () => {
+    const result = rollupChecks(
+      input({
+        checkRuns: [{ name: "Vercel", status: "completed", conclusion: "success", appSlug: "vercel" }],
+        headCommitAgeMs: null,
+      }),
+    );
+
+    expect(result.status).toBe("not_run");
+  });
+});
+
+describe("rollupChecks — ordering of the branch-protection override", () => {
+  it("does not claim CI passed while another job is still running", () => {
+    // A satisfied branch-protection gate outranks the producer guess, but not
+    // in-flight work — GitHub itself says "some checks haven't completed yet".
+    const result = rollupChecks(
+      input({
+        checkRuns: [
+          { name: "ci-pass", status: "completed", conclusion: "success", appSlug: "github-actions" },
+          { name: "e2e", status: "in_progress", conclusion: null, appSlug: "github-actions" },
+        ],
+        requiredContexts: ["ci-pass"],
+      }),
+    );
+
+    expect(result.status).toBe("pending");
+  });
+
+  it("does not stick at pending when a conclusion arrives before the status flips", () => {
+    // GitHub can report `status: "queued"` with `conclusion: "skipped"`.
+    // Treating that as in-flight left the PR pending forever.
+    const result = rollupChecks(
+      input({
+        checkRuns: [{ name: "build", status: "queued", conclusion: "skipped", appSlug: "github-actions" }],
+        headCommitAgeMs: 10 * 60 * 1000,
+      }),
+    );
+
+    expect(result.status).toBe("not_run");
+  });
+});
+
+describe("rollupPrChecks — row-level rollup shared by CLI/TUI/toolbars", () => {
+  it("refuses a green built only from third-party rows", () => {
+    const result = rollupPrChecks([
+      { status: "completed", conclusion: "success", appSlug: "coderabbitai" },
+      { status: "completed", conclusion: "success", appSlug: "vercel" },
+    ]);
+
+    expect(result.status).toBe("not_run");
+    expect(result.counts.passing).toBe(0);
+    expect(result.counts.total).toBe(2);
+  });
+
+  it("reports none for zero checks rather than defaulting to passing", () => {
+    // adeRpcServer initialised its verdict to "passing", so an empty list read
+    // green on the surface agents consume.
+    expect(rollupPrChecks([]).status).toBe("none");
+  });
+
+  it("does not count skipped as passing", () => {
+    const result = rollupPrChecks([
+      { status: "completed", conclusion: "skipped", appSlug: "github-actions" },
+    ]);
+
+    expect(result.status).toBe("not_run");
+    expect(result.counts.skipped).toBe(1);
+  });
+
+  it("treats a slug-less legacy row as CI rather than reporting not-run", () => {
+    // `appSlug` only started being populated in this change. Persisted rows,
+    // older hosts and the TUI's action payloads all carry checks with no slug;
+    // failing those closed would report "CI has not run" for every legacy
+    // payload whose CI genuinely passed.
+    const result = rollupPrChecks([{ status: "completed", conclusion: "success", appSlug: null }]);
+
+    expect(result.status).toBe("passing");
+  });
+
+  it("counts a legacy commit status as CI", () => {
+    const result = rollupPrChecks([
+      { status: "completed", conclusion: "success", appSlug: "commit_status" },
+    ]);
+
+    expect(result.status).toBe("passing");
   });
 });

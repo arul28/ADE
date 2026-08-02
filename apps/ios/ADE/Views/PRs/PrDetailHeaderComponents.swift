@@ -90,7 +90,7 @@ struct PrDetailSummarySection: View {
   /// header says.
   private var subline: String {
     if checksStatus == "not_run" {
-      return checksReason ?? "No CI has run on this commit."
+      return checksReason ?? noCIReasonText
     }
     return mergeGate.subline
   }

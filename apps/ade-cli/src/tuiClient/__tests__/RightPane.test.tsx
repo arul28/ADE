@@ -1041,6 +1041,35 @@ describe("RightPane lane-details", () => {
     expect(frame).not.toContain("RUN");
   });
 
+  // ADE-135: with three bot rows the counts read 0 passing / 0 failing /
+  // 0 pending / 3 total, and the old line called that "checks passing".
+  it("does not claim checks are passing when the rollup says CI never ran", () => {
+    const result = render(
+      <RightPane
+        content={{
+          kind: "lane-details",
+          ...baseLaneDetails,
+          pr: {
+            number: 988,
+            state: "open",
+            url: "https://github.com/example/ADE/pull/988",
+            checksPassed: 0,
+            checksTotal: 3,
+            checksPending: 0,
+            checksFailed: 0,
+            checksStatus: "not_run",
+          },
+        }}
+        focused
+      />,
+    );
+    const frame = stripAnsi(result.lastFrame() ?? "");
+
+    expect(frame).toContain("CI not run");
+    expect(frame).not.toContain("checks passing");
+    expect(frame).not.toContain("passing");
+  });
+
   it("shows the PR GitHub link when the PR row is selected", () => {
     const result = render(
       <RightPane

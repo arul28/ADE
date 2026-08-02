@@ -78,6 +78,10 @@ export type PrSummary = {
    * One sentence explaining a non-obvious rollup, e.g. "3 checks reported, none
    * from a CI provider." Null when the state speaks for itself. Every surface
    * reads this instead of re-deriving the explanation.
+   *
+   * Optional AND nullable, and the difference is load-bearing at the upsert:
+   * absent means "leave whatever is stored alone" (partial summaries flow
+   * through `upsertRow` constantly), null means "clear it".
    */
   checksReason?: string | null;
   /** Required contexts that never reported, in the order GitHub declared them. */
@@ -132,6 +136,12 @@ export type PrLaneSummary = {
   state: "open" | "merged" | "closed";
   checksPassed: number;
   checksTotal: number;
+  /**
+   * ADE-135 canonical rollup. Consumers must read this rather than inferring a
+   * pass from `checksPassed === checksTotal` — producer-blind counts are how
+   * three preview-bot successes rendered as a green N/N.
+   */
+  checksStatus?: PrChecksStatus;
   stack?: GitHubPrStackMembership | null;
 };
 

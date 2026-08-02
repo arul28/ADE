@@ -12,7 +12,13 @@ function compactLabel(value: string | null | undefined): string | null {
 /**
  * ADE-135: `not_run` means nothing verified the head commit. The only
  * checks-derived success tone is `merge_ready`, so that is the one that must
- * never go green on an unverified commit — a green toast is exactly the signal
+ * never go green on an unverified commit.
+ *
+ * Defence in depth, deliberately: `prPollingService.isMergeReady` already
+ * requires `checksStatus === "passing"`, so today this branch cannot fire.
+ * It exists so that relaxing that upstream predicate cannot silently
+ * reintroduce a green "ready to merge" toast on an unverified commit — do not
+ * read its tests as coverage of a live path — a green toast is exactly the signal
  * a human (or a `/ship` loop) reads as "the suite is fine". It drops to `info`
  * rather than `danger`: absence is a finding, not a failure. The lifecycle
  * kinds (opened / reopened / merged) say nothing about CI and keep their tone.

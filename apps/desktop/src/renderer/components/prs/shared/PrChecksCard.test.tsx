@@ -173,8 +173,23 @@ describe("PrChecksCard summary + bucketing", () => {
     expect(rowNames()).toEqual(["e2e"]);
   });
 
-  it("renders ghost rows even when nothing at all reported", () => {
-    render(<PrChecksCard checks={[]} actionRuns={[]} missingRequired={["CI / build"]} />);
-    expect(screen.getAllByTestId("pr-checks-card-ghost-row")).toHaveLength(1);
+  it("renders ghost rows, and no green header, when nothing at all reported", () => {
+    // The pure layer-3 case: branch protection names a required context and
+    // nothing ran. The list must still render, and the header must not claim a
+    // pass off an empty row set.
+    render(
+      <PrChecksCard
+        checks={[]}
+        actionRuns={[]}
+        missingRequired={["CI / build"]}
+        checksStatus="not_run"
+      />,
+    );
+
+    const ghosts = screen.getAllByTestId("pr-checks-card-ghost-row");
+    expect(ghosts).toHaveLength(1);
+    expect(ghosts[0]!.textContent).toContain("CI / build");
+    expect(screen.queryByText(/passed/i)).toBeNull();
+    expect(screen.getByText(/No CI has run/i)).toBeTruthy();
   });
 });

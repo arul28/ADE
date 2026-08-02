@@ -1,5 +1,6 @@
 import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
+import { NO_CI_REASON, rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -117,9 +118,14 @@ function statusWord(status: unknown, conclusion?: unknown): "OK" | "FAIL" | "WAI
  * rewritten: it is the one value a reader would otherwise see as a raw enum,
  * and "not run" is the whole point — nothing verified the commit (ADE-135).
  */
-function checksStatusWord(status: string | null): string | null {
+function checksStatusLabel(status: string | null): string | null {
   if (!status) return null;
-  return status === "not_run" ? "CI: not run" : status;
+  return status === "not_run" ? "not run" : status;
+}
+
+function checksStatusWord(status: string | null): string | null {
+  const label = checksStatusLabel(status);
+  return label && status === "not_run" ? `CI: ${label}` : label;
 }
 
 function formatCount(noun: string, count: number): string {
@@ -188,6 +194,15 @@ export function formatPrSummary(value: unknown): string {
     ?? pickString(pr, ["adeUrl", "adePrUrl"])
     ?? derivedAdeUrl;
   const mergeable = pickString(pr, ["mergeable", "mergeStateStatus"]);
+  // ADE-135: the PR summary is the first thing `/pr` prints, and it used to say
+  // nothing at all about CI — so the reader's only checks signal was the row
+  // table below it, which is precisely what read green while nothing verified
+  // the commit. The service's rollup (and its one-sentence reason) belongs here.
+  const checksStatus = checksStatusLabel(pickString(pr, ["checksStatus"]));
+  const checksReason = pickString(pr, ["checksReason"]);
+  const checks = checksStatus
+    ? `${checksStatus}${checksReason ? ` — ${checksReason}` : ""}`
+    : null;
   const rows = [
     `#${number ?? id ?? "?"} · ${state}${draft}`,
     title,
@@ -196,6 +211,7 @@ export function formatPrSummary(value: unknown): string {
     lane ? `lane      ${lane}` : null,
     head || base ? `branch    ${head ?? "unknown"}${base ? ` -> ${base}` : ""}` : null,
     mergeable ? `merge     ${mergeable}` : null,
+    checks ? `checks    ${checks}` : null,
     githubUrl ? `github   ${githubUrl}` : null,
     fallbackUrl && fallbackUrl !== githubUrl ? `url      ${fallbackUrl}` : null,
     adeUrl ? `ade      ${adeUrl}` : null,
@@ -344,22 +360,24 @@ export function formatPrChecks(value: unknown): string {
   const checks = firstRecordArray(value, ["checks", "items", "results"]);
   if (!checks.length) {
     return rollup === "not_run"
-      ? `CI: not run — ${reason ?? "No CI has run on this commit."}`
+      ? `CI: not run — ${reason ?? NO_CI_REASON}`
       : "No PR checks.";
   }
-  let ok = 0;
-  let fail = 0;
-  let wait = 0;
-  for (const check of checks) {
-    const status = statusWord(check.status, check.conclusion);
-    if (status === "OK") ok += 1;
-    else if (status === "FAIL") fail += 1;
-    else if (status === "WAIT") wait += 1;
-  }
-  // ADE-135: rows can all be green and still verify nothing (third-party apps
-  // only, or an all-skipped suite). The rollup is the authority when it says
-  // so; otherwise fall back to "nothing passed" as the same signal.
-  const notRun = rollup === "not_run" || (ok === 0 && fail === 0 && wait === 0);
+  // ADE-135: counting the rows directly is producer-blind — three third-party
+  // successes tallied as "3 passing". `rollupPrChecks` applies the same CI
+  // producer rule as every other surface. The payload's own `checksStatus`
+  // still wins when present, since it also knows about required contexts,
+  // which these rows cannot see.
+  const rows = checks.map((check) => ({
+    status: pickString(check, ["status"]) ?? "",
+    conclusion: pickString(check, ["conclusion"]),
+    appSlug: pickString(check, ["appSlug"]),
+  }));
+  const rowRollup = rollupPrChecks(rows);
+  const ok = rowRollup.counts.passing;
+  const fail = rowRollup.counts.failing;
+  const wait = rowRollup.counts.pending;
+  const notRun = rollup === "not_run" || rowRollup.status === "not_run";
   const summary = notRun
     ? `CI: not run${reason ? ` — ${reason}` : ""}`
     : [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]

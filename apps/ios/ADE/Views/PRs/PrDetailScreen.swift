@@ -419,7 +419,8 @@ struct PrDetailView: View {
       summaryReviewStatus: snapshot?.status?.reviewStatus ?? currentPr.reviewStatus,
       status: snapshot?.status,
       checks: snapshot?.checks ?? [],
-      reviews: snapshot?.reviews ?? []
+      reviews: snapshot?.reviews ?? [],
+      summaryChecksStatus: currentPr.checksStatus
     )
   }
 

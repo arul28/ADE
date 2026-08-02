@@ -25,6 +25,7 @@ import { getDefaultModelDescriptor } from "../../desktop/src/shared/modelRegistr
 import { buildAdeCliInlineGuidance } from "../../desktop/src/shared/adeCliGuidance";
 import { buildDeeplink, isValidCommitSha, isValidRepoRelativePath } from "../../desktop/src/shared/deeplinks";
 import { resolveStableLaneBaseBranch } from "../../desktop/src/shared/laneBaseResolution";
+import { rollupPrChecks } from "../../desktop/src/shared/prChecksRollup";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
   getAdeAgentSkillRootsForPrompt,
@@ -41,7 +42,7 @@ import {
   type MergeMethod,
   type AppNavigationRequest,
 } from "../../desktop/src/shared/types";
-import type { PrCheck, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
+import type { PrCheck, PrChecksStatus, PrComment, PrReviewThread } from "../../desktop/src/shared/types/prs";
 import type { CtoLinearQuickView } from "../../desktop/src/shared/types/cto";
 import type { LinearConnectionStatus } from "../../desktop/src/shared/types/linearSync";
 import { resolveAdeLayout } from "../../desktop/src/shared/adeLayout";
@@ -1860,24 +1861,43 @@ function requirePrService(runtime: AdeRuntime): NonNullable<AdeRuntime["prServic
   return runtime.prService;
 }
 
-function summarizePrChecks(checks: PrCheck[]): { overall: "failing" | "pending" | "passing" | "not_run"; counts: { passing: number; failing: number; pending: number; total: number } } {
-  const passing = checks.filter((check) => check.conclusion === "success").length;
-  const failing = checks.filter((check) => check.conclusion === "failure").length;
-  const pending = checks.filter((check) => check.status !== "completed").length;
-
-  // ADE-135: this started at "passing" and only moved off it for a failure or
-  // an in-flight run, so zero checks — or a suite that was entirely skipped —
-  // reported green. Nothing succeeding means nothing was verified, which is
-  // "not_run", not a pass.
-  let overall: "failing" | "pending" | "passing" | "not_run" = passing > 0 ? "passing" : "not_run";
-  if (failing > 0) overall = "failing";
-  else if (pending > 0) overall = "pending";
-
-  return { overall, counts: { passing, failing, pending, total: checks.length } };
+function summarizePrChecks(checks: PrCheck[]): {
+  overall: PrChecksStatus;
+  counts: { passing: number; failing: number; pending: number; total: number };
+} {
+  // ADE-135: this used to carry its own pass/fail rule and got it wrong twice
+  // over — it initialised `overall` to "passing", so zero checks read green,
+  // and it was producer-blind, so a single rate-limited CodeRabbit `success`
+  // also read green. That is the ticket's bug on the surface agents read.
+  // The shared rollup is the only authority now.
+  const { status, counts } = rollupPrChecks(checks);
+  return {
+    overall: status,
+    counts: {
+      passing: counts.passing,
+      failing: counts.failing,
+      pending: counts.pending,
+      total: counts.total,
+    },
+  };
 }
 
-function mapCheckToSummary(check: PrCheck): { name: string; status: string; conclusion: string | null; url: string | null } {
-  return { name: check.name, status: check.status, conclusion: check.conclusion, url: check.detailsUrl };
+function mapCheckToSummary(check: PrCheck): {
+  name: string;
+  status: string;
+  conclusion: string | null;
+  url: string | null;
+  appSlug: string | null;
+} {
+  // ADE-135: without the producer, an agent reading three rows of
+  // `conclusion: "success"` has no way to know that not one of them is CI.
+  return {
+    name: check.name,
+    status: check.status,
+    conclusion: check.conclusion,
+    url: check.detailsUrl,
+    appSlug: check.appSlug ?? null,
+  };
 }
 
 function summarizePrReviewComments(
@@ -5195,9 +5215,32 @@ async function runTool(args: {
     const prId = assertNonEmptyString(toolArgs.prId, "prId");
     const prSvc = requirePrService(runtime);
     const checks = await prSvc.getChecks(prId);
+    // The aggregate travels with the rows so an agent does not have to
+    // re-derive "was this verified?" and get it wrong, which is the bug this
+    // ticket exists to fix.
+    //
+    // The PERSISTED verdict wins when we have it. A row-level rollup only sees
+    // the flattened checks: it cannot see required contexts that never
+    // reported, the merge-state corroboration, or the grace window, all of
+    // which live in `computeStatus`. Reporting the row tally here would let
+    // this tool say "passing" while every human surface says "not run" — on
+    // precisely the surface an autonomous agent reads before merging.
+    const { overall, counts } = summarizePrChecks(checks);
+    // Best-effort: `listAll` is a local DB read, but a degraded runtime may not
+    // expose it. Falling back to the row tally is still better than throwing.
+    let summary: { checksStatus?: string; checksReason?: string | null; checksMissingRequired?: string[] | null } | null = null;
+    try {
+      summary = prSvc.listAll?.().find((entry) => entry.id === prId) ?? null;
+    } catch {
+      summary = null;
+    }
     return {
       success: true,
       prId,
+      checksStatus: summary?.checksStatus ?? overall,
+      checksReason: summary?.checksReason ?? null,
+      checksMissingRequired: summary?.checksMissingRequired ?? [],
+      checksCounts: counts,
       checks: checks.map(mapCheckToSummary),
     };
   }

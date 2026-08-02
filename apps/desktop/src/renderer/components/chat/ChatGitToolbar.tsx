@@ -21,7 +21,8 @@ import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { buildPrsRouteSearch } from "../prs/prsRouteState";
 import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { rollupPrChecks } from "../../../shared/prChecksRollup";
+import type { PrChecksStatus } from "../../../shared/types/prs";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -98,34 +99,24 @@ function formatRelativeTime(iso: string | null | undefined): string | null {
   return new Date(ts).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/**
+ * ADE-135: this carried its own tally and was producer-blind, so a PR whose
+ * only checks were CodeRabbit and Vercel rendered a green "3" here — the
+ * ticket's bug, beside a pill that had already been fixed to say "not run".
+ * The shared row rollup decides; this only reshapes the counts for the JSX.
+ */
 function summarizeChecks(
   checks: PrCheck[],
-): { passed: number; failed: number; running: number; skipped: number; total: number } {
-  let passed = 0;
-  let failed = 0;
-  let running = 0;
-  // ADE-135: `skipped` used to be counted as `passed`, so a PR whose whole
-  // suite was skipped rendered a green "3" here. A skipped job verified
-  // nothing; it gets its own bucket and never colours the pill green.
-  let skipped = 0;
-  for (const c of checks) {
-    switch (pipelineStateOf(c)) {
-      case "running":
-      case "queued":
-        running += 1;
-        break;
-      case "passed":
-        passed += 1;
-        break;
-      case "skipped":
-        skipped += 1;
-        break;
-      case "failed":
-        failed += 1;
-        break;
-    }
-  }
-  return { passed, failed, running, skipped, total: checks.length };
+): { passed: number; failed: number; running: number; skipped: number; total: number; status: PrChecksStatus } {
+  const { status, counts } = rollupPrChecks(checks);
+  return {
+    passed: counts.passing,
+    failed: counts.failing,
+    running: counts.pending,
+    skipped: counts.skipped,
+    total: counts.total,
+    status,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -474,11 +465,21 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
                   {summary.running}
                 </span>
               ) : null}
-              {summary.passed === 0 && summary.failed === 0 && summary.running === 0 ? (
-                // Every row settled without verifying anything (all skipped or
-                // neutral). Name that instead of a bare count that reads neutral.
+              {summary.skipped > 0 && summary.status !== "not_run" ? (
+                // Previously folded into `passed`, so a 3-pass/2-skip PR read
+                // "5". Shown in its own muted bucket rather than silently
+                // dropped, which would under-report the suite instead.
+                <span className="inline-flex items-center gap-1 text-fg/35">
+                  <MinusCircle size={9} weight="fill" />
+                  {summary.skipped}
+                </span>
+              ) : null}
+              {summary.status === "not_run" ? (
+                // Nothing verified this commit — either every row was skipped,
+                // or the only reporters were preview/review bots. Say so rather
+                // than showing a bare count that reads as merely neutral.
                 <span className="text-fg/35" title="No CI has run on this commit.">
-                  {summary.skipped === summary.total ? "not run" : `${summary.total} check${summary.total === 1 ? "" : "s"}`}
+                  {`not run · ${summary.total} check${summary.total === 1 ? "" : "s"}`}
                 </span>
               ) : null}
             </span>

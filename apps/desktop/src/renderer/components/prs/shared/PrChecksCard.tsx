@@ -9,7 +9,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 
-import type { PrActionRun, PrCheck, PrRerunChecksTarget } from "../../../../shared/types/prs";
+import type { PrActionRun, PrCheck, PrChecksStatus, PrRerunChecksTarget } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT, floatingPane } from "../../lanes/laneDesignTokens";
 import {
   buildUnifiedChecks,
@@ -42,6 +42,13 @@ export type PrChecksCardProps = {
    * rather than as nothing at all.
    */
   missingRequired?: readonly string[] | null;
+  /**
+   * The canonical rollup. The header used to derive its verdict from row counts
+   * alone, which is producer-blind: on the ADE-135 payload it rendered a green
+   * "3/3 passed" directly above the `required · not reported` ghost rows this
+   * card had just been taught to show.
+   */
+  checksStatus?: PrChecksStatus | null;
 };
 
 type Bucket = "pass" | "fail" | "pending" | "skip";
@@ -100,6 +107,7 @@ export const PrChecksCard = memo(function PrChecksCard({
   actionBusy = false,
   fill = false,
   missingRequired,
+  checksStatus,
 }: PrChecksCardProps) {
   // Order is meaningful (GitHub's declaration order), so this is never sorted.
   const ghosts = missingRequired ?? [];
@@ -120,8 +128,11 @@ export const PrChecksCard = memo(function PrChecksCard({
     [items, fill],
   );
 
+  // `not_run` outranks the row tally: rows can all be green and still have
+  // verified nothing.
+  const notRun = checksStatus === "not_run";
   const summaryColor =
-    total === 0
+    total === 0 || notRun
       ? COLORS.textMuted
       : failing > 0
         ? COLORS.danger
@@ -129,8 +140,15 @@ export const PrChecksCard = memo(function PrChecksCard({
           ? COLORS.info
           : COLORS.checkPass;
 
-  const summaryText = total === 0 ? "No checks yet" : `${passing}/${total} passed`;
-  const headerBucket: Bucket = total === 0 ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
+  const summaryText = notRun
+    ? total === 0
+      ? "No CI has run"
+      : `No CI has run · ${total} check${total === 1 ? "" : "s"}`
+    : total === 0
+      ? "No checks yet"
+      : `${passing}/${total} passed`;
+  const headerBucket: Bucket =
+    total === 0 || notRun ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
 
   return (
     <section

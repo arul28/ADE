@@ -122,6 +122,7 @@ import { PrDetailPane } from "../prs/detail/PrDetailPane";
 import { PrsProvider } from "../prs/state/PrsContext";
 import { buildGraphPrOverlay } from "./graphPrData";
 import { getPrChecksBadge, getPrReviewsBadge, InlinePrBadge } from "../prs/shared/prVisuals";
+import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
 const nodeTypes = { lane: GraphLaneNode, proposal: GraphProposalNode };
 const edgeTypes = { custom: RiskEdge };
@@ -3297,7 +3298,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
                   // Only shown when the rollup has something to explain, which
                   // in practice means a not-run or a held-back pending.
                   pr.checksStatus === "not_run"
-                    ? pr.checksReason ?? "No CI has run on this commit."
+                    ? pr.checksReason ?? NO_CI_REASON
                     : null,
                   `${pr.reviewCount} reviews · ${pr.commentCount} comments${pr.behindBaseBy != null ? ` · behind ${pr.behindBaseBy}` : ""}`,
                   pr.title ? pr.title : null,

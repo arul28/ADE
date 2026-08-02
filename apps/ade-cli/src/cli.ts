@@ -1608,7 +1608,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade prs create --lane <lane> --base main      Open and map a GitHub PR; prints GitHub + ADE URLs
     $ ade prs create --lane <lane> --close-linear-issue-on-merge
     $ ade prs link --lane <lane> --url <pr-url>     Map an existing GitHub PR to a lane
-    $ ade prs checks <pr> --text                    Show check status
+    $ ade prs checks <pr> --text                    Show the CI rollup + per-check rows ("not run" = nothing verified the commit)
     $ ade prs comments <pr> --text                  Show unresolved review work
     $ ade prs github-snapshot --include-external-closed --history-page-limit 4
                                                     Include bounded closed PR history in the GitHub snapshot
@@ -17599,6 +17599,10 @@ function statusWord(value: unknown): string {
     return "FAIL";
   if (["pending", "running", "in_progress", "queued", "active"].includes(raw))
     return "WAIT";
+  // ADE-135: `not_run` is a checks rollup, not a job conclusion, and it must
+  // never read as a raw enum — the sentence it stands for is "nothing verified
+  // this commit".
+  if (raw === "not_run") return "NOT RUN";
   return raw.toUpperCase();
 }
 
@@ -17715,10 +17719,45 @@ function formatPrCreate(value: unknown): string {
   ]);
 }
 
+/**
+ * Header verdict for `ade prs checks`.
+ *
+ * ADE-135: the table alone is the bug. Three third-party bot rows each render
+ * `OK`, and a reader — human or agent — concludes the commit passed CI. The
+ * canonical rollup now travels with the rows as `checksStatus`/`checksCounts`,
+ * so the verdict leads. `not_run` is spelled out rather than leaked as a raw
+ * enum: it is the one status whose whole point is that nothing verified the
+ * commit.
+ */
+function formatPrChecksVerdict(value: unknown): string | null {
+  if (!isRecord(value)) return null;
+  const status = asString(value.checksStatus);
+  if (!status) return null;
+  // `none` means nothing reported and nothing was expected. Printing the bare
+  // enum beside an empty table reads as a value, not a sentence — the same
+  // complaint that motivates the `not_run` relabel below.
+  if (status === "none") return null;
+  const label = status === "not_run" ? "not run" : status;
+  const counts = isRecord(value.checksCounts) ? value.checksCounts : null;
+  const parts: string[] = [];
+  for (const noun of ["passing", "failing", "pending"] as const) {
+    const count = counts ? counts[noun] : null;
+    if (typeof count === "number" && count > 0) parts.push(`${count} ${noun}`);
+  }
+  const total = counts ? counts.total : null;
+  if (typeof total === "number" && total > 0) {
+    parts.push(`${total} check${total === 1 ? "" : "s"} reported`);
+  }
+  return parts.length > 0 ? `${label} (${parts.join(", ")})` : label;
+}
+
 function formatPrChecks(value: unknown): string {
   const checks = firstArray(value, ["checks", "items"]);
   const summary = isRecord(value) ? value.summary : null;
-  const header = summary
+  const verdict = formatPrChecksVerdict(value);
+  const header = verdict
+    ? `ADE PR checks - ${verdict}`
+    : summary
     ? `ADE PR checks - ${cell(summary, 80)}`
     : "ADE PR checks";
   return `${header}\n${renderTable(

@@ -83,7 +83,17 @@ export function deriveMergeBlockers(args: {
     });
   }
 
+  // NOTE: this function has no production caller — only its own test — but it
+  // duplicates `buildMergeChecklist`'s checks logic, so it is kept in step with
+  // it. Letting the two diverge is how the ADE-135 bug survived in one of them.
   const checkSummary = summarizeChecks(checks);
+  const blockersRollup = status?.checksStatus ?? pr.checksStatus;
+  if (blockersRollup === "not_run") {
+    blockers.push({
+      id: "no-ci",
+      label: "No CI has run on this commit.",
+    });
+  }
   if (checkSummary.failing > 0) {
     blockers.push({
       id: "failing-checks",
@@ -214,7 +224,13 @@ export function buildMergeChecklist(args: {
   }
 
   // --- Checks ---------------------------------------------------------------
+  // ADE-135: `summarizeChecks` counts rows and is producer-blind, so on a PR
+  // whose only checks are third-party apps (CodeRabbit, Vercel, a comment bot)
+  // it reports `passing: 3` and this row said "All 3 checks passed" — the
+  // ticket's exact lie, on the surface a reader trusts most. The canonical
+  // rollup decides the verdict; the counts are still summarizeChecks' job.
   const summary = summarizeChecks(checks);
+  const checksRollup = status?.checksStatus ?? pr.checksStatus;
   if (summary.failing > 0) {
     items.push({
       id: "checks",
@@ -225,6 +241,12 @@ export function buildMergeChecklist(args: {
     items.push({
       id: "checks",
       label: `${summary.pending} pending check${summary.pending === 1 ? "" : "s"}`,
+      state: "neutral",
+    });
+  } else if (checksRollup === "not_run") {
+    items.push({
+      id: "checks",
+      label: "No CI has run on this commit",
       state: "neutral",
     });
   } else if (summary.passing > 0) {

@@ -17,9 +17,11 @@ import type { PrPipelineState } from "./types/prs";
  *  1. State mapping is delegated to `prPipelineState`, so `skipped`/`neutral`
  *     can no longer masquerade as success and the rollup can no longer
  *     disagree with the per-job rows rendered beneath it.
- *  2. Green requires a *CI producer* — GitHub Actions or a legacy commit
- *     status. Preview/review/comment apps still render, but cannot carry a
- *     green on their own.
+ *  2. Green requires either a producer that is not a known non-CI app, or a
+ *     satisfied branch-protection gate. Preview/review/comment apps render but
+ *     cannot carry a green on their own. See the tradeoff note on
+ *     `NON_CI_PRODUCER_APP_SLUGS` for why this is a denylist and not an
+ *     allowlist — the allowlist version broke every non-Actions CI provider.
  *  3. Required contexts that never reported hold the rollup back, so a missing
  *     job is visible rather than silently absent.
  *
@@ -27,8 +29,47 @@ import type { PrPipelineState } from "./types/prs";
  * about our own knowledge rather than about the code.
  */
 
-/** GitHub App slugs whose successes constitute actual verification. */
-const CI_PRODUCER_APP_SLUGS = new Set(["github-actions"]);
+/**
+ * Producers that are definitively NOT CI: preview deploys, review bots, comment
+ * bots, docs builders. These are the apps that made PR #988 read green while
+ * nothing verified the code, so they can never carry a pass.
+ *
+ * This is a denylist rather than an allowlist because the allowlist version was
+ * wrong in the dangerous direction. CircleCI (`circleci-checks`), Buildkite,
+ * Azure Pipelines, Semaphore and Travis all report through the *Checks API*
+ * with their own slugs — not the legacy commit-status API — so an
+ * Actions-only allowlist marked every one of those repos permanently
+ * "CI has not run", silently and forever. Breaking real CI users to catch a
+ * bot is a worse trade than the residual it leaves: an unrecognised bot can
+ * still carry a green, which the required-context rule below then catches
+ * wherever branch protection is readable.
+ */
+const NON_CI_PRODUCER_APP_SLUGS = new Set([
+  "coderabbitai",
+  "vercel",
+  "netlify",
+  "cloudflare-workers-and-pages",
+  "changeset-bot",
+  "copilot-pull-request-reviewer",
+  "greptile-apps",
+  "railway-app",
+  "graphite-app",
+  "mintlify",
+  "cursor",
+  "sonarcloud",
+  "snyk-io",
+  "renovate",
+  "dependabot",
+]);
+
+/**
+ * Fallback sentence for a `not_run` rollup whose `reason` is absent — an older
+ * host, or a row written before the reason column existed. Every `not_run`
+ * return below sets a reason, so this is the pre-migration path only. Shared
+ * because it had already been pasted into eleven files and one copy had lost
+ * its full stop.
+ */
+export const NO_CI_REASON = "No CI has run on this commit.";
 
 /**
  * Below this age a missing CI run is more likely "hasn't started" than
@@ -66,14 +107,18 @@ export type ChecksRollupInput = {
    * we hold could read them. Null means "unknown", never "none required".
    */
   requiredContexts: readonly string[] | null;
-  requiredSource: RequiredContextSource;
   /**
    * GraphQL `mergeStateStatus === "blocked"`. Corroborating only: it conflates
    * missing checks with review-required and out-of-date branches, so it may
    * strengthen a not-run finding but must never downgrade a genuine pass.
    */
   mergeStateBlocked: boolean;
-  /** Age of the head commit, used only to choose between "yet" and "never". */
+  /**
+   * Age of the head commit. Distinguishes "CI has not started yet" from "CI
+   * never ran", and inside the grace window holds the rollup at `pending`.
+   * Null means unknown, which is treated as *stale* — a row whose age we
+   * cannot establish must not have a finding hidden behind a grace window.
+   */
   headCommitAgeMs: number | null;
 };
 
@@ -97,9 +142,9 @@ export type ChecksRollup = {
  */
 export function isCiProducerAppSlug(slug: string | null | undefined): boolean {
   const value = (slug ?? "").trim().toLowerCase();
-  // A missing slug is treated as non-CI: GitHub always populates it for
-  // Actions, so an absent one means we cannot vouch for the producer.
-  return CI_PRODUCER_APP_SLUGS.has(value);
+  // A missing slug cannot be vouched for, so it does not count as CI.
+  if (!value) return false;
+  return !NON_CI_PRODUCER_APP_SLUGS.has(value);
 }
 
 /**
@@ -119,11 +164,51 @@ export const COMMIT_STATUS_APP_SLUG = "commit_status";
  */
 export function isCiProducerCheck(appSlug: string | null | undefined): boolean {
   const value = (appSlug ?? "").trim().toLowerCase();
-  return value === COMMIT_STATUS_APP_SLUG || isCiProducerAppSlug(value);
+  if (value === COMMIT_STATUS_APP_SLUG) return true;
+  // Unlike the payload-level predicate, an ABSENT slug counts as CI here.
+  // These rows come from `PrCheck` lists, and `appSlug` only started being
+  // populated in this change — every persisted row, every older host, and the
+  // TUI's own action payloads carry checks with no slug at all. Failing those
+  // closed would report "CI has not run" for every legacy payload whose CI
+  // genuinely passed, which is the original bug pointing the other way.
+  // A named bot is still caught, because the denylist matches on the slug it
+  // does send.
+  if (!value) return true;
+  return isCiProducerAppSlug(value);
 }
 
 function isCiProducer(run: ChecksRollupCheckRun): boolean {
   return isCiProducerAppSlug(run.appSlug);
+}
+
+/**
+ * GitHub's check-run `status` enum is wider than the three values
+ * `pipelineStateOf` accepts: `waiting`, `requested` and `pending` also occur,
+ * and they arrive with a null conclusion. Folding those into `completed` would
+ * make them terminal-but-unknown, and a PR sitting on a deployment-approval
+ * gate would report "CI has not run" while its job is very much alive. They are
+ * in-flight, so they map to `queued`.
+ */
+function toPipelineStatus(
+  raw: string,
+  conclusion: string | null,
+): "queued" | "in_progress" | "completed" {
+  switch (raw) {
+    case "in_progress":
+      return "in_progress";
+    case "completed":
+      return "completed";
+    case "queued":
+    case "waiting":
+    case "requested":
+    case "pending":
+    default:
+      // A check can carry a terminal conclusion (e.g. `skipped`) before its
+      // status flips to `completed`; the code this replaced said so explicitly.
+      // Ignoring that here left `hasInFlight` true forever, so the PR could
+      // never leave `pending` and the chat card stayed `live` indefinitely.
+      return conclusion ? "completed" : "queued";
+  }
 }
 
 function commitStatusState(state: string): PrPipelineState {
@@ -155,10 +240,7 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
   const ciStates: PrPipelineState[] = [
     ...ciRuns.map((run) =>
       pipelineStateOf({
-        status:
-          run.status === "queued" || run.status === "in_progress" || run.status === "completed"
-            ? run.status
-            : "completed",
+        status: toPipelineStatus(run.status, run.conclusion),
         conclusion: run.conclusion,
       }),
     ),
@@ -172,6 +254,25 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
   const missingRequiredContexts = (input.requiredContexts ?? []).filter(
     (context) => !observedContexts.has(context.trim()),
   );
+
+  // Branch protection is the one authority that outranks producer guessing: if
+  // every required context reported and passed, this commit was verified, no
+  // matter which app ran the job. Without this, a repo whose CI is an app we do
+  // not recognise would sit at "not run" while its own merge gate was satisfied.
+  const requiredKnown = (input.requiredContexts?.length ?? 0) > 0;
+  const passedContexts = new Set<string>([
+    ...input.checkRuns
+      .filter((run) => pipelineStateOf({
+        status: toPipelineStatus(run.status, run.conclusion),
+        conclusion: run.conclusion,
+      }) === "passed")
+      .map((run) => run.name.trim()),
+    ...input.commitStatuses
+      .filter((status) => commitStatusState(status.state) === "passed")
+      .map((status) => status.context.trim()),
+  ]);
+  const allRequiredPassed =
+    requiredKnown && (input.requiredContexts ?? []).every((context) => passedContexts.has(context.trim()));
 
   const ciProducerCount = ciStates.length;
   const hasFailure = ciStates.some((state) => state === "failed");
@@ -199,12 +300,24 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
   // Required checks are known and some never reported. Something is expected
   // that has not arrived, so the rollup stays open rather than going green.
   if (missingRequiredContexts.length > 0) {
-    const stale = (input.headCommitAgeMs ?? 0) >= CI_PENDING_GRACE_MS;
+    const stale = (input.headCommitAgeMs ?? Number.POSITIVE_INFINITY) >= CI_PENDING_GRACE_MS;
     return {
-      status: hasPass || ciProducerCount > 0 ? "pending" : "not_run",
+      // Inside the grace window a required check that has not reported is
+      // simply one GitHub has not registered yet. Calling that "not run" made
+      // every single push flash a spurious "CI has not run" card before the
+      // suite appeared.
+      status: ciProducerCount > 0 || !stale ? "pending" : "not_run",
       reason: `${pluralize(missingRequiredContexts.length, "required check has", "required checks have")} not reported${stale ? "" : " yet"}: ${formatContexts(missingRequiredContexts)}.`,
       missingRequiredContexts,
     };
+  }
+
+  // Ordered AFTER the in-flight check on purpose: a satisfied branch-protection
+  // gate outranks the producer guess and the missing-context rule, but it must
+  // not claim "CI passed" while another job is still running — that is the same
+  // rollup-disagrees-with-the-rows failure this module exists to prevent.
+  if (allRequiredPassed) {
+    return { status: "passing", reason: null, missingRequiredContexts };
   }
 
   if (hasPass) {
@@ -226,10 +339,13 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
 
   // No CI producer at all. If other apps reported, or GitHub says the merge is
   // blocked, then something was expected here and its absence is the finding.
-  const stale = (input.headCommitAgeMs ?? 0) >= CI_PENDING_GRACE_MS;
+  const stale = (input.headCommitAgeMs ?? Number.POSITIVE_INFINITY) >= CI_PENDING_GRACE_MS;
   if (otherRuns.length > 0) {
     return {
-      status: "not_run",
+      // A commit pushed seconds ago whose CI suite has not registered yet is
+      // pending, not unverified. Only once the grace window closes is absence
+      // a finding.
+      status: stale ? "not_run" : "pending",
       reason: `${pluralize(otherRuns.length, "check", "checks")} reported, none from a CI provider. CI has ${stale ? "not run on this commit" : "not run yet"}.`,
       missingRequiredContexts,
     };
@@ -245,4 +361,75 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
   // Genuinely nothing anywhere, and nothing told us to expect anything. Stay
   // quiet rather than inventing a warning for repos that simply have no CI.
   return { status: "none", reason: null, missingRequiredContexts };
+}
+
+/**
+ * A flattened check row as the UI surfaces see it — check runs and legacy
+ * commit statuses already merged into one list, which is what `PrCheck` is.
+ */
+export type PrCheckRow = {
+  status: string;
+  conclusion: string | null;
+  appSlug?: string | null;
+};
+
+export type PrChecksRowRollup = {
+  status: PrChecksStatus;
+  counts: { passing: number; failing: number; pending: number; skipped: number; total: number };
+};
+
+/**
+ * Row-level rollup for surfaces that only ever have the merged check list and
+ * no required-context knowledge — the `ade` RPC server, the TUI right pane, the
+ * chat toolbars.
+ *
+ * ADE-135: each of those had grown its own pass/fail rule, and each got it
+ * wrong differently — one initialised its verdict to "passing" so zero checks
+ * read green, another counted `skipped` into the passed bucket, a third derived
+ * green from row counts alone. They share this instead. It applies the same two
+ * rules as `rollupChecks`: state comes from `pipelineStateOf`, and only a CI
+ * producer's success can carry a green.
+ */
+export function rollupPrChecks(checks: readonly PrCheckRow[]): PrChecksRowRollup {
+  let passing = 0;
+  let failing = 0;
+  let pending = 0;
+  let skipped = 0;
+
+  for (const check of checks) {
+    const state = pipelineStateOf({
+      status: toPipelineStatus(check.status, check.conclusion),
+      conclusion: check.conclusion,
+    });
+    // Only a CI producer's verdict counts toward pass/fail. Preview, review and
+    // comment apps are still tallied in `total` so the UI can say how many
+    // checks reported, but they cannot move the rollup.
+    if (!isCiProducerCheck(check.appSlug)) continue;
+    switch (state) {
+      case "passed":
+        passing += 1;
+        break;
+      case "failed":
+        failing += 1;
+        break;
+      case "running":
+      case "queued":
+        pending += 1;
+        break;
+      case "skipped":
+        skipped += 1;
+        break;
+      default:
+        break;
+    }
+  }
+
+  const counts = { passing, failing, pending, skipped, total: checks.length };
+  if (failing > 0) return { status: "failing", counts };
+  if (pending > 0) return { status: "pending", counts };
+  if (passing > 0) return { status: "passing", counts };
+  // No CI producer succeeded. If nothing at all reported we cannot even say
+  // something was expected, so stay quiet; otherwise this is the ADE-135 case.
+  if (checks.length === 0) return { status: "none", counts };
+  return { status: "not_run", counts };
 }

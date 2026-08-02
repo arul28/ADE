@@ -237,6 +237,10 @@ type LaneDetailsPr = NonNullable<Extract<RightPaneContent, { kind: "lane-details
 function laneDetailsPrChecksLineColor(pr: LaneDetailsPr): string {
   if (pr.checksPending > 0) return theme.color.running;
   if (pr.checksFailed > 0) return theme.color.error;
+  // ADE-135: an unverified commit is not a quiet neutral state — it is the
+  // finding — so it takes the attention colour rather than the muted one a
+  // clean pass gets.
+  if (pr.checksStatus === "not_run") return theme.color.attention;
   return theme.color.t3;
 }
 
@@ -254,8 +258,20 @@ function formatPrActivity(pr: LaneDetailsPr): string {
   if (pr.checksFailed > 0) {
     return `${pr.checksFailed} check${pr.checksFailed === 1 ? "" : "s"} failing`;
   }
-  if (pr.checksTotal > 0) {
+  // ADE-135: this said "checks passing" for any non-empty row list, which is
+  // exactly the ticket — on PR #988 three bot rows made `checksTotal` 3 while
+  // `checksPassed` stayed 0, and the line claimed a pass nothing had earned.
+  // The rollup, not the row count, decides.
+  if (pr.checksStatus === "not_run") {
+    return pr.checksTotal > 0
+      ? `CI not run · ${pr.checksTotal} check${pr.checksTotal === 1 ? "" : "s"}, none from CI`
+      : "CI not run";
+  }
+  if (pr.checksPassed > 0) {
     return "checks passing";
+  }
+  if (pr.checksTotal > 0) {
+    return `${pr.checksTotal} check${pr.checksTotal === 1 ? "" : "s"}`;
   }
   if (pr.state === "merged") return "merged";
   if (pr.state === "closed") return "closed";
@@ -607,7 +623,11 @@ function LaneDetailsPane({
               </Text>
               {content.pr.checksTotal > 0 ? (
                 <Text color={theme.color.t4} dimColor>
-                  {content.pr.checksPassed}/{content.pr.checksTotal} passing
+                  {/* ADE-135: "0/3 passing" would still invite the reader to
+                      treat the 3 as CI. Say what the rollup found instead. */}
+                  {content.pr.checksStatus === "not_run"
+                    ? `${content.pr.checksTotal} check${content.pr.checksTotal === 1 ? "" : "s"}, no CI`
+                    : `${content.pr.checksPassed}/${content.pr.checksTotal} passing`}
                 </Text>
               ) : null}
             </Box>
@@ -1256,7 +1276,10 @@ function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; 
     : pr.state === "merged"
       ? theme.color.violet
       : theme.color.t4;
-  const checksColor = pr.checksTotal === 0
+  // ADE-135: `passed === total` is not proof of a pass — on a PR whose only
+  // checks are preview/review bots the counts are producer-blind. The rollup
+  // decides whether green is earned.
+  const checksColor = pr.checksTotal === 0 || pr.checksStatus === "not_run"
     ? theme.color.t4
     : pr.checksPassed === pr.checksTotal
       ? theme.color.running
@@ -1269,7 +1292,9 @@ function ChatInfoPrBlock({ info, brandColor, width }: { info: ChatInfoSnapshot; 
         {pr.checksTotal > 0 ? (
           <>
             <Text color={theme.color.t4}>{" · checks "}</Text>
-            <Text color={checksColor}>{`${pr.checksPassed}/${pr.checksTotal}`}</Text>
+            <Text color={checksColor}>
+              {pr.checksStatus === "not_run" ? "not run" : `${pr.checksPassed}/${pr.checksTotal}`}
+            </Text>
           </>
         ) : null}
       </Box>

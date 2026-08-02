@@ -11613,7 +11613,7 @@ final class ADETests: XCTestCase {
   func testPrChecksSummaryFallsBackToOverallFailingStatus() {
     let stats = prChecksSummaryStats(checks: [], overallChecksStatus: "failing")
 
-    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 1, pending: 0, pass: 0, total: 1))
+    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 1, pending: 0, pass: 0, skipped: 0, total: 1))
     XCTAssertTrue(prChecksHasFailedSignal(checks: [], overallChecksStatus: "failing"))
     XCTAssertEqual(prChecksEmptyStateCopy(overallChecksStatus: "failing").title, "Checks failing")
   }
@@ -11631,8 +11631,195 @@ final class ADETests: XCTestCase {
     ]
     let stats = prChecksSummaryStats(checks: checks, overallChecksStatus: "failing")
 
-    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 1, total: 1))
+    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 1, skipped: 0, total: 1))
     XCTAssertFalse(prChecksHasFailedSignal(checks: checks, overallChecksStatus: "failing"))
+  }
+
+  // MARK: - ADE-135: nothing verified the commit
+
+  /// PR #988's shape: three third-party apps reported `success`, GitHub Actions
+  /// never registered a suite. Every surface below used to read this as a pass.
+  private func ade135ThirdPartyChecks() -> [PrCheck] {
+    ["CodeRabbit", "Vercel", "Greptile"].map { name in
+      PrCheck(
+        name: name,
+        status: "completed",
+        conclusion: "success",
+        detailsUrl: nil,
+        startedAt: nil,
+        completedAt: nil
+      )
+    }
+  }
+
+  func testPrChecksSummaryReportsNoPassesWhenRollupSaysNotRun() {
+    let stats = prChecksSummaryStats(checks: ade135ThirdPartyChecks(), overallChecksStatus: "not_run")
+
+    XCTAssertEqual(stats, PrChecksSummaryStats(fail: 0, pending: 0, pass: 0, skipped: 3, total: 3))
+    XCTAssertFalse(prChecksHasFailedSignal(checks: ade135ThirdPartyChecks(), overallChecksStatus: "not_run"))
+  }
+
+  func testPrChecksSummaryInventsNoRowForNotRunWithoutChecks() {
+    XCTAssertEqual(
+      prChecksSummaryStats(checks: [], overallChecksStatus: "not_run"),
+      PrChecksSummaryStats(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
+    )
+  }
+
+  func testPrChecksEmptyStateCarriesHostReasonForNotRun() {
+    let copy = prChecksEmptyStateCopy(
+      overallChecksStatus: "not_run",
+      checksReason: "3 checks reported, none from a CI provider."
+    )
+    XCTAssertEqual(copy.title, "No CI ran on this commit")
+    XCTAssertEqual(copy.message, "3 checks reported, none from a CI provider.")
+
+    // Older hosts send no reason; the copy must still be a sentence.
+    XCTAssertEqual(
+      prChecksEmptyStateCopy(overallChecksStatus: "not_run").message,
+      noCIReasonText
+    )
+  }
+
+  func testPrChecksGroupSummaryNeverShowsPassWhenNothingVerifiedTheCommit() {
+    let checks = ade135ThirdPartyChecks()
+
+    XCTAssertEqual(
+      prChecksGroupSummaryParts(checks: checks, notRun: false),
+      [PrChecksGroupSummaryPart(text: "3 pass", tone: .pass)]
+    )
+    XCTAssertEqual(
+      prChecksGroupSummaryParts(checks: checks, notRun: true),
+      [PrChecksGroupSummaryPart(text: "3 reported", tone: .muted)]
+    )
+  }
+
+  func testPrChecksLabelAndTintTreatNotRunAsAbsenceNotFailure() {
+    XCTAssertEqual(prChecksLabel("not_run"), "Not run")
+    XCTAssertEqual(prChecksTint("not_run"), ADEColor.textSecondary)
+    XCTAssertNotEqual(prChecksTint("not_run"), ADEColor.danger)
+    // An unknown state from a newer host must degrade, never render green.
+    XCTAssertEqual(prChecksTint("some_future_state"), ADEColor.textSecondary)
+  }
+
+  func testPrRowCiIndicatorDrawsHollowRingForNotRun() {
+    var item = ade135ListItem(checksStatus: "not_run")
+    item.checksReason = "3 checks reported, none from a CI provider."
+    let data = PrRowCard.Data(pr: item)
+
+    XCTAssertEqual(data.ciIndicator?.glyph, .hollowRing)
+    XCTAssertEqual(data.ciIndicator?.title, "3 checks reported, none from a CI provider.")
+    // `not_run` is a finding, not a warning banner, and never a failure label.
+    XCTAssertNil(data.warnMessage)
+
+    let passing = PrRowCard.Data(pr: ade135ListItem(checksStatus: "passing"))
+    XCTAssertEqual(passing.ciIndicator?.glyph, .symbol("checkmark.circle.fill"))
+
+    // "none" stays silent: nothing observed and nothing expected.
+    XCTAssertNil(PrRowCard.Data(pr: ade135ListItem(checksStatus: "none")).ciIndicator)
+  }
+
+  func testPrMergeChecklistReportsNoCiInsteadOfCountingThirdPartyRows() {
+    let items = PrMergeChecklist.build(
+      prState: "open",
+      summaryReviewStatus: "approved",
+      status: nil,
+      checks: ade135ThirdPartyChecks(),
+      reviews: [],
+      summaryChecksStatus: "not_run"
+    )
+
+    let checksRow = items.first { $0.id == "checks" }
+    XCTAssertEqual(checksRow?.label, "No CI has run on this commit")
+    XCTAssertEqual(checksRow?.state, .neutral)
+  }
+
+  func testPrMergeGateSublineDropsAllChecksGreenWhenNothingRan() {
+    let status = PrStatus(
+      prId: "pr-988",
+      state: "open",
+      checksStatus: "not_run",
+      reviewStatus: "approved",
+      isMergeable: true,
+      mergeConflicts: false,
+      behindBaseBy: 0
+    )
+    let gate = prComputeMergeGate(
+      status: status,
+      checks: ade135ThirdPartyChecks(),
+      summaryChecksStatus: "not_run",
+      reviewThreadsUnresolved: 0,
+      reviewsNeeded: 1,
+      reviewsHave: 1,
+      capabilities: nil
+    )
+
+    XCTAssertFalse(gate.subline.contains("all checks green"))
+    XCTAssertTrue(gate.subline.contains("no CI has run on this commit"))
+    // Tone stays green on purpose: it feeds merge enablement and this fix is not
+    // allowed to gate a merge. Only the sentence was false.
+    XCTAssertEqual(gate.tone, .green)
+  }
+
+  /// Older brains send neither `checks_reason` nor `checks_missing_required`, and
+  /// never send `not_run`. Decoding must not fail and must not invent a verdict.
+  func testPrStatusDecodesWithoutAde135FieldsFromOlderHosts() throws {
+    let json = """
+    {"prId":"pr-1","state":"open","checksStatus":"passing","reviewStatus":"approved",
+     "isMergeable":true,"mergeConflicts":false,"behindBaseBy":0}
+    """
+    let status = try JSONDecoder().decode(PrStatus.self, from: Data(json.utf8))
+
+    XCTAssertEqual(status.checksStatus, "passing")
+    XCTAssertNil(status.checksReason)
+    XCTAssertNil(status.checksMissingRequired)
+  }
+
+  func testPrStatusDecodesAde135FieldsWhenPresent() throws {
+    let json = """
+    {"prId":"pr-988","state":"open","checksStatus":"not_run",
+     "checksReason":"3 checks reported, none from a CI provider.",
+     "checksMissingRequired":["CI / build","CI / test"],
+     "reviewStatus":"approved","isMergeable":true,"mergeConflicts":false,"behindBaseBy":0}
+    """
+    let status = try JSONDecoder().decode(PrStatus.self, from: Data(json.utf8))
+
+    XCTAssertEqual(status.checksStatus, "not_run")
+    XCTAssertEqual(status.checksReason, "3 checks reported, none from a CI provider.")
+    // Declaration order is the ruleset's order and is never sorted.
+    XCTAssertEqual(status.checksMissingRequired, ["CI / build", "CI / test"])
+  }
+
+  private func ade135ListItem(checksStatus: String) -> PullRequestListItem {
+    PullRequestListItem(
+      id: "pr-988",
+      laneId: "lane-988",
+      laneName: "rate-limit",
+      projectId: "project-1",
+      repoOwner: "arul28",
+      repoName: "ADE",
+      githubPrNumber: 988,
+      githubUrl: "https://github.com/arul28/ADE/pull/988",
+      title: "GitHub Rate Limit Fallback",
+      state: "open",
+      baseBranch: "main",
+      headBranch: "lane/rate-limit",
+      checksStatus: checksStatus,
+      reviewStatus: "approved",
+      additions: 10,
+      deletions: 1,
+      lastSyncedAt: nil,
+      createdAt: "2026-08-01T00:00:00.000Z",
+      updatedAt: "2026-08-01T00:00:00.000Z",
+      adeKind: "single",
+      linkedGroupId: nil,
+      linkedGroupType: nil,
+      linkedGroupName: nil,
+      linkedGroupPosition: nil,
+      linkedGroupCount: 0,
+      workflowDisplayState: nil,
+      cleanupState: nil
+    )
   }
 
   func testPrMergeGateDoesNotShowGreenWhenStatusIsMissing() {

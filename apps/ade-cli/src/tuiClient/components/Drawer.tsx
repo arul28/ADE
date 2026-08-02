@@ -23,6 +23,7 @@ import {
 } from "../drawerLayout";
 import { Rail, statusGlyph, type StatusKind } from "./designKit";
 import { sessionLifecycleMarker, type SessionLifecycleMarker } from "../sessionLifecycle";
+import type { PrChecksStatus } from "../../../../desktop/src/shared/types/prs";
 
 export { visibleDrawerChatCount, visibleDrawerLaneCount };
 
@@ -38,6 +39,8 @@ export type DrawerPrSummary = {
   state: "open" | "closed" | "merged";
   checksPassed: number;
   checksTotal: number;
+  /** ADE-135 canonical rollup; `passed === total` is not proof of a pass. */
+  checksStatus?: PrChecksStatus;
   stack?: GitHubPrStackMembership | null;
 };
 
@@ -672,11 +675,23 @@ function LaneCard({
 
 function formatPrPillText(pr: DrawerPrSummary): string {
   const stack = pr.stack ? ` ≋${pr.stack.position}/${pr.stack.size}` : "";
-  return `[#${pr.number}${stack} ·${pr.checksPassed}/${pr.checksTotal}]`;
+  // ADE-135: the text twin of `PrPill` — it feeds the mouse hit-test width, so
+  // it has to say the same thing the pill renders, "no ci" included. A bare
+  // `3/3` here would put the ticket's lie back in the drawer.
+  const checks = pr.checksStatus === "not_run"
+    ? "no ci"
+    : `${pr.checksPassed}/${pr.checksTotal}`;
+  return `[#${pr.number}${stack} ·${checks}]`;
 }
 
 function PrPill({ pr }: { pr: DrawerPrSummary }) {
-  const checksColor = pr.checksPassed === pr.checksTotal ? theme.color.running : theme.color.attention;
+  // ADE-135: producer-blind counts can read N/N while nothing verified the
+  // commit, so the rollup gates the green.
+  const checksColor = pr.checksStatus === "not_run"
+    ? theme.color.t4
+    : pr.checksPassed === pr.checksTotal
+      ? theme.color.running
+      : theme.color.attention;
   return (
     <Text>
       <Text color={theme.color.violet}>[#</Text>
@@ -689,8 +704,14 @@ function PrPill({ pr }: { pr: DrawerPrSummary }) {
         </>
       ) : null}
       <Text color={theme.color.t3}> ·</Text>
-      <Text color={checksColor}>{pr.checksPassed}</Text>
-      <Text color={theme.color.t3}>/{pr.checksTotal}</Text>
+      {pr.checksStatus === "not_run" ? (
+        <Text color={checksColor}>no ci</Text>
+      ) : (
+        <>
+          <Text color={checksColor}>{pr.checksPassed}</Text>
+          <Text color={theme.color.t3}>/{pr.checksTotal}</Text>
+        </>
+      )}
       <Text color={theme.color.violet}>]</Text>
     </Text>
   );

@@ -1,6 +1,6 @@
 import React from "react";
 import {
-  GithubLogo, CheckCircle, XCircle, Circle,
+  GithubLogo, CheckCircle, XCircle, Circle, CircleDashed,
   CircleNotch, ArrowRight, Eye, Code,
   PencilSimple, X, Check, ArrowsClockwise, Play,
   CaretDown, CaretRight,
@@ -571,6 +571,9 @@ export function PrDetailPane({
   // One unified check set for the tab header, the CI rollup, and the adaptive
   // refresh cadence below.
   const headerChecks = React.useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
+  // Prefer the live status when we have it; fall back to the row. Both carry
+  // the canonical rollup, which the header's own bucket counts cannot see.
+  const checksStatusForHeader = status?.checksStatus ?? pr.checksStatus;
   const checksTerminal = React.useMemo(
     // An empty result is not terminal: a workflow may not have created its
     // first check run yet. Keep the checks-tab poll alive until at least one
@@ -1371,7 +1374,14 @@ export function PrDetailPane({
   const showDetailLoadingPill = (detailLoading || detailBusy) && !hasVisibleDetailData;
 
   const headerCi = React.useMemo(() => {
-    if (headerChecks.length === 0) return null;
+    // A `not_run` rollup with zero rows is the pure layer-3 case: required
+    // contexts are known and none reported. Returning null there left the
+    // header silent in exactly the situation the rule exists to surface.
+    if (headerChecks.length === 0) {
+      return checksStatusForHeader === "not_run"
+        ? { color: COLORS.textMuted, label: "No CI has run", icon: <CircleDashed size={12} weight="bold" /> }
+        : null;
+    }
     // Same rollup as the CI tab and the overview card — one implementation.
     const buckets = summarizePipelineStates(headerChecks);
     const passing = buckets.passed;
@@ -1383,8 +1393,18 @@ export function PrDetailPane({
     if (pending > 0) {
       return { color: COLORS.info, label: `${pending} running`, icon: <CircleNotch size={12} className="animate-spin" /> };
     }
+    // ADE-135: this pill is the surface in the ticket title. The bucket counts
+    // above are producer-blind, so three third-party successes rendered a green
+    // "3/3 passed" here. The canonical rollup decides whether green is earned.
+    if (checksStatusForHeader === "not_run") {
+      return {
+        color: COLORS.textMuted,
+        label: "No CI has run",
+        icon: <CircleDashed size={12} weight="bold" />,
+      };
+    }
     return { color: COLORS.checkPass, label: `${passing}/${headerChecks.length} passed`, icon: <CheckCircle size={12} weight="fill" /> };
-  }, [headerChecks]);
+  }, [headerChecks, checksStatusForHeader]);
 
   const DETAIL_TABS: Array<{ id: DetailTab; label: string; icon: React.ElementType; count?: number }> = [
     { id: "overview", label: "Overview", icon: Eye },
@@ -1674,6 +1694,7 @@ export function PrDetailPane({
             checks={checks}
             actionRuns={actionRuns}
             actionBusy={actionBusy}
+            checksStatus={checksStatusForHeader}
             unmapped={isUnmapped}
             onRerunChecks={pr.laneId ? handleRerunChecks : undefined}
             focusedCheckId={focusedCheckId}

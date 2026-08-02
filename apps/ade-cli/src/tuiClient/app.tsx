@@ -57,6 +57,8 @@ import type { FeedbackPreparedDraft, FeedbackSubmission } from "../../../desktop
 import type { ProjectSecretsListResult, ProjectSecretValueResult } from "../../../desktop/src/shared/types/projectSecrets";
 import type { SearchQueryResult, SearchResultItem } from "../../../desktop/src/shared/types/search";
 import type { ChatTerminalPreviewResult, ChatTerminalSession, UsageSnapshot } from "../../../desktop/src/shared/types";
+import { rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
+import type { PrChecksStatus } from "../../../desktop/src/shared/types/prs";
 import {
   DEFAULT_CODEX_REASONING_EFFORT,
   approveToolUse,
@@ -6071,6 +6073,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           checksPassed: number;
           checksTotal: number;
           checksPending: number;
+          checksStatus?: PrChecksStatus;
           checksFailed: number;
         } | null = null;
         if (activePr) {
@@ -6092,17 +6095,30 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
           let checksTotal = 0;
           let checksPending = 0;
           let checksFailed = 0;
+          let checksStatus: PrChecksStatus = "none";
           if (prId) {
-            const checks = await conn.actionList<Array<{ status?: string; conclusion?: string | null }>>("pr", "getChecks", [prId]).catch(() => null);
+            const checks = await conn.actionList<Array<{ status?: string; conclusion?: string | null; appSlug?: string | null }>>("pr", "getChecks", [prId]).catch(() => null);
             if (!cancelled && Array.isArray(checks)) {
-              checksTotal = checks.length;
-              checksPassed = checks.filter((check) => check.status === "completed" && check.conclusion === "success").length;
-              checksFailed = checks.filter((check) => check.conclusion === "failure").length;
-              checksPending = checks.filter((check) => check.status !== "completed").length;
+              // ADE-135: this hand-rolled the tally the rest of the branch
+              // centralised, and it was producer-blind — three third-party
+              // successes rendered `3/3` in the green theme colour, which is
+              // the ticket's exact lie on the TUI.
+              const rollup = rollupPrChecks(
+                checks.map((check) => ({
+                  status: check.status ?? "",
+                  conclusion: check.conclusion ?? null,
+                  appSlug: check.appSlug ?? null,
+                })),
+              );
+              checksTotal = rollup.counts.total;
+              checksPassed = rollup.counts.passing;
+              checksFailed = rollup.counts.failing;
+              checksPending = rollup.counts.pending;
+              checksStatus = rollup.status;
             }
           }
           if (number != null && url) {
-            pr = { number, state, url, checksPassed, checksTotal, checksPending, checksFailed };
+            pr = { number, state, url, checksPassed, checksTotal, checksPending, checksFailed, checksStatus };
           }
         }
 
@@ -8464,6 +8480,15 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     let unsubscribe: (() => void) | null = null;
     const refreshPrsByLane = async () => {
       try {
+        // ADE-135: `PrLaneSummary` now carries the service's canonical
+        // `checksStatus` (set by `summaryToLanePrSummary`), so the pill gates on
+        // that instead of inferring a pass from `checksPassed === checksTotal`.
+        // An earlier revision joined a second unscoped `pr listAll` call for the
+        // same field: redundant, an extra whole-history serialization on a 30s
+        // refresh, and strictly less correct — projection-backed and detached
+        // lanes are absent from `pull_requests`, so their status came back
+        // undefined and fell through to exactly the producer-blind green this
+        // ticket exists to remove.
         const prs = await listPrsByLane(connection);
         if (cancelled) return;
         const next: Record<string, DrawerPrSummary> = {};
@@ -8473,6 +8498,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
             state: pr.state,
             checksPassed: pr.checksPassed,
             checksTotal: pr.checksTotal,
+            checksStatus: pr.checksStatus,
             stack: pr.stack ?? null,
           };
         }

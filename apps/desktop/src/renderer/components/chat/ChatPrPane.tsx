@@ -26,6 +26,7 @@ import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -175,7 +176,7 @@ function notRunView(reason: string | null | undefined): ChecksView {
     icon: <MinusCircle size={11} weight="fill" />,
     text: "CI not run",
     tone: NOT_RUN_TONE,
-    title: reason ?? "No CI has run on this commit.",
+    title: reason ?? NO_CI_REASON,
   };
 }
 

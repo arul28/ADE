@@ -10,6 +10,7 @@ import type {
   PrActionJob,
   PrActionRun,
   PrCheck,
+  PrChecksStatus,
   PrReview,
   PrReviewThread,
   PrSummary,
@@ -149,10 +150,12 @@ function countBuckets(entries: RankedItem[]): { progress: AdeCardProgress; other
  * Actions jobs are CI by construction — they only exist because a workflow run
  * produced them. Check rows are classified by `isCiProducerCheck`, the same
  * predicate the rollup uses, so the headline and the rows can never go back to
- * disagreeing about what counts as CI. A check with no `appSlug` (older row, or
- * a producer GitHub did not name) lands in "Other": an unattributable success
- * is not evidence that CI ran. Any check whose name a job already covers is
- * dropped so the same work is not counted twice once both endpoints answered.
+ * disagreeing about what counts as CI. A check GitHub names as a preview or
+ * review bot lands in "Other" and cannot carry the headline; a slug-less row is
+ * CI-eligible, because `appSlug` only started being populated in this change
+ * and failing legacy rows closed would report "CI has not run" for every one of
+ * them. Any check whose name a job already covers is dropped so the same work
+ * is not counted twice once both endpoints answered.
  */
 function groupCheckItems(runs: PrActionRun[], checks: PrCheck[]): {
   ci: RankedItem[];
@@ -182,6 +185,28 @@ export function selectPrCardSession(
       || right.sessionId.localeCompare(left.sessionId)
     ))[0] ?? null;
 }
+
+/**
+ * Presentation per rollup state, as one exhaustive map rather than three
+ * parallel ternary ladders over the same discriminant.
+ *
+ * `not_run` and `none` are deliberately neutral: the card reports an absence,
+ * and an absence is not an alarm — only a real red job earns the warning tone.
+ * `none` used to fall through to "CI is running", which was its own small lie.
+ *
+ * Being a `Record<PrChecksStatus, …>` makes the next state a compile error
+ * here instead of three silent `else` arms.
+ */
+const CI_CARD_PRESENTATION: Record<
+  PrChecksStatus,
+  { title: string; tone: "success" | "warning" | "accent" | "neutral"; state: "live" | "terminal" }
+> = {
+  passing: { title: "CI passed", tone: "success", state: "terminal" },
+  failing: { title: "CI failed", tone: "warning", state: "terminal" },
+  pending: { title: "CI is running", tone: "accent", state: "live" },
+  not_run: { title: "CI has not run", tone: "neutral", state: "terminal" },
+  none: { title: "No checks reported", tone: "neutral", state: "terminal" },
+};
 
 export function buildPrCiCard(args: {
   pr: PrSummary;
@@ -214,27 +239,7 @@ export function buildPrCiCard(args: {
   const { progress, other } = countBuckets(groups.ci);
   const ciTotal = groups.ci.length;
   const otherTotal = groups.other.length;
-  const state = pr.checksStatus === "pending" ? "live" : "terminal";
-  const title = pr.checksStatus === "passing"
-    ? "CI passed"
-    : pr.checksStatus === "failing"
-      ? "CI failed"
-      : pr.checksStatus === "pending"
-        ? "CI is running"
-        : pr.checksStatus === "not_run"
-          // Checks exist or are expected, but nothing verified this commit. The
-          // old fallback said "CI is running" here, which was its own lie.
-          ? "CI has not run"
-          : "No checks reported";
-  // `not_run`/`none` are neutral on purpose: the card reports an absence, and
-  // an absence is not an alarm. Only a real red job earns the amber treatment.
-  const tone = pr.checksStatus === "failing"
-    ? "warning"
-    : pr.checksStatus === "passing"
-      ? "success"
-      : pr.checksStatus === "pending"
-        ? "accent"
-        : "neutral";
+  const { title, tone, state } = CI_CARD_PRESENTATION[pr.checksStatus];
   const reason = pr.checksReason?.trim() || null;
   const missingRequired = (pr.checksMissingRequired ?? []).map((c) => c.trim()).filter(Boolean);
   // A partial response is still degraded: the surviving endpoint's rows remain

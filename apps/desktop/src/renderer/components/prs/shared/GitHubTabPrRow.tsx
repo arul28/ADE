@@ -11,6 +11,7 @@ import { PrCiRunningIndicator } from "./prVisuals";
 import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
 import { branchNameFromRef } from "../tabs/githubPrBranch";
+import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -49,9 +50,6 @@ function stateBadgeStyle(item: GitHubPrListItem): React.CSSProperties {
     textTransform: "capitalize",
   };
 }
-
-/** Copy used when the producer had no more specific reason to offer. */
-const NO_CI_REASON = "No CI has run on this commit.";
 
 function PrRowCiStatus({
   status,

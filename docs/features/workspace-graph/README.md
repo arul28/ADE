@@ -374,7 +374,8 @@ The renderer's `buildGraphPrOverlay(args)` converts a PR summary +
 live detail into `GraphPrOverlay` so the graph can show PR state
 without every PR detail loaded:
 
-- `number`, `title`, `url`, `state`, `checksStatus`, `reviewStatus`
+- `number`, `title`, `url`, `state`, `checksStatus`, `checksReason`,
+  `reviewStatus`
 - `pendingCheckCount`, `approvedCount`, `changeRequestCount`,
   `commentCount`, `reviewCount`
 - `isMergeable`, `mergeConflicts`, `behindBaseBy`
@@ -384,7 +385,14 @@ without every PR detail loaded:
 - `detailLoaded` — whether the live detail bundle was present
 
 Nodes render PR badges via `prBadge` IIFE; edges can carry PR
-metadata via `GraphEdgeData.pr`.
+metadata via `GraphEdgeData.pr`. A `checksStatus` of `not_run` is tested before
+the "ready" case and renders a muted `PR #N CI not run` badge — nothing failed,
+but nothing verified the commit either, so an approved PR whose CI never ran
+must not fall through to the generic open badge. `checksReason` is always read
+from the same source as the `checksStatus` it explains (both from the live
+status, or both from the stored summary), so a `not_run` badge can never carry
+a stale caption about a state it no longer holds. See
+[pull-requests](../pull-requests/README.md#checks-rollup-what-counts-as-a-pass).
 
 ## Layout migration
 
