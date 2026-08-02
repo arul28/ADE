@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.50] - 2026-08-02
+
+### CI status accuracy
+
+- Require an actual CI producer (or a passing required context) before the checks rollup can render green; add a `not_run` state for commits nothing verified, applied consistently across desktop, iOS, Work chat, Lanes, the graph, the ade CLI, and the TUI.
+- Bring the merge checklist, agent-facing RPC summary, PR panes/pills, ade code drawer, and lane summaries onto the same canonical rollup.
+
+### Cross-machine Work
+
+- Fix remote-machine threads not showing their PR badge/header when the global machine selector points elsewhere; pin PR reads to the lane's owning machine.
+- Disable a PR-create click that cannot run instead of letting it silently no-op.
+
+### Fixes
+
+- Restore the native editor context menu on macOS right-click.
+
 ## [1.2.49] - 2026-08-01
 
 ### Activity across ADE
@@ -1319,6 +1335,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.50]: https://github.com/arul28/ADE/compare/v1.2.49...v1.2.50
 [1.2.49]: https://github.com/arul28/ADE/compare/v1.2.48...v1.2.49
 [1.2.48]: https://github.com/arul28/ADE/compare/v1.2.47...v1.2.48
 [1.2.47]: https://github.com/arul28/ADE/compare/v1.2.46...v1.2.47

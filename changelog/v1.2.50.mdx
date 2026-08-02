@@ -1,0 +1,23 @@
+---
+title: "v1.2.50"
+description: "Release notes for ADE v1.2.50 - August 2, 2026"
+---
+
+v1.2.50 makes CI status honest across every surface, brings PR context to cross-machine threads, and fixes a macOS right-click regression.
+
+---
+
+## CI status can no longer claim a pass nothing verified
+
+- **"CI passed" now requires an actual CI producer.** A PR whose only reporters were rate-limited or cancelled third-party apps used to render a green rollup. The checks rollup now requires a real CI producer (or a passing required context) before it can go green, and renders a new `not_run` state — a hollow ring, not an alarm — everywhere else: desktop, iOS, the Work-chat card, Lanes, the graph, the ade CLI, and the TUI.
+- **Fourteen surfaces inherited the same fix.** The merge checklist (desktop and iOS), the agent-facing RPC summary, PR panes and pills, the ade code drawer, and lane summaries all now defer to the same canonical rollup instead of tallying raw check rows.
+- Display-only: no merge button or automation gate changes behavior beyond the status they show.
+
+## Cross-machine PR context
+
+- **Remote-machine threads show their PR badge and header again.** PR reads are now pinned to the machine that owns the lane, so a session running on another machine shows its PR pill instead of going blank when the global selector points elsewhere.
+- A PR-create click that cannot run (no owning machine reachable) is now disabled with an explanatory hover instead of silently doing nothing.
+
+## Fixes
+
+- Restore the native editor context menu on macOS right-click.
