@@ -89,12 +89,15 @@ export function deriveMergeBlockers(args: {
   const checkSummary = summarizeChecks(checks);
   const blockersRollup = status?.checksStatus ?? pr.checksStatus;
   if (blockersRollup === "not_run") {
+    // The canonical verdict replaces the row counts rather than sitting beside
+    // them: when nothing verified the commit, any failing/pending rows are
+    // third-party, and reporting "2 pending required checks" would be the same
+    // producer-blind claim in a different tense.
     blockers.push({
       id: "no-ci",
       label: "No CI has run on this commit.",
     });
-  }
-  if (checkSummary.failing > 0) {
+  } else if (checkSummary.failing > 0) {
     blockers.push({
       id: "failing-checks",
       label: `${checkSummary.failing} required check${checkSummary.failing === 1 ? "" : "s"} ${checkSummary.failing === 1 ? "is" : "are"} failing.`,
@@ -231,7 +234,17 @@ export function buildMergeChecklist(args: {
   // rollup decides the verdict; the counts are still summarizeChecks' job.
   const summary = summarizeChecks(checks);
   const checksRollup = status?.checksStatus ?? pr.checksStatus;
-  if (summary.failing > 0) {
+  if (checksRollup === "not_run") {
+    // Ordered ahead of the raw counts on purpose: a `not_run` rollup can
+    // coexist with pending or failing third-party rows, and reporting those
+    // would put a producer-blind number where the honest answer is "nothing
+    // verified this commit".
+    items.push({
+      id: "checks",
+      label: "No CI has run on this commit",
+      state: "neutral",
+    });
+  } else if (summary.failing > 0) {
     items.push({
       id: "checks",
       label: `${summary.failing} failing check${summary.failing === 1 ? "" : "s"}`,
@@ -241,12 +254,6 @@ export function buildMergeChecklist(args: {
     items.push({
       id: "checks",
       label: `${summary.pending} pending check${summary.pending === 1 ? "" : "s"}`,
-      state: "neutral",
-    });
-  } else if (checksRollup === "not_run") {
-    items.push({
-      id: "checks",
-      label: "No CI has run on this commit",
       state: "neutral",
     });
   } else if (summary.passing > 0) {

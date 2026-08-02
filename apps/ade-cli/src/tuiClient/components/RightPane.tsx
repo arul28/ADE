@@ -235,12 +235,13 @@ export function computeLaneChatCounts(
 type LaneDetailsPr = NonNullable<Extract<RightPaneContent, { kind: "lane-details" }>["pr"]>;
 
 function laneDetailsPrChecksLineColor(pr: LaneDetailsPr): string {
+  // ADE-135: the canonical verdict outranks the row counts. A `not_run` rollup
+  // coexists with pending/failing THIRD-PARTY rows, so checking those first
+  // would colour an unverified commit as merely running or red-for-the-wrong-
+  // reason. An unverified commit is the finding, so it takes attention.
+  if (pr.checksStatus === "not_run") return theme.color.attention;
   if (pr.checksPending > 0) return theme.color.running;
   if (pr.checksFailed > 0) return theme.color.error;
-  // ADE-135: an unverified commit is not a quiet neutral state — it is the
-  // finding — so it takes the attention colour rather than the muted one a
-  // clean pass gets.
-  if (pr.checksStatus === "not_run") return theme.color.attention;
   return theme.color.t3;
 }
 
@@ -251,13 +252,6 @@ function laneDetailsPrChipStatus(state: LaneDetailsPr["state"]): "info" | "done"
 }
 
 function formatPrActivity(pr: LaneDetailsPr): string {
-  if (pr.checksPending > 0) {
-    const done = pr.checksTotal - pr.checksPending;
-    return `CI running · ${done}/${pr.checksTotal} done`;
-  }
-  if (pr.checksFailed > 0) {
-    return `${pr.checksFailed} check${pr.checksFailed === 1 ? "" : "s"} failing`;
-  }
   // ADE-135: this said "checks passing" for any non-empty row list, which is
   // exactly the ticket — on PR #988 three bot rows made `checksTotal` 3 while
   // `checksPassed` stayed 0, and the line claimed a pass nothing had earned.
@@ -266,6 +260,14 @@ function formatPrActivity(pr: LaneDetailsPr): string {
     return pr.checksTotal > 0
       ? `CI not run · ${pr.checksTotal} check${pr.checksTotal === 1 ? "" : "s"}, none from CI`
       : "CI not run";
+  }
+
+  if (pr.checksPending > 0) {
+    const done = pr.checksTotal - pr.checksPending;
+    return `CI running · ${done}/${pr.checksTotal} done`;
+  }
+  if (pr.checksFailed > 0) {
+    return `${pr.checksFailed} check${pr.checksFailed === 1 ? "" : "s"} failing`;
   }
   if (pr.checksPassed > 0) {
     return "checks passing";

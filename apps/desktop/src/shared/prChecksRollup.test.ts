@@ -99,7 +99,7 @@ describe("rollupChecks — producer awareness", () => {
     expect(result.status).toBe("not_run");
   });
 
-  it("recognizes only github-actions as a CI app slug", () => {
+  it("excludes known non-CI apps and admits everything else", () => {
     expect(isCiProducerAppSlug("github-actions")).toBe(true);
     expect(isCiProducerAppSlug("GitHub-Actions")).toBe(true);
     expect(isCiProducerAppSlug("vercel")).toBe(false);

@@ -377,7 +377,11 @@ export function formatPrChecks(value: unknown): string {
   const ok = rowRollup.counts.passing;
   const fail = rowRollup.counts.failing;
   const wait = rowRollup.counts.pending;
-  const notRun = rollup === "not_run" || rowRollup.status === "not_run";
+  // A supplied canonical `checksStatus` is authoritative: only the host knows
+  // about required contexts, the merge box, and the grace window. The row
+  // fallback speaks only when the payload carried no verdict at all — letting
+  // it override a supplied `passing` would contradict the contract above.
+  const notRun = rollup ? rollup === "not_run" : rowRollup.status === "not_run";
   const summary = notRun
     ? `CI: not run${reason ? ` — ${reason}` : ""}`
     : [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]

@@ -432,7 +432,12 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
 
   db.run.mockImplementation((sql: string, params: unknown[] = []) => {
     const text = String(sql);
-    if (text.includes("update pull_requests")) {
+    // Matches ONLY the projection update in `applyProjectionToLinkedPrRows`
+    // (its params end `… head_sha, id, project_id`). The substring used to be
+    // the bare "update pull_requests", which also matched `upsertRow`'s much
+    // longer UPDATE and then read two arbitrary columns as the id/project id —
+    // silently finding no row instead of failing loudly.
+    if (text.includes("update pull_requests") && text.includes("head_sha = coalesce(?, head_sha)")) {
       const prId = params[12];
       const projectIdParam = params[13];
       const row = rows.find((entry) => entry.id === prId && entry.project_id === projectIdParam);
@@ -843,11 +848,14 @@ describe("prService.getForLane", () => {
     });
   });
 
-  it("does not report a lane PR as fully passed when only bots reported", async () => {
-    // ADE-135: `checksPassed` counted any `success` row with no producer
-    // awareness, so a lane whose PR had only CodeRabbit/Vercel checks reported
-    // N/N — and every consumer inferring a pass from `passed === total`
-    // (the ade code drawer, the lane rail) painted it green.
+  it("carries the canonical checks rollup onto every lane PR summary", async () => {
+    // ADE-135: consumers (the ade code drawer, the lane rail) used to infer a
+    // pass from `checksPassed === checksTotal`, which is producer-blind. They
+    // read `checksStatus` now, so it has to survive the trip through
+    // `listPrsByLane`. This fixture seeds no snapshot rows, so it pins the
+    // no-checks path where the summary echoes the row's stored verdict; the
+    // producer-aware COUNTING it delegates to is covered by the
+    // `rollupPrChecks` suite in shared/prChecksRollup.test.ts.
     const lane = makeFakeLane({ id: "lane-bots", branchRef: "refs/heads/bots-feature" });
     const service = buildGetForLaneService(lane, [
       makePrRow({

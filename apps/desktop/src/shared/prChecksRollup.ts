@@ -306,7 +306,11 @@ export function rollupChecks(input: ChecksRollupInput): ChecksRollup {
       // simply one GitHub has not registered yet. Calling that "not run" made
       // every single push flash a spurious "CI has not run" card before the
       // suite appeared.
-      status: ciProducerCount > 0 || !stale ? "pending" : "not_run",
+      // `hasPass` keeps a partially-verified commit pending while it waits for
+      // the missing context. Bare `ciProducerCount > 0` used to do the same,
+      // which pinned a stale commit whose CI was entirely SKIPPED at `pending`
+      // forever — producers reported, but nothing verified anything.
+      status: hasPass || !stale ? "pending" : "not_run",
       reason: `${pluralize(missingRequiredContexts.length, "required check has", "required checks have")} not reported${stale ? "" : " yet"}: ${formatContexts(missingRequiredContexts)}.`,
       missingRequiredContexts,
     };

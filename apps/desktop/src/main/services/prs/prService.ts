@@ -4779,7 +4779,8 @@ export function createPrService({
      */
     headActivityAt: string | null;
     /**
-     * `bestEffort` turns a 403/rate-limit on /check-runs into `[]`, which is
+     * Set when EITHER checks fetch failed. `bestEffort` turns a 403/rate-limit
+     * on /check-runs or /commits/{sha}/status into an empty result, which is
      * byte-identical to "this commit has no checks". Recomputing from that
      * would flip a green PR to `not_run` and persist it to every surface,
      * so a failed fetch keeps whatever we last knew.
@@ -4846,7 +4847,7 @@ export function createPrService({
     let checkRunsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
       ? await Promise.all([
-          headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
+          headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
           headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
           bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
           baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
@@ -5173,7 +5174,7 @@ export function createPrService({
 
     let checkRunsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
-      restHeadSha ? fetchCombinedStatus(repo, restHeadSha) : Promise.resolve({ state: "", statuses: [] }),
+      restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
       restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
       bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),

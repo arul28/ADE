@@ -1633,6 +1633,10 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
   // Three green rows, zero CI: a review bot, a preview deploy, and a comment
   // bot. The rollup calls this "not_run" — the rows are real, the pass is not.
   "pr-5": [
+    // Slugs are load-bearing: an ABSENT `appSlug` is treated as CI-eligible
+    // (legacy rows carry none), so without them a producer-aware consumer like
+    // `groupCheckItems` would file all three under CI and the fixture would
+    // stop demonstrating the bug it exists to demonstrate.
     {
       name: "CodeRabbit",
       status: "completed",
@@ -1640,6 +1644,7 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       detailsUrl: "#",
       startedAt: now,
       completedAt: now,
+      appSlug: "coderabbitai",
     },
     {
       name: "Vercel — Preview",
@@ -1648,6 +1653,7 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       detailsUrl: "#",
       startedAt: now,
       completedAt: now,
+      appSlug: "vercel",
     },
     {
       name: "changeset-bot",
@@ -1656,6 +1662,7 @@ const MOCK_CHECKS_BY_PR: Record<string, any[]> = {
       detailsUrl: "#",
       startedAt: now,
       completedAt: now,
+      appSlug: "changeset-bot",
     },
   ],
 };

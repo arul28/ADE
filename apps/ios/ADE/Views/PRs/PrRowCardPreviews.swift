@@ -137,6 +137,9 @@ private enum PrRowCardPreviewData {
     var item = linkedPr559
     item.id = "pr-988"
     item.githubPrNumber = 988
+    // Cloned from the #559 fixture, so the URL has to be retargeted too —
+    // otherwise a preview action opens the wrong PR.
+    item.githubUrl = "https://github.com/arul28/ADE/pull/988"
     item.title = "GitHub Rate Limit Fallback"
     item.checksStatus = "not_run"
     item.checksReason = "3 checks reported, none from a CI provider. CI has not run on this commit."
