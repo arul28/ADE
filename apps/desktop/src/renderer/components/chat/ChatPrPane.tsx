@@ -12,6 +12,7 @@ import {
   GithubLogo,
   GitPullRequest,
   Lightning,
+  MinusCircle,
   Sparkle,
   X,
   XCircle,
@@ -25,6 +26,7 @@ import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { useAppStore } from "../../state/appStore";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
 /**
  * Left floating info-pane for an ADE chat's pull request. Mirrors the right
@@ -165,9 +167,29 @@ function liveDot(pr: PrSummary, relay: RelayState): { dot: string; label: string
     : { dot: "bg-amber-400/70", label, title: `Last ${via} ${label} ago` };
 }
 
-type ChecksView = { icon: React.ReactNode; text: string; tone: string };
+type ChecksView = { icon: React.ReactNode; text: string; tone: string; title?: string };
 
-function checksView(checks: PrCheck[] | null, fallback: PrSummary["checksStatus"]): ChecksView | null {
+const NOT_RUN_TONE = "text-fg/45";
+
+function notRunView(reason: string | null | undefined): ChecksView {
+  return {
+    icon: <MinusCircle size={11} weight="fill" />,
+    text: "CI not run",
+    tone: NOT_RUN_TONE,
+    title: reason ?? NO_CI_REASON,
+  };
+}
+
+function checksView(
+  checks: PrCheck[] | null,
+  fallback: PrSummary["checksStatus"],
+  reason?: string | null,
+): ChecksView | null {
+  // ADE-135: the rollup knows two things the per-job rows cannot show — which
+  // app produced each run, and which required contexts never reported at all.
+  // When it says nothing verified this commit, that verdict outranks any count
+  // of green rows; PR #988 had three third-party successes and zero CI.
+  if (fallback === "not_run") return notRunView(reason);
   if (checks && checks.length > 0) {
     const total = checks.length;
     const failing = checks.filter((check) => pipelineStateOf(check) === "failed").length;
@@ -179,6 +201,9 @@ function checksView(checks: PrCheck[] | null, fallback: PrSummary["checksStatus"
     if (running > 0) {
       return { icon: <Clock size={11} weight="fill" />, text: `${passing}/${total} checks running`, tone: "text-amber-300/80" };
     }
+    // Every row settled and not one of them succeeded (all skipped/neutral/
+    // cancelled). "0/3 checks" in green read as a pass; it is an absence.
+    if (passing === 0) return notRunView(reason);
     return { icon: <CheckCircle size={11} weight="fill" />, text: `${passing}/${total} checks`, tone: "text-emerald-300/80" };
   }
   switch (fallback) {
@@ -264,7 +289,13 @@ function PrDetails({
 }) {
   const tone = stateTone(pr.state);
   const live = liveDot(pr, relay);
-  const checksInfo = pr.state === "open" || pr.state === "draft" ? checksView(checks, pr.checksStatus) : null;
+  // The live status wins over the stored summary when we have it, and its
+  // reason must travel with the status it explains.
+  const checksStatus = status?.checksStatus ?? pr.checksStatus;
+  const checksReason = (status ? status.checksReason : pr.checksReason) ?? null;
+  const checksInfo = pr.state === "open" || pr.state === "draft"
+    ? checksView(checks, checksStatus, checksReason)
+    : null;
   const reviewInfo = reviewView(reviews, pr.reviewStatus);
   const mergeReady = isMergeReady(pr, status);
   const pulseHeader = deltaVisible && Boolean(delta) && delta!.kind !== "commit";
@@ -330,7 +361,7 @@ function PrDetails({
       <FieldPulse nonce={nonce} active={pulseChecks}>
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg/50">
           {checksInfo ? (
-            <span className={cn("inline-flex items-center gap-1", checksInfo.tone)}>
+            <span className={cn("inline-flex items-center gap-1", checksInfo.tone)} title={checksInfo.title}>
               {checksInfo.icon}
               {checksInfo.text}
             </span>

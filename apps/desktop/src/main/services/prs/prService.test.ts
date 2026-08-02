@@ -432,7 +432,12 @@ function installPullRequestRowStore(db: ReturnType<typeof makeMockDb>, initialRo
 
   db.run.mockImplementation((sql: string, params: unknown[] = []) => {
     const text = String(sql);
-    if (text.includes("update pull_requests")) {
+    // Matches ONLY the projection update in `applyProjectionToLinkedPrRows`
+    // (its params end `… head_sha, id, project_id`). The substring used to be
+    // the bare "update pull_requests", which also matched `upsertRow`'s much
+    // longer UPDATE and then read two arbitrary columns as the id/project id —
+    // silently finding no row instead of failing loudly.
+    if (text.includes("update pull_requests") && text.includes("head_sha = coalesce(?, head_sha)")) {
       const prId = params[12];
       const projectIdParam = params[13];
       const row = rows.find((entry) => entry.id === prId && entry.project_id === projectIdParam);
@@ -843,6 +848,33 @@ describe("prService.getForLane", () => {
     });
   });
 
+  it("carries the canonical checks rollup onto every lane PR summary", async () => {
+    // ADE-135: consumers (the ade code drawer, the lane rail) used to infer a
+    // pass from `checksPassed === checksTotal`, which is producer-blind. They
+    // read `checksStatus` now, so it has to survive the trip through
+    // `listPrsByLane`. This fixture seeds no snapshot rows, so it pins the
+    // no-checks path where the summary echoes the row's stored verdict; the
+    // producer-aware COUNTING it delegates to is covered by the
+    // `rollupPrChecks` suite in shared/prChecksRollup.test.ts.
+    const lane = makeFakeLane({ id: "lane-bots", branchRef: "refs/heads/bots-feature" });
+    const service = buildGetForLaneService(lane, [
+      makePrRow({
+        lane_id: lane.id,
+        state: "open",
+        github_pr_number: 988,
+        head_branch: "bots-feature",
+        checks_status: "not_run",
+      }),
+    ]);
+
+    const rows = await service.listPrsByLane();
+    const row = rows.find((entry) => entry.laneId === lane.id);
+
+    expect(row, "lane PR summary must exist").toBeTruthy();
+    expect(row!.checksStatus).toBe("not_run");
+    expect(row!.checksPassed).toBe(0);
+  });
+
   it("keeps listPrsByLane in parity with the branch-first per-lane resolver", async () => {
     const mappedLane = makeFakeLane({ id: "lane-mapped", branchRef: "refs/heads/mapped-feature" });
     const projectedLane = makeFakeLane({ id: "lane-projected", branchRef: "refs/heads/projected-feature" });
@@ -872,6 +904,10 @@ describe("prService.getForLane", () => {
         state: pr.state === "draft" ? "open" : pr.state,
         checksPassed: 0,
         checksTotal: 0,
+        // ADE-135: the rollup rides along so consumers never infer a pass from
+        // `checksPassed === checksTotal`. With no checks fetched it mirrors the
+        // row's own status.
+        checksStatus: pr.checksStatus,
         stack: pr.stack ?? null,
       }));
 
@@ -2867,6 +2903,77 @@ describe("prService.getStatus", () => {
     vi.clearAllMocks();
   });
 
+  it("keeps the previous checks rollup when the check-runs fetch fails", async () => {
+    // ADE-135: `bestEffort` turns a 403/rate-limit on /check-runs into `[]`,
+    // which is byte-identical to "this commit has no checks". Recomputing from
+    // that flipped a green PR to `not_run` and persisted it — and the row
+    // replicates to iOS, so a transient GitHub blip became a durable lie.
+    const row = makePrRow({
+      id: "pr-fetchfail",
+      github_pr_number: 91,
+      checks_status: "passing",
+      checks_reason: null,
+    });
+    const db = makeMockDb();
+    installPullRequestRowStore(db, [row]);
+    let checkRunCalls = 0;
+    const githubService = makeGithubService({
+      apiRequest: vi.fn(async (args: { method?: string; path: string }) => {
+        if (args.path === "/repos/test-owner/test-repo/pulls/91") {
+          return {
+            data: makeGitHubPull({
+              number: 91,
+              html_url: row.github_url,
+              title: row.title,
+              mergeable: true,
+              mergeable_state: "clean",
+              head: { ref: "my-feature", sha: "head-sha" },
+              base: { ref: "main", sha: "base-sha" },
+            }),
+          };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/status") {
+          return { data: { state: "", statuses: [] } };
+        }
+        if (args.path === "/repos/test-owner/test-repo/commits/head-sha/check-runs") {
+          checkRunCalls += 1;
+          throw new Error("403 rate limit exceeded");
+        }
+        if (args.path === "/repos/test-owner/test-repo/pulls/91/reviews") return { data: [] };
+        if (args.path.includes("/compare/")) return { data: { behind_by: 0 } };
+        if (args.path.includes("/rules/branches/")) return { data: [] };
+        if (args.path.includes("/protection")) return { data: {} };
+        if (args.method === "POST" && args.path === "/graphql") {
+          return {
+            data: {
+              data: {
+                repository: {
+                  viewerPermission: "WRITE",
+                  pullRequest: {
+                    mergeable: "MERGEABLE",
+                    mergeStateStatus: "CLEAN",
+                    reviewDecision: null,
+                    headRefOid: "head-sha",
+                    baseRef: { branchProtectionRule: null },
+                    latestOpinionatedReviews: { nodes: [] },
+                  },
+                },
+              },
+            },
+          };
+        }
+        return { data: {} };
+      }),
+    });
+    const { service } = buildService({ db, githubService });
+
+    const status = await service.getStatus("pr-fetchfail");
+
+    expect(checkRunCalls, "check-runs must actually have been attempted").toBe(1);
+    expect(status.checksStatus).toBe("passing");
+    expect(status.checksStatus).not.toBe("not_run");
+  });
+
   it("returns promptly without polling when GitHub mergeability is unknown", async () => {
     // getStatus must stay cheap so the renderer can re-poll: it does NOT block on
     // the long mergeability wait. When mergeability is still unknown it flags
@@ -3336,7 +3443,10 @@ describe("prService.refresh", () => {
     const initialUpsert = db.run.mock.calls.find(([sql]: [unknown]) =>
       String(sql).includes("update pull_requests") && String(sql).includes("created_at = ?")
     );
-    expect(initialUpsert?.[1]?.[15]).toBe(githubCreatedAt);
+    // Positional, so it moves whenever upsertRow gains a column. The four
+    // ADE-135 checks_reason/checks_missing_required params sit between
+    // checks_status and review_status, pushing created_at from 15 to 19.
+    expect(initialUpsert?.[1]?.[19]).toBe(githubCreatedAt);
 
     db.run.mockClear();
     merged = true;

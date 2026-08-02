@@ -475,6 +475,10 @@ alter table pull_requests add column head_sha text;
 
 alter table pull_requests add column creation_strategy text;
 alter table pull_requests add column merged_at text;
+-- ADE-135: the desktop rollup replicates these through cr-sqlite, so the column
+-- must exist before a changeset carrying it arrives.
+alter table pull_requests add column checks_reason text;
+alter table pull_requests add column checks_missing_required text;
 
 drop table if exists github_pr_cache;
 

@@ -390,6 +390,14 @@ function rowToPr(row) {
     baseBranch: String(row.base_branch ?? "main"),
     headBranch: String(row.head_branch ?? ""),
     checksStatus: row.checks_status ?? "none",
+    // ADE-135: the rollup's explanation and the required contexts that never
+    // reported travel with the status, so an exported "not_run" can be
+    // rendered with its reason instead of a bare muted badge.
+    checksReason: row.checks_reason ?? null,
+    checksMissingRequired: (() => {
+      const parsed = safeJson(row.checks_missing_required, []);
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    })(),
     reviewStatus: row.review_status ?? "none",
     additions: Number(row.additions ?? 0),
     deletions: Number(row.deletions ?? 0),

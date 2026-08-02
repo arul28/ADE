@@ -296,7 +296,9 @@ struct PrDetailView: View {
       linkedGroupCount: 0,
       workflowDisplayState: githubItem?.workflowDisplayState,
       cleanupState: githubItem?.cleanupState,
-      stack: githubItem?.stack
+      stack: githubItem?.stack,
+      checksReason: status?.checksReason,
+      checksMissingRequired: status?.checksMissingRequired
     )
   }
 
@@ -417,7 +419,8 @@ struct PrDetailView: View {
       summaryReviewStatus: snapshot?.status?.reviewStatus ?? currentPr.reviewStatus,
       status: snapshot?.status,
       checks: snapshot?.checks ?? [],
-      reviews: snapshot?.reviews ?? []
+      reviews: snapshot?.reviews ?? [],
+      summaryChecksStatus: currentPr.checksStatus
     )
   }
 
@@ -629,6 +632,10 @@ struct PrDetailView: View {
         PrChecksTab(
           checks: snapshot?.checks ?? [],
           overallChecksStatus: snapshot?.status?.checksStatus ?? currentPr.checksStatus,
+          checksReason: snapshot?.status?.checksReason ?? currentPr.checksReason,
+          missingRequired: snapshot?.status?.checksMissingRequired
+            ?? currentPr.checksMissingRequired
+            ?? [],
           actionRuns: actionRuns,
           deployments: deployments,
           canRerunChecks: canRerunChecks,

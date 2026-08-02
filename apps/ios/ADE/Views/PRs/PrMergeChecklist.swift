@@ -88,7 +88,8 @@ enum PrMergeChecklist {
     summaryReviewStatus: String,
     status: PrStatus?,
     checks: [PrCheck],
-    reviews: [PrReview]
+    reviews: [PrReview],
+    summaryChecksStatus: String? = nil
   ) -> [PrMergeChecklistItem] {
     var items: [PrMergeChecklistItem] = []
     let mergeState = status?.mergeStateStatus
@@ -145,7 +146,12 @@ enum PrMergeChecklist {
     }
 
     // --- Checks -------------------------------------------------------------
+    // ADE-135: `summarizeChecks` counts rows and is producer-blind, so a PR
+    // whose only checks are third-party apps reports passing == 3 and this row
+    // claimed "All 3 checks passed" — the ticket's lie, on the surface a reader
+    // trusts most. The canonical rollup decides the verdict; the counts stay.
     let summary = summarizeChecks(checks)
+    let checksRollup = status?.checksStatus ?? summaryChecksStatus
     if summary.failing > 0 {
       items.append(
         PrMergeChecklistItem(
@@ -159,6 +165,14 @@ enum PrMergeChecklist {
         PrMergeChecklistItem(
           id: "checks",
           label: "\(summary.pending) pending check\(summary.pending == 1 ? "" : "s")",
+          state: .neutral
+        )
+      )
+    } else if checksRollup == "not_run" {
+      items.append(
+        PrMergeChecklistItem(
+          id: "checks",
+          label: "No CI has run on this commit",
           state: .neutral
         )
       )

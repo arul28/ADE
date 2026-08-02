@@ -82,6 +82,18 @@ struct PrDetailSummarySection: View {
   private var state: String { snapshot?.status?.state ?? pr.state }
   private var stateTint: Color { prStateTint(state) }
   private var checksStatus: String { snapshot?.status?.checksStatus ?? pr.checksStatus }
+  private var checksReason: String? { snapshot?.status?.checksReason ?? pr.checksReason }
+
+  /// ADE-135. The merge gate counts *observed* failures, so a PR that nothing
+  /// ever verified still reaches its "All checks green" subline. Absence outranks
+  /// that copy here — the gate itself is left alone, this only changes what the
+  /// header says.
+  private var subline: String {
+    if checksStatus == "not_run" {
+      return checksReason ?? noCIReasonText
+    }
+    return mergeGate.subline
+  }
   private var files: [PrFile] { snapshot?.files ?? [] }
   private var commits: [PrCommit] { snapshot?.commits ?? [] }
 
@@ -97,7 +109,7 @@ struct PrDetailSummarySection: View {
     VStack(alignment: .leading, spacing: 0) {
       HStack(alignment: .center, spacing: 8) {
         PrTagChip(label: state.isEmpty ? "unknown" : state, color: stateTint)
-        Text(mergeGate.subline)
+        Text(subline)
           .font(.system(size: 12.5))
           .foregroundStyle(ADEColor.textSecondary)
           .lineLimit(2)

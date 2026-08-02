@@ -153,6 +153,17 @@ export function prCiDotColor(pr: GraphPrOverlay): string {
   return getPrCiDotColor({ checksStatus: pr.checksStatus, ciRunning: pr.pendingCheckCount > 0 });
 }
 
+/**
+ * Human label for a checks rollup in graph tooltips. Exists so `not_run` never
+ * reaches a user as the raw enum, and so it reads as absence ("not run")
+ * rather than as a state that could be mistaken for a result.
+ */
+export function prChecksLabel(status: GraphPrOverlay["checksStatus"]): string {
+  if (status === "not_run") return "not run";
+  if (status === "none") return "none";
+  return status;
+}
+
 export function iconGlyph(icon: LaneIcon): React.ReactNode {
   const match = ICON_OPTIONS.find((opt) => opt.key === icon);
   return match?.icon ?? null;

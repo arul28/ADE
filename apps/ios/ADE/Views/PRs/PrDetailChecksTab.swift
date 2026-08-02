@@ -4,34 +4,51 @@ struct PrChecksSummaryStats: Equatable {
   let fail: Int
   let pending: Int
   let pass: Int
+  /// ADE-135: neutral/skipped used to be folded into `pass`, so an all-skipped
+  /// suite rendered a green "3 pass" bar directly beneath the banner saying no
+  /// CI had run. They get their own muted bucket; `total` still sums the four.
+  let skipped: Int
   let total: Int
 }
 
 func prChecksSummaryStats(checks: [PrCheck], overallChecksStatus: String?) -> PrChecksSummaryStats {
-  var fail = 0, pending = 0, pass = 0
+  var fail = 0, pending = 0, pass = 0, skipped = 0
   for check in checks {
     switch prCheckConclusionKind(check) {
     case .success: pass += 1
     case .failure: fail += 1
     case .pending: pending += 1
-    // Neutral/skipped checks are non-failing outcomes; bucket them with pass so the
-    // stat strip's total always equals the sum of pass + fail + pending.
-    case .neutral: pass += 1
+    // Non-failing, but nothing was verified either — counting these as passes
+    // is the same mistake the rollup used to make.
+    case .neutral: skipped += 1
     }
   }
   if !checks.isEmpty {
-    return .init(fail: fail, pending: pending, pass: pass, total: checks.count)
+    // ADE-135: on PR #988 three third-party rows carried `success`, so a naive
+    // tally renders "3 pass" directly beneath a banner saying no CI ran. iOS
+    // cannot tell a test job from a preview bot on its own — the host already
+    // decided that and said `not_run`, so trust it and report those rows as
+    // unverified rather than reimplementing the producer rule here and letting
+    // the two drift.
+    if overallChecksStatus?.lowercased() == "not_run" {
+      return .init(fail: fail, pending: pending, pass: 0, skipped: pass + skipped, total: checks.count)
+    }
+    return .init(fail: fail, pending: pending, pass: pass, skipped: skipped, total: checks.count)
   }
 
   switch overallChecksStatus?.lowercased() {
   case "failing", "failure", "failed":
-    return .init(fail: 1, pending: 0, pass: 0, total: 1)
+    return .init(fail: 1, pending: 0, pass: 0, skipped: 0, total: 1)
   case "pending", "running", "in_progress":
-    return .init(fail: 0, pending: 1, pass: 0, total: 1)
+    return .init(fail: 0, pending: 1, pass: 0, skipped: 0, total: 1)
   case "passing", "success", "passed":
-    return .init(fail: 0, pending: 0, pass: 1, total: 1)
+    return .init(fail: 0, pending: 0, pass: 1, skipped: 0, total: 1)
+  // ADE-135: nothing verified the commit, so there is no synthetic row to invent
+  // in any bucket — least of all pass.
+  case "not_run":
+    return .init(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
   default:
-    return .init(fail: 0, pending: 0, pass: 0, total: 0)
+    return .init(fail: 0, pending: 0, pass: 0, skipped: 0, total: 0)
   }
 }
 
@@ -40,8 +57,18 @@ func prChecksHasFailedSignal(checks: [PrCheck], overallChecksStatus: String?) ->
     || prChecksSummaryStats(checks: checks, overallChecksStatus: overallChecksStatus).fail > 0
 }
 
-func prChecksEmptyStateCopy(overallChecksStatus: String?) -> (title: String, message: String) {
+func prChecksEmptyStateCopy(
+  overallChecksStatus: String?,
+  checksReason: String? = nil
+) -> (title: String, message: String) {
   switch overallChecksStatus?.lowercased() {
+  // ADE-135. Distinct from the default "No CI checks": there nothing was
+  // expected, here something was and it never arrived.
+  case "not_run":
+    return (
+      "No CI ran on this commit",
+      checksReason ?? noCIReasonText
+    )
   case "failing", "failure", "failed":
     return (
       "Checks failing",
@@ -68,6 +95,11 @@ func prChecksEmptyStateCopy(overallChecksStatus: String?) -> (title: String, mes
 struct PrChecksTab: View {
   let checks: [PrCheck]
   let overallChecksStatus: String?
+  /// Host-supplied explanation for a non-obvious rollup, e.g. "3 checks reported,
+  /// none from a CI provider."
+  let checksReason: String?
+  /// Required contexts that never reported, in the order GitHub declared them.
+  let missingRequired: [String]
   let actionRuns: [PrActionRun]
   let deployments: [PrDeployment]
   let canRerunChecks: Bool
@@ -77,6 +109,8 @@ struct PrChecksTab: View {
   init(
     checks: [PrCheck],
     overallChecksStatus: String? = nil,
+    checksReason: String? = nil,
+    missingRequired: [String] = [],
     actionRuns: [PrActionRun],
     deployments: [PrDeployment] = [],
     canRerunChecks: Bool,
@@ -85,6 +119,8 @@ struct PrChecksTab: View {
   ) {
     self.checks = checks
     self.overallChecksStatus = overallChecksStatus
+    self.checksReason = checksReason
+    self.missingRequired = missingRequired
     self.actionRuns = actionRuns
     self.deployments = deployments
     self.canRerunChecks = canRerunChecks
@@ -105,7 +141,18 @@ struct PrChecksTab: View {
   }
 
   private var emptyStateCopy: (title: String, message: String) {
-    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus)
+    prChecksEmptyStateCopy(overallChecksStatus: overallChecksStatus, checksReason: checksReason)
+  }
+
+  /// The canonical rollup said nothing verified this commit.
+  private var isNotRun: Bool {
+    overallChecksStatus?.lowercased() == "not_run"
+  }
+
+  /// True when the rollup itself is the finding: nothing verified the commit, so
+  /// the reason banner leads even if unrelated check rows did sync.
+  private var showsNotRunBanner: Bool {
+    isNotRun && !checks.isEmpty
   }
 
   var body: some View {
@@ -115,6 +162,10 @@ struct PrChecksTab: View {
       }
       PrChecksStatStrip(stats: stats)
 
+      if showsNotRunBanner {
+        PrChecksNotRunBanner(reason: checksReason ?? noCIReasonText)
+      }
+
       if checks.isEmpty {
         ADEEmptyStateView(
           symbol: "checklist",
@@ -123,8 +174,12 @@ struct PrChecksTab: View {
         )
       } else {
         ForEach(groups, id: \.kind) { group in
-          PrChecksGroupCard(group: group)
+          PrChecksGroupCard(group: group, notRun: isNotRun)
         }
+      }
+
+      if !missingRequired.isEmpty {
+        PrChecksMissingRequiredCard(contexts: missingRequired)
       }
 
       // Outline rerun button.
@@ -179,6 +234,10 @@ private struct PrChecksProgressBar: View {
     if total == 0 { return "no checks" }
     if stats.fail > 0 { return "\(stats.fail) failing" }
     if stats.pending > 0 { return "\(stats.pending) pending · \(stats.pass) passing" }
+    // ADE-135: "all passing" with zero passes is the lie in miniature. A suite
+    // that only skipped verified nothing, and says so.
+    if stats.pass == 0 && stats.skipped > 0 { return "\(stats.skipped) skipped · none passing" }
+    if stats.skipped > 0 { return "\(stats.pass) passing · \(stats.skipped) skipped" }
     return "all passing"
   }
 
@@ -192,7 +251,13 @@ private struct PrChecksProgressBar: View {
         Spacer(minLength: 6)
         Text(passSummary)
           .font(.system(size: 10.5, weight: .semibold))
-          .foregroundStyle(stats.fail > 0 ? ADEColor.danger : (stats.pending > 0 ? ADEColor.warning : ADEColor.success))
+          .foregroundStyle(
+            stats.fail > 0
+              ? ADEColor.danger
+              : (stats.pending > 0
+                  ? ADEColor.warning
+                  : (stats.pass > 0 ? ADEColor.success : ADEColor.textMuted))
+          )
       }
       .padding(.horizontal, 4)
 
@@ -201,10 +266,12 @@ private struct PrChecksProgressBar: View {
         let passW = geo.size.width * CGFloat(stats.pass) / CGFloat(total)
         let failW = geo.size.width * CGFloat(stats.fail) / CGFloat(total)
         let pendW = geo.size.width * CGFloat(stats.pending) / CGFloat(total)
+        let skipW = geo.size.width * CGFloat(stats.skipped) / CGFloat(total)
         HStack(spacing: 0) {
           if stats.fail > 0 { Rectangle().fill(ADEColor.danger).frame(width: failW) }
           if stats.pending > 0 { Rectangle().fill(ADEColor.warning).frame(width: pendW) }
           if stats.pass > 0 { Rectangle().fill(ADEColor.success).frame(width: passW) }
+          if stats.skipped > 0 { Rectangle().fill(ADEColor.textMuted.opacity(0.5)).frame(width: skipW) }
           if stats.total == 0 { Rectangle().fill(ADEColor.textMuted.opacity(0.3)) }
         }
         .clipShape(Capsule())
@@ -226,6 +293,9 @@ private struct PrChecksStatStrip: View {
       PrChecksStatTile(count: stats.fail, label: "Fail", tint: ADEColor.danger)
       PrChecksStatTile(count: stats.pending, label: "Pending", tint: ADEColor.warning)
       PrChecksStatTile(count: stats.pass, label: "Pass", tint: ADEColor.success)
+      if stats.skipped > 0 {
+        PrChecksStatTile(count: stats.skipped, label: "Skipped", tint: ADEColor.textMuted)
+      }
       PrChecksStatTile(count: stats.total, label: "Total", tint: PrGlassPalette.purpleBright)
     }
   }
@@ -269,6 +339,128 @@ private struct PrChecksStatTile: View {
       RoundedRectangle(cornerRadius: 12, style: .continuous)
         .strokeBorder(tint.opacity(0.38), lineWidth: 0.75)
     )
+  }
+}
+
+// MARK: - Not-run banner
+
+/// ADE-135. Shown when checks synced but none of them verified the commit — the
+/// case that used to render as "CI passed". Muted, not red: this is a gap in what
+/// we know, not a failing build.
+private struct PrChecksNotRunBanner: View {
+  let reason: String
+
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      Circle()
+        .strokeBorder(
+          ADEColor.textSecondary,
+          style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6])
+        )
+        .frame(width: 15, height: 15)
+        .padding(.top, 1)
+
+      VStack(alignment: .leading, spacing: 3) {
+        Text("No CI ran on this commit")
+          .font(.footnote.weight(.semibold))
+          .foregroundStyle(ADEColor.textPrimary)
+        Text(reason)
+          .font(.system(size: 11))
+          .foregroundStyle(ADEColor.textSecondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 11)
+    .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+    .overlay(
+      RoundedRectangle(cornerRadius: 14, style: .continuous)
+        .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+    )
+    .accessibilityElement(children: .combine)
+  }
+}
+
+// MARK: - Missing required contexts
+
+/// Required contexts GitHub declared that never reported. Rendered as dimmed
+/// ghost rows in the order the API gave them (no sorting — that order is how the
+/// ruleset reads), so a job that never ran is visible as an empty slot rather
+/// than as nothing at all.
+private struct PrChecksMissingRequiredCard: View {
+  let contexts: [String]
+
+  var body: some View {
+    VStack(alignment: .leading, spacing: 4) {
+      HStack(alignment: .firstTextBaseline, spacing: 8) {
+        Text("REQUIRED · NOT REPORTED")
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .tracking(1.2)
+          .foregroundColor(ADEColor.textSecondary)
+        Spacer(minLength: 12)
+        Text("\(contexts.count) missing")
+          .font(.system(size: 11, weight: .semibold, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+      }
+      .padding(.horizontal, 4)
+      .padding(.vertical, 4)
+
+      VStack(spacing: 0) {
+        ForEach(Array(contexts.enumerated()), id: \.offset) { index, context in
+          if index > 0 {
+            Divider().overlay(ADEColor.glassBorder)
+          }
+          PrChecksMissingRequiredRow(context: context)
+        }
+      }
+      .background(ADEColor.glassBackground, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 14, style: .continuous)
+          .strokeBorder(ADEColor.glassBorder, lineWidth: 0.5)
+      )
+    }
+  }
+}
+
+private struct PrChecksMissingRequiredRow: View {
+  let context: String
+
+  var body: some View {
+    HStack(alignment: .center, spacing: 10) {
+      // Same hollow dashed ring as the PR row card: an empty slot where a result
+      // should be.
+      ZStack {
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(ADEColor.textSecondary.opacity(0.08))
+        Circle()
+          .strokeBorder(
+            ADEColor.textSecondary,
+            style: StrokeStyle(lineWidth: 1.2, lineCap: .round, dash: [2.0, 2.4])
+          )
+          .frame(width: 12, height: 12)
+      }
+      .frame(width: 22, height: 22)
+
+      VStack(alignment: .leading, spacing: 2) {
+        Text(context)
+          .font(.system(.footnote, design: .monospaced).weight(.semibold))
+          .foregroundStyle(ADEColor.textSecondary)
+          .lineLimit(1)
+        Text("required · not reported")
+          .font(.system(size: 10, design: .monospaced))
+          .foregroundStyle(ADEColor.textMuted)
+          .lineLimit(1)
+      }
+
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 12)
+    .padding(.vertical, 10)
+    .opacity(0.72)
+    .accessibilityElement(children: .combine)
+    .accessibilityLabel("\(context), required, not reported")
   }
 }
 
@@ -319,42 +511,68 @@ private struct PrCheckGroup {
   }
 }
 
+/// One coloured fragment of a group card's right-hand summary. Split out from the
+/// view so ADE-135's "never green when nothing verified the commit" rule can be
+/// asserted without rendering.
+struct PrChecksGroupSummaryPart: Equatable {
+  enum Tone: Equatable { case fail, pending, pass, muted }
+  let text: String
+  let tone: Tone
+}
+
+/// ADE-135. The per-group tally is producer-blind in exactly the way the top-level
+/// rollup used to be: three third-party apps reporting `success` rendered a green
+/// "3 pass" in the CI group, directly under the banner saying no CI ran. When the
+/// host says `not_run`, those rows are reported as arrived-but-unverifying instead
+/// of as passes, so no green survives anywhere on the screen.
+func prChecksGroupSummaryParts(checks: [PrCheck], notRun: Bool) -> [PrChecksGroupSummaryPart] {
+  var pass = 0
+  var fail = 0
+  var pending = 0
+  for check in checks {
+    switch prCheckConclusionKind(check) {
+    case .success: pass += 1
+    case .failure: fail += 1
+    case .pending: pending += 1
+    case .neutral: break
+    }
+  }
+  var parts: [PrChecksGroupSummaryPart] = []
+  if fail > 0 {
+    parts.append(.init(text: "\(fail) fail", tone: .fail))
+  }
+  if pending > 0 {
+    parts.append(.init(text: "\(pending) pending", tone: .pending))
+  }
+  if pass > 0 {
+    parts.append(
+      notRun
+        ? .init(text: "\(pass) reported", tone: .muted)
+        : .init(text: "\(pass) pass", tone: .pass)
+    )
+  }
+  if parts.isEmpty {
+    return [.init(text: "\(checks.count) total", tone: .muted)]
+  }
+  return parts
+}
+
 private struct PrChecksGroupCard: View {
   let group: PrCheckGroup
+  /// The canonical rollup says nothing verified this commit.
+  let notRun: Bool
+
+  private func color(for tone: PrChecksGroupSummaryPart.Tone) -> Color {
+    switch tone {
+    case .fail: return ADEColor.danger
+    case .pending: return ADEColor.warning
+    case .pass: return ADEColor.success
+    case .muted: return ADEColor.textSecondary
+    }
+  }
 
   private var summary: AttributedString {
-    var pass = 0
-    var fail = 0
-    var pending = 0
-    for check in group.checks {
-      switch prCheckConclusionKind(check) {
-      case .success: pass += 1
-      case .failure: fail += 1
-      case .pending: pending += 1
-      case .neutral: break
-      }
-    }
-    var parts: [AttributedString] = []
-    if fail > 0 {
-      var f = AttributedString("\(fail) fail")
-      f.foregroundColor = ADEColor.danger
-      parts.append(f)
-    }
-    if pending > 0 {
-      var p = AttributedString("\(pending) pending")
-      p.foregroundColor = ADEColor.warning
-      parts.append(p)
-    }
-    if pass > 0 {
-      var s = AttributedString("\(pass) pass")
-      s.foregroundColor = ADEColor.success
-      parts.append(s)
-    }
-    if parts.isEmpty {
-      var s = AttributedString("\(group.checks.count) total")
-      s.foregroundColor = ADEColor.textSecondary
-      return s
-    }
+    let parts = prChecksGroupSummaryParts(checks: group.checks, notRun: notRun)
     var result = AttributedString("")
     for (index, part) in parts.enumerated() {
       if index > 0 {
@@ -362,7 +580,9 @@ private struct PrChecksGroupCard: View {
         sep.foregroundColor = ADEColor.textMuted
         result.append(sep)
       }
-      result.append(part)
+      var fragment = AttributedString(part.text)
+      fragment.foregroundColor = color(for: part.tone)
+      result.append(fragment)
     }
     return result
   }

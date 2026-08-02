@@ -130,10 +130,38 @@ private enum PrRowCardPreviewData {
     commentCount: 0
   )
 
+  // ADE-135. The PR nothing verified: third-party apps reported success, GitHub
+  // Actions never registered a suite. The row must show a hollow dashed ring, not
+  // the green checkmark this used to render.
+  static let linkedPr988NotRun: PullRequestListItem = {
+    var item = linkedPr559
+    item.id = "pr-988"
+    item.githubPrNumber = 988
+    // Cloned from the #559 fixture, so the URL has to be retargeted too —
+    // otherwise a preview action opens the wrong PR.
+    item.githubUrl = "https://github.com/arul28/ADE/pull/988"
+    item.title = "GitHub Rate Limit Fallback"
+    item.checksStatus = "not_run"
+    item.checksReason = "3 checks reported, none from a CI provider. CI has not run on this commit."
+    item.checksMissingRequired = ["CI / build"]
+    return item
+  }()
+
+  static let github988NotRun: GitHubPrListItem = {
+    var item = github559
+    item.id = "gh-988"
+    item.githubPrNumber = 988
+    item.githubUrl = "https://github.com/arul28/ADE/pull/988"
+    item.title = "GitHub Rate Limit Fallback"
+    item.linkedPrId = linkedPr988NotRun.id
+    return item
+  }()
+
   static var githubListRows: some View {
     ScrollView {
       VStack(spacing: 0) {
         PrRowCard(item: github559, linkedPr: linkedPr559)
+        PrRowCard(item: github988NotRun, linkedPr: linkedPr988NotRun)
         PrRowCard(item: github346)
         PrRowCard(item: github425)
       }
@@ -157,6 +185,15 @@ private enum PrRowCardPreviewData {
   PrRowCard(
     item: PrRowCardPreviewData.github559,
     linkedPr: PrRowCardPreviewData.linkedPr559
+  )
+  .padding(.horizontal, 16)
+  .background(PrsLiquidBackdrop())
+}
+
+#Preview("CI not run · PR #988") {
+  PrRowCard(
+    item: PrRowCardPreviewData.github988NotRun,
+    linkedPr: PrRowCardPreviewData.linkedPr988NotRun
   )
   .padding(.horizontal, 16)
   .background(PrsLiquidBackdrop())

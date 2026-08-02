@@ -21,6 +21,9 @@ function githubItemToLanePr(item: GitHubPrListItem, laneId: string): PrSummary {
     state: item.isDraft ? "draft" : item.state,
     baseBranch: item.baseBranch ?? "",
     headBranch: item.headBranch ?? "",
+    // "none", not "not_run": the GitHub list endpoint carries no check data at
+    // all, so we have observed nothing rather than observed an absence. Only a
+    // rollup that actually looked at the commit may claim "not_run" (ADE-135).
     checksStatus: "none",
     reviewStatus: "none",
     additions: 0,

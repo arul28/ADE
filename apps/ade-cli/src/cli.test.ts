@@ -2784,6 +2784,53 @@ describe("ADE CLI", () => {
     });
   });
 
+  // ADE-135: `ade prs checks` printed nothing but the row table, so three
+  // third-party bot rows each rendering `OK` read as a passing commit. The
+  // canonical rollup now travels with the rows and leads the output.
+  it("leads `prs checks --text` with the canonical rollup, not the row tally", () => {
+    const opts = {
+      ...baseResolveOpts(),
+      projectRoot: null,
+      workspaceRoot: null,
+      text: true,
+    };
+    const notRun = formatOutput(
+      {
+        success: true,
+        prId: "pr-988",
+        checksStatus: "not_run",
+        checksCounts: { passing: 0, failing: 0, pending: 0, total: 3 },
+        checks: [
+          { name: "CodeRabbit", status: "completed", conclusion: "success", appSlug: "coderabbitai" },
+          { name: "Vercel — Preview", status: "completed", conclusion: "success", appSlug: "vercel" },
+          { name: "changeset-bot", status: "completed", conclusion: "success", appSlug: "changeset-bot" },
+        ],
+      },
+      opts,
+      "pr-checks",
+    );
+    expect(notRun).toContain("ADE PR checks - not run");
+    expect(notRun).toContain("3 checks reported");
+    // The raw enum must never reach the reader — the phrase is the point.
+    expect(notRun).not.toContain("not_run");
+
+    const passing = formatOutput(
+      {
+        success: true,
+        prId: "pr-42",
+        checksStatus: "passing",
+        checksCounts: { passing: 2, failing: 0, pending: 0, total: 2 },
+        checks: [
+          { name: "ci / unit", status: "completed", conclusion: "success", appSlug: "github-actions" },
+          { name: "ci / lint", status: "completed", conclusion: "success", appSlug: "github-actions" },
+        ],
+      },
+      opts,
+      "pr-checks",
+    );
+    expect(passing).toContain("ADE PR checks - passing (2 passing");
+  });
+
   describe("chat create parent lineage", () => {
     const savedParentEnv = process.env.ADE_CHAT_SESSION_ID;
     afterEach(() => {

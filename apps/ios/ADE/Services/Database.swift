@@ -1397,8 +1397,8 @@ final class DatabaseService {
           insert into pull_requests(
             id, project_id, lane_id, repo_owner, repo_name, github_pr_number, github_url, github_node_id,
             title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-            last_synced_at, created_at, updated_at, merged_at
-          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            last_synced_at, created_at, updated_at, merged_at, checks_reason, checks_missing_required
+          ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
           on conflict(id) do update set
             project_id = excluded.project_id,
             lane_id = excluded.lane_id,
@@ -1418,7 +1418,11 @@ final class DatabaseService {
             last_synced_at = excluded.last_synced_at,
             created_at = excluded.created_at,
             updated_at = excluded.updated_at,
-            merged_at = coalesce(excluded.merged_at, merged_at)
+            merged_at = coalesce(excluded.merged_at, merged_at),
+            -- Plain assignment, like checks_status: the reason legitimately clears
+            -- when a later rollup no longer needs to explain itself.
+            checks_reason = excluded.checks_reason,
+            checks_missing_required = excluded.checks_missing_required
         """) { statement in
           try bindText(pr.id, to: statement, index: 1)
           try bindText(projectId, to: statement, index: 2)
@@ -1452,6 +1456,12 @@ final class DatabaseService {
           } else {
             sqlite3_bind_null(statement, 20)
           }
+          if let checksReason = pr.checksReason {
+            try bindText(checksReason, to: statement, index: 21)
+          } else {
+            sqlite3_bind_null(statement, 21)
+          }
+          try bindOptionalJson(pr.checksMissingRequired, to: statement, index: 22)
         }
 
         _ = try execute("""
@@ -2254,7 +2264,8 @@ final class DatabaseService {
       select pr.id, pr.lane_id, pr.project_id, pr.repo_owner, pr.repo_name, pr.github_pr_number,
              pr.github_url, pr.github_node_id,
              title, state, base_branch, head_branch, checks_status, review_status, additions, deletions,
-             last_synced_at, created_at, updated_at, merged_at, stack_snapshot.stack_json
+             last_synced_at, created_at, updated_at, merged_at, stack_snapshot.stack_json,
+             pr.checks_reason, pr.checks_missing_required
         from pull_requests pr
         left join pull_request_stack_snapshots stack_snapshot on stack_snapshot.pr_id = pr.id
        where pr.project_id = ?
@@ -2287,7 +2298,9 @@ final class DatabaseService {
         stack: decodeJson(
           stringValue(statement, index: 20),
           as: GitHubPrStackMembership.self
-        )
+        ),
+        checksReason: stringValue(statement, index: 21),
+        checksMissingRequired: decodeJson(stringValue(statement, index: 22), as: [String].self)
       )
     }
   }
@@ -2386,6 +2399,8 @@ final class DatabaseService {
              pr.created_at,
              pr.updated_at,
              stack_snapshot.stack_json,
+             pr.checks_reason,
+             pr.checks_missing_required,
     \(prGroupSelect)
     \(integrationSelect)
         from pull_requests pr
@@ -2429,14 +2444,14 @@ final class DatabaseService {
         lastSyncedAt: stringValue(statement, index: 16),
         createdAt: stringValue(statement, index: 17) ?? "",
         updatedAt: stringValue(statement, index: 18) ?? "",
-        groupId: stringValue(statement, index: 20),
-        groupType: stringValue(statement, index: 21),
-        groupName: stringValue(statement, index: 22),
-        groupPosition: columnIsNull(statement, index: 23) ? nil : Int(sqlite3_column_int64(statement, 23)),
-        groupCount: Int(sqlite3_column_int64(statement, 24)),
-        workflowDisplayState: stringValue(statement, index: 25),
-        cleanupState: stringValue(statement, index: 26),
-        linkedWorkflowGroupId: stringValue(statement, index: 27)
+        groupId: stringValue(statement, index: 22),
+        groupType: stringValue(statement, index: 23),
+        groupName: stringValue(statement, index: 24),
+        groupPosition: columnIsNull(statement, index: 25) ? nil : Int(sqlite3_column_int64(statement, 25)),
+        groupCount: Int(sqlite3_column_int64(statement, 26)),
+        workflowDisplayState: stringValue(statement, index: 27),
+        cleanupState: stringValue(statement, index: 28),
+        linkedWorkflowGroupId: stringValue(statement, index: 29)
       )
 
       let adeKind: String?
@@ -2479,7 +2494,9 @@ final class DatabaseService {
         stack: decodeJson(
           stringValue(statement, index: 19),
           as: GitHubPrStackMembership.self
-        )
+        ),
+        checksReason: stringValue(statement, index: 20),
+        checksMissingRequired: decodeJson(stringValue(statement, index: 21), as: [String].self)
       )
     }
   }
@@ -3019,6 +3036,11 @@ final class DatabaseService {
     try ensureColumn(tableName: "pull_requests", columnName: "merge_method", definition: "text")
     try ensureColumn(tableName: "pull_requests", columnName: "commit_count", definition: "integer")
     try ensureColumn(tableName: "pull_requests", columnName: "changed_files", definition: "integer")
+    // ADE-135: the checks rollup now carries its own explanation and the required
+    // contexts that never reported, so "CI passed" can no longer stand in for
+    // "nothing ran". `checks_missing_required` is a JSON array of context names.
+    try ensureColumn(tableName: "pull_requests", columnName: "checks_reason", definition: "text")
+    try ensureColumn(tableName: "pull_requests", columnName: "checks_missing_required", definition: "text")
     try exec("""
       create table if not exists pull_request_snapshots (
         pr_id text primary key,

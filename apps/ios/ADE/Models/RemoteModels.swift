@@ -4018,6 +4018,12 @@ struct PrSummary: Codable, Identifiable, Equatable {
   var creationStrategy: String? = nil
   /// Native GitHub stack membership. Nil against hosts before stacked PR support.
   var stack: GitHubPrStackMembership? = nil
+  /// ADE-135. One sentence explaining a non-obvious checks rollup, e.g. "3 checks
+  /// reported, none from a CI provider." Nil when the state speaks for itself, and
+  /// on hosts that predate the rollup.
+  var checksReason: String? = nil
+  /// Required check contexts that never reported, in the order GitHub declared them.
+  var checksMissingRequired: [String]? = nil
 }
 
 struct PullRequestListItem: Codable, Identifiable, Equatable {
@@ -4055,6 +4061,10 @@ struct PullRequestListItem: Codable, Identifiable, Equatable {
   var mergeMethod: String? = nil
   var commitCount: Int? = nil
   var changedFiles: Int? = nil
+  /// See `PrSummary.checksReason`.
+  var checksReason: String? = nil
+  /// See `PrSummary.checksMissingRequired`.
+  var checksMissingRequired: [String]? = nil
 }
 
 struct PrGroupMemberSummary: Codable, Identifiable, Equatable {
@@ -4113,6 +4123,10 @@ struct PrStatus: Codable, Equatable {
   var prId: String
   var state: String
   var checksStatus: String
+  /// See `PrSummary.checksReason`.
+  var checksReason: String?
+  /// See `PrSummary.checksMissingRequired`.
+  var checksMissingRequired: [String]?
   var reviewStatus: String
   var isMergeable: Bool
   var mergeConflicts: Bool
@@ -4136,7 +4150,8 @@ struct PrStatus: Codable, Equatable {
   /// new GitHub enum value never fails the whole snapshot decode. All other
   /// fields use synthesized decoding via `decodeIfPresent` semantics.
   private enum CodingKeys: String, CodingKey {
-    case prId, state, checksStatus, reviewStatus, isMergeable, mergeConflicts, behindBaseBy
+    case prId, state, checksStatus, checksReason, checksMissingRequired
+    case reviewStatus, isMergeable, mergeConflicts, behindBaseBy
     case mergeStateStatus, reviewDecision, approvalsCount, requiredApprovals
     case mergeabilityComputing, canBypass, headSha
   }
@@ -4146,6 +4161,9 @@ struct PrStatus: Codable, Equatable {
     prId = try c.decode(String.self, forKey: .prId)
     state = try c.decode(String.self, forKey: .state)
     checksStatus = try c.decode(String.self, forKey: .checksStatus)
+    // ADE-135 additions: absent on hosts that predate the rollup, never fatal.
+    checksReason = try c.decodeIfPresent(String.self, forKey: .checksReason)
+    checksMissingRequired = try c.decodeIfPresent([String].self, forKey: .checksMissingRequired)
     reviewStatus = try c.decode(String.self, forKey: .reviewStatus)
     isMergeable = try c.decode(Bool.self, forKey: .isMergeable)
     mergeConflicts = try c.decode(Bool.self, forKey: .mergeConflicts)
@@ -4170,6 +4188,8 @@ struct PrStatus: Codable, Equatable {
     prId: String,
     state: String,
     checksStatus: String,
+    checksReason: String? = nil,
+    checksMissingRequired: [String]? = nil,
     reviewStatus: String,
     isMergeable: Bool,
     mergeConflicts: Bool,
@@ -4185,6 +4205,8 @@ struct PrStatus: Codable, Equatable {
     self.prId = prId
     self.state = state
     self.checksStatus = checksStatus
+    self.checksReason = checksReason
+    self.checksMissingRequired = checksMissingRequired
     self.reviewStatus = reviewStatus
     self.isMergeable = isMergeable
     self.mergeConflicts = mergeConflicts

@@ -441,6 +441,8 @@ export const PrDetailRightMetadataRail = memo(function PrDetailRightMetadataRail
           this column, so they take the slack and scroll internally. */}
       <PrChecksCard
         fill
+        missingRequired={pr.checksMissingRequired}
+        checksStatus={pr.checksStatus}
         checks={checks}
         actionRuns={actionRuns}
         onSelectCheck={onSelectCheck}

@@ -1,6 +1,12 @@
 import Foundation
 import SwiftUI
 
+/// ADE-135: fallback when the host sent no `checksReason` (older host, or a row
+/// written before the column existed). Shared because it had been pasted into
+/// six files and one copy had already lost its full stop.
+let noCIReasonText = "No CI has run on this commit."
+
+
 private let prIsoFormatter: ISO8601DateFormatter = {
   let formatter = ISO8601DateFormatter()
   formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -908,6 +914,10 @@ func prChecksTint(_ status: String) -> Color {
     return ADEColor.danger
   case "pending", "queued", "in_progress":
     return ADEColor.warning
+  // ADE-135. `not_run` means nothing verified the commit. It reads as an empty
+  // slot, not an alarm, so it stays in the muted tone rather than danger red.
+  case "not_run":
+    return ADEColor.textSecondary
   default:
     return ADEColor.textSecondary
   }
@@ -931,6 +941,7 @@ func prChecksLabel(_ status: String) -> String {
   case "passing": return "Passing"
   case "failing": return "Failing"
   case "pending": return "Pending"
+  case "not_run": return "Not run"
   default: return titleCase(status)
   }
 }

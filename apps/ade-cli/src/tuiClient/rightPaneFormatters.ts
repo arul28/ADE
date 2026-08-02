@@ -1,5 +1,6 @@
 import { buildDeeplink } from "../../../desktop/src/shared/deeplinks";
 import { buildWebClientUrl } from "../../../desktop/src/shared/webClientUrl";
+import { NO_CI_REASON, rollupPrChecks } from "../../../desktop/src/shared/prChecksRollup";
 
 type JsonRecord = Record<string, unknown>;
 
@@ -112,6 +113,21 @@ function statusWord(status: unknown, conclusion?: unknown): "OK" | "FAIL" | "WAI
   return raw.toUpperCase();
 }
 
+/**
+ * Human rendering of a `PrChecksStatus` in a header line. Only `not_run` is
+ * rewritten: it is the one value a reader would otherwise see as a raw enum,
+ * and "not run" is the whole point — nothing verified the commit (ADE-135).
+ */
+function checksStatusLabel(status: string | null): string | null {
+  if (!status) return null;
+  return status === "not_run" ? "not run" : status;
+}
+
+function checksStatusWord(status: string | null): string | null {
+  const label = checksStatusLabel(status);
+  return label && status === "not_run" ? `CI: ${label}` : label;
+}
+
 function formatCount(noun: string, count: number): string {
   return `${count} ${noun}${count === 1 ? "" : "s"}`;
 }
@@ -178,6 +194,15 @@ export function formatPrSummary(value: unknown): string {
     ?? pickString(pr, ["adeUrl", "adePrUrl"])
     ?? derivedAdeUrl;
   const mergeable = pickString(pr, ["mergeable", "mergeStateStatus"]);
+  // ADE-135: the PR summary is the first thing `/pr` prints, and it used to say
+  // nothing at all about CI — so the reader's only checks signal was the row
+  // table below it, which is precisely what read green while nothing verified
+  // the commit. The service's rollup (and its one-sentence reason) belongs here.
+  const checksStatus = checksStatusLabel(pickString(pr, ["checksStatus"]));
+  const checksReason = pickString(pr, ["checksReason"]);
+  const checks = checksStatus
+    ? `${checksStatus}${checksReason ? ` — ${checksReason}` : ""}`
+    : null;
   const rows = [
     `#${number ?? id ?? "?"} · ${state}${draft}`,
     title,
@@ -186,6 +211,7 @@ export function formatPrSummary(value: unknown): string {
     lane ? `lane      ${lane}` : null,
     head || base ? `branch    ${head ?? "unknown"}${base ? ` -> ${base}` : ""}` : null,
     mergeable ? `merge     ${mergeable}` : null,
+    checks ? `checks    ${checks}` : null,
     githubUrl ? `github   ${githubUrl}` : null,
     fallbackUrl && fallbackUrl !== githubUrl ? `url      ${fallbackUrl}` : null,
     adeUrl ? `ade      ${adeUrl}` : null,
@@ -328,20 +354,39 @@ export function formatPrMergeState(value: unknown): string {
 }
 
 export function formatPrChecks(value: unknown): string {
+  const root = unwrapStructured(value);
+  const rollup = isRecord(root) ? pickString(root, ["checksStatus"]) : null;
+  const reason = isRecord(root) ? pickString(root, ["checksReason"]) : null;
   const checks = firstRecordArray(value, ["checks", "items", "results"]);
-  if (!checks.length) return "No PR checks.";
-  let ok = 0;
-  let fail = 0;
-  let wait = 0;
-  for (const check of checks) {
-    const status = statusWord(check.status, check.conclusion);
-    if (status === "OK") ok += 1;
-    else if (status === "FAIL") fail += 1;
-    else if (status === "WAIT") wait += 1;
+  if (!checks.length) {
+    return rollup === "not_run"
+      ? `CI: not run — ${reason ?? NO_CI_REASON}`
+      : "No PR checks.";
   }
-  const summary = [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]
-    .filter(Boolean)
-    .join(" · ") || `${checks.length} check${checks.length === 1 ? "" : "s"}`;
+  // ADE-135: counting the rows directly is producer-blind — three third-party
+  // successes tallied as "3 passing". `rollupPrChecks` applies the same CI
+  // producer rule as every other surface. The payload's own `checksStatus`
+  // still wins when present, since it also knows about required contexts,
+  // which these rows cannot see.
+  const rows = checks.map((check) => ({
+    status: pickString(check, ["status"]) ?? "",
+    conclusion: pickString(check, ["conclusion"]),
+    appSlug: pickString(check, ["appSlug"]),
+  }));
+  const rowRollup = rollupPrChecks(rows);
+  const ok = rowRollup.counts.passing;
+  const fail = rowRollup.counts.failing;
+  const wait = rowRollup.counts.pending;
+  // A supplied canonical `checksStatus` is authoritative: only the host knows
+  // about required contexts, the merge box, and the grace window. The row
+  // fallback speaks only when the payload carried no verdict at all — letting
+  // it override a supplied `passing` would contradict the contract above.
+  const notRun = rollup ? rollup === "not_run" : rowRollup.status === "not_run";
+  const summary = notRun
+    ? `CI: not run${reason ? ` — ${reason}` : ""}`
+    : [ok ? `${ok} passing` : null, fail ? `${fail} failing` : null, wait ? `${wait} pending` : null]
+      .filter(Boolean)
+      .join(" · ") || `${checks.length} check${checks.length === 1 ? "" : "s"}`;
   return [
     `PR checks · ${summary}`,
     "",
@@ -396,7 +441,7 @@ export function formatPrComments(value: unknown): string {
   const threads = firstRecordArray(root, ["reviewThreads", "threads"]);
   const comments = firstRecordArray(root, ["comments", "issueComments"]);
   const headerParts = [
-    summary ? pickString(summary, ["checksStatus"]) : null,
+    summary ? checksStatusWord(pickString(summary, ["checksStatus"])) : null,
     summary ? `${asString(summary.actionableComments) ?? "0"} actionable` : null,
   ].filter(Boolean);
   const lines = [`PR comments${headerParts.length ? ` · ${headerParts.join(" · ")}` : ""}`];

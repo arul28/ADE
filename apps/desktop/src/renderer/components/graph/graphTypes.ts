@@ -67,6 +67,8 @@ export type GraphPrOverlay = {
   url: string;
   state: PrState;
   checksStatus: PrStatus["checksStatus"];
+  /** Rollup explanation for a non-obvious `checksStatus` (see PrStatus). */
+  checksReason: string | null;
   reviewStatus: PrReviewStatus;
   lastSyncedAt: string | null;
   lastActivityAt: string | null;

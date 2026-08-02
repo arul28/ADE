@@ -188,6 +188,46 @@ private enum PrDetailPreviewFixtures {
     commits: commits
   )
 
+  // ADE-135 fixture: reproduces PR #988 — three third-party apps reported
+  // `success`, GitHub Actions registered no suite, and one required context never
+  // reported. This used to render as "CI passed".
+  static let notRunReason = "3 checks reported, none from a CI provider. CI has not run on this commit."
+
+  static let notRunMissingRequired = ["CI / build", "CI / test (ubuntu-latest)"]
+
+  static var notRunPr: PullRequestListItem {
+    var item = pr
+    item.checksStatus = "not_run"
+    item.checksReason = notRunReason
+    item.checksMissingRequired = notRunMissingRequired
+    return item
+  }
+
+  static var notRunSnapshot: PullRequestSnapshot {
+    PullRequestSnapshot(
+      detail: detail,
+      status: PrStatus(
+        prId: pr.id,
+        state: "open",
+        checksStatus: "not_run",
+        checksReason: notRunReason,
+        checksMissingRequired: notRunMissingRequired,
+        reviewStatus: "requested",
+        isMergeable: true,
+        mergeConflicts: false,
+        behindBaseBy: 0,
+        reviewDecision: .reviewRequired,
+        approvalsCount: 0,
+        requiredApprovals: 1
+      ),
+      checks: [],
+      reviews: reviews,
+      comments: [],
+      files: files,
+      commits: commits
+    )
+  }
+
   static let unresolvedThread = PrReviewThread(
     id: "thread-1",
     isResolved: false,
@@ -370,6 +410,54 @@ private struct PrGitHubStackCardPreviewScreen: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
     .background(prLiquidGlassBackdrop().ignoresSafeArea())
   }
+}
+
+/// ADE-135. Header + checks tab for a PR nothing verified: the summary section's
+/// subline carries the reason instead of the gate's green copy, and the checks
+/// tab lists the required contexts that never reported as ghost rows.
+private struct PrDetailNotRunPreviewScreen: View {
+  @State private var commitsExpanded = false
+
+  var body: some View {
+    ScrollView {
+      VStack(spacing: 14) {
+        PrDetailSummarySection(
+          pr: PrDetailPreviewFixtures.notRunPr,
+          snapshot: PrDetailPreviewFixtures.notRunSnapshot,
+          // Deliberately the green gate: the gate counts observed failures and
+          // finds none, which is exactly the state the header must override.
+          mergeGate: PrMergeGateInfo(tone: .green, subline: "All checks green", target: .overview),
+          commitsExpanded: $commitsExpanded,
+          onChecksTap: {},
+          onFilesTap: {},
+          onCommitTap: { _ in }
+        )
+
+        PrChecksTab(
+          checks: [],
+          overallChecksStatus: "not_run",
+          checksReason: PrDetailPreviewFixtures.notRunReason,
+          missingRequired: PrDetailPreviewFixtures.notRunMissingRequired,
+          actionRuns: [],
+          canRerunChecks: true,
+          isLive: true,
+          onRerun: {}
+        )
+      }
+      .padding(16)
+    }
+    .background(prLiquidGlassBackdrop().ignoresSafeArea())
+  }
+}
+
+#Preview("PR detail · Checks not run") {
+  PrDetailNotRunPreviewScreen()
+    .preferredColorScheme(.dark)
+}
+
+#Preview("PR detail · Checks not run · light") {
+  PrDetailNotRunPreviewScreen()
+    .preferredColorScheme(.light)
 }
 
 #Preview("PR detail · Overview thread") {

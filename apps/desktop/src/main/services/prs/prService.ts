@@ -155,6 +155,9 @@ import type { IssueTracker } from "../cto/issueTracker";
 import type { LinearLiveStatusService } from "../cto/linearLiveStatusService";
 import { publishLinearPrCard } from "../cto/linearLaneCardService";
 import { parseSyntheticGithubPrId, syntheticGithubPrId } from "../../../shared/types/prs";
+import { COMMIT_STATUS_APP_SLUG, rollupChecks, rollupPrChecks } from "../../../shared/prChecksRollup";
+import type { ChecksRollup, ChecksRollupCheckRun, ChecksRollupCommitStatus } from "../../../shared/prChecksRollup";
+import { createRequiredChecksResolver } from "./requiredChecks";
 import { spawn } from "node:child_process";
 import { runGit, runGitMergeTree, runGitOrThrow } from "../git/git";
 import { shouldAttemptAdminMergeForRestError } from "./resolverUtils";
@@ -234,6 +237,10 @@ type PullRequestRow = {
   merge_method?: string | null;
   commit_count?: number | null;
   changed_files?: number | null;
+  /** ADE-135: why the rollup is not green, when that is not self-evident. */
+  checks_reason?: string | null;
+  /** ADE-135: JSON array of required contexts that never reported. */
+  checks_missing_required?: string | null;
 };
 
 type PrAutoLinkIgnoreRow = {
@@ -984,44 +991,76 @@ function toChecksStatus(state: string | null | undefined): PrChecksStatus {
   return "none";
 }
 
-function toChecksStatusFromCheckRuns(checkRuns: any[]): PrChecksStatus | null {
-  if (!Array.isArray(checkRuns) || checkRuns.length === 0) return null;
-
-  let hasPending = false;
-  let hasFailure = false;
-  let hasSuccessLike = false;
-  for (const run of checkRuns) {
-    const status = asString(run?.status).toLowerCase();
-    const conclusion = asString(run?.conclusion).toLowerCase();
-    if (status && status !== "completed") {
-      // A check can have a conclusion (e.g. "skipped") even when its status
-      // hasn't flipped to "completed".  Treat it as finished if a terminal
-      // conclusion is present; otherwise it's genuinely pending.
-      if (!conclusion || (conclusion !== "success" && conclusion !== "neutral" && conclusion !== "skipped" && conclusion !== "failure" && conclusion !== "cancelled" && conclusion !== "timed_out" && conclusion !== "action_required" && conclusion !== "stale")) {
-        hasPending = true;
-        continue;
-      }
-    }
-    if (!conclusion) continue;
-    if (conclusion === "success" || conclusion === "neutral" || conclusion === "skipped") {
-      hasSuccessLike = true;
-      continue;
-    }
-    if (
-      conclusion === "failure" ||
-      conclusion === "cancelled" ||
-      conclusion === "timed_out" ||
-      conclusion === "action_required" ||
-      conclusion === "stale"
-    ) {
-      hasFailure = true;
-    }
+/** Row storage for `checksMissingRequired` is JSON; tolerate anything else. */
+function parseMissingRequired(raw: string | null | undefined): string[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((entry): entry is string => typeof entry === "string") : [];
+  } catch {
+    return [];
   }
+}
 
-  if (hasPending) return "pending";
-  if (hasFailure) return "failing";
-  if (hasSuccessLike) return "passing";
-  return "none";
+/** Normalize a raw check-runs payload into the rollup's input shape. */
+function toRollupCheckRuns(checkRuns: any[]): ChecksRollupCheckRun[] {
+  if (!Array.isArray(checkRuns)) return [];
+  return checkRuns.map((run) => ({
+    name: asString(run?.name),
+    status: asString(run?.status).toLowerCase(),
+    conclusion: asString(run?.conclusion).toLowerCase() || null,
+    appSlug: asString(run?.app?.slug).toLowerCase() || null,
+  }));
+}
+
+function toRollupCommitStatuses(
+  statuses: Array<{ context: string; state: string }> | undefined,
+): ChecksRollupCommitStatus[] {
+  if (!Array.isArray(statuses)) return [];
+  return statuses.map((status) => ({
+    context: asString(status?.context),
+    state: asString(status?.state).toLowerCase(),
+  }));
+}
+
+/**
+ * Earliest moment anything reported on this commit.
+ *
+ * ADE-135: the grace window originally keyed off the PR's `updated_at`, but
+ * GitHub bumps that on every comment, label and review — including the comments
+ * posted by the very bots (CodeRabbit, Vercel) whose presence is the finding.
+ * Each bot comment reset the age below the grace window and demoted a
+ * months-old unverified commit back to "pending / has not run *yet*". A check's
+ * own start time cannot be moved by a comment, so it is the honest clock.
+ */
+function earliestReportAt(
+  checkRuns: any[],
+  combinedStatus: { statuses?: Array<Record<string, unknown>> } | undefined,
+): string | null {
+  let earliest: number | null = null;
+  let earliestRaw: string | null = null;
+  const consider = (raw: string | null | undefined) => {
+    if (!raw) return;
+    const parsed = Date.parse(raw);
+    if (!Number.isFinite(parsed)) return;
+    if (earliest == null || parsed < earliest) {
+      earliest = parsed;
+      earliestRaw = raw;
+    }
+  };
+  if (Array.isArray(checkRuns)) {
+    for (const run of checkRuns) consider(asString(run?.started_at) || null);
+  }
+  if (Array.isArray(combinedStatus?.statuses)) {
+    for (const status of combinedStatus!.statuses!) consider(asString(status?.created_at) || null);
+  }
+  return earliestRaw;
+}
+
+function commitAgeMs(timestamp: string | null | undefined, nowMs: number): number | null {
+  if (!timestamp) return null;
+  const parsed = Date.parse(timestamp);
+  return Number.isFinite(parsed) ? Math.max(0, nowMs - parsed) : null;
 }
 
 function computeReviewStatus(args: {
@@ -1055,6 +1094,8 @@ function rowToSummary(row: PullRequestRow): PrSummary {
     baseBranch: row.base_branch,
     headBranch: row.head_branch,
     checksStatus: (row.checks_status as PrChecksStatus) ?? "none",
+    checksReason: row.checks_reason ?? null,
+    checksMissingRequired: parseMissingRequired(row.checks_missing_required),
     reviewStatus: (row.review_status as PrReviewStatus) ?? "none",
     additions: Number(row.additions ?? 0),
     deletions: Number(row.deletions ?? 0),
@@ -1199,6 +1240,15 @@ function compareBackgroundRefreshPriority(left: PullRequestRow, right: PullReque
 function hasMaterialSummaryChange(row: PullRequestRow, summary: PrSummary): boolean {
   return row.state !== summary.state
     || row.checks_status !== summary.checksStatus
+    // ADE-135: the reason is what the tooltip and chat card render, so a change
+    // in *why* CI is not green is a material change even when the state holds.
+    || (Object.prototype.hasOwnProperty.call(summary, "checksReason")
+        && (row.checks_reason ?? null) !== (summary.checksReason ?? null))
+    // A required context appearing or finally reporting changes the ghost rows
+    // the PR detail renders, even when the status and reason string both hold.
+    || (Object.prototype.hasOwnProperty.call(summary, "checksMissingRequired")
+        && parseMissingRequired(row.checks_missing_required).join("\u0000")
+           !== (summary.checksMissingRequired ?? []).join("\u0000"))
     || row.review_status !== summary.reviewStatus
     || (row.title ?? "") !== summary.title
     || row.base_branch !== summary.baseBranch
@@ -1442,7 +1492,8 @@ export function createPrService({
     checks_status, review_status, additions, deletions, last_synced_at,
     created_at, updated_at, merged_at, creation_strategy, merge_conflicts, behind_base_by, head_sha,
     detached_at, detached_lane_name, detached_lane_color, detached_provenance,
-    merged_by_login, merged_by_avatar_url, merge_method, commit_count, changed_files`;
+    merged_by_login, merged_by_avatar_url, merge_method, commit_count, changed_files,
+    checks_reason, checks_missing_required`;
   /**
    * Lane-scoped "what is this lane working on" lookups must ignore detached rows.
    * A detached row is history: its lane was deleted, or the lane moved to another
@@ -1883,6 +1934,8 @@ export function createPrService({
       baseBranch: row.base_branch ?? "",
       headBranch: row.head_branch ?? "",
       checksStatus: "none",
+      checksReason: null,
+      checksMissingRequired: [],
       reviewStatus: "none",
       additions: 0,
       deletions: 0,
@@ -2053,12 +2106,19 @@ export function createPrService({
 
   const summaryToLanePrSummary = (pr: PrSummary, checks: PrCheck[] = []): PrLaneSummary => {
     const state: PrLaneSummary["state"] = pr.state === "merged" || pr.state === "closed" ? pr.state : "open";
+    // ADE-135: `checksPassed` used to count any `success` row, so a lane whose
+    // PR had only preview/review bots reported N/N and every consumer of this
+    // shape rendered it green. The counts are producer-aware now, and the
+    // canonical rollup rides along so a consumer never has to infer a verdict
+    // from `passed === total`.
+    const rollup = rollupPrChecks(checks);
     return {
       laneId: pr.laneId,
       number: Number(pr.githubPrNumber),
       state,
-      checksPassed: checks.filter((check) => check.status === "completed" && check.conclusion === "success").length,
-      checksTotal: checks.length,
+      checksPassed: rollup.counts.passing,
+      checksTotal: rollup.counts.total,
+      checksStatus: checks.length > 0 ? rollup.status : pr.checksStatus,
       stack: pr.stack ?? null,
     };
   };
@@ -2465,6 +2525,15 @@ export function createPrService({
     const hasBehindBaseBy = Object.prototype.hasOwnProperty.call(summary, "behindBaseBy");
     const behindBaseByValue = normalizeBehindBaseBy(summary.behindBaseBy);
     const hasMergedAt = Object.prototype.hasOwnProperty.call(summary, "mergedAt");
+    // ADE-135. Guarded like mergeConflicts/behindBaseBy: partial summaries flow
+    // through here constantly, and an unguarded write would wipe a good reason
+    // every time a caller upserted without one.
+    const hasChecksReason = Object.prototype.hasOwnProperty.call(summary, "checksReason");
+    const checksReasonValue = summary.checksReason ?? null;
+    const hasChecksMissingRequired = Object.prototype.hasOwnProperty.call(summary, "checksMissingRequired");
+    const checksMissingRequiredValue = Array.isArray(summary.checksMissingRequired)
+      ? JSON.stringify(summary.checksMissingRequired)
+      : null;
     // By default we only adopt an existing row that is already associated with
     // this lane. Callers like `linkToLane`/`refreshOne` must not silently
     // reassign an existing PR row from another lane just because the repo/PR
@@ -2523,6 +2592,8 @@ export function createPrService({
                  base_branch = ?,
                  head_branch = ?,
                  checks_status = ?,
+                 checks_reason = case when ? then ? else checks_reason end,
+                 checks_missing_required = case when ? then ? else checks_missing_required end,
                  review_status = ?,
                  additions = ?,
                  deletions = ?,
@@ -2547,6 +2618,10 @@ export function createPrService({
           summary.baseBranch,
           summary.headBranch,
           summary.checksStatus,
+          hasChecksReason ? 1 : 0,
+          checksReasonValue,
+          hasChecksMissingRequired ? 1 : 0,
+          checksMissingRequiredValue,
           summary.reviewStatus,
           summary.additions,
           summary.deletions,
@@ -2609,8 +2684,10 @@ export function createPrService({
           merged_at,
           creation_strategy,
           merge_conflicts,
-          behind_base_by
-        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          behind_base_by,
+          checks_reason,
+          checks_missing_required
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `,
       [
         summary.id,
@@ -2635,7 +2712,9 @@ export function createPrService({
         summary.mergedAt ?? null,
         summary.creationStrategy ?? null,
         mergeConflictsValue,
-        behindBaseByValue
+        behindBaseByValue,
+        checksReasonValue,
+        checksMissingRequiredValue
       ]
     );
     return summary.id;
@@ -3026,6 +3105,8 @@ export function createPrService({
         baseBranch: asString(rawPr?.base?.ref) || branchNameFromRef(lane.baseRef),
         headBranch,
         checksStatus: "none",
+        checksReason: null,
+        checksMissingRequired: [],
         reviewStatus: "none",
         additions: Number(rawPr?.additions ?? 0),
         deletions: Number(rawPr?.deletions ?? 0),
@@ -4662,6 +4743,64 @@ export function createPrService({
     return Array.isArray(data?.check_runs) ? data.check_runs : [];
   };
 
+  /** Last-known rollup for a PR row, so a failed checks fetch can hold it. */
+  const previousChecksRollup = (prId: string): ChecksRollup => {
+    const row = getRowById(prId);
+    return {
+      status: (row?.checks_status as PrChecksStatus | null) ?? "none",
+      reason: row?.checks_reason ?? null,
+      missingRequiredContexts: parseMissingRequired(row?.checks_missing_required),
+    };
+  };
+
+  const requiredChecksResolver = createRequiredChecksResolver({
+    apiRequest: (options) => githubService.apiRequest<any>(options),
+    logger,
+  });
+
+  /**
+   * ADE-135: the single checks derivation. Both the poller and the webhook path
+   * land here — `ingestGithubWebhook` uses its payload only to resolve which PR
+   * changed and hands those ids to the poller (`onPrStateIngested` →
+   * `reconcilePrs`), which re-derives through `computeStatus`. So there is
+   * exactly one place where "is this commit verified?" gets answered.
+   */
+  const deriveChecksRollup = async (args: {
+    repo: GitHubRepoRef;
+    baseBranch: string;
+    checkRuns: any[];
+    combinedStatus: { state: string; statuses: Array<{ context: string; state: string }> };
+    mergeStateBlocked: boolean;
+    /**
+     * Last-resort clock, used only when nothing has reported on the commit at
+     * all. PR `updated_at` is unreliable on its own — GitHub bumps it on every
+     * comment, not just on `synchronize` — so `earliestReportAt` is preferred
+     * whenever any check or status carries a timestamp.
+     */
+    headActivityAt: string | null;
+    /**
+     * Set when EITHER checks fetch failed. `bestEffort` turns a 403/rate-limit
+     * on /check-runs or /commits/{sha}/status into an empty result, which is
+     * byte-identical to "this commit has no checks". Recomputing from that
+     * would flip a green PR to `not_run` and persist it to every surface,
+     * so a failed fetch keeps whatever we last knew.
+     */
+    checksFetchFailed?: boolean;
+    previous: ChecksRollup;
+  }) => {
+    if (args.checksFetchFailed) return args.previous;
+    const required = await requiredChecksResolver
+      .resolve(args.repo, args.baseBranch, args.mergeStateBlocked)
+      .catch(() => ({ contexts: null, source: "unavailable" as const }));
+    return rollupChecks({
+      checkRuns: toRollupCheckRuns(args.checkRuns),
+      commitStatuses: toRollupCommitStatuses(args.combinedStatus?.statuses),
+      requiredContexts: required.contexts,
+      mergeStateBlocked: args.mergeStateBlocked,
+      headCommitAgeMs: commitAgeMs(earliestReportAt(args.checkRuns, args.combinedStatus) ?? args.headActivityAt, Date.now()),
+    });
+  };
+
   const fetchCompare = async (repo: GitHubRepoRef, baseSha: string, headSha: string): Promise<{ behindBy: number }> => {
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
@@ -4705,10 +4844,11 @@ export function createPrService({
     const requestedReviewers = Array.isArray(pr?.requested_reviewers) ? pr.requested_reviewers.map((u: any) => asString(u?.login)).filter(Boolean) : [];
     const requestedTeams = Array.isArray(pr?.requested_teams) ? pr.requested_teams.map((team: any) => asString(team?.slug)).filter(Boolean) : [];
 
+    let checkRunsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare] = shouldFetchLiveStatus
       ? await Promise.all([
-          headSha ? fetchCombinedStatus(repo, headSha) : Promise.resolve({ state: "", statuses: [] }),
-          headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]) : Promise.resolve([]),
+          headSha ? bestEffort("refreshOne.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
+          headSha ? bestEffort("refreshOne.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
           bestEffort("refreshOne.fetchReviews", fetchReviews(repo, Number(row.github_pr_number)), []),
           baseSha && headSha ? bestEffort("refreshOne.fetchCompare", fetchCompare(repo, baseSha, headSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null })
         ])
@@ -4725,9 +4865,29 @@ export function createPrService({
       if (review.state === "changes_requested") reviewStatesByUser.set(review.reviewer, "CHANGES_REQUESTED");
     }
 
-    const checksStatus = shouldFetchLiveStatus
-      ? toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state)
-      : (row.checks_status as PrChecksStatus | null) ?? "none";
+    const checksRollup = shouldFetchLiveStatus
+      ? await deriveChecksRollup({
+          repo,
+          baseBranch: asString(pr?.base?.ref) || row.base_branch,
+          checkRuns,
+          combinedStatus,
+          // No GraphQL merge box on this path; the rollup treats the absence as
+          // "no corroboration", never as "not blocked".
+          mergeStateBlocked: false,
+          headActivityAt: asString(pr?.updated_at) || row.updated_at || null,
+          checksFetchFailed: checkRunsFetchFailed,
+          previous: {
+            status: (row.checks_status as PrChecksStatus | null) ?? "none",
+            reason: row.checks_reason ?? null,
+            missingRequiredContexts: parseMissingRequired(row.checks_missing_required),
+          },
+        })
+      : {
+          status: (row.checks_status as PrChecksStatus | null) ?? "none",
+          reason: row.checks_reason ?? null,
+          missingRequiredContexts: parseMissingRequired(row.checks_missing_required),
+        };
+    const checksStatus = checksRollup.status;
     const reviewStatus = shouldFetchLiveStatus
       ? computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser })
       : (row.review_status as PrReviewStatus | null) ?? "none";
@@ -4750,6 +4910,8 @@ export function createPrService({
       baseBranch,
       headBranch,
       checksStatus,
+      checksReason: checksRollup.reason,
+      checksMissingRequired: checksRollup.missingRequiredContexts,
       reviewStatus,
       additions,
       deletions,
@@ -5010,9 +5172,10 @@ export function createPrService({
     const baseSha = asString(pr?.base?.sha);
     const mergeConflicts = mergeConflictsFromPull(pr);
 
+    let checkRunsFetchFailed = false;
     const [combinedStatus, checkRuns, reviews, compare, mergeState] = await Promise.all([
-      restHeadSha ? fetchCombinedStatus(repo, restHeadSha) : Promise.resolve({ state: "", statuses: [] }),
-      restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[]) : Promise.resolve([]),
+      restHeadSha ? bestEffort("computeStatus.fetchCombinedStatus", fetchCombinedStatus(repo, restHeadSha), { state: "", statuses: [] }, () => { checkRunsFetchFailed = true; }) : Promise.resolve({ state: "", statuses: [] }),
+      restHeadSha ? bestEffort("computeStatus.fetchCheckRuns", fetchCheckRuns(repo, restHeadSha), [] as any[], () => { checkRunsFetchFailed = true; }) : Promise.resolve([]),
       bestEffort("computeStatus.fetchReviews", fetchReviews(repo, prNumber), []),
       baseSha && restHeadSha ? bestEffort("computeStatus.fetchCompare", fetchCompare(repo, baseSha, restHeadSha), { behindBy: null as number | null }) : Promise.resolve({ behindBy: null as number | null }),
       fetchMergeStateViaGraphql(repo, prNumber),
@@ -5031,7 +5194,17 @@ export function createPrService({
       draft: Boolean(pr?.draft),
       mergedAt: asString(pr?.merged_at) || null
     });
-    const checksStatus = toChecksStatusFromCheckRuns(checkRuns) ?? toChecksStatus(combinedStatus.state);
+    const checksRollup = await deriveChecksRollup({
+      repo,
+      baseBranch: asString(pr?.base?.ref),
+      checkRuns,
+      combinedStatus,
+      mergeStateBlocked: (mergeState?.mergeStateStatus ?? "").toLowerCase() === "blocked",
+      headActivityAt: asString(pr?.updated_at) || null,
+      checksFetchFailed: checkRunsFetchFailed,
+      previous: previousChecksRollup(prId),
+    });
+    const checksStatus = checksRollup.status;
     const reviewStatus = computeReviewStatus({ requestedReviewers, requestedTeams, reviewStatesByUser });
     const behindBaseBy = compare.behindBy;
 
@@ -5057,6 +5230,8 @@ export function createPrService({
         prId,
         state: nextState,
         checksStatus,
+        checksReason: checksRollup.reason,
+        checksMissingRequired: checksRollup.missingRequiredContexts,
         reviewStatus,
         isMergeable,
         mergeConflicts: mergeConflicts === true,
@@ -5080,6 +5255,8 @@ export function createPrService({
       ...summary,
       state: status.state,
       checksStatus: status.checksStatus,
+      checksReason: status.checksReason ?? null,
+      checksMissingRequired: status.checksMissingRequired ?? [],
       reviewStatus: status.reviewStatus,
       additions: Number(pr?.additions ?? summary.additions),
       deletions: Number(pr?.deletions ?? summary.deletions),
@@ -5141,7 +5318,8 @@ export function createPrService({
         conclusion,
         detailsUrl: asString(run?.details_url) || asString(run?.html_url) || null,
         startedAt: asString(run?.started_at) || null,
-        completedAt: asString(run?.completed_at) || null
+        completedAt: asString(run?.completed_at) || null,
+        appSlug: asString(run?.app?.slug).toLowerCase() || null
       });
     }
 
@@ -5158,7 +5336,10 @@ export function createPrService({
         conclusion: s.state === "success" ? "success" : s.state === "failure" || s.state === "error" ? "failure" : null,
         detailsUrl: s.target_url ?? null,
         startedAt: s.created_at ?? null,
-        completedAt: s.updated_at ?? null
+        completedAt: s.updated_at ?? null,
+        // Legacy commit statuses are how Jenkins/Buildkite/CircleCI report, so
+        // they count as CI even though they carry no app slug.
+        appSlug: COMMIT_STATUS_APP_SLUG
       });
     }
 
@@ -6351,6 +6532,8 @@ export function createPrService({
       baseBranch,
       headBranch,
       checksStatus: "none",
+      checksReason: null,
+      checksMissingRequired: [],
       reviewStatus: "none",
       additions: Number(pr?.additions ?? 0),
       deletions: Number(pr?.deletions ?? 0),
@@ -6485,6 +6668,8 @@ export function createPrService({
       baseBranch,
       headBranch,
       checksStatus: "none",
+      checksReason: null,
+      checksMissingRequired: [],
       reviewStatus: "none",
       additions: Number(pr?.additions ?? 0),
       deletions: Number(pr?.deletions ?? 0),

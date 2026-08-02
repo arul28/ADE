@@ -260,4 +260,48 @@ describe("buildDefaultCommitMessage", () => {
     expect(result.title).toBe("");
     expect(result.body).toBe("");
   });
+
+  it("reports no-CI rather than a producer-blind pending or failing count", () => {
+    // A not_run rollup coexists with third-party rows in any state. Reporting
+    // "1 pending check" there is the same blind claim in a different tense.
+    for (const conclusion of ["failure", null] as const) {
+      const items = buildMergeChecklist({
+        pr: makePr({ checksStatus: "not_run" }),
+        status: null,
+        checks: [
+          {
+            name: "Vercel",
+            status: conclusion === null ? "in_progress" : "completed",
+            conclusion,
+            detailsUrl: null,
+            startedAt: null,
+            completedAt: null,
+            appSlug: "vercel",
+          },
+        ],
+        reviews: [],
+      });
+      const row = items.find((item) => item.id === "checks");
+      expect(row?.label, String(conclusion)).toBe("No CI has run on this commit");
+      expect(row?.state, String(conclusion)).toBe("neutral");
+    }
+  });
+
+  it("does not claim all checks passed when nothing verified the commit", () => {
+    // ADE-135: summarizeChecks is producer-blind, so three third-party
+    // successes reported passing: 3 and this row said "All 3 checks passed" —
+    // on the surface a reader trusts most.
+    const items = buildMergeChecklist({
+      pr: makePr({ checksStatus: "not_run" }),
+      status: null,
+      checks: [
+        { name: "CodeRabbit", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "coderabbitai" },
+        { name: "Vercel", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "vercel" },
+      ],
+      reviews: [],
+    });
+    const checksRow = items.find((item) => item.id === "checks");
+    expect(checksRow?.label).toBe("No CI has run on this commit");
+    expect(checksRow?.state).not.toBe("pass");
+  });
 });

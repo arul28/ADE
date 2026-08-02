@@ -1,5 +1,5 @@
 import React from "react";
-import { ArrowSquareOut, ChatText, CheckCircle, GitBranch, XCircle } from "@phosphor-icons/react";
+import { ArrowSquareOut, ChatText, CheckCircle, CircleDashed, GitBranch, XCircle } from "@phosphor-icons/react";
 
 import type { GitHubPrListItem, PrSummary } from "../../../../shared/types/prs";
 import { COLORS, MONO_FONT, SANS_FONT, inlineBadge } from "../../lanes/laneDesignTokens";
@@ -11,6 +11,7 @@ import { PrCiRunningIndicator } from "./prVisuals";
 import { GitHubStackBadge } from "./GitHubStackBadge";
 import { formatPrListGroupDiff, type PrListGroupHeader as PrListGroupHeaderModel } from "./prListGrouping";
 import { branchNameFromRef } from "../tabs/githubPrBranch";
+import { NO_CI_REASON } from "../../../../shared/prChecksRollup";
 
 /**
  * Presentation for one row of the GitHub PR list, and the period header that groups
@@ -50,7 +51,13 @@ function stateBadgeStyle(item: GitHubPrListItem): React.CSSProperties {
   };
 }
 
-function PrRowCiStatus({ status }: { status: PrSummary["checksStatus"] | null }) {
+function PrRowCiStatus({
+  status,
+  reason,
+}: {
+  status: PrSummary["checksStatus"] | null;
+  reason?: string | null;
+}) {
   switch (status) {
     case "passing":
       return (
@@ -68,6 +75,19 @@ function PrRowCiStatus({ status }: { status: PrSummary["checksStatus"] | null })
       return (
         <span title="CI pending" style={{ display: "inline-flex", flexShrink: 0 }}>
           <PrCiRunningIndicator color={COLORS.warning} size={14} />
+        </span>
+      );
+    // ADE-135: nothing verified this commit. The glyph is a hollow dashed ring
+    // in the muted tone — an empty slot where a result should be, deliberately
+    // not the danger colour: this is absence, not failure.
+    case "not_run":
+      return (
+        <span
+          aria-label="No CI has run"
+          title={reason || NO_CI_REASON}
+          style={{ display: "inline-flex", flexShrink: 0 }}
+        >
+          <CircleDashed size={14} weight="bold" style={{ color: COLORS.textMuted }} />
         </span>
       );
     default:
@@ -391,7 +411,9 @@ export function GitHubTabPrRow({
         }}>
           {item.title}
         </span>
-        {terminal ? null : <PrRowCiStatus status={linkedPr?.checksStatus ?? null} />}
+        {terminal ? null : (
+          <PrRowCiStatus status={linkedPr?.checksStatus ?? null} reason={linkedPr?.checksReason ?? null} />
+        )}
         {ago ? (
           <span style={{ fontFamily: MONO_FONT, fontSize: 10, color: COLORS.textDim, flexShrink: 0 }}>
             {ago}

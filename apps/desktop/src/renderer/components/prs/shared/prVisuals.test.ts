@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { derivePrActivityState, formatCompactCount, getPrEdgeColor } from "./prVisuals";
+import {
+  derivePrActivityState,
+  formatCompactCount,
+  getPrChecksBadge,
+  getPrCiDotColor,
+  getPrEdgeColor,
+} from "./prVisuals";
 
 describe("prVisuals", () => {
   afterEach(() => {
@@ -62,6 +68,15 @@ describe("prVisuals", () => {
     expect(getPrEdgeColor({ state: "open", checksStatus: "failing", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.info);
     expect(getPrEdgeColor({ state: "merged", checksStatus: "pending", reviewStatus: "approved", ciRunning: true })).toBe(COLORS.success);
     expect(getPrEdgeColor({ state: "open", checksStatus: "passing", reviewStatus: "changes_requested", ciRunning: true })).toBe(COLORS.danger);
+  });
+
+  // ADE-135: an approved PR whose commit nothing verified used to inherit the
+  // success edge from the approval alone, which is exactly the "CI passed"
+  // illusion this ticket exists to kill.
+  it("never paints a not_run PR green", () => {
+    expect(getPrEdgeColor({ state: "open", checksStatus: "not_run", reviewStatus: "approved" })).toBe(COLORS.textMuted);
+    expect(getPrCiDotColor({ checksStatus: "not_run" })).toBe(COLORS.textMuted);
+    expect(getPrChecksBadge("not_run").color).toBe(COLORS.textMuted);
   });
 
   describe("formatCompactCount", () => {

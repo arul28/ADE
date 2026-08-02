@@ -14,7 +14,13 @@ import type { GitHubRepoRef } from "./git";
 import type { LaneSummary, RebaseTargetCommit } from "./lanes";
 
 export type PrState = "draft" | "open" | "merged" | "closed";
-export type PrChecksStatus = "pending" | "passing" | "failing" | "none";
+/**
+ * `none` means we observed nothing at all and nothing led us to expect
+ * anything — a repo without CI stays quiet. `not_run` is the ADE-135 state:
+ * checks exist, or required contexts are known, but nothing actually verified
+ * the commit. The two are distinct because only the second is a finding.
+ */
+export type PrChecksStatus = "pending" | "passing" | "failing" | "none" | "not_run";
 export type PrReviewStatus = "none" | "requested" | "approved" | "changes_requested";
 export type MergeMethod = "merge" | "squash" | "rebase";
 export type PrNotificationKind =
@@ -68,6 +74,18 @@ export type PrSummary = {
   baseBranch: string;
   headBranch: string;
   checksStatus: PrChecksStatus;
+  /**
+   * One sentence explaining a non-obvious rollup, e.g. "3 checks reported, none
+   * from a CI provider." Null when the state speaks for itself. Every surface
+   * reads this instead of re-deriving the explanation.
+   *
+   * Optional AND nullable, and the difference is load-bearing at the upsert:
+   * absent means "leave whatever is stored alone" (partial summaries flow
+   * through `upsertRow` constantly), null means "clear it".
+   */
+  checksReason?: string | null;
+  /** Required contexts that never reported, in the order GitHub declared them. */
+  checksMissingRequired?: string[] | null;
   reviewStatus: PrReviewStatus;
   additions: number;
   deletions: number;
@@ -118,6 +136,12 @@ export type PrLaneSummary = {
   state: "open" | "merged" | "closed";
   checksPassed: number;
   checksTotal: number;
+  /**
+   * ADE-135 canonical rollup. Consumers must read this rather than inferring a
+   * pass from `checksPassed === checksTotal` — producer-blind counts are how
+   * three preview-bot successes rendered as a green N/N.
+   */
+  checksStatus?: PrChecksStatus;
   stack?: GitHubPrStackMembership | null;
 };
 
@@ -125,6 +149,10 @@ export type PrStatus = {
   prId: string;
   state: PrState;
   checksStatus: PrChecksStatus;
+  /** See `PrSummary.checksReason`. */
+  checksReason?: string | null;
+  /** See `PrSummary.checksMissingRequired`. */
+  checksMissingRequired?: string[] | null;
   reviewStatus: PrReviewStatus;
   isMergeable: boolean;
   mergeConflicts: boolean;
@@ -171,6 +199,13 @@ export type PrCheck = {
   detailsUrl: string | null;
   startedAt: string | null;
   completedAt: string | null;
+  /**
+   * ADE-135: `app.slug` of the GitHub App that produced this check run, so
+   * surfaces can tell a CI job from a preview/review bot. `"commit_status"` for
+   * legacy combined-status contexts, which are CI by convention. Null when
+   * GitHub omitted it or the row predates this field.
+   */
+  appSlug?: string | null;
 };
 
 export type PrReview = {

@@ -14,6 +14,7 @@ import {
 } from "../prs/shared/prVisuals";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
+import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
 /** Caption beneath the state badge: "PR opened / merged / draft / closed". */
 function prStateCaption(state: LaneTabPrTag["state"]): string {
@@ -44,6 +45,11 @@ function checksCaption(status: PrChecksStatus): string {
       return "Checks failing";
     case "pending":
       return "Checks running";
+    // ADE-135: "not_run" is a finding — checks were expected and nothing
+    // verified the commit — where "none" is the quiet no-CI-here case. They
+    // share the muted dot, so only the caption tells them apart.
+    case "not_run":
+      return "CI not run";
     default:
       return "No checks";
   }
@@ -169,7 +175,14 @@ export function LanePrBadgePopover({
                       <InlinePrBadge label={badge.label} color={badge.color} bg={badge.bg} border={badge.border} />
                     );
                   })()}
-                  <span className="text-[10.5px]" style={{ color: COLORS.textMuted }}>
+                  <span
+                    className="text-[10.5px]"
+                    style={{ color: COLORS.textMuted }}
+                    // The rollup's own sentence when it has one ("2 required
+                    // checks have not reported: …"), so the muted caption is
+                    // explainable without opening the PRs tab.
+                    title={pr.checksReason ?? (pr.checksStatus === "not_run" ? NO_CI_REASON : undefined)}
+                  >
                     {checksCaption(pr.checksStatus!)}
                   </span>
                 </span>

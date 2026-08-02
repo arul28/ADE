@@ -72,6 +72,10 @@ export function GraphLaneNode({ data, selected }: NodeProps<Node<GraphNodeData>>
     if (pr.state === "closed") return { label: `Closed PR #${pr.number}`, className: "text-muted-fg" };
     if (pr.reviewStatus === "changes_requested") return { label: `PR #${pr.number} needs changes`, className: "text-amber-300" };
     if (pr.checksStatus === "failing") return { label: `PR #${pr.number} checks failing`, className: "text-red-300" };
+    // ADE-135: without this, an approved PR whose CI never ran fell past the
+    // "ready" test into the generic sky-blue "open" badge — the absence became
+    // invisible. It is muted, not red: nothing failed, nothing verified.
+    if (pr.checksStatus === "not_run") return { label: `PR #${pr.number} CI not run`, className: "text-muted-fg" };
     if (pr.reviewStatus === "approved" && pr.checksStatus === "passing") return { label: `PR #${pr.number} ready`, className: "text-emerald-300" };
     if (pr.pendingCheckCount > 0) return { label: `PR #${pr.number} checks running`, className: "text-sky-300" };
     return { label: `PR #${pr.number} open`, className: "text-sky-300" };

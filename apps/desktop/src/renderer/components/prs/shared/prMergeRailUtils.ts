@@ -83,8 +83,21 @@ export function deriveMergeBlockers(args: {
     });
   }
 
+  // NOTE: this function has no production caller — only its own test — but it
+  // duplicates `buildMergeChecklist`'s checks logic, so it is kept in step with
+  // it. Letting the two diverge is how the ADE-135 bug survived in one of them.
   const checkSummary = summarizeChecks(checks);
-  if (checkSummary.failing > 0) {
+  const blockersRollup = status?.checksStatus ?? pr.checksStatus;
+  if (blockersRollup === "not_run") {
+    // The canonical verdict replaces the row counts rather than sitting beside
+    // them: when nothing verified the commit, any failing/pending rows are
+    // third-party, and reporting "2 pending required checks" would be the same
+    // producer-blind claim in a different tense.
+    blockers.push({
+      id: "no-ci",
+      label: "No CI has run on this commit.",
+    });
+  } else if (checkSummary.failing > 0) {
     blockers.push({
       id: "failing-checks",
       label: `${checkSummary.failing} required check${checkSummary.failing === 1 ? "" : "s"} ${checkSummary.failing === 1 ? "is" : "are"} failing.`,
@@ -214,8 +227,24 @@ export function buildMergeChecklist(args: {
   }
 
   // --- Checks ---------------------------------------------------------------
+  // ADE-135: `summarizeChecks` counts rows and is producer-blind, so on a PR
+  // whose only checks are third-party apps (CodeRabbit, Vercel, a comment bot)
+  // it reports `passing: 3` and this row said "All 3 checks passed" — the
+  // ticket's exact lie, on the surface a reader trusts most. The canonical
+  // rollup decides the verdict; the counts are still summarizeChecks' job.
   const summary = summarizeChecks(checks);
-  if (summary.failing > 0) {
+  const checksRollup = status?.checksStatus ?? pr.checksStatus;
+  if (checksRollup === "not_run") {
+    // Ordered ahead of the raw counts on purpose: a `not_run` rollup can
+    // coexist with pending or failing third-party rows, and reporting those
+    // would put a producer-blind number where the honest answer is "nothing
+    // verified this commit".
+    items.push({
+      id: "checks",
+      label: "No CI has run on this commit",
+      state: "neutral",
+    });
+  } else if (summary.failing > 0) {
     items.push({
       id: "checks",
       label: `${summary.failing} failing check${summary.failing === 1 ? "" : "s"}`,

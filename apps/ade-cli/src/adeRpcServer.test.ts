@@ -852,6 +852,42 @@ function createFakePathExecutable(dir: string, name: string): string {
 }
 
 describe("adeRpcServer", () => {
+  it("does not report a green rollup to agents when only third-party bots reported", async () => {
+    // ADE-135: `summarizePrChecks` initialised `overall` to "passing" and was
+    // producer-blind, so PR #988's three bot successes came back as green on
+    // the exact surface an autonomous agent reads before deciding to merge.
+    const { runtime } = createRuntime();
+    runtime.prService.getChecks = vi.fn(async () => [
+      { name: "CodeRabbit", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "coderabbitai" },
+      { name: "Vercel", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "vercel" },
+      { name: "Vercel Preview Comments", status: "completed", conclusion: "success", detailsUrl: null, startedAt: null, completedAt: null, appSlug: "vercel" },
+    ]);
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const result = await callTool(handler, "pr_get_checks", { prId: "pr-1" });
+    const payload = result.structuredContent ?? result;
+
+    expect(payload.checksStatus).toBe("not_run");
+    expect(payload.checksCounts.passing).toBe(0);
+    expect(payload.checksCounts.total).toBe(3);
+    expect(payload.checks[0].appSlug).toBe("coderabbitai");
+  });
+
+  it("reports zero checks as none rather than defaulting to passing", async () => {
+    const { runtime } = createRuntime();
+    runtime.prService.getChecks = vi.fn(async () => []);
+    const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });
+    await initialize(handler, { role: "agent", chatSessionId: "session-1" });
+
+    const result = await callTool(handler, "pr_get_checks", { prId: "pr-1" });
+    const payload = result.structuredContent ?? result;
+
+    expect(payload.checksStatus).not.toBe("passing");
+    expect(payload.checksStatus).toBe("none");
+    expect(payload.checksCounts.total).toBe(0);
+  });
+
   it("exposes direct PTY RPC methods with enriched create/list responses", async () => {
     const { runtime } = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime, serverVersion: "test" });

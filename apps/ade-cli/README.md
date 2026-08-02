@@ -409,7 +409,7 @@ ade prs create --lane lane-id --base main --close-linear-issue-on-merge
 ade prs list-open --text
 ade prs github-snapshot --include-external-closed --history-page-limit 4
 ade prs github-snapshot --include-state-counts --no-revalidate
-ade prs checks pr-id --text
+ade prs checks pr-id --text                                 # header carries the canonical rollup (checksStatus/checksCounts); "not run" means nothing verified the commit, whatever the rows say
 ade prs comments pr-id --text
 ade shell start --lane lane-id -- npm test
 ade terminal list --lane lane-id --text

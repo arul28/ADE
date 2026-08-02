@@ -153,4 +153,43 @@ describe("PrChecksCard summary + bucketing", () => {
     fireEvent.click(screen.getByRole("button", { name: "Re-run CI / e2e" }));
     expect(onRerunChecks).toHaveBeenCalledWith({ actionJobIds: [77] });
   });
+
+  // ADE-135: a required job that never reported is the finding. It has to be
+  // visible in the same list as the results that did arrive, in GitHub's order.
+  it("renders missing required contexts as ghost rows ahead of real checks", () => {
+    render(
+      <PrChecksCard
+        checks={[check({ name: "e2e", conclusion: "failure" })]}
+        actionRuns={[]}
+        missingRequired={["CI / build", "CI / lint"]}
+      />,
+    );
+
+    const ghosts = screen.getAllByTestId("pr-checks-card-ghost-row");
+    expect(ghosts.map((row) => (row.textContent ?? "").trim())).toEqual([
+      "CI / buildrequired · not reported",
+      "CI / lintrequired · not reported",
+    ]);
+    expect(rowNames()).toEqual(["e2e"]);
+  });
+
+  it("renders ghost rows, and no green header, when nothing at all reported", () => {
+    // The pure layer-3 case: branch protection names a required context and
+    // nothing ran. The list must still render, and the header must not claim a
+    // pass off an empty row set.
+    render(
+      <PrChecksCard
+        checks={[]}
+        actionRuns={[]}
+        missingRequired={["CI / build"]}
+        checksStatus="not_run"
+      />,
+    );
+
+    const ghosts = screen.getAllByTestId("pr-checks-card-ghost-row");
+    expect(ghosts).toHaveLength(1);
+    expect(ghosts[0]!.textContent).toContain("CI / build");
+    expect(screen.queryByText(/passed/i)).toBeNull();
+    expect(screen.getByText(/No CI has run/i)).toBeTruthy();
+  });
 });

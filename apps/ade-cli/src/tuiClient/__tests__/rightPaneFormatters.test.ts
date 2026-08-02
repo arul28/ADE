@@ -43,6 +43,24 @@ describe("rightPaneFormatters", () => {
     expect(body).not.toContain("\"title\"");
   });
 
+  // ADE-135: `/pr` leads with this summary, so the rollup has to be visible
+  // here — otherwise the reader's only checks signal is the row table, which is
+  // exactly what read green while nothing verified the commit.
+  it("surfaces the checks rollup and its reason in the PR summary", () => {
+    const body = formatPrSummary({
+      id: "pr-988",
+      number: 988,
+      title: "Ship the thing",
+      state: "open",
+      checksStatus: "not_run",
+      checksReason: "3 checks reported, none from a CI provider. CI has not run on this commit.",
+    });
+
+    expect(body).toContain("checks    not run");
+    expect(body).toContain("none from a CI provider");
+    expect(body).not.toContain("not_run");
+  });
+
   it("renders a detached PR's lane as history, not as a live mapping", () => {
     const body = formatPrSummary({
       id: "pr-9",
@@ -206,6 +224,58 @@ describe("rightPaneFormatters", () => {
     expect(body).toContain("WAIT lint");
   });
 
+  // ADE-135: three third-party successes and no CI producer used to summarize
+  // as "3 passing". The rollup's verdict outranks the row count.
+  it("renders a not-run rollup honestly even when every row is green", () => {
+    const body = formatPrChecks({
+      checksStatus: "not_run",
+      checksReason: "3 checks reported, none from a CI provider. CI has not run on this commit.",
+      checks: [
+        { name: "CodeRabbit", status: "completed", conclusion: "success" },
+        { name: "Vercel — Preview", status: "completed", conclusion: "success" },
+        { name: "changeset-bot", status: "completed", conclusion: "success" },
+      ],
+    });
+
+    expect(body).toContain("CI: not run");
+    expect(body).not.toContain("3 passing");
+  });
+
+  it("refuses a green from third-party rows when the payload carries no rollup", () => {
+    // The production call site is `conn.actionList("pr","getChecks")`, which
+    // returns a BARE ARRAY — so the `checksStatus` field the test above relies
+    // on is always absent there. The row tally itself has to be producer-aware
+    // or the TUI prints "3 passing" for a commit nothing verified.
+    const body = formatPrChecks([
+      { name: "CodeRabbit", status: "completed", conclusion: "success", appSlug: "coderabbitai" },
+      { name: "Vercel", status: "completed", conclusion: "success", appSlug: "vercel" },
+      { name: "Vercel Preview Comments", status: "completed", conclusion: "success", appSlug: "vercel" },
+    ]);
+
+    expect(body).toContain("CI: not run");
+    expect(body).not.toContain("3 passing");
+    expect(body).toContain("PR checks");
+  });
+
+  it("still reports real CI as passing from a bare array", () => {
+    // The guard against over-correcting: a genuine Actions run must stay green
+    // on the same bare-array path.
+    const body = formatPrChecks([
+      { name: "ci-pass", status: "completed", conclusion: "success", appSlug: "github-actions" },
+    ]);
+
+    expect(body).toContain("1 passing");
+    expect(body).not.toContain("CI: not run");
+  });
+
+  it("reports a fully skipped suite as not run", () => {
+    const body = formatPrChecks([
+      { name: "ci / unit", status: "completed", conclusion: "skipped" },
+    ]);
+
+    expect(body).toContain("CI: not run");
+  });
+
   it("summarizes PR review comments and threads", () => {
     const body = formatPrComments({
       summary: { checksStatus: "passing", actionableComments: 2 },
@@ -222,6 +292,9 @@ describe("rightPaneFormatters", () => {
     });
 
     expect(body).toContain("PR comments · passing · 2 actionable");
+    expect(
+      formatPrComments({ summary: { checksStatus: "not_run", actionableComments: 0 } }),
+    ).toContain("CI: not run");
     expect(body).toContain("open src/index.ts:12");
     expect(body).toContain("reviewer: Please handle the loading state.");
     expect(body).not.toContain("\"reviewThreads\"");

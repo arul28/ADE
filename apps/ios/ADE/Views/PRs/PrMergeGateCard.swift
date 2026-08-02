@@ -283,8 +283,19 @@ func prComputeMergeGate(
     return PrMergeGateInfo(tone: .amber, subline: subline, target: .overview)
   }
 
+  // ADE-135. Nothing here is failing or pending, but "green" is a claim about
+  // observed results and `not_run` means there were none: third-party apps
+  // only, or an all-skipped suite. The tone stays green deliberately — it feeds
+  // merge enablement at PrDetailScreen's `canMerge`, and this fix is not
+  // allowed to gate anyone's merge. Only the sentence changes, because the
+  // sentence is the part that was false.
+  let summarySaysNotRun = normalizedSummaryChecksStatus == "not_run"
   let subline: String
-  if reviewsNeeded > 0 || reviewsHave > 0 {
+  if summarySaysNotRun {
+    subline = reviewsNeeded > 0 || reviewsHave > 0
+      ? "\(approvalsText) · no CI has run on this commit"
+      : "No CI has run on this commit"
+  } else if reviewsNeeded > 0 || reviewsHave > 0 {
     subline = "\(approvalsText) · all checks green"
   } else {
     subline = "All checks green"

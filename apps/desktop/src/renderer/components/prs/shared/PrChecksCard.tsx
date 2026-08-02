@@ -3,12 +3,13 @@ import {
   ArrowClockwise,
   ArrowSquareOut,
   CheckCircle,
+  CircleDashed,
   CircleNotch,
   MinusCircle,
   XCircle,
 } from "@phosphor-icons/react";
 
-import type { PrActionRun, PrCheck, PrRerunChecksTarget } from "../../../../shared/types/prs";
+import type { PrActionRun, PrCheck, PrChecksStatus, PrRerunChecksTarget } from "../../../../shared/types/prs";
 import { COLORS, SANS_FONT, floatingPane } from "../../lanes/laneDesignTokens";
 import {
   buildUnifiedChecks,
@@ -34,6 +35,20 @@ export type PrChecksCardProps = {
    * done by `buildUnifiedChecks`).
    */
   fill?: boolean;
+  /**
+   * ADE-135: required contexts that never reported on this commit, in the order
+   * GitHub declared them. Rendered as dimmed placeholder rows in the same list
+   * as the real checks so a job that is simply absent reads as an unfilled slot
+   * rather than as nothing at all.
+   */
+  missingRequired?: readonly string[] | null;
+  /**
+   * The canonical rollup. The header used to derive its verdict from row counts
+   * alone, which is producer-blind: on the ADE-135 payload it rendered a green
+   * "3/3 passed" directly above the `required · not reported` ghost rows this
+   * card had just been taught to show.
+   */
+  checksStatus?: PrChecksStatus | null;
 };
 
 type Bucket = "pass" | "fail" | "pending" | "skip";
@@ -91,7 +106,11 @@ export const PrChecksCard = memo(function PrChecksCard({
   onRerunChecks,
   actionBusy = false,
   fill = false,
+  missingRequired,
+  checksStatus,
 }: PrChecksCardProps) {
+  // Order is meaningful (GitHub's declaration order), so this is never sorted.
+  const ghosts = missingRequired ?? [];
   const items = useMemo(() => buildUnifiedChecks(checks, actionRuns), [checks, actionRuns]);
 
   const { passing, failing, pending, total } = useMemo(() => {
@@ -109,8 +128,11 @@ export const PrChecksCard = memo(function PrChecksCard({
     [items, fill],
   );
 
+  // `not_run` outranks the row tally: rows can all be green and still have
+  // verified nothing.
+  const notRun = checksStatus === "not_run";
   const summaryColor =
-    total === 0
+    total === 0 || notRun
       ? COLORS.textMuted
       : failing > 0
         ? COLORS.danger
@@ -118,8 +140,15 @@ export const PrChecksCard = memo(function PrChecksCard({
           ? COLORS.info
           : COLORS.checkPass;
 
-  const summaryText = total === 0 ? "No checks yet" : `${passing}/${total} passed`;
-  const headerBucket: Bucket = total === 0 ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
+  const summaryText = notRun
+    ? total === 0
+      ? "No CI has run"
+      : `No CI has run · ${total} check${total === 1 ? "" : "s"}`
+    : total === 0
+      ? "No checks yet"
+      : `${passing}/${total} passed`;
+  const headerBucket: Bucket =
+    total === 0 || notRun ? "skip" : failing > 0 ? "fail" : pending > 0 ? "pending" : "pass";
 
   return (
     <section
@@ -145,12 +174,36 @@ export const PrChecksCard = memo(function PrChecksCard({
         ) : null}
       </div>
 
-      {attention.length > 0 ? (
+      {attention.length > 0 || ghosts.length > 0 ? (
         <div
           className={fill ? "min-h-0 flex-1 overflow-y-auto" : undefined}
           style={{ borderTop: `1px solid ${COLORS.border}` }}
           data-testid="pr-checks-card-list"
         >
+          {/* Ghosts lead the list: a slot that was never filled outranks the
+              results that did arrive. */}
+          {ghosts.map((context) => (
+            <div
+              key={`missing:${context}`}
+              className="flex items-center gap-2 px-3 py-1.5"
+              data-testid="pr-checks-card-ghost-row"
+            >
+              <CircleDashed size={14} weight="bold" style={{ color: COLORS.textDim, flexShrink: 0 }} />
+              <span
+                className="min-w-0 flex-1 truncate text-[11px]"
+                style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
+                title={`${context} is required but has not reported on this commit`}
+              >
+                {context}
+              </span>
+              <span
+                className="text-[10px]"
+                style={{ color: COLORS.textDim, fontFamily: SANS_FONT }}
+              >
+                required · not reported
+              </span>
+            </div>
+          ))}
           {attention.map((item) => {
             const bucket = bucketOf(item);
             const rerunTarget: PrRerunChecksTarget | null = item.source === "actions_job" && item.jobId != null

@@ -2157,6 +2157,25 @@ successful field values, displays a partial-data retry notice, and uses the
 normal 25 s freshness window as retry backoff. An explicit retry bypasses that
 window.
 
+**CI checks.** The phone never decides for itself whether CI passed — it cannot
+tell a test job from a preview bot, and reimplementing the producer rule locally
+is exactly how the two would drift. The host's canonical rollup arrives on the
+replicated `pull_requests` row as `checksStatus` (`passing | failing | pending |
+none | not_run`) plus `checksReason` and `checksMissingRequired`, and every iOS
+surface reads it: `PrRowCard`'s status dot, the merge checklist
+(`PrMergeChecklist`), the merge gate card, the Work-chat PR views, and
+`PrDetailChecksTab`. `not_run` — something was expected and nothing verified the
+commit — renders as a hollow dashed ring, distinct from `none` (a repo with no
+CI, which stays quiet), and the CI-Checks empty state reads "No CI ran on this
+commit" over the host's `checksReason` sentence instead of the default "No CI
+checks". `prChecksSummaryStats` (rendered by `PrChecksStatStrip`) gives `neutral`/`skipped` their own muted bucket
+rather than folding them into `pass` (an all-skipped suite used to render a
+green bar directly beneath a banner saying no CI ran), and when the host says
+`not_run` it reports every otherwise-passing row as unverified. Required
+contexts in `checksMissingRequired` render as dimmed ghost rows in the check
+list, matching desktop. See
+[pull-requests](../pull-requests/README.md#checks-rollup-what-counts-as-a-pass).
+
 **Palette.** The PR surfaces use `PrGlassPalette` (in `PrMergeGateCard.swift`)
 and `PrsGlass` (in `PrListRowModifier.swift`), which are now flat and
 adaptive light/dark and map to the desktop CSS tokens: `ink` =

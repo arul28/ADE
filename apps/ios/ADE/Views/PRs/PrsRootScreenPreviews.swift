@@ -160,6 +160,29 @@ private enum PrsRootPreviewData {
     commentCount: 0
   )
 
+  // ADE-135. Sits directly under the passing row so the hollow dashed ring can be
+  // compared against the green checkmark it used to be mistaken for.
+  static let linkedPr988NotRun: PullRequestListItem = {
+    var item = linkedPr559
+    item.id = "pr-988"
+    item.githubPrNumber = 988
+    item.title = "GitHub Rate Limit Fallback"
+    item.checksStatus = "not_run"
+    item.checksReason = "3 checks reported, none from a CI provider. CI has not run on this commit."
+    item.checksMissingRequired = ["CI / build"]
+    return item
+  }()
+
+  static let github988NotRun: GitHubPrListItem = {
+    var item = github559
+    item.id = "gh-988"
+    item.githubPrNumber = 988
+    item.githubUrl = "https://github.com/arul28/ADE/pull/988"
+    item.title = "GitHub Rate Limit Fallback"
+    item.linkedPrId = linkedPr988NotRun.id
+    return item
+  }()
+
   static let categoryCounts = PrGitHubCategoryCounts(open: 21, merged: 0, closed: 0)
 }
 
@@ -197,6 +220,12 @@ private struct PrsGitHubRootPreviewScreen: View {
         PrRowCard(
           item: PrsRootPreviewData.github559,
           linkedPr: PrsRootPreviewData.linkedPr559
+        )
+        .prListRowCard()
+
+        PrRowCard(
+          item: PrsRootPreviewData.github988NotRun,
+          linkedPr: PrsRootPreviewData.linkedPr988NotRun
         )
         .prListRowCard()
 

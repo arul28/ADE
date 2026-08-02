@@ -223,9 +223,7 @@ struct PrRowCard: View {
         }
 
         if !data.isTerminal, let ci = data.ciIndicator {
-          Image(systemName: ci.symbol)
-            .foregroundStyle(ci.color)
-            .accessibilityLabel(ci.title)
+          PrRowCiGlyph(indicator: ci)
         }
 
         if !data.isTerminal, let review = data.reviewIndicator {
@@ -260,6 +258,33 @@ struct PrRowCard: View {
     case "approved": return "checkmark.bubble"
     case "changes_requested": return "exclamationmark.bubble"
     default: return "bubble.left.and.exclamationmark.bubble.right"
+    }
+  }
+}
+
+/// Renders the row's CI signal. Symbol states track the ambient caption font so
+/// they stay aligned with the review glyph beside them; the `not_run` ring is
+/// drawn at a fixed 13pt, which matches a filled `.caption2` symbol optically.
+private struct PrRowCiGlyph: View {
+  let indicator: PrRowCard.Data.CIIndicator
+
+  var body: some View {
+    switch indicator.glyph {
+    case let .symbol(name):
+      Image(systemName: name)
+        .foregroundStyle(indicator.color)
+        .accessibilityLabel(indicator.title)
+    case .hollowRing:
+      Circle()
+        .strokeBorder(
+          indicator.color,
+          style: StrokeStyle(lineWidth: 1.3, lineCap: .round, dash: [2.2, 2.6])
+        )
+        .frame(width: 13, height: 13)
+        // Shapes are not accessibility elements by default, so the ring has to be
+        // promoted to one or the finding is invisible to VoiceOver.
+        .accessibilityElement()
+        .accessibilityLabel(indicator.title)
     }
   }
 }
@@ -342,6 +367,9 @@ extension PrRowCard {
     let isUnmapped: Bool
     let laneLabel: String?
     let checksStatus: String?
+    /// Host-supplied explanation for a non-obvious rollup. Surfaced verbatim on
+    /// the CI indicator's accessibility label so the "why" travels with the glyph.
+    let checksReason: String?
     let reviewStatus: String?
     let warnMessage: String?
     let stackGroupId: String?
@@ -385,7 +413,15 @@ extension PrRowCard {
     }
 
     struct CIIndicator {
-      let symbol: String
+      /// ADE-135. `not_run` has no honest SF Symbol — every circle-with-a-mark
+      /// reads as a verdict, and this state is the absence of one. It draws a
+      /// hollow dashed ring instead: an empty slot where a result should be.
+      enum Glyph: Equatable {
+        case symbol(String)
+        case hollowRing
+      }
+
+      let glyph: Glyph
       let color: Color
       let title: String
     }
@@ -398,11 +434,19 @@ extension PrRowCard {
     var ciIndicator: CIIndicator? {
       switch checksStatus {
       case "passing":
-        return CIIndicator(symbol: "checkmark.circle.fill", color: PrsGlass.openTop, title: "CI passing")
+        return CIIndicator(glyph: .symbol("checkmark.circle.fill"), color: PrsGlass.openTop, title: "CI passing")
       case "failing":
-        return CIIndicator(symbol: "xmark.circle.fill", color: PrsGlass.closedTop, title: "CI failing")
+        return CIIndicator(glyph: .symbol("xmark.circle.fill"), color: PrsGlass.closedTop, title: "CI failing")
       case "pending":
-        return CIIndicator(symbol: "clock.fill", color: PrsGlass.draftTop, title: "CI pending")
+        return CIIndicator(glyph: .symbol("clock.fill"), color: PrsGlass.draftTop, title: "CI pending")
+      case "not_run":
+        // Checks exist or are required, but nothing verified this commit. Muted,
+        // never the failure red — this is a gap, not a red build.
+        return CIIndicator(
+          glyph: .hollowRing,
+          color: PrsGlass.textMuted,
+          title: checksReason ?? noCIReasonText
+        )
       default:
         return nil
       }
@@ -437,7 +481,10 @@ extension PrRowCard {
       self.isExternal = false
       self.isUnmapped = false
       self.laneLabel = pr.laneName ?? pr.laneId
+      // Only "none" (nothing observed, nothing expected) is silent. "not_run" is a
+      // finding and must survive to `ciIndicator`.
       self.checksStatus = pr.checksStatus == "none" ? nil : pr.checksStatus
+      self.checksReason = pr.checksReason
       self.reviewStatus = pr.reviewStatus == "none" ? nil : pr.reviewStatus
       self.warnMessage = Self.warnMessage(
         workflowDisplayState: pr.workflowDisplayState,
@@ -476,6 +523,7 @@ extension PrRowCard {
       self.isUnmapped = unmapped
       self.laneLabel = item.linkedLaneName ?? item.linkedLaneId ?? linkedPr?.laneName ?? linkedPr?.laneId
       self.checksStatus = linkedPr?.checksStatus == "none" ? nil : linkedPr?.checksStatus
+      self.checksReason = linkedPr?.checksReason
       self.reviewStatus = linkedPr?.reviewStatus == "none" ? nil : linkedPr?.reviewStatus
       self.warnMessage = unmapped
         ? nil
@@ -518,6 +566,8 @@ extension PrRowCard {
       if checksStatus == "failing" {
         return "CI failing"
       }
+      // "not_run" deliberately produces no warn banner: the hollow ring already
+      // states it, and this row is reserved for things the user must act on.
       return nil
     }
   }

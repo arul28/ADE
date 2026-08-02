@@ -27,6 +27,10 @@ export function getPrChecksBadge(status: PrChecksStatus): PrBadgeSpec {
   if (status === "passing") return { label: "CI", ...colorBadge(COLORS.success) };
   if (status === "failing") return { label: "CI", ...colorBadge(COLORS.danger) };
   if (status === "pending") return { label: "CI", ...colorBadge(COLORS.warning) };
+  // ADE-135: `not_run` and `none` both land here. Absence is not failure —
+  // nothing verified the commit, so it reads muted rather than borrowing the
+  // danger colour. Anything that is not explicitly green above must fall here;
+  // a new state reaching the success branch by accident is this ticket's bug.
   return { label: "CI", ...colorBadge(COLORS.textMuted) };
 }
 
@@ -49,6 +53,9 @@ export function getPrEdgeColor(args: {
   if (args.ciRunning || args.checksStatus === "pending") return COLORS.info;
   if (args.reviewStatus === "requested" || args.reviewStatus === "none") return COLORS.warning;
   if (args.checksStatus === "failing") return COLORS.danger;
+  // ADE-135: an approved PR whose commit nothing verified must not wear the
+  // success edge — the approval is real, the verification is not.
+  if (args.checksStatus === "not_run") return COLORS.textMuted;
   if (args.checksStatus === "passing" || args.reviewStatus === "approved") return COLORS.success;
   return COLORS.textMuted;
 }
@@ -60,6 +67,8 @@ export function getPrCiDotColor(args: {
   if (args.ciRunning || args.checksStatus === "pending") return COLORS.info;
   if (args.checksStatus === "failing") return COLORS.danger;
   if (args.checksStatus === "passing") return COLORS.success;
+  // `not_run`/`none`: nothing verified the commit, so it stays muted. Only an
+  // explicit `passing` above earns green.
   return COLORS.textMuted;
 }
 

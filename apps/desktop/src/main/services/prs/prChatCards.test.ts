@@ -75,7 +75,7 @@ function run(overrides: Partial<PrActionRun> = {}): PrActionRun {
   };
 }
 
-function check(name: string): PrCheck {
+function check(name: string, overrides: Partial<PrCheck> = {}): PrCheck {
   return {
     name,
     status: "completed",
@@ -83,6 +83,11 @@ function check(name: string): PrCheck {
     detailsUrl: null,
     startedAt: null,
     completedAt: null,
+    // Default to a real CI producer. An ABSENT slug is deliberately treated as
+    // CI-eligible (legacy rows carry no slug at all), so a fixture that means
+    // "preview/review bot" has to say which bot — exactly as GitHub does.
+    appSlug: "github-actions",
+    ...overrides,
   };
 }
 
@@ -118,7 +123,7 @@ describe("PR chat cards", () => {
   });
 
   it("builds one live CI episode keyed by head and attempt", () => {
-    const card = buildPrCiCard({ pr: pr(), runs: [run()], checks: [check("external")] });
+    const card = buildPrCiCard({ pr: pr(), runs: [run()], checks: [check("external", { appSlug: "vercel" })] });
     expect(card).toMatchObject({
       cardId: "pr-ci:pr-7:abc123:2",
       variant: "pr_ci",
@@ -126,18 +131,51 @@ describe("PR chat cards", () => {
       progress: { passed: 0, failed: 1, running: 1, queued: 0 },
       navTarget: { kind: "pr", detailTab: "checks", prNumber: 7 },
     });
-    expect(card.rows?.map((row) => row.text)).toEqual(["lint", "test"]);
+    expect(card.rows?.map((row) => row.text)).toEqual(["lint", "test", "external"]);
+    expect(card.rows?.map((row) => row.detail)).toEqual([
+      "CI · failed",
+      "CI · running",
+      "Other · passed",
+    ]);
   });
 
-  it("falls back to check rows when Actions jobs are unavailable", () => {
+  it("keeps a third-party check out of the CI group and out of CI's counters", () => {
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "not_run" }),
+      runs: [],
+      checks: [check("Vercel", { appSlug: "vercel" }), check("CodeRabbit", { appSlug: "coderabbitai" }), check("coverage-bot", { appSlug: "mintlify" })],
+    });
+    expect(card.state).toBe("terminal");
+    expect(card.title).toBe("CI has not run");
+    expect(card.progress).toEqual({ passed: 0, failed: 0, running: 0, queued: 0 });
+    expect(card.metrics).toEqual([
+      { label: "CI checks", value: "0", tone: "neutral" },
+      { label: "other checks", value: "3", tone: "neutral" },
+    ]);
+    expect(card.rows?.[0]).toMatchObject({ text: "No CI checks reported on this commit" });
+    expect(card.rows?.slice(1).map((row) => row.detail)).toEqual(["Other · passed", "Other · passed"]);
+    expect(card.rowsTruncated).toBe(1);
+  });
+
+  it("counts a legacy commit status as CI — Buildkite and CircleCI report that way", () => {
     const card = buildPrCiCard({
       pr: pr({ checksStatus: "passing" }),
       runs: [],
-      checks: [check("Vercel")],
+      checks: [check("buildkite/ci", { id: null, appSlug: "commit_status" }), check("Vercel", { appSlug: "vercel" })],
     });
-    expect(card.state).toBe("terminal");
     expect(card.progress).toEqual({ passed: 1, failed: 0, running: 0, queued: 0 });
-    expect(card.rows?.[0]?.text).toBe("Vercel");
+    expect(card.metrics).toContainEqual({ label: "other checks", value: "1", tone: "neutral" });
+    expect(card.rows?.map((row) => row.detail)).toEqual(["CI · passed", "Other · passed"]);
+  });
+
+  it("counts an Actions check run as CI when only the checks endpoint answered", () => {
+    const card = buildPrCiCard({
+      pr: pr({ checksStatus: "passing" }),
+      runs: [],
+      checks: [check("test-desktop", { appSlug: "github-actions" })],
+    });
+    expect(card.progress).toEqual({ passed: 1, failed: 0, running: 0, queued: 0 });
+    expect(card.rows?.[0]).toMatchObject({ text: "test-desktop", detail: "CI · passed" });
   });
 
   it("does not report neutral, skipped, or indeterminate checks as passed", () => {
@@ -172,9 +210,49 @@ describe("PR chat cards", () => {
     expect(card.progress).toEqual({ passed: 0, failed: 0, running: 0, queued: 0 });
     expect(card.metrics).toContainEqual({ label: "other", value: "2", tone: "neutral" });
     expect(card.rows).toMatchObject([
-      { text: "unknown", icon: "info", detail: "unknown", tone: "neutral" },
-      { text: "optional", icon: "skipped", detail: "skipped", tone: "neutral" },
+      { text: "unknown", icon: "info", detail: "CI · unknown", tone: "neutral" },
+      { text: "optional", icon: "skipped", detail: "CI · skipped", tone: "neutral" },
     ]);
+  });
+
+  // ADE-135: PR #988 rendered "CI passed" while GitHub Actions never registered
+  // a suite. The headline must follow the CI group, and an absence is neutral —
+  // it is a statement about what we know, not an alarm.
+  it("never claims a run for a PR nothing verified", () => {
+    const notRun = buildPrCiCard({
+      pr: pr({
+        checksStatus: "not_run",
+        checksReason: "3 checks reported, none from a CI provider. CI has not run on this commit.",
+      }),
+      runs: [],
+      checks: [check("Vercel", { appSlug: "vercel" }), check("CodeRabbit", { appSlug: "coderabbitai" })],
+    });
+    expect(notRun.title).toBe("CI has not run");
+    expect(notRun.subtitle).toContain("none from a CI provider");
+    expect(notRun.metrics?.every((metric) => metric.tone !== "warning")).toBe(true);
+    expect(notRun.fallbackText).toContain("ci has not run");
+
+    const none = buildPrCiCard({ pr: pr({ checksStatus: "none" }), runs: [], checks: [] });
+    expect(none.title).toBe("No checks reported");
+    expect(none.metrics).toEqual([{ label: "status", value: "none", tone: "neutral" }]);
+    expect(none.rows).toEqual([]);
+  });
+
+  it("names the required checks that never reported, truncating the shard list", () => {
+    const shards = Array.from({ length: 8 }, (_, index) => `test-desktop (${index + 1}/8)`);
+    const card = buildPrCiCard({
+      pr: pr({
+        checksStatus: "not_run",
+        checksMissingRequired: shards,
+      }),
+      runs: [],
+      checks: [],
+    });
+    const required = card.rows?.find((row) => row.detail === "required");
+    expect(required?.text).toBe(
+      "Required checks with no result: test-desktop (1/8), test-desktop (2/8), test-desktop (3/8), +5 more",
+    );
+    expect(required?.tone).toBe("neutral");
   });
 
   it("summarizes only the newest run for each workflow", () => {
