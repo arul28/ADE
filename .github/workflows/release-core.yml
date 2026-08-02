@@ -370,6 +370,32 @@ jobs:
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
 
+      - name: Stage standalone runtime proof assets
+        shell: pwsh
+        run: |
+          $releaseDir = "apps/desktop/release"
+          Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.sh" -Destination "$releaseDir/install.sh"
+          Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.ps1" -Destination "$releaseDir/install.ps1"
+          Get-ChildItem -LiteralPath "apps/desktop/resources/runtime" -File -Filter "ade-*" | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $releaseDir
+          }
+          Get-Item -LiteralPath "$releaseDir/ade-win32-x64.exe" | Out-Null
+          Get-Item -LiteralPath "$releaseDir/ade-win32-x64.native.tar.gz" | Out-Null
+          $checksumFiles = @(
+            Get-Item -LiteralPath "$releaseDir/install.sh"
+            Get-Item -LiteralPath "$releaseDir/install.ps1"
+            Get-ChildItem -LiteralPath $releaseDir -File -Filter "ade-*"
+          ) | Sort-Object Name
+          $checksumLines = $checksumFiles | ForEach-Object {
+            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$digest  $($_.Name)"
+          }
+          [System.IO.File]::WriteAllLines(
+            (Join-Path (Resolve-Path $releaseDir) "SHA256SUMS"),
+            $checksumLines,
+           [System.Text.UTF8Encoding]::new($false)
+          )
+
       - name: Generate exact-SHA Windows proof manifest
         shell: pwsh
         run: >-
@@ -402,6 +428,10 @@ jobs:
           path: |
             apps/desktop/release/*.exe
             apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/ade-*
+            apps/desktop/release/install.sh
+            apps/desktop/release/install.ps1
+            apps/desktop/release/SHA256SUMS
             apps/desktop/release/latest.yml
             apps/desktop/release/windows-proof-manifest.json
           if-no-files-found: error
@@ -456,6 +486,10 @@ jobs:
           path: |
             apps/desktop/release/*.exe
             apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/ade-*
+            apps/desktop/release/install.sh
+            apps/desktop/release/install.ps1
+            apps/desktop/release/SHA256SUMS
             apps/desktop/release/latest.yml
             apps/desktop/release/windows-proof-manifest.json
           if-no-files-found: error

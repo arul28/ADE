@@ -6,8 +6,10 @@
       "windows-11-x64"
     ],
     "shells": [
-      "powershell",
-      "cmd"
+      "powershell-5-1",
+      "powershell-7",
+      "cmd",
+      "git-bash"
     ],
     "providers": [
       "claude",
@@ -140,7 +142,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -179,7 +181,7 @@
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -198,7 +200,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -218,7 +220,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": ["claude", "codex", "cursor", "droid", "opencode"],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -317,7 +319,7 @@
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
-        "shells": ["powershell", "cmd"],
+        "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": ["codex"],
         "clients": ["windows-desktop", "ade-code"],
         "routes": ["tailscale"],
@@ -455,7 +457,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell", "cmd"],
+        "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": [],
         "clients": ["windows-desktop"],
         "routes": [],
@@ -475,7 +477,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell", "cmd"],
+        "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": [],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -495,7 +497,7 @@
       "hosts": ["windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": ["codex"],
         "clients": ["windows-desktop"],
         "routes": ["lan"],
@@ -515,7 +517,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell", "cmd"],
+        "shells": ["powershell-5-1", "powershell-7", "cmd"],
         "providers": [],
         "clients": ["windows-desktop", "ade-code"],
         "routes": [],
@@ -555,7 +557,7 @@
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
       "coverage": {
         "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
-        "shells": ["powershell"],
+        "shells": ["powershell-5-1", "powershell-7"],
         "providers": [],
         "clients": ["windows-desktop"],
         "routes": [],
@@ -593,7 +595,7 @@
       "id": "explicit-shell-conpty-matrix",
       "title": "PowerShell 5.1, PowerShell 7, cmd, and Git Bash ConPTY matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd", "git-bash"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["shell-conpty-matrix"],
       "acceptanceRequirementIds": ["powershell-5-1", "powershell-7", "cmd", "git-bash", "conpty-unicode", "conpty-metacharacters", "conpty-resize", "conpty-ctrl-c", "conpty-cancel", "descendant-cleanup", "crash-restore"],
       "requiredEvidenceKinds": ["gui", "process", "log"],
@@ -608,7 +610,7 @@
       "id": "explicit-provider-lifecycle-matrix",
       "title": "Real provider authentication and recovery matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": ["claude", "codex", "cursor", "droid", "opencode"], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["claude", "codex", "cursor", "droid", "opencode"], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["provider-lifecycle-matrix"],
       "acceptanceRequirementIds": ["claude-authenticated", "claude-unauthenticated", "claude-fresh", "claude-resume", "claude-recovery-metadata", "claude-recovery-instructions", "claude-redaction", "codex-authenticated", "codex-unauthenticated", "codex-fresh", "codex-resume", "codex-recovery-metadata", "codex-recovery-instructions", "codex-redaction", "cursor-authenticated", "cursor-unauthenticated", "cursor-fresh", "cursor-resume", "cursor-recovery-metadata", "cursor-recovery-instructions", "cursor-redaction", "opencode-authenticated", "opencode-unauthenticated", "opencode-fresh", "opencode-resume", "opencode-recovery-metadata", "opencode-recovery-instructions", "opencode-redaction", "droid-authenticated", "droid-unauthenticated", "droid-fresh", "droid-resume", "droid-recovery-metadata", "droid-recovery-instructions", "droid-redaction"],
       "requiredEvidenceKinds": ["gui", "log", "process", "db"],
@@ -623,22 +625,22 @@
       "id": "standalone-cli-brain-lifecycle",
       "title": "Standalone ade-win32-x64 CLI and brain lifecycle",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": [], "clients": ["ade-code"], "routes": ["lan", "tailscale"], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": [], "clients": ["ade-code"], "routes": ["lan", "tailscale"], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["standalone-cli-brain"],
       "acceptanceRequirementIds": ["ade-win32-x64", "install", "start", "status", "doctor", "update", "remote-bootstrap", "openssh-prerequisite", "damaged-install-recovery"],
       "requiredEvidenceKinds": ["process", "ipc", "log", "network"],
       "passConditions": [
-        "After the standalone ade-win32-x64 implementation exists, its payload installs and proves brain start, status, doctor, and update without the desktop process.",
+        "The standalone ade-win32-x64 payload installs and proves brain start, status, doctor, and update without the desktop process.",
         "Remote bootstrap proves the OpenSSH prerequisite and an actionable missing-OpenSSH failure before a successful supported macOS/Linux bootstrap.",
         "A damaged or partial standalone install produces bounded recovery guidance and recovers without deleting project data."
       ],
-      "dependencies": ["BLOCKING IMPLEMENTATION: ADE does not yet build ade-win32-x64 and brain update currently rejects Windows", "Supported macOS and Linux bootstrap hosts", "Disposable damaged-install snapshot"]
+      "dependencies": ["BLOCKING EVIDENCE: exact-SHA standalone runtime, native archive, install.ps1, and SHA256SUMS must be captured from the immutable proof run", "Supported macOS and Linux bootstrap hosts", "Disposable damaged-install snapshot"]
     },
     {
       "id": "brain-host-lifecycle-explicit",
       "title": "Closed desktop, brain crash, login, logout, reboot, repair, reinstall, and uninstall",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["brain-host-lifecycle"],
       "acceptanceRequirementIds": ["desktop-closed", "brain-crash", "brain-restart", "login", "logout", "reboot", "repair", "reinstall", "uninstall"],
       "requiredEvidenceKinds": ["process", "ipc", "log", "db"],
@@ -683,7 +685,7 @@
       "id": "transport-streaming-reconnect-explicit",
       "title": "LAN firewall, Tailscale, Relay, reconnect, streaming, and remote-command matrix",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": ["codex"], "clients": ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"], "routes": ["lan", "tailscale", "relay"], "journeys": ["windows-regressions"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7", "cmd"], "providers": ["codex"], "clients": ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"], "routes": ["lan", "tailscale", "relay"], "journeys": ["windows-regressions"]},
       "acceptanceGateIds": ["transport-streaming-reconnect"],
       "acceptanceRequirementIds": ["lan-firewall", "tailscale", "relay", "reconnect", "terminal-streaming", "chat-streaming", "remote-commands"],
       "requiredEvidenceKinds": ["network", "ipc", "gui", "log"],
@@ -698,7 +700,7 @@
       "id": "signed-updater-proof-explicit",
       "title": "Signed N to N+1 identity, tamper, relaunch, recovery, preservation, and SmartScreen",
       "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
-      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell"], "providers": [], "clients": ["windows-desktop"], "routes": ["lan"], "journeys": ["signed-n-to-n-plus-one-update"]},
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell-5-1", "powershell-7"], "providers": [], "clients": ["windows-desktop"], "routes": ["lan"], "journeys": ["signed-n-to-n-plus-one-update"]},
       "acceptanceGateIds": ["signed-updater-proof"],
       "acceptanceRequirementIds": ["signed-n-to-n-plus-one", "rfc3161-timestamp", "publisher-identity", "tamper-rejection", "relaunch", "brain-recovery", "data-preservation", "smartscreen-observation"],
       "requiredEvidenceKinds": ["gui", "log", "process", "network", "db"],

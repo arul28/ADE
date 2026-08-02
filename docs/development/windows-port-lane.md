@@ -69,7 +69,7 @@ Recent `main` work that is **not** inherently macOS-only but can surface path/sh
   Windows Graphics Capture/UI Automation is not implemented.
 - **iOS Simulator / Attention Notch** — hidden on Windows by capability. These
   remain macOS-only product surfaces.
-- **Releases** — pull-request CI may publish an unsigned Windows preview artifact for internal testing. With `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`, `release-core.yml` fails the Windows jobs unless the installer, packaged app, and standalone runtime are Authenticode signed, timestamped, and match `WINDOWS_SIGNING_EXPECTED_SUBJECT` or `WINDOWS_SIGNING_EXPECTED_THUMBPRINT`; the installer and packaged app must also share one certificate. That test job cannot block macOS publication while public Windows publication is disabled. SmartScreen reputation remains a release-engineering concern, not only app code.
+- **Releases** — pull-request CI may publish an unsigned Windows preview artifact for internal testing. With `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`, the proof workflow fails unless the installer, packaged app, and standalone runtime are Authenticode signed, timestamped, and match the pinned subject or thumbprint; the installer and packaged app must also share one certificate. Public readiness still requires immutable exact-SHA proof for the Windows runtime, native archive, installer, and checksum manifest. Disabled Windows publication does not block the macOS release path. SmartScreen reputation remains a release-engineering concern, not only app code.
 - **Docs in `AGENTS.md`** still emphasize macOS Codex/Computer Use; Windows developers should use this file + `docs/ARCHITECTURE.md` for WSL/VM dev notes if applicable.
 
 ## External proof gates before public availability

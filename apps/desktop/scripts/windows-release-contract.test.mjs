@@ -408,6 +408,11 @@ test("signed Windows proof workflow is non-publishing and emits an exact-SHA man
   assert.match(windowsRelease, /--expected-sha "\$\{\{ inputs\.target_ref \}\}"/);
   assert.match(windowsRelease, /--expected-tag "\$\{\{ inputs\.release_tag \}\}"/);
   assert.match(windowsRelease, /--expected-run-id "\$\{\{ github\.run_id \}\}"/);
+  assert.match(windowsRelease, /name: Stage standalone runtime proof assets/);
+  assert.match(windowsRelease, /ade-win32-x64\.exe/);
+  assert.match(windowsRelease, /ade-win32-x64\.native\.tar\.gz/);
+  assert.match(windowsRelease, /install-runtime\.ps1/);
+  assert.match(windowsRelease, /SHA256SUMS/);
   assert.match(windowsRelease, /apps\/desktop\/release\/windows-proof-manifest\.json/);
 });
 
@@ -419,6 +424,9 @@ test("public Windows release promotes the approved immutable proof artifact", ()
   assert.match(windowsRelease, /Get-FileHash -LiteralPath \$manifestPath -Algorithm SHA256/);
   assert.match(windowsRelease, /APPROVED_BUILD_MANIFEST_SHA256/);
   assert.match(windowsRelease, /--expected-run-id "\$\{\{ vars\.ADE_WINDOWS_APPROVED_PROOF_RUN_ID \}\}"/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/ade-\*/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/install\.ps1/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/SHA256SUMS/);
   assert.match(windowsRelease, /inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
 });
 

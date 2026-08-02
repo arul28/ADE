@@ -2,7 +2,7 @@
 
 Use this guide after the Windows release changes have been merged into `main`.
 
-ADE already publishes macOS and standalone Mac/Linux files through GitHub Releases. The Windows release uses that same pipeline.
+ADE already publishes macOS and standalone runtime files through GitHub Releases. The Windows release uses that same pipeline and includes the standalone Windows payload.
 
 After setup, a normal release is:
 
@@ -99,11 +99,16 @@ The run passes only when:
 - No GitHub Release is created.
 - A machine-readable proof manifest is generated for the exact checked-out SHA.
 
-Download the `ade-win-release-v<VERSION>` artifact from the successful run. It must contain exactly:
+Download the `ade-win-release-v<VERSION>` artifact from the successful run. Its
+manifest-indexed files must include:
 
 - `ADE-<VERSION>-win-x64.exe`
 - `ADE-<VERSION>-win-x64.exe.blockmap`
 - `latest.yml`
+- `ade-win32-x64.exe`
+- `ade-win32-x64.native.tar.gz`
+- `install.ps1`
+- `SHA256SUMS`
 - `windows-proof-manifest.json`
 
 Before editing the manifest, record the immutable build identity:
@@ -116,11 +121,13 @@ $BUILD_MANIFEST_SHA256 = (Get-FileHash `
 ```
 
 Create the proof-bundle layout from the proof contract: leave the manifest at
-the bundle root and place the installer, blockmap, and `latest.yml` under its
-`artifacts/` directory before running the validator.
+the bundle root and place all seven manifest-indexed files under its
+`artifacts/` directory before running the validator. Keep any additional
+standalone platform files from the Actions artifact unchanged alongside them.
 
-Run the build-phase validator after download. It re-hashes all three release
-files and rejects a manifest for any other commit:
+Run the build-phase validator after download. It re-hashes all seven indexed
+release files, verifies the standalone entries against `SHA256SUMS`, and
+rejects a manifest for any other commit:
 
 ```powershell
 node apps/desktop/scripts/windows-proof-manifest.mjs validate `

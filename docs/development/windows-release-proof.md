@@ -24,15 +24,20 @@ builds without publication, and uploads `ade-win-release-v<VERSION>` containing:
 - `ADE-<VERSION>-win-x64.exe`
 - `ADE-<VERSION>-win-x64.exe.blockmap`
 - `latest.yml`
+- `ade-win32-x64.exe`
+- `ade-win32-x64.native.tar.gz`
+- `install.ps1`
+- `SHA256SUMS`
 - `windows-proof-manifest.json`
 
-The generated manifest records SHA-256 and byte size for all three release
-files. It also records the workflow run, the exact source SHA, the signed-build
-validator gates, and SHA-256 digests of the scenario and #999 provenance
-indexes. All external scenarios start as `pending`. Before editing the manifest,
-record its SHA-256 and the workflow run id; publication uses those values to
-retrieve and verify the immutable Actions artifact that supplied the tested
-bytes.
+The generated manifest records SHA-256 and byte size for all seven indexed
+release files. It also verifies that `SHA256SUMS` binds the standalone Windows
+runtime, its native archive, and `install.ps1`; records the workflow run, exact
+source SHA, signed-build validator gates, and SHA-256 digests of the scenario
+and #999 provenance indexes. All external scenarios start as `pending`. Before
+editing the manifest, record its SHA-256 and the workflow run id; publication
+uses those values to retrieve and verify the immutable Actions artifact that
+supplied the tested bytes.
 
 ## Proof bundle layout
 
@@ -46,7 +51,11 @@ windows-proof-<40-character-sha>/
 |-- artifacts/
 |   |-- ADE-<VERSION>-win-x64.exe
 |   |-- ADE-<VERSION>-win-x64.exe.blockmap
-|   `-- latest.yml
+|   |-- latest.yml
+|   |-- ade-win32-x64.exe
+|   |-- ade-win32-x64.native.tar.gz
+|   |-- install.ps1
+|   `-- SHA256SUMS
 `-- evidence/
     |-- 0001-clean-install-win10/
     |   |-- gui-first-launch.png
@@ -81,7 +90,7 @@ personal identifiers; visual and semantic redaction still requires review.
 | `createdAt` | ISO timestamp for manifest creation. |
 | `release` | Repository, version, tag, exact lowercase 40-character `targetSha`, `architecture: "x64"`, and non-publishing workflow identity. |
 | `buildValidation` | `signedBuild: true`; canonical artifact validator; Authenticode, RFC3161 timestamp, signer-consistency, and publisher-pin gates all `passed`. |
-| `artifacts` | Exactly one `installer`, one `blockmap`, and one `update-manifest`, each with a top-level filename, lowercase SHA-256, and positive byte size. |
+| `artifacts` | Exactly one each of `installer`, `blockmap`, `update-manifest`, `standalone-runtime`, `standalone-native-archive`, `standalone-installer`, and `runtime-checksums`, with fixed top-level filenames, lowercase SHA-256, and positive byte size. The checksum manifest must bind the other three standalone Windows entries. |
 | `indexes` | Fixed paths and SHA-256 values for `windows-full-system-scenarios.json` and `windows-source-provenance.json`. |
 | `releaseGates` | Signed build enabled; non-publishing workflow true; GitHub Release creation, public Windows release, and website release readiness all false. `websiteReleaseReady` records approval state for this release, not whether a previously approved download is currently visible. |
 | `approval` | `proof_pending`, `proof_complete`, or `approved`; publication readiness binds role-based approval to `approvedTargetSha`. |
@@ -251,8 +260,11 @@ Based-on: nsxdavid/ADE#999
 The manifest stores the provenance index digest so a release proof cannot be
 silently detached from the credited source mapping.
 
-That provenance index also resolves the original #999 Codex inline P2: current
-startup is a channel/user-qualified HKCU Run value plus hidden PowerShell
-supervisor, the launcher writes the advisory supervisor/runtime PID record, and
-an initialized runtime IPC response is the separate readiness record. Any
-ONLOGON Scheduled Task is legacy residue to remove, not a current service.
+That provenance index also resolves both original #999 Codex inline P2s. The
+desktop launcher reuses its current executable only when its basename exactly
+matches the requested channel-qualified executable; otherwise it searches the
+requested app/channel candidates. Current startup is a channel/user-qualified
+HKCU Run value plus hidden PowerShell supervisor, the launcher writes the
+advisory supervisor/runtime PID record, and an initialized runtime IPC response
+is the separate readiness record. Any ONLOGON Scheduled Task is legacy residue
+to remove, not a current service.

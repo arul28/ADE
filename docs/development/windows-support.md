@@ -144,9 +144,10 @@ the named pipe is healthy.
 - A Windows client may bootstrap supported macOS/Linux runtimes. Verify the
   OpenSSH client prerequisite first and require a bounded actionable error when
   it is absent. This does not make Windows an SSH-bootstrap *target*.
-- At this source revision, `ade brain update` still rejects a Windows runtime
-  target and installed-desktop discovery in `ade doctor` is incomplete. Treat
-  either result as a public-release proof blocker; do not relabel it as a pass
+- Windows standalone install and `ade brain update` are implemented, but the
+  exact-SHA proof must re-hash `ade-win32-x64.exe`, its native archive,
+  `install.ps1`, and `SHA256SUMS` from the immutable proof run. Missing or
+  mismatched evidence is a public-release blocker; do not relabel it as a pass
   or substitute a manual binary copy.
 - Repair a partial launcher/runtime installation with the product's bounded
   repair path before testing reinstall or uninstall. Repair must preserve

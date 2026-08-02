@@ -104,12 +104,11 @@ and full-system acceptance inventory live in
 installed-host diagnosis is in
 [`docs/development/windows-support.md`](docs/development/windows-support.md).
 
-Four source follow-ups are explicitly outside this preview boundary:
-`ade brain update` continues to reject Windows because Windows as a standalone
-remote brain is deferred; `ade doctor` does not yet discover an installed
-Windows desktop version. None is required to install and run the local Windows
-desktop preview, but each should be resolved before calling Windows a
-first-class remote-brain/operations platform.
+Windows standalone install and `ade brain update` are implemented. Windows is
+still not an SSH-bootstrap target, and public readiness requires exact-SHA
+evidence for the standalone executable, native archive, `install.ps1`, and
+`SHA256SUMS` from the immutable proof run. Missing or mismatched evidence blocks
+release; a manual binary copy is not acceptable proof.
 
 ## Current readiness
 

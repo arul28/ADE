@@ -198,22 +198,24 @@ function validateNoSensitiveData(value, errors, field = "manifest") {
   }
 }
 
-function findReleaseArtifacts(releaseDir) {
-  const entries = fs.readdirSync(releaseDir, { withFileTypes: true })
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name);
-  const installers = entries.filter((name) => name.endsWith(".exe") && !name.endsWith(".exe.blockmap"));
-  const blockmaps = entries.filter((name) => name.endsWith(".exe.blockmap"));
-  const latest = entries.filter((name) => name === "latest.yml");
-  if (installers.length !== 1 || blockmaps.length !== 1 || latest.length !== 1) {
-    throw new Error("Expected exactly one Windows installer, one installer blockmap, and latest.yml.");
-  }
+function expectedReleaseArtifacts(version) {
   return [
-    ["installer", installers[0]],
-    ["blockmap", blockmaps[0]],
-    ["update-manifest", latest[0]],
-  ].map(([role, file]) => {
+    ["installer", `ADE-${version}-win-x64.exe`],
+    ["blockmap", `ADE-${version}-win-x64.exe.blockmap`],
+    ["update-manifest", "latest.yml"],
+    ["standalone-runtime", "ade-win32-x64.exe"],
+    ["standalone-native-archive", "ade-win32-x64.native.tar.gz"],
+    ["standalone-installer", "install.ps1"],
+    ["runtime-checksums", "SHA256SUMS"],
+  ];
+}
+
+function findReleaseArtifacts(releaseDir, version) {
+  return expectedReleaseArtifacts(version).map(([role, file]) => {
     const filePath = path.join(releaseDir, file);
+    if (!fs.existsSync(filePath) || !fs.statSync(filePath).isFile()) {
+      throw new Error(`Expected release artifact ${file}.`);
+    }
     return {
       role,
       file,
@@ -283,7 +285,7 @@ export function createBuildManifest({
       signerConsistency: "passed",
       publisherPin: "passed",
     },
-    artifacts: findReleaseArtifacts(releaseDir),
+    artifacts: findReleaseArtifacts(releaseDir, releaseMatch[1]),
     indexes: {
       scenarioInventory: {
         path: "docs/development/windows-full-system-scenarios.json",
@@ -319,8 +321,8 @@ export function createBuildManifest({
 }
 
 function validateArtifactEntries(errors, artifacts, version) {
-  if (!Array.isArray(artifacts) || artifacts.length !== 3) {
-    addError(errors, "artifacts", "must contain exactly installer, blockmap, and update-manifest entries");
+  if (!Array.isArray(artifacts) || artifacts.length !== 7) {
+    addError(errors, "artifacts", "must contain exactly the desktop and standalone Windows release entries");
     return;
   }
   const roles = new Set();
@@ -335,19 +337,54 @@ function validateArtifactEntries(errors, artifacts, version) {
     requireString(errors, artifact.sha256, `${field}.sha256`, SHA256_PATTERN);
     requirePositiveInteger(errors, artifact.sizeBytes, `${field}.sizeBytes`);
   });
-  for (const role of ["installer", "blockmap", "update-manifest"]) {
+  for (const [role] of expectedReleaseArtifacts(version)) {
     if (!roles.has(role)) addError(errors, "artifacts", `is missing role ${role}`);
   }
   if (typeof version === "string" && version.length > 0) {
-    const expectedFiles = {
-      installer: `ADE-${version}-win-x64.exe`,
-      blockmap: `ADE-${version}-win-x64.exe.blockmap`,
-      "update-manifest": "latest.yml",
-    };
+    const expectedFiles = Object.fromEntries(expectedReleaseArtifacts(version));
     for (const artifact of artifacts) {
       if (expectedFiles[artifact.role] && artifact.file !== expectedFiles[artifact.role]) {
         addError(errors, `artifacts.${artifact.role}.file`, `must equal ${expectedFiles[artifact.role]}`);
       }
+    }
+  }
+}
+
+function validateRuntimeChecksums(errors, artifactRoot, artifacts) {
+  if (!artifactRoot || !Array.isArray(artifacts)) return;
+  const byRole = new Map(artifacts.map((artifact) => [artifact?.role, artifact]));
+  const checksumArtifact = byRole.get("runtime-checksums");
+  if (!checksumArtifact || !isSafeRelativePath(checksumArtifact.file) || checksumArtifact.file.includes("/")) return;
+  const checksumPath = path.join(path.resolve(artifactRoot), checksumArtifact.file);
+  if (!fs.existsSync(checksumPath) || !fs.statSync(checksumPath).isFile()) return;
+
+  const listed = new Map();
+  for (const [index, line] of fs.readFileSync(checksumPath, "utf8").split(/\r?\n/).entries()) {
+    if (line.length === 0) continue;
+    const match = line.match(/^([0-9a-f]{64}) [ *](.+)$/);
+    if (!match) {
+      addError(errors, `artifacts.runtime-checksums.line${index + 1}`, "must use lowercase SHA-256 checksum format");
+      continue;
+    }
+    const [, digest, file] = match;
+    if (!isSafeRelativePath(file) || file.includes("/")) {
+      addError(errors, `artifacts.runtime-checksums.line${index + 1}`, "must name a safe top-level relative file");
+      continue;
+    }
+    if (listed.has(file)) {
+      addError(errors, "artifacts.runtime-checksums", `contains duplicate entry ${file}`);
+      continue;
+    }
+    listed.set(file, digest);
+  }
+
+  for (const role of ["standalone-runtime", "standalone-native-archive", "standalone-installer"]) {
+    const artifact = byRole.get(role);
+    if (!artifact || typeof artifact.file !== "string" || typeof artifact.sha256 !== "string") continue;
+    if (!listed.has(artifact.file)) {
+      addError(errors, "artifacts.runtime-checksums", `is missing ${artifact.file}`);
+    } else if (listed.get(artifact.file) !== artifact.sha256) {
+      addError(errors, "artifacts.runtime-checksums", `does not bind the declared SHA-256 for ${artifact.file}`);
     }
   }
 }
@@ -468,6 +505,7 @@ export function validateManifest(manifest, {
     manifest.artifacts.forEach((artifact, index) => {
       verifyIndexedFile(errors, artifactRoot, { ...artifact, path: artifact.file }, `artifacts[${index}]`);
     });
+    validateRuntimeChecksums(errors, artifactRoot, manifest.artifacts);
   } else {
     addError(errors, "artifactRoot", "is required so release files are independently re-hashed");
   }

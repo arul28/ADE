@@ -116,6 +116,17 @@
   ],
   "sourceReviewDispositions": [
     {
+      "id": "codex-p2-windows-desktop-app-channel",
+      "source": "original-999-codex-inline-p2",
+      "status": "resolved",
+      "finding": "The source fallback could reuse the current Stable ADE.exe when a different requested app or channel, such as ADE Beta, was missing.",
+      "disposition": "The Windows launcher reuses the current executable only when its basename exactly matches the requested channel-qualified executable. Otherwise it searches candidates for the requested app or channel and fails closed when none exists. This behavior is owned by the Windows providers and clients layer from PR2.",
+      "requestedAppName": "channel-qualified-executable",
+      "currentExecutableMatch": "exact-request-only",
+      "fallbackPolicy": "search-requested-channel",
+      "stackLayers": ["windows-providers-and-clients", "windows-proof-and-support"]
+    },
+    {
       "id": "codex-p2-windows-supervisor-registration",
       "source": "original-999-codex-inline-p2",
       "status": "resolved",

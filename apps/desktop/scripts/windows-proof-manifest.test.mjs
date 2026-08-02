@@ -34,6 +34,13 @@ function createFixture() {
   fs.writeFileSync(path.join(releaseDir, "ADE-1.2.3-win-x64.exe"), "signed installer fixture");
   fs.writeFileSync(path.join(releaseDir, "ADE-1.2.3-win-x64.exe.blockmap"), "blockmap fixture");
   fs.writeFileSync(path.join(releaseDir, "latest.yml"), "version: 1.2.3\n");
+  fs.writeFileSync(path.join(releaseDir, "ade-win32-x64.exe"), "standalone runtime fixture");
+  fs.writeFileSync(path.join(releaseDir, "ade-win32-x64.native.tar.gz"), "standalone native archive fixture");
+  fs.writeFileSync(path.join(releaseDir, "install.ps1"), "Write-Output 'install fixture'\n");
+  const checksummedFiles = ["ade-win32-x64.exe", "ade-win32-x64.native.tar.gz", "install.ps1"];
+  fs.writeFileSync(path.join(releaseDir, "SHA256SUMS"), checksummedFiles
+    .map((file) => `${sha256File(path.join(releaseDir, file))}  ${file}`)
+    .join("\n") + "\n");
   const manifest = createBuildManifest({
     releaseDir,
     targetSha,
@@ -101,6 +108,10 @@ function completeManifest(manifest, evidenceRoot) {
 
 test("committed Windows scenario inventory covers the full declared matrix", () => {
   assert.deepEqual(validateInventory(inventory), []);
+  assert.deepEqual(inventory.dimensions.shells, ["powershell-5-1", "powershell-7", "cmd", "git-bash"]);
+  const genericShell = clone(inventory);
+  genericShell.dimensions.shells[0] = "powershell";
+  assert.ok(validateInventory(genericShell).some((error) => error.includes("unknown shell")));
   const incomplete = clone(inventory);
   incomplete.acceptanceGates.find((gate) => gate.id === "shell-conpty-matrix").requirements.pop();
   assert.ok(validateInventory(incomplete).some((error) => error.includes("shell-conpty-matrix") || error.includes("crash-restore")));
@@ -117,7 +128,14 @@ test("committed provenance maps every #999 source commit into stack layers", () 
   assert.deepEqual(validateProvenance(provenance), []);
   assert.equal(provenance.sourcePullRequest.authorName, "David Whatley");
   assert.equal(provenance.commitMappings.length, 9);
-  assert.equal(provenance.sourceReviewDispositions[0].status, "resolved");
+  assert.deepEqual(new Set(provenance.sourceReviewDispositions.map(({ id }) => id)), new Set([
+    "codex-p2-windows-desktop-app-channel",
+    "codex-p2-windows-supervisor-registration",
+  ]));
+
+  const omittedDisposition = clone(provenance);
+  omittedDisposition.sourceReviewDispositions.pop();
+  assert.ok(validateProvenance(omittedDisposition).some((error) => error.includes("both original #999 Codex P2 dispositions")));
 
   const changedMapping = clone(provenance);
   changedMapping.commitMappings[0].rebasedSha = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -141,6 +159,15 @@ test("build manifest is exact-SHA, non-publishing, and artifact-bound", (t) => {
   assert.equal(fixture.manifest.release.workflow.publish, false);
   assert.equal(fixture.manifest.releaseGates.publicReleaseEnabled, false);
   assert.equal(fixture.manifest.releaseGates.websiteReleaseReady, false);
+  assert.deepEqual(fixture.manifest.artifacts.map(({ role }) => role), [
+    "installer",
+    "blockmap",
+    "update-manifest",
+    "standalone-runtime",
+    "standalone-native-archive",
+    "standalone-installer",
+    "runtime-checksums",
+  ]);
 
   const wrongBuildIdentity = validateManifest(fixture.manifest, {
     inventory,
@@ -181,6 +208,31 @@ test("build validation rejects a different approved SHA or changed artifact", (t
     provenancePath,
   });
   assert.ok(errors.some((error) => error.includes("artifacts[0].sha256")));
+});
+
+test("build validation rejects a checksum manifest that does not bind standalone runtime bytes", (t) => {
+  const fixture = createFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const checksumPath = path.join(fixture.releaseDir, "SHA256SUMS");
+  const changedChecksums = fs.readFileSync(checksumPath, "utf8").replace(
+    /^[0-9a-f]{64}(  ade-win32-x64\.exe)$/m,
+    `${"a".repeat(64)}$1`,
+  );
+  fs.writeFileSync(checksumPath, changedChecksums);
+  const checksumArtifact = fixture.manifest.artifacts.find(({ role }) => role === "runtime-checksums");
+  checksumArtifact.sha256 = sha256File(checksumPath);
+  checksumArtifact.sizeBytes = fs.statSync(checksumPath).size;
+
+  const errors = validateManifest(fixture.manifest, {
+    inventory,
+    provenance,
+    expectedSha: targetSha,
+    phase: "build",
+    artifactRoot: fixture.releaseDir,
+    inventoryPath,
+    provenancePath,
+  });
+  assert.ok(errors.some((error) => error.includes("does not bind the declared SHA-256 for ade-win32-x64.exe")));
 });
 
 test("complete validation re-hashes indexed evidence and enforces independent signals", (t) => {
@@ -279,7 +331,10 @@ test("malformed evidence links return validation errors instead of throwing", (t
   malformedInventory.scenarios[0].hosts = [7];
   malformedInventory.dimensions.operatingSystems = {};
   const malformedProvenance = clone(provenance);
-  malformedProvenance.sourceReviewDispositions[0].disposition = 7;
+  const malformedDispositionIndex = malformedProvenance.sourceReviewDispositions.findIndex(
+    ({ id }) => id === "codex-p2-windows-supervisor-registration",
+  );
+  malformedProvenance.sourceReviewDispositions[malformedDispositionIndex].disposition = 7;
 
   assert.doesNotThrow(() => validateManifest(fixture.manifest, {
     inventory: malformedInventory,
@@ -307,7 +362,7 @@ test("malformed evidence links return validation errors instead of throwing", (t
   assert.ok(errors.some((error) => error.includes("scenarioResults[1].hostAliases")));
   assert.ok(errors.some((error) => error.includes("scenarios[0].hosts[0]")));
   assert.ok(errors.some((error) => error.includes("dimensions.operatingSystems")));
-  assert.ok(errors.some((error) => error.includes("sourceReviewDispositions[0].disposition")));
+  assert.ok(errors.some((error) => error.includes(`sourceReviewDispositions[${malformedDispositionIndex}].disposition`)));
 });
 
 test("manifest rejects unsafe evidence paths and obvious identifiers", (t) => {

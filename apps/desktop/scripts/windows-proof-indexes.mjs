@@ -162,7 +162,7 @@ export function validateInventory(inventory) {
   const dimensions = inventory.dimensions;
   const requiredDimensions = {
     operatingSystems: ["windows-10-22h2-x64", "windows-11-x64"],
-    shells: ["powershell", "cmd"],
+    shells: ["powershell-5-1", "powershell-7", "cmd", "git-bash"],
     providers: ["claude", "codex", "cursor", "droid", "opencode"],
     clients: ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"],
     routes: ["lan", "tailscale", "relay"],
@@ -177,6 +177,13 @@ export function validateInventory(inventory) {
       for (const requiredValue of required) {
         if (!values.includes(requiredValue)) {
           addError(errors, `dimensions.${name}`, `must include ${JSON.stringify(requiredValue)}`);
+        }
+      }
+      if (name === "shells") {
+        for (const value of values) {
+          if (!required.includes(value)) {
+            addError(errors, "dimensions.shells", `contains unknown shell ${JSON.stringify(value)}`);
+          }
         }
       }
       validateDimensionCoverage(errors, inventory, name, values);
@@ -428,18 +435,13 @@ export function validateProvenance(provenance) {
       addError(errors, "stackLayers", `source commit ${sourceSha} is not attributed to any layer`);
     }
   }
-  const dispositions = provenance.sourceReviewDispositions;
-  if (!Array.isArray(dispositions) || dispositions.length !== 1) {
-    addError(errors, "sourceReviewDispositions", "must contain the original #999 Codex P2 disposition");
-  } else {
-    const disposition = dispositions[0];
-    if (requireObject(errors, disposition, "sourceReviewDispositions[0]")) {
-      rejectUnknownKeys(errors, disposition, "sourceReviewDispositions[0]", [
+  const dispositionSpecs = new Map([
+    ["codex-p2-windows-supervisor-registration", {
+      allowedKeys: [
         "id", "source", "status", "finding", "disposition", "currentRegistration",
         "launcher", "pidRecord", "readinessRecord", "scheduledTasks", "stackLayers",
-      ]);
-      const exactFields = {
-        id: "codex-p2-windows-supervisor-registration",
+      ],
+      exactFields: {
         source: "original-999-codex-inline-p2",
         status: "resolved",
         currentRegistration: "hkcu-run",
@@ -447,24 +449,57 @@ export function validateProvenance(provenance) {
         pidRecord: "supervisor-runtime-pids",
         readinessRecord: "initialized-runtime-ipc",
         scheduledTasks: "legacy-cleanup-only",
-      };
-      for (const [field, expected] of Object.entries(exactFields)) {
-        if (disposition[field] !== expected) {
-          addError(errors, `sourceReviewDispositions[0].${field}`, `must equal ${expected}`);
-        }
-      }
-      requireString(errors, disposition.finding, "sourceReviewDispositions[0].finding");
-      requireString(errors, disposition.disposition, "sourceReviewDispositions[0].disposition");
-      if (requireStringArray(errors, disposition.stackLayers, "sourceReviewDispositions[0].stackLayers", {
-        pattern: SAFE_ID_PATTERN,
-      })) {
-        for (const requiredLayer of ["windows-runtime-and-ipc", "windows-proof-and-support"]) {
-          if (!disposition.stackLayers.includes(requiredLayer)) {
-            addError(errors, "sourceReviewDispositions[0].stackLayers", `must include ${requiredLayer}`);
-          }
+      },
+      stackLayers: ["windows-runtime-and-ipc", "windows-proof-and-support"],
+    }],
+    ["codex-p2-windows-desktop-app-channel", {
+      allowedKeys: [
+        "id", "source", "status", "finding", "disposition", "requestedAppName",
+        "currentExecutableMatch", "fallbackPolicy", "stackLayers",
+      ],
+      exactFields: {
+        source: "original-999-codex-inline-p2",
+        status: "resolved",
+        requestedAppName: "channel-qualified-executable",
+        currentExecutableMatch: "exact-request-only",
+        fallbackPolicy: "search-requested-channel",
+      },
+      stackLayers: ["windows-providers-and-clients", "windows-proof-and-support"],
+    }],
+  ]);
+  const dispositions = provenance.sourceReviewDispositions;
+  if (!Array.isArray(dispositions) || dispositions.length !== dispositionSpecs.size) {
+    addError(errors, "sourceReviewDispositions", "must contain both original #999 Codex P2 dispositions");
+  }
+  const dispositionIds = new Set();
+  if (Array.isArray(dispositions)) dispositions.forEach((disposition, index) => {
+    const field = `sourceReviewDispositions[${index}]`;
+    if (!requireObject(errors, disposition, field)) return;
+    const spec = dispositionSpecs.get(disposition.id);
+    if (!spec) {
+      addError(errors, `${field}.id`, "is not a reviewed original #999 Codex P2 disposition");
+      return;
+    }
+    if (dispositionIds.has(disposition.id)) addError(errors, `${field}.id`, "must be unique");
+    dispositionIds.add(disposition.id);
+    rejectUnknownKeys(errors, disposition, field, spec.allowedKeys);
+    for (const [name, expected] of Object.entries(spec.exactFields)) {
+      if (disposition[name] !== expected) addError(errors, `${field}.${name}`, `must equal ${expected}`);
+    }
+    requireString(errors, disposition.finding, `${field}.finding`);
+    requireString(errors, disposition.disposition, `${field}.disposition`);
+    if (requireStringArray(errors, disposition.stackLayers, `${field}.stackLayers`, {
+      pattern: SAFE_ID_PATTERN,
+    })) {
+      for (const requiredLayer of spec.stackLayers) {
+        if (!disposition.stackLayers.includes(requiredLayer)) {
+          addError(errors, `${field}.stackLayers`, `must include ${requiredLayer}`);
         }
       }
     }
+  });
+  for (const id of dispositionSpecs.keys()) {
+    if (!dispositionIds.has(id)) addError(errors, "sourceReviewDispositions", `is missing ${id}`);
   }
   if (requireObject(errors, provenance.requiredCommitTrailers, "requiredCommitTrailers")) {
     rejectUnknownKeys(errors, provenance.requiredCommitTrailers, "requiredCommitTrailers", ["coAuthor", "basedOn"]);
