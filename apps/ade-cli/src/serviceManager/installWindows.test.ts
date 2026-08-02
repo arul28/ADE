@@ -22,11 +22,13 @@ import {
   buildWindowsRunKeyQueryArgs,
   buildWindowsRunTaskArgs,
   buildWindowsStartLauncherArgs,
+  buildWindowsStartTaskArgs,
   getWindowsServiceStatus,
   installWindowsService,
   isWindowsLegacyTaskOwnedByCommand,
   readWindowsServicePidRecord,
   resolveWindowsServiceLauncherPath,
+  resolveWindowsStartTaskName,
   resolveWindowsTaskName,
   resolveWindowsTaskUser,
   uninstallWindowsService,
@@ -352,7 +354,10 @@ describe("Windows background service helpers", () => {
       message: "ADE per-user startup entry installed and channel brain is ready.",
     });
     expect(fs.readFileSync(launcherPath, "utf8")).toBe(
-      `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath })}`,
+      `\uFEFF${renderWindowsServiceLauncher(serviceCommand, {
+        pidPath,
+        logPath: `${launcherPath}.log`,
+      })}`,
     );
     expect(readinessProbe).toHaveBeenCalledWith(expect.objectContaining({
       command: serviceCommand,
@@ -381,7 +386,10 @@ describe("Windows background service helpers", () => {
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
       { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsStartLauncherArgs(launcherPath) },
+      {
+        command: WINDOWS_POWERSHELL_COMMAND,
+        args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+      },
     ]);
   });
 
@@ -415,7 +423,9 @@ describe("Windows background service helpers", () => {
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
     expect(calls.at(-2)?.args).toEqual(expect.arrayContaining(["ADD", "/V", taskName]));
-    expect(calls.at(-1)?.args).toEqual(buildWindowsStartLauncherArgs(launcherPath));
+    expect(calls.at(-1)?.args).toEqual(
+      buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+    );
   });
 
   it("ends and deletes only the exact legacy task it owns before installing the channel task", async () => {
@@ -497,7 +507,10 @@ describe("Windows background service helpers", () => {
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
       { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
       { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsStartLauncherArgs(launcherPath) },
+      {
+        command: WINDOWS_POWERSHELL_COMMAND,
+        args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+      },
     ]);
     expect(calls.filter((call) => call.command === WINDOWS_SCHTASKS_COMMAND)).toEqual([]);
     expect(calls.some((call) => call.args.includes("ADE Runtime") && call.args.includes("/End")))
@@ -625,6 +638,9 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
+      // The job-escaping start task is unavailable, so the launch falls back to
+      // the in-session PowerShell start, which also fails.
+      { status: 1, stdout: "", stderr: "ERROR: task scheduler unavailable" },
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
     ]);
@@ -658,6 +674,7 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
+      buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsStartLauncherArgs(launcherPath),
       buildWindowsRunKeyDeleteArgs(taskName),
     ]);

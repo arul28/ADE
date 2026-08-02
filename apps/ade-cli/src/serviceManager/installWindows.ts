@@ -125,6 +125,18 @@ export function resolveWindowsServicePidPath(args: {
   return `${resolveWindowsServiceLauncherPath(args)}.pid.json`;
 }
 
+/**
+ * launchd parity for `StandardOutPath`/`StandardErrorPath`: the detached,
+ * hidden supervisor has nowhere to write, so without this a supervisor death
+ * leaves no evidence anywhere on the machine.
+ */
+export function resolveWindowsSupervisorLogPath(args: {
+  env?: NodeJS.ProcessEnv;
+  serviceName?: string;
+} = {}): string {
+  return `${resolveWindowsServiceLauncherPath(args)}.log`;
+}
+
 export function readWindowsServicePidRecord(args: {
   env?: NodeJS.ProcessEnv;
   serviceName?: string;
@@ -268,6 +280,99 @@ export function buildWindowsRunKeyAddArgs(valueName: string, command: string): s
 
 export function buildWindowsRunKeyDeleteArgs(valueName: string): string[] {
   return ["DELETE", WINDOWS_RUN_KEY, "/V", valueName, "/F"];
+}
+
+/** Transient one-shot task used only to escape the caller's job object. */
+export function resolveWindowsStartTaskName(taskName = resolveWindowsTaskName()): string {
+  return `${taskName} (start)`;
+}
+
+/**
+ * Registers, runs, and immediately unregisters a one-shot task whose action is
+ * the supervisor launcher.
+ *
+ * `Register-ScheduledTask` is used rather than `schtasks /Create` because
+ * `schtasks` caps `/TR` at 261 characters, which a deep `ADE_HOME` blows past;
+ * the cmdlet has no such limit. `ExecutionTimeLimit` is explicitly zeroed --
+ * the Task Scheduler default is three days, and an always-on brain must not be
+ * terminated by its own launcher on day four. Unregistering does not terminate
+ * the process the task already started, so nothing is left registered.
+ */
+export function buildWindowsStartTaskArgs(
+  launcherPath: string,
+  startTaskName: string,
+): string[] {
+  const launcherArguments = [
+    "-NoProfile",
+    "-NonInteractive",
+    "-WindowStyle",
+    "Hidden",
+    "-ExecutionPolicy",
+    "Bypass",
+    "-File",
+    cmdQuote(launcherPath),
+  ].join(" ");
+  const nameLiteral = powerShellSingleQuotedLiteral(startTaskName);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
+    // Far-future one-shot trigger: the task only ever runs because we start it.
+    "$trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddDays(3650))",
+    "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)",
+    [
+      `try { Register-ScheduledTask -TaskName ${nameLiteral} -Action $action -Trigger $trigger -Settings $settings -Force | Out-Null`,
+      `Start-ScheduledTask -TaskName ${nameLiteral}`,
+      // Unregistering before the engine has spawned the action would cancel it,
+      // so wait for the task to actually enter Running first.
+      "$deadline = [DateTime]::UtcNow.AddSeconds(15)",
+      `while ([DateTime]::UtcNow -lt $deadline -and (Get-ScheduledTask -TaskName ${nameLiteral} -ErrorAction SilentlyContinue).State -ne 'Running') { Start-Sleep -Milliseconds 100 } } finally { Unregister-ScheduledTask -TaskName ${nameLiteral} -Confirm:$false -ErrorAction SilentlyContinue }`,
+    ].join("; "),
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+/**
+ * Starts the supervisor **outside the caller's job object**.
+ *
+ * A process started with `Process.Start`/`ShellExecuteEx` is an ordinary
+ * descendant of whoever ran `ade brain start`, and on Windows job membership is
+ * inherited and cannot be escaped: `CREATE_BREAKAWAY_FROM_JOB` fails with
+ * ERROR_ACCESS_DENIED unless the job sets `JOB_OBJECT_LIMIT_BREAKAWAY_OK`,
+ * which kill-on-close jobs do not. Terminals, editors, CI agents and Electron
+ * all put their children in `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` jobs, so the
+ * supervisor *and* the brain it guards were silently terminated the moment the
+ * session that installed them went away -- no exit code, no log, no restart.
+ *
+ * The Task Scheduler service starts task actions itself, so a process launched
+ * through a task is parented to `svchost.exe` and belongs to no job of ours.
+ * That is the same ownership handover macOS gets from `launchctl load`, and it
+ * matches the login path, where `explorer.exe` (also job-free) runs the HKCU
+ * `Run` entry.
+ *
+ * A one-shot task is used rather than an ONLOGON one because ONLOGON task
+ * registration requires elevation while a one-shot does not -- which is exactly
+ * why login persistence stays on the HKCU `Run` key.
+ */
+function startWindowsSupervisorDetached(
+  run: ServiceManagerSpawnSync,
+  launcherPath: string,
+  taskName: string,
+): string | null {
+  const viaTask = run(
+    WINDOWS_POWERSHELL_COMMAND,
+    buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+    { encoding: "utf8", windowsHide: true },
+  );
+  if (viaTask.status === 0) return null;
+  // Task Scheduler is unavailable or denied by policy. Fall back to the
+  // in-session launch: the brain still comes up, it is just bound to the
+  // lifetime of the session that started it, which status will report.
+  const start = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsStartLauncherArgs(launcherPath), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (start.status === 0) return null;
+  return serviceManagerResultText(start) || "PowerShell launch failed.";
 }
 
 export function buildWindowsStartLauncherArgs(launcherPath: string): string[] {
@@ -467,10 +572,11 @@ export async function installWindowsService(
   const runtimeEnv = { ...env, ...(serviceCommand.env ?? {}) };
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
+  const logPath = `${launcherPath}.log`;
   const socketPath = resolveMachineAdeLayout(runtimeEnv, "win32").socketPath;
   try {
     fs.mkdirSync(path.dirname(launcherPath), { recursive: true });
-    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath })}`, {
+    fs.writeFileSync(launcherPath, `\uFEFF${renderWindowsServiceLauncher(serviceCommand, { pidPath, logPath })}`, {
       encoding: "utf8",
       mode: 0o600,
     });
@@ -544,11 +650,8 @@ export async function installWindowsService(
       message: serviceManagerResultText(registration) || "Unable to create the ADE per-user startup entry.",
     };
   }
-  const start = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsStartLauncherArgs(launcherPath), {
-    encoding: "utf8",
-    windowsHide: true,
-  });
-  if (start.status !== 0) {
+  const startFailure = startWindowsSupervisorDetached(run, launcherPath, taskName);
+  if (startFailure) {
     run(WINDOWS_REG_COMMAND, buildWindowsRunKeyDeleteArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
@@ -558,7 +661,7 @@ export async function installWindowsService(
       serviceName,
       action: "install",
       path: taskName,
-      message: `ADE per-user startup entry was installed, but the background service failed to start: ${serviceManagerResultText(start) || "PowerShell launch failed."}`,
+      message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
   const readiness = await waitForWindowsRuntimeReadiness({
@@ -646,6 +749,7 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
       message: removalErrors.join(" "),
     };
   }
+  try { fs.rmSync(`${launcherPath}.log`, { force: true }); } catch { /* advisory log */ }
   try {
     fs.rmSync(launcherPath, { force: true });
   } catch (error) {

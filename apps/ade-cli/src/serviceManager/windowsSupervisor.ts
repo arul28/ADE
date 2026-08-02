@@ -69,6 +69,14 @@ export function renderWindowsServiceLauncher(
   command: AdeServiceCommand,
   options: {
     pidPath: string;
+    /**
+     * launchd gives macOS `StandardOutPath`/`StandardErrorPath` for free, so a
+     * brain that dies leaves a trace on disk. The Windows supervisor is spawned
+     * detached with a hidden window and no redirection, so until this log
+     * existed every supervisor death -- graceful or externally terminated --
+     * was completely invisible. Optional so existing callers keep working.
+     */
+    logPath?: string;
     initialRestartDelayMs?: number;
     maxRestartDelayMs?: number;
     healthyRuntimeMs?: number;
@@ -84,8 +92,20 @@ export function renderWindowsServiceLauncher(
     return `[System.Environment]::SetEnvironmentVariable(${powerShellSingleQuotedLiteral(key)}, ${powerShellSingleQuotedLiteral(value)}, 'Process')`;
   });
   const commandLine = command.args.map(cmdQuote).join(" ");
+  const logLines = options.logPath
+    ? [
+      `$logPath = ${powerShellSingleQuotedLiteral(options.logPath)}`,
+      "function Write-SupervisorLog([string]$message) {",
+      "  try {",
+      "    $stamp = [DateTimeOffset]::UtcNow.ToString('o')",
+      "    [IO.File]::AppendAllText($logPath, \"$stamp supervisor=$PID $message`r`n\", [Text.Encoding]::UTF8)",
+      "  } catch { }",
+      "}",
+    ]
+    : ["function Write-SupervisorLog([string]$message) { }"];
   const processLines = [
     `$pidPath = ${powerShellSingleQuotedLiteral(options.pidPath)}`,
+    ...logLines,
     `$initialRestartDelayMs = ${Math.max(100, Math.floor(options.initialRestartDelayMs ?? 1_000))}`,
     `$maxRestartDelayMs = ${Math.max(100, Math.floor(options.maxRestartDelayMs ?? 30_000))}`,
     `$healthyRuntimeMs = ${Math.max(1_000, Math.floor(options.healthyRuntimeMs ?? 60_000))}`,
@@ -107,6 +127,7 @@ export function renderWindowsServiceLauncher(
     "  }",
     "  [IO.File]::WriteAllText($pidPath, ($record | ConvertTo-Json -Compress), [Text.Encoding]::ASCII)",
     "}",
+    "Write-SupervisorLog 'supervisor started'",
     "try {",
     "  while ($true) {",
     "    $runtimeStartedAt = [DateTimeOffset]::UtcNow",
@@ -116,10 +137,12 @@ export function renderWindowsServiceLauncher(
     "      $lastLaunchError = $null",
     "      $nextRestartAt = $null",
     "      Write-PidRecord -runtimePid $process.Id -runtimeStartedAtMs $runtimeStartedAt.ToUnixTimeMilliseconds()",
+    "      Write-SupervisorLog \"brain started pid=$($process.Id) restartCount=$restartCount\"",
     "      $process.WaitForExit()",
     "      $lastExitCode = $process.ExitCode",
     "      $lastExitAt = [DateTimeOffset]::UtcNow.ToString('o')",
     "      $runtimeLifetimeMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() - $runtimeStartedAt.ToUnixTimeMilliseconds()",
+    "      Write-SupervisorLog \"brain exited pid=$($process.Id) exitCode=$lastExitCode lifetimeMs=$runtimeLifetimeMs\"",
     "      if ($runtimeLifetimeMs -ge $healthyRuntimeMs) { $restartCount = 0 } else { $restartCount += 1 }",
     "    } catch {",
     "      $lastExitCode = $null",
@@ -127,14 +150,23 @@ export function renderWindowsServiceLauncher(
     "      $lastLaunchError = [string]$_.Exception.Message",
     "      if ($lastLaunchError.Length -gt 512) { $lastLaunchError = $lastLaunchError.Substring(0, 512) }",
     "      $restartCount += 1",
+    "      Write-SupervisorLog \"brain launch failed: $lastLaunchError\"",
     "    }",
     "    $exponent = [Math]::Min([Math]::Max($restartCount - 1, 0), 20)",
     "    $restartDelayMs = [Math]::Min($maxRestartDelayMs, $initialRestartDelayMs * [Math]::Pow(2, $exponent))",
     "    $nextRestartAt = [DateTimeOffset]::UtcNow.AddMilliseconds($restartDelayMs).ToString('o')",
     "    Write-PidRecord -runtimePid $null -runtimeStartedAtMs $null",
+    "    Write-SupervisorLog \"restarting in ${restartDelayMs}ms (nextRestartAt=$nextRestartAt)\"",
     "    Start-Sleep -Milliseconds ([int]$restartDelayMs)",
     "  }",
+    "} catch {",
+    // Any terminating error outside the inner try (a failed pid-record write,
+    // a broken Start-Sleep) used to unwind straight through `finally` and take
+    // the always-on brain down with no trace at all.
+    "  Write-SupervisorLog \"supervisor loop aborted: $($_.Exception.Message)\"",
+    "  throw",
     "} finally {",
+    "  Write-SupervisorLog 'supervisor exiting; clearing pid record'",
     "  Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue",
     "}",
   ];
