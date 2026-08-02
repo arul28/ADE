@@ -2260,13 +2260,14 @@ describe("adeRpcServer", () => {
       args?: string[];
       startupCommand?: string;
     };
-    if (process.platform === "win32") {
-      expect(createCall.command).toBeUndefined();
-      expect(createCall.startupCommand).toContain("claude --model claude-sonnet-5 --permission-mode default");
-    } else {
-      expect(createCall.command).toBe(claudePath);
-      expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-sonnet-5", "--permission-mode", "default"]));
-    }
+    // Provider resolution is platform-native on every OS: POSIX goes through
+    // `command -v`, Windows through `where.exe` (which honours PATHEXT, hence
+    // the `.cmd` fixture). A resolved provider always becomes a direct
+    // command/args launch so worker identity rides the process env instead of
+    // a POSIX-only `VAR=value cmd` prefix.
+    expect(createCall.command).toBe(claudePath);
+    expect(createCall.args).toEqual(expect.arrayContaining(["--model", "claude-sonnet-5", "--permission-mode", "default"]));
+    expect(createCall.startupCommand).toContain("claude --model claude-sonnet-5 --permission-mode default");
     // The final arg concatenates ADE_CLI_INLINE_GUIDANCE with the user prompt; assert
     // it ends with the user prompt and carries the inline guidance preamble.
     const launchText = createCall.args?.at(-1) ?? createCall.startupCommand ?? "";
@@ -2549,7 +2550,7 @@ describe("adeRpcServer", () => {
   it("starts Codex spawn_agent with current default permission flags", async () => {
     const fixture = createRuntime();
     const binDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-spawn-bin-"));
-    createFakePathExecutable(binDir, "codex");
+    const codexPath = createFakePathExecutable(binDir, "codex");
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
 
     const response = await withEnv({ PATH: `${binDir}${path.delimiter}${process.env.PATH ?? ""}`, SHELL: "/bin/sh" }, async () => {
@@ -2568,12 +2569,8 @@ describe("adeRpcServer", () => {
       startupCommand?: string;
     };
     expect(createCall.startupCommand).toContain("codex --sandbox workspace-write --ask-for-approval on-request");
-    if (process.platform === "win32") {
-      expect(createCall.command).toBeUndefined();
-    } else {
-      expect(createCall.command).toMatch(/codex$/);
-      expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
-    }
+    expect(createCall.command).toBe(codexPath);
+    expect(createCall.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "on-request"]));
     expect(response.structuredContent.startupCommand).not.toContain("--full-auto");
   });
 
@@ -2829,8 +2826,7 @@ describe("adeRpcServer", () => {
       })
     );
     const createCall = fixture.runtime.ptyService.create.mock.calls[0]?.[0] as { command?: string };
-    if (process.platform === "win32") expect(createCall.command).toBeUndefined();
-    else expect(createCall.command).toBe(claudePath);
+    expect(createCall.command).toBe(claudePath);
   });
 
   it("keeps spawn_agent on shell startup when the provider executable cannot be resolved", async () => {
