@@ -119,15 +119,59 @@ const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "tiling_tree.get",
 ]);
 
-function normalizeComparableSocketPath(socketPath: string): string {
-  return socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)
-    ? socketPath
-    : path.resolve(socketPath);
+/**
+ * Collapse the equivalent spellings of one Windows named pipe onto a single
+ * comparison key.
+ *
+ * Win32 accepts `/` and `\` interchangeably in a pipe path and matches pipe
+ * names case-insensitively, so `\\.\pipe\ade-runtime-stable-abc`,
+ * `//./pipe/ade-runtime-stable-abc`, and `\\.\pipe\ADE-Runtime-Stable-ABC` all
+ * address the *same* pipe. `isAdeRuntimeNamedPipePath` already encodes that by
+ * accepting both separator forms after lowercasing.
+ *
+ * This value is a comparison key ONLY. It is deliberately not a valid
+ * substitute for the caller's address: callers keep using the original
+ * `socketPath` to connect, listen, probe, log, and report, so the lowercasing
+ * here can never reach a real endpoint.
+ */
+function namedPipeComparisonKey(socketPath: string): string {
+  return socketPath.trim().replace(/\//g, "\\").toLowerCase();
 }
 
+function normalizeComparableSocketPath(socketPath: string): string {
+  if (socketPath.startsWith("tcp://")) return socketPath;
+  if (isAdeRuntimeNamedPipePath(socketPath)) return namedPipeComparisonKey(socketPath);
+  // POSIX socket paths stay case-sensitive: `/tmp/ADE.sock` and `/tmp/ade.sock`
+  // are genuinely different files.
+  return path.resolve(socketPath);
+}
+
+/**
+ * The stable/alpha/beta runtime endpoints for this user, so the primary-socket
+ * guard also refuses to spawn an app-owned brain onto a *sibling* channel's
+ * endpoint.
+ *
+ * Derived through `resolveMachineAdeLayout` rather than hand-built, because the
+ * endpoint is a filesystem socket on macOS/Linux but a per-user named pipe on
+ * Windows. Hardcoding `~/.ade{,-alpha,-beta}/sock/ade.sock` made this set
+ * unmatchable on Windows, silently disabling the cross-channel half of the
+ * guard there.
+ */
 function defaultChannelRuntimeSocketPaths(): Set<string> {
+  // `windowsChannelIdentity` prefers ADE_RUNTIME_SERVICE_NAME / ADE_PACKAGE_CHANNEL
+  // over the channel inferred from the home directory name. Both must be dropped
+  // while enumerating, or this process's own channel would pin all three homes to
+  // a single pipe and the other two channels would drop out of the set.
+  const {
+    ADE_RUNTIME_SERVICE_NAME: _ignoredServiceName,
+    ADE_PACKAGE_CHANNEL: _ignoredPackageChannel,
+    ...channelEnv
+  } = process.env;
   return new Set([".ade", ".ade-alpha", ".ade-beta"].map((homeName) =>
-    path.join(os.homedir(), homeName, "sock", "ade.sock")
+    resolveMachineAdeLayout({
+      ...channelEnv,
+      ADE_HOME: path.join(os.homedir(), homeName),
+    }).socketPath
   ).map(normalizeComparableSocketPath));
 }
 

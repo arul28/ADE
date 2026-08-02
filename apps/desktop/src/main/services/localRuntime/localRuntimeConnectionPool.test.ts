@@ -3254,6 +3254,172 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  /**
+   * Drive `createConnection` through the primary-endpoint guard with the
+   * service-connect and repair paths stubbed out, and report the guard's
+   * decision. `spawnRuntime` is stubbed to throw rather than actually launch a
+   * daemon, so a guard that wrongly lets the spawn through fails loudly instead
+   * of leaking a process.
+   *
+   * `requestedSocketPath` is resolved *after* the environment is in place, so
+   * the address under test and the layout the pool derives internally always
+   * agree on channel and ADE_HOME.
+   */
+  async function runPrimaryEndpointGuard(args: {
+    adeHome: string;
+    packageChannel?: string;
+    requestedSocketPath: (layoutSocketPath: string) => string;
+  }): Promise<{ blocked: boolean; spawnAttempted: boolean; requested: string; layout: string }> {
+    const originalEnv = {
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      ADE_PACKAGE_CHANNEL: process.env.ADE_PACKAGE_CHANNEL,
+      ADE_RUNTIME_SERVICE_NAME: process.env.ADE_RUNTIME_SERVICE_NAME,
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime").mockImplementation(() => {
+      throw new Error("primary-endpoint guard let the spawn through");
+    });
+
+    try {
+      process.env.ADE_HOME = args.adeHome;
+      delete process.env.ADE_RUNTIME_SERVICE_NAME;
+      if (args.packageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+      else process.env.ADE_PACKAGE_CHANNEL = args.packageChannel;
+
+      const layout = resolveMachineAdeLayout().socketPath;
+      const requested = args.requestedSocketPath(layout);
+      process.env.ADE_RUNTIME_SOCKET_PATH = requested;
+
+      const error = await internals.createConnection().catch((caught) => caught) as Error;
+      return {
+        blocked: /refusing to spawn an app-owned brain on a primary channel socket/i.test(error.message),
+        spawnAttempted: spawnRuntime.mock.calls.length > 0,
+        requested,
+        layout,
+      };
+    } finally {
+      pool.dispose();
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  /**
+   * Name a sibling channel's runtime endpoint the way a real install of that
+   * channel would compute it: the channel is inferred from the home directory
+   * name, so this process's own ADE_PACKAGE_CHANNEL / ADE_RUNTIME_SERVICE_NAME
+   * must not bleed into the derivation.
+   */
+  function channelRuntimeSocketPath(homeName: string): string {
+    const {
+      ADE_RUNTIME_SERVICE_NAME: _ignoredServiceName,
+      ADE_PACKAGE_CHANNEL: _ignoredPackageChannel,
+      ...channelEnv
+    } = process.env;
+    return resolveMachineAdeLayout({
+      ...channelEnv,
+      ADE_HOME: path.join(os.homedir(), homeName),
+    }).socketPath;
+  }
+
+  it.runIf(process.platform === "win32")(
+    "treats a forward-slash named pipe spelling as the same primary endpoint",
+    async () => {
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-slash-alias-"));
+      try {
+        // Win32 accepts `/` and `\` interchangeably, so this addresses the very
+        // pipe the layout resolves to. Comparing the raw strings would miss it
+        // and let a second app-owned brain onto the machine's primary endpoint.
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => layout.replace(/\\/g, "/"),
+        });
+
+        expect(outcome.layout.startsWith("\\\\.\\pipe\\")).toBe(true);
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome.requested.startsWith("//./pipe/")).toBe(true);
+        expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "treats a differently-cased named pipe as the same primary endpoint",
+    async () => {
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-case-alias-"));
+      try {
+        // Windows pipe names are case-insensitive: this connects to the same
+        // pipe object as the layout address.
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => layout.toUpperCase(),
+        });
+
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
+  it("blocks a spawn onto a sibling channel's runtime endpoint", async () => {
+    // A Stable desktop must not spawn an app-owned brain onto the Beta
+    // channel's endpoint. ADE_HOME points somewhere unrelated, so the layout
+    // comparison cannot match and only the cross-channel set can catch this.
+    // On Windows that set was hardcoded to `~/.ade*/sock/ade.sock` — addresses
+    // that never exist there — so this protection silently did not apply.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cross-channel-"));
+    try {
+      const outcome = await runPrimaryEndpointGuard({
+        adeHome,
+        packageChannel: "stable",
+        requestedSocketPath: () => channelRuntimeSocketPath(".ade-beta"),
+      });
+
+      expect(outcome.requested).not.toBe(outcome.layout);
+      expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+    } finally {
+      removeTempDir(adeHome);
+    }
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "keeps POSIX socket paths case-sensitive when matching the primary endpoint",
+    async () => {
+      // The named-pipe canonicalization must not bleed onto filesystem sockets:
+      // `/tmp/.../ADE.sock` and `/tmp/.../ade.sock` are genuinely different
+      // files on a case-sensitive filesystem.
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-posix-case-"));
+      try {
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => path.join(path.dirname(layout), "ADE.sock"),
+        });
+
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome).toMatchObject({ blocked: false, spawnAttempted: true });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({
       mode: "standalone",
