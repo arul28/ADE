@@ -849,22 +849,10 @@ jobs:
           cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
           chmod 755 release-assets/runtime/install.sh
 
-      - name: Generate standalone runtime checksums
-        run: |
-          set -euo pipefail
-          runtime_assets=(
-            install.sh
-            ade-darwin-arm64
-            ade-darwin-arm64.native.tar.gz
-            ade-darwin-x64
-            ade-darwin-x64.native.tar.gz
-            ade-linux-arm64
-            ade-linux-arm64.native.tar.gz
-            ade-linux-x64
-            ade-linux-x64.native.tar.gz
-          )
-          (cd release-assets/runtime && sha256sum "${runtime_assets[@]}" | LC_ALL=C sort -k2 > SHA256SUMS)
-
+      # The published SHA256SUMS is generated later, over the exact merged set of
+      # standalone assets this release uploads. Hashing release-assets/runtime on
+      # its own would describe a set that is never published once the Windows
+      # gate contributes the signed win32 standalone files.
       - name: Validate publish asset manifest
         run: |
           set -euo pipefail
@@ -901,8 +889,6 @@ jobs:
             echo "::error::Standalone runtime installer is not executable."
             exit 1
           fi
-          require_file 'release-assets/runtime/SHA256SUMS' 'standalone runtime checksum manifest'
-          (cd release-assets/runtime && sha256sum -c SHA256SUMS)
 
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             binary="release-assets/runtime/ade-$target"
@@ -989,23 +975,27 @@ jobs:
             release-assets/mac/*.zip
             release-assets/mac/latest-mac.yml
           )
+          # Cross-platform standalone assets always come from this run. The
+          # darwin runtime binaries are notarized per run, so only this run's
+          # copies are byte-identical to the ones inside the DMGs published
+          # beside them.
           runtime_files=(
             release-assets/runtime/install.sh
-            release-assets/runtime/SHA256SUMS
             release-assets/runtime/ade-darwin-*
             release-assets/runtime/ade-linux-*
           )
           files=("${base_files[@]}" "${runtime_files[@]}")
+          checksum_files=("${runtime_files[@]}")
 
           # This repository variable stays disabled until the signed installer
           # passes the clean-host release checks.
           if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
-            windows_files=(
-              release-assets/win/ADE-*-win-x64.exe
-              release-assets/win/ADE-*-win-x64.exe.blockmap
-              release-assets/win/latest.yml
+            # The approved proof bundle also carries the cross-platform runtime
+            # set and its own checksum manifest. Those bytes belong to the older
+            # proof run and are superseded by the current run's notarized
+            # copies, so they stay proof-internal and are never published.
+            proof_internal_files=(
               release-assets/win/install.sh
-              release-assets/win/install.ps1
               release-assets/win/SHA256SUMS
               release-assets/win/ade-darwin-arm64
               release-assets/win/ade-darwin-arm64.native.tar.gz
@@ -1015,11 +1005,58 @@ jobs:
               release-assets/win/ade-linux-arm64.native.tar.gz
               release-assets/win/ade-linux-x64
               release-assets/win/ade-linux-x64.native.tar.gz
+            )
+            for proof_internal_file in "${proof_internal_files[@]}"; do
+              if [ ! -s "$proof_internal_file" ]; then
+                echo "::error::Approved Windows proof is missing $proof_internal_file."
+                exit 1
+              fi
+            done
+            # Only the genuinely Windows-specific members of the approved proof
+            # are published, so no asset name is served by two different runs.
+            windows_files=(
+              release-assets/win/ADE-*-win-x64.exe
+              release-assets/win/ADE-*-win-x64.exe.blockmap
+              release-assets/win/latest.yml
+              release-assets/win/install.ps1
               release-assets/win/ade-win32-x64.exe
               release-assets/win/ade-win32-x64.native.tar.gz
             )
-            files=("${base_files[@]}" "${windows_files[@]}")
+            files=("${files[@]}" "${windows_files[@]}")
+            checksum_files+=(
+              release-assets/win/install.ps1
+              release-assets/win/ade-win32-x64.exe
+              release-assets/win/ade-win32-x64.native.tar.gz
+            )
           fi
+
+          # One checksum manifest over exactly the standalone assets uploaded
+          # below, regenerated because the published set merges this run's
+          # notarized cross-platform binaries with the approved proof run's
+          # signed Windows binaries. install-runtime.sh and install-runtime.ps1
+          # resolve their own platform's entries from this file.
+          mkdir -p release-assets/publish
+          published_checksums=release-assets/publish/SHA256SUMS
+          for checksum_file in "${checksum_files[@]}"; do
+            printf '%s  %s\n' \
+              "$(sha256sum "$checksum_file" | cut -d ' ' -f 1)" \
+              "$(basename "$checksum_file")"
+          done | LC_ALL=C sort -k2 > "$published_checksums"
+          if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$published_checksums"; then
+            echo "::error::Published checksum manifest has an invalid entry."
+            exit 1
+          fi
+          mapfile -t expected_published_checksums < <(
+            for checksum_file in "${checksum_files[@]}"; do basename "$checksum_file"; done | LC_ALL=C sort
+          )
+          mapfile -t actual_published_checksums < <(awk '{ print $2 }' "$published_checksums")
+          if ! diff -u \
+            <(printf '%s\n' "${expected_published_checksums[@]}") \
+            <(printf '%s\n' "${actual_published_checksums[@]}"); then
+            echo "::error::Published checksum manifest does not name the exact published standalone asset set."
+            exit 1
+          fi
+          files+=("$published_checksums")
 
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No release artifacts were found after validation."
