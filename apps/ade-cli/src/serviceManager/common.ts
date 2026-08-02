@@ -2,6 +2,7 @@ import fs from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 
 export type ServiceManagerResult = {
   ok: boolean;
@@ -71,32 +72,119 @@ function processOutputText(result: ServiceManagerProcessResult): string {
   return "";
 }
 
-function readParentPid(
-  run: ServiceManagerSpawnSync,
-  pid: number,
-): number | null {
+/**
+ * The ancestry query could not be answered at all — the mechanism itself is
+ * broken/absent, so we know NOTHING about the process tree. Distinct from
+ * `null`, which is the definitive answer "this process has no further parent".
+ */
+export const PARENT_PID_UNKNOWN = "unknown" as const;
+
+export type ParentPidLookup = number | null | typeof PARENT_PID_UNKNOWN;
+
+/** Exit code the win32 parent-pid query uses for "no such process". */
+const WINDOWS_PARENT_PID_NOT_FOUND_EXIT = 3;
+
+/**
+ * PowerShell to print a pid's ParentProcessId, or exit 3 when the pid is gone.
+ *
+ * `Get-CimInstance Win32_Process` rather than `wmic`: wmic is deprecated and is
+ * being removed from Windows, and this matches the CIM queries already used by
+ * `serviceManager/windowsSupervisor.ts`.
+ */
+export function buildWindowsParentPidQueryArgs(pid: number): string[] {
+  if (!Number.isInteger(pid) || pid <= 0) {
+    throw new Error(`Invalid pid for the Windows parent-process query: ${String(pid)}`);
+  }
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `$process = Get-CimInstance Win32_Process -Filter 'ProcessId = ${pid}' -ErrorAction SilentlyContinue`,
+    `if ($null -eq $process) { exit ${WINDOWS_PARENT_PID_NOT_FOUND_EXIT} }`,
+    "[Console]::Out.Write([string]$process.ParentProcessId)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+function readWindowsParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
+  let result: ServiceManagerProcessResult;
+  try {
+    // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
+    // redirectable via PATH/SystemRoot, and this guard protects a teardown.
+    result = run(
+      resolveTrustedWindowsTool("powershell"),
+      buildWindowsParentPidQueryArgs(pid),
+      { encoding: "utf8", timeout: 5_000, windowsHide: true },
+    );
+  } catch {
+    return PARENT_PID_UNKNOWN;
+  }
+  // Only "the process does not exist" is a definitive end of the chain. Any
+  // other non-zero status (spawn failure, CIM unavailable, timeout) means the
+  // ancestry is undetermined, NOT that we reached the root.
+  if (result.status === WINDOWS_PARENT_PID_NOT_FOUND_EXIT) return null;
+  if (result.status !== 0) return PARENT_PID_UNKNOWN;
+  const text = processOutputText(result);
+  if (!/^\d+$/.test(text)) return PARENT_PID_UNKNOWN;
+  const parentPid = Number.parseInt(text, 10);
+  if (!Number.isFinite(parentPid)) return PARENT_PID_UNKNOWN;
+  // ParentProcessId 0 is the Idle pseudo-process: the top of the tree.
+  return parentPid > 0 ? parentPid : null;
+}
+
+function readPosixParentPid(run: ServiceManagerSpawnSync, pid: number): ParentPidLookup {
+  // `ps` exits 1 both for "no such pid" and for a genuine failure, so a POSIX
+  // host cannot distinguish the two the way the win32 branch above can. `ps` is
+  // part of every POSIX base system, so treat a failure as end-of-chain.
   const result = run("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" });
   if (result.status !== 0) return null;
   const parentPid = Number.parseInt(processOutputText(result), 10);
   return Number.isFinite(parentPid) && parentPid > 0 ? parentPid : null;
 }
 
+/**
+ * Parent pid of `pid`, dispatched per platform the same way
+ * `serviceManager/index.ts` dispatches `getRuntimeServiceMainPid`.
+ */
+export function readParentPid(
+  run: ServiceManagerSpawnSync,
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): ParentPidLookup {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return platform === "win32"
+    ? readWindowsParentPid(run, pid)
+    : readPosixParentPid(run, pid);
+}
+
+/**
+ * Whether this process is running inside the process tree rooted at `targetPid`.
+ *
+ * This is a SAFETY guard: its callers use it to refuse tearing down the very
+ * runtime the command was issued from. When ancestry cannot be determined
+ * (`PARENT_PID_UNKNOWN`) it therefore answers `true` — fail CLOSED. A false
+ * "yes" costs the user one refusal that names the
+ * `ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION=1` override; a false "no" silently
+ * destroys a live runtime and every active session on it. Only the first is
+ * recoverable.
+ */
 export function isCurrentProcessDescendantOfPid(args: {
   targetPid: number;
   run?: ServiceManagerSpawnSync;
   currentPid?: number;
-  parentPid?: (pid: number) => number | null;
+  platform?: NodeJS.Platform;
+  parentPid?: (pid: number) => ParentPidLookup;
 }): boolean {
   const targetPid = Math.floor(args.targetPid);
   if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
   const run = args.run ?? spawnSync;
-  const readPid = args.parentPid ?? ((pid) => readParentPid(run, pid));
+  const platform = args.platform ?? process.platform;
+  const readPid = args.parentPid ?? ((pid: number) => readParentPid(run, pid, platform));
   const seen = new Set<number>();
   let cursor = Math.floor(args.currentPid ?? process.pid);
   while (Number.isFinite(cursor) && cursor > 0 && !seen.has(cursor)) {
     if (cursor === targetPid) return true;
     seen.add(cursor);
     const next = readPid(cursor);
+    if (next === PARENT_PID_UNKNOWN) return true;
     if (!next || next === cursor) return false;
     cursor = next;
   }

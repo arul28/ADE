@@ -6,8 +6,11 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
+  buildWindowsParentPidQueryArgs,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
+  PARENT_PID_UNKNOWN,
+  readParentPid,
   renderCommand,
   resolveAdeServeCommand,
   serviceManagerOwnsRuntimeRecovery,
@@ -284,6 +287,130 @@ describe("isCurrentProcessDescendantOfPid", () => {
       })[pid] ?? null,
     })).toBe(false);
   });
+});
+
+// These exercise the DEFAULT parent-pid backend. The suite above injects a fake
+// `parentPid` every time, which is exactly how a Windows host could ship a
+// `readParentPid` that always returned null — and therefore a self-shutdown
+// guard that never fired — with a green Windows CI job.
+describe("readParentPid on win32", () => {
+  // A trusted powershell path, never a bare `powershell` resolved off PATH.
+  const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
+
+  const recordingRun = (
+    reply: (pid: number) => ServiceManagerProcessResult,
+  ): { run: ServiceManagerSpawnSync; calls: Array<{ command: string; args: string[] }> } => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const run: ServiceManagerSpawnSync = (command, args) => {
+      calls.push({ command, args });
+      if (!TRUSTED_POWERSHELL.test(command)) {
+        // Mirror the real host: Git Bash's `ps` is found and rejects the POSIX
+        // flags with status 1; a clean Windows box reports ENOENT. Both land on
+        // a non-zero status with no usable stdout.
+        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
+      }
+      const filter = /ProcessId = (\d+)/.exec(args.join(" "));
+      return reply(Number(filter?.[1] ?? 0));
+    };
+    return { run, calls };
+  };
+
+  it("queries Win32_Process through the trusted PowerShell for the parent pid", () => {
+    const { run, calls } = recordingRun(() => ({ status: 0, stdout: "4321\r\n" }));
+
+    expect(readParentPid(run, 1234, "win32")).toBe(4321);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.command).toMatch(TRUSTED_POWERSHELL);
+    expect(calls[0]!.command).not.toBe("ps");
+    expect(calls[0]!.args).toEqual(buildWindowsParentPidQueryArgs(1234));
+    const script = calls[0]!.args.join(" ");
+    expect(script).toContain("Get-CimInstance Win32_Process");
+    expect(script).toContain("ParentProcessId");
+    // wmic is deprecated and is being removed from Windows.
+    expect(script).not.toMatch(/wmic/i);
+  });
+
+  it("treats a missing process as the definitive end of the chain", () => {
+    const { run } = recordingRun(() => ({ status: 3, stdout: "" }));
+    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  });
+
+  it("treats ParentProcessId 0 as the top of the tree", () => {
+    const { run } = recordingRun(() => ({ status: 0, stdout: "0" }));
+    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  });
+
+  it("reports an undetermined ancestry when the query itself fails", () => {
+    const failures: ServiceManagerProcessResult[] = [
+      { status: 1, stdout: "", stderr: "Get-CimInstance is not recognized" },
+      { status: null, stdout: null, stderr: null },
+      { status: 0, stdout: "not-a-pid" },
+      { status: 0, stdout: "" },
+    ];
+    for (const failure of failures) {
+      const { run } = recordingRun(() => failure);
+      expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
+    }
+  });
+});
+
+describe("isCurrentProcessDescendantOfPid on win32", () => {
+  const win32Tree = (tree: Record<number, number>): ServiceManagerSpawnSync =>
+    (command, args) => {
+      if (!/powershell\.exe$/i.test(command)) {
+        // Anything that is not the Windows query is the old POSIX `ps` path,
+        // which cannot answer on this platform.
+        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
+      }
+      const pid = Number(/ProcessId = (\d+)/.exec(args.join(" "))?.[1] ?? 0);
+      const parent = tree[pid];
+      return parent == null
+        ? { status: 3, stdout: "" }
+        : { status: 0, stdout: String(parent) };
+    };
+
+  it("blocks a self-shutdown issued from inside the runtime's process tree", () => {
+    // No `parentPid` injection: this drives the real default backend, so a
+    // Windows build without a win32 branch answers false and fails here.
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: win32Tree({ 400: 300, 300: 100, 100: 0 }),
+    })).toBe(true);
+  });
+
+  it("allows a shutdown issued from an unrelated process tree", () => {
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: win32Tree({ 400: 300, 300: 1, 1: 0 }),
+    })).toBe(false);
+  });
+
+  it("fails closed when the ancestry query is unavailable", () => {
+    // Destroying a live runtime is unrecoverable; a refusal that names the
+    // ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION override is not.
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: () => ({ status: 1, stdout: "", stderr: "powershell unavailable" }),
+    })).toBe(true);
+  });
+});
+
+describe.runIf(process.platform === "win32")("readParentPid against the real Windows host", () => {
+  it("resolves this process's actual parent pid", () => {
+    // process.ppid is an independent oracle for the same fact. Before the win32
+    // branch existed this returned null on every Windows host.
+    expect(readParentPid(spawnChildSync, process.pid)).toBe(process.ppid);
+  }, 30_000);
+
+  it("reports the real parent as an ancestor of this process", () => {
+    expect(isCurrentProcessDescendantOfPid({ targetPid: process.ppid })).toBe(true);
+  }, 30_000);
 });
 
 describe("isStaleChannelServeCommandLine", () => {
