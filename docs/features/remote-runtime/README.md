@@ -172,17 +172,19 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   format the join and every per-project cache are keyed by.
   `TopBar.tsx` renders the group as one tab plus a machine menu; the machine
   name only earns inline space when it is ambiguous (more than one machine in
-  the group, or a checkout that is not on This Mac), and the menu also offers
+  the group, or a checkout that is not on This computer), and the menu also offers
   **Connect another machine…**.
 - `apps/desktop/src/shared/machineIdentity.ts` — the single definition of "the
   machine ADE is running on": `THIS_MACHINE_ID` (`"this-mac"`),
-  `THIS_MACHINE_NAME` (`"This Mac"`), `isThisMachineId`, and
+  `THIS_MACHINE_NAME` (`"This computer"`), `isThisMachineId`, and
   `machineDisplayName`. Every producer and consumer of a machine id imports
   from here — `laneMachines.ts`, `projectTabGrouping.ts`, `crossMachineLanes.ts`,
   `LaneGitActionsPane.tsx`, the composer, and the Chats page — because the
   push-divergence guard decides "is this another machine?" by comparing ids, so
-  two spellings of this machine make it warn that This Mac diverged from itself.
-  Machines are named **absolutely** ("This Mac", "MacBook Pro (97)"); "remote"
+  two spellings of this machine make it warn that This computer diverged from
+  itself. The name is deliberately platform-neutral — ADE also runs on Windows,
+  where "This Mac" was simply wrong.
+  Machines are named **absolutely** ("This computer", "MacBook Pro (97)"); "remote"
   is never a machine name, since the machine a tab is bound to can change and
   the create-lane dialog already uses "remote" for the git base-branch source.
 - `apps/desktop/src/main/services/projects/recentProjectSummary.ts` — reads
@@ -283,7 +285,7 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   compared, never names), the other machine is on a different branch, or the
   other machine has nothing unpushed.
 - `apps/desktop/src/renderer/components/chat/thisMachineProjectRoot.ts` —
-  resolves the machine picker's "This Mac" option back to *this repository's*
+  resolves the machine picker's "This computer" option back to *this repository's*
   local checkout by repo identity (reusing `deriveLaneMachineOptions`' rule)
   rather than to the first local tab in insertion order, and refuses to switch
   when there is no local counterpart. Used by the chat composer's machine picker
@@ -421,14 +423,14 @@ A repository is one tab. Local and remote checkouts of the same repo — joined 
 their normalized git origin — collapse into a single tab whose **machine** is a
 dimension inside it, switched from a dropdown on the tab. There is no separate
 "remote" tab, and "remote" is not a machine name: machines are named absolutely
-("This Mac", "MacBook Pro (97)").
+("This computer", "MacBook Pro (97)").
 
 The tab's machine is the global execution context — Lanes, PRs, Files, Git, and
 Run all follow it. Two things are deliberately wider than that:
 
 - **The Work sidebar is a union.** It shows chats in flight on *every* connected
   machine for this repository, regardless of which machine the tab is bound to.
-  Lanes not on This Mac carry a small monochrome machine marker that promotes to
+  Lanes not on This computer carry a small monochrome machine marker that promotes to
   the machine's name when a glyph alone would be ambiguous (the machine is
   offline, two or more foreign machines are on screen, or the same branch exists
   elsewhere). Foreign lanes appear only when they have sessions — the union is

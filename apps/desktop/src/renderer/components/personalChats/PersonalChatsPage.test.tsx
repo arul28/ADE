@@ -11,6 +11,7 @@ import type {
   AgentChatSessionSummary,
 } from "../../../shared/types";
 import type { ModelDescriptor } from "../../../shared/modelRegistry";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { ADE_OPEN_BUILT_IN_BROWSER_EVENT, openUrlInAdeBrowser } from "../../lib/openExternal";
 
 // Deliberately a LIGHT accent (Codex-style) so the contrast tests can tell the
@@ -756,8 +757,12 @@ describe("PersonalChatsPage", () => {
     storeState.openRemoteProjectTabs = [remoteTab];
     await renderPage();
 
+    // Composed from THIS_MACHINE_NAME, not spelled out: the local machine's
+    // absolute name is the helper's to define (it stopped being "This Mac" when
+    // ADE started running on Windows), and this assertion is about the sentence
+    // shape, not the noun.
     const trigger = await screen.findByRole("button", {
-      name: "Chats run on This Mac. Choose a machine.",
+      name: `Chats run on ${THIS_MACHINE_NAME}. Choose a machine.`,
     });
     // "This machine" was ambiguous once a tab's machine became switchable.
     expect(document.body.textContent).not.toMatch(/this machine/i);
