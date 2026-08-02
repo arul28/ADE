@@ -7,7 +7,8 @@ ADE already publishes macOS and standalone Mac/Linux files through GitHub Releas
 After setup, a normal release is:
 
 1. A maintainer tags an approved commit.
-2. GitHub Actions builds, signs, and checks every platform.
+2. GitHub Actions builds and checks the other platforms, then retrieves and
+   verifies the immutable Windows artifact approved by the exact-SHA proof.
 3. GitHub Actions creates one unpublished GitHub Release.
 4. A maintainer checks it and makes it public.
 
@@ -22,10 +23,12 @@ Complete these actions in order:
 1. Configure the Windows signing credentials in GitHub Actions.
 2. Enable signed test builds while keeping Windows publication off.
 3. Build a signed test version in GitHub Actions.
-4. Test the installer on clean Windows 10 and Windows 11 computers.
-5. Enable Windows in the production release workflow.
-6. Tag the approved commit. GitHub Actions builds every platform and creates one unpublished release.
-7. Check the release, make it public, and enable the Windows website link.
+4. Complete the exact-SHA proof inventory on clean Windows 10 and Windows 11 computers, including a signed N to N+1 private update.
+5. Validate and approve the redacted proof bundle while publication and the website remain disabled.
+6. Bind the approved proof SHA and enable Windows in the production release workflow.
+7. Tag the approved commit. GitHub Actions builds the other platforms, promotes
+   the exact approved Windows artifact, and creates one unpublished release.
+8. Check the release, make it public, and only then enable the Windows website link.
 
 The sections below provide the commands and pass conditions.
 
@@ -94,12 +97,38 @@ The run passes only when:
 - Required bundled tools and runtime files are present.
 - The macOS and standalone runtime jobs still pass.
 - No GitHub Release is created.
+- A machine-readable proof manifest is generated for the exact checked-out SHA.
 
 Download the `ade-win-release-v<VERSION>` artifact from the successful run. It must contain exactly:
 
 - `ADE-<VERSION>-win-x64.exe`
 - `ADE-<VERSION>-win-x64.exe.blockmap`
 - `latest.yml`
+- `windows-proof-manifest.json`
+
+Before editing the manifest, record the immutable build identity:
+
+```powershell
+$PROOF_RUN_ID = "<workflow-run-id>"
+$BUILD_MANIFEST_SHA256 = (Get-FileHash `
+  -LiteralPath <proof-root>\windows-proof-manifest.json `
+  -Algorithm SHA256).Hash.ToLowerInvariant()
+```
+
+Create the proof-bundle layout from the proof contract: leave the manifest at
+the bundle root and place the installer, blockmap, and `latest.yml` under its
+`artifacts/` directory before running the validator.
+
+Run the build-phase validator after download. It re-hashes all three release
+files and rejects a manifest for any other commit:
+
+```powershell
+node apps/desktop/scripts/windows-proof-manifest.mjs validate `
+  --manifest <proof-root>\windows-proof-manifest.json `
+  --phase build `
+  --expected-sha $RELEASE_SHA `
+  --artifact-root <proof-root>\artifacts
+```
 
 ### 3. Test the signed installer
 
@@ -115,12 +144,47 @@ On clean Windows 10 x64 and Windows 11 x64 computers:
 
 2. Install ADE and run the same check on `%LOCALAPPDATA%\Programs\ADE\ADE.exe`.
 3. Confirm both results report `Status: Valid` and the approved ADE publisher.
-4. Test installation, launch, projects, lanes, agent sessions, terminals, `ade doctor`, the background service, iPhone pairing, uninstall, and reinstall.
-5. Record the commit, workflow run, Windows versions, publisher, certificate fingerprint, file SHA-256, and results.
+4. Test installation, launch, projects, lanes, agent sessions, terminals, `ade doctor`, the HKCU startup supervisor, iPhone pairing, uninstall, and reinstall.
+5. Complete every scenario in the machine-readable inventory, including
+   Windows 10/11, PowerShell 5.1, PowerShell 7, cmd, Git Bash, every provider state, account OAuth/directory,
+   cross-machine clients, LAN/Tailscale/Relay, the private signed N to N+1
+   updater path, and regressions.
+6. Index separately redacted GUI, log, DB, process, IPC, and network evidence.
+   Record publisher/certificate identity as a digest, never raw certificate
+   material or personal/account identifiers.
 
-Use the [full Windows test matrix](../development/windows-port-lane.md#external-proof-gates-before-public-availability) for the acceptance test.
+Use the [Windows release proof contract](../development/windows-release-proof.md)
+and its [full-system scenario inventory](../development/windows-full-system-scenarios.json)
+for the acceptance test. Installed-host recovery guidance lives in
+[Windows support](../development/windows-support.md).
 
-### 4. Enable Windows releases
+### 4. Approve the exact-SHA proof
+
+After every `pre-tag` result is `pass`, evidence is redacted, and the manifest
+is `proof_complete`, run the complete validator with the artifact and evidence
+roots. Leave `draft-assets-website-explicit` pending until the unpublished draft
+exists in Publish step 3. An authorized Windows release maintainer then changes the role-only
+approval fields as described in the proof contract and runs
+`--phase publication-readiness`. This validation still requires both public
+release and website flags to be false.
+
+Set the protected proof binding to the manifest's exact SHA, the original
+non-publishing run, and the original build-manifest digest:
+
+```bash
+gh variable set ADE_WINDOWS_APPROVED_PROOF_SHA \
+  --repo arul28/ADE --body "$RELEASE_SHA"
+gh variable set ADE_WINDOWS_APPROVED_PROOF_RUN_ID \
+  --repo arul28/ADE --body "$PROOF_RUN_ID"
+gh variable set ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 \
+  --repo arul28/ADE --body "$BUILD_MANIFEST_SHA256"
+```
+
+The public workflow fails closed if any binding is absent or malformed, if the
+SHA or release tag differs, or if the retrieved immutable artifact's manifest
+or release-file hashes differ.
+
+### 5. Enable Windows releases
 
 After the recorded test results pass:
 
@@ -130,6 +194,8 @@ gh variable set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \
 ```
 
 This setting allows the existing release workflow to add validated Windows files to its combined draft. It does not publish a release by itself.
+Keep `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` unset or `0`; website readiness is not
+publication approval.
 
 ## Publish a release
 
@@ -143,8 +209,18 @@ Confirm:
 - The normal `ci-pass` check succeeded for that exact commit.
 - The version tag does not already exist.
 - The signed-build and public-release settings are `1`.
+- `ADE_WINDOWS_APPROVED_PROOF_SHA` equals the approved 40-character commit SHA.
+- `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` identifies the approved non-publishing run.
+- `ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256` equals the recorded original
+  build-manifest digest.
+- The proof manifest passed `publication-readiness` with public release and
+  website gates still disabled.
 
-For later releases, run the non-publishing workflow for the approved version and commit. For the first Windows release, reuse the Step 2 result if its version and commit are unchanged.
+For later releases, first set `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0`, then run
+the non-publishing workflow and collect fresh exact-SHA proof for the approved
+version and commit. Restore the public gate only after that proof is approved.
+For the first Windows release, reuse the Step 2 result if its version and commit
+are unchanged.
 
 ```bash
 VERSION="<VERSION>"
@@ -167,7 +243,10 @@ git tag -a "v$VERSION" "$RELEASE_SHA" -m "ADE v$VERSION"
 git push origin "v$VERSION"
 ```
 
-The tag starts `.github/workflows/release.yml`. GitHub Actions builds every platform and creates or updates an unpublished GitHub Release.
+The tag starts `.github/workflows/release.yml`. GitHub Actions rebuilds the
+other platforms, promotes the exact approved Windows artifact from the
+non-publishing run, verifies its immutable identity and hashes, and creates or
+updates an unpublished GitHub Release.
 
 Do not rerun the release workflow after the release is public. The workflow refuses to overwrite assets on a published release.
 
@@ -187,6 +266,22 @@ Require:
 - The Windows installer, its `.blockmap`, and `latest.yml` are present.
 - The downloaded Windows installer and installed `ADE.exe` have valid signatures from the approved publisher.
 - The installed app points to `arul28/ADE` for updates.
+- The approved proof SHA equals the release target and the downloaded Windows
+  files match the proof manifest hashes.
+
+Add the redacted draft-asset and disabled-website evidence to the proof bundle,
+set `draft-assets-website-explicit` to `pass`, then run the final gate:
+
+```powershell
+node apps/desktop/scripts/windows-proof-manifest.mjs validate `
+  --manifest <proof-root>\windows-proof-manifest.json `
+  --phase draft-readiness `
+  --expected-sha $RELEASE_SHA `
+  --expected-tag "v$VERSION" `
+  --expected-run-id $PROOF_RUN_ID `
+  --artifact-root <proof-root>\artifacts `
+  --evidence-root <proof-root>\evidence
+```
 
 Stop if any file or check is wrong. Do not upload replacement files by hand and do not move an existing tag. Fix the source, choose a higher version, and repeat the automated process.
 
@@ -213,7 +308,11 @@ For the first public Windows release:
 
 Later releases use the same website link and do not require another setting change.
 
-After a second signed Windows release exists, verify that an installed older version updates to it. This validates the updater; it is not required infrastructure for publishing the first Windows release.
+The N to N+1 updater path must already have been proven with two signed,
+non-public builds before the first public Windows release. Repeat it against
+public metadata after the next public signed release as an ongoing regression
+check; do not weaken the initial proof requirement merely because public N+1
+does not exist yet.
 
 ## If something fails
 
@@ -242,6 +341,9 @@ WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later.
 - [Tag-triggered release workflow](../../.github/workflows/release.yml)
 - [Shared release jobs](../../.github/workflows/release-core.yml)
 - [Contract tests](../../apps/desktop/scripts/windows-release-contract.test.mjs)
+- [Proof manifest generator and validator](../../apps/desktop/scripts/windows-proof-manifest.mjs)
+- [Exact-SHA Windows proof](../development/windows-release-proof.md)
+- [Windows support and troubleshooting](../development/windows-support.md)
 - [Update behavior](../features/onboarding-and-settings/desktop-auto-update.md)
 
 ## References

@@ -1,0 +1,742 @@
+{
+  "schemaVersion": "ade.windows-proof-scenarios/v1",
+  "dimensions": {
+    "operatingSystems": [
+      "windows-10-22h2-x64",
+      "windows-11-x64"
+    ],
+    "shells": [
+      "powershell",
+      "cmd"
+    ],
+    "providers": [
+      "claude",
+      "codex",
+      "cursor",
+      "droid",
+      "opencode"
+    ],
+    "clients": [
+      "windows-desktop",
+      "ade-code",
+      "hosted-web",
+      "ios",
+      "desktop-peer"
+    ],
+    "routes": [
+      "lan",
+      "tailscale",
+      "relay"
+    ],
+    "journeys": [
+      "account-oauth",
+      "account-directory",
+      "signed-n-to-n-plus-one-update",
+      "windows-regressions"
+    ]
+  },
+  "requiredEvidenceKinds": [
+    "gui",
+    "log",
+    "db",
+    "process",
+    "ipc",
+    "network"
+  ],
+  "acceptanceGates": [
+    {
+      "id": "shell-conpty-matrix",
+      "stage": "pre-tag",
+      "requirements": ["powershell-5-1", "powershell-7", "cmd", "git-bash", "conpty-unicode", "conpty-metacharacters", "conpty-resize", "conpty-ctrl-c", "conpty-cancel", "descendant-cleanup", "crash-restore"]
+    },
+    {
+      "id": "provider-lifecycle-matrix",
+      "stage": "pre-tag",
+      "requirements": ["claude-authenticated", "claude-unauthenticated", "claude-fresh", "claude-resume", "claude-recovery-metadata", "claude-recovery-instructions", "claude-redaction", "codex-authenticated", "codex-unauthenticated", "codex-fresh", "codex-resume", "codex-recovery-metadata", "codex-recovery-instructions", "codex-redaction", "cursor-authenticated", "cursor-unauthenticated", "cursor-fresh", "cursor-resume", "cursor-recovery-metadata", "cursor-recovery-instructions", "cursor-redaction", "opencode-authenticated", "opencode-unauthenticated", "opencode-fresh", "opencode-resume", "opencode-recovery-metadata", "opencode-recovery-instructions", "opencode-redaction", "droid-authenticated", "droid-unauthenticated", "droid-fresh", "droid-resume", "droid-recovery-metadata", "droid-recovery-instructions", "droid-redaction"]
+    },
+    {
+      "id": "standalone-cli-brain",
+      "stage": "pre-tag",
+      "requirements": ["ade-win32-x64", "install", "start", "status", "doctor", "update", "remote-bootstrap", "openssh-prerequisite", "damaged-install-recovery"]
+    },
+    {
+      "id": "brain-host-lifecycle",
+      "stage": "pre-tag",
+      "requirements": ["desktop-closed", "brain-crash", "brain-restart", "login", "logout", "reboot", "repair", "reinstall", "uninstall"]
+    },
+    {
+      "id": "account-oauth-directory",
+      "stage": "pre-tag",
+      "requirements": ["default-browser-callback", "encrypted-persistence", "reauthentication", "sign-out", "existing-machine-discovery"]
+    },
+    {
+      "id": "cross-machine-directions",
+      "stage": "pre-tag",
+      "requirements": ["windows-session-to-macos", "windows-session-to-physical-ios", "windows-session-to-hosted-web", "macos-session-to-windows", "windows-client-to-macos-linux-runtime", "macos-linux-client-to-windows-runtime"]
+    },
+    {
+      "id": "transport-streaming-reconnect",
+      "stage": "pre-tag",
+      "requirements": ["lan-firewall", "tailscale", "relay", "reconnect", "terminal-streaming", "chat-streaming", "remote-commands"]
+    },
+    {
+      "id": "signed-updater-proof",
+      "stage": "pre-tag",
+      "requirements": ["signed-n-to-n-plus-one", "rfc3161-timestamp", "publisher-identity", "tamper-rejection", "relaunch", "brain-recovery", "data-preservation", "smartscreen-observation"]
+    },
+    {
+      "id": "unchanged-release-paths",
+      "stage": "pre-tag",
+      "requirements": ["macos-desktop", "macos-runtime", "linux-runtime", "web", "relay", "ios"]
+    },
+    {
+      "id": "draft-assets-and-website",
+      "stage": "post-draft",
+      "requirements": ["installer", "blockmap", "latest-yml", "checksums", "update-metadata", "website-link-disabled", "website-link-correct"]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "clean-install-win10",
+      "title": "Clean standard-user install and first launch on Windows 10",
+      "hosts": ["windows-10-22h2-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "A standard user installs without Node.js or elevation and reaches the project picker.",
+        "The installed executable and background brain start from packaged resources."
+      ],
+      "dependencies": ["Clean Windows 10 22H2 x64 standard-user host"]
+    },
+    {
+      "id": "clean-install-win11",
+      "title": "Clean standard-user install and first launch on Windows 11",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "A standard user installs without Node.js or elevation and reaches the project picker.",
+        "Start Menu relaunch attaches to the packaged background brain."
+      ],
+      "dependencies": ["Clean Windows 11 x64 standard-user host"]
+    },
+    {
+      "id": "hkcu-supervisor-recovery",
+      "title": "HKCU startup supervisor recovers across logoff and reboot",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["process", "ipc", "log"],
+      "passConditions": [
+        "The channel-qualified HKCU Run value launches the hidden PowerShell supervisor.",
+        "The supervisor and runtime PID record identify live ADE-owned processes after logon.",
+        "A redacted IPC readiness record proves the named pipe accepts an initialized client after logoff-logon and reboot."
+      ],
+      "dependencies": ["Permission to log off and reboot disposable hosts"]
+    },
+    {
+      "id": "channel-isolation",
+      "title": "Stable and Beta remain isolated for one Windows user",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["process", "ipc", "db"],
+      "passConditions": [
+        "Stable and Beta use different startup values, ADE homes, named pipes, and databases.",
+        "Stopping or uninstalling one channel does not stop or delete the other."
+      ],
+      "dependencies": ["Stable and Beta signed installers for one exact source commit"]
+    },
+    {
+      "id": "account-isolation",
+      "title": "Two Windows accounts cannot cross local runtime boundaries",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["process", "ipc", "log"],
+      "passConditions": [
+        "Each account owns a distinct startup entry, ADE home, launcher, PID record, and named pipe.",
+        "The second account cannot initialize against the first account's pipe."
+      ],
+      "dependencies": ["Two non-administrator accounts on one disposable host"]
+    },
+    {
+      "id": "uninstall-reinstall",
+      "title": "Uninstall and reinstall remove only ADE-owned integration",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["process", "log", "db"],
+      "passConditions": [
+        "Uninstall stops the owned process tree and removes its HKCU value, launcher, shims, and owned PATH entry.",
+        "Legacy Scheduled Tasks are absent and unrelated PATH values and user data remain intact.",
+        "Reinstall starts cleanly and can reopen preserved project state."
+      ],
+      "dependencies": ["Disposable project with non-secret state"]
+    },
+    {
+      "id": "providers-powershell",
+      "title": "All providers launch and resume through PowerShell",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": ["claude", "codex", "cursor", "droid", "opencode"],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "Fresh launch and tracked resume work for every provider using destination-local credentials.",
+        "Unicode and spaces, quotes, dollar signs, percent signs, ampersands, and backticks remain literal.",
+        "Cancellation and child-tree cleanup leave no provider process behind."
+      ],
+      "dependencies": ["Pre-authorized test identities for each provider"]
+    },
+    {
+      "id": "providers-cmd",
+      "title": "All providers launch and resume through cmd",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["cmd"],
+        "providers": ["claude", "codex", "cursor", "droid", "opencode"],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "Fresh launch and tracked resume work for every provider using destination-local credentials.",
+        "Unicode and spaces, quotes, dollar signs, percent signs, ampersands, and backticks remain literal.",
+        "Resize, Ctrl+C, cancellation, and child-tree cleanup behave correctly."
+      ],
+      "dependencies": ["Pre-authorized test identities for each provider"]
+    },
+    {
+      "id": "account-oauth-directory",
+      "title": "ADE account OAuth and account directory adoption",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "hosted-web"],
+        "routes": ["relay"],
+        "journeys": ["account-oauth", "account-directory"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "log"],
+      "passConditions": [
+        "Interactive OAuth completes without recording credentials in proof.",
+        "The signed-in Windows brain publishes one redacted machine alias with a verified Relay route.",
+        "Hosted web adopts the same-account machine with DPoP-bound credentials."
+      ],
+      "dependencies": ["External ADE account service", "Pre-authorized test account"]
+    },
+    {
+      "id": "account-signout",
+      "title": "Account sign-out revokes cloud ownership without breaking local use",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "hosted-web", "ios"],
+        "routes": ["lan", "relay"],
+        "journeys": ["account-oauth", "account-directory"]
+      },
+      "requiredEvidenceKinds": ["network", "db", "log"],
+      "passConditions": [
+        "Sign-out closes Relay peers and removes account-directory access.",
+        "Local project access and locally trusted direct pairing continue according to ownership rules.",
+        "No account credential or device identity appears in evidence."
+      ],
+      "dependencies": ["External ADE account service", "Paired local controller"]
+    },
+    {
+      "id": "desktop-peer-lan",
+      "title": "Cross-machine desktop client over LAN",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "desktop-peer"],
+        "routes": ["lan"],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "ipc", "db"],
+      "passConditions": [
+        "A paired desktop selects the Windows machine and a project over LAN.",
+        "Project, lane, and session mutations execute on the Windows brain and replicate back."
+      ],
+      "dependencies": ["Second ADE desktop on the same trusted LAN"]
+    },
+    {
+      "id": "ade-code-tailscale",
+      "title": "ADE Code client over Tailscale",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": ["powershell", "cmd"],
+        "providers": ["codex"],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": ["tailscale"],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["network", "ipc", "log"],
+      "passConditions": [
+        "ADE resolves the Windows Tailscale CLI from Program Files, PATH, or the explicit override.",
+        "ADE Code attaches to the intended project and receives live chat and terminal state."
+      ],
+      "dependencies": ["Two nodes on one test tailnet"]
+    },
+    {
+      "id": "hosted-web-relay",
+      "title": "Hosted web client over Relay",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "hosted-web"],
+        "routes": ["relay"],
+        "journeys": ["account-directory", "windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "ipc"],
+      "passConditions": [
+        "The browser connects through the directory-selected verified Relay route.",
+        "Project switches and remote commands remain bound to the selected machine and project.",
+        "The proof contains correlation aliases, not URLs with credentials or query strings."
+      ],
+      "dependencies": ["External Relay and account-directory services"]
+    },
+    {
+      "id": "ios-route-fallback",
+      "title": "Physical iPhone uses LAN, Tailscale, and Relay fallback",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "ios"],
+        "routes": ["lan", "tailscale", "relay"],
+        "journeys": ["account-directory", "windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "db"],
+      "passConditions": [
+        "A physical iPhone pairs with the Windows brain and selects the expected route order.",
+        "Moving off LAN proves bounded fallback to Tailscale or Relay without re-pairing.",
+        "Bidirectional CRR writes converge after route changes."
+      ],
+      "dependencies": ["Physical iPhone", "Test tailnet", "External Relay service"]
+    },
+    {
+      "id": "crr-firewall-roundtrip",
+      "title": "Packaged CR-SQLite and Windows Defender Firewall roundtrip",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "ios"],
+        "routes": ["lan"],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["db", "network", "log"],
+      "passConditions": [
+        "The installed crsqlite.dll produces and applies real changesets.",
+        "Firewall prompts or rules permit the approved private-network flow and do not silently open unrelated access.",
+        "A phone-originated and Windows-originated row converge with acknowledgements."
+      ],
+      "dependencies": ["Physical iPhone", "Disposable non-secret database rows"]
+    },
+    {
+      "id": "remote-runtime-bootstrap",
+      "title": "Windows desktop controls supported macOS and Linux runtimes",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop", "desktop-peer"],
+        "routes": ["lan", "tailscale"],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "process", "log"],
+      "passConditions": [
+        "The package uploads the matching Darwin or Linux runtime and native archive over SSH.",
+        "Lanes, files, terminals, chat, browser, and App Control remain owned by the remote runtime."
+      ],
+      "dependencies": ["Supported macOS runtime host", "Supported Linux runtime host"]
+    },
+    {
+      "id": "signed-update-n-to-n-plus-one",
+      "title": "Signed installed N to signed N+1 automatic update",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": ["lan"],
+        "journeys": ["signed-n-to-n-plus-one-update"]
+      },
+      "requiredEvidenceKinds": ["gui", "log", "process", "network"],
+      "passConditions": [
+        "Installed signed version N discovers only the approved N+1 repository metadata.",
+        "The updater verifies, hands off, relaunches on N+1, and preserves project data and the HKCU supervisor.",
+        "Installer and installed executable at both versions use the approved pinned signer."
+      ],
+      "dependencies": ["Two signed non-public Windows builds", "Private update feed matching the approved repository"]
+    },
+    {
+      "id": "update-rejection-recovery",
+      "title": "Updater rejects tampering and recovers from interrupted handoff",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": ["lan"],
+        "journeys": ["signed-n-to-n-plus-one-update", "windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["log", "process", "network"],
+      "passConditions": [
+        "Checksum or signature mismatch cannot install or replace the running app.",
+        "Interrupted handoff reports retry state, preserves the verified cache once, and clears it after repeated failure.",
+        "The old version remains launchable with intact data."
+      ],
+      "dependencies": ["Controlled private update feed", "Disposable interrupted-update host snapshot"]
+    },
+    {
+      "id": "projects-lanes-git",
+      "title": "Projects, lanes, Git, files, and conflict regression pass",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell", "cmd"],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "log", "db", "process"],
+      "passConditions": [
+        "Open and create projects, then create, commit, rebase, conflict-resolve, archive, and delete lanes.",
+        "Drive-letter, UNC, junction, Unicode, and spaced paths remain inside the intended worktree.",
+        "Files, diffs, history, and PR projections refresh from canonical runtime state."
+      ],
+      "dependencies": ["Disposable Git repository with synthetic conflicts"]
+    },
+    {
+      "id": "terminal-process-regressions",
+      "title": "ConPTY resize, input, cancellation, and process-tree regressions pass",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell", "cmd"],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "PowerShell and cmd PTYs accept Unicode, resize, Ctrl+C, and cancellation.",
+        "Stopping a session terminates descendants without visible probe consoles or orphan processes.",
+        "Resume uses the lane-owning runtime's shell and provider descriptor."
+      ],
+      "dependencies": []
+    },
+    {
+      "id": "browser-app-control-proof",
+      "title": "Built-in Browser, App Control, and proof ingestion regressions pass",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": ["codex"],
+        "clients": ["windows-desktop"],
+        "routes": ["lan"],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "ipc", "network", "log"],
+      "passConditions": [
+        "Built-in Browser navigation and downloads work without claiming native Windows computer use.",
+        "App Control launches a developer-owned Electron app, attaches over CDP, and accepts input.",
+        "Intentional screenshots, traces, and redacted logs ingest through the proof broker."
+      ],
+      "dependencies": ["Local non-secret Electron fixture app"]
+    },
+    {
+      "id": "deep-links-file-associations-path",
+      "title": "Deep links, file associations, CLI shim, and PATH regressions pass",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell", "cmd"],
+        "providers": [],
+        "clients": ["windows-desktop", "ade-code"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "process", "ipc"],
+      "passConditions": [
+        "Cold and hot ade links route to the requested surface.",
+        "File association opens the intended project without path corruption.",
+        "A newly launched shell resolves only the installer-owned ade shim."
+      ],
+      "dependencies": []
+    },
+    {
+      "id": "windows-ui-accessibility",
+      "title": "Window chrome, DPI, monitor, contrast, and keyboard regressions pass",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": [],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": [],
+        "journeys": ["windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "log"],
+      "passConditions": [
+        "Caption controls, dragging, double-click maximize, and Snap Layouts work.",
+        "Core screens remain usable at 100, 125, 150, and 200 percent scaling, on multiple monitors, in high contrast, and by keyboard.",
+        "macOS-only controls remain hidden or capability-blocked."
+      ],
+      "dependencies": ["Host or VM capable of the required display configurations"]
+    },
+    {
+      "id": "authenticode-artifact-identity",
+      "title": "Installer, installed app, blockmap, and updater metadata share one release identity",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"],
+        "shells": ["powershell"],
+        "providers": [],
+        "clients": ["windows-desktop"],
+        "routes": [],
+        "journeys": ["signed-n-to-n-plus-one-update"]
+      },
+      "requiredEvidenceKinds": ["log", "process"],
+      "passConditions": [
+        "Installer and installed executable signatures are valid, timestamped, pinned, and consistent.",
+        "The installer digest matches the exact-SHA manifest and latest.yml references the matching installer and blockmap.",
+        "Evidence stores digests of publisher identity fields rather than raw certificate details."
+      ],
+      "dependencies": ["Approved organizational Authenticode certificate"]
+    },
+    {
+      "id": "cross-machine-handoff",
+      "title": "Cross-machine Work chat handoff preserves exact Git and route contracts",
+      "hosts": ["windows-11-x64"],
+      "coverage": {
+        "operatingSystems": ["windows-11-x64"],
+        "shells": [],
+        "providers": ["claude", "codex", "opencode"],
+        "clients": ["windows-desktop", "desktop-peer"],
+        "routes": ["tailscale", "relay"],
+        "journeys": ["account-directory", "windows-regressions"]
+      },
+      "requiredEvidenceKinds": ["gui", "network", "ipc", "db"],
+      "passConditions": [
+        "A clean published source lane transfers only the bounded capsule at the reviewed route.",
+        "The destination validates the exact commit, creates or reuses the correct lane, and dispatches idempotently.",
+        "Secrets, transcripts, artifact bytes, PTYs, and dirty worktree content do not cross machines."
+      ],
+      "dependencies": ["Second compatible ADE desktop", "Published synthetic test branch"]
+    },
+    {
+      "id": "explicit-shell-conpty-matrix",
+      "title": "PowerShell 5.1, PowerShell 7, cmd, and Git Bash ConPTY matrix",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["shell-conpty-matrix"],
+      "acceptanceRequirementIds": ["powershell-5-1", "powershell-7", "cmd", "git-bash", "conpty-unicode", "conpty-metacharacters", "conpty-resize", "conpty-ctrl-c", "conpty-cancel", "descendant-cleanup", "crash-restore"],
+      "requiredEvidenceKinds": ["gui", "process", "log"],
+      "passConditions": [
+        "PowerShell 5.1, PowerShell 7, cmd, and Git Bash each launch as separately identified shell cases on both Windows versions.",
+        "Every shell case proves ConPTY Unicode and metacharacter round trips, resize, Ctrl+C, explicit cancellation, descendant process-tree cleanup, and crash restore.",
+        "No shell is inferred from the generic powershell label; evidence records the exact executable family with paths redacted."
+      ],
+      "dependencies": ["PowerShell 7 and Git for Windows installed on disposable hosts"]
+    },
+    {
+      "id": "explicit-provider-lifecycle-matrix",
+      "title": "Real provider authentication and recovery matrix",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": ["claude", "codex", "cursor", "droid", "opencode"], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["provider-lifecycle-matrix"],
+      "acceptanceRequirementIds": ["claude-authenticated", "claude-unauthenticated", "claude-fresh", "claude-resume", "claude-recovery-metadata", "claude-recovery-instructions", "claude-redaction", "codex-authenticated", "codex-unauthenticated", "codex-fresh", "codex-resume", "codex-recovery-metadata", "codex-recovery-instructions", "codex-redaction", "cursor-authenticated", "cursor-unauthenticated", "cursor-fresh", "cursor-resume", "cursor-recovery-metadata", "cursor-recovery-instructions", "cursor-redaction", "opencode-authenticated", "opencode-unauthenticated", "opencode-fresh", "opencode-resume", "opencode-recovery-metadata", "opencode-recovery-instructions", "opencode-redaction", "droid-authenticated", "droid-unauthenticated", "droid-fresh", "droid-resume", "droid-recovery-metadata", "droid-recovery-instructions", "droid-redaction"],
+      "requiredEvidenceKinds": ["gui", "log", "process", "db"],
+      "passConditions": [
+        "Claude, Codex, Cursor, OpenCode, and Droid each prove authenticated and unauthenticated states plus fresh and resumed real sessions.",
+        "Each provider proves crash/interruption recovery metadata and actionable recovery instructions without silently fabricating resume success.",
+        "Provider evidence is independently redacted for account identifiers, prompts, transcripts, tokens, command arguments, and local paths."
+      ],
+      "dependencies": ["Authorized disposable provider test identities; no credentials retained in proof"]
+    },
+    {
+      "id": "standalone-cli-brain-lifecycle",
+      "title": "Standalone ade-win32-x64 CLI and brain lifecycle",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": [], "clients": ["ade-code"], "routes": ["lan", "tailscale"], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["standalone-cli-brain"],
+      "acceptanceRequirementIds": ["ade-win32-x64", "install", "start", "status", "doctor", "update", "remote-bootstrap", "openssh-prerequisite", "damaged-install-recovery"],
+      "requiredEvidenceKinds": ["process", "ipc", "log", "network"],
+      "passConditions": [
+        "After the standalone ade-win32-x64 implementation exists, its payload installs and proves brain start, status, doctor, and update without the desktop process.",
+        "Remote bootstrap proves the OpenSSH prerequisite and an actionable missing-OpenSSH failure before a successful supported macOS/Linux bootstrap.",
+        "A damaged or partial standalone install produces bounded recovery guidance and recovers without deleting project data."
+      ],
+      "dependencies": ["BLOCKING IMPLEMENTATION: ADE does not yet build ade-win32-x64 and brain update currently rejects Windows", "Supported macOS and Linux bootstrap hosts", "Disposable damaged-install snapshot"]
+    },
+    {
+      "id": "brain-host-lifecycle-explicit",
+      "title": "Closed desktop, brain crash, login, logout, reboot, repair, reinstall, and uninstall",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell"], "providers": [], "clients": ["windows-desktop", "ade-code"], "routes": [], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["brain-host-lifecycle"],
+      "acceptanceRequirementIds": ["desktop-closed", "brain-crash", "brain-restart", "login", "logout", "reboot", "repair", "reinstall", "uninstall"],
+      "requiredEvidenceKinds": ["process", "ipc", "log", "db"],
+      "passConditions": [
+        "With the Windows desktop closed, the brain remains ready; an injected brain crash is detected, then supported explicit ade brain start or repair restarts it during the same login session.",
+        "Login, logout, and reboot each produce a new advisory supervisor/runtime PID record and a separate initialized IPC readiness record.",
+        "Repair is exercised separately from reinstall and uninstall; each preserves or removes only the data and integration it owns."
+      ],
+      "dependencies": ["Disposable host snapshots and permission to log out and reboot"]
+    },
+    {
+      "id": "account-oauth-directory-explicit",
+      "title": "Default-browser OAuth, encrypted persistence, reauthentication, sign-out, and directory discovery",
+      "hosts": ["windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": [], "clients": ["windows-desktop", "hosted-web", "ios"], "routes": ["lan", "tailscale", "relay"], "journeys": ["account-oauth", "account-directory"]},
+      "acceptanceGateIds": ["account-oauth-directory"],
+      "acceptanceRequirementIds": ["default-browser-callback", "encrypted-persistence", "reauthentication", "sign-out", "existing-machine-discovery"],
+      "requiredEvidenceKinds": ["gui", "db", "ipc", "network"],
+      "passConditions": [
+        "OAuth launches the Windows default browser, validates its callback, and stores the resulting account state only in the encrypted credential path.",
+        "Expired authorization triggers reauthentication; sign-out clears local account and Relay authority without deleting unrelated project data.",
+        "A different already-authorized client discovers the existing Windows machine through the account directory without exposing machine identifiers in proof."
+      ],
+      "dependencies": ["Authorized disposable ADE account and external account-directory/OAuth services"]
+    },
+    {
+      "id": "cross-machine-directions-explicit",
+      "title": "Bidirectional client, session, and runtime direction matrix",
+      "hosts": ["windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": ["claude", "codex", "opencode"], "clients": ["windows-desktop", "desktop-peer", "hosted-web", "ios", "ade-code"], "routes": ["lan", "tailscale", "relay"], "journeys": ["account-directory", "windows-regressions"]},
+      "acceptanceGateIds": ["cross-machine-directions"],
+      "acceptanceRequirementIds": ["windows-session-to-macos", "windows-session-to-physical-ios", "windows-session-to-hosted-web", "macos-session-to-windows", "windows-client-to-macos-linux-runtime", "macos-linux-client-to-windows-runtime"],
+      "requiredEvidenceKinds": ["gui", "ipc", "network", "db"],
+      "passConditions": [
+        "Windows-originated sessions are visible and controllable from macOS desktop, physical iOS, and hosted web; macOS-originated sessions are visible and controllable from Windows.",
+        "The Windows client controls supported macOS and Linux runtimes, and macOS and Linux ADE clients control the Windows runtime.",
+        "Every direction preserves owning machine, project, lane, session, and command authority across reconnect."
+      ],
+      "dependencies": ["Supported macOS and Linux hosts", "Physical iPhone", "Hosted web test deployment"]
+    },
+    {
+      "id": "transport-streaming-reconnect-explicit",
+      "title": "LAN firewall, Tailscale, Relay, reconnect, streaming, and remote-command matrix",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell", "cmd"], "providers": ["codex"], "clients": ["windows-desktop", "ade-code", "hosted-web", "ios", "desktop-peer"], "routes": ["lan", "tailscale", "relay"], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["transport-streaming-reconnect"],
+      "acceptanceRequirementIds": ["lan-firewall", "tailscale", "relay", "reconnect", "terminal-streaming", "chat-streaming", "remote-commands"],
+      "requiredEvidenceKinds": ["network", "ipc", "gui", "log"],
+      "passConditions": [
+        "LAN proves the intended Windows Firewall scope, then Tailscale and Relay each prove authenticated connection and route truth.",
+        "Each route interruption reconnects within bounds while terminal streaming, chat streaming, and remote commands resume without duplication or cross-machine drift.",
+        "Network evidence records route class, timing, and bounded outcome only; no IP, hostname, Relay URL, or credential is retained."
+      ],
+      "dependencies": ["Test tailnet", "External Relay", "Firewall-policy-controlled disposable hosts"]
+    },
+    {
+      "id": "signed-updater-proof-explicit",
+      "title": "Signed N to N+1 identity, tamper, relaunch, recovery, preservation, and SmartScreen",
+      "hosts": ["windows-10-22h2-x64", "windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-10-22h2-x64", "windows-11-x64"], "shells": ["powershell"], "providers": [], "clients": ["windows-desktop"], "routes": ["lan"], "journeys": ["signed-n-to-n-plus-one-update"]},
+      "acceptanceGateIds": ["signed-updater-proof"],
+      "acceptanceRequirementIds": ["signed-n-to-n-plus-one", "rfc3161-timestamp", "publisher-identity", "tamper-rejection", "relaunch", "brain-recovery", "data-preservation", "smartscreen-observation"],
+      "requiredEvidenceKinds": ["gui", "log", "process", "network", "db"],
+      "passConditions": [
+        "Signed N and N+1 installer/app identities have a valid RFC3161 timestamp and the same approved publisher digest; SmartScreen behavior is recorded factually on both Windows versions.",
+        "Valid N to N+1 update verifies metadata, relaunches on N+1, restores brain readiness, and preserves project, account, lane, and preference data.",
+        "Tampered installer, blockmap, or update metadata is rejected while N remains launchable and no unverified replacement is installed."
+      ],
+      "dependencies": ["Two signed non-public builds", "Private update feed", "Clean or reset SmartScreen test state"]
+    },
+    {
+      "id": "unchanged-release-paths-explicit",
+      "title": "Existing non-Windows release paths remain unchanged",
+      "hosts": ["windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": [], "clients": ["windows-desktop", "hosted-web", "ios", "desktop-peer"], "routes": ["relay"], "journeys": ["windows-regressions"]},
+      "acceptanceGateIds": ["unchanged-release-paths"],
+      "acceptanceRequirementIds": ["macos-desktop", "macos-runtime", "linux-runtime", "web", "relay", "ios"],
+      "requiredEvidenceKinds": ["log", "network", "process"],
+      "passConditions": [
+        "The unchanged macOS desktop, macOS runtime, Linux runtime, web, Relay, and iOS build/release validation paths all pass at the exact target SHA.",
+        "Windows proof and promotion do not rename, omit, republish, or alter the permissions and publication behavior of those paths."
+      ],
+      "dependencies": ["CI results for every existing release path"]
+    },
+    {
+      "id": "draft-assets-website-explicit",
+      "title": "Complete draft assets and disabled but correct Windows website link",
+      "hosts": ["windows-11-x64"],
+      "coverage": {"operatingSystems": ["windows-11-x64"], "shells": [], "providers": [], "clients": ["windows-desktop", "hosted-web"], "routes": [], "journeys": ["signed-n-to-n-plus-one-update"]},
+      "acceptanceGateIds": ["draft-assets-and-website"],
+      "acceptanceRequirementIds": ["installer", "blockmap", "latest-yml", "checksums", "update-metadata", "website-link-disabled", "website-link-correct"],
+      "requiredEvidenceKinds": ["gui", "log", "network"],
+      "passConditions": [
+        "The unpublished draft has the complete installer, blockmap, and latest.yml set; all checksums match the approved manifest and update metadata names the same version and files.",
+        "The Windows website download control remains disabled before publication, while its hidden target resolves to the approved canonical release location and analytics identity.",
+        "No proof workflow creates a GitHub Release, publishes an asset, or enables the website."
+      ],
+      "dependencies": ["Authorized read-only draft inspection", "Built website configuration without deployment"]
+    }
+  ]
+}

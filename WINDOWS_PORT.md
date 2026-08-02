@@ -98,7 +98,11 @@ Do not enable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` or
 Maintainers can follow
 [`docs/playbooks/windows-signed-release.md`](docs/playbooks/windows-signed-release.md)
 for signing, draft-release verification, publication,
-and website-enable procedure.
+and website-enable procedure. The exact-SHA manifest, redacted evidence layout,
+and full-system acceptance inventory live in
+[`docs/development/windows-release-proof.md`](docs/development/windows-release-proof.md);
+installed-host diagnosis is in
+[`docs/development/windows-support.md`](docs/development/windows-support.md).
 
 Four source follow-ups are explicitly outside this preview boundary:
 `ade brain update` continues to reject Windows because Windows as a standalone
@@ -386,8 +390,8 @@ These should not block the first Windows desktop build:
 - Windows as a remotely installable ADE brain.
 - Native Windows computer use using Windows Graphics Capture/UI Automation.
 - Signed N-to-N+1 automatic-update testing, including cache/retry/relaunch,
-  scheduled-task repair, data preservation, and rejection of tampered or
-  incorrectly signed updates.
+  HKCU startup-supervisor recovery, legacy Scheduled Task cleanup, data
+  preservation, and rejection of tampered or incorrectly signed updates.
 - Windows ARM64 after all native/provider payloads are available.
 - Windows resource telemetry and general orphan-agent recovery.
 

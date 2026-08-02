@@ -47,7 +47,7 @@ These are the foundations that should stay merged from this lane (see also `docs
 | **Installers** | The assisted NSIS installer is explicitly per-user and non-elevating. Its custom install step repairs the channel-aware CLI shim, current-user `PATH`, and brain startup registration; uninstall removes only the terminal shim, PATH/protocol/association/startup state owned by that installation. Stable/Beta/Alpha use distinct executable, app, and shim names. Windows packages carry all Darwin/Linux remote-runtime sidecars. Electron-builder owns `app-update.yml`; CI binds it to `${{ github.repository }}` and package smoke verifies the authority. |
 | **Standalone brain** | Releases build `ade-win32-x64.exe` plus a native dependency archive and checksum them with all other runtime artifacts. `install.ps1` stages and verifies both, installs the current-user PATH/service, and rolls back on failure. `ade brain start/status/doctor/update` support Windows; self-update stops the running executable before replacement and restores the previous runtime/service on failure. |
 | **Remote SSH runtime** | Windows 10 22H2 and Windows 11 x64 are native SSH-bootstrap targets through Windows OpenSSH Server. Bootstrap uses encoded PowerShell plus JSON stdin, verified SFTP uploads for `ade-win32-x64.exe`, native dependencies, the PTY worker, and agent skills, then launches the channel-specific named-pipe runtime through `ade rpc --stdio`. PowerShell 5.1+ and `tar.exe` are prerequisites; WSL, ARM64, and Windows Server remain excluded from Windows v1. |
-| **CI/release** | `ci.yml` has a required `windows-latest` package job that builds and smokes an unsigned preview, including fresh install, repair, reinstall, PATH/startup/deep-link/file-association ownership, and uninstall. `release-core.yml` enables the signed job only with `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`; the Windows signing-secret contract is exactly `WINDOWS_CSC_LINK`, `WINDOWS_CSC_KEY_PASSWORD`, `WINDOWS_SIGNING_EXPECTED_SUBJECT`, and `WINDOWS_SIGNING_EXPECTED_THUMBPRINT`, with a trusted RFC3161 timestamp and the approved identity required for the installer, installed app, and standalone runtime (thumbprint equality is enforced whenever a thumbprint is configured). The non-publishing run retains a checksum-covered standalone proof bundle for offline clean-host installation. While public Windows publication is disabled, a failed or skipped signed Windows test build cannot block the existing macOS release. Public Windows assets additionally require both `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` and `ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED=1`; the latter attests to the mandatory clean-host, two-unpublished-version signed N-to-N+1 updater proof. |
+| **CI/release** | `ci.yml` has a required `windows-latest` package job that builds and smokes an unsigned preview, including installed-product lifecycle checks. With publication disabled, `release-core.yml` uses only the canonical `WINDOWS_*` signing contract to build one signed proof artifact containing the desktop and standalone runtime, requires a trusted RFC3161 timestamp and pinned identity, and fails closed. Public release retrieves that immutable artifact and verifies its run id, manifest digest, tag, exact source SHA, checksums, and installed-update approval rather than rebuilding. Disabled Windows publication never blocks the macOS release path. |
 | **Sync / Tailscale** | `resolveTailscaleCliPath` (shared): macOS bundle, Windows `Program Files`\\Tailscale, then `PATH`. |
 
 ## Mainline feature areas to smoke-test on Windows after each rebase
@@ -82,12 +82,12 @@ verification. Complete these before enabling the public website/release flags:
    relaunch, repair, `ade brain start/status/doctor/update`, logoff/logon brain
    recovery, deep links/file associations, and no orphaned legacy task/launcher.
 2. **Channel/user isolation** — run Stable and Beta side by side and verify
-   separate tasks, ADE homes, runtime/desktop-bridge pipes, and project state;
+   separate HKCU Run values, ADE homes, runtime/desktop-bridge pipes, and project state;
    repeat with a second Windows account.
 3. **Provider/PTY matrix** — fresh launch and resume for Claude, Codex, Cursor,
-   Droid, and OpenCode in PowerShell and cmd, including Unicode and paths or
+   Droid, and OpenCode in PowerShell 5.1, PowerShell 7, cmd, and Git Bash, including Unicode and paths or
    prompts containing spaces, quotes, `$`, `%`, `&`, and backticks. Exercise
-   resize, Ctrl+C, cancellation, and child-tree cleanup.
+   authenticated/unauthenticated state, resize, Ctrl+C, cancellation, child-tree cleanup, crash restore, recovery metadata/instructions, and redaction.
 4. **Sync and firewall** — pair a physical iPhone, prove bidirectional CRR
    changes, verify Windows Defender Firewall behavior on LAN, then exercise
    Tailscale/Relay fallback. For a non-default Tailscale install, set
@@ -98,20 +98,13 @@ verification. Complete these before enabling the public website/release flags:
    monitors, high contrast, and keyboard navigation.
 6. **Signed installer** — verify the installer and installed app use the approved
    publisher, then install, relaunch, log off/on, uninstall, and reinstall.
-   Provision signing credentials and monitor SmartScreen reputation. Before
-   publication, use two unpublished signed versions to prove N to N+1 update,
-   timestamp/signature validation, tamper rejection, desktop relaunch and brain
-   recovery, and data preservation.
-7. **Public gates** — enable `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1` to produce
-   signed test builds. Keep `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0` and the website
-   flag disabled until the signed installer, signed standalone runtime, and
-   mandatory two-version update proof pass. The PowerShell installer, Windows
-   runtime executable, and native archive remain outside release drafts until
-   the public-release and installed-update-proof gates are both enabled. Only
-   then may a maintainer enable public release and website flags.
+   Provision signing credentials and monitor SmartScreen reputation. Before publication, use two unpublished signed versions to prove N to N+1 update, timestamp/signature validation, tamper rejection, desktop relaunch, brain recovery, and data preservation.
+7. **Proof, promotion, and public gates** — enable `ADE_WINDOWS_SIGNED_BUILD_ENABLED=1` to produce the non-publishing signed proof build while `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0` and `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` is unset or `0`. Complete the exact-SHA inventory, including the private signed N to N+1 update and standalone runtime, then bind the approved proof run, manifest digest, and installed-update approval before enabling promotion. Inspect the assembled unpublished draft before publication. Enable the website only after that same release is public and verified.
 
-The cumulative release-proof layer adds the complete Windows signed-release
-and publication procedure before this stack can be considered ready.
+The machine-readable scenario inventory and evidence rules are in
+[Windows release proof](./windows-release-proof.md). The complete maintainer
+procedure is [Windows signed release and publication](../playbooks/windows-signed-release.md),
+and installed-host diagnosis is in [Windows support](./windows-support.md).
 
 ## Suggested validation commands (from repo root)
 

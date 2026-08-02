@@ -134,7 +134,7 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
   assert.match(pkg.scripts["dist:win:signed"], /validate:win:release:signed/);
   assert.match(pkg.scripts["package:win:signed"], /--require-signing/);
 
-  const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-proof", "promote-approved-win-proof");
   assert.match(windowsRelease, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
   assert.match(windowsRelease, /npm run dist:win:signed/);
   assert.match(windowsRelease, /ADE_RELEASE_REPOSITORY:\s*\$\{\{ github\.repository \}\}/);
@@ -313,13 +313,17 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(workflowHeader, /contents: read/);
   assert.doesNotMatch(workflowHeader, /contents: write/);
   assert.match(releaseTriggerWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: write/);
-  assert.match(publish, /- build-win-release/);
+  assert.match(publish, /- promote-approved-win-proof/);
   assert.match(publish, /permissions:\s*\n\s+actions: read\s*\n\s+contents: write/);
   assert.match(publish, /name: ade-win-release-/);
-  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
+  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.promote-approved-win-proof\.result == 'success'/);
   assert.match(verify, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1/);
   assert.match(verify, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED/);
   assert.match(verify, /requires approved two-version installed-update proof/);
+  assert.match(verify, /ADE_WINDOWS_APPROVED_PROOF_SHA/);
+  assert.match(verify, /ADE_WINDOWS_APPROVED_PROOF_RUN_ID/);
+  assert.match(verify, /ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256/);
+  assert.match(verify, /Approved Windows proof is for \$proof_sha, but this release builds \$target_sha/);
   assert.match(publish, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
   assert.match(publish, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'/);
   assert.match(publish, /BUILD_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED \}\}/);
@@ -390,6 +394,41 @@ test("release preflight validates the exact approved commit", () => {
   assert.doesNotMatch(prepareWorkflow, /ref: main/);
 });
 
+test("signed Windows proof workflow is non-publishing and emits an exact-SHA manifest", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-proof", "promote-approved-win-proof");
+  assert.match(prepareWorkflow, /name: Prepare signed Windows proof/);
+  assert.match(prepareWorkflow, /Signed Windows proof requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1/);
+  assert.match(prepareWorkflow, /Signed Windows proof is non-publishing/);
+  assert.match(prepareWorkflow, /publish: false/);
+  assert.doesNotMatch(prepareWorkflow, /contents: write/);
+  assert.match(windowsRelease, /windows-proof-manifest\.mjs create/);
+  assert.match(windowsRelease, /--target-sha "\$\{\{ inputs\.target_ref \}\}"/);
+  assert.match(windowsRelease, /windows-proof-manifest\.mjs validate/);
+  assert.match(windowsRelease, /--phase build/);
+  assert.match(windowsRelease, /--expected-sha "\$\{\{ inputs\.target_ref \}\}"/);
+  assert.match(windowsRelease, /--expected-tag "\$\{\{ inputs\.release_tag \}\}"/);
+  assert.match(windowsRelease, /--expected-run-id "\$\{\{ github\.run_id \}\}"/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/windows-proof-manifest\.json/);
+});
+
+test("public Windows release promotes the approved immutable proof artifact", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "promote-approved-win-proof", "build-runtime-binaries");
+  assert.match(windowsRelease, /name: Download approved immutable Windows proof artifact/);
+  assert.match(windowsRelease, /run-id: \$\{\{ vars\.ADE_WINDOWS_APPROVED_PROOF_RUN_ID \}\}/);
+  assert.match(windowsRelease, /name: Validate approved Windows artifact identity/);
+  assert.match(windowsRelease, /Get-FileHash -LiteralPath \$manifestPath -Algorithm SHA256/);
+  assert.match(windowsRelease, /APPROVED_BUILD_MANIFEST_SHA256/);
+  assert.match(windowsRelease, /--expected-run-id "\$\{\{ vars\.ADE_WINDOWS_APPROVED_PROOF_RUN_ID \}\}"/);
+  assert.match(windowsRelease, /inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
+});
+
+test("normal public workflow skips Windows promotion while its public gate is disabled", () => {
+  const promotion = jobBlock(releaseWorkflow, "promote-approved-win-proof", "build-runtime-binaries");
+  assert.match(promotion, /if: \$\{\{ inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \}\}/);
+  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'/);
+});
+
 test("pull requests build and smoke an unsigned Windows installer", () => {
   const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
   assert.match(packageJob, /runs-on: windows-latest/);
@@ -427,6 +466,7 @@ test("Windows package smoke requires every bundled provider runtime", () => {
 
 test("download page gates the Windows release and enables dedicated analytics", () => {
   assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
+  assert.match(downloadPage, /=== "1"/);
   assert.match(downloadPage, /signed Windows release is approved/);
   assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
   assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);

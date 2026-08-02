@@ -12,6 +12,12 @@ The mental model up front: ADE has a **brain** — the always-on, machine-owned 
 4. [**features/**](./features/) — per-feature subfolders, each with a `README.md` + detail docs. Start with `remote-runtime/`, `ade-code/`, and `sync-and-multi-device/` for the brain+clients picture.
 5. [**playbooks/**](./playbooks/) — operational workflows agents can follow directly.
 
+Windows release engineering starts with
+[`development/windows-release-proof.md`](./development/windows-release-proof.md)
+for the exact-SHA evidence contract and
+[`development/windows-support.md`](./development/windows-support.md) for the
+installed-host supervisor and troubleshooting boundary.
+
 ## Layout
 
 ```
@@ -24,6 +30,11 @@ docs/
 ├── playbooks/
 │   ├── ship-lane.md                       # autonomous PR-to-merge driver
 │   └── windows-signed-release.md          # signed Windows publication
+├── development/
+│   ├── windows-release-proof.md            # exact-SHA evidence schema + validator
+│   ├── windows-full-system-scenarios.json  # external Windows acceptance inventory
+│   ├── windows-source-provenance.json      # #999 source/rebase/stack mapping
+│   └── windows-support.md                  # installed Windows support guide
 └── features/
     ├── agents/                            # agent identity, tools, personas
     ├── ade-code/                          # terminal Work chat docs; source lives in apps/ade-cli/src/tuiClient

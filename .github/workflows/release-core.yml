@@ -73,7 +73,12 @@ jobs:
           BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
           PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
           WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
+          APPROVED_PROOF_SHA: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_SHA }}
+          APPROVED_PROOF_RUN_ID: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
+          APPROVED_BUILD_MANIFEST_SHA256: ${{ vars.ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 }}
         run: |
+          set -euo pipefail
+
           if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$BUILD_WINDOWS" != "1" ]; then
             echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1."
             exit 1
@@ -81,6 +86,27 @@ jobs:
           if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" != "1" ]; then
             echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires approved two-version installed-update proof."
             exit 1
+          fi
+
+          if [ "$PUBLISH_WINDOWS" = "1" ]; then
+            target_sha="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+            proof_sha="$(printf '%s' "$APPROVED_PROOF_SHA" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+            if ! printf '%s' "$proof_sha" | grep -Eq '^[0-9a-f]{40}$'; then
+              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_PROOF_SHA to contain the approved exact 40-character commit SHA."
+              exit 1
+            fi
+            if [ "$proof_sha" != "$target_sha" ]; then
+              echo "::error::Approved Windows proof is for $proof_sha, but this release builds $target_sha."
+              exit 1
+            fi
+            if ! printf '%s' "$APPROVED_PROOF_RUN_ID" | grep -Eq '^[1-9][0-9]*$'; then
+              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_PROOF_RUN_ID to identify the immutable non-publishing workflow run."
+              exit 1
+            fi
+            if ! printf '%s' "$APPROVED_BUILD_MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
+              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 to bind the approved artifact set."
+              exit 1
+            fi
           fi
 
   build-mac-release:
@@ -257,14 +283,14 @@ jobs:
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
-  build-win-release:
-    if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+  build-win-proof:
+    if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && inputs.publish == false }}
     needs:
       - verify
       - build-runtime-binaries
     runs-on: windows-latest
     concurrency:
-      group: release-${{ inputs.release_tag }}-win
+      group: release-${{ inputs.release_tag }}-win-proof
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -300,6 +326,7 @@ jobs:
           if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_SUBJECT) -and [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
             throw "Public Windows releases require WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT."
           }
+
       - name: Download ADE runtime binaries
         uses: actions/download-artifact@v4
         with:
@@ -343,7 +370,32 @@ jobs:
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
 
-      - name: Upload validated Windows artifacts to workflow run
+      - name: Generate exact-SHA Windows proof manifest
+        shell: pwsh
+        run: >-
+          node apps/desktop/scripts/windows-proof-manifest.mjs create
+          --output apps/desktop/release/windows-proof-manifest.json
+          --release-dir apps/desktop/release
+          --target-sha "${{ inputs.target_ref }}"
+          --release-tag "${{ inputs.release_tag }}"
+          --repository "${{ github.repository }}"
+          --workflow-name "${{ github.workflow }}"
+          --workflow-run-id "${{ github.run_id }}"
+          --workflow-run-attempt "${{ github.run_attempt }}"
+          --workflow-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Validate exact-SHA Windows build proof
+        shell: pwsh
+        run: >-
+          node apps/desktop/scripts/windows-proof-manifest.mjs validate
+          --manifest apps/desktop/release/windows-proof-manifest.json
+          --phase build
+          --expected-sha "${{ inputs.target_ref }}"
+          --expected-tag "${{ inputs.release_tag }}"
+          --expected-run-id "${{ github.run_id }}"
+          --artifact-root apps/desktop/release
+
+      - name: Upload validated Windows proof artifact
         uses: actions/upload-artifact@v4
         with:
           name: ade-win-release-${{ inputs.release_tag }}
@@ -351,6 +403,61 @@ jobs:
             apps/desktop/release/*.exe
             apps/desktop/release/*.exe.blockmap
             apps/desktop/release/latest.yml
+            apps/desktop/release/windows-proof-manifest.json
+          if-no-files-found: error
+
+  promote-approved-win-proof:
+    if: ${{ inputs.publish && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
+    needs: verify
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ inputs.release_tag }}-win-promotion
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Download approved immutable Windows proof artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: apps/desktop/release
+          github-token: ${{ github.token }}
+          run-id: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
+
+      - name: Validate approved Windows artifact identity
+        shell: pwsh
+        env:
+          APPROVED_BUILD_MANIFEST_SHA256: ${{ vars.ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 }}
+        run: |
+          $manifestPath = "apps/desktop/release/windows-proof-manifest.json"
+          $actualManifestSha = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualManifestSha -ne $env:APPROVED_BUILD_MANIFEST_SHA256) {
+            throw "Approved build manifest digest mismatch: expected $env:APPROVED_BUILD_MANIFEST_SHA256, received $actualManifestSha."
+          }
+          node apps/desktop/scripts/windows-proof-manifest.mjs validate `
+            --manifest $manifestPath `
+            --phase build `
+            --expected-sha "${{ inputs.target_ref }}" `
+            --expected-tag "${{ inputs.release_tag }}" `
+            --expected-run-id "${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}" `
+            --artifact-root apps/desktop/release
+
+      - name: Upload approved Windows artifacts for draft assembly
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+            apps/desktop/release/windows-proof-manifest.json
           if-no-files-found: error
 
   build-runtime-binaries:
@@ -533,14 +640,14 @@ jobs:
           vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
           || (
             vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'
-            && needs.build-win-release.result == 'success'
+            && needs.promote-approved-win-proof.result == 'success'
           )
         )
       }}
     needs:
       - build-runtime-binaries
       - build-mac-release
-      - build-win-release
+      - promote-approved-win-proof
     permissions:
       actions: read
       contents: write
@@ -709,8 +816,8 @@ jobs:
           shopt -s nullglob
           # The per-arch macOS zips + latest-mac.yml are what electron-updater
           # consumes; DMGs are the human downloads. Mac blockmaps stay omitted.
-          # When the post-upgrade proof gate is enabled, Windows adds its signed
-          # installer, blockmap, and latest.yml as one validated draft-release set.
+          # Only an exact-SHA-approved Windows proof allows the public gate to
+          # add the signed installer, blockmap, and latest.yml as one set.
           files=(
             release-assets/mac/*.dmg
             release-assets/mac/*.zip
