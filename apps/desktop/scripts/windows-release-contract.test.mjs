@@ -138,11 +138,14 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
   assert.match(windowsRelease, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof/);
   assert.match(windowsRelease, /npm run dist:win:signed/);
   assert.match(windowsRelease, /ADE_RELEASE_REPOSITORY:\s*\$\{\{ github\.repository \}\}/);
-  assert.match(windowsRelease, /WINDOWS_CSC_LINK/);
-  assert.match(windowsRelease, /WINDOWS_CSC_KEY_PASSWORD/);
-  assert.doesNotMatch(windowsRelease, /WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD/);
+  // Azure Artifact Signing holds the private key and never releases the
+  // certificate, so the only signing material the job carries is a Microsoft
+  // Entra service principal. No PFX secret exists to reference any more.
+  assert.match(windowsRelease, /AZURE_TENANT_ID: \$\{\{ secrets\.AZURE_TENANT_ID \}\}/);
+  assert.match(windowsRelease, /AZURE_CLIENT_ID: \$\{\{ secrets\.AZURE_CLIENT_ID \}\}/);
+  assert.match(windowsRelease, /AZURE_CLIENT_SECRET: \$\{\{ secrets\.AZURE_CLIENT_SECRET \}\}/);
+  assert.doesNotMatch(releaseWorkflow, /WIN_CSC_LINK|WINDOWS_CSC_LINK|WINDOWS_CSC_KEY_PASSWORD/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
   assert.doesNotMatch(windowsRelease, /ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT|ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT/);
   assert.match(windowsRelease, /ADE_POSTHOG_PROJECT_TOKEN:\s*\$\{\{ secrets\.ADE_POSTHOG_PROJECT_TOKEN \}\}/);
   assert.match(windowsRelease, /ADE_POSTHOG_HOST:\s*\$\{\{ secrets\.ADE_POSTHOG_HOST \}\}/);
@@ -155,26 +158,108 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
 test("signed packaging stops before electron-builder when credentials are absent", () => {
   const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
   const env = { ...process.env };
-  delete env.WINDOWS_CSC_LINK;
-  delete env.WINDOWS_CSC_KEY_PASSWORD;
+  delete env.AZURE_TENANT_ID;
+  delete env.AZURE_CLIENT_ID;
+  delete env.AZURE_CLIENT_SECRET;
   const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
     cwd: desktopRoot,
     env,
     encoding: "utf8",
   });
   assert.notEqual(result.status, 0);
-  assert.match(`${result.stdout}\n${result.stderr}`, /Signed Windows packaging requires WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD/);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Signed Windows packaging requires AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET/,
+  );
 });
 
-test("Windows packaging accepts signing material only through canonical inputs", () => {
-  assert.match(electronBuilderWrapper, /canonicalWindowsCscLink = process\.env\.WINDOWS_CSC_LINK/);
-  assert.match(electronBuilderWrapper, /canonicalWindowsCscKeyPassword = process\.env\.WINDOWS_CSC_KEY_PASSWORD/);
+test("signed packaging stops before electron-builder when the publisher is unpinned", () => {
+  const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
+  const env = {
+    ...process.env,
+    AZURE_TENANT_ID: "tenant",
+    AZURE_CLIENT_ID: "client",
+    AZURE_CLIENT_SECRET: "secret",
+  };
+  delete env.WINDOWS_SIGNING_EXPECTED_SUBJECT;
+  const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
+    cwd: desktopRoot,
+    env,
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Signed Windows packaging requires WINDOWS_SIGNING_EXPECTED_SUBJECT/,
+  );
+});
+
+// Azure Artifact Signing renews the certificate daily and expires it after 72
+// hours, so thumbprint pinning would fail every release within days. Every
+// layer that could accept the name must reject it instead of ignoring it.
+test("thumbprint pinning is rejected everywhere rather than silently ignored", () => {
+  const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
+  const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
+    cwd: desktopRoot,
+    env: {
+      ...process.env,
+      AZURE_TENANT_ID: "tenant",
+      AZURE_CLIENT_ID: "client",
+      AZURE_CLIENT_SECRET: "secret",
+      WINDOWS_SIGNING_EXPECTED_SUBJECT: "CN=Example",
+      WINDOWS_SIGNING_EXPECTED_THUMBPRINT: "0123456789ABCDEF",
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/,
+  );
+  assert.match(winArtifactValidator, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(releaseWorkflow, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(prepareWorkflow, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  // The subject is now the only pin, so the validator must require it outright
+  // rather than accepting either name.
+  assert.doesNotMatch(
+    winArtifactValidator,
+    /WINDOWS_SIGNING_EXPECTED_SUBJECT\s*"?\s*\+?\s*"?\s*or WINDOWS_SIGNING_EXPECTED_THUMBPRINT/,
+  );
+  assert.doesNotMatch(winArtifactValidator, /expectedIdentity\.thumbprint &&/);
+});
+
+test("Windows packaging signs through Azure Artifact Signing and no local key material", () => {
+  // electron-builder 26 picks the Azure signing manager purely on the presence
+  // of win.azureSignOptions, above the single chokepoint that signs the
+  // packaged executable, its DLLs, the NSIS installer, and the uninstaller.
+  assert.match(electronBuilderWrapper, /--config\.win\.azureSignOptions\.publisherName=\$\{expectedSigningSubject\}/);
+  assert.match(electronBuilderWrapper, /--config\.win\.azureSignOptions\.endpoint=\$\{azureSigningEndpoint\}/);
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.codeSigningAccountName=\$\{azureSigningAccountName\}/,
+  );
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.certificateProfileName=\$\{azureCertificateProfileName\}/,
+  );
+  // The certificate lives for 72 hours, so an RFC3161 countersignature is what
+  // keeps a shipped installer verifiable afterwards.
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.timestampRfc3161=http:\/\/timestamp\.acs\.microsoft\.com/,
+  );
+  assert.match(electronBuilderWrapper, /--config\.forceCodeSigning=true/);
+  // The macOS Developer ID secrets must never become a Windows signing
+  // identity, and an unsigned dist:win must never reach the signing service.
   assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_LINK/);
   assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_KEY_PASSWORD/);
-  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_LINK/);
-  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_KEY_PASSWORD/);
-  assert.match(electronBuilderWrapper, /CSC_LINK: canonicalWindowsCscLink/);
-  assert.match(electronBuilderWrapper, /CSC_KEY_PASSWORD: canonicalWindowsCscKeyPassword/);
+  assert.match(
+    electronBuilderWrapper,
+    /AZURE_SIGNING_CREDENTIAL_ENV = \["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"\]/,
+  );
+  assert.match(electronBuilderWrapper, /for \(const name of AZURE_SIGNING_CREDENTIAL_ENV\) \{\s*\n\s*delete baseChildEnv\[name\];/);
+  assert.doesNotMatch(electronBuilderWrapper, /CSC_LINK:|CSC_KEY_PASSWORD:|\.pfx|WINDOWS_CSC_/);
 });
 
 test("Windows packaging rejects unknown channels before electron-builder", () => {
@@ -253,19 +338,29 @@ test("standalone Windows runtime signing uses only canonical credentials and val
   assert.match(runtimeBuild, /target: win32-x64[\s\S]*os: windows-latest[\s\S]*binary: ade-win32-x64\.exe/);
   assert.match(windowsSignStep, /matrix\.target == 'win32-x64'/);
   assert.match(windowsSignStep, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof/);
-  assert.match(windowsSignStep, /WINDOWS_CSC_LINK: \$\{\{ secrets\.WINDOWS_CSC_LINK \}\}/);
-  assert.match(windowsSignStep, /WINDOWS_CSC_KEY_PASSWORD: \$\{\{ secrets\.WINDOWS_CSC_KEY_PASSWORD \}\}/);
+  assert.match(windowsSignStep, /AZURE_TENANT_ID: \$\{\{ secrets\.AZURE_TENANT_ID \}\}/);
+  assert.match(windowsSignStep, /AZURE_CLIENT_ID: \$\{\{ secrets\.AZURE_CLIENT_ID \}\}/);
+  assert.match(windowsSignStep, /AZURE_CLIENT_SECRET: \$\{\{ secrets\.AZURE_CLIENT_SECRET \}\}/);
   assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
-  assert.doesNotMatch(windowsSignStep, /(?:^|\s)(?:WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD):/m);
+  assert.doesNotMatch(windowsSignStep, /(?:^|\s)(?:WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD|WINDOWS_CSC_LINK|WINDOWS_CSC_KEY_PASSWORD):/m);
   assert.match(windowsSignStep, /sign-windows-runtime\.ps1/);
-  assert.match(windowsRuntimeSigner, /Set-AuthenticodeSignature/);
+  // The standalone runtime signs through the same Azure Artifact Signing
+  // mechanism electron-builder 26 uses, so there is one signing code path for
+  // every Windows artifact ADE publishes.
+  assert.match(windowsRuntimeSigner, /Invoke-TrustedSigning/);
+  assert.match(windowsRuntimeSigner, /-CodeSigningAccountName \$signingAccountName/);
+  assert.match(windowsRuntimeSigner, /-CertificateProfileName \$certificateProfileName/);
+  assert.match(windowsRuntimeSigner, /timestamp\.acs\.microsoft\.com/);
+  // Post-sign verification stays exactly as strict: valid status, a trusted
+  // RFC3161 timestamp, and the pinned publisher subject.
   assert.match(windowsRuntimeSigner, /Get-AuthenticodeSignature/);
+  assert.match(windowsRuntimeSigner, /SignatureStatus\]::Valid/);
   assert.match(windowsRuntimeSigner, /TimeStamperCertificate/);
   assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
-  assert.match(windowsRuntimeSigner, /X509KeyStorageFlags\]::EphemeralKeySet/);
-  assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:certificateSource|certificatePassword|expectedSubject|expectedThumbprint)/);
+  // The service never releases the certificate, so the signer must not contain
+  // any local key-material handling at all.
+  assert.doesNotMatch(windowsRuntimeSigner, /X509Certificate2|\.pfx|WINDOWS_CSC_|Set-AuthenticodeSignature/);
+  assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:AZURE_CLIENT_SECRET|expectedSubject)/);
 });
 
 test("standalone Windows release assets remain behind the publication gate", () => {
@@ -325,8 +420,8 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
   // verify fails fast on missing signing material instead of on stale proof
   // bindings, which no longer exist.
-  assert.match(verify, /Windows releases require the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets/);
-  assert.match(verify, /WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret to pin the approved publisher/);
+  assert.match(verify, /Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
+  assert.match(verify, /Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher/);
   assert.match(verify, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
   assert.match(publish, /if: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \}\}/);
   assert.match(publish, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
@@ -405,7 +500,7 @@ test("release preflight validates the exact approved commit", () => {
 test("Windows proof collection is opt-in, non-publishing, and emits an exact-SHA manifest", () => {
   const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
   assert.match(prepareWorkflow, /name: Prepare signed Windows proof/);
-  assert.match(prepareWorkflow, /Signed Windows proof requires the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets/);
+  assert.match(prepareWorkflow, /Signed Windows proof requires the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
   assert.match(prepareWorkflow, /windows_proof: \$\{\{ inputs\.windows_proof \}\}/);
   assert.match(prepareWorkflow, /publish: false/);
   assert.doesNotMatch(prepareWorkflow, /contents: write/);
