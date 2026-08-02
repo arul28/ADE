@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
+import { gitBashPath, shellQuote } from "./appControlLaunchCommand";
 
 type FakeCdpTarget = {
   id: string;
@@ -231,7 +232,15 @@ describe("appControlService", () => {
       expect(createArgs.windowsStartupCommands.powershell).not.toContain(" && ");
       expect(createArgs.windowsStartupCommands.cmd).toContain('cd /d "');
       expect(createArgs.windowsStartupCommands.cmd).toContain(" && ");
-      expect(createArgs.windowsStartupCommands["git-bash"]).toMatch(/^cd -- \/[a-z]\//);
+      // `projectRoot` is a host-native temp dir, so its shape differs per runner:
+      // a drive-letter path on windows-latest, a plain POSIX path on ubuntu.
+      // Derive the expected MSYS `cd` target from the fixture rather than hard
+      // coding a drive-letter root; appControlLaunchCommand.test.ts pins the
+      // drive-letter -> MSYS rewrite itself with literal inputs on every host.
+      const expectedGitBashCd = `cd -- ${shellQuote(gitBashPath(projectRoot))} && `;
+      expect(createArgs.windowsStartupCommands["git-bash"].slice(0, expectedGitBashCd.length))
+        .toBe(expectedGitBashCd);
+      expect(createArgs.windowsStartupCommands["git-bash"]).not.toContain(String.fromCharCode(92));
       expect(createArgs.windowsStartupCommands["git-bash"]).toContain(" && ");
       expect(createArgs.startupCommand).toBe(createArgs.windowsStartupCommands.powershell);
     } finally {

@@ -6,6 +6,7 @@ import {
   commandForwardsAppControlDebug,
   commandLooksLikeDirectElectronLaunch,
   commandLooksLikePackageScriptLaunch,
+  gitBashPath,
   insertDebugFlagsIntoDirectElectronCommand,
   resolveDirectElectronLaunch,
   resolvePackageScriptElectronLaunch,
@@ -105,7 +106,14 @@ describe("appControlLaunchCommand", () => {
         projectRoot,
         { platform: "win32", shell: "git-bash" },
       );
-      expect(gitBash).toMatch(/^cd -- '?\/[a-z]\//);
+      // The fixture's package directory is a host-native temp dir: a drive-letter
+      // path on Windows, a plain POSIX path on a Linux runner. Deriving the
+      // expected `cd` target from the fixture keeps this assertion exact on every
+      // host; the drive-letter -> MSYS rewrite itself is pinned host-independently
+      // by the `gitBashPath` case below.
+      const expectedCd = `cd -- ${shellQuote(gitBashPath(projectRoot))} && `;
+      expect(gitBash?.slice(0, expectedCd.length)).toBe(expectedCd);
+      expect(gitBash).not.toContain(String.fromCharCode(92));
       expect(gitBash).toContain("/node_modules/.bin'");
       expect(gitBash).toContain(":$PATH");
       expect(gitBash).toContain(" && ");
@@ -114,6 +122,18 @@ describe("appControlLaunchCommand", () => {
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+
+  it("rewrites Windows drive-letter paths into MSYS form for Git Bash", () => {
+    // Git Bash receives MSYS paths, not native Windows ones. This runs on every
+    // host because the inputs are literals rather than host-native temp dirs, so
+    // the conversion stays covered on the Linux unit runner as well as Windows.
+    expect(gitBashPath("C:\\Users\\ade\\my app")).toBe("/c/Users/ade/my app");
+    expect(gitBashPath("D:/work/app/node_modules/.bin")).toBe("/d/work/app/node_modules/.bin");
+    expect(gitBashPath("c:\\ade")).toBe("/c/ade");
+    // Rootless and UNC paths have no drive letter to fold; MSYS takes them as-is.
+    expect(gitBashPath("/tmp/ade-app-control")).toBe("/tmp/ade-app-control");
+    expect(gitBashPath("\\\\server\\share\\app")).toBe("//server/share/app");
   });
 
   it("detects direct Electron launches and injects debug flags after electron", () => {

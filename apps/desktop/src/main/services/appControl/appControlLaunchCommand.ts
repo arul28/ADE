@@ -193,7 +193,14 @@ function quoteCmdSetValue(value: string): string {
     .replace(/[\r\n]/g, " ");
 }
 
-function gitBashPath(value: string): string {
+/**
+ * Rewrites a native Windows path into the MSYS form Git Bash expects:
+ * `C:\Users\ade` becomes `/c/Users/ade`. Only a drive-letter root is rewritten;
+ * a path that already has no drive (a UNC share, or a POSIX path) is passed
+ * through with separators normalised, because MSYS understands those as-is and
+ * inventing a drive letter for them would corrupt them.
+ */
+export function gitBashPath(value: string): string {
   const normalized = value.split(String.fromCharCode(92)).join("/");
   const drivePath = normalized.match(/^([a-z]):\/(.*)$/i);
   if (!drivePath) return normalized;
