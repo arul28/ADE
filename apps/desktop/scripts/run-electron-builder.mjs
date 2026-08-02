@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveWindowsPackageIdentity } from "./windows-package-identity.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -14,6 +15,21 @@ const configuredRepository = (
   || `${pkg.build?.publish?.owner ?? ""}/${pkg.build?.publish?.repo ?? ""}`
 ).replace(/^\/+|\/+$/g, "");
 const repositoryMatch = /^([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)$/.exec(configuredRepository);
+const channelIdentity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
+const { packageChannel } = channelIdentity;
+const canonicalWindowsCscLink = process.env.WINDOWS_CSC_LINK;
+const canonicalWindowsCscKeyPassword = process.env.WINDOWS_CSC_KEY_PASSWORD;
+const configuredFileAssociation = Array.isArray(pkg.build?.fileAssociations)
+  ? pkg.build.fileAssociations[0]
+  : pkg.build?.fileAssociations;
+if (!configuredFileAssociation || !Array.isArray(configuredFileAssociation.ext)) {
+  throw new Error("Windows packaging requires the configured ADE file association extension list.");
+}
+const baseChildEnv = { ...process.env };
+delete baseChildEnv.CSC_LINK;
+delete baseChildEnv.CSC_KEY_PASSWORD;
+delete baseChildEnv.WINDOWS_CSC_LINK;
+delete baseChildEnv.WINDOWS_CSC_KEY_PASSWORD;
 
 if (!repositoryMatch) {
   throw new Error(
@@ -22,7 +38,8 @@ if (!repositoryMatch) {
 }
 
 if (requireSigning) {
-  const missingSecrets = ["CSC_LINK", "CSC_KEY_PASSWORD"].filter((name) => !process.env[name]?.trim());
+  const missingSecrets = ["WINDOWS_CSC_LINK", "WINDOWS_CSC_KEY_PASSWORD"]
+    .filter((name) => !process.env[name]?.trim());
   if (missingSecrets.length > 0) {
     throw new Error(
       `Signed Windows packaging requires ${missingSecrets.join(" and ")}. `
@@ -43,17 +60,38 @@ const args = [
   `--config.publish.owner=${owner}`,
   `--config.publish.repo=${repo}`,
   `--config.extraMetadata.adeReleaseRepository=${configuredRepository}`,
+  `--config.appId=${channelIdentity.appId}`,
+  `--config.productName=${channelIdentity.productName}`,
+  `--config.win.executableName=${channelIdentity.productName}`,
+  `--config.fileAssociations.name=${channelIdentity.fileClass}`,
+  `--config.fileAssociations.description=${configuredFileAssociation.description ?? "ADE files"}`,
+  ...configuredFileAssociation.ext.map((extension) => `--config.fileAssociations.ext=${extension}`),
   ...(requireSigning ? ["--config.forceCodeSigning=true"] : []),
 ];
 
 console.log(
-  `[windows-package] Building for ${owner}/${repo}${requireSigning ? " with required Authenticode signing" : " (unsigned allowed)"}.`,
+  `[windows-package] Building ${channelIdentity.productName} for ${owner}/${repo}${requireSigning ? " with required Authenticode signing" : " (unsigned allowed)"}.`,
 );
-const child = spawn(electronBuilderBin, args, {
+const childEnv = {
+  ...baseChildEnv,
+  ADE_PACKAGE_CHANNEL: packageChannel === "stable" ? "" : packageChannel,
+  ADE_DESKTOP_APP_NAME: channelIdentity.productName,
+  ...(requireSigning
+    ? {
+        CSC_LINK: canonicalWindowsCscLink,
+        CSC_KEY_PASSWORD: canonicalWindowsCscKeyPassword,
+      }
+    : {}),
+};
+const electronBuilderCommand = process.platform === "win32" ? process.execPath : electronBuilderBin;
+const electronBuilderArgs = process.platform === "win32"
+  ? [path.join(desktopRoot, "node_modules", "electron-builder", "out", "cli", "cli.js"), ...args]
+  : args;
+const child = spawn(electronBuilderCommand, electronBuilderArgs, {
   cwd: desktopRoot,
-  env: process.env,
+  env: childEnv,
   stdio: "inherit",
-  shell: process.platform === "win32",
+  shell: false,
   windowsHide: process.platform === "win32",
 });
 child.once("error", (error) => {

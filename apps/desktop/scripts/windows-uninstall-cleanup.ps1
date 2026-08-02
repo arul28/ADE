@@ -4,9 +4,11 @@ param(
   [string]$InstallDir,
   [string]$AppExecutableName = "",
   [string]$PackageChannel = "stable",
+  [string]$AdeHome = "",
   [string]$CliBinDir = "",
   [switch]$SkipServiceRemoval,
-  [switch]$SkipUserPathUpdate
+  [switch]$SkipUserPathUpdate,
+  [switch]$SkipProtocolRemoval
 )
 
 $ErrorActionPreference = "Stop"
@@ -59,7 +61,8 @@ namespace Ade.Windows {
 
 function Test-CliShimOwnedByInstall(
   [string]$ShimPath,
-  [string]$ExpectedCliDir
+  [string]$ExpectedCliDir,
+  [string[]]$ExpectedWrapperNames
 ) {
   $contents = Get-Content -LiteralPath $ShimPath -Raw -ErrorAction Stop
   foreach ($line in ($contents -split "`r?`n")) {
@@ -71,11 +74,10 @@ function Test-CliShimOwnedByInstall(
     if (-not $match.Success) { continue }
 
     $targetPath = $match.Groups["target"].Value
-    if (-not [string]::Equals(
-      [System.IO.Path]::GetFileName($targetPath),
-      "ade.cmd",
-      [System.StringComparison]::OrdinalIgnoreCase
-    )) { continue }
+    $targetName = [System.IO.Path]::GetFileName($targetPath)
+    if (-not ($ExpectedWrapperNames | Where-Object {
+      [string]::Equals($_, $targetName, [System.StringComparison]::OrdinalIgnoreCase)
+    })) { continue }
 
     try {
       $targetDir = Resolve-NormalizedPath ([System.IO.Path]::GetDirectoryName($targetPath))
@@ -125,6 +127,119 @@ namespace Ade.Windows {
   }
 }
 
+function Remove-OwnedStableProtocolRegistration([string]$ExpectedExecutablePath) {
+  $protocolRoot = "Registry::HKEY_CURRENT_USER\Software\Classes\ade"
+  $commandKey = Join-Path $protocolRoot "shell\open\command"
+  if (-not (Test-Path -LiteralPath $commandKey)) { return }
+  try {
+    $command = [string](Get-Item -LiteralPath $commandKey -ErrorAction Stop).GetValue("")
+    if ([string]::IsNullOrWhiteSpace($command)) { return }
+    $normalizedExpected = Resolve-NormalizedPath $ExpectedExecutablePath
+    $quotedExecutable = [Text.RegularExpressions.Regex]::Match($command, '^\s*"(?<exe>[^"]+\.exe)"')
+    if (-not $quotedExecutable.Success) { return }
+    $registeredExecutable = Resolve-NormalizedPath $quotedExecutable.Groups["exe"].Value
+    if ([string]::Equals(
+      $registeredExecutable,
+      $normalizedExpected,
+      [StringComparison]::OrdinalIgnoreCase
+    )) {
+      Remove-Item -LiteralPath $protocolRoot -Recurse -Force -ErrorAction Stop
+    }
+  } catch {
+    throw "ADE could not remove its owned ade:// protocol registration: $($_.Exception.Message)"
+  }
+}
+
+function Restore-FileAssociationDefaults([string]$Channel) {
+  $ownedClass = if ($Channel -eq "stable") { "com.ade.desktop.files" } else { "com.ade.desktop.$Channel.files" }
+  $fallbackClasses = @(
+    "com.ade.desktop.files",
+    "com.ade.desktop.beta.files",
+    "com.ade.desktop.alpha.files"
+  ) | Where-Object {
+    $_ -ne $ownedClass -and (Test-Path -LiteralPath "Registry::HKEY_CURRENT_USER\Software\Classes\$_")
+  }
+  $fallbackClass = @($fallbackClasses)[0]
+  $classesRoot = "Registry::HKEY_CURRENT_USER\Software\Classes"
+  if (-not (Test-Path -LiteralPath $classesRoot)) { return }
+  foreach ($extensionKey in Get-ChildItem -LiteralPath $classesRoot -ErrorAction Stop | Where-Object { $_.PSChildName.StartsWith(".") }) {
+    $currentDefault = [string]$extensionKey.GetValue("")
+    if (-not [string]::Equals($currentDefault, $ownedClass, [StringComparison]::OrdinalIgnoreCase)) { continue }
+    Set-Item -LiteralPath $extensionKey.PSPath -Value $(if ($fallbackClass) { $fallbackClass } else { "" }) -ErrorAction Stop
+  }
+}
+
+function Get-ShortSha256([string]$Value) {
+  $sha = [Security.Cryptography.SHA256]::Create()
+  try {
+    $bytes = [Text.Encoding]::UTF8.GetBytes($Value)
+    return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace("-", "").Substring(0, 12).ToLowerInvariant()
+  } finally {
+    $sha.Dispose()
+  }
+}
+
+function Remove-ChannelStartupWithoutPackagedCli(
+  [string]$AdeHome,
+  [string]$Channel
+) {
+  $serviceName = if ($Channel -eq "stable") { "com.ade.runtime" } else { "com.ade.runtime.$Channel" }
+  $baseUserName = $env:USERNAME
+  if ([string]::IsNullOrWhiteSpace($baseUserName)) {
+    throw "ADE could not resolve the current Windows user for startup cleanup."
+  }
+  $userName = if ([string]::IsNullOrWhiteSpace($env:USERDOMAIN) -or $baseUserName.Contains("\")) {
+    $baseUserName
+  } else {
+    "$($env:USERDOMAIN)\$baseUserName"
+  }
+  $identity = "$($serviceName.ToLowerInvariant())`0$($userName.ToLowerInvariant())"
+  $taskName = "ADE Runtime ($Channel-$(Get-ShortSha256 $identity))"
+  $launcherPath = Join-Path $AdeHome "runtime\brain-service-$(Get-ShortSha256 $serviceName).ps1"
+  $pidPath = "$launcherPath.pid.json"
+
+  if (Test-Path -LiteralPath $pidPath -PathType Leaf) {
+    try {
+      $record = Get-Content -LiteralPath $pidPath -Raw | ConvertFrom-Json
+      $supervisorPid = [int]$record.supervisorPid
+      if ($supervisorPid -gt 0) {
+        $process = Get-CimInstance Win32_Process -Filter "ProcessId = $supervisorPid" -ErrorAction SilentlyContinue
+        if ($process -and ([string]$process.CommandLine).IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+          & taskkill.exe /PID $supervisorPid /T /F | Out-Null
+        }
+      }
+    } catch {
+      Write-Warning "ADE could not verify its stale startup PID record: $($_.Exception.Message)"
+    }
+  }
+
+  $runKey = "Registry::HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run"
+  if (Test-Path -LiteralPath $runKey) {
+    $key = Get-Item -LiteralPath $runKey -ErrorAction Stop
+    $command = [string]$key.GetValue($taskName, "")
+    if (-not [string]::IsNullOrWhiteSpace($command)) {
+      if ($command.IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -lt 0) {
+        throw "ADE refused to remove a startup entry that is not owned by this channel."
+      }
+      Remove-ItemProperty -LiteralPath $runKey -Name $taskName -ErrorAction Stop
+    }
+  }
+
+  foreach ($scheduledTaskName in @($taskName, $(if ($Channel -eq "stable") { "ADE Runtime" }))) {
+    if ([string]::IsNullOrWhiteSpace($scheduledTaskName)) { continue }
+    $task = Get-ScheduledTask -TaskName $scheduledTaskName -ErrorAction SilentlyContinue
+    if ($task) {
+      $actionText = [string](($task.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join " ")
+      if ($actionText.IndexOf($launcherPath, [StringComparison]::OrdinalIgnoreCase) -ge 0) {
+        Stop-ScheduledTask -InputObject $task -ErrorAction SilentlyContinue
+        Unregister-ScheduledTask -InputObject $task -Confirm:$false -ErrorAction Stop
+      }
+    }
+  }
+  Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+  Remove-Item -LiteralPath $launcherPath -Force -ErrorAction SilentlyContinue
+}
+
 $resolvedInstallDir = Resolve-NormalizedPath $InstallDir
 $normalizedPackageChannel = $PackageChannel.Trim().ToLowerInvariant()
 if (@("stable", "alpha", "beta") -notcontains $normalizedPackageChannel) {
@@ -141,53 +256,56 @@ if (-not $SkipServiceRemoval) {
     throw "The installer did not provide a valid ADE executable name."
   }
 
+  $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
+  $channelAdeHome = if ([string]::IsNullOrWhiteSpace($AdeHome)) {
+    Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
+  } else {
+    Resolve-NormalizedPath $AdeHome
+  }
   $appExe = Join-Path $resolvedInstallDir $normalizedAppExecutableName
   $cliPath = Join-Path $resolvedInstallDir "resources\ade-cli\cli.cjs"
-  if (-not (Test-Path -LiteralPath $appExe -PathType Leaf)) {
-    throw "Cannot remove the ADE background service because $normalizedAppExecutableName is missing from $resolvedInstallDir."
-  }
-  if (-not (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
-    throw "Cannot remove the ADE background service because the packaged CLI is missing from $resolvedInstallDir."
-  }
-
-  $electronRunAsNodePresent = Test-Path Env:ELECTRON_RUN_AS_NODE
-  $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
-  $disableCliInstallPresent = Test-Path Env:ADE_DISABLE_CLI_AUTO_INSTALL
-  $disableCliInstall = $env:ADE_DISABLE_CLI_AUTO_INSTALL
-  $packageChannelPresent = Test-Path Env:ADE_PACKAGE_CHANNEL
-  $previousPackageChannel = $env:ADE_PACKAGE_CHANNEL
-  $adeHomePresent = Test-Path Env:ADE_HOME
-  $previousAdeHome = $env:ADE_HOME
-  $nodePathPresent = Test-Path Env:NODE_PATH
-  $previousNodePath = $env:NODE_PATH
-  try {
-    $env:ELECTRON_RUN_AS_NODE = "1"
-    $env:ADE_DISABLE_CLI_AUTO_INSTALL = "1"
-    $env:ADE_PACKAGE_CHANNEL = $normalizedPackageChannel
-    $homeName = if ($normalizedPackageChannel -eq "stable") { ".ade" } else { ".ade-$normalizedPackageChannel" }
-    $env:ADE_HOME = Join-Path ([System.Environment]::GetFolderPath("UserProfile")) $homeName
-    $resourcesDir = Join-Path $resolvedInstallDir "resources"
-    $nodePathEntries = @(
-      (Join-Path $resourcesDir "app.asar.unpacked\node_modules")
-      (Join-Path $resourcesDir "app.asar\node_modules")
-      if (-not [string]::IsNullOrWhiteSpace($previousNodePath)) { $previousNodePath }
-    )
-    $env:NODE_PATH = $nodePathEntries -join [System.IO.Path]::PathSeparator
-    $cleanupProcess = Start-Process `
-      -FilePath $appExe `
-      -ArgumentList @("`"$cliPath`"", "serve", "--uninstall-service") `
-      -WindowStyle Hidden `
-      -Wait `
-      -PassThru
-    if ($cleanupProcess.ExitCode -ne 0) {
-      throw "The ADE background service cleanup command exited with code $($cleanupProcess.ExitCode)."
+  if ((Test-Path -LiteralPath $appExe -PathType Leaf) -and (Test-Path -LiteralPath $cliPath -PathType Leaf)) {
+    $electronRunAsNodePresent = Test-Path Env:ELECTRON_RUN_AS_NODE
+    $electronRunAsNode = $env:ELECTRON_RUN_AS_NODE
+    $disableCliInstallPresent = Test-Path Env:ADE_DISABLE_CLI_AUTO_INSTALL
+    $disableCliInstall = $env:ADE_DISABLE_CLI_AUTO_INSTALL
+    $packageChannelPresent = Test-Path Env:ADE_PACKAGE_CHANNEL
+    $previousPackageChannel = $env:ADE_PACKAGE_CHANNEL
+    $adeHomePresent = Test-Path Env:ADE_HOME
+    $previousAdeHome = $env:ADE_HOME
+    $nodePathPresent = Test-Path Env:NODE_PATH
+    $previousNodePath = $env:NODE_PATH
+    try {
+      $env:ELECTRON_RUN_AS_NODE = "1"
+      $env:ADE_DISABLE_CLI_AUTO_INSTALL = "1"
+      $env:ADE_PACKAGE_CHANNEL = $normalizedPackageChannel
+      $env:ADE_HOME = $channelAdeHome
+      $resourcesDir = Join-Path $resolvedInstallDir "resources"
+      $nodePathEntries = @(
+        (Join-Path $resourcesDir "app.asar.unpacked\node_modules")
+        (Join-Path $resourcesDir "app.asar\node_modules")
+        if (-not [string]::IsNullOrWhiteSpace($previousNodePath)) { $previousNodePath }
+      )
+      $env:NODE_PATH = $nodePathEntries -join [System.IO.Path]::PathSeparator
+      $cleanupProcess = Start-Process `
+        -FilePath $appExe `
+        -ArgumentList @("`"$cliPath`"", "serve", "--uninstall-service") `
+        -WindowStyle Hidden `
+        -Wait `
+        -PassThru
+      if ($cleanupProcess.ExitCode -ne 0) {
+        throw "The ADE background service cleanup command exited with code $($cleanupProcess.ExitCode)."
+      }
+    } finally {
+      Restore-EnvironmentValue "ELECTRON_RUN_AS_NODE" $electronRunAsNode $electronRunAsNodePresent
+      Restore-EnvironmentValue "ADE_DISABLE_CLI_AUTO_INSTALL" $disableCliInstall $disableCliInstallPresent
+      Restore-EnvironmentValue "ADE_PACKAGE_CHANNEL" $previousPackageChannel $packageChannelPresent
+      Restore-EnvironmentValue "ADE_HOME" $previousAdeHome $adeHomePresent
+      Restore-EnvironmentValue "NODE_PATH" $previousNodePath $nodePathPresent
     }
-  } finally {
-    Restore-EnvironmentValue "ELECTRON_RUN_AS_NODE" $electronRunAsNode $electronRunAsNodePresent
-    Restore-EnvironmentValue "ADE_DISABLE_CLI_AUTO_INSTALL" $disableCliInstall $disableCliInstallPresent
-    Restore-EnvironmentValue "ADE_PACKAGE_CHANNEL" $previousPackageChannel $packageChannelPresent
-    Restore-EnvironmentValue "ADE_HOME" $previousAdeHome $adeHomePresent
-    Restore-EnvironmentValue "NODE_PATH" $previousNodePath $nodePathPresent
+  } else {
+    Write-Warning "The packaged ADE executable or CLI is missing; removing only validated per-user startup state."
+    Remove-ChannelStartupWithoutPackagedCli $channelAdeHome $normalizedPackageChannel
   }
 }
 
@@ -200,9 +318,13 @@ if ([string]::IsNullOrWhiteSpace($CliBinDir)) {
 
 $resolvedCliBinDir = Resolve-NormalizedPath $CliBinDir
 $packagedCliDir = Resolve-NormalizedPath (Join-Path $resolvedInstallDir "resources\ade-cli\bin")
+$expectedWrapperNames = @("ade.cmd")
+if ($normalizedPackageChannel -ne "stable") {
+  $expectedWrapperNames += "ade-$normalizedPackageChannel.cmd"
+}
 if (Test-Path -LiteralPath $resolvedCliBinDir -PathType Container) {
   foreach ($shim in Get-ChildItem -LiteralPath $resolvedCliBinDir -Filter "ade*.cmd" -File -ErrorAction Stop) {
-    if (Test-CliShimOwnedByInstall $shim.FullName $packagedCliDir) {
+    if (Test-CliShimOwnedByInstall $shim.FullName $packagedCliDir $expectedWrapperNames) {
       Remove-Item -LiteralPath $shim.FullName -Force -ErrorAction Stop
     }
   }
@@ -240,4 +362,10 @@ if ($remainingAdeShims.Count -eq 0 -and (Test-Path -LiteralPath $resolvedCliBinD
   if ($remainingFiles.Count -eq 0) {
     Remove-Item -LiteralPath $resolvedCliBinDir -Force -ErrorAction Stop
   }
+}
+
+Restore-FileAssociationDefaults $normalizedPackageChannel
+
+if (-not $SkipProtocolRemoval -and $normalizedPackageChannel -eq "stable" -and -not [string]::IsNullOrWhiteSpace($AppExecutableName)) {
+  Remove-OwnedStableProtocolRegistration (Join-Path $resolvedInstallDir $AppExecutableName)
 }

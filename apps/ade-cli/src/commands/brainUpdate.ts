@@ -28,6 +28,7 @@ const SUPPORTED_TARGETS = new Set([
   "darwin-x64",
   "linux-arm64",
   "linux-x64",
+  "win32-x64",
 ]);
 
 export class BrainUpdateUsageError extends Error {}
@@ -108,10 +109,12 @@ export function detectRuntimeTarget(
   arch: string = os.arch(),
 ): string {
   const normalizedArch = normalizeArch(arch);
-  const normalizedPlatform = platform === "darwin" || platform === "linux" ? platform : null;
+  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
+    ? platform
+    : null;
   if (!normalizedPlatform || !normalizedArch) {
     throw new BrainUpdateUsageError(
-      `ADE brain update is only supported on macOS and Linux arm64/x64 runtimes; got ${platform}/${arch}.`,
+      `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
     );
   }
   const target = `${normalizedPlatform}-${normalizedArch}`;
@@ -395,6 +398,59 @@ export function requestBrainServiceRestart(
   );
 }
 
+export function requestBrainServiceStop(
+  args: {
+    command: string;
+    commandArgs: string[];
+    env?: NodeJS.ProcessEnv;
+  },
+  run: typeof runCommand = runCommand,
+): BrainServiceRestartResult {
+  return run(
+    args.command,
+    [...args.commandArgs, "--uninstall-service"],
+    {
+      env: {
+        ...(args.env ?? process.env),
+        ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
+      },
+    },
+  );
+}
+
+export function requestBrainServiceStatus(
+  args: {
+    command: string;
+    commandArgs: string[];
+    env?: NodeJS.ProcessEnv;
+  },
+  run: typeof runCommand = runCommand,
+): BrainServiceRestartResult & { installed: boolean | null } {
+  const result = run(
+    args.command,
+    [...args.commandArgs, "--service-status", "--json"],
+    { env: args.env ?? process.env },
+  );
+  let installed: boolean | null = null;
+  if (result.status === 0) {
+    try {
+      const parsed = JSON.parse(result.stdout) as { installed?: unknown };
+      installed = typeof parsed.installed === "boolean" ? parsed.installed : null;
+    } catch {
+      installed = null;
+    }
+  }
+  return { ...result, installed };
+}
+
+function runtimeBinaryAssetName(target: string): string {
+  return `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
+}
+
+function installedRuntimeBinaryName(target: string): string {
+  return target.startsWith("win32-") ? "ade.exe" : "ade";
+}
+
 function runtimeNodeModulesPath(runtimeRoot: string): string {
   return path.join(runtimeRoot, "node_modules");
 }
@@ -525,6 +581,11 @@ async function applyStagedBrainUpdate(
   deps: BrainUpdateDeps,
 ): Promise<Record<string, unknown>> {
   const manifest = readManifest(manifestPath);
+  if (manifest.target === "win32-x64" && !manifest.restartService) {
+    throw new BrainUpdateUsageError(
+      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+    );
+  }
   const stagingDir = path.dirname(manifestPath);
   const runtimeDir = path.dirname(manifest.runtimeTargetDir);
   const statusBase = {
@@ -545,9 +606,59 @@ async function applyStagedBrainUpdate(
   const cleanupStagingDir = async () => {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
   };
+  const platform = deps.platform ?? process.platform;
+  let windowsServiceStopped = false;
+  let windowsServiceWasInstalled = false;
+  const serviceEnv = () => ({
+    ...runtimeSidecarEnv(process.env, manifest.runtimeTargetDir),
+    ADE_HOME: manifest.adeHome,
+  });
+  const restartRolledBackWindowsService = (): string | null => {
+    if (!windowsServiceStopped || !windowsServiceWasInstalled || platform !== "win32") return null;
+    const rollbackRestart = requestBrainServiceRestart(
+      {
+        command: manifest.binaryPath,
+        commandArgs: ["serve"],
+        env: serviceEnv(),
+      },
+      deps.runCommand ?? runCommand,
+    );
+    if (rollbackRestart.status === 0) return null;
+    return rollbackRestart.stderr || rollbackRestart.stdout || "ADE brain service rollback restart failed.";
+  };
 
   try {
     await writeStatus("applying", "Applying staged ADE brain runtime update.");
+    if (platform === "win32" && await pathExists(manifest.binaryPath)) {
+      const statusResult = requestBrainServiceStatus(
+        {
+          command: manifest.binaryPath,
+          commandArgs: ["serve"],
+          env: serviceEnv(),
+        },
+        deps.runCommand ?? runCommand,
+      );
+      if (statusResult.status !== 0 || statusResult.installed === null) {
+        throw new Error(
+          statusResult.stderr || statusResult.stdout || "ADE brain service state could not be read before replacing the Windows runtime.",
+        );
+      }
+      windowsServiceWasInstalled = statusResult.installed;
+      const stopResult = requestBrainServiceStop(
+        {
+          command: manifest.binaryPath,
+          commandArgs: ["serve"],
+          env: serviceEnv(),
+        },
+        deps.runCommand ?? runCommand,
+      );
+      if (stopResult.status !== 0) {
+        throw new Error(
+          stopResult.stderr || stopResult.stdout || "ADE brain service could not be stopped before replacing the Windows runtime.",
+        );
+      }
+      windowsServiceStopped = true;
+    }
     await fsp.mkdir(path.dirname(manifest.binaryPath), { recursive: true });
     await fsp.mkdir(path.dirname(manifest.runtimeTargetDir), { recursive: true });
     const replacementPath = path.join(
@@ -619,10 +730,7 @@ async function applyStagedBrainUpdate(
     }
 
     await writeStatus("restarting", "Restarting ADE brain service with the updated runtime.");
-    const env = {
-      ...runtimeSidecarEnv(process.env, manifest.runtimeTargetDir),
-      ADE_HOME: manifest.adeHome,
-    };
+    const env = serviceEnv();
     const result = requestBrainServiceRestart(
       {
         command: manifest.binaryPath,
@@ -639,7 +747,10 @@ async function applyStagedBrainUpdate(
       } catch (error) {
         rollbackMessage = `Rollback failed: ${error instanceof Error ? error.message : String(error)}`;
       }
-      const failureMessage = `${message} ${rollbackMessage}`;
+      const rollbackRestartError = restartRolledBackWindowsService();
+      const failureMessage = `${message} ${rollbackMessage}${
+        rollbackRestartError ? ` Previous Windows service restart also failed: ${rollbackRestartError}` : ""
+      }`;
       await writeStatus("failed", failureMessage, failureMessage);
       return {
         ok: false,
@@ -669,7 +780,11 @@ async function applyStagedBrainUpdate(
       message: "ADE brain updated and service restart requested.",
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    const rollbackRestartError = restartRolledBackWindowsService();
+    const message = rollbackRestartError
+      ? `${baseMessage} Previous Windows service restart also failed: ${rollbackRestartError}`
+      : baseMessage;
     await writeStatus("failed", message, message).catch(() => undefined);
     return {
       ok: false,
@@ -717,13 +832,18 @@ export async function runBrainUpdateCommand(
 
   const layout = resolveMachineAdeLayout(env, deps.platform ?? process.platform);
   const target = detectRuntimeTarget(deps.platform ?? process.platform, deps.arch ?? os.arch());
-  const binaryName = `ade-${target}`;
-  const nativeArchiveName = `${binaryName}.native.tar.gz`;
+  if (target === "win32-x64" && !options.restartService) {
+    throw new BrainUpdateUsageError(
+      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+    );
+  }
+  const binaryName = runtimeBinaryAssetName(target);
+  const canonicalNativeArchiveName = `ade-${target}.native.tar.gz`;
   const binaryUrl = brainUpdateAssetUrl(options.repo, options.version, binaryName);
-  const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, nativeArchiveName);
+  const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, canonicalNativeArchiveName);
   const checksumUrl = brainUpdateAssetUrl(options.repo, options.version, CHECKSUMS_ASSET);
   const installDir = path.resolve(options.installDir ?? layout.binDir);
-  const binaryPath = path.join(installDir, "ade");
+  const binaryPath = path.join(installDir, installedRuntimeBinaryName(target));
   const runtimeTargetDir = path.join(layout.runtimeDir, target);
   const currentVersion = deps.currentVersion ?? null;
   const summary = {
@@ -763,8 +883,8 @@ export async function runBrainUpdateCommand(
 
   try {
     const tmpDir = await (deps.tmpDir ?? (() => defaultUpdateStagingDir(layout.runtimeDir)))();
-    const stagedBinaryPath = path.join(tmpDir, "ade");
-    const nativeArchivePath = path.join(tmpDir, nativeArchiveName);
+    const stagedBinaryPath = path.join(tmpDir, installedRuntimeBinaryName(target));
+    const nativeArchivePath = path.join(tmpDir, canonicalNativeArchiveName);
     const checksumPath = path.join(tmpDir, CHECKSUMS_ASSET);
     const stagedRuntimeRoot = path.join(tmpDir, "runtime", target);
     const download = deps.downloadFile ?? defaultDownloadFile;
@@ -775,7 +895,7 @@ export async function runBrainUpdateCommand(
       checksumPath,
       binaryName,
       binaryPath: stagedBinaryPath,
-      nativeArchiveName,
+      nativeArchiveName: canonicalNativeArchiveName,
       nativeArchivePath,
     });
     await fsp.chmod(stagedBinaryPath, 0o755);

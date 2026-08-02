@@ -8,6 +8,10 @@ import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
 import { createAuthenticodeProbe } from "./windows-authenticode.mjs";
+import {
+  resolveWindowsPackageIdentity,
+  windowsInstallerPattern,
+} from "./windows-package-identity.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(__dirname, "..");
@@ -17,7 +21,8 @@ const {
   missingRequiredPackagedAdeCliPayloadPaths,
   packagedAdeCliPayloadFiles,
 } = packagedAdeCliResourcesModule;
-const productName = pkg.build?.productName ?? pkg.productName ?? "ADE";
+const packageIdentity = resolveWindowsPackageIdentity(process.env.ADE_PACKAGE_CHANNEL);
+const productName = packageIdentity.productName;
 const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // The unpacked runtime includes x64 Codex, Claude, OpenCode, node-pty, and
 // ONNX payloads. The afterPack step now also materializes the bundled ADE
@@ -83,14 +88,14 @@ function normalizeCertificateThumbprint(value) {
 
 function expectedWindowsSigningIdentity() {
   if (!shouldRequireSignedArtifacts()) return null;
-  const subject = process.env.ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT?.trim() ?? "";
+  const subject = process.env.WINDOWS_SIGNING_EXPECTED_SUBJECT?.trim() ?? "";
   const thumbprint = normalizeCertificateThumbprint(
-    process.env.ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT,
+    process.env.WINDOWS_SIGNING_EXPECTED_THUMBPRINT,
   );
   if (!subject && !thumbprint) {
     fail(
-      "Signed Windows validation requires ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT " +
-        "or ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT so the release cannot be signed by an unexpected publisher.",
+      "Signed Windows validation requires WINDOWS_SIGNING_EXPECTED_SUBJECT " +
+        "or WINDOWS_SIGNING_EXPECTED_THUMBPRINT so the release cannot be signed by an unexpected publisher.",
     );
   }
   return { subject, thumbprint };
@@ -210,10 +215,6 @@ function requireFile(relativePath, label) {
   }
 }
 
-function escapeRegExp(value) {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
 function parseWinTargets() {
   const targets = pkg.build?.win?.target;
   if (!Array.isArray(targets)) return [];
@@ -256,6 +257,7 @@ function validatePreflight() {
   requireFile("build/icon.ico", "Windows app icon");
   requireFile("scripts/ade-cli-windows-wrapper.cmd", "Windows ADE CLI wrapper");
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
+  requireFile("scripts/windows-install-setup.ps1", "Windows install setup script");
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
   requireFile("build/installer.nsh", "Windows NSIS customization");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
@@ -272,6 +274,14 @@ function validatePreflight() {
   }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
+  }
+  if (
+    pkg.build?.nsis?.oneClick !== false
+    || pkg.build?.nsis?.perMachine !== false
+    || pkg.build?.nsis?.allowElevation !== false
+    || pkg.build?.nsis?.runAfterFinish !== false
+  ) {
+    fail("package.json build.nsis must pin the Windows installer to a non-elevating per-user lifecycle");
   }
 
   const winTargets = parseWinTargets();
@@ -840,7 +850,7 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
 
 async function validateReleaseArtifacts() {
   const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? path.join(desktopRoot, "release");
-  const installerRegex = new RegExp(`^${escapeRegExp(productName)}-.+-win-x64\\.exe$`);
+  const installerRegex = windowsInstallerPattern(packageIdentity);
   const installerPath =
     resolveAbsolute(readFlag("--installer")) ?? (await findArtifact(releaseDir, installerRegex, "Windows installer"));
   const installerBlockmapPath =

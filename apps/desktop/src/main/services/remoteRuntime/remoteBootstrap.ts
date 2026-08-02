@@ -807,6 +807,24 @@ const REMOTE_ARTIFACT_UPLOAD_WATCHDOG_SECONDS = Math.ceil(
 const REMOTE_ARTIFACT_UPLOAD_CHUNK_BYTES = 1024 * 1024;
 const REMOTE_ARTIFACT_UPLOAD_NO_PROGRESS_RETRIES = 2;
 
+export function formatOpenSshSpawnError(
+  error: unknown,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const message = error instanceof Error ? error.message : String(error);
+  const code = error && typeof error === "object" && "code" in error
+    ? String((error as NodeJS.ErrnoException).code ?? "")
+    : "";
+  if (platform === "win32" && (code === "ENOENT" || /spawn\s+ssh\s+enoent/i.test(message))) {
+    return [
+      "Windows OpenSSH Client is unavailable.",
+      "Install it from Settings > System > Optional Features > OpenSSH Client",
+      "or run `Add-WindowsCapability -Online -Name OpenSSH.Client~~~~0.0.1.0` in an elevated PowerShell window, then restart ADE.",
+    ].join(" ");
+  }
+  return `SSH upload process failed: ${message}`;
+}
+
 function openSshArgsForRoute(
   target: RemoteRuntimeTarget,
   route: ConnectedSshRoute,
@@ -1058,7 +1076,7 @@ async function uploadSshChunkViaOpenSsh(
         stderr += chunk.toString();
       });
       child.on("error", (error) => {
-        settle(new Error(`SSH upload process failed${uploadProgressSuffix()}: ${error.message}`));
+        settle(new Error(`${formatOpenSshSpawnError(error)}${uploadProgressSuffix()}`));
       });
       child.on("close", (code, signal) => {
         if (code && code !== 0) {

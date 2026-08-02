@@ -59,8 +59,8 @@ function currentTarget() {
 }
 
 function validateTarget(target) {
-  if (!/^(darwin|linux)-(arm64|x64)$/.test(target)) {
-    throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, or linux-x64.`);
+  if (!/^(?:(?:darwin|linux)-(?:arm64|x64)|win32-x64)$/.test(target)) {
+    throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, linux-x64, or win32-x64.`);
   }
 }
 
@@ -77,6 +77,7 @@ async function run(command, args, options = {}) {
       cwd: packageRoot,
       env: process.env,
       maxBuffer: 50 * 1024 * 1024,
+      windowsHide: process.platform === "win32",
       ...options,
     });
     stdout = result.stdout;
@@ -308,7 +309,13 @@ async function main() {
   process.env.ADE_CLI_VERSION = runtimeVersion;
 
   if (!args.skipBuild) {
-    await run(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build"]);
+    if (process.platform === "win32") {
+      const npmCli = process.env.npm_execpath
+        || path.join(path.dirname(process.execPath), "node_modules", "npm", "bin", "npm-cli.js");
+      await run(process.execPath, [npmCli, "run", "build"]);
+    } else {
+      await run("npm", ["run", "build"]);
+    }
   }
 
   const workDir = path.join(args.outDir, ".sea", args.target);
@@ -330,7 +337,7 @@ async function main() {
   await fs.writeFile(seaConfigPath, `${JSON.stringify(seaConfig, null, 2)}\n`, "utf8");
   await run(sourceNodeBinary, ["--experimental-sea-config", seaConfigPath]);
 
-  const binaryName = `ade-${args.target}${process.platform === "win32" ? ".exe" : ""}`;
+  const binaryName = `ade-${args.target}${args.target.startsWith("win32-") ? ".exe" : ""}`;
   const binaryPath = path.join(args.outDir, binaryName);
   await fs.copyFile(sourceNodeBinary, binaryPath);
   await fs.chmod(binaryPath, 0o755);
@@ -346,7 +353,11 @@ async function main() {
   if (args.target.startsWith("darwin-")) {
     postjectArgs.push("--macho-segment-name", "NODE_SEA");
   }
-  await run(path.join(packageRoot, "node_modules", ".bin", process.platform === "win32" ? "postject.cmd" : "postject"), postjectArgs);
+  if (process.platform === "win32") {
+    await run(process.execPath, [path.join(packageRoot, "node_modules", "postject", "dist", "cli.js"), ...postjectArgs]);
+  } else {
+    await run(path.join(packageRoot, "node_modules", ".bin", "postject"), postjectArgs);
+  }
   await adHocSignIfNeeded(binaryPath);
 
   let nativeArchivePath = null;

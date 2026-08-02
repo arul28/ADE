@@ -46,10 +46,16 @@ Source dev launches use the temp dev endpoint and `ade-desktop-dev` Electron pro
 
 Three ways to put `ade` on a machine:
 
-1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers.
+1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers and Windows x64 machines.
 
    ```bash
    curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
    ```
 
    Environment overrides accepted by `install.sh`:
@@ -59,7 +65,7 @@ Three ways to put `ade` on a machine:
    - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
    - `ADE_HOME=/custom/.ade` — change the per-machine state root.
 
-   The script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`, verifies it and `ade-<platform-arch>.native.tar.gz` against `SHA256SUMS`, extracts the archive to `$ADE_HOME/runtime/<platform-arch>/`, runs `ade --version` to verify, and best-effort registers the per-user login service on macOS / systemd.
+   The POSIX script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`; the PowerShell script downloads `ade-win32-x64.exe` to `$ADE_INSTALL_DIR\ade.exe`. Both verify the binary and matching `.native.tar.gz` against `SHA256SUMS`, extract native dependencies under `$ADE_HOME/runtime/<platform-arch>/`, run `ade --version`, and register the per-user login service. The PowerShell installer also adds the install directory to the current user's `PATH` unless `-NoPath` is passed; use `-NoService` to skip startup registration.
 
 2. **Desktop bundle** — every packaged ADE.app ships the CLI. macOS path:
 
@@ -164,7 +170,7 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
-The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade`, which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
+The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade` (`ade.exe` on Windows), which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. On Windows, update stops the existing process before replacing the executable and restores the previous executable, native tree, and service if promotion fails. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
 ## Internal process command
 

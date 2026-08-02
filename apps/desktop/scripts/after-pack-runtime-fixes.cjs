@@ -197,12 +197,13 @@ function channelCliName(channel) {
   return "ade";
 }
 
-function materializeChannelCliWrapper(resourcesRoot, channel) {
+function materializeChannelCliWrapper(resourcesRoot, channel, platform = "darwin") {
   if (!channel) return null;
   const cliRoot = path.join(resourcesRoot, "ade-cli");
   const binRoot = path.join(cliRoot, "bin");
-  const sourcePath = path.join(binRoot, "ade");
-  const targetPath = path.join(binRoot, channelCliName(channel));
+  const extension = platform === "win32" ? ".cmd" : "";
+  const sourcePath = path.join(binRoot, `ade${extension}`);
+  const targetPath = path.join(binRoot, `${channelCliName(channel)}${extension}`);
   requireFile(sourcePath, "bundled ADE CLI wrapper");
   fs.copyFileSync(sourcePath, targetPath);
   fs.chmodSync(targetPath, 0o755);
@@ -415,7 +416,7 @@ module.exports = async function afterPack(context) {
     requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
     fs.chmodSync(bundledCliBinPath, 0o755);
     fs.chmodSync(bundledCliInstallerPath, 0o755);
-    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel);
+    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel, platform);
     if (channelWrapperPath) {
       console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
     }
@@ -423,6 +424,11 @@ module.exports = async function afterPack(context) {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
     requireFile(path.join(resourcesRoot, "ade-cli", "windows-uninstall-cleanup.ps1"), "bundled Windows uninstall cleanup script");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-install-setup.ps1"), "bundled Windows install setup script");
+    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel, platform);
+    if (channelWrapperPath) {
+      console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
+    }
   } else {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade"), "bundled ADE CLI wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.sh"), "bundled ADE CLI PATH installer");

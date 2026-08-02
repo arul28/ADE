@@ -41,8 +41,8 @@ function currentTarget() {
 }
 
 function validateTarget(target) {
-  if (!/^(darwin|linux)-(arm64|x64)$/.test(target)) {
-    throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, or linux-x64.`);
+  if (!/^(?:(?:darwin|linux)-(?:arm64|x64)|win32-x64)$/.test(target)) {
+    throw new Error(`Unsupported runtime target '${target}'. Expected darwin-arm64, darwin-x64, linux-arm64, linux-x64, or win32-x64.`);
   }
 }
 
@@ -101,7 +101,8 @@ function isPackageForOtherTarget(packageName, target) {
     ? "windows"
     : packageTarget.platform;
   const { platform, arch } = targetParts(target);
-  return targetPlatform !== platform || packageTarget.arch !== arch;
+  const normalizedTargetPlatform = platform === "win32" ? "windows" : platform;
+  return targetPlatform !== normalizedTargetPlatform || packageTarget.arch !== arch;
 }
 
 function nodePtyPrebuildTarget(target) {
@@ -130,7 +131,7 @@ function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
     }
   }
 
-  if (packageName === "opencode-ai" && relative === "bin/opencode.exe") {
+  if (packageName === "opencode-ai" && relative === "bin/opencode.exe" && !target.startsWith("win32-")) {
     return false;
   }
 
@@ -212,12 +213,13 @@ async function writeManifest(bundleRoot, target, packages) {
 // crsql_internal_sync_bit crash this packaging step exists to prevent, so it's
 // a hard build failure rather than a warning. Other targets (not yet vendored)
 // warn-and-skip until their extension is added.
-const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64", "darwin-x64"]);
+const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64", "darwin-x64", "win32-x64"]);
 
 function crsqliteExtensionFileName(target) {
   const { platform } = targetParts(target);
   if (platform === "darwin") return "crsqlite.dylib";
   if (platform === "linux") return "crsqlite.so";
+  if (platform === "win32") return "crsqlite.dll";
   throw new Error(`No cr-sqlite extension filename mapping for platform '${platform}' (target ${target}).`);
 }
 

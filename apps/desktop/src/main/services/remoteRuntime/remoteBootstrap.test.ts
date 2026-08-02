@@ -13,6 +13,7 @@ import {
   bootstrapRemoteRuntime,
   buildRemoteRuntimeEnvironmentPrefix,
   coerceProjects,
+  formatOpenSshSpawnError,
   normalizeRemoteArch,
   normalizeRuntimeVersion,
   resolveRemoteRuntimeLayout,
@@ -80,6 +81,20 @@ describe("normalizeRemoteArch", () => {
       }),
     );
     expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote ade service platform/i);
+  });
+});
+
+describe("formatOpenSshSpawnError", () => {
+  it("turns a missing Windows OpenSSH client into an actionable prerequisite diagnostic", () => {
+    const error = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
+    expect(formatOpenSshSpawnError(error, "win32")).toMatch(
+      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart ADE/i,
+    );
+  });
+
+  it("preserves ordinary OpenSSH spawn failures on other platforms", () => {
+    expect(formatOpenSshSpawnError(new Error("permission denied"), "linux"))
+      .toBe("SSH upload process failed: permission denied");
   });
 });
 

@@ -338,6 +338,10 @@
       "artifactName": "${productName}-${version}-win-${arch}.${ext}",
       "extraResources": [
         {
+          "from": "scripts/windows-install-setup.ps1",
+          "to": "ade-cli/windows-install-setup.ps1"
+        },
+        {
           "from": "scripts/windows-uninstall-cleanup.ps1",
           "to": "ade-cli/windows-uninstall-cleanup.ps1"
         },
@@ -354,7 +358,15 @@
       ]
     },
     "nsis": {
-      "include": "build/installer.nsh"
+      "include": "build/installer.nsh",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     },
     "mac": {
       "target": [

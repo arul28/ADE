@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   brainUpdateAssetUrl,
   detectRuntimeTarget,
@@ -17,8 +17,9 @@ function sha256(value: string): string {
 }
 
 function checksumFileFor(target: string, binaryContent: string, archiveContent = "archive"): string {
+  const binaryName = `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
   return [
-    `${sha256(binaryContent)}  ade-${target}`,
+    `${sha256(binaryContent)}  ${binaryName}`,
     `${sha256(archiveContent)}  ade-${target}.native.tar.gz`,
     "",
   ].join("\n");
@@ -42,7 +43,8 @@ describe("brain update command", () => {
     expect(detectRuntimeTarget("darwin", "x86_64")).toBe("darwin-x64");
     expect(detectRuntimeTarget("linux", "aarch64")).toBe("linux-arm64");
     expect(detectRuntimeTarget("linux", "amd64")).toBe("linux-x64");
-    expect(() => detectRuntimeTarget("win32", "x64")).toThrow(/only supported/);
+    expect(detectRuntimeTarget("win32", "x64")).toBe("win32-x64");
+    expect(() => detectRuntimeTarget("win32", "arm64")).toThrow(/unsupported/i);
   });
 
   it("builds latest and tagged release asset URLs", () => {
@@ -220,6 +222,111 @@ describe("brain update command", () => {
       version: "1.2.13",
     });
     expect(fs.existsSync(tmp)).toBe(false);
+  });
+
+  it.each([
+    {
+      label: "and reinstalls it afterward",
+      updateArgs: ["update", "--version", "v1.2.13", "--foreground"],
+      serviceWasInstalled: true,
+      failInstall: false,
+      ok: true,
+      restarted: true,
+      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
+    },
+    {
+      label: "without restoring a service that was not previously installed",
+      updateArgs: ["update", "--version", "v1.2.13", "--foreground"],
+      serviceWasInstalled: false,
+      failInstall: true,
+      ok: false,
+      restarted: false,
+      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
+    },
+  ])("stops a Windows brain before replacing its executable $label", async ({
+    updateArgs,
+    serviceWasInstalled,
+    failInstall,
+    ok,
+    restarted,
+    expectedServiceArgs,
+  }) => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const installedBinary = path.join(root, "bin", "ade.exe");
+    fs.mkdirSync(path.dirname(installedBinary), { recursive: true });
+    fs.writeFileSync(installedBinary, "old-binary");
+    fs.mkdirSync(tmp, { recursive: true });
+    const serviceCalls: string[][] = [];
+
+    const result = await runBrainUpdateCommand(
+      updateArgs,
+      {
+        env: { ADE_HOME: root },
+        platform: "win32",
+        arch: "x64",
+        tmpDir: async () => tmp,
+        downloadFile: async (url, outPath) => {
+          if (url.endsWith("/SHA256SUMS")) {
+            fs.writeFileSync(
+              outPath,
+              checksumFileFor(
+                "win32-x64",
+                "https://github.com/arul28/ADE/releases/download/v1.2.13/ade-win32-x64.exe",
+              ),
+            );
+          } else {
+            fs.writeFileSync(outPath, url.endsWith(".tar.gz") ? "archive" : url);
+          }
+        },
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: (command, args) => {
+          if (command === "tar") {
+            const targetDir = args[args.indexOf("-C") + 1];
+            fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
+          } else if (args.includes("--service-status")) {
+            return {
+              status: 0,
+              stdout: JSON.stringify({ installed: serviceWasInstalled, running: serviceWasInstalled }),
+              stderr: "",
+            };
+          } else {
+            serviceCalls.push([command, ...args]);
+            if (failInstall && args.includes("--install-service")) {
+              return { status: 1, stdout: "", stderr: "service start failed" };
+            }
+          }
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok, applied: ok, restarted, target: "win32-x64" });
+    expect(serviceCalls).toEqual(expectedServiceArgs.map((args) => [installedBinary, ...args]));
+    if (ok) {
+      expect(fs.readFileSync(installedBinary, "utf8")).toContain("ade-win32-x64.exe");
+    } else {
+      expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
+    }
+    expect(fs.existsSync(path.join(root, "runtime", "win32-x64", "node_modules"))).toBe(ok);
+  });
+
+  it("rejects --no-restart on Windows before downloading or removing startup registration", async () => {
+    const downloadFile = vi.fn(async () => undefined);
+    const runCommand = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
+
+    await expect(runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground", "--no-restart"],
+      {
+        env: { ADE_HOME: tempRoot() },
+        platform: "win32",
+        arch: "x64",
+        downloadFile,
+        runCommand,
+      },
+    )).rejects.toThrow(/--no-restart is not supported on Windows/);
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
   });
 
   it("rolls back promoted assets when the service restart fails", async () => {

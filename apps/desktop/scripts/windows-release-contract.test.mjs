@@ -5,6 +5,10 @@ import test from "node:test";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { parse as parseYaml } from "yaml";
+import {
+  resolveWindowsPackageIdentity,
+  windowsInstallerPattern,
+} from "./windows-package-identity.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -128,8 +132,11 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
   assert.match(windowsRelease, /npm run dist:win:signed/);
   assert.match(windowsRelease, /ADE_RELEASE_REPOSITORY:\s*\$\{\{ github\.repository \}\}/);
   assert.match(windowsRelease, /WINDOWS_CSC_LINK/);
+  assert.match(windowsRelease, /WINDOWS_CSC_KEY_PASSWORD/);
+  assert.doesNotMatch(windowsRelease, /WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
+  assert.doesNotMatch(windowsRelease, /ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT|ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT/);
   assert.match(windowsRelease, /ADE_POSTHOG_PROJECT_TOKEN:\s*\$\{\{ secrets\.ADE_POSTHOG_PROJECT_TOKEN \}\}/);
   assert.match(windowsRelease, /ADE_POSTHOG_HOST:\s*\$\{\{ secrets\.ADE_POSTHOG_HOST \}\}/);
   assert.match(
@@ -141,15 +148,72 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
 test("signed packaging stops before electron-builder when credentials are absent", () => {
   const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
   const env = { ...process.env };
-  delete env.CSC_LINK;
-  delete env.CSC_KEY_PASSWORD;
+  delete env.WINDOWS_CSC_LINK;
+  delete env.WINDOWS_CSC_KEY_PASSWORD;
   const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
     cwd: desktopRoot,
     env,
     encoding: "utf8",
   });
   assert.notEqual(result.status, 0);
-  assert.match(`${result.stdout}\n${result.stderr}`, /Signed Windows packaging requires CSC_LINK and CSC_KEY_PASSWORD/);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Signed Windows packaging requires WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD/);
+});
+
+test("Windows packaging accepts signing material only through canonical inputs", () => {
+  assert.match(electronBuilderWrapper, /canonicalWindowsCscLink = process\.env\.WINDOWS_CSC_LINK/);
+  assert.match(electronBuilderWrapper, /canonicalWindowsCscKeyPassword = process\.env\.WINDOWS_CSC_KEY_PASSWORD/);
+  assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_LINK/);
+  assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_KEY_PASSWORD/);
+  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_LINK/);
+  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_KEY_PASSWORD/);
+  assert.match(electronBuilderWrapper, /CSC_LINK: canonicalWindowsCscLink/);
+  assert.match(electronBuilderWrapper, /CSC_KEY_PASSWORD: canonicalWindowsCscKeyPassword/);
+});
+
+test("Windows packaging rejects unknown channels before electron-builder", () => {
+  const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
+  const result = spawnSync(process.execPath, [wrapper, "--win", "--x64"], {
+    cwd: desktopRoot,
+    env: { ...process.env, ADE_PACKAGE_CHANNEL: "betaa" },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(`${result.stdout}\n${result.stderr}`, /Unsupported ADE_PACKAGE_CHANNEL 'betaa'/);
+});
+
+test("Beta validation selects only Beta artifacts when Stable files are retained", () => {
+  const beta = resolveWindowsPackageIdentity("beta");
+  const artifacts = [
+    "ADE-1.2.3-win-x64.exe",
+    "ADE Beta-1.2.3-win-x64.exe",
+  ];
+  assert.equal(beta.executableName, "ADE Beta.exe");
+  assert.deepEqual(artifacts.filter((name) => windowsInstallerPattern(beta).test(name)), [
+    "ADE Beta-1.2.3-win-x64.exe",
+  ]);
+  assert.match(winArtifactValidator, /windowsInstallerPattern\(packageIdentity\)/);
+});
+
+test("standalone releases include a checksummed Windows brain and PowerShell installer", () => {
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const installer = fs.readFileSync(
+    path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
+    "utf8",
+  );
+  assert.match(runtimeBuild, /target: win32-x64[\s\S]*os: windows-latest[\s\S]*binary: ade-win32-x64\.exe/);
+  assert.match(publish, /install-runtime\.ps1 release-assets\/runtime\/install\.ps1/);
+  assert.match(publish, /sha256sum install\.sh install\.ps1 ade-\*/);
+  assert.match(publish, /darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64/);
+  assert.match(publish, /if \[ "\$target" = "win32-x64" \]; then binary="\$binary\.exe"/);
+  assert.match(installer, /Verify-Checksum/);
+  assert.match(installer, /ade-win32-x64\.exe|\$binaryAsset/);
+  assert.match(installer, /serve --install-service/);
+  assert.match(installer, /serve --service-status --json/);
+  assert.match(installer, /if \(\$serviceStatus\.installed\)/);
+  assert.match(installer, /Install-UserPath/);
+  assert.match(installer, /Recovery files were retained at \$tempRoot/);
+  assert.match(installer, /if \(-not \$preserveTempForRecovery\)/);
 });
 
 test("Windows release assets are validated and published as one release set", () => {
@@ -164,10 +228,13 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /name: ade-win-release-/);
   assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
   assert.match(verify, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1/);
+  assert.match(verify, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED/);
+  assert.match(verify, /requires approved two-version installed-update proof/);
   assert.match(publish, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
+  assert.match(publish, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'/);
   assert.match(publish, /BUILD_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED \}\}/);
   assert.match(publish, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
-  assert.match(publish, /if \[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \]; then/);
+  assert.match(publish, /if \[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]; then/);
   assert.match(publish, /release-assets\/win\/\*\.exe/);
   assert.match(publish, /release-assets\/win\/\*\.exe\.blockmap/);
   assert.match(publish, /release-assets\/win\/latest\.yml/);
@@ -176,8 +243,17 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /if \[ "\$is_draft" != "true" \]; then/);
 });
 
-test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
+test("Windows NSIS install and uninstall own only their per-user channel integration", () => {
   assert.equal(pkg.build.nsis.include, "build/installer.nsh");
+  assert.equal(pkg.build.nsis.oneClick, false);
+  assert.equal(pkg.build.nsis.perMachine, false);
+  assert.equal(pkg.build.nsis.allowElevation, false);
+  assert.equal(pkg.build.nsis.runAfterFinish, false);
+  assert.equal(pkg.build.nsis.deleteAppDataOnUninstall, false);
+  assert.ok(
+    pkg.build.win.extraResources.some((entry) => entry.to === "ade-cli/windows-install-setup.ps1"),
+    "Windows package must carry the install setup script",
+  );
   assert.ok(
     pkg.build.win.extraResources.some((entry) => entry.to === "ade-cli/windows-uninstall-cleanup.ps1"),
     "Windows package must carry the uninstall cleanup script",
@@ -187,6 +263,12 @@ test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
     path.join(desktopRoot, "scripts", "windows-uninstall-cleanup.ps1"),
     "utf8",
   );
+  const setup = fs.readFileSync(
+    path.join(desktopRoot, "scripts", "windows-install-setup.ps1"),
+    "utf8",
+  );
+  assert.match(nsis, /!macro customInstall/);
+  assert.match(nsis, /windows-install-setup\.ps1/);
   assert.match(nsis, /!macro customUnInstall/);
   assert.match(nsis, /windows-uninstall-cleanup\.ps1/);
   assert.match(nsis, /-AppExecutableName "\$\{APP_EXECUTABLE_FILENAME\}"/);
@@ -197,10 +279,17 @@ test("Windows NSIS uninstall removes ADE-owned machine integration", () => {
   assert.match(cleanup, /-Wait/);
   assert.match(cleanup, /cleanupProcess\.ExitCode/);
   assert.match(cleanup, /ADE_PACKAGE_CHANNEL = \$normalizedPackageChannel/);
-  assert.match(cleanup, /ADE_HOME = Join-Path/);
+  assert.match(cleanup, /\$env:ADE_HOME = \$channelAdeHome/);
   assert.match(cleanup, /app\.asar\.unpacked\\node_modules/);
   assert.match(cleanup, /NODE_PATH = \$nodePathEntries/);
   assert.match(cleanup, /SetEnvironmentVariable\("Path"/);
+  assert.match(cleanup, /Remove-OwnedStableProtocolRegistration/);
+  assert.match(setup, /install-path\.cmd/);
+  assert.match(setup, /serve --install-service/);
+  assert.match(setup, /ade-\$PackageChannel\.cmd/);
+  assert.match(electronBuilderWrapper, /resolveWindowsPackageIdentity/);
+  assert.match(electronBuilderWrapper, /--config\.fileAssociations\.name=\$\{channelIdentity\.fileClass\}/);
+  assert.doesNotMatch(electronBuilderWrapper, /--config\.win\.fileAssociations/);
 });
 
 test("release preflight validates the exact approved commit", () => {
@@ -215,6 +304,18 @@ test("pull requests build and smoke an unsigned Windows installer", () => {
   const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
   assert.match(packageJob, /runs-on: windows-latest/);
   assert.match(packageJob, /npm run dist:win/);
+  assert.match(packageJob, /ADE_PACKAGE_CHANNEL: beta/);
+  assert.match(packageJob, /windows-installed-product-smoke\.ps1/);
+  assert.match(packageJob, /-CompanionInstallerPath/);
+  assert.match(packageJob, /ADE_STABLE_INSTALLER/);
+  const installedSmoke = fs.readFileSync(
+    path.join(desktopRoot, "scripts", "windows-installed-product-smoke.ps1"),
+    "utf8",
+  );
+  assert.match(installedSmoke, /Stop-InstalledProductProcesses/);
+  assert.match(installedSmoke, /ExecutablePath/);
+  assert.match(installedSmoke, /missing-executable repair/);
+  assert.match(packageJob, /Test Stable and Beta installed-product lifecycles/);
   assert.doesNotMatch(packageJob, /dist:win:signed/);
   const ciPass = jobBlock(ciWorkflow, "ci-pass", null);
   assert.match(ciPass, /- package-win/);
