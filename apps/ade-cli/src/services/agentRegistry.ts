@@ -101,6 +101,26 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
       /\bcursor(?:-agent)?\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
     ],
   },
+  {
+    agent: "droid",
+    displayName: "Factory Droid",
+    binaryNames: ["droid"],
+    installCommand: npmGlobalInstallCommand("droid"),
+    // Factory exposes sign-in through the interactive CLI's /login flow rather
+    // than a non-interactive `login` subcommand. Launching `droid` is therefore
+    // the portable recovery command on Windows, macOS, and Linux.
+    authCommand: "droid",
+    missingErrorPatterns: [
+      /\bdroid\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+droid\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bdroid\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+      /\bfactory\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+      /\b(?:invalid|missing|no)\s+factory(?:_api_key| api key)\b/i,
+      /\bfactory(?:_api_key| api key)\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
+    ],
+  },
 ];
 
 function descriptorMatchesPreferred(descriptor: AgentCliDescriptor, preferredAgent: string | null | undefined): boolean {

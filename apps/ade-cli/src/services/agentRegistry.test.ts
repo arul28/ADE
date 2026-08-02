@@ -41,6 +41,13 @@ describe("classifyAgentCliError", () => {
       installCommand: `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`,
       authCommand: "cursor-agent login",
     });
+    expect(classifyForWindows("'droid.cmd' is not recognized as an internal or external command")).toMatchObject({
+      agent: "droid",
+      displayName: "Factory Droid",
+      category: "missing",
+      installCommand: "npm install -g droid",
+      authCommand: "droid",
+    });
   });
 
   it("classifies unauthenticated agent CLIs with auth commands", () => {
@@ -59,6 +66,27 @@ describe("classifyAgentCliError", () => {
       category: "unauthenticated",
       authCommand: "claude auth login",
     });
+  });
+
+  it("provides Factory Droid install and interactive authentication recovery", () => {
+    expect(classifyAgentCliError("spawn droid ENOENT")).toMatchObject({
+      agent: "droid",
+      displayName: "Factory Droid",
+      category: "missing",
+      authCommand: "droid",
+    });
+    expect(classifyAgentCliError("Factory Droid authentication failed: login required")).toMatchObject({
+      agent: "droid",
+      displayName: "Factory Droid",
+      category: "unauthenticated",
+      authCommand: "droid",
+    });
+    expect(classifyAgentCliError("No Factory API key was found", "droid")).toMatchObject({
+      agent: "droid",
+      category: "unauthenticated",
+      authCommand: "droid",
+    });
+    expect(classifyAgentCliError("Factory Droid completed successfully", "droid")).toBeNull();
   });
 
   it("uses the installed legacy Cursor alias for authentication recovery", () => {
