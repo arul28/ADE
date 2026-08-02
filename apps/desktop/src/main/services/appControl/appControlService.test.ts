@@ -1,4 +1,7 @@
 import type { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
 
@@ -192,6 +195,48 @@ describe("appControlService", () => {
       }));
     } finally {
       service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("passes shell-specific Windows package-script commands through to the PTY", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-windows-shells",
+      ptyId: "pty-windows-shells",
+      pid: 42,
+    }));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-shells-"));
+    fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
+      scripts: { dev: "echo preparing && electron ." },
+    }), "utf8");
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev", cwd: projectRoot });
+
+      const createArgs = create.mock.calls[0]?.[0] as Record<string, any>;
+      expect(createArgs).not.toHaveProperty("command");
+      expect(createArgs.windowsStartupCommands.powershell).toContain("Set-Location -LiteralPath");
+      expect(createArgs.windowsStartupCommands.powershell).not.toContain(" && ");
+      expect(createArgs.windowsStartupCommands.cmd).toContain('cd /d "');
+      expect(createArgs.windowsStartupCommands.cmd).toContain(" && ");
+      expect(createArgs.windowsStartupCommands["git-bash"]).toMatch(/^cd -- \/[a-z]\//);
+      expect(createArgs.windowsStartupCommands["git-bash"]).toContain(" && ");
+      expect(createArgs.startupCommand).toBe(createArgs.windowsStartupCommands.powershell);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
       Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
     }
   });

@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { commandArrayToLine, parseCommandLine } from "../../../shared/shell";
+import type { WindowsShellKind } from "../../../shared/types";
 
 export type AppControlDirectLaunch = {
   command: string;
@@ -13,10 +14,9 @@ export type AppControlPackageLaunch = AppControlDirectLaunch & {
   cwd: string;
 };
 
-type WindowsShell = "powershell" | "cmd";
 type LaunchOptions = {
   platform?: NodeJS.Platform;
-  shell?: WindowsShell;
+  shell?: WindowsShellKind;
 };
 
 export function shellQuote(value: string): string {
@@ -193,6 +193,13 @@ function quoteCmdSetValue(value: string): string {
     .replace(/[\r\n]/g, " ");
 }
 
+function gitBashPath(value: string): string {
+  const normalized = value.split(String.fromCharCode(92)).join("/");
+  const drivePath = normalized.match(/^([a-z]):\/(.*)$/i);
+  if (!drivePath) return normalized;
+  return `/${drivePath[1]!.toLowerCase()}/${drivePath[2]}`;
+}
+
 export function rewritePackageScriptElectronLaunch(
   command: string,
   debugFlags: string[],
@@ -220,7 +227,8 @@ export function rewritePackageScriptElectronLaunch(
     const platform = options.platform ?? process.platform;
     if (platform === "win32") {
       const parsedEnv = takeLeadingEnv(envPrefix).env;
-      if ((options.shell ?? "powershell") === "cmd") {
+      const shell = options.shell ?? "powershell";
+      if (shell === "cmd") {
         const assignments = [
           `cd /d "${quoteCmdSetValue(packageDir)}"`,
           `set "PATH=${quoteCmdSetValue(packageBinPath)};%PATH%"`,
@@ -229,6 +237,14 @@ export function rewritePackageScriptElectronLaunch(
           ),
         ];
         return `${assignments.join(" && ")} && ${rewrittenScript}`;
+      }
+
+      if (shell === "git-bash") {
+        const expandedEnvPrefix = [
+          `PATH=${shellQuote(gitBashPath(packageBinPath))}:$PATH`,
+          ...Object.entries(parsedEnv).map(([key, value]) => `${key}=${shellQuote(value)}`),
+        ].join(" ");
+        return `cd -- ${shellQuote(gitBashPath(packageDir))} && ${prependEnvToShellSegments(rewrittenScript, expandedEnvPrefix)}`;
       }
 
       const assignments = [

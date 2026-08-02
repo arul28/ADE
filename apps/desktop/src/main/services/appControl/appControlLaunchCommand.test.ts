@@ -98,6 +98,19 @@ describe("appControlLaunchCommand", () => {
       expect(cmd).toContain('set "PATH=');
       expect(cmd).toContain(';%PATH%" &&');
       expect(cmd).not.toContain(":$PATH");
+
+      const gitBash = rewritePackageScriptElectronLaunch(
+        "npm run dev",
+        DEBUG_FLAGS,
+        projectRoot,
+        { platform: "win32", shell: "git-bash" },
+      );
+      expect(gitBash).toMatch(/^cd -- '?\/[a-z]\//);
+      expect(gitBash).toContain("/node_modules/.bin'");
+      expect(gitBash).toContain(":$PATH");
+      expect(gitBash).toContain(" && ");
+      expect(gitBash).not.toContain("Set-Location");
+      expect(gitBash).not.toContain('set "PATH=');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }

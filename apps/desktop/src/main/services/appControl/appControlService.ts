@@ -27,6 +27,7 @@ import type {
   AppControlStopArgs,
   AppControlTarget,
   AppControlTypeTextArgs,
+  WindowsShellKind,
 } from "../../../shared/types";
 import type { Logger } from "../logging/logger";
 import type { createPtyService } from "../pty/ptyService";
@@ -155,6 +156,7 @@ type ResolvedLaunch = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  windowsStartupCommands?: Partial<Record<WindowsShellKind, string>>;
 };
 
 function nowIso(): string {
@@ -1373,6 +1375,7 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         }
       }
       let command = rawCommand;
+      let windowsStartupCommands: Partial<Record<WindowsShellKind, string>> | undefined;
       if (!commandForwardsAppControlDebug(command)) {
         if (process.platform === "win32") {
           const structuredPackage = resolvePackageScriptElectronLaunch(
@@ -1409,15 +1412,26 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         }
 
         if (commandLooksLikePackageScriptLaunch(command)) {
-          command = rewritePackageScriptElectronLaunch(
-            command,
-            autoDebugFlags,
-            cwd,
-            {
+          if (process.platform === "win32") {
+            const originalCommand = command;
+            windowsStartupCommands = Object.fromEntries(
+              (["powershell", "cmd", "git-bash"] as const)
+                .map((shell) => [
+                  shell,
+                  rewritePackageScriptElectronLaunch(originalCommand, autoDebugFlags, cwd, {
+                    platform: "win32",
+                    shell,
+                  }),
+                ] as const)
+                .filter((entry): entry is readonly [WindowsShellKind, string] => Boolean(entry[1])),
+            ) as Partial<Record<WindowsShellKind, string>>;
+            command = windowsStartupCommands.powershell
+              ?? `${originalCommand} -- ${autoDebugFlags.map(shellQuote).join(" ")}`;
+          } else {
+            command = rewritePackageScriptElectronLaunch(command, autoDebugFlags, cwd, {
               platform: process.platform,
-              shell: process.platform === "win32" ? "powershell" : undefined,
-            },
-          ) ?? `${command} -- ${autoDebugFlags.map(shellQuote).join(" ")}`;
+            }) ?? `${command} -- ${autoDebugFlags.map(shellQuote).join(" ")}`;
+          }
         } else if (commandLooksLikeDirectElectronLaunch(command)) {
           command = insertDebugFlagsIntoDirectElectronCommand(command, autoDebugFlags);
         }
@@ -1429,6 +1443,9 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         label: launchArgs.label?.trim() || rawCommand,
         cwd,
         commandForDisplay: command,
+        ...(windowsStartupCommands && Object.keys(windowsStartupCommands).length
+          ? { windowsStartupCommands }
+          : {}),
       };
     }
 
@@ -1600,6 +1617,9 @@ export function createAppControlService(args: CreateAppControlServiceArgs) {
         // its parent chat.
         toolType: "shell",
         startupCommand: resolved.commandForDisplay,
+        ...(resolved.windowsStartupCommands
+          ? { windowsStartupCommands: resolved.windowsStartupCommands }
+          : {}),
         ...(resolved.command
           ? { command: resolved.command, args: resolved.args ?? [] }
           : {}),

@@ -92,6 +92,7 @@ import {
   withClaudePluginInCommandLine,
   withCodexNoAltScreen,
   resolveWindowsShellLaunchFields,
+  resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -5214,12 +5215,18 @@ export function createPtyService({
       // interactive shell. Direct command launches already received argv; if a
       // direct launch fell back to shell, startupCommand keeps compatibility
       // with CLIs that are only available through shell startup files.
-      if (startupCommand && !launchedDirectCommand && selectedShell) {
+      const selectedWindowsShellKind = process.platform === "win32" && selectedShell
+        ? resolveWindowsShellKind(selectedShell.file)
+        : null;
+      const selectedStartupCommand = selectedWindowsShellKind
+        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind] ?? startupCommand
+        : startupCommand;
+      if (selectedStartupCommand && !launchedDirectCommand && selectedShell) {
         const writeStartupCommand = () => {
           entry.startupTimer = null;
           if (entry.disposed) return;
           try {
-            pty.write(`${startupCommand}\r`);
+            pty.write(`${selectedStartupCommand}\r`);
             setRuntimeState(sessionId, "running");
             scheduleIdleTransition(sessionId);
           } catch (err) {
@@ -5234,7 +5241,7 @@ export function createPtyService({
             });
           }
         };
-      const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
+        const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
         if (startupDelayMs > 0) {
           entry.startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
           entry.startupTimer.unref?.();
