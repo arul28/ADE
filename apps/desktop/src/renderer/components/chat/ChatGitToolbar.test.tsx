@@ -195,6 +195,40 @@ describe("ChatGitToolbar", () => {
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
+  // CodeRabbit on #1012: creating a PR is impossible for a lane on another
+  // machine, and a surface with no PR pane has nothing to open instead — so the
+  // create button must not accept a click it will silently drop.
+  it("does not offer a dead PR-create click for a pinned lane with no pane", async () => {
+    const runtimePin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      projectId: "project-b",
+      runtimeName: "Machine B",
+      displayName: "Repo B",
+      rootPath: "/repo-b",
+    };
+
+    renderToolbar({ runtimePin });
+
+    const button = await screen.findByRole("button", { name: "PR" });
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
+    expect(button.getAttribute("title")).toContain("Machine B");
+    fireEvent.click(button);
+    expect(screen.getByTestId("location").textContent).toBe("/work");
+  });
+
+  it("keeps the PR-create click live on the machine that owns the lane", async () => {
+    renderToolbar();
+
+    const button = await screen.findByRole("button", { name: "PR" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/prs?tab=normal&create=1&sourceLaneId=lane-1&target=primary",
+    );
+  });
+
   // On the pinned path `prs.onEvent` is a polling pump that re-anchors to the
   // live head on every subscribe, so a subscription keyed on the PR row dropped
   // whatever the runtime buffered in the teardown gap.

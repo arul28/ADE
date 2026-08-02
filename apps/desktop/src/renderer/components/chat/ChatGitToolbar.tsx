@@ -408,6 +408,12 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
 
   // When the chat surface owns a PR floating pane, the pill reflects + toggles
   // the pane; otherwise it drives the inline slide-out menu.
+  // Set only when the create affordance cannot do anything: a lane on another
+  // machine, on a surface whose PR pane (which explains the same thing) is
+  // absent. With a pane present the click opens it and the pane speaks.
+  const createBlockedReason = runtimePin && !linkedPr && !onTogglePrPane
+    ? `Switch to ${runtimePin.kind === "remote" ? runtimePin.runtimeName : "this lane's machine"} to open a pull request for it.`
+    : null;
   const prPillActive = onTogglePrPane ? Boolean(prPaneOpen) : prMenuOpen;
   const prBadge = useMemo(() => {
     if (!linkedPr) return null;
@@ -579,7 +585,8 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
               if (onTogglePrPane) onTogglePrPane();
               else void handlePr();
             }}
-            disabled={isBusy}
+            disabled={isBusy || createBlockedReason !== null}
+            title={createBlockedReason ?? undefined}
           >
             <GitPullRequest size={10} weight="bold" />
             <span>PR</span>
