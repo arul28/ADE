@@ -12,6 +12,7 @@ import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
 import { setLaneNaming } from "../../state/laneNamingStore";
 import { SessionListPane } from "./SessionListPane";
+import { laneBoundMachineKey, lanePrCompositeKey } from "./useLanePrs";
 import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { EMPTY_WORK_SESSION_FILTERS } from "./workSessionFilters";
 
@@ -52,7 +53,10 @@ function cardPropsFor(sessionId: string): Record<string, unknown> | undefined {
 const { lanePrsByLaneIdForTest } = vi.hoisted(() => ({
   lanePrsByLaneIdForTest: new Map<string, unknown[]>(),
 }));
-vi.mock("./useLanePrs", () => ({
+// Only the hook is stubbed; the key/accessor helpers stay REAL so the test seeds
+// its map with the same key discipline the component reads it back with.
+vi.mock("./useLanePrs", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./useLanePrs")>()),
   useLanePrsByLaneId: () => lanePrsByLaneIdForTest,
 }));
 
@@ -1247,6 +1251,7 @@ describe("SessionListPane", () => {
                 title: "Chat on the other machine",
               }),
             ],
+            prs: [],
             lastSyncedAtMs: 1,
             error: null,
             ...overrides,
@@ -1376,6 +1381,34 @@ describe("SessionListPane", () => {
           laneName: "Elsewhere Lane",
         }),
       );
+    });
+
+    // The bug: a foreign row's PR was looked up against the machine the project
+    // TAB is bound to, so a session doing work on another machine showed no PR
+    // badge until you switched the global machine selector to that machine.
+    it("renders a foreign lane's PR badge from its own machine's answer", () => {
+      seedForeignMachine();
+      lanePrsByLaneIdForTest.set(
+        lanePrCompositeKey("target-studio", "lane-elsewhere"),
+        [makePr({ laneId: "lane-elsewhere", githubPrNumber: 91, headBranch: "feature/elsewhere" })],
+      );
+      renderPane();
+
+      expect(screen.getByText("#91")).toBeTruthy();
+    });
+
+    // The other half of the same bug: the bound machine's rows must not answer
+    // for a foreign lane either. Cross-machine handoff copies a lane id, so a
+    // bare-lane-id lookup would render the wrong machine's PR here.
+    it("does not borrow the bound machine's PR for a foreign lane", () => {
+      seedForeignMachine();
+      lanePrsByLaneIdForTest.set(
+        laneBoundMachineKey("lane-elsewhere"),
+        [makePr({ laneId: "lane-elsewhere", githubPrNumber: 77, headBranch: "feature/elsewhere" })],
+      );
+      renderPane();
+
+      expect(screen.queryByText("#77")).toBeNull();
     });
 
     it("keeps a foreign lane's divider, and its menu, once it holds two chats", () => {
@@ -2008,7 +2041,10 @@ describe("SessionListPane singleton lanes and shelves", () => {
   it("hands the lane's PR badge to the lone card once the divider is gone", () => {
     // PR state has to survive everywhere the lane header is minimized or
     // absent; the singleton form was the last hole.
-    lanePrsByLaneIdForTest.set("lane-solo", [makePr({ laneId: "lane-solo", headBranch: "solo-lane" })]);
+    lanePrsByLaneIdForTest.set(
+      laneBoundMachineKey("lane-solo"),
+      [makePr({ laneId: "lane-solo", headBranch: "solo-lane" })],
+    );
     const session = soloSession();
     const { container } = renderPane({
       lanes: [soloLane],
@@ -2495,7 +2531,7 @@ describe("SessionListPane header shape", () => {
   });
 
   it("keeps the PR badge on a collapsed quiet lane header", () => {
-    lanePrsByLaneIdForTest.set("lane-known", [makePr()]);
+    lanePrsByLaneIdForTest.set(laneBoundMachineKey("lane-known"), [makePr()]);
     const snoozed = makeSession({
       id: "session-pr-snoozed",
       laneId: "lane-known",
@@ -2749,6 +2785,7 @@ describe("SessionListPane visual hierarchy", () => {
               laneName: "Primary",
               title: "Primary chat elsewhere",
             })],
+            prs: [],
             lastSyncedAtMs: 1,
             error: null,
           },
@@ -2873,6 +2910,7 @@ describe("SessionListPane machine chip suppression", () => {
           online: true,
           lanes: [lane],
           sessions,
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },

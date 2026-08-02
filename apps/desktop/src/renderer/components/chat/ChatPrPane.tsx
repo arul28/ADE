@@ -18,13 +18,14 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
-import type { PrCheck, PrReview, PrState, PrStatus, PrSummary } from "../../../shared/types";
+import type { OpenProjectBinding, PrCheck, PrReview, PrState, PrStatus, PrSummary } from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
 import { ChatPrInlineCreator } from "./ChatPrInlineCreator";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
-import { useAppStore } from "../../state/appStore";
+import { useAppStore, useRootAppStore } from "../../state/appStore";
 import { pipelineStateOf } from "../../../shared/prPipelineState";
+import { openLanePr } from "../../lib/lanePrBadge";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 import { NO_CI_REASON } from "../../../shared/prChecksRollup";
 
@@ -416,6 +417,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   sessionTitle = null,
   delta = null,
   onClose,
+  runtimePin = null,
 }: {
   laneId: string;
   branchName?: string | null;
@@ -429,9 +431,22 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   delta?: ChatPrDelta | null;
   /** Closes the pane — wired to the title bar's ✕ (the header PR pill also toggles it). */
   onClose?: () => void;
+  /** See `ChatGitToolbar.runtimePin` — the machine this lane's PR row lives on. */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   const projectRoot = useAppStore((s) => s.project?.rootPath ?? s.projectBinding?.rootPath ?? null);
+  // See `ChatGitToolbar`: a local pin is a fresh object on every cross-machine
+  // merge, so effects key on the stable pin key and read the object via a ref.
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
+  const runtimePinKey = runtimePin?.key ?? null;
+  const machinesById = useRootAppStore((s) => s.crossMachineLanesByMachineId);
+  const pinMachineName = useMemo(() => {
+    if (!runtimePinKey) return null;
+    return Object.values(machinesById)
+      .find((machine) => machine.binding?.key === runtimePinKey)?.machineName ?? null;
+  }, [machinesById, runtimePinKey]);
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [copied, setCopied] = useState(false);
@@ -463,12 +478,12 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     const requestIsCurrent = () => laneIdRef.current === laneId && refreshRequestRef.current === requestId;
     let cached: PrSummary | null = null;
     try {
-      cached = await window.ade.prs.getForLane(laneId);
+      cached = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
       if (!requestIsCurrent()) return;
       setCurrentPr(cached);
       setLoading(false);
       if (options.live && cached && !cached.unmapped) {
-        const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot });
+        const refreshed = await refreshLinkedPrCoalesced(cached, { projectRoot, pin: runtimePinRef.current });
         if (!requestIsCurrent()) return;
         setCurrentPr(refreshed);
       }
@@ -477,7 +492,10 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     } finally {
       if (requestIsCurrent()) setLoading(false);
     }
-  }, [laneId, projectRoot, setCurrentPr]);
+    // See ChatGitToolbar: read via ref, but the identity must still follow the
+    // pin so the effects keyed on it re-read from the new machine.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, projectRoot, runtimePinKey, setCurrentPr]);
 
   // The inline creator hands us the freshly-created PR the moment createFromLane
   // resolves — swap to the details view instantly rather than waiting for the
@@ -496,7 +514,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     if (syncing) return;
     setSyncing(true);
     try {
-      await window.ade.prs.syncLanePr(laneId);
+      await window.ade.prs.syncLanePr(laneId, runtimePinRef.current);
     } catch {
       // best-effort
     } finally {
@@ -534,11 +552,11 @@ export const ChatPrPane = React.memo(function ChatPrPane({
         // A reconcile just healed backend state — re-read the lane's PR.
         void refresh();
       }
-    });
+    }, runtimePinRef.current);
     return () => {
       unsubscribe();
     };
-  }, [refresh]);
+  }, [refresh, runtimePinKey]);
 
   // Clear the reconcile hide timer ONLY on unmount — never on a re-subscribe —
   // so the debounce can't be stranded mid-flight.
@@ -566,9 +584,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       } else {
         setCurrentPr(null);
       }
-    });
+    }, runtimePinRef.current);
     return unsubscribe;
-  }, [laneId, refresh, setCurrentPr]);
+  }, [laneId, refresh, runtimePinKey, setCurrentPr]);
 
   // Hot-refresh enriched detail (checks / reviews / merge status) whenever this
   // PR's content changes — driven by the relay's `prs-updated`, not a timer.
@@ -594,9 +612,9 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     const prId = pr.id;
     let cancelled = false;
     void Promise.allSettled([
-      window.ade.prs.getChecks(prId),
-      window.ade.prs.getReviews(prId),
-      window.ade.prs.getStatus(prId),
+      window.ade.prs.getChecks(prId, runtimePinRef.current),
+      window.ade.prs.getReviews(prId, runtimePinRef.current),
+      window.ade.prs.getStatus(prId, runtimePinRef.current),
     ]).then(([c, r, s]) => {
       if (cancelled) return;
       if (c.status === "fulfilled") setChecks(c.value);
@@ -604,7 +622,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
       if (s.status === "fulfilled") setStatus(s.value);
     });
     return () => { cancelled = true; };
-  }, [pr]);
+  }, [pr, runtimePinKey]);
 
   // Best-effort: is the webhook relay actually connected for this repo? Drives
   // the live/stale/offline dot so the pane reflects real webhook status.
@@ -637,10 +655,13 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return () => window.clearTimeout(id);
   }, [copied]);
 
+  // Same rule the sidebar badge follows: a PR id only resolves on the machine
+  // that owns it, so a pinned pane's "Open in ADE" would land on an empty PRs
+  // tab. `openLanePr` sends a foreign PR to GitHub instead.
   const openInAde = useCallback(() => {
     if (!pr) return;
-    navigate(`/prs?tab=normal&prId=${encodeURIComponent(pr.id)}`);
-  }, [pr, navigate]);
+    openLanePr(pr, { foreign: Boolean(runtimePin), navigate });
+  }, [pr, navigate, runtimePin]);
 
   const openInGitHub = useCallback(async () => {
     if (!pr) return;
@@ -719,6 +740,18 @@ export const ChatPrPane = React.memo(function ChatPrPane({
             onOpenGitHub={() => void openInGitHub()}
             onCopy={() => void copyLink()}
           />
+        ) : runtimePin ? (
+          // Reading a foreign lane's PR is now routed to its machine; CREATING
+          // one is not. The creator derives its branch, base and Linear link
+          // from `state.lanes` — the bound machine's lanes, which do not contain
+          // this lane — and `createFromLane` is unpinned, so it would run
+          // against the wrong machine. Say so instead of offering a button that
+          // cannot work.
+          <p className="px-1 py-6 text-center text-[12px] leading-relaxed text-fg/40">
+            No pull request yet.
+            <br />
+            Switch to {pinMachineName ?? "this chat's machine"} to open one.
+          </p>
         ) : (
           <ChatPrInlineCreator
             laneId={laneId}

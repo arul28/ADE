@@ -2,7 +2,7 @@ import React, { createContext, useContext, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
 import type { StateCreator } from "zustand";
-import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
+import type { CtoAttentionState, KeybindingsSnapshot, LaneDeleteProgress, LaneListSnapshot, LaneSummary, OpenProjectBinding, PrSummary, ProjectInfo, ProjectPathInspection, ProviderMode, RecentProjectSummary, TerminalSessionSummary } from "../../shared/types";
 import { recentProjectStateKey } from "../../shared/projectIdentity";
 import { THIS_MACHINE_ID } from "../../shared/machineIdentity";
 import { MODEL_REGISTRY, type ModelDescriptor } from "../../shared/modelRegistry";
@@ -1045,6 +1045,13 @@ export type CrossMachineMachineLanes = {
   online: boolean;
   lanes: LaneSummary[];
   sessions: TerminalSessionSummary[];
+  /**
+   * The machine's own mapped PR records. A PR row lives in the `.ade` database
+   * of the machine that owns the lane, so — like lanes and sessions — it can
+   * only be read from that machine. Carried here so a card or chat header can
+   * show its lane's PR without the project tab being bound to that machine.
+   */
+  prs: PrSummary[];
   lastSyncedAtMs: number | null;
   /** Last read failure, kept alongside (not instead of) the retained lanes. */
   error: string | null;
@@ -1213,6 +1220,7 @@ export type AppState = {
     online?: boolean;
     lanes?: LaneSummary[];
     sessions?: TerminalSessionSummary[];
+    prs?: PrSummary[];
     error?: string | null;
   }) => void;
   /**
@@ -1783,6 +1791,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
       const previous = prev.crossMachineLanesByMachineId[machineId] ?? null;
       const lanes = reuseStructurallyEqualArray(entry.lanes, previous?.lanes);
       const sessions = reuseStructurallyEqualArray(entry.sessions, previous?.sessions);
+      const prs = reuseStructurallyEqualArray(entry.prs, previous?.prs);
       const incomingBinding =
         entry.binding !== undefined ? entry.binding : previous?.binding ?? null;
       const binding = reuseStructurallyEqualValue(incomingBinding, previous?.binding ?? null);
@@ -1797,8 +1806,11 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         // returned nothing must not erase what the machine last reported.
         lanes: lanes ?? previous?.lanes ?? [],
         sessions: sessions ?? previous?.sessions ?? [],
+        prs: prs ?? previous?.prs ?? [],
         lastSyncedAtMs:
-          entry.lanes || entry.sessions ? Date.now() : previous?.lastSyncedAtMs ?? null,
+          entry.lanes || entry.sessions || entry.prs
+            ? Date.now()
+            : previous?.lastSyncedAtMs ?? null,
         error: entry.error !== undefined ? entry.error : previous?.error ?? null,
       };
       const sliceUnchanged = (
@@ -1810,6 +1822,7 @@ const createAppState: StateCreator<AppState> = (set, get) => {
         && previous.online === next.online
         && previous.lanes === next.lanes
         && previous.sessions === next.sessions
+        && previous.prs === next.prs
         && previous.lastSyncedAtMs === next.lastSyncedAtMs
         && previous.error === next.error
       );

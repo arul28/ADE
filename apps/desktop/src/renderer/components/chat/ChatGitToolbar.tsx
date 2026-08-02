@@ -14,7 +14,7 @@ import {
 } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { cn } from "../ui/cn";
-import type { DiffChanges, PrSummary, PrCheck } from "../../../shared/types";
+import type { DiffChanges, OpenProjectBinding, PrSummary, PrCheck } from "../../../shared/types";
 import { armLaneBranchDriftWarning } from "../lanes/LaneBranchDrift";
 import { useLaneGitActionRuntimeState } from "../lanes/LaneGitActionsPane";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
@@ -23,6 +23,7 @@ import { useAppStore } from "../../state/appStore";
 import { refreshLinkedPrCoalesced } from "../../lib/prReadCache";
 import { rollupPrChecks } from "../../../shared/prChecksRollup";
 import type { PrChecksStatus } from "../../../shared/types/prs";
+import { openLanePr } from "../../lib/lanePrBadge";
 import { GitHubStackBadge } from "../prs/shared/GitHubStackBadge";
 
 // ---------------------------------------------------------------------------
@@ -38,6 +39,13 @@ type ChatGitToolbarProps = {
    */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  /**
+   * The machine this lane lives on, when it is not the machine the project tab
+   * is bound to. A lane's PR record lives in its own machine's database, so
+   * without this the pill reads the bound machine's rows, finds nothing, and
+   * shows the bare "PR" create button for a session that already has one.
+   */
+  runtimePin?: OpenProjectBinding | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -127,6 +135,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   laneId,
   onTogglePrPane,
   prPaneOpen,
+  runtimePin = null,
 }: ChatGitToolbarProps) {
   const navigate = useNavigate();
   const runtime = useLaneGitActionRuntimeState(laneId);
@@ -144,6 +153,21 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const laneIdRef = React.useRef(laneId);
   const refreshPrRequestRef = React.useRef(0);
   laneIdRef.current = laneId;
+  // Read inside the event handler through a ref, never as an effect dep. On the
+  // PINNED path `prs.onEvent` is a polling pump that re-anchors to the live head
+  // on every subscribe (`suppressReplay`), so making the subscription depend on
+  // the PR row — which every event replaces — drops whatever the runtime
+  // buffered in the teardown gap. ChatPrPane keeps its subscription stable the
+  // same way.
+  const linkedPrRef = React.useRef<PrSummary | null>(null);
+  linkedPrRef.current = linkedPr;
+  // Effects key on the pin's KEY, never its object identity: a local pin is
+  // reconstructed on every cross-machine merge (~10s), and depending on the
+  // object made the reset effect blank the pill and the pinned event pump
+  // re-anchor on that timer. The object itself is read through this ref.
+  const runtimePinRef = React.useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
+  const runtimePinKey = runtimePin?.key ?? null;
 
   // -----------------------------------------------------------------------
   // Refresh git status + PR link
@@ -163,13 +187,13 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     refreshPrRequestRef.current = requestId;
     const requestIsCurrent = () => laneIdRef.current === laneId && refreshPrRequestRef.current === requestId;
     try {
-      const pr = await window.ade.prs.getForLane(laneId);
+      const pr = await window.ade.prs.getForLane(laneId, runtimePinRef.current);
       if (!requestIsCurrent()) return null;
       setLinkedPr(pr);
       setPrLoaded(true);
       if (options.live && pr && !pr.unmapped) {
         try {
-          const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot });
+          const refreshed = await refreshLinkedPrCoalesced(pr, { projectRoot, pin: runtimePinRef.current });
           if (!requestIsCurrent()) return null;
           setLinkedPr(refreshed);
           return refreshed;
@@ -185,7 +209,11 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       }
       return null;
     }
-  }, [laneId, projectRoot]);
+    // `runtimePinKey` is read through `runtimePinRef`, so the linter cannot see
+    // it — but a callback that reads machine A must not be reused as if it reads
+    // machine B, and its identity is what re-runs the effects below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [laneId, projectRoot, runtimePinKey]);
 
   useEffect(() => {
     setDirtyCount(0);
@@ -193,19 +221,21 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     setPrLoaded(false);
     setPrMenuOpen(false);
     setPrChecks(null);
-    if (!isRemoteProject) void refreshStatus();
+    // `diff.getChanges` is not pinned, so for a lane on another machine it can
+    // only ask the bound machine about a lane it does not have. Skip it.
+    if (!isRemoteProject && !runtimePinKey) void refreshStatus();
     void refreshPr();
-  }, [isRemoteProject, refreshStatus, refreshPr]);
+  }, [isRemoteProject, refreshStatus, refreshPr, runtimePinKey]);
 
   // Re-poll after the runtime finishes an action (from either pane or toolbar)
   const prevBusy = React.useRef(runtime.busyAction);
   useEffect(() => {
     if (prevBusy.current && !runtime.busyAction) {
-      if (!isRemoteProject) void refreshStatus();
+      if (!isRemoteProject && !runtimePinKey) void refreshStatus();
       void refreshPr();
     }
     prevBusy.current = runtime.busyAction;
-  }, [isRemoteProject, runtime.busyAction, refreshStatus, refreshPr]);
+  }, [isRemoteProject, runtime.busyAction, refreshStatus, refreshPr, runtimePinKey]);
 
   // Backend reconcile-on-focus, in its OWN subscription keyed only on stable
   // deps (laneId/projectRoot via refreshPr) — NOT linkedPr, so the idle branch's
@@ -218,49 +248,58 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       if (event.state === "running") return;
       // A reconcile just healed backend state — re-read the linked PR.
       void refreshPr();
-    });
+    }, runtimePinRef.current);
     return () => {
       unsubscribe();
     };
-  }, [refreshPr]);
+  }, [refreshPr, runtimePinKey]);
 
   // Subscribe to backend PR events so the linked-PR pill reflects external
   // changes (PR closed, merged, checks finished, etc.) without a manual refresh.
   useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event) => {
+      const current = linkedPrRef.current;
       if (event.type === "pr-notification") {
-        if (event.laneId === laneId || event.prId === linkedPr?.id) void refreshPr();
+        if (event.laneId === laneId || event.prId === current?.id) void refreshPr();
         return;
       }
       if (event.type !== "prs-updated") return;
       const eventIncludesLanePr = event.prs.some((pr) => pr.laneId === laneId);
-      const eventIncludesLinkedPr = linkedPr ? event.prs.some((pr) => pr.id === linkedPr.id) : false;
+      const eventIncludesLinkedPr = current ? event.prs.some((pr) => pr.id === current.id) : false;
       if (eventIncludesLanePr || eventIncludesLinkedPr) {
         void refreshPr();
-      } else if (linkedPr) {
+      } else if (current) {
         // The linked PR vanished from the latest snapshot — clear the pill.
         setLinkedPr(null);
       }
-    });
+    }, runtimePinRef.current);
     return () => {
       unsubscribe();
     };
-  }, [laneId, linkedPr, refreshPr]);
+  }, [laneId, refreshPr, runtimePinKey]);
 
   const handlePr = useCallback(async () => {
     // A PR operation is about to run against this worktree — arm the drift
     // warning strip so a wrong-branch PR is caught before it is opened.
     armLaneBranchDriftWarning(laneId);
-    const openPr = (prId: string) => {
-      navigate(`/prs${buildPrsRouteSearch({
-        activeTab: "normal",
-        selectedPrId: prId,
-        selectedLaneId: laneId,
-        selectedRebaseItemId: null,
-      })}`);
+    const openPr = (pr: PrSummary) => {
+      // The PRs tab resolves a PR id against the bound machine only, so a lane
+      // on another machine goes to GitHub — the one destination that means the
+      // same thing from either machine. The local branch keeps this surface's
+      // richer route (it also selects the lane), so it passes its own path.
+      openLanePr(pr, {
+        foreign: Boolean(runtimePin),
+        navigate,
+        localPath: `/prs${buildPrsRouteSearch({
+          activeTab: "normal",
+          selectedPrId: pr.id,
+          selectedLaneId: laneId,
+          selectedRebaseItemId: null,
+        })}`,
+      });
     };
     if (linkedPr) {
-      openPr(linkedPr.id);
+      openPr(linkedPr);
       return;
     }
 
@@ -268,10 +307,15 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       setPrActionBusy(true);
       const latestPr = await refreshPr().finally(() => setPrActionBusy(false));
       if (latestPr) {
-        openPr(latestPr.id);
+        openPr(latestPr);
         return;
       }
     }
+
+    // Creating a PR is a write against the lane's worktree and the create form
+    // derives its branches from the bound machine's lanes, so it is offered only
+    // on the machine that owns the lane. Reading one is not so restricted.
+    if (runtimePin) return;
 
     const params = new URLSearchParams({
       tab: "normal",
@@ -280,7 +324,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
       target: "primary",
     });
     navigate(`/prs?${params.toString()}`);
-  }, [laneId, linkedPr, navigate, prLoaded, refreshPr]);
+  }, [laneId, linkedPr, navigate, prLoaded, refreshPr, runtimePin]);
 
   const handlePrClick = useCallback(() => {
     if (prActionBusy) return;
@@ -307,7 +351,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     if (!prMenuOpen || !linkedPr || linkedPr.unmapped) return;
     let cancelled = false;
     setPrChecksLoading(true);
-    window.ade.prs.getChecks(linkedPr.id)
+    window.ade.prs.getChecks(linkedPr.id, runtimePinRef.current)
       .then((checks) => {
         if (!cancelled) setPrChecks(checks);
       })
@@ -320,7 +364,7 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
     return () => {
       cancelled = true;
     };
-  }, [prMenuOpen, linkedPr]);
+  }, [prMenuOpen, linkedPr, runtimePinKey]);
 
   // Reset the copy-confirmed checkmark a moment after it's shown.
   useEffect(() => {
@@ -332,8 +376,9 @@ export const ChatGitToolbar = React.memo(function ChatGitToolbar({
   const handleOpenInAde = useCallback(() => {
     if (!linkedPr) return;
     setPrMenuOpen(false);
-    navigate(`/prs?tab=normal&prId=${encodeURIComponent(linkedPr.id)}`);
-  }, [linkedPr, navigate]);
+    // Same rule as the pill: a PR id only resolves on the machine that owns it.
+    openLanePr(linkedPr, { foreign: Boolean(runtimePin), navigate });
+  }, [linkedPr, navigate, runtimePin]);
 
   const handleOpenInGitHub = useCallback(async () => {
     if (!linkedPr) return;

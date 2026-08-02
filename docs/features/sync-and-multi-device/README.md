@@ -554,9 +554,23 @@ Desktop connection UI:
 Cross-machine Work union:
 
 - `apps/desktop/src/renderer/state/crossMachineLanes.ts` — renderer-owned,
-  repository-scoped projection of each connected machine's lanes and bounded
-  session preview into the active Work sidebar. It is not CRDT replication and
-  does not change the project tab's runtime binding. A detached chat created
+  repository-scoped projection of each connected machine's lanes, bounded
+  session preview, and mapped PR rows into the active Work sidebar. It is not
+  CRDT replication and does not change the project tab's runtime binding. A PR
+  row lives in the `.ade` database of the machine that owns the lane, so each
+  machine's slice carries its own `prs`, read with `pr.listAll` on the lane
+  cadence (in parallel with the lane and session reads on a cadence tick;
+  sequentially only for the off-cadence catch-up, so a slow PR round trip never
+  holds a machine's lanes and chats out of the store). The read is best-effort
+  and omission-retaining: a machine that answers `lane.list` but fails
+  `pr.listAll` still contributes its lanes and sessions and keeps its last
+  reported PR rows. `decodeForeignPrs` applies the same drop-don't-half-decode
+  contract as `decodeForeignLanes`, validating every field the badge path reads
+  (`id`, `laneId`, `headBranch`, `githubPrNumber`, `githubUrl`, `state`) so a
+  peer on an older build cannot produce a `PR #undefined` chip or one whose
+  click is a silent no-op. See
+  [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read).
+  A detached chat created
   against another `OpenProjectBinding` is optimistically filed in that
   binding's machine slice using its stable session id and resolved lane name;
   binding-scoped reconciliation retains it across stale list responses, then
@@ -582,6 +596,17 @@ Cross-machine Work union:
   the user put it. Switching the tab is reserved for a session whose binding this
   window does not have open. Local sessions resolve to a `null` pin and keep the
   unpinned path unchanged.
+- `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` and
+  `apps/desktop/src/renderer/lib/lanePrBadge.ts` — the lane→PR map and the
+  navigation contract for its chips. Because cross-machine handoff copies a
+  lane id, "which machine" is part of the identity of a PR lookup: the map has
+  three namespaced key spaces and no bare lane ids — `bound:<laneId>`
+  (`boundMachineLanePrs`), `<machineId>:<laneId>` (`lanePrsForMachine`), and
+  `any:<laneId>` (`laneHasAnyPr`, used only by the Has PR filter chip). A
+  session card marks its badge foreign from the presence of a foreign row, not
+  from a runtime pin — an unreachable machine's row has a null binding and no
+  pin while still being foreign — and `openLanePr` sends a foreign PR to GitHub
+  because the PRs tab can only resolve a PR id on the bound machine.
 
 Cross-machine Work chat handoff:
 

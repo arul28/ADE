@@ -808,6 +808,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           online: true,
           lanes: [],
           sessions: [foreign],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -884,6 +885,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [foreignA],
+          prs: [],
         },
         "target-b": {
           machineId: "target-b",
@@ -891,6 +893,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingB,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignB],
+          prs: [],
         },
       },
     };
@@ -919,6 +922,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [{ ...foreignA, lastOutputPreview: "fresh-a" }],
+          prs: [],
         },
       },
     };
@@ -941,6 +945,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [{ ...foreignA, lastOutputPreview: "fresher-a" }],
+          prs: [],
         },
       },
     };
@@ -994,6 +999,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [foreignA],
+          prs: [],
         },
         "target-b": {
           machineId: "target-b",
@@ -1001,6 +1007,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingB,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignB],
+          prs: [],
         },
       },
     };
@@ -1031,6 +1038,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: bindingA,
           lanes: [{ id: "lane-a" }],
           sessions: [foreignA],
+          prs: [],
         },
       },
     };
@@ -1064,6 +1072,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           machineName: "Machine B",
           lanes: [{ id: "foreign-lane" }],
           sessions: [foreign],
+          prs: [],
         },
       },
     };
@@ -1079,6 +1088,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           machineName: "Machine B",
           lanes: [{ id: "foreign-lane" }],
           sessions: [],
+          prs: [],
         },
       },
     };
@@ -1170,6 +1180,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: foreignBinding,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignSession],
+          prs: [],
         },
       },
     };
@@ -1254,6 +1265,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: foreignBinding,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignSession],
+          prs: [],
         },
       },
     };
@@ -1310,6 +1322,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           online: true,
           lanes: [{ id: "lane-1" }],
           sessions: [foreignSession],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -1385,6 +1398,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           binding: foreignBinding,
           lanes: [{ id: "lane-b" }],
           sessions: [foreignSession],
+          prs: [],
         },
       },
     };
@@ -1805,6 +1819,7 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
           machineName: "Machine B",
           lanes: [{ id: foreign.laneId }],
           sessions: [foreign],
+          prs: [],
         },
       },
     };

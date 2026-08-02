@@ -2365,19 +2365,46 @@ declare global {
         createLaneFromPrBranch: (
           args: CreateLaneFromPrBranchArgs,
         ) => Promise<CreateLaneFromPrBranchResult>;
-        getForLane: (laneId: string) => Promise<PrSummary | null>;
-        syncLanePr: (laneId: string) => Promise<PrSummary | null>;
+        /**
+         * `pin` routes the read to the machine that owns the lane. A PR row
+         * lives in that machine's database, so an unpinned read only ever
+         * answers for the machine the project tab is bound to. The PRs tab
+         * (which IS bound-machine-scoped) simply omits it.
+         */
+        getForLane: (
+          laneId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrSummary | null>;
+        syncLanePr: (
+          laneId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrSummary | null>;
         reconcileNow: () => Promise<void>;
-        listAll: () => Promise<PrSummary[]>;
+        listAll: (pin?: OpenProjectBinding | null) => Promise<PrSummary[]>;
         listOpenForRepo: () => Promise<BranchPullRequest[]>;
-        refresh: (args?: {
-          prId?: string;
-          prIds?: string[];
-        }) => Promise<PrSummary[]>;
-        getStatus: (prId: string) => Promise<PrStatus | null>;
-        getChecks: (prId: string) => Promise<PrCheck[]>;
-        getComments: (prId: string) => Promise<PrComment[]>;
-        getReviews: (prId: string) => Promise<PrReview[]>;
+        refresh: (
+          args?: {
+            prId?: string;
+            prIds?: string[];
+          },
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrSummary[]>;
+        getStatus: (
+          prId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrStatus | null>;
+        getChecks: (
+          prId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrCheck[]>;
+        getComments: (
+          prId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrComment[]>;
+        getReviews: (
+          prId: string,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<PrReview[]>;
         getReviewThreads: (prId: string) => Promise<PrReviewThread[]>;
         updateDescription: (args: UpdatePrDescriptionArgs) => Promise<void>;
         delete: (args: DeletePrArgs) => Promise<DeletePrResult>;
@@ -2463,7 +2490,10 @@ declare global {
         listIntegrationWorkflows: (
           args?: ListIntegrationWorkflowsArgs,
         ) => Promise<IntegrationProposal[]>;
-        onEvent: (cb: (ev: PrEventPayload) => void) => () => void;
+        onEvent: (
+          cb: (ev: PrEventPayload) => void,
+          pin?: OpenProjectBinding | null,
+        ) => () => void;
         getDetail: (prId: string) => Promise<PrDetail>;
         getFiles: (prId: string) => Promise<PrFile[]>;
         getCommits: (prId: string) => Promise<PrCommit[]>;

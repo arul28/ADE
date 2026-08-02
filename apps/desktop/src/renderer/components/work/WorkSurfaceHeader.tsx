@@ -7,6 +7,7 @@ import { SessionLifecycleChips } from "./SessionLifecycleChips";
 import { ClaudeCacheTtlBadge } from "../shared/ClaudeCacheTtlBadge";
 import { useFloatingPaneEmbeddedChrome } from "../ui/FloatingPane";
 import { cn } from "../ui/cn";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 // Provider default chat titles — mirrors DEFAULT_SESSION_TITLES in
 // agentChatService.ts. When a chat's title transitions FROM one of these TO a
@@ -199,6 +200,8 @@ export type WorkSurfaceHeaderProps = {
    */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  /** See `ChatGitToolbar.runtimePin`: the machine this lane's PR is read from. */
+  runtimePin?: OpenProjectBinding | null;
   /** Surface-specific trailing actions (right side of the row). */
   trailingActions?: ReactNode;
   /**
@@ -242,6 +245,7 @@ export function WorkSurfaceHeader({
   showGitToolbar = false,
   onTogglePrPane,
   prPaneOpen,
+  runtimePin = null,
   trailingActions,
   onToggleSessionsPane,
   sessionsPaneCollapsed = false,
@@ -289,7 +293,12 @@ export function WorkSurfaceHeader({
         </div>
 
         {showGitToolbar && laneId ? (
-          <ChatGitToolbar laneId={laneId} onTogglePrPane={onTogglePrPane} prPaneOpen={prPaneOpen} />
+          <ChatGitToolbar
+            laneId={laneId}
+            onTogglePrPane={onTogglePrPane}
+            prPaneOpen={prPaneOpen}
+            runtimePin={runtimePin}
+          />
         ) : null}
 
         {trailingActions || onToggleToolsPane ? (

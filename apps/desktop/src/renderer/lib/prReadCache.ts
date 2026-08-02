@@ -1,4 +1,4 @@
-import type { GitHubPrSnapshot, PrSummary } from "../../shared/types";
+import type { GitHubPrSnapshot, OpenProjectBinding, PrSummary } from "../../shared/types";
 
 type InFlightEntry<T> = {
   promise: Promise<T>;
@@ -13,7 +13,19 @@ const linkedPrRecentRefresh = new Map<string, { refreshedAt: number; result: PrS
 
 export const LINKED_PR_LIVE_REFRESH_COOLDOWN_MS = 5_000;
 
-function projectKey(projectRoot: string | null | undefined): string {
+/**
+ * Cache scope for a PR read.
+ *
+ * A pinned read resolves against the lane's own machine, so two reads that
+ * differ only by pin are reads of two different databases and must never share
+ * an in-flight entry — the pin is part of the key, and takes precedence over
+ * the project root (a pin already names a project on its machine).
+ */
+function projectKey(
+  projectRoot: string | null | undefined,
+  pin?: OpenProjectBinding | null,
+): string {
+  if (pin?.key) return `pin:${pin.key}`;
   return projectRoot?.trim() || "active";
 }
 
@@ -46,11 +58,14 @@ function coalesceInFlight<T>(
   return promise;
 }
 
-export function listPrsCoalesced(options?: { projectRoot?: string | null }): Promise<PrSummary[]> {
+export function listPrsCoalesced(options?: {
+  projectRoot?: string | null;
+  pin?: OpenProjectBinding | null;
+}): Promise<PrSummary[]> {
   return coalesceInFlight(
     prListInFlight,
-    projectKey(options?.projectRoot),
-    () => window.ade.prs.listAll(),
+    projectKey(options?.projectRoot, options?.pin),
+    () => window.ade.prs.listAll(options?.pin ?? null),
   );
 }
 
@@ -72,17 +87,17 @@ export function getGitHubSnapshotCoalesced(
 
 export function refreshPrsCoalesced(
   args: { prId?: string; prIds?: string[] } = {},
-  options?: { projectRoot?: string | null },
+  options?: { projectRoot?: string | null; pin?: OpenProjectBinding | null },
 ): Promise<PrSummary[]> {
   const prIds = args.prIds?.filter(Boolean).sort() ?? [];
   return coalesceInFlight(
     prRefreshInFlight,
     JSON.stringify({
-      projectRoot: projectKey(options?.projectRoot),
+      projectRoot: projectKey(options?.projectRoot, options?.pin),
       prId: args.prId ?? null,
       prIds,
     }),
-    () => window.ade.prs.refresh(args),
+    () => window.ade.prs.refresh(args, options?.pin ?? null),
   );
 }
 
@@ -90,6 +105,7 @@ export function refreshLinkedPrCoalesced(
   pr: PrSummary,
   options?: {
     projectRoot?: string | null;
+    pin?: OpenProjectBinding | null;
     force?: boolean;
     cooldownMs?: number;
   },
@@ -98,7 +114,7 @@ export function refreshLinkedPrCoalesced(
   if (!prId) return Promise.resolve(null);
 
   const key = JSON.stringify({
-    projectRoot: projectKey(options?.projectRoot),
+    projectRoot: projectKey(options?.projectRoot, options?.pin),
     prId,
   });
   const cooldownMs = Math.max(0, options?.cooldownMs ?? LINKED_PR_LIVE_REFRESH_COOLDOWN_MS);
@@ -112,7 +128,10 @@ export function refreshLinkedPrCoalesced(
     key,
     async () => {
       try {
-        const refreshed = await refreshPrsCoalesced({ prIds: [prId] }, { projectRoot: options?.projectRoot });
+        const refreshed = await refreshPrsCoalesced(
+          { prIds: [prId] },
+          { projectRoot: options?.projectRoot, pin: options?.pin },
+        );
         const result = refreshed.find((next) => next.id === prId) ?? null;
         linkedPrRecentRefresh.set(key, { refreshedAt: Date.now(), result });
         return result;

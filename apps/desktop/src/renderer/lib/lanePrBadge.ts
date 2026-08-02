@@ -82,3 +82,51 @@ export function lanePrStateColor(state: PrState): string {
       return COLORS.textSecondary; // closed
   }
 }
+
+/** Deep link the PR chip opens, identical from every host so the target cannot drift. */
+export function lanePrDeepLinkPath(pr: PrSummary): string {
+  return `/prs?tab=normal&prId=${encodeURIComponent(pr.id)}`;
+}
+
+/**
+ * Opens a lane's PR from any Work surface.
+ *
+ * The PRs tab reads the machine the project tab is bound to, and a PR id is only
+ * resolvable on the machine that owns it — so deep-linking a PR that lives on
+ * another machine lands on an empty tab. GitHub resolves identically from every
+ * machine, so a foreign PR opens there instead of pretending to navigate.
+ *
+ * Canonical on purpose: the sidebar badge, the session card, and the chat PR
+ * pane all answer "where does this PR open" the same way, and a fourth caller
+ * getting it wrong is exactly how the foreign-PR dead end appeared twice.
+ */
+export function openLanePr(
+  pr: PrSummary,
+  options: {
+    foreign?: boolean;
+    navigate: (path: string) => void;
+    /**
+     * Overrides the in-app destination for the local case. The chat toolbar
+     * uses a richer route that also selects the lane; everything else wants the
+     * plain deep link.
+     */
+    localPath?: string;
+  },
+): void {
+  if (!options.foreign) {
+    options.navigate(options.localPath ?? lanePrDeepLinkPath(pr));
+    return;
+  }
+  if (!pr.githubUrl) return;
+  // `githubUrl` on a foreign row is data the paired machine sent us, so
+  // `openExternal` can reject (the main process enforces an http/https/mailto
+  // allowlist). Swallow it into the same in-app fallback the PR pane uses
+  // rather than raising an unhandled rejection on a click handler.
+  void window.ade.app.openExternal(pr.githubUrl).catch(() => {
+    try {
+      window.open(pr.githubUrl, "_blank", "noopener,noreferrer");
+    } catch {
+      /* nothing left to try */
+    }
+  });
+}

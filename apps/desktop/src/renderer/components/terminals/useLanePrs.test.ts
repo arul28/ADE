@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { GitHubPrListItem, LaneSummary, PrSummary } from "../../../shared/types";
-import { buildLanePrsByLaneId } from "./useLanePrs";
+import {
+  boundMachineLanePrs,
+  buildLanePrsByLaneId,
+  laneAnyMachineKey,
+  laneBoundMachineKey,
+  laneHasAnyPr,
+  lanePrCompositeKey,
+  lanePrsForMachine,
+} from "./useLanePrs";
 
 function lane(overrides: Partial<LaneSummary> = {}): LaneSummary {
   return {
@@ -131,5 +139,49 @@ describe("buildLanePrsByLaneId", () => {
     });
 
     expect(result.has("lane-1")).toBe(false);
+  });
+});
+
+/*
+ * Key discipline. These pin the invariant that made a remote machine's PRs
+ * invisible: a lookup has to name the machine, because a lane id does not.
+ */
+describe("lane PR key namespaces", () => {
+  it("never collides across the three namespaces for one lane id", () => {
+    const keys = [
+      lanePrCompositeKey("machine-a", "lane-1"),
+      laneBoundMachineKey("lane-1"),
+      laneAnyMachineKey("lane-1"),
+    ];
+
+    expect(new Set(keys).size).toBe(3);
+    expect(keys).not.toContain("lane-1");
+    expect(lanePrCompositeKey("machine-a", "lane-1"))
+      .not.toBe(lanePrCompositeKey("machine-b", "lane-1"));
+  });
+
+  // The regression: cross-machine handoff copies a lane id, so a foreign
+  // machine's PR could answer a bound-machine lookup and render a badge that
+  // deep-links into a PRs tab which cannot resolve it.
+  it("keeps a foreign machine's PR out of the bound machine's answer", () => {
+    const byLane = new Map<string, PrSummary[]>([
+      [lanePrCompositeKey("machine-b", "lane-1"), [mappedPr({ id: "pr-foreign" })]],
+      [laneAnyMachineKey("lane-1"), [mappedPr({ id: "pr-foreign" })]],
+    ]);
+
+    expect(boundMachineLanePrs(byLane, "lane-1")).toEqual([]);
+    expect(lanePrsForMachine(byLane, "machine-b", "lane-1")[0]?.id).toBe("pr-foreign");
+    expect(lanePrsForMachine(byLane, "machine-a", "lane-1")).toEqual([]);
+  });
+
+  it("answers the filter chip from any machine, including a foreign-only lane", () => {
+    const byLane = new Map<string, PrSummary[]>([
+      [lanePrCompositeKey("machine-b", "lane-1"), [mappedPr()]],
+      [laneAnyMachineKey("lane-1"), [mappedPr()]],
+    ]);
+
+    expect(laneHasAnyPr(byLane, "lane-1")).toBe(true);
+    expect(laneHasAnyPr(byLane, "lane-unknown")).toBe(false);
+    expect(boundMachineLanePrs(byLane, "lane-unknown")).toEqual([]);
   });
 });

@@ -934,8 +934,15 @@ Renderer surfaces:
   formatting, and matching. Status/Tool selections OR within an axis; axes
   AND together.
 - `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` —
-  project-scoped coalesced PR read plus `prs-updated` subscription, returned as
-  a lane-id map shared by the list's PR badges and Has PR filter.
+  the lane→PR map shared by the list's PR badges and the Has PR filter. The
+  bound machine's half is a coalesced PR read plus a `prs-updated`
+  subscription; each other machine's rows arrive with its cross-machine union
+  slice. Keys are namespaced by machine and never bare lane ids, because
+  cross-machine handoff copies a lane id: `boundMachineLanePrs` answers rows on
+  the tab's own machine, `lanePrsForMachine` answers a foreign row from its own
+  machine only, and `laneHasAnyPr` is the union answer the Has PR chip uses —
+  the one lookup allowed to ignore machine identity. See
+  [Pull requests](../pull-requests/README.md#which-machine-answers-a-pr-read).
 - `apps/desktop/src/renderer/components/terminals/useSessionDelta.ts` —
   fetches `SessionDeltaSummary` for a given session.
 - `apps/desktop/src/shared/cliLaunch.ts` — canonical CLI launch
@@ -1049,12 +1056,17 @@ Renderer surfaces:
   `ade.agentChat.delete`. Fixed-position menus measure and clamp to the renderer
   viewport.
 - `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx`,
+  `apps/desktop/src/renderer/lib/lanePrBadge.ts`,
   `LaneActionsSubmenu.tsx`, and
-  `apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx` — shared compact PR
-  state/deep-link badge, the singleton session row's lane submenu, and the
-  pointer-safe/keyboard-accessible submenu primitive. `LaneActionsSubmenu`
-  renders the same `buildLaneMenuGroups()` definitions as the lane divider's
-  context menu, so the two surfaces cannot drift.
+  `apps/desktop/src/renderer/components/ui/MenuSubmenu.tsx` — the shared
+  compact PR state badge, its selection/presentation/navigation helpers, the
+  singleton session row's lane submenu, and the pointer-safe/keyboard-accessible
+  submenu primitive. The badge is presentation-only; where it opens is decided
+  once by `openLanePr`, which sends a PR on the machine you are bound to into
+  the PRs tab and a foreign one to GitHub, since a PR id resolves only on the
+  machine that owns it. `LaneActionsSubmenu` renders the same
+  `buildLaneMenuGroups()` definitions as the lane divider's context menu, so the
+  two surfaces cannot drift.
 - `apps/desktop/src/renderer/lib/sessionListCache.ts` — shared renderer
   cache for `ade.sessions.list` calls, keyed by `projectRoot/laneId/status`.
   Ordinary callers coalesce compatible in-flight reads; forced reads bypass

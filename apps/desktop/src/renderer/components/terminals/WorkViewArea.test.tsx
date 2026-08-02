@@ -561,7 +561,7 @@ describe("WorkViewArea", () => {
     expect(terminals.map((terminal) => terminal.getAttribute("data-session-id"))).toContain("session-1");
   });
 
-  it("suppresses the PR pane and auto-pop reads for a foreign running CLI", async () => {
+  it("pins the PR pane and auto-pop reads to the owning machine for a foreign running CLI", async () => {
     const session = { ...makeRunningSession("session-foreign", "pty-foreign"), toolType: "codex" as const };
     const runtimePin = {
       kind: "remote",
@@ -591,11 +591,16 @@ describe("WorkViewArea", () => {
     );
     const local = within(view.container);
 
-    expect(local.queryByRole("button", { name: "Toggle PR pane" })).toBeNull();
-    expect(local.queryByTestId("chat-pr-pane")).toBeNull();
+    // A lane's PR lives in ITS machine's database, so a foreign session gets the
+    // same PR affordance as a local one — the reads just carry the pin. Before
+    // this, both the pane and its auto-pop were suppressed outright, which is
+    // what made a remote session's PR invisible until the tab was rebound.
     await waitFor(() => {
-      for (const mock of Object.values(prsMocks)) expect(mock).not.toHaveBeenCalled();
+      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1", runtimePin);
     });
+    expect(prsMocks.onEvent).toHaveBeenCalledWith(expect.any(Function), runtimePin);
+    fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));
+    expect((await local.findByTestId("chat-pr-pane")).getAttribute("data-lane-id")).toBe("lane-1");
   });
 
   it("keeps PR auto-pop and pane controls enabled for a local running CLI", async () => {
@@ -619,7 +624,7 @@ describe("WorkViewArea", () => {
     const local = within(view.container);
 
     await waitFor(() => {
-      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1");
+      expect(prsMocks.getForLane).toHaveBeenCalledWith("lane-1", null);
       expect(prsMocks.onEvent).toHaveBeenCalledTimes(1);
     });
     fireEvent.click(local.getByRole("button", { name: "Toggle PR pane" }));

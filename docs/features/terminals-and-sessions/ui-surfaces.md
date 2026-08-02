@@ -274,8 +274,11 @@ The full card is one full-bleed row with three lines:
    accent and `LaneIcon`; branch identity is always muted and uses `BranchIcon`.
 2. **Title + singleton PR** — `primarySessionLabel()` is the prominent,
    elastic element. When the card stands in for a one-session lane, the shared
-   `LanePrBadge` sits at the right edge directly beneath the lifecycle status,
-   stays untruncated, and deep-links to the PR in ADE. While the owning lane is
+   `LanePrBadge` sits at the right edge directly beneath the lifecycle status
+   and stays untruncated. A card whose lane lives on this machine deep-links to
+   the PR in ADE; a card on another machine badges from that machine's own PR
+   rows and opens the PR on GitHub, because the PRs tab can only resolve a PR
+   id on the machine the project tab is bound to. While the owning lane is
    mid background AI naming, every visible lane-label position (singleton row,
    hover detail, or grouped header) uses the shared animated `Naming lane…`
    placeholder; the persisted deterministic fallback stays hidden unless
@@ -926,7 +929,9 @@ deeplink framing before persisting the user's view choice. A reorder starts
 from the lanes currently rendered on screen, prunes dead ids only on write, and
 sets Manual even for a no-op drop from another mode so the control truthfully
 describes the current ordering. `useLanePrsByLaneId` supplies one coalesced PR
-read plus `prs-updated` pushes for both the lane badges and the Has PR filter;
+read plus `prs-updated` pushes for the bound machine, folded together with each
+other machine's PR rows from the cross-machine union, and serves both the lane
+badges (machine-scoped keys) and the Has PR filter (the union key);
 with no active chips the filtered session list is returned by reference so the
 new controls do not add avoidable downstream re-renders.
 

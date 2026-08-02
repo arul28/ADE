@@ -4,10 +4,10 @@ import { ArrowClockwise, CaretDown, CaretRight, CircleNotch, Desktop, Funnel, Ma
 import { AnimatePresence, motion } from "motion/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import type { LaneSummary, OpenProjectBinding, PrSummary, TerminalSessionSummary } from "../../../shared/types";
-import { selectPrimaryLanePr } from "../../lib/lanePrBadge";
-import { LanePrBadge, lanePrDeepLinkPath } from "./LanePrBadge";
+import { openLanePr, selectPrimaryLanePr } from "../../lib/lanePrBadge";
+import { LanePrBadge } from "./LanePrBadge";
 import type { SessionContextMenuLaneActions } from "./SessionContextMenu";
-import { useLanePrsByLaneId } from "./useLanePrs";
+import { boundMachineLanePrs, laneHasAnyPr, lanePrsForMachine, useLanePrsByLaneId } from "./useLanePrs";
 import {
   canonicalInputFromSummary,
   sessionFilingBucket,
@@ -1051,7 +1051,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         workSessionFilters.tool.length > 0
         && !workSessionFilters.tool.includes(workToolFamily(job.targetToolType))
       ) return false;
-      if (workSessionFilters.hasPr && (prsByLaneId.get(job.laneId)?.length ?? 0) === 0) return false;
+      if (workSessionFilters.hasPr && !laneHasAnyPr(prsByLaneId, job.laneId)) return false;
       if (workSessionFilters.dirtyLane && !lanes.find((lane) => lane.id === job.laneId)?.status.dirty) {
         return false;
       }
@@ -1778,8 +1778,17 @@ export const SessionListPane = React.memo(function SessionListPane({
     if (isFirst) sessionItemAnchorEmitted = true;
     const foreignRow = options?.foreignRow;
     const sessionLane = foreignRow?.lane ?? laneById.get(session.laneId) ?? null;
-    const sessionPr = !foreignRow && sessionLane
-      ? selectPrimaryLanePr(sessionLane, prsByLaneId.get(session.laneId) ?? [])
+    // A PR belongs to the lane, and the lane belongs to a machine — so the PR
+    // is read from that machine and filed under its composite key. A foreign
+    // card is no longer excluded: it was only ever blank because the lookup
+    // could not reach past the tab's own binding.
+    const sessionPr = sessionLane
+      ? selectPrimaryLanePr(
+          sessionLane,
+          foreignRow
+            ? lanePrsForMachine(prsByLaneId, foreignRow.machineId, session.laneId)
+            : boundMachineLanePrs(prsByLaneId, session.laneId),
+        )
       : null;
     // A card on an unreachable machine is shown as last reported and every
     // action on it would fail, so it is inert and says which machine is gone.
@@ -1839,6 +1848,7 @@ export const SessionListPane = React.memo(function SessionListPane({
         compact={options?.compact}
         showLaneIdentity={options?.showLaneIdentity}
         lanePr={options?.lanePr}
+        lanePrForeign={Boolean(foreignRow)}
         gridBadge={foreignRow ? null : gridBadgeFor(session.id)}
         runtimePin={foreignRow?.binding}
         machineMarker={options?.machineMarker ?? null}
@@ -2215,9 +2225,12 @@ export const SessionListPane = React.memo(function SessionListPane({
         {lane.icon ? iconGlyph(lane.icon) : <LaneIcon size={12} weight="regular" />}
       </span>
     );
-    const primaryPr = selectPrimaryLanePr(lane, prsByLaneId.get(lane.id) ?? []);
+    const primaryPr = selectPrimaryLanePr(lane, boundMachineLanePrs(prsByLaneId, lane.id));
     const prBadge = primaryPr ? (
-      <LanePrBadge pr={primaryPr} onOpen={() => navigate(lanePrDeepLinkPath(primaryPr))} />
+      <LanePrBadge
+        pr={primaryPr}
+        onOpen={() => openLanePr(primaryPr, { foreign: false, navigate })}
+      />
     ) : null;
     // Never populated for a lane on the Mac you're sitting at — the marker says
     // exactly one thing, "this work isn't here", and no lane type is exempt.
@@ -2331,10 +2344,14 @@ export const SessionListPane = React.memo(function SessionListPane({
       : workCollapsedLaneIds.includes(compositeLaneId);
     // A shelved lane shows nothing but its header, so the header has to keep
     // carrying everything that identifies the lane — the machine marker below,
-    // and the PR badge here. PR records are local to this runtime, so a lane
-    // that exists only elsewhere simply has none; when the local runtime does
-    // know the lane's PR, it is the same lane and the same badge.
-    const primaryPr = selectPrimaryLanePr(row.lane, prsByLaneId.get(row.lane.id) ?? []);
+    // and the PR badge here. The lookup is keyed by the row's OWN machine: a
+    // bare lane id would answer out of whichever machine happened to claim it,
+    // and cross-machine handoff makes that a real collision, not a theoretical
+    // one.
+    const primaryPr = selectPrimaryLanePr(
+      row.lane,
+      lanePrsForMachine(prsByLaneId, row.machineId, row.lane.id),
+    );
     // A group WITH a header names the machine there, so its rows never repeat
     // it. A headerless group has no such header, so its lone card takes the
     // marker instead — the same trade `renderLaneGroup` makes.
@@ -2372,7 +2389,10 @@ export const SessionListPane = React.memo(function SessionListPane({
         headerless={headerless}
         accentColor={row.lane.color ?? null}
         prBadge={primaryPr ? (
-          <LanePrBadge pr={primaryPr} onOpen={() => navigate(lanePrDeepLinkPath(primaryPr))} />
+          <LanePrBadge
+            pr={primaryPr}
+            onOpen={() => openLanePr(primaryPr, { foreign: true, navigate })}
+          />
         ) : null}
         machineMarker={headerMarker ? <LaneMachineMarker marker={headerMarker} /> : null}
         quietCounts={laneQuiet && collapsed

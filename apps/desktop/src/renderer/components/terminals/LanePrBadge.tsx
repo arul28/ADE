@@ -51,8 +51,3 @@ export function LanePrBadge({ pr, onOpen }: { pr: PrSummary; onOpen: () => void 
     </span>
   );
 }
-
-/** Deep link the PR chip opens, identical from every host so the target cannot drift. */
-export function lanePrDeepLinkPath(pr: PrSummary): string {
-  return `/prs?tab=normal&prId=${encodeURIComponent(pr.id)}`;
-}

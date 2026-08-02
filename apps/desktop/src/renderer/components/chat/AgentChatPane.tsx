@@ -3741,13 +3741,6 @@ export function AgentChatPane({
     companionStateKey === WORK_START_DRAFT_COMPANION_STATE_KEY && legacyWorkDraftLaneId
       ? `draft:${legacyWorkDraftLaneId}`
       : null;
-  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
-  // changes; shared with the CLI session surface via useChatPrAutoPop.
-  // `persistKey` makes open/closed per chat and durable across restarts —
-  // declared here because it needs `companionStateKey`.
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId, {
-    persistKey: companionStateKey,
-  });
   // Measured height of the floating PR pane card, published to the minimap rail
   // through ChatPrPaneInsetContext so it can re-centre in the band left below.
   const prPaneInset = usePrPaneInsetObserver();
@@ -3943,6 +3936,16 @@ export function AgentChatPane({
   );
   const chatRuntimePinRef = useRef<OpenProjectBinding | null>(chatRuntimePin);
   chatRuntimePinRef.current = chatRuntimePin;
+  // Left PR floating pane (ADE chats only). Auto-pops on webhook-driven PR
+  // changes; shared with the CLI session surface via useChatPrAutoPop.
+  // `persistKey` makes open/closed per chat and durable across restarts.
+  // Declared HERE, below `chatRuntimePin`, because a chat on another machine
+  // must read its PR from that machine — the pane and its auto-pop take the
+  // same pin every other call this chat makes already takes.
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(laneId, {
+    persistKey: companionStateKey,
+    runtimePin: chatRuntimePin,
+  });
   const renderedSession = useMemo(
     () => (
       renderedSessionId
@@ -11771,6 +11774,7 @@ export function AgentChatPane({
         showGitToolbar={showWorkspaceChrome}
         onTogglePrPane={showWorkspaceChrome && laneId ? () => setPrPaneOpen((v) => !v) : undefined}
         prPaneOpen={prPaneOpen}
+        runtimePin={chatRuntimePin}
         trailingActions={chatHeaderTrailingActions}
         onToggleSessionsPane={onToggleSessionsPane}
         sessionsPaneCollapsed={sessionsPaneCollapsed}
@@ -13032,6 +13036,7 @@ export function AgentChatPane({
                             sessionTitle={selectedSession?.title ?? null}
                             delta={prPaneDelta}
                             onClose={() => setPrPaneOpen(false)}
+                            runtimePin={chatRuntimePin}
                           />,
                         )
                       : null}

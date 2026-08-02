@@ -26,7 +26,7 @@ import {
 } from "../../lib/terminalAttention";
 import type { CanonicalStatusBucket } from "../../../shared/sessionCanonicalState";
 import { nextSnoozeDeadlineMs } from "../../lib/sessionSnooze";
-import { useLanePrsByLaneId } from "./useLanePrs";
+import { laneHasAnyPr, useLanePrsByLaneId } from "./useLanePrs";
 import { applyWorkLaneManualMove, type WorkLaneSortMode } from "./workLaneOrder";
 import {
   EMPTY_WORK_SESSION_FILTERS,
@@ -1561,7 +1561,10 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
     if (isWorkSessionFilterEmpty(workSessionFilters)) return filtered;
     const ctx = {
       nowMs: Date.now(),
-      laneHasPr: (laneId: string) => (prsByLaneId.get(laneId)?.length ?? 0) > 0,
+      // Union answer on purpose: the chip asks "does this lane have a PR at
+      // all", and a filtered session row carries no machine to key on. Badges
+      // use the machine-scoped lookups instead — see `lanePrsForMachine`.
+      laneHasPr: (laneId: string) => laneHasAnyPr(prsByLaneId, laneId),
       laneIsDirty: (laneId: string) => laneStatusById.get(laneId)?.status.dirty === true,
     };
     return filtered.filter((session) => matchesWorkSessionFilters(session, workSessionFilters, ctx));

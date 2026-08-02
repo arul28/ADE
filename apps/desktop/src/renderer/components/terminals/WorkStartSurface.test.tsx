@@ -137,6 +137,7 @@ describe("WorkStartSurface", () => {
         online: true,
         lanes: [{ id: "lane-studio", name: "Studio lane" } as any],
         sessions: [],
+        prs: [],
         lastSyncedAtMs: 1,
         error: null,
       },

@@ -45,9 +45,9 @@ import { useSessionDelta } from "./useSessionDelta";
 import { cn } from "../ui/cn";
 import { MONO_FONT } from "../lanes/laneDesignTokens";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
-import { LanePrBadge, lanePrDeepLinkPath } from "./LanePrBadge";
+import { LanePrBadge } from "./LanePrBadge";
 import { branchNameFromRef } from "../prs/shared/laneBranchTargets";
-import { lanePrStateColor, lanePrStateLabel } from "../../lib/lanePrBadge";
+import { lanePrStateColor, lanePrStateLabel, openLanePr } from "../../lib/lanePrBadge";
 import {
   SessionHoverCard,
   useSessionHoverCard,
@@ -297,6 +297,7 @@ export const SessionCard = React.memo(function SessionCard({
   githubStack = null,
   showLaneIdentity = false,
   lanePr = null,
+  lanePrForeign = false,
   machineMarker = null,
   suppressMachineChip = false,
 }: {
@@ -334,6 +335,16 @@ export const SessionCard = React.memo(function SessionCard({
    * divider owns the PR badge and a second copy per row would be noise.
    */
   lanePr?: PrSummary | null;
+  /**
+   * True when this card's lane lives on another machine. The PR itself is read
+   * from that machine; only its click-through has to change, because the PRs tab
+   * cannot resolve a PR id that is not on the bound machine. See `openLanePr`.
+   *
+   * Deliberately NOT derived from `runtimePin`: an unreachable machine's row has
+   * a null binding and therefore no pin, while still being foreign. Deriving it
+   * would send exactly those rows back to a PRs tab that cannot resolve them.
+   */
+  lanePrForeign?: boolean;
   /**
    * The machine this row's lane lives on, when that is not the Mac you're
    * sitting at. Resolved once by the cross-machine union and handed down, so a
@@ -728,7 +739,7 @@ export const SessionCard = React.memo(function SessionCard({
           </span>
         </span>
       ),
-      onActivate: () => navigate(lanePrDeepLinkPath(lanePr)),
+      onActivate: () => openLanePr(lanePr, { foreign: lanePrForeign, navigate }),
       activateLabel: `Open pull request #${lanePr.githubPrNumber}`,
       testId: "session-hover-pr",
     });
@@ -860,7 +871,7 @@ export const SessionCard = React.memo(function SessionCard({
   const singletonPrBadge = showLaneIdentity && lanePr ? (
     <LanePrBadge
       pr={lanePr}
-      onOpen={() => navigate(lanePrDeepLinkPath(lanePr))}
+      onOpen={() => openLanePr(lanePr, { foreign: lanePrForeign, navigate })}
     />
   ) : null;
 

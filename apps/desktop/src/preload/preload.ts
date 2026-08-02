@@ -1593,12 +1593,23 @@ function callPinnedOrBoundRuntimeActionOr<T>(
   return callProjectRuntimeActionOr<T>(domain, action, request, local);
 }
 
+// A lane's PR record lives in the `.ade` database of the machine that owns the
+// lane, so a PR read is a per-lane fact exactly like a chat or a terminal — and
+// takes a pin for the same reason. Without one, every PR read resolves against
+// whichever machine the project tab happens to be bound to, so a session on
+// another machine showed no PR badge on its card and no PR pill in its header
+// until the tab was rebound to that machine.
+//
+// `pin: null` is not "no opinion" — it means "the machine the project tab is
+// bound to", which is exactly right for the PRs tab, the global execution
+// context. Every call site states which of the two it wants.
 function callPrReadRuntimeActionOr<T>(
+  pin: OpenProjectBinding | null | undefined,
   action: string,
   request: Omit<RemoteRuntimeActionRequest, "domain" | "action">,
   local: () => Promise<T>,
 ): Promise<T> {
-  return callProjectRuntimeActionOr("pr", action, request, local);
+  return callPinnedOrBoundRuntimeActionOr(pin, "pr", action, request, local);
 }
 
 async function callProjectFileRuntimeActionOr<T>(
@@ -8706,50 +8717,69 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionStrictOr("pr", "createLaneFromPrBranch", { args }, () =>
         ipcRenderer.invoke(IPC.prsCreateLaneFromPrBranch, args),
       ),
-    getForLane: async (laneId: string): Promise<PrSummary | null> =>
-      callPrReadRuntimeActionOr("getForLane", { arg: laneId }, () =>
+    getForLane: async (
+      laneId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrSummary | null> =>
+      callPrReadRuntimeActionOr(pin, "getForLane", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.prsGetForLane, { laneId }),
       ),
-    syncLanePr: async (laneId: string): Promise<PrSummary | null> =>
-      callPrReadRuntimeActionOr("syncLanePr", { arg: laneId }, () =>
+    syncLanePr: async (
+      laneId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrSummary | null> =>
+      callPrReadRuntimeActionOr(pin, "syncLanePr", { arg: laneId }, () =>
         ipcRenderer.invoke(IPC.prsSyncLanePr, { laneId }),
       ),
     reconcileNow: async (): Promise<void> =>
-      callPrReadRuntimeActionOr("reconcileOnFocus", { args: { force: true } }, () =>
+      callPrReadRuntimeActionOr(null, "reconcileOnFocus", { args: { force: true } }, () =>
         ipcRenderer.invoke(IPC.prsReconcileNow),
       ),
-    listAll: async (): Promise<PrSummary[]> =>
-      callPrReadRuntimeActionOr("listAll", { args: {} }, () =>
+    listAll: async (pin?: OpenProjectBinding | null): Promise<PrSummary[]> =>
+      callPrReadRuntimeActionOr(pin, "listAll", { args: {} }, () =>
         ipcRenderer.invoke(IPC.prsListAll),
       ),
     listOpenForRepo: async (): Promise<BranchPullRequest[]> =>
-      callPrReadRuntimeActionOr("listOpenPullRequests", {}, () =>
+      callPrReadRuntimeActionOr(null, "listOpenPullRequests", {}, () =>
         ipcRenderer.invoke(IPC.prsListOpenForRepo),
       ),
     refresh: async (
       args: { prId?: string; prIds?: string[] } = {},
+      pin?: OpenProjectBinding | null,
     ): Promise<PrSummary[]> =>
-      callPrReadRuntimeActionOr("refresh", { args }, () =>
+      callPrReadRuntimeActionOr(pin, "refresh", { args }, () =>
         ipcRenderer.invoke(IPC.prsRefresh, args),
       ),
-    getStatus: async (prId: string): Promise<PrStatus | null> =>
-      callPrReadRuntimeActionOr("getStatus", { arg: prId }, () =>
+    getStatus: async (
+      prId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrStatus | null> =>
+      callPrReadRuntimeActionOr(pin, "getStatus", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetStatus, { prId }),
       ),
-    getChecks: async (prId: string): Promise<PrCheck[]> =>
-      callPrReadRuntimeActionOr("getChecks", { arg: prId }, () =>
+    getChecks: async (
+      prId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrCheck[]> =>
+      callPrReadRuntimeActionOr(pin, "getChecks", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetChecks, { prId }),
       ),
-    getComments: async (prId: string): Promise<PrComment[]> =>
-      callPrReadRuntimeActionOr("getComments", { arg: prId }, () =>
+    getComments: async (
+      prId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrComment[]> =>
+      callPrReadRuntimeActionOr(pin, "getComments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetComments, { prId }),
       ),
-    getReviews: async (prId: string): Promise<PrReview[]> =>
-      callPrReadRuntimeActionOr("getReviews", { arg: prId }, () =>
+    getReviews: async (
+      prId: string,
+      pin?: OpenProjectBinding | null,
+    ): Promise<PrReview[]> =>
+      callPrReadRuntimeActionOr(pin, "getReviews", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetReviews, { prId }),
       ),
     getReviewThreads: async (prId: string): Promise<PrReviewThread[]> =>
-      callPrReadRuntimeActionOr("getReviewThreads", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getReviewThreads", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetReviewThreads, { prId }),
       ),
     updateDescription: async (args: UpdatePrDescriptionArgs): Promise<void> =>
@@ -8850,21 +8880,23 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.prsGetConflictAnalysis, { prId }),
       ),
     getMergeContext: (prId: string): Promise<PrMergeContext> =>
-      callPrReadRuntimeActionOr("getMergeContext", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getMergeContext", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetMergeContext, { prId }),
       ),
     getMergeContexts: (prIds: string[]): Promise<Record<string, PrMergeContext>> =>
       callPrReadRuntimeActionOr(
+        null,
         "getMergeContexts",
         { argsList: [prIds] },
         () => ipcRenderer.invoke(IPC.prsGetMergeContexts, { prIds }),
       ),
     listWithConflicts: (args: { includeConflictAnalysis?: boolean } = {}): Promise<PrWithConflicts[]> =>
-      callPrReadRuntimeActionOr("listWithConflicts", { args }, () =>
+      callPrReadRuntimeActionOr(null, "listWithConflicts", { args }, () =>
         ipcRenderer.invoke(IPC.prsListWithConflicts, args),
       ),
     listSnapshots: (args: { prId?: string } = {}): Promise<PrSnapshotHydration[]> =>
       callPrReadRuntimeActionOr(
+        null,
         "listSnapshots",
         { args },
         () => ipcRenderer.invoke(IPC.prsListSnapshots, args),
@@ -8875,6 +8907,7 @@ contextBridge.exposeInMainWorld("ade", {
       historyPageLimit?: number;
     }): Promise<GitHubPrSnapshot> =>
       callPrReadRuntimeActionOr(
+        null,
         "getGithubSnapshot",
         { args: args ?? {} },
         () => ipcRenderer.invoke(IPC.prsGetGitHubSnapshot, args ?? {}),
@@ -8999,7 +9032,17 @@ contextBridge.exposeInMainWorld("ade", {
         ipcRenderer.removeListener(IPC.prsAiResolutionEvent, listener);
       };
     },
-    onEvent: (cb: (ev: PrEventPayload) => void) => {
+    onEvent: (cb: (ev: PrEventPayload) => void, pin?: OpenProjectBinding | null) => {
+      // A pinned surface reads its PRs from the lane's machine, so it must hear
+      // that machine's `prs-updated` too — the bound runtime's feed describes a
+      // different database and would leave the pinned pill permanently stale.
+      const removePinned = subscribePinnedProjectRuntimeEvents(
+        pin,
+        (payload) => toWrappedEvent<PrEventPayload>(payload, "pr_event"),
+        cb,
+        "PR event",
+      );
+      if (removePinned) return removePinned;
       const unsubscribeLocal = subscribeLocalPrEvents(cb);
       const unsubscribeRemote = subscribeRemotePrEvents(cb);
       return () => {
@@ -9008,71 +9051,71 @@ contextBridge.exposeInMainWorld("ade", {
       };
     },
     getDetail: async (prId: string): Promise<PrDetail> =>
-      callPrReadRuntimeActionOr("getDetail", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getDetail", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDetail, { prId }),
       ),
     getFiles: async (prId: string): Promise<PrFile[]> =>
-      callPrReadRuntimeActionOr("getFiles", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getFiles", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetFiles, { prId }),
       ),
     getCommits: async (prId: string): Promise<PrCommit[]> =>
-      callPrReadRuntimeActionOr("getCommits", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getCommits", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetCommits, { prId }),
       ),
     getActionRuns: async (prId: string): Promise<PrActionRun[]> =>
-      callPrReadRuntimeActionOr("getActionRuns", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getActionRuns", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActionRuns, { prId }),
       ),
     getActivity: async (prId: string): Promise<PrActivityEvent[]> =>
-      callPrReadRuntimeActionOr("getActivity", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getActivity", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetActivity, { prId }),
       ),
     getWorkflowGraph: async (args: GetPrWorkflowGraphArgs): Promise<PrWorkflowGraph> =>
-      callPrReadRuntimeActionOr("getWorkflowGraph", { args }, () =>
+      callPrReadRuntimeActionOr(null, "getWorkflowGraph", { args }, () =>
         ipcRenderer.invoke(IPC.prsGetWorkflowGraph, args),
       ),
     getCheckLog: async (args: GetPrCheckLogArgs): Promise<PrCheckLogExcerpt> =>
-      callPrReadRuntimeActionOr("getCheckLog", { args }, () =>
+      callPrReadRuntimeActionOr(null, "getCheckLog", { args }, () =>
         ipcRenderer.invoke(IPC.prsGetCheckLog, args),
       ),
     getDetailByGithub: async (coords: PrGithubCoords): Promise<PrDetail> =>
-      callPrReadRuntimeActionOr("getDetailByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getDetailByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetDetailByGithub, coords),
       ),
     getFilesByGithub: async (coords: PrGithubCoords): Promise<PrFile[]> =>
-      callPrReadRuntimeActionOr("getFilesByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getFilesByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetFilesByGithub, coords),
       ),
     getCommitsByGithub: async (coords: PrGithubCoords): Promise<PrCommit[]> =>
-      callPrReadRuntimeActionOr("getCommitsByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getCommitsByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetCommitsByGithub, coords),
       ),
     getActionRunsByGithub: async (coords: PrGithubCoords): Promise<PrActionRun[]> =>
-      callPrReadRuntimeActionOr("getActionRunsByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getActionRunsByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetActionRunsByGithub, coords),
       ),
     getActivityByGithub: async (coords: PrGithubCoords): Promise<PrActivityEvent[]> =>
-      callPrReadRuntimeActionOr("getActivityByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getActivityByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetActivityByGithub, coords),
       ),
     getStatusByGithub: async (coords: PrGithubCoords): Promise<PrStatus | null> =>
-      callPrReadRuntimeActionOr("getStatusByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getStatusByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetStatusByGithub, coords),
       ),
     getChecksByGithub: async (coords: PrGithubCoords): Promise<PrCheck[]> =>
-      callPrReadRuntimeActionOr("getChecksByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getChecksByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetChecksByGithub, coords),
       ),
     getReviewsByGithub: async (coords: PrGithubCoords): Promise<PrReview[]> =>
-      callPrReadRuntimeActionOr("getReviewsByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getReviewsByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetReviewsByGithub, coords),
       ),
     getCommentsByGithub: async (coords: PrGithubCoords): Promise<PrComment[]> =>
-      callPrReadRuntimeActionOr("getCommentsByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getCommentsByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetCommentsByGithub, coords),
       ),
     getReviewThreadsByGithub: async (coords: PrGithubCoords): Promise<PrReviewThread[]> =>
-      callPrReadRuntimeActionOr("getReviewThreadsByGithub", { arg: coords }, () =>
+      callPrReadRuntimeActionOr(null, "getReviewThreadsByGithub", { arg: coords }, () =>
         ipcRenderer.invoke(IPC.prsGetReviewThreadsByGithub, coords),
       ),
     addComment: async (args: AddPrCommentArgs): Promise<PrComment> =>
@@ -9154,11 +9197,11 @@ contextBridge.exposeInMainWorld("ade", {
         () => ipcRenderer.invoke(IPC.prsCleanupIntegrationWorkflow, args),
       ),
     getDeployments: async (prId: string): Promise<PrDeployment[]> =>
-      callPrReadRuntimeActionOr("getDeployments", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getDeployments", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetDeployments, { prId }),
       ),
     getAiSummary: async (prId: string): Promise<PrAiSummary | null> =>
-      callPrReadRuntimeActionOr("getAiSummary", { arg: prId }, () =>
+      callPrReadRuntimeActionOr(null, "getAiSummary", { arg: prId }, () =>
         ipcRenderer.invoke(IPC.prsGetAiSummary, { prId }),
       ),
     regenerateAiSummary: async (prId: string): Promise<PrAiSummary> =>

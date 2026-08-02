@@ -7,6 +7,7 @@ import {
   type ChatPrSignature,
 } from "./ChatPrPane";
 import { patchChatCompanionUiState, readChatCompanionUiState } from "./chatCompanionUiState";
+import type { OpenProjectBinding } from "../../../shared/types";
 
 export type UseChatPrAutoPop = {
   prPaneOpen: boolean;
@@ -34,9 +35,17 @@ export type UseChatPrAutoPop = {
  */
 export function useChatPrAutoPop(
   laneId: string | null | undefined,
-  opts?: { persistKey?: string | null },
+  opts?: { persistKey?: string | null; runtimePin?: OpenProjectBinding | null },
 ): UseChatPrAutoPop {
   const persistKey = opts?.persistKey ?? null;
+  // The lane's PR lives on the lane's machine, so both the seed read and the
+  // event feed have to come from there — see `ChatGitToolbar.runtimePin`. Keyed
+  // on the pin KEY, read through a ref: a local pin is a fresh object on every
+  // cross-machine merge, and re-subscribing re-anchors the pinned event pump.
+  const runtimePin = opts?.runtimePin ?? null;
+  const runtimePinRef = useRef<OpenProjectBinding | null>(runtimePin);
+  runtimePinRef.current = runtimePin;
+  const runtimePinKey = runtimePin?.key ?? null;
   const [prPaneOpen, setPrPaneOpen] = useState(
     () => (persistKey ? readChatCompanionUiState(persistKey).prPaneOpen : false),
   );
@@ -87,7 +96,7 @@ export function useChatPrAutoPop(
     if (!laneId || !prs?.getForLane || !prs?.onEvent) return;
     let cancelled = false;
     prs
-      .getForLane(laneId)
+      .getForLane(laneId, runtimePinRef.current)
       .then((pr) => {
         if (!cancelled && prevPrSigRef.current === null) prevPrSigRef.current = chatPrSignature(pr);
       })
@@ -102,12 +111,12 @@ export function useChatPrAutoPop(
       if (!change) return;
       setPrPaneDelta({ ...change, nonce: ++nonceRef.current });
       setPrPaneOpen(true);
-    });
+    }, runtimePinRef.current);
     return () => {
       cancelled = true;
       unsubscribe();
     };
-  }, [laneId]);
+  }, [laneId, runtimePinKey]);
 
   return { prPaneOpen, setPrPaneOpen, prPaneDelta };
 }

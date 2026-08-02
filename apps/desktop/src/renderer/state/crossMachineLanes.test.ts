@@ -9,6 +9,7 @@ import {
   buildCrossMachineLaneRows,
   cancelCrossMachineOptimisticChatSession,
   decodeForeignLanes,
+  decodeForeignPrs,
   decodeForeignSessions,
   reconcileCrossMachineOptimisticSessions,
   orderCrossMachineRows,
@@ -149,6 +150,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           // Newer activity than the reachable machine, and still ranked below it.
           lanes: [makeLane({ id: "lane-offline", createdAt: "2026-07-28T10:00:00.000Z" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -160,6 +162,7 @@ describe("offline machines stay in the sidebar, dimmed", () => {
           online: true,
           lanes: [makeLane({ id: "lane-online", createdAt: "2026-07-20T10:00:00.000Z" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -312,6 +315,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/foreign" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -358,6 +362,7 @@ describe("machine marker", () => {
           online: false,
           lanes: [activeLane],
           sessions: [makeSession({ id: "session-duplicate", laneId: activeLane.id })],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -375,6 +380,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [thisMacLane],
           sessions: [makeSession({ id: "session-local", laneId: thisMacLane.id })],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -412,6 +418,7 @@ describe("machine marker", () => {
           online: false,
           lanes: [makeLane({ id: "lane-offline", branchRef: "feature/shared" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -423,6 +430,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-online", branchRef: "feature/shared" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -458,6 +466,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-a", branchRef: "feature/a" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },
@@ -469,6 +478,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-b", branchRef: "feature/b" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },
@@ -494,6 +504,7 @@ describe("machine marker", () => {
           online: true,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/shared" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },
@@ -602,6 +613,7 @@ describe("selectOtherMachineBranchStates", () => {
             }),
           ],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },
@@ -650,6 +662,7 @@ describe("selectOtherMachineBranchStates", () => {
           online: true,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/other" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: 1,
           error: null,
         },
@@ -678,6 +691,7 @@ describe("selectOtherMachineBranchStates", () => {
             }),
           ],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -698,6 +712,7 @@ describe("selectOtherMachineBranchStates", () => {
           online: false,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/shared" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: null,
           error: "not yet reachable",
         },
@@ -731,6 +746,7 @@ describe("selectOtherMachineBranchStates", () => {
           online: true,
           lanes: [activeLane],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -748,6 +764,7 @@ describe("selectOtherMachineBranchStates", () => {
             }),
           ],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: Date.now(),
           error: null,
         },
@@ -779,6 +796,7 @@ describe("selectOtherMachineBranchStates", () => {
           online: false,
           lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/shared" })],
           sessions: [],
+          prs: [],
           lastSyncedAtMs: syncedAtMs,
           error: "offline",
         },
@@ -797,6 +815,32 @@ describe("foreign payload decoding", () => {
     expect(decodeForeignLanes({ lanes: [{ id: "a", name: "A", branchRef: "b" }] })).toHaveLength(1);
     expect(decodeForeignSessions([{ id: "s", laneId: "l" }, { id: "s2" }])).toHaveLength(1);
     expect(decodeForeignSessions("nope")).toEqual([]);
+  });
+
+  // A half-decoded PR renders "PR #undefined", or a badge whose click is a
+  // silent no-op because the foreign click-through has nowhere to go. Dropping
+  // the row shows no badge, which is honest.
+  it("drops PR rows missing any field the foreign badge renders", () => {
+    const complete = {
+      id: "pr-1",
+      laneId: "lane-1",
+      headBranch: "feature/x",
+      githubPrNumber: 91,
+      githubUrl: "https://github.com/arul28/ADE/pull/91",
+      state: "open",
+    };
+
+    expect(decodeForeignPrs([complete])).toHaveLength(1);
+    expect(decodeForeignPrs({ prs: [complete] })).toHaveLength(1);
+    expect(decodeForeignPrs([
+      { ...complete, githubPrNumber: undefined },
+      { ...complete, githubUrl: "" },
+      { ...complete, laneId: "" },
+      { ...complete, state: undefined },
+      { ...complete, id: "" },
+      null,
+    ])).toEqual([]);
+    expect(decodeForeignPrs("nope")).toEqual([]);
   });
 });
 
@@ -899,25 +943,31 @@ describe("cross-machine refresh scheduling", () => {
     });
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(400);
-    expect(callAction).toHaveBeenCalledTimes(2);
+    // Three reads go out TOGETHER on a lane-cadence tick: lanes, chats and PRs.
+    // PRs ride the lane cadence (a PR is only rendered by joining it to a lane)
+    // and must be issued in parallel — reading them after the lane read would
+    // hold this machine's lanes and chats behind a second 8s timeout and stall
+    // every other machine's cadence with it.
+    expect(callAction).toHaveBeenCalledTimes(3);
 
     // The old setInterval path started another generation on its own cadence,
     // invalidating this still-live read. A settled-chain poll must leave it alone
     // for as long as the read's own timeout allows it to run.
     await vi.advanceTimersByTimeAsync(7_500);
-    expect(callAction).toHaveBeenCalledTimes(2);
+    expect(callAction).toHaveBeenCalledTimes(3);
 
     pending.splice(0).forEach((resolve, index) => resolve({
-      result: index === 0 ? { lanes: [] } : { sessions: [] },
+      result: index === 0 ? { lanes: [] } : index === 1 ? { sessions: [] } : { prs: [] },
     }));
     await Promise.resolve();
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(9_000);
-    expect(callAction).toHaveBeenCalledTimes(2);
-    // The next tick reads chats only: the lane list has its own 30s cadence, and
-    // no chat referenced a lane this machine has not already reported.
-    await vi.advanceTimersByTimeAsync(2_000);
     expect(callAction).toHaveBeenCalledTimes(3);
+    // The next tick reads chats only: the lane list (and with it the PR list)
+    // has its own 30s cadence, and no chat referenced a lane this machine has
+    // not already reported.
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(callAction).toHaveBeenCalledTimes(4);
     expect(callAction).toHaveBeenLastCalledWith(
       "target-studio",
       "project-a",
@@ -989,6 +1039,86 @@ describe("cross-machine refresh scheduling", () => {
     // than the cadence this test exists to prove.
     await vi.advanceTimersByTimeAsync(21_000);
     expect(requests.filter((entry) => entry.domain === "lane")).toHaveLength(2);
+
+    stop();
+  });
+
+  // The bug this whole change exists to fix: a foreign machine's PR rows live in
+  // ITS database, so they were never fetched and its cards/headers rendered no
+  // PR badge until the project tab was rebound to that machine.
+  it("stores a foreign machine's PRs on its slice, and fetches them for a catch-up lane", async () => {
+    vi.useFakeTimers();
+    const requests: Array<{ domain: string; action: string }> = [];
+    let sessionLaneId = "lane-known";
+    const callAction = vi.fn(async (
+      _targetId: string,
+      _projectId: string,
+      request: { domain: string; action: string },
+    ) => {
+      requests.push({ domain: request.domain, action: request.action });
+      if (request.domain === "lane") {
+        return { result: { lanes: [
+          { id: "lane-known", name: "Known", branchRef: "feature/known" },
+          { id: "lane-brand-new", name: "New", branchRef: "feature/new" },
+        ] } };
+      }
+      if (request.domain === "pr") {
+        return { result: { prs: [{
+          id: "pr-foreign",
+          laneId: "lane-known",
+          headBranch: "feature/known",
+          githubPrNumber: 91,
+          githubUrl: "https://github.com/acme/repo-a/pull/91",
+          state: "open",
+        }] } };
+      }
+      return { result: { sessions: [{ id: "session-1", laneId: sessionLaneId }] } };
+    });
+    window.ade = {
+      remoteRuntime: {
+        callAction,
+        getConnectionSnapshot: vi.fn(async () => ({
+          connections: [{
+            state: "connected",
+            target: { id: "target-studio", name: "Mac Studio (12)", hostname: "studio" },
+            projects: [{
+              projectId: "project-a",
+              rootPath: "/repo-a",
+              displayName: "Repo A",
+              gitOriginUrl: "git@github.com:acme/repo-a.git",
+            }],
+          }],
+          connectedCount: 1,
+        })),
+        onConnectionSnapshotChanged: vi.fn(() => () => {}),
+      },
+    } as unknown as typeof window.ade;
+
+    const stop = startCrossMachineLaneSync({
+      scopeKey: "local:/repo-a",
+      repoDisplayName: "Repo A",
+      repoOriginUrl: "git@github.com:acme/repo-a.git",
+      boundTargetId: null,
+      boundProjectId: null,
+    });
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(400);
+
+    const slice = () => useAppStore.getState().crossMachineLanesByMachineId["target-studio"];
+    expect(requests.filter((entry) => entry.domain === "pr")).toHaveLength(1);
+    expect(slice()?.prs).toEqual([expect.objectContaining({ id: "pr-foreign", laneId: "lane-known" })]);
+
+    // Chat-only ticks inside the lane window must not re-read PRs: they ride the
+    // lane cadence, not the 10s chat cadence.
+    await vi.advanceTimersByTimeAsync(21_000);
+    expect(requests.filter((entry) => entry.domain === "pr")).toHaveLength(1);
+    expect(slice()?.prs).toHaveLength(1);
+
+    // A chat on a lane we have never seen forces an off-cadence lane read. That
+    // lane must arrive WITH its PR, or it renders blank for a full 30s cadence.
+    sessionLaneId = "lane-brand-new";
+    await vi.advanceTimersByTimeAsync(10_500);
+    expect(requests.filter((entry) => entry.domain === "pr")).toHaveLength(2);
 
     stop();
   });
