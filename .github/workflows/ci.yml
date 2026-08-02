@@ -448,9 +448,7 @@ jobs:
           src/services/sync/syncService.test.ts
 
       - name: Test intended-user named-pipe listener contracts
-        run: >-
-          cd apps/ade-cli && npx vitest run src/cli.test.ts
-          -t "declares intended-user-only access|hosts headless RPC on a Windows named pipe"
+        run: cd apps/ade-cli && npx vitest run src/services/runtime/localIpcListenOptions.test.ts
 
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts

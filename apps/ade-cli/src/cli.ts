@@ -85,6 +85,7 @@ import {
   withRpcAuthParam,
 } from "./rpcAuth";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
 import {
   isUnsupportedRecoveryActionError,
@@ -16277,7 +16278,7 @@ async function runServe(
       server.once("listening", handleListening);
       server.once("error", handleError);
       if (typeof target === "string") {
-        server.listen(target);
+        server.listen(localIpcListenOptions(target));
       } else {
         server.listen(target.port, target.host);
       }
