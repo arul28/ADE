@@ -493,6 +493,24 @@ jobs:
       - name: Test Windows local runtime connection pool contracts
         run: cd apps/desktop && npx vitest run src/main/services/localRuntime/localRuntimeConnectionPool.test.ts
 
+      # The CRDT/sync layer. These suites are gated on `isCrsqliteAvailable()`,
+      # which resolves `vendor/crsqlite/<platform>-<arch>/`. Only darwin-arm64,
+      # darwin-x64, and win32-x64 are vendored, so on the ubuntu-latest
+      # `test-desktop` job the gate is false and 57 tests skip silently — a
+      # green checkmark over unrun CRR replication, sync host, sync service,
+      # and device registry coverage. windows-latest is the only runner in this
+      # workflow that has the extension, so this is where those tests actually
+      # execute. Do not add kvDb.rebuildRecovery.test.ts here: its temp-dir
+      # teardown unlinks an open SQLite handle, which is EBUSY on Windows.
+      - name: Test Windows CRDT, sync, and device registry contracts
+        run: >-
+          cd apps/desktop && npx vitest run
+          src/main/services/state/kvDb.test.ts
+          src/main/services/state/kvDb.migrations.test.ts
+          src/main/services/state/kvDb.sync.test.ts
+          src/main/services/sync/deviceRegistryService.test.ts
+          src/main/services/sync/syncHostService.test.ts
+          src/main/services/sync/syncService.test.ts
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
