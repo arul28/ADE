@@ -293,7 +293,7 @@ export type AttentionPreferences = {
 };
 
 /**
- * How this Mac exposes its notch surface. Events never override the selected
+ * How this computer exposes its notch surface. Events never override the selected
  * interaction mode.
  * - `minimal`: keep a tiny status visible; hover or click opens a short peek.
  * - `hover`: stay visually dormant until the pointer enters the top-edge hot

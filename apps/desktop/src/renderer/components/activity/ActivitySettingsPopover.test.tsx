@@ -4,6 +4,14 @@ import React from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../../lib/platform", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/platform")>("../../lib/platform");
+  return {
+    ...actual,
+    supportsNativeNotch: true,
+  };
+});
+
 import { DEFAULT_ATTENTION_PREFERENCES } from "../../../shared/types";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { resetActivityStoreForTests } from "../../state/activityStore";
