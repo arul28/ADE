@@ -57,7 +57,7 @@ import type {
   ListMyGitHubReposInput,
   ProjectBrowseInput,
 } from "../../desktop/src/shared/types/core";
-import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
@@ -14697,21 +14697,69 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
     : path.resolve(rawSocketPath);
 }
 
-function isEphemeralRuntimeSocketPath(socketPath: string): boolean {
-  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
-    return false;
-  }
-  const normalizedSocketPath = path.resolve(socketPath);
+/**
+ * The `ade-<kind>-XXXXXX` naming convention every throwaway ADE brain already
+ * follows for its scratch directory under the system temp dir.
+ */
+const EPHEMERAL_RUNTIME_SCRATCH_PATTERN =
+  /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/;
+
+function isEphemeralRuntimeScratchPath(candidate: string): boolean {
+  const normalizedPath = path.resolve(candidate);
   const tmpDirs = Array.from(new Set(
     [os.tmpdir(), realpathSyncSafe(os.tmpdir()), "/tmp", realpathSyncSafe("/tmp")]
       .map((dir) => path.resolve(dir)),
   ));
   for (const tmpDir of tmpDirs) {
-    const relativeToTmp = path.relative(tmpDir, normalizedSocketPath);
+    const relativeToTmp = path.relative(tmpDir, normalizedPath);
     if (relativeToTmp.startsWith("..") || path.isAbsolute(relativeToTmp)) continue;
-    return /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/.test(relativeToTmp);
+    return EPHEMERAL_RUNTIME_SCRATCH_PATTERN.test(relativeToTmp);
   }
   return false;
+}
+
+/**
+ * Whether this endpoint belongs to a throwaway brain rather than the machine's
+ * real one. An ephemeral brain is spawned with `--no-sync` and an idle-exit
+ * budget, and is excluded from runtime-service repair.
+ *
+ * On macOS/Linux the endpoint is `<ADE_HOME>/sock/ade.sock`, so inspecting the
+ * socket path answers the question directly.
+ *
+ * Windows has no filesystem socket to inspect: the machine endpoint is a named
+ * pipe whose name is a hash of ADE_HOME, so there is no path to match and this
+ * used to return `false` for every pipe. What the POSIX branch is really asking
+ * is "does this brain belong to a scratch ADE_HOME under the temp dir", since
+ * the socket always lives inside that home — so on Windows we ask that question
+ * of the home itself, and confirm the endpoint is the pipe that home derives.
+ *
+ * Without it every Windows scratch brain was misread as the real,
+ * service-managed machine brain: it was spawned WITH mobile sync and so lost
+ * the singleton race against the user's actual brain (which the sync loop
+ * treats as fatal before the RPC socket is ever bound), it never idle-exited,
+ * and under a packaged Electron CLI it was eligible to trigger repair of the
+ * installed runtime service.
+ */
+function isEphemeralRuntimeSocketPath(socketPath: string): boolean {
+  if (socketPath.startsWith("tcp://")) return false;
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    if (!isEphemeralRuntimeScratchPath(resolveMachineAdeDir())) return false;
+    return namedPipeComparisonKey(resolveMachineAdeLayout().socketPath)
+      === namedPipeComparisonKey(socketPath);
+  }
+  return isEphemeralRuntimeScratchPath(socketPath);
+}
+
+/**
+ * Collapse the equivalent spellings of one Windows named pipe onto a single
+ * comparison key: Win32 accepts `/` and `\` interchangeably in a pipe path and
+ * matches pipe names case-insensitively. Mirrors the identically named helper
+ * in the desktop local runtime pool.
+ *
+ * This is a comparison key ONLY — never an address to connect to or listen on.
+ */
+function namedPipeComparisonKey(socketPath: string): string {
+  return socketPath.trim().replace(/\//g, "\\").toLowerCase();
 }
 
 function realpathSyncSafe(filePath: string): string {

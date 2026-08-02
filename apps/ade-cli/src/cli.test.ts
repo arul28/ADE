@@ -43,6 +43,8 @@ import {
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../desktop/src/shared/accountDirectory";
+import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
@@ -893,6 +895,42 @@ describe("ADE CLI", () => {
     expect(isEphemeralRuntimeSocketPath(path.join(os.homedir(), ".ade", "sock", "ade.sock"))).toBe(false);
     expect(isEphemeralRuntimeSocketPath("tcp://127.0.0.1:8765")).toBe(false);
   });
+
+  // Only a Windows runner can exercise this: `resolveMachineAdeLayout` yields a
+  // named pipe there and a filesystem socket everywhere else, so off win32
+  // there is no pipe endpoint to classify. Gated by the "Test Windows CLI
+  // contracts" step, which already runs this file natively.
+  (process.platform === "win32" ? it : it.skip)(
+    "classifies a scratch-home named pipe as ephemeral",
+    () => {
+      const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));
+      try {
+        withEnv({ ADE_HOME: scratchHome }, () => {
+          const scratchPipe = resolveMachineAdeLayout().socketPath;
+          expect(isAdeRuntimeNamedPipePath(scratchPipe)).toBe(true);
+          expect(isEphemeralRuntimeSocketPath(scratchPipe)).toBe(true);
+          // Win32 treats `/` and `\` interchangeably in a pipe path and matches
+          // pipe names case-insensitively, so every spelling of this endpoint
+          // has to classify the same way.
+          expect(
+            isEphemeralRuntimeSocketPath(scratchPipe.replace(/\\/g, "/").toUpperCase()),
+          ).toBe(true);
+          // A pipe that is not this home's own endpoint stays non-ephemeral,
+          // so the scratch-home check cannot leak onto a real machine brain.
+          expect(
+            isEphemeralRuntimeSocketPath("\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef"),
+          ).toBe(false);
+        });
+        withEnv({ ADE_HOME: path.join(os.homedir(), ".ade") }, () => {
+          expect(
+            isEphemeralRuntimeSocketPath(resolveMachineAdeLayout().socketPath),
+          ).toBe(false);
+        });
+      } finally {
+        fs.rmSync(scratchHome, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("blocks manual service-socket runtime spawn when service mutation is disabled", () => {
     expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {
