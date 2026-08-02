@@ -84,6 +84,7 @@ export type BrainUpdateDeps = {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
+  execPath?: string;
   currentVersion?: string;
   now?: () => Date;
   tmpDir?: () => Promise<string>;
@@ -560,7 +561,16 @@ async function promoteStagedNativeRuntime(manifest: BrainUpdateManifest): Promis
     return hasBackup ? backupPath : null;
   } catch (error) {
     if (hasBackup) {
-      await fsp.rename(backupPath, manifest.runtimeTargetDir).catch(() => undefined);
+      try {
+        await fsp.rename(backupPath, manifest.runtimeTargetDir);
+      } catch (restoreError) {
+        throw new Error(
+          `ADE native runtime promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          + `restoring the previous runtime also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}. `
+          + `Recovery files remain at ${backupPath}.`,
+          { cause: error },
+        );
+      }
     }
     throw error;
   }
@@ -570,10 +580,51 @@ async function rollbackPromotedNativeRuntime(
   manifest: BrainUpdateManifest,
   backupPath: string | null,
 ): Promise<void> {
-  await fsp.rm(manifest.runtimeTargetDir, { recursive: true, force: true }).catch(() => undefined);
+  await fsp.rm(manifest.runtimeTargetDir, { recursive: true, force: true });
   if (backupPath) {
     await fsp.rename(backupPath, manifest.runtimeTargetDir);
   }
+}
+
+const WINDOWS_DEFERRED_STAGING_CLEANUP = [
+  "$ErrorActionPreference='SilentlyContinue';",
+  "$target=$env:ADE_BRAIN_UPDATE_CLEANUP_DIR;",
+  "$parentPid=[int]$env:ADE_BRAIN_UPDATE_CLEANUP_PARENT_PID;",
+  "Wait-Process -Id $parentPid -ErrorAction SilentlyContinue;",
+  "for ($attempt=0; $attempt -lt 20; $attempt++) {",
+  "  Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue;",
+  "  if (-not (Test-Path -LiteralPath $target)) { exit 0 }",
+  "  Start-Sleep -Milliseconds 500;",
+  "}",
+  "exit 1;",
+].join(" ");
+
+function isPathInside(parentPath: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function cleanupAppliedUpdateStaging(
+  stagingDir: string,
+  deps: BrainUpdateDeps,
+): Promise<void> {
+  const platform = deps.platform ?? process.platform;
+  const execPath = deps.execPath ?? process.execPath;
+  if (platform === "win32" && isPathInside(stagingDir, execPath)) {
+    (deps.spawnDetached ?? spawnDetached)(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_DEFERRED_STAGING_CLEANUP],
+      {
+        env: {
+          ...(deps.env ?? process.env),
+          ADE_BRAIN_UPDATE_CLEANUP_DIR: stagingDir,
+          ADE_BRAIN_UPDATE_CLEANUP_PARENT_PID: String(process.pid),
+        },
+      },
+    );
+    return;
+  }
+  await fsp.rm(stagingDir, { recursive: true, force: true });
 }
 
 async function applyStagedBrainUpdate(
@@ -603,14 +654,24 @@ async function applyStagedBrainUpdate(
       message,
       error,
     });
-  const cleanupStagingDir = async () => {
-    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+  const cleanupStagingDir = () => cleanupAppliedUpdateStaging(stagingDir, deps);
+  const cleanupStagingAfterSuccess = async (successMessage: string): Promise<string> => {
+    try {
+      await cleanupStagingDir();
+      return successMessage;
+    } catch (error) {
+      const cleanupError = error instanceof Error ? error.message : String(error);
+      const warningMessage = `${successMessage} Staging cleanup could not complete: ${cleanupError}. Remove ${stagingDir} manually.`;
+      await writeStatus("succeeded", warningMessage).catch(() => undefined);
+      return warningMessage;
+    }
   };
   const platform = deps.platform ?? process.platform;
+  const baseEnv = deps.env ?? process.env;
   let windowsServiceStopped = false;
   let windowsServiceWasInstalled = false;
   const serviceEnv = () => ({
-    ...runtimeSidecarEnv(process.env, manifest.runtimeTargetDir),
+    ...runtimeSidecarEnv(baseEnv, manifest.runtimeTargetDir),
     ADE_HOME: manifest.adeHome,
   });
   const restartRolledBackWindowsService = (): string | null => {
@@ -674,15 +735,29 @@ async function applyStagedBrainUpdate(
     let binaryBackedUp = false;
     let binaryPromoted = false;
     const rollbackPromotedAssets = async () => {
-      await fsp.rm(replacementPath, { force: true }).catch(() => undefined);
+      const rollbackErrors: string[] = [];
+      const attempt = async (label: string, action: () => Promise<void>) => {
+        try {
+          await action();
+        } catch (error) {
+          rollbackErrors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      await attempt("staged binary cleanup", () => fsp.rm(replacementPath, { force: true }));
       if (binaryPromoted) {
-        await fsp.rm(manifest.binaryPath, { force: true });
+        await attempt("new binary removal", () => fsp.rm(manifest.binaryPath, { force: true }));
       }
       if (binaryBackedUp) {
-        await fsp.rename(binaryBackupPath, manifest.binaryPath);
+        await attempt("previous binary restoration", () => fsp.rename(binaryBackupPath, manifest.binaryPath));
       }
       if (nativePromoted) {
-        await rollbackPromotedNativeRuntime(manifest, nativeBackupPath);
+        await attempt(
+          "previous native runtime restoration",
+          () => rollbackPromotedNativeRuntime(manifest, nativeBackupPath),
+        );
+      }
+      if (rollbackErrors.length > 0) {
+        throw new Error(rollbackErrors.join("; "));
       }
     };
     const discardPromotedBackups = async () => {
@@ -708,14 +783,24 @@ async function applyStagedBrainUpdate(
       await fsp.rename(replacementPath, manifest.binaryPath);
       binaryPromoted = true;
     } catch (error) {
-      await rollbackPromotedAssets().catch(() => undefined);
+      try {
+        await rollbackPromotedAssets();
+      } catch (rollbackError) {
+        throw new Error(
+          `ADE runtime asset promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          + `rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. `
+          + `Recovery files were retained beside ${manifest.binaryPath} and ${manifest.runtimeTargetDir}.`,
+          { cause: error },
+        );
+      }
       throw error;
     }
 
     if (!manifest.restartService) {
-      await writeStatus("succeeded", "ADE brain runtime updated. Service restart was skipped.");
+      const successMessage = "ADE brain runtime updated. Service restart was skipped.";
+      await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
-      await cleanupStagingDir();
+      const message = await cleanupStagingAfterSuccess(successMessage);
       return {
         ok: true,
         action: "update",
@@ -725,7 +810,7 @@ async function applyStagedBrainUpdate(
         target: manifest.target,
         binaryPath: manifest.binaryPath,
         runtimePath: manifest.runtimeTargetDir,
-        message: "ADE brain runtime updated. Service restart was skipped.",
+        message,
       };
     }
 
@@ -765,9 +850,10 @@ async function applyStagedBrainUpdate(
       };
     }
 
-    await writeStatus("succeeded", "ADE brain updated and service restart requested.");
+    const successMessage = "ADE brain updated and service restart requested.";
+    await writeStatus("succeeded", successMessage);
     await discardPromotedBackups();
-    await cleanupStagingDir();
+    const message = await cleanupStagingAfterSuccess(successMessage);
     return {
       ok: true,
       action: "update",
@@ -777,7 +863,7 @@ async function applyStagedBrainUpdate(
       target: manifest.target,
       binaryPath: manifest.binaryPath,
       runtimePath: manifest.runtimeTargetDir,
-      message: "ADE brain updated and service restart requested.",
+      message,
     };
   } catch (error) {
     const baseMessage = error instanceof Error ? error.message : String(error);

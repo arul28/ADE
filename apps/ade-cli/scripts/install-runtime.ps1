@@ -2,6 +2,7 @@
 param(
   [string]$Version = $(if ($env:ADE_VERSION) { $env:ADE_VERSION } else { "latest" }),
   [string]$Repo = $(if ($env:ADE_RELEASE_REPO) { $env:ADE_RELEASE_REPO } else { "arul28/ADE" }),
+  [string]$AssetDirectory = $env:ADE_RELEASE_ASSET_DIR,
   [string]$InstallDir = $env:ADE_INSTALL_DIR,
   [string]$AdeHome = $env:ADE_HOME,
   [switch]$NoService,
@@ -23,6 +24,14 @@ function Resolve-AssetUrl([string]$Name) {
 }
 
 function Download-Asset([string]$Name, [string]$Destination) {
+  if (-not [string]::IsNullOrWhiteSpace($AssetDirectory)) {
+    $source = Join-Path ([IO.Path]::GetFullPath($AssetDirectory)) $Name
+    if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+      Fail "missing local runtime asset: $Name"
+    }
+    Copy-Item -LiteralPath $source -Destination $Destination -Force
+    return
+  }
   $url = Resolve-AssetUrl $Name
   if (-not $url.StartsWith("https://", [StringComparison]::OrdinalIgnoreCase)) {
     Fail "refusing non-HTTPS runtime asset URL: $url"

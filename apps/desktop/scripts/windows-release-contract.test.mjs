@@ -48,6 +48,10 @@ const windowsServiceManager = fs.readFileSync(
   path.join(repoRoot, "apps", "ade-cli", "src", "serviceManager", "installWindows.ts"),
   "utf8",
 );
+const windowsRuntimeSigner = fs.readFileSync(
+  path.join(repoRoot, "apps", "ade-cli", "scripts", "sign-windows-runtime.ps1"),
+  "utf8",
+);
 const desktopMain = fs.readFileSync(path.join(desktopRoot, "src", "main", "main.ts"), "utf8");
 const registerIpc = fs.readFileSync(
   path.join(desktopRoot, "src", "main", "services", "ipc", "registerIpc.ts"),
@@ -194,19 +198,59 @@ test("Beta validation selects only Beta artifacts when Stable files are retained
   assert.match(winArtifactValidator, /windowsInstallerPattern\(packageIdentity\)/);
 });
 
-test("standalone releases include a checksummed Windows brain and PowerShell installer", () => {
+test("standalone Windows runtime signing uses only canonical credentials and validates publisher identity", () => {
   const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+  const windowsSignStep = runtimeBuild.slice(
+    runtimeBuild.indexOf("- name: Sign and validate standalone Windows runtime"),
+    runtimeBuild.indexOf("- name: Materialize runtime notarization API key"),
+  );
+  assert.match(runtimeBuild, /target: win32-x64[\s\S]*os: windows-latest[\s\S]*binary: ade-win32-x64\.exe/);
+  assert.match(windowsSignStep, /matrix\.target == 'win32-x64'/);
+  assert.match(windowsSignStep, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
+  assert.match(windowsSignStep, /WINDOWS_CSC_LINK: \$\{\{ secrets\.WINDOWS_CSC_LINK \}\}/);
+  assert.match(windowsSignStep, /WINDOWS_CSC_KEY_PASSWORD: \$\{\{ secrets\.WINDOWS_CSC_KEY_PASSWORD \}\}/);
+  assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
+  assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
+  assert.doesNotMatch(windowsSignStep, /(?:^|\s)(?:WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD):/m);
+  assert.match(windowsSignStep, /sign-windows-runtime\.ps1/);
+  assert.match(windowsRuntimeSigner, /Set-AuthenticodeSignature/);
+  assert.match(windowsRuntimeSigner, /Get-AuthenticodeSignature/);
+  assert.match(windowsRuntimeSigner, /TimeStamperCertificate/);
+  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
+  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
+  assert.match(windowsRuntimeSigner, /X509KeyStorageFlags\]::EphemeralKeySet/);
+  assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:certificateSource|certificatePassword|expectedSubject|expectedThumbprint)/);
+});
+
+test("standalone Windows release assets remain behind every publication and proof gate", () => {
   const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
   const installer = fs.readFileSync(
     path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
     "utf8",
   );
-  assert.match(runtimeBuild, /target: win32-x64[\s\S]*os: windows-latest[\s\S]*binary: ade-win32-x64\.exe/);
-  assert.match(publish, /install-runtime\.ps1 release-assets\/runtime\/install\.ps1/);
-  assert.match(publish, /sha256sum install\.sh install\.ps1 ade-\*/);
-  assert.match(publish, /darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64/);
-  assert.match(publish, /if \[ "\$target" = "win32-x64" \]; then binary="\$binary\.exe"/);
+  const releaseFiles = publish.slice(publish.indexOf("files=("), publish.indexOf("if [ \"$BUILD_WINDOWS\"", publish.indexOf("files=(")));
+  assert.doesNotMatch(releaseFiles, /install\.ps1|ade-win32-x64/);
+  assert.match(publish, /runtime_assets\+=\(install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz\)/);
+  assert.match(publish, /test -s release-assets\/runtime\/install\.ps1/);
+  assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.exe/);
+  assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
+  assert.match(publish, /release-assets\/runtime\/install\.ps1[\s\S]*release-assets\/runtime\/ade-win32-x64\.exe[\s\S]*release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
+  assert.ok(
+    (publish.match(/\[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]/g) ?? []).length >= 3,
+    "copying, checksumming, and publishing standalone Windows assets must all require every gate",
+  );
+  assert.match(publish, /install\.ps1\|ade-win32-x64\.exe\|ade-win32-x64\.native\.tar\.gz/);
+  assert.match(publish, /gh release delete-asset "\$TAG_NAME" "\$asset" --repo "\$GH_REPO" --yes/);
+  assert.match(publish, /"\$BUILD_WINDOWS" != "1"[\s\S]*"\$PUBLISH_WINDOWS" != "1"[\s\S]*"\$WINDOWS_UPDATE_PROOF_APPROVED" != "1"/);
+  assert.match(runtimeBuild, /name: Assemble signed Windows standalone proof bundle/);
+  assert.match(runtimeBuild, /matrix\.target == 'win32-x64' && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
+  assert.match(runtimeBuild, /sha256sum install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz/);
+  assert.match(runtimeBuild, /apps\/ade-cli\/dist-static\/install\.ps1/);
+  assert.match(runtimeBuild, /apps\/ade-cli\/dist-static\/SHA256SUMS/);
   assert.match(installer, /Verify-Checksum/);
+  assert.match(installer, /ADE_RELEASE_ASSET_DIR/);
+  assert.match(installer, /Copy-Item -LiteralPath \$source -Destination \$Destination -Force/);
   assert.match(installer, /ade-win32-x64\.exe|\$binaryAsset/);
   assert.match(installer, /serve --install-service/);
   assert.match(installer, /serve --service-status --json/);

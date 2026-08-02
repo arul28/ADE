@@ -413,6 +413,18 @@ jobs:
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
 
+      - name: Sign and validate standalone Windows runtime
+        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          & apps/ade-cli/scripts/sign-windows-runtime.ps1 `
+            -BinaryPath "apps/ade-cli/dist-static/${{ matrix.binary }}"
+
       - name: Materialize runtime notarization API key
         if: ${{ startsWith(matrix.target, 'darwin-') }}
         env:
@@ -485,6 +497,19 @@ jobs:
             exit 1
           fi
 
+      - name: Assemble signed Windows standalone proof bundle
+        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp apps/ade-cli/scripts/install-runtime.ps1 apps/ade-cli/dist-static/install.ps1
+          (
+            cd apps/ade-cli/dist-static
+            sha256sum install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz \
+              | LC_ALL=C sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
       - name: Upload ADE runtime binary
         uses: actions/upload-artifact@v4
         with:
@@ -492,6 +517,8 @@ jobs:
           path: |
             apps/ade-cli/dist-static/${{ matrix.binary }}
             apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
+            apps/ade-cli/dist-static/install.ps1
+            apps/ade-cli/dist-static/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
 
@@ -564,15 +591,39 @@ jobs:
           merge-multiple: true
 
       - name: Add standalone runtime installer
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
           chmod 755 release-assets/runtime/install.sh
-          cp apps/ade-cli/scripts/install-runtime.ps1 release-assets/runtime/install.ps1
+          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
+            cp apps/ade-cli/scripts/install-runtime.ps1 release-assets/runtime/install.ps1
+          fi
 
       - name: Generate standalone runtime checksums
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           set -euo pipefail
-          (cd release-assets/runtime && sha256sum install.sh install.ps1 ade-* | LC_ALL=C sort -k2 > SHA256SUMS)
+          runtime_assets=(
+            install.sh
+            ade-darwin-arm64
+            ade-darwin-arm64.native.tar.gz
+            ade-darwin-x64
+            ade-darwin-x64.native.tar.gz
+            ade-linux-arm64
+            ade-linux-arm64.native.tar.gz
+            ade-linux-x64
+            ade-linux-x64.native.tar.gz
+          )
+          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
+            runtime_assets+=(install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz)
+          fi
+          (cd release-assets/runtime && sha256sum "${runtime_assets[@]}" | LC_ALL=C sort -k2 > SHA256SUMS)
 
       - name: Validate publish asset manifest
         run: |
@@ -610,13 +661,11 @@ jobs:
             echo "::error::Standalone runtime installer is not executable."
             exit 1
           fi
-          require_file 'release-assets/runtime/install.ps1' 'standalone Windows runtime installer'
           require_file 'release-assets/runtime/SHA256SUMS' 'standalone runtime checksum manifest'
           (cd release-assets/runtime && sha256sum -c SHA256SUMS)
 
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64 win32-x64; do
+          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             binary="release-assets/runtime/ade-$target"
-            if [ "$target" = "win32-x64" ]; then binary="$binary.exe"; fi
             require_file "$binary" "ADE runtime binary for $target"
             require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
             archive_listing="$RUNNER_TEMP/ade-$target-native-files.txt"
@@ -641,6 +690,12 @@ jobs:
           test -s "${installers[0]}"
           test -s "${blockmaps[0]}"
           test -s release-assets/win/latest.yml
+          test -s release-assets/runtime/install.ps1
+          test -s release-assets/runtime/ade-win32-x64.exe
+          test -s release-assets/runtime/ade-win32-x64.native.tar.gz
+          grep -Eq '[[:space:]]install\.ps1$' release-assets/runtime/SHA256SUMS
+          grep -Eq '[[:space:]]ade-win32-x64\.exe$' release-assets/runtime/SHA256SUMS
+          grep -Eq '[[:space:]]ade-win32-x64\.native\.tar\.gz$' release-assets/runtime/SHA256SUMS
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -661,9 +716,9 @@ jobs:
             release-assets/mac/*.zip
             release-assets/mac/latest-mac.yml
             release-assets/runtime/install.sh
-            release-assets/runtime/install.ps1
             release-assets/runtime/SHA256SUMS
-            release-assets/runtime/ade-*
+            release-assets/runtime/ade-darwin-*
+            release-assets/runtime/ade-linux-*
           )
 
           # This repository variable stays disabled until the signed installer
@@ -673,6 +728,9 @@ jobs:
               release-assets/win/*.exe
               release-assets/win/*.exe.blockmap
               release-assets/win/latest.yml
+              release-assets/runtime/install.ps1
+              release-assets/runtime/ade-win32-x64.exe
+              release-assets/runtime/ade-win32-x64.native.tar.gz
             )
           fi
 
@@ -686,6 +744,18 @@ jobs:
             if [ "$is_draft" != "true" ]; then
               echo "::error::Release $TAG_NAME is already public. Refusing to overwrite published assets."
               exit 1
+            fi
+            if [ "$BUILD_WINDOWS" != "1" ] || [ "$PUBLISH_WINDOWS" != "1" ] || [ "$WINDOWS_UPDATE_PROOF_APPROVED" != "1" ]; then
+              mapfile -t existing_assets < <(
+                gh release view "$TAG_NAME" --repo "$GH_REPO" --json assets --jq '.assets[].name'
+              )
+              for asset in "${existing_assets[@]}"; do
+                case "$asset" in
+                  install.ps1|ade-win32-x64.exe|ade-win32-x64.native.tar.gz|ADE*-win-x64.exe|ADE*-win-x64.exe.blockmap|latest.yml)
+                    gh release delete-asset "$TAG_NAME" "$asset" --repo "$GH_REPO" --yes
+                    ;;
+                esac
+              done
             fi
             gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
