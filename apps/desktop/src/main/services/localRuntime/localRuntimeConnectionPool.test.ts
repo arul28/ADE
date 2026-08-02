@@ -6,6 +6,7 @@ import path from "node:path";
 import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
 
 vi.mock("electron", () => ({
@@ -136,6 +137,27 @@ class RawRuntimeSocketClient {
  */
 function machineRuntimeSocketPath(adeHome: string): string {
   return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
+}
+
+/**
+ * Canonicalize a temp project root with the *same* helper the runtime applies
+ * to every root it registers: `normalizeProjectRootPath` delegates to
+ * `realpathIfExists`, so `rootPath` always comes back off the wire in the
+ * spelling `fs.realpathSync.native` produces.
+ *
+ * The JS `fs.realpathSync` is not that helper. Both resolve symlinks — which is
+ * all these assertions used to need, to collapse the macOS `/var` ->
+ * `/private/var` tmpdir link — but only the native one expands Windows 8.3
+ * short names. Whenever the account name exceeds eight characters
+ * (`Administrator`, most `First Last` accounts, and GitHub's own
+ * `runneradmin`), `os.tmpdir()` is reported as
+ * `C:\Users\RUNNER~1\AppData\Local\Temp`, and a root built from it stays in
+ * that spelling under the JS realpath while the registered root comes back as
+ * `C:\Users\runneradmin\...`. Comparing the two then fails on two spellings of
+ * one directory rather than on any behavior.
+ */
+function canonicalProjectRoot(rootPath: string): string {
+  return realpathIfExists(rootPath);
 }
 
 function withTsxNodeOptions(value: string | undefined, loaderPath: string): string {
@@ -2082,7 +2104,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
-    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
+    const expectedProjectRoot = canonicalProjectRoot(projectRoot);
     const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
@@ -2209,7 +2231,7 @@ describe("local runtime connection pool", () => {
 
       pool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.version_mismatch_detected", expect.objectContaining({
         runtimeVersion: "1.0.0",
@@ -2267,7 +2289,7 @@ describe("local runtime connection pool", () => {
 
       secondPool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
       const secondRegistered = await secondPool.ensureProject(secondProjectRoot);
-      expect(fs.realpathSync(secondRegistered.rootPath)).toBe(fs.realpathSync(secondProjectRoot));
+      expect(canonicalProjectRoot(secondRegistered.rootPath)).toBe(canonicalProjectRoot(secondProjectRoot));
       const secondConnection = await (secondPool as unknown as { connection: Promise<{ socketPath: string; child: unknown }> }).connection;
       expect(secondConnection.socketPath).toBe(connection.socketPath);
       expect(secondConnection.child).toBeNull();
@@ -2514,7 +2536,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0-beta.1", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
 
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
       expect(logger.info).not.toHaveBeenCalledWith(
         "local_runtime.version_mismatch_detected",
         expect.anything(),
@@ -2593,7 +2615,7 @@ describe("local runtime connection pool", () => {
       expect(expectedBuildHash).toBeTruthy();
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.build_mismatch_detected", expect.objectContaining({
         runtimeBuildHash: "old-build",
@@ -2715,7 +2737,7 @@ describe("local runtime connection pool", () => {
 
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.role_mismatch_detected", expect.objectContaining({
         runtimeDefaultRole: "agent",
