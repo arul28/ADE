@@ -465,6 +465,12 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ade-win-release-${{ inputs.release_tag }}
+          # A public release promotes these exact bytes from this run, so the
+          # artifact has to outlive approval. Pinned instead of inherited: a
+          # lowered repository or organization default would silently shorten
+          # the window in which the approved proof can still be released.
+          # Keep this in sync with docs/playbooks/windows-signed-release.md.
+          retention-days: 90
           path: |
             apps/desktop/release/ADE-*-win-x64.exe
             apps/desktop/release/ADE-*-win-x64.exe.blockmap
@@ -502,6 +508,51 @@ jobs:
         with:
           node-version: 22
 
+      - name: Confirm approved Windows proof artifact is still retained
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          APPROVED_PROOF_RUN_ID: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
+          ARTIFACT_NAME: ade-win-release-${{ inputs.release_tag }}
+        run: |
+          set -uo pipefail
+
+          if ! status="$(
+            gh api "repos/$GH_REPO/actions/runs/$APPROVED_PROOF_RUN_ID/artifacts" \
+              --method GET \
+              -H "Accept: application/vnd.github+json" \
+              -f per_page=100 \
+              --jq '
+                [.artifacts[] | select(.name == env.ARTIFACT_NAME)] as $named
+                | if ($named | length) == 0 then "missing"
+                  elif ([$named[] | select(.expired == false)] | length) == 0 then "expired"
+                  else "available" end
+              '
+          )"; then
+            status="unreadable"
+          fi
+
+          recovery="Re-run prepare-release.yml with windows_proof=true for the approved commit while ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is not 1, re-approve the proof, then update ADE_WINDOWS_APPROVED_PROOF_RUN_ID and ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256."
+
+          case "$status" in
+            available)
+              echo "Approved Windows proof artifact $ARTIFACT_NAME from run $APPROVED_PROOF_RUN_ID is still retained."
+              ;;
+            expired)
+              echo "::error::Approved Windows proof artifact $ARTIFACT_NAME from run $APPROVED_PROOF_RUN_ID has passed its 90-day retention window and can no longer be downloaded. $recovery"
+              exit 1
+              ;;
+            missing)
+              echo "::error::Approved Windows proof run $APPROVED_PROOF_RUN_ID has no artifact named $ARTIFACT_NAME. ADE_WINDOWS_APPROVED_PROOF_RUN_ID may point at the wrong run, or the release tag may differ from the proven one. $recovery"
+              exit 1
+              ;;
+            *)
+              echo "::error::Could not read artifacts for approved Windows proof run $APPROVED_PROOF_RUN_ID. Confirm ADE_WINDOWS_APPROVED_PROOF_RUN_ID names a run in $GH_REPO that has not been deleted. $recovery"
+              exit 1
+              ;;
+          esac
+
       - name: Download approved immutable Windows proof artifact
         uses: actions/download-artifact@v4
         with:
@@ -532,6 +583,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ade-win-release-${{ inputs.release_tag }}
+          # Re-published copy of the approved proof, consumed by publish-release
+          # in this same run. Pinned so a shortened default cannot expire it
+          # between promotion and draft assembly.
+          retention-days: 90
           path: |
             apps/desktop/release/ADE-*-win-x64.exe
             apps/desktop/release/ADE-*-win-x64.exe.blockmap
