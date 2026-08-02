@@ -66,12 +66,12 @@ beforeEach(() => {
 });
 
 describe("deriveLaneMachineOptions", () => {
-  it("lists this Mac alone when nothing else is connected", () => {
+  it("lists this computer alone when nothing else is connected", () => {
     const options = deriveLaneMachineOptions({ connections: [], boundTargetId: null });
 
     expect(options).toHaveLength(1);
     expect(options[0]?.id).toBe(THIS_MACHINE_ID);
-    expect(options[0]?.name).toBe("This Mac");
+    expect(options[0]?.name).toBe("This computer");
     expect(options[0]?.isBound).toBe(true);
   });
 
