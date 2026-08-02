@@ -453,8 +453,32 @@ jobs:
       - name: Test intended-user named-pipe listener contracts
         run: cd apps/ade-cli && npx vitest run src/services/runtime/localIpcListenOptions.test.ts
 
+      # `trustedWindowsTools` is a security control whose only substantive case
+      # is win32-gated, so before this step it ran on no runner at all. The
+      # credential store and the `ade://` deeplink command-injection guard are
+      # both filesystem- and argument-quoting sensitive, which is exactly what
+      # a Linux-hosted job cannot exercise.
+      - name: Test Windows trusted-tool, credential, and deeplink guards
+        run: >-
+          cd apps/ade-cli && npx vitest run
+          src/commands/deeplinks.test.ts
+          src/lib/trustedWindowsTools.test.ts
+          src/services/credentials/credentialStore.test.ts
+
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
+
+      # The suites docs/development/windows-port-lane.md names as the Windows
+      # validation set. Before this step the intersection with this job was
+      # empty, so the documented gate was never actually run on Windows.
+      - name: Test Windows path, spawn, window, and update contracts
+        run: >-
+          cd apps/desktop && npx vitest run
+          src/main/services/appControl/appControlService.test.ts
+          src/main/services/shared/processExecution.test.ts
+          src/main/services/updates/autoUpdateService.test.ts
+          src/main/windowAppearance.test.ts
+          src/renderer/lib/pathUtils.test.ts
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to

@@ -28,20 +28,6 @@
       "count": 1
     },
     {
-      "file": "apps/ade-cli/src/lib/trustedWindowsTools.test.ts",
-      "kind": "uncovered-gate",
-      "form": "alias-declaration",
-      "requires": "win32",
-      "count": 1
-    },
-    {
-      "file": "apps/ade-cli/src/lib/trustedWindowsTools.test.ts",
-      "kind": "uncovered-gate",
-      "form": "alias-use",
-      "requires": "win32",
-      "count": 1
-    },
-    {
       "file": "apps/ade-cli/src/services/credentials/credentialStore.test.ts",
       "kind": "vacuous-return",
       "form": "vacuous-return",
