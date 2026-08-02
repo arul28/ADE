@@ -16,6 +16,15 @@ on:
         required: false
         default: false
         type: boolean
+      windows_proof:
+        description: >-
+          Collect clean-host Windows proof evidence. Builds Windows even while
+          ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is off and emits the exact-SHA
+          proof manifest bundle. Deliberate evidence collection only; it does
+          not gate ordinary releases.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -88,45 +97,33 @@ jobs:
 
           echo "ci-pass succeeded for $TARGET_REF: $url"
 
+      # Windows builds fresh on the tag, the same way macOS does. There is one
+      # maintainer-facing switch, ADE_WINDOWS_PUBLIC_RELEASE_ENABLED, plus the
+      # deliberate windows_proof dispatch input for clean-host evidence runs.
+      # Fail here, a minute in, rather than after a full Windows package build.
       - name: Validate Windows release configuration
         env:
-          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
           PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
-          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
-          APPROVED_PROOF_SHA: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_SHA }}
-          APPROVED_PROOF_RUN_ID: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
-          APPROVED_BUILD_MANIFEST_SHA256: ${{ vars.ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 }}
+          WINDOWS_PROOF: ${{ inputs.windows_proof }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
           set -euo pipefail
 
-          if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$BUILD_WINDOWS" != "1" ]; then
-            echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1."
-            exit 1
-          fi
-          if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" != "1" ]; then
-            echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires approved two-version installed-update proof."
-            exit 1
+          if [ "$PUBLISH_WINDOWS" != "1" ] && [ "$WINDOWS_PROOF" != "true" ]; then
+            echo "Windows release is disabled for this run. Set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 to publish Windows assets."
+            exit 0
           fi
 
-          if [ "$PUBLISH_WINDOWS" = "1" ]; then
-            target_sha="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-            proof_sha="$(printf '%s' "$APPROVED_PROOF_SHA" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-            if ! printf '%s' "$proof_sha" | grep -Eq '^[0-9a-f]{40}$'; then
-              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_PROOF_SHA to contain the approved exact 40-character commit SHA."
-              exit 1
-            fi
-            if [ "$proof_sha" != "$target_sha" ]; then
-              echo "::error::Approved Windows proof is for $proof_sha, but this release builds $target_sha."
-              exit 1
-            fi
-            if ! printf '%s' "$APPROVED_PROOF_RUN_ID" | grep -Eq '^[1-9][0-9]*$'; then
-              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_PROOF_RUN_ID to identify the immutable non-publishing workflow run."
-              exit 1
-            fi
-            if ! printf '%s' "$APPROVED_BUILD_MANIFEST_SHA256" | grep -Eq '^[0-9a-f]{64}$'; then
-              echo "::error::Public Windows release requires ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 to bind the approved artifact set."
-              exit 1
-            fi
+          if [ -z "$WINDOWS_CSC_LINK" ] || [ -z "$WINDOWS_CSC_KEY_PASSWORD" ]; then
+            echo "::error::Windows releases require the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets."
+            exit 1
+          fi
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ] && [ -z "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret to pin the approved publisher."
+            exit 1
           fi
 
   build-mac-release:
@@ -303,14 +300,18 @@ jobs:
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
-  build-win-proof:
-    if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && inputs.publish == false }}
+  build-win-release:
+    # Same shape as build-mac-release: the tagged commit is built, signed and
+    # validated in-run, and its output is published by publish-release. The
+    # windows_proof input additionally builds Windows while the publication gate
+    # is still off, so clean-host evidence can be collected deliberately.
+    if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof }}
     needs:
       - verify
       - build-runtime-binaries
     runs-on: windows-latest
     concurrency:
-      group: release-${{ inputs.release_tag }}-win-proof
+      group: release-${{ inputs.release_tag }}-win-x64
       cancel-in-progress: true
     steps:
       - uses: actions/checkout@v4
@@ -390,7 +391,24 @@ jobs:
           if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
 
+      - name: Upload validated Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/ADE-*-win-x64.exe
+            apps/desktop/release/ADE-*-win-x64.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+
+      # Everything below is deliberate clean-host evidence collection. It builds
+      # the redacted proof bundle and its exact-SHA manifest, and never gates an
+      # ordinary release. The machine-checkable Windows gates all ran above:
+      # the job-level signing-secret requirement, --require-signing in
+      # run-electron-builder.mjs, --require-signed Authenticode verification in
+      # validate-win-artifacts.mjs, and the installed-product lifecycle smoke.
       - name: Stage standalone runtime proof assets
+        if: ${{ inputs.windows_proof }}
         shell: pwsh
         run: |
           $releaseDir = "apps/desktop/release"
@@ -437,6 +455,7 @@ jobs:
           )
 
       - name: Generate exact-SHA Windows proof manifest
+        if: ${{ inputs.windows_proof }}
         shell: pwsh
         run: >-
           node apps/desktop/scripts/windows-proof-manifest.mjs create
@@ -451,6 +470,7 @@ jobs:
           --workflow-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
       - name: Validate exact-SHA Windows build proof
+        if: ${{ inputs.windows_proof }}
         shell: pwsh
         run: >-
           node apps/desktop/scripts/windows-proof-manifest.mjs validate
@@ -461,131 +481,15 @@ jobs:
           --expected-run-id "${{ github.run_id }}"
           --artifact-root apps/desktop/release
 
-      - name: Upload validated Windows proof artifact
+      - name: Upload validated Windows proof bundle
+        if: ${{ inputs.windows_proof }}
         uses: actions/upload-artifact@v4
         with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          # A public release promotes these exact bytes from this run, so the
-          # artifact has to outlive approval. Pinned instead of inherited: a
-          # lowered repository or organization default would silently shorten
-          # the window in which the approved proof can still be released.
+          name: ade-win-proof-${{ inputs.release_tag }}
+          # Clean-host evidence is reviewed by a human days or weeks after the
+          # run. Pinned instead of inherited so a lowered repository or
+          # organization default cannot expire the bundle mid-review.
           # Keep this in sync with docs/playbooks/windows-signed-release.md.
-          retention-days: 90
-          path: |
-            apps/desktop/release/ADE-*-win-x64.exe
-            apps/desktop/release/ADE-*-win-x64.exe.blockmap
-            apps/desktop/release/ade-darwin-arm64
-            apps/desktop/release/ade-darwin-arm64.native.tar.gz
-            apps/desktop/release/ade-darwin-x64
-            apps/desktop/release/ade-darwin-x64.native.tar.gz
-            apps/desktop/release/ade-linux-arm64
-            apps/desktop/release/ade-linux-arm64.native.tar.gz
-            apps/desktop/release/ade-linux-x64
-            apps/desktop/release/ade-linux-x64.native.tar.gz
-            apps/desktop/release/ade-win32-x64.exe
-            apps/desktop/release/ade-win32-x64.native.tar.gz
-            apps/desktop/release/install.sh
-            apps/desktop/release/install.ps1
-            apps/desktop/release/SHA256SUMS
-            apps/desktop/release/latest.yml
-            apps/desktop/release/windows-proof-manifest.json
-          if-no-files-found: error
-
-  promote-approved-win-proof:
-    if: ${{ inputs.publish && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
-    needs: verify
-    runs-on: windows-latest
-    concurrency:
-      group: release-${{ inputs.release_tag }}-win-promotion
-      cancel-in-progress: true
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Confirm approved Windows proof artifact is still retained
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          APPROVED_PROOF_RUN_ID: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
-          ARTIFACT_NAME: ade-win-release-${{ inputs.release_tag }}
-        run: |
-          set -uo pipefail
-
-          if ! status="$(
-            gh api "repos/$GH_REPO/actions/runs/$APPROVED_PROOF_RUN_ID/artifacts" \
-              --method GET \
-              -H "Accept: application/vnd.github+json" \
-              -f per_page=100 \
-              --jq '
-                [.artifacts[] | select(.name == env.ARTIFACT_NAME)] as $named
-                | if ($named | length) == 0 then "missing"
-                  elif ([$named[] | select(.expired == false)] | length) == 0 then "expired"
-                  else "available" end
-              '
-          )"; then
-            status="unreadable"
-          fi
-
-          recovery="Re-run prepare-release.yml with windows_proof=true for the approved commit while ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is not 1, re-approve the proof, then update ADE_WINDOWS_APPROVED_PROOF_RUN_ID and ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256."
-
-          case "$status" in
-            available)
-              echo "Approved Windows proof artifact $ARTIFACT_NAME from run $APPROVED_PROOF_RUN_ID is still retained."
-              ;;
-            expired)
-              echo "::error::Approved Windows proof artifact $ARTIFACT_NAME from run $APPROVED_PROOF_RUN_ID has passed its 90-day retention window and can no longer be downloaded. $recovery"
-              exit 1
-              ;;
-            missing)
-              echo "::error::Approved Windows proof run $APPROVED_PROOF_RUN_ID has no artifact named $ARTIFACT_NAME. ADE_WINDOWS_APPROVED_PROOF_RUN_ID may point at the wrong run, or the release tag may differ from the proven one. $recovery"
-              exit 1
-              ;;
-            *)
-              echo "::error::Could not read artifacts for approved Windows proof run $APPROVED_PROOF_RUN_ID. Confirm ADE_WINDOWS_APPROVED_PROOF_RUN_ID names a run in $GH_REPO that has not been deleted. $recovery"
-              exit 1
-              ;;
-          esac
-
-      - name: Download approved immutable Windows proof artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          path: apps/desktop/release
-          github-token: ${{ github.token }}
-          run-id: ${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}
-
-      - name: Validate approved Windows artifact identity
-        shell: pwsh
-        env:
-          APPROVED_BUILD_MANIFEST_SHA256: ${{ vars.ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256 }}
-        run: |
-          $manifestPath = "apps/desktop/release/windows-proof-manifest.json"
-          $actualManifestSha = (Get-FileHash -LiteralPath $manifestPath -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actualManifestSha -ne $env:APPROVED_BUILD_MANIFEST_SHA256) {
-            throw "Approved build manifest digest mismatch: expected $env:APPROVED_BUILD_MANIFEST_SHA256, received $actualManifestSha."
-          }
-          node apps/desktop/scripts/windows-proof-manifest.mjs validate `
-            --manifest $manifestPath `
-            --phase build `
-            --expected-sha "${{ inputs.target_ref }}" `
-            --expected-tag "${{ inputs.release_tag }}" `
-            --expected-run-id "${{ vars.ADE_WINDOWS_APPROVED_PROOF_RUN_ID }}" `
-            --artifact-root apps/desktop/release
-
-      - name: Upload approved Windows artifacts for draft assembly
-        uses: actions/upload-artifact@v4
-        with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          # Re-published copy of the approved proof, consumed by publish-release
-          # in this same run. Pinned so a shortened default cannot expire it
-          # between promotion and draft assembly.
           retention-days: 90
           path: |
             apps/desktop/release/ADE-*-win-x64.exe
@@ -668,7 +572,7 @@ jobs:
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
 
       - name: Sign and validate standalone Windows runtime
-        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+        if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}
         shell: pwsh
         env:
           WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
@@ -751,8 +655,8 @@ jobs:
             exit 1
           fi
 
-      - name: Assemble signed Windows standalone proof bundle
-        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+      - name: Assemble signed Windows standalone runtime bundle
+        if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}
         shell: bash
         run: |
           set -euo pipefail
@@ -777,6 +681,10 @@ jobs:
           compression-level: 0
 
   publish-release:
+    # Windows is a first-class release platform: when its gate is on, a failed
+    # or skipped Windows build blocks the draft exactly as a failed macOS build
+    # does. always() is still needed so the job evaluates when build-win-release
+    # is legitimately skipped with the gate off.
     if: >-
       ${{
         always()
@@ -785,16 +693,13 @@ jobs:
         && needs.build-mac-release.result == 'success'
         && (
           vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
-          || (
-            vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'
-            && needs.promote-approved-win-proof.result == 'success'
-          )
+          || needs.build-win-release.result == 'success'
         )
       }}
     needs:
       - build-runtime-binaries
       - build-mac-release
-      - promote-approved-win-proof
+      - build-win-release
     permissions:
       actions: read
       contents: write
@@ -831,7 +736,7 @@ jobs:
           rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
 
       - name: Download Windows release artifacts
-        if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
+        if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
         uses: actions/download-artifact@v4
         with:
           name: ade-win-release-${{ inputs.release_tag }}
@@ -890,6 +795,31 @@ jobs:
             exit 1
           fi
 
+          # Cross-platform runtime allowlist. Every ade-* file in the runtime
+          # download must be one of the ten this release is allowed to carry, in
+          # every flag state, so an extra or missing sidecar can never reach the
+          # draft. All ten are produced by build-runtime-binaries in this run.
+          runtime_files=(
+            ade-darwin-arm64
+            ade-darwin-arm64.native.tar.gz
+            ade-darwin-x64
+            ade-darwin-x64.native.tar.gz
+            ade-linux-arm64
+            ade-linux-arm64.native.tar.gz
+            ade-linux-x64
+            ade-linux-x64.native.tar.gz
+            ade-win32-x64.exe
+            ade-win32-x64.native.tar.gz
+          )
+          mapfile -t actual_runtime_files < <(
+            find release-assets/runtime -maxdepth 1 -type f -name 'ade-*' -printf '%f\n' | LC_ALL=C sort
+          )
+          mapfile -t expected_runtime_files < <(printf '%s\n' "${runtime_files[@]}" | LC_ALL=C sort)
+          if ! diff -u <(printf '%s\n' "${expected_runtime_files[@]}") <(printf '%s\n' "${actual_runtime_files[@]}"); then
+            echo "::error::Runtime artifacts contain an unauthorized or missing entry."
+            exit 1
+          fi
+
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
             binary="release-assets/runtime/ade-$target"
             require_file "$binary" "ADE runtime binary for $target"
@@ -903,22 +833,13 @@ jobs:
           done
 
       - name: Validate gated Windows publish asset manifest
-        if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
+        if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          runtime_files=(
-            ade-darwin-arm64
-            ade-darwin-arm64.native.tar.gz
-            ade-darwin-x64
-            ade-darwin-x64.native.tar.gz
-            ade-linux-arm64
-            ade-linux-arm64.native.tar.gz
-            ade-linux-x64
-            ade-linux-x64.native.tar.gz
-            ade-win32-x64.exe
-            ade-win32-x64.native.tar.gz
-          )
+
+          # Desktop installer set, built and signed by build-win-release in this
+          # same run.
           installers=(release-assets/win/ADE-*-win-x64.exe)
           blockmaps=(release-assets/win/ADE-*-win-x64.exe.blockmap)
           if [ "${#installers[@]}" -ne 1 ] || [ "${#blockmaps[@]}" -ne 1 ]; then
@@ -928,57 +849,67 @@ jobs:
           test -s "${installers[0]}"
           test -s "${blockmaps[0]}"
           test -s release-assets/win/latest.yml
-          test -s release-assets/win/install.sh
-          test -s release-assets/win/install.ps1
-          test -s release-assets/win/ade-win32-x64.exe
-          test -s release-assets/win/ade-win32-x64.native.tar.gz
-          test -s release-assets/win/SHA256SUMS
-          mapfile -t actual_runtime_files < <(
-            find release-assets/win -maxdepth 1 -type f -name 'ade-*' -printf '%f\n' | LC_ALL=C sort
-          )
-          mapfile -t expected_runtime_files < <(printf '%s\n' "${runtime_files[@]}" | LC_ALL=C sort)
-          if ! diff -u <(printf '%s\n' "${expected_runtime_files[@]}") <(printf '%s\n' "${actual_runtime_files[@]}"); then
-            echo "::error::Windows proof contains an unauthorized or missing runtime artifact."
+
+          # Updater feed correctness: latest.yml must name the installer that is
+          # actually being published beside it, the same contract the merged
+          # latest-mac.yml carries for macOS.
+          installer_name="$(basename "${installers[0]}")"
+          if ! grep -Fq "$installer_name" release-assets/win/latest.yml; then
+            echo "::error::release-assets/win/latest.yml does not reference the published installer $installer_name."
             exit 1
           fi
-          if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' release-assets/win/SHA256SUMS; then
-            echo "::error::Windows proof checksum manifest has an invalid entry."
+
+          # Standalone Windows runtime, built and signed by build-runtime-binaries
+          # in this same run.
+          test -s release-assets/runtime/install.ps1
+          test -s release-assets/runtime/ade-win32-x64.exe
+          test -s release-assets/runtime/ade-win32-x64.native.tar.gz
+          # Cross-check the Windows standalone bytes against the digests computed
+          # on the signing runner, so a corrupted artifact transfer cannot reach
+          # the draft. That manifest is written by Git Bash on windows-latest,
+          # where sha256sum reads in binary mode and marks each name with a
+          # leading '*'; normalize it before parsing. Text and binary mode are
+          # identical here on Linux, so the normalized form verifies correctly.
+          test -s release-assets/runtime/SHA256SUMS
+          windows_sums="$RUNNER_TEMP/windows-standalone-SHA256SUMS"
+          sed 's/^\([0-9a-f]\{64\}\) [ *]/\1  /' release-assets/runtime/SHA256SUMS > "$windows_sums"
+          if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$windows_sums"; then
+            echo "::error::Windows standalone checksum manifest has an invalid entry."
             exit 1
           fi
-          mapfile -t actual_checksum_files < <(awk '{ print $2 }' release-assets/win/SHA256SUMS | LC_ALL=C sort)
+          mapfile -t actual_checksum_files < <(awk '{ print $2 }' "$windows_sums" | LC_ALL=C sort)
           mapfile -t expected_checksum_files < <(
-            printf '%s\n' install.sh install.ps1 "${runtime_files[@]}" | LC_ALL=C sort
+            printf '%s\n' install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz | LC_ALL=C sort
           )
           if ! diff -u <(printf '%s\n' "${expected_checksum_files[@]}") <(printf '%s\n' "${actual_checksum_files[@]}"); then
-            echo "::error::Windows proof checksum manifest does not name the exact authorized runtime set."
+            echo "::error::Windows standalone checksum manifest does not name the exact authorized Windows runtime set."
             exit 1
           fi
-          (cd release-assets/win && sha256sum -c SHA256SUMS)
+          (cd release-assets/runtime && sha256sum -c "$windows_sums")
+
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.release_tag }}
           TARGET_REF: ${{ inputs.target_ref }}
           GH_REPO: ${{ github.repository }}
-          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
           PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
-          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           set -euo pipefail
           shopt -s nullglob
-          # The per-arch macOS zips + latest-mac.yml are what electron-updater
-          # consumes; DMGs are the human downloads. Mac blockmaps stay omitted.
-          # Only an exact-SHA-approved Windows proof allows the public gate to
-          # add the signed installer, blockmap, and latest.yml as one set.
+          # Every asset comes from this run. The per-arch macOS zips +
+          # latest-mac.yml are what electron-updater consumes; DMGs are the human
+          # downloads. Mac blockmaps stay omitted. The Windows installer,
+          # blockmap and latest.yml are the electron-updater equivalents.
           base_files=(
             release-assets/mac/*.dmg
             release-assets/mac/*.zip
             release-assets/mac/latest-mac.yml
           )
-          # Cross-platform standalone assets always come from this run. The
-          # darwin runtime binaries are notarized per run, so only this run's
-          # copies are byte-identical to the ones inside the DMGs published
-          # beside them.
+          # Cross-platform standalone runtime. These are notarized or signed by
+          # the build-runtime-binaries jobs of this same run, which is what keeps
+          # them byte-identical to the copies bundled inside the desktop
+          # installers published beside them.
           runtime_files=(
             release-assets/runtime/install.sh
             release-assets/runtime/ade-darwin-*
@@ -987,54 +918,29 @@ jobs:
           files=("${base_files[@]}" "${runtime_files[@]}")
           checksum_files=("${runtime_files[@]}")
 
-          # This repository variable stays disabled until the signed installer
-          # passes the clean-host release checks.
-          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
-            # The approved proof bundle also carries the cross-platform runtime
-            # set and its own checksum manifest. Those bytes belong to the older
-            # proof run and are superseded by the current run's notarized
-            # copies, so they stay proof-internal and are never published.
-            proof_internal_files=(
-              release-assets/win/install.sh
-              release-assets/win/SHA256SUMS
-              release-assets/win/ade-darwin-arm64
-              release-assets/win/ade-darwin-arm64.native.tar.gz
-              release-assets/win/ade-darwin-x64
-              release-assets/win/ade-darwin-x64.native.tar.gz
-              release-assets/win/ade-linux-arm64
-              release-assets/win/ade-linux-arm64.native.tar.gz
-              release-assets/win/ade-linux-x64
-              release-assets/win/ade-linux-x64.native.tar.gz
-            )
-            for proof_internal_file in "${proof_internal_files[@]}"; do
-              if [ ! -s "$proof_internal_file" ]; then
-                echo "::error::Approved Windows proof is missing $proof_internal_file."
-                exit 1
-              fi
-            done
-            # Only the genuinely Windows-specific members of the approved proof
-            # are published, so no asset name is served by two different runs.
+          # One switch decides whether this release carries Windows at all.
+          if [ "$PUBLISH_WINDOWS" = "1" ]; then
             windows_files=(
               release-assets/win/ADE-*-win-x64.exe
               release-assets/win/ADE-*-win-x64.exe.blockmap
               release-assets/win/latest.yml
-              release-assets/win/install.ps1
-              release-assets/win/ade-win32-x64.exe
-              release-assets/win/ade-win32-x64.native.tar.gz
+              release-assets/runtime/install.ps1
+              release-assets/runtime/ade-win32-x64.exe
+              release-assets/runtime/ade-win32-x64.native.tar.gz
             )
             files=("${files[@]}" "${windows_files[@]}")
             checksum_files+=(
-              release-assets/win/install.ps1
-              release-assets/win/ade-win32-x64.exe
-              release-assets/win/ade-win32-x64.native.tar.gz
+              release-assets/runtime/install.ps1
+              release-assets/runtime/ade-win32-x64.exe
+              release-assets/runtime/ade-win32-x64.native.tar.gz
             )
           fi
 
           # One checksum manifest over exactly the standalone assets uploaded
-          # below, regenerated because the published set merges this run's
-          # notarized cross-platform binaries with the approved proof run's
-          # signed Windows binaries. install-runtime.sh and install-runtime.ps1
-          # resolve their own platform's entries from this file.
+          # below, regenerated so the digests always describe the bytes actually
+          # published rather than any per-job manifest staged upstream.
+          # install-runtime.sh and install-runtime.ps1 resolve their own
+          # platform's entries from this file.
           mkdir -p release-assets/publish
           published_checksums=release-assets/publish/SHA256SUMS
           for checksum_file in "${checksum_files[@]}"; do

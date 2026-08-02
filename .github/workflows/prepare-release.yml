@@ -18,10 +18,10 @@ on:
         type: string
       windows_proof:
         description: >-
-          Collect the signed Windows exact-SHA proof. Requires
-          ADE_WINDOWS_SIGNED_BUILD_ENABLED=1 and
-          ADE_WINDOWS_PUBLIC_RELEASE_ENABLED other than 1. Leave false for the
-          platform-neutral macOS and standalone runtime dry run.
+          Collect clean-host Windows proof evidence. Builds and signs Windows
+          even while ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is off, and emits the
+          exact-SHA proof bundle. Leave false for the ordinary dry run, which
+          still builds Windows whenever the publication gate is on.
         required: false
         default: false
         type: boolean
@@ -38,23 +38,25 @@ jobs:
       tag_name: ${{ steps.resolve.outputs.tag_name }}
       target_sha: ${{ steps.resolve.outputs.target_sha }}
     steps:
-      # Opt-in mode. Without it this workflow stays the platform-neutral dry run
-      # that macOS and standalone runtime releases have always used, so it stays
-      # runnable no matter how the Windows repository variables are set.
+      # Opt-in evidence collection. It never depends on a repository variable
+      # state, so proof can be collected before Windows is enabled and again as
+      # a regression check after it is. This workflow never publishes either way.
       - name: Prepare signed Windows proof mode
         if: ${{ inputs.windows_proof }}
         env:
-          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
-          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
           set -euo pipefail
 
-          if [ "$BUILD_WINDOWS" != "1" ]; then
-            echo "::error::Signed Windows proof requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1."
+          if [ -z "$WINDOWS_CSC_LINK" ] || [ -z "$WINDOWS_CSC_KEY_PASSWORD" ]; then
+            echo "::error::Signed Windows proof requires the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets."
             exit 1
           fi
-          if [ "$PUBLISH_WINDOWS" = "1" ]; then
-            echo "::error::Signed Windows proof is non-publishing. Set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0 before running it."
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ] && [ -z "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::Signed Windows proof requires the WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret."
             exit 1
           fi
 
@@ -109,4 +111,5 @@ jobs:
       release_tag: ${{ needs.resolve.outputs.tag_name }}
       target_ref: ${{ needs.resolve.outputs.target_sha }}
       publish: false
+      windows_proof: ${{ inputs.windows_proof }}
     secrets: inherit
