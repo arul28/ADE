@@ -452,6 +452,13 @@ jobs:
       - name: Test intended-user named-pipe listener contracts
         run: cd apps/ade-cli && npx vitest run src/services/runtime/localIpcListenOptions.test.ts
 
+      # Sync-port holder identification is win32-gated: on Windows the holder
+      # lookup goes through PowerShell rather than lsof/ps, and a broken lookup
+      # silently disables stale-port reclaim instead of failing. Only a Windows
+      # runner executes that gate.
+      - name: Test Windows sync-port holder identification
+        run: cd apps/ade-cli && npx vitest run src/services/sync/sharedSyncListener.test.ts
+
       # `trustedWindowsTools` is a security control whose only substantive case
       # is win32-gated, so before this step it ran on no runner at all. The
       # credential store and the `ade://` deeplink command-injection guard are
