@@ -17,6 +17,7 @@ import {
   type AttentionNotchRevealMode,
   type AttentionPreferences,
 } from "../../../shared/types";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   activityNotchSupported,
   activityNotchSettingsFromPreferences,
@@ -387,12 +388,21 @@ export function ActivitySettingsControls({
       <>
         {notchSupported ? (
           <section>
-            <h3>This Mac</h3>
+            {/*
+              These two are scope labels, not macOS prose: the page variant
+              renders the very same notch row with `<ScopeChip scope="machine">`,
+              and this component exists so the two surfaces cannot say different
+              things about one setting. A badge reading "This Mac" beside a chip
+              reading "This computer" would be two names for one machine. The
+              surrounding section is macOS-only, but the *scope* is not a
+              platform claim, so it follows `THIS_MACHINE_NAME`.
+            */}
+            <h3>{THIS_MACHINE_NAME}</h3>
             <PopoverRow
               icon={Notches}
               label="ADE notch"
               description="Ambient agent status at the top of this display."
-              badge="This Mac"
+              badge={THIS_MACHINE_NAME}
               control={
                 <PopoverSwitch
                   label="ADE notch"
@@ -594,8 +604,18 @@ export function ActivitySettingsControls({
         title="Notch & menu bar"
         description={
           notchSupported
+            // Prose about a macOS surface, not a scope label — "menu bar"
+            // already commits the sentence to macOS, and this branch only
+            // renders there. Half-renaming it to "this computer" would read
+            // worse and claim no more. Deliberately unlike the popover badges.
             ? "The ambient HUD near the menu bar on this Mac."
-            : "The notch is a native macOS surface and isn’t available in the web client."
+            // `notchSupported` is false for two unrelated reasons and the old
+            // copy assumed only one of them: the web client (no `attentionNotch`
+            // bridge) and any non-macOS desktop. A Windows user was told they
+            // were running the web client.
+            : supportsNativeNotch
+              ? "The notch is a native macOS surface and isn’t available in the web client."
+              : "The notch is a native macOS surface and isn’t available on this computer."
         }
       >
         <SettingsCard
