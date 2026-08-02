@@ -6,10 +6,16 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.mutableStateListOf
-import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.snapshots.SnapshotStateList
 import androidx.compose.ui.Modifier
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation3.runtime.NavEntry
@@ -31,6 +37,49 @@ sealed interface AppRoute {
     data class Workspace(val projectId: String, val rootPath: String?) : AppRoute
     data class Session(val sessionId: String) : AppRoute
     data object Settings : AppRoute
+}
+
+private val AppRouteStackSaver = listSaver<SnapshotStateList<AppRoute>, String>(
+    save = { stack -> stack.map(::encodeRoute) },
+    restore = { saved -> mutableStateListOf<AppRoute>().apply { addAll(saved.map(::decodeRoute)) } },
+)
+
+private fun encodeRoute(route: AppRoute): String = when (route) {
+    AppRoute.Access -> "access"
+    AppRoute.SignInEmail -> "sign-in-email"
+    is AppRoute.SignInCode -> "sign-in-code:${android.net.Uri.encode(route.email)}"
+    AppRoute.Machines -> "machines"
+    AppRoute.Pairing -> "pairing"
+    AppRoute.Scanner -> "scanner"
+    AppRoute.Nearby -> "nearby"
+    AppRoute.Pin -> "pin"
+    AppRoute.Hub -> "hub"
+    AppRoute.PersonalChats -> "personal-chats"
+    is AppRoute.Workspace -> "workspace:${android.net.Uri.encode(route.projectId)}:${android.net.Uri.encode(route.rootPath.orEmpty())}"
+    is AppRoute.Session -> "session:${android.net.Uri.encode(route.sessionId)}"
+    AppRoute.Settings -> "settings"
+}
+
+private fun decodeRoute(value: String): AppRoute = when {
+    value == "access" -> AppRoute.Access
+    value == "sign-in-email" -> AppRoute.SignInEmail
+    value.startsWith("sign-in-code:") -> AppRoute.SignInCode(android.net.Uri.decode(value.substringAfter(':')))
+    value == "machines" -> AppRoute.Machines
+    value == "pairing" -> AppRoute.Pairing
+    value == "scanner" -> AppRoute.Scanner
+    value == "nearby" -> AppRoute.Nearby
+    value == "pin" -> AppRoute.Pin
+    value == "hub" -> AppRoute.Hub
+    value == "personal-chats" -> AppRoute.PersonalChats
+    value.startsWith("workspace:") -> value.split(':', limit = 3).let { parts ->
+        AppRoute.Workspace(
+            projectId = android.net.Uri.decode(parts.getOrElse(1) { "" }),
+            rootPath = android.net.Uri.decode(parts.getOrElse(2) { "" }).ifBlank { null },
+        )
+    }
+    value.startsWith("session:") -> AppRoute.Session(android.net.Uri.decode(value.substringAfter(':')))
+    value == "settings" -> AppRoute.Settings
+    else -> AppRoute.Access
 }
 
 class MainActivity : ComponentActivity() {
@@ -55,7 +104,7 @@ class MainActivity : ComponentActivity() {
                     graph.machineStore.current() != null -> AppRoute.Hub
                     else -> AppRoute.Access
                 }
-                val backStack = remember { mutableStateListOf<AppRoute>(initial) }
+                val backStack = rememberSaveable(saver = AppRouteStackSaver) { mutableStateListOf<AppRoute>(initial) }
                 LaunchedEffect(state.signedIn) {
                     if (state.signedIn && backStack.size == 1 && backStack.first() == AppRoute.Access) {
                         backStack.apply { clear(); add(AppRoute.Machines) }
@@ -77,6 +126,24 @@ class MainActivity : ComponentActivity() {
                     backStack = backStack,
                     modifier = Modifier,
                     onBack = { if (backStack.size > 1) backStack.removeAt(backStack.lastIndex) },
+                    transitionSpec = {
+                        slideInHorizontally(
+                            initialOffsetX = { width -> width / 6 },
+                            animationSpec = tween(180),
+                        ) togetherWith slideOutHorizontally(
+                            targetOffsetX = { width -> -width / 10 },
+                            animationSpec = tween(180),
+                        )
+                    },
+                    popTransitionSpec = {
+                        slideInHorizontally(
+                            initialOffsetX = { width -> -width / 10 },
+                            animationSpec = tween(180),
+                        ) togetherWith slideOutHorizontally(
+                            targetOffsetX = { width -> width / 6 },
+                            animationSpec = tween(180),
+                        )
+                    },
                     entryProvider = { route ->
                         NavEntry(route) {
                             AppRouteContent(

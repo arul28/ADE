@@ -12,6 +12,7 @@ import type {
   AgentChatClaudePermissionMode,
   AgentChatTranscriptEntry,
   AgentChatEventHistorySnapshot,
+  AgentChatApprovalDecision,
   AgentChatApproveArgs,
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
@@ -2441,11 +2442,35 @@ function parseAgentChatResolveUnprocessedMessageArgs(
   };
 }
 
-function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
+const AGENT_CHAT_APPROVAL_DECISIONS: readonly AgentChatApprovalDecision[] = [
+  "accept",
+  "accept_for_session",
+  "decline",
+  "cancel",
+];
+
+/**
+ * Approval decisions must be validated, never cast. An unrecognized value used
+ * to slip through the `as` cast and be treated downstream as "not an accept",
+ * i.e. a silent denial: a client typo or a protocol drift would quietly deny a
+ * tool the user meant to approve, with no error surfaced anywhere. Reject
+ * unknown values loudly instead so the caller sees the mistake.
+ */
+export function parseAgentChatApprovalDecision(value: unknown, action: string): AgentChatApprovalDecision {
+  const decision = requireString(value, `${action} requires decision.`);
+  if ((AGENT_CHAT_APPROVAL_DECISIONS as readonly string[]).includes(decision)) {
+    return decision as AgentChatApprovalDecision;
+  }
+  throw new Error(
+    `${action} decision must be one of ${AGENT_CHAT_APPROVAL_DECISIONS.join(", ")}. Received: ${decision}`,
+  );
+}
+
+export function parseAgentChatApproveArgs(value: Record<string, unknown>): AgentChatApproveArgs {
   return {
     sessionId: requireString(value.sessionId, "chat.approve requires sessionId."),
     itemId: requireString(value.itemId, "chat.approve requires itemId."),
-    decision: requireString(value.decision, "chat.approve requires decision.") as AgentChatApproveArgs["decision"],
+    decision: parseAgentChatApprovalDecision(value.decision, "chat.approve"),
     ...(asTrimmedString(value.responseText) ? { responseText: asTrimmedString(value.responseText)! } : {}),
   };
 }
@@ -2457,7 +2482,9 @@ function parseAgentChatRespondToInputArgs(value: Record<string, unknown>): Agent
   };
 
   if (typeof value.decision === "string" && value.decision.trim().length > 0) {
-    parsed.decision = value.decision.trim() as AgentChatRespondToInputArgs["decision"];
+    // Same class of bug as chat.approve: validate rather than cast, so an
+    // unknown decision fails loudly instead of being read as a denial.
+    parsed.decision = parseAgentChatApprovalDecision(value.decision.trim(), "chat.respondToInput");
   }
   if (isRecord(value.answers)) {
     parsed.answers = Object.fromEntries(

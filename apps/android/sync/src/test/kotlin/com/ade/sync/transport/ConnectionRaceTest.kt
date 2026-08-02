@@ -44,6 +44,37 @@ class ConnectionRaceTest {
     }
 
     @Test
+    fun `numeric tailnet route wins its race slot over MagicDNS alias`() {
+        val race = ConnectionRace()
+        val plan = race.plan(listOf(
+            RouteCandidate("ws://192.168.1.44:8787", RouteKind.LAN),
+            RouteCandidate("ws://studio.example.ts.net:8787", RouteKind.TAILNET),
+            RouteCandidate("ws://100.75.20.63:8787", RouteKind.TAILNET),
+            RouteCandidate("wss://relay.example/connect/studio", RouteKind.RELAY),
+        ))
+
+        assertEquals(
+            listOf(
+                "ws://192.168.1.44:8787",
+                "ws://100.75.20.63:8787",
+                "wss://relay.example/connect/studio",
+            ),
+            plan.map(RouteCandidate::url),
+        )
+    }
+
+    @Test
+    fun `remembered MagicDNS route still stays first`() {
+        val race = ConnectionRace()
+        val plan = race.plan(listOf(
+            RouteCandidate("ws://studio.example.ts.net:8787", RouteKind.TAILNET, remembered = true),
+            RouteCandidate("ws://100.75.20.63:8787", RouteKind.TAILNET),
+        ))
+
+        assertEquals("ws://studio.example.ts.net:8787", plan.first().url)
+    }
+
+    @Test
     fun `first authenticated route wins and slower routes are cancelled`() = runTest {
         val race = ConnectionRace(candidateStaggerMillis = 1, relayJoinDelayMillis = 1, overallBudgetMillis = 1_000)
         val winner = race.connect(listOf(

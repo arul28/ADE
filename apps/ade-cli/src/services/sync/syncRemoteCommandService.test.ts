@@ -6,7 +6,11 @@ import type { SyncCommandPayload, SyncPairingConnectInfo, SyncWebPairingInfo } f
 import { parsePairingQrText } from "../../../../desktop/src/shared/pairingQr";
 import { deriveDeterministicLaneNameFromPrompt } from "../../../../desktop/src/shared/laneNameFallback";
 import { MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS } from "../../../../desktop/src/shared/syncMobileCompatibility";
-import { createSyncRemoteCommandService } from "./syncRemoteCommandService";
+import {
+  createSyncRemoteCommandService,
+  parseAgentChatApprovalDecision,
+  parseAgentChatApproveArgs,
+} from "./syncRemoteCommandService";
 
 function makePayload(
   action: string,
@@ -2928,5 +2932,53 @@ describe("lanes.create default base resolution", () => {
     await service.execute(makePayload("lanes.create", { name: "fresh", description: "" }));
 
     expect(laneService.create.mock.calls[0]![0].baseBranch).toBeUndefined();
+  });
+});
+
+describe("chat.approve decision validation", () => {
+  const decisions = ["accept", "accept_for_session", "decline", "cancel"] as const;
+
+  it("passes every real approval decision through unchanged", () => {
+    for (const decision of decisions) {
+      expect(parseAgentChatApproveArgs({ sessionId: "s1", itemId: "i1", decision })).toEqual({
+        sessionId: "s1",
+        itemId: "i1",
+        decision,
+      });
+    }
+  });
+
+  it("rejects an unknown decision instead of silently denying", () => {
+    // The old cast turned a typo into a value nothing downstream matches as an
+    // accept — a silent denial of a tool the user meant to approve.
+    expect(() => parseAgentChatApproveArgs({ sessionId: "s1", itemId: "i1", decision: "aceept" }))
+      .toThrow(/chat\.approve decision must be one of/);
+    expect(() => parseAgentChatApproveArgs({ sessionId: "s1", itemId: "i1", decision: "Accept" }))
+      .toThrow(/chat\.approve decision must be one of/);
+    expect(() => parseAgentChatApproveArgs({ sessionId: "s1", itemId: "i1", decision: "approve" }))
+      .toThrow(/Received: approve/);
+  });
+
+  it("still requires a decision to be present", () => {
+    expect(() => parseAgentChatApproveArgs({ sessionId: "s1", itemId: "i1" }))
+      .toThrow(/chat\.approve requires decision/);
+  });
+
+  it("validates chat.respondToInput decisions the same way", () => {
+    expect(parseAgentChatApprovalDecision("decline", "chat.respondToInput")).toBe("decline");
+    expect(() => parseAgentChatApprovalDecision("nope", "chat.respondToInput"))
+      .toThrow(/chat\.respondToInput decision must be one of/);
+  });
+
+  it("surfaces the rejection through the command surface", async () => {
+    const approveToolUse = vi.fn().mockResolvedValue(undefined);
+    const { service } = createService({ agentChatService: { approveToolUse } });
+
+    await expect(service.execute(makePayload("chat.approve", {
+      sessionId: "s1",
+      itemId: "i1",
+      decision: "definitely-not-a-decision",
+    }))).rejects.toThrow(/chat\.approve decision must be one of/);
+    expect(approveToolUse).not.toHaveBeenCalled();
   });
 });

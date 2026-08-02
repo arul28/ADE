@@ -24,10 +24,28 @@ android {
         vectorDrawables.useSupportLibrary = true
         buildConfigField("String", "ACCOUNT_DIRECTORY_URL", "\"https://ade-account-directory-production.arulsharma1028.workers.dev\"")
         buildConfigField("String", "ATTENTION_RELAY_URL", "\"https://ade-push-relay.arulsharma1028.workers.dev\"")
-        val clerkKey = providers.gradleProperty("ADE_CLERK_PUBLISHABLE_KEY")
+        val rawClerkKey = providers.gradleProperty("ADE_CLERK_PUBLISHABLE_KEY")
             .orElse(providers.environmentVariable("ADE_CLERK_PUBLISHABLE_KEY"))
             .orElse("")
             .get()
+        val allowAccountDisabledBuild = providers.gradleProperty("ADE_ALLOW_ACCOUNT_DISABLED_BUILD")
+            .orElse(providers.environmentVariable("ADE_ALLOW_ACCOUNT_DISABLED_BUILD"))
+            .orElse("false")
+            .get()
+            .toBoolean()
+        if (rawClerkKey.isBlank() && !allowAccountDisabledBuild) {
+            throw GradleException(
+                "ADE_CLERK_PUBLISHABLE_KEY is required. Set " +
+                    "ADE_ALLOW_ACCOUNT_DISABLED_BUILD=true only for an intentional account-disabled build.",
+            )
+        }
+        if (rawClerkKey.startsWith("pk_test_")) {
+            throw GradleException(
+                "ADE_CLERK_PUBLISHABLE_KEY must use ADE's production Clerk key because " +
+                    "this build targets the production account directory.",
+            )
+        }
+        val clerkKey = rawClerkKey
             .replace("\\", "\\\\")
             .replace("\"", "\\\"")
         buildConfigField("String", "CLERK_PUBLISHABLE_KEY", "\"$clerkKey\"")
@@ -74,6 +92,8 @@ android {
         compose = true
         buildConfig = true
     }
+
+    sourceSets.getByName("main").assets.srcDir("../../ios/ADE/Assets.xcassets/BrandMark.imageset")
 
     packaging {
         resources.excludes += setOf("META-INF/DEPENDENCIES", "META-INF/LICENSE.md", "META-INF/NOTICE.md")

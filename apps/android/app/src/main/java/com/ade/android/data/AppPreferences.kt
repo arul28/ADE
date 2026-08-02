@@ -43,6 +43,26 @@ class AppPreferences(private val context: Context) {
     fun composerDraft(machineKey: String): Flow<String> = context.adeDataStore.data.map { it[hubKey(machineKey, "draft")] ?: "" }
     fun composerPreferences(machineKey: String): Flow<String?> = context.adeDataStore.data.map { it[hubKey(machineKey, "composer_preferences")] }
 
+    // Work tab view state. iOS persists the same thing per project+host under
+    // `ade.work.viewStateByScope.v1`; on Android the host half of the scope is
+    // already the machineKey namespace, so the stored scope is the project id.
+    fun workCollapsed(machineKey: String): Flow<String?> = context.adeDataStore.data.map { it[hubKey(machineKey, "work_collapsed")] }
+    fun workViewState(machineKey: String): Flow<String?> = context.adeDataStore.data.map { it[hubKey(machineKey, "work_view_state")] }
+
+    // Model picker favourites/recents. The host owns these when it exposes the
+    // `modelPicker.*` remote commands (they are shared cross-surface with iOS and
+    // desktop); these keys are the fallback for hosts that do not, and the local
+    // mirror that survives a cold start before the first host round-trip.
+    // Both are newline-separated model ids, recents most-recent-first.
+    fun modelFavourites(machineKey: String): Flow<String?> = context.adeDataStore.data.map { it[hubKey(machineKey, "model_favourites")] }
+    fun modelRecents(machineKey: String): Flow<String?> = context.adeDataStore.data.map { it[hubKey(machineKey, "model_recents")] }
+
+    suspend fun setModelFavourites(machineKey: String, value: String) = put(hubKey(machineKey, "model_favourites"), value)
+    suspend fun setModelRecents(machineKey: String, value: String) = put(hubKey(machineKey, "model_recents"), value)
+
+    suspend fun setWorkCollapsed(machineKey: String, value: String) = put(hubKey(machineKey, "work_collapsed"), value)
+    suspend fun setWorkViewState(machineKey: String, value: String) = put(hubKey(machineKey, "work_view_state"), value)
+
     suspend fun setHubOrder(machineKey: String, value: String) = put(hubKey(machineKey, "order"), value)
     suspend fun setHubCollapsed(machineKey: String, value: String) = put(hubKey(machineKey, "collapsed"), value)
     suspend fun setHubCollapsedLanes(machineKey: String, value: String) = put(hubKey(machineKey, "collapsed_lanes"), value)

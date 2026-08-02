@@ -19,6 +19,33 @@ same-named environment variables:
 - `ADE_FCM_API_KEY`
 - `ADE_FCM_SENDER_ID`
 
+The account directory is production, so `ADE_CLERK_PUBLISHABLE_KEY` must be the
+`pk_live_` value from the iOS **Release** build configuration. The iOS project
+also contains a Debug `pk_test_` value for its isolated development directory;
+Android rejects that mismatch at build time rather than producing an APK whose
+account-directory requests will always return 401.
+
+The build also fails when the key is missing so an account-disabled APK cannot
+accidentally replace a working development install. Set
+`ADE_ALLOW_ACCOUNT_DISABLED_BUILD=true` only when that build is intentional.
+
+On the standard Android emulator, the host machine's loopback is `10.0.2.2`,
+not `127.0.0.1`. Debug builds expose a **Local ADE brain** entry in Nearby so a
+branch brain listening on host port `8787` can be paired without depending on
+mDNS crossing the emulator NAT. That convenience route is compiled out of
+release builds.
+
+The Compose UI reuses the canonical iOS `BrandMark.imageset` through the
+Android main asset source set. Keep the source-set mapping instead of copying
+the same binary into a second tracked asset directory.
+
+Terminal sessions do not depend solely on the embedded emulator view for text
+entry. The explicit composer buffers visible text before Return, and the two
+scrollable key rows mirror iOS with Esc, Tab/back-tab, arrows, Return/soft
+return, common control sequences, shell symbols, Paste, and Hide. This also
+keeps terminal input usable when an emulator's hardware-keyboard forwarding is
+disabled or unreliable.
+
 ## Internal Play build
 
 Keep the upload keystore outside the repository and provide all signing values

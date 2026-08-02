@@ -8,6 +8,7 @@ import android.util.Base64
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.ade.android.connection.AdeConnectionService
+import com.ade.android.connection.ReconnectWorker
 import com.ade.android.data.Appearance
 import com.ade.android.pairing.NearbyDiscovery
 import com.ade.android.security.MachineProfile
@@ -26,6 +27,9 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,6 +37,8 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.withLock
 import kotlin.coroutines.resume
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.serialization.builtins.MapSerializer
+import kotlinx.serialization.builtins.serializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -51,6 +57,11 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 
+/**
+ * Wire source: `LaneSummary` + `LaneListSnapshot` in
+ * apps/desktop/src/shared/types/lanes.ts:78-106 / 222-230, as returned by
+ * `lanes.refreshSnapshots` with `includeStatus: true`.
+ */
 data class UiLane(
     val id: String,
     val name: String,
@@ -60,10 +71,34 @@ data class UiLane(
     val awaiting: Int = 0,
     val archived: Boolean = false,
     val laneType: String? = null,
+    val description: String? = null,
+    // LaneSummary.color — nullable hex string.
+    val color: String? = null,
+    // LaneSummary.status (LaneStatus, lanes.ts:20-33). Present only when the
+    // request asked for includeStatus.
+    val dirty: Boolean = false,
+    val ahead: Int = 0,
+    val behind: Int = 0,
+    val remoteBehind: Int = 0,
+    val rebaseInProgress: Boolean = false,
+    val hasStatus: Boolean = false,
+    val childCount: Int = 0,
+    val stackDepth: Int = 0,
+    val parentLaneId: String? = null,
+    // LaneSummary.linearIssue.identifier.
+    val linearIdentifier: String? = null,
+    // LaneSummary.devicesOpen (DeviceMarker[]), injected by the host presence
+    // decorator with a 60s TTL; we only need the count for the card badge.
+    val devicesOpen: Int = 0,
 )
 
 enum class SessionKind { CHAT, TERMINAL }
 
+/**
+ * Wire source: `TerminalSessionSummary` in
+ * apps/desktop/src/shared/types/sessions.ts:160-273, as returned by
+ * `work.listSessions` (a bare array).
+ */
 data class UiSession(
     val id: String,
     val laneId: String?,
@@ -78,6 +113,25 @@ data class UiSession(
     val personal: Boolean = false,
     val archived: Boolean = false,
     val model: String? = null,
+    /** Host-reported reasoning effort, from `chat.getSummary`. */
+    val reasoningEffort: String? = null,
+    /** Host-reported fast-mode (service tier) flag, from `chat.getSummary`. */
+    val fastMode: Boolean = false,
+    // Everything below is present on every `work.listSessions` row (explicit
+    // null rather than omitted — sessionService.mapRow spreads the SQL row).
+    val status: String? = null,
+    val startedAt: String? = null,
+    val lastActivityAt: String? = null,
+    val settledAt: String? = null,
+    val statusNote: String? = null,
+    val attentionRequestedAt: String? = null,
+    val attentionMessage: String? = null,
+    val lastTurnFailedAt: String? = null,
+    val exitCode: Int? = null,
+    val pinned: Boolean = false,
+    val summary: String? = null,
+    val goal: String? = null,
+    val currentTurnStartedAt: String? = null,
 )
 
 data class UiProjectBrowseEntry(val name: String, val fullPath: String, val gitRepository: Boolean)
@@ -89,6 +143,21 @@ data class UiModel(
     val provider: String,
     val defaultReasoning: String? = null,
     val reasoningEfforts: List<String> = emptyList(),
+    /** `chat.modelCatalog` service tiers. Fast mode is supported iff this contains "fast". */
+    val serviceTiers: List<String> = emptyList(),
+)
+
+/**
+ * Persisted Work tab view state. Mirrors the iOS `ade.work.viewStateByScope.v1`
+ * store; the host half of the iOS `"<hostIdentity>::<projectId>"` scope is
+ * already the per-machine DataStore namespace here, so the scope is the project id.
+ */
+@Serializable
+data class WorkViewState(
+    val query: String = "",
+    val statusFilter: String = "all",
+    val laneFilter: String? = null,
+    val organization: String = "BY_LANE",
 )
 
 @Serializable
@@ -139,6 +208,10 @@ data class MainUiState(
     val attentionPreferences: JsonObject? = null,
     val hubCollapsedProjectIds: Set<String> = emptySet(),
     val hubCollapsedLaneKeys: Set<String> = emptySet(),
+    /** `"<scope>:<groupId>"` entries for collapsed Work tab groups. */
+    val workCollapsedKeys: Set<String> = emptySet(),
+    /** Work tab search/filter/grouping, keyed by scope (the project id). */
+    val workViewStates: Map<String, WorkViewState> = emptyMap(),
     val hubProjectOrder: List<String> = emptyList(),
     val hubComposerDraft: String = "",
     val hubComposerPreferences: HubComposerPreferences = HubComposerPreferences(),
@@ -146,15 +219,26 @@ data class MainUiState(
     val projectBrowseEntries: List<UiProjectBrowseEntry> = emptyList(),
     val githubRepos: List<UiGitHubRepo> = emptyList(),
     val models: List<UiModel> = emptyList(),
+    /** Model picker favourites — host-owned via `modelPicker.*`, mirrored locally. */
+    val modelFavourites: Set<String> = emptySet(),
+    /** Model picker recents, most recent first. */
+    val modelRecents: List<String> = emptyList(),
     val deepLinkSequence: Long = 0,
     val deepLinkSessionId: String? = null,
     val deepLinkMachineKey: String? = null,
     val openingProjectName: String? = null,
-)
+    /** True while the app is retrying a dropped connection on its own. */
+    val reconnecting: Boolean = false,
+) {
+    fun terminalTranscript() =
+        TerminalTranscriptState(terminalData, terminalStartOffset, terminalEndOffset, terminalAtStart)
+}
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val graph = (application as AdeApplication).graph
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
+    private val laneRefreshInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var autoReconnectJob: Job? = null
     private val _ui = MutableStateFlow(MainUiState(
         signedIn = graph.auth.signedIn,
         accountName = graph.auth.displayName,
@@ -194,6 +278,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
         viewModelScope.launch {
             graph.sync.invalidated.collectLatest { domains ->
+                // Coalesce invalidation bursts. One user-visible change is
+                // routinely several host transactions (creating a lane writes
+                // the lane row, its branch profile and its state snapshot
+                // separately), so a single action can deliver several batches
+                // back to back. `collectLatest` cancels this delay when a newer
+                // batch lands, so the burst collapses into one refresh instead
+                // of one full lane-status sweep per batch.
+                //
+                // This is coalescing, not a workaround: the refresh-feedback
+                // loop it was originally added to survive is fixed host-side —
+                // `upsertBranchProfileForRow` no longer rewrites an unchanged
+                // profile, so serving a refresh no longer emits an
+                // invalidation. Kept because burst coalescing is worth having
+                // on its own.
+                delay(INVALIDATION_REFRESH_DEBOUNCE_MS)
                 if (InvalidationDomain.LANES in domains) refreshLanes()
                 if (InvalidationDomain.SESSIONS in domains || InvalidationDomain.CHATS in domains) {
                     refreshSessions()
@@ -205,6 +304,22 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
                 if (InvalidationDomain.ATTENTION in domains && _ui.value.signedIn) refreshAttention()
                 if (InvalidationDomain.USAGE in domains) refreshQuota()
+            }
+        }
+        viewModelScope.launch {
+            // Nothing else notices a host that went away: the socket simply
+            // closes and the Hub keeps painting its cache. Watch the transport
+            // directly so a runtime restart heals without Settings -> Reconnect.
+            graph.sync.status.collect { status ->
+                when (status.state) {
+                    "connected" -> {
+                        autoReconnectJob?.cancel()
+                        autoReconnectJob = null
+                        if (_ui.value.reconnecting) _ui.update { it.copy(reconnecting = false) }
+                    }
+                    "disconnected", "error" -> startAutoReconnect()
+                    else -> Unit
+                }
             }
         }
         viewModelScope.launch {
@@ -348,14 +463,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun connectAccount(machine: DirectoryMachine, onSuccess: () -> Unit) = launchBusy {
-        loadCache(machine.machineKey)
-        graph.pairing.adopt(machine)
-        reconcileAnalyticsPreference()
-        captureAppOpenedNow()
-        _ui.update { it.copy(savedMachines = graph.machineStore.list()) }
-        refreshAllNow()
-        resumeSelectedStream()
-        onSuccess()
+        val previous = currentMachine()
+        try {
+            loadCache(machine.machineKey)
+            graph.pairing.adopt(machine)
+            reconcileAnalyticsPreference()
+            captureAppOpenedNow()
+            _ui.update { it.copy(savedMachines = graph.machineStore.list()) }
+            refreshAllNow()
+            resumeSelectedStream()
+            onSuccess()
+        } catch (error: Throwable) {
+            // Account adoption tears down the active transport before racing
+            // the remote routes. If every route fails, restore the last saved
+            // machine so one bad directory entry does not strand the app in a
+            // misleading error state attached to that previous machine.
+            if (previous != null) {
+                runCatching {
+                    loadCache(previous.machineKey)
+                    graph.pairing.connect(previous)
+                    refreshAllNow()
+                    resumeSelectedStream()
+                }
+            }
+            throw error
+        }
     }
 
     fun disconnect() {
@@ -416,6 +548,51 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         AdeConnectionService.start(getApplication(), currentMachine()?.name)
     }
 
+    /** Host-reported model settings per session id, from `chat.getSummary`. */
+    private data class SessionModelSettings(val modelId: String, val effort: String?, val fastMode: Boolean)
+
+    private val sessionModelSettings = mutableMapOf<String, SessionModelSettings>()
+
+    /**
+     * `work.listSessions` does not carry the session's model, so the picker would
+     * open blank on a cold start even though the host has one. `chat.getSummary`
+     * does (model / modelId / reasoningEffort / fastMode — AgentChatSessionSummary
+     * in apps/desktop/src/shared/types/chat.ts).
+     *
+     * Deliberately lazy — called when the model picker opens, never on session
+     * open. Issuing it alongside the transcript subscription put it on the same
+     * command channel as the history fetch and pushed that past its 30 s
+     * timeout, leaving the transcript empty behind a "Timed out" banner. The
+     * result is cached per session and re-applied on every roster refresh.
+     */
+    fun ensureSessionModelLoaded(sessionId: String) = launchQuiet {
+        if (sessionModelSettings.containsKey(sessionId)) return@launchQuiet
+        val action = chatAction("getSummary", sessionId)
+        if (!graph.sync.canInvokeRemoteAction(action)) return@launchQuiet
+        val summary = runCatching {
+            graph.sync.sendCommand(action, buildJsonObject { put("sessionId", sessionId) })
+        }.getOrNull() as? JsonObject ?: return@launchQuiet
+        val modelId = summary.string("modelId") ?: summary.string("model") ?: return@launchQuiet
+        sessionModelSettings[sessionId] = SessionModelSettings(
+            modelId = modelId,
+            effort = summary.string("reasoningEffort"),
+            fastMode = summary["fastMode"]?.jsonPrimitive?.content == "true",
+        )
+        _ui.update { it.copy(
+            sessions = applySessionModels(it.sessions),
+            personalChats = applySessionModels(it.personalChats),
+        ) }
+    }
+
+    private fun applySessionModels(list: List<UiSession>): List<UiSession> = list.map { session ->
+        val settings = sessionModelSettings[session.id] ?: return@map session
+        session.copy(
+            model = settings.modelId,
+            reasoningEffort = settings.effort,
+            fastMode = settings.fastMode,
+        )
+    }
+
     fun closeSession() {
         val id = _ui.value.selectedSessionId ?: return
         val session = selectedSession(id)
@@ -470,14 +647,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             put("beforeOffset", before)
             put("maxBytes", 512_000)
         }).jsonObject
-        val data = page.string("data").orEmpty()
-        val start = page["startOffset"]?.jsonPrimitive?.content?.toLongOrNull() ?: before
-        val atStart = page["atStart"]?.jsonPrimitive?.content == "true" || start <= 0
-        _ui.update { it.copy(
-            terminalData = data + it.terminalData,
-            terminalStartOffset = start,
-            terminalAtStart = atStart,
-        ) }
+        _ui.update {
+            val merged = prependTerminalHistory(it.terminalTranscript(), page, before)
+            it.copy(
+                terminalData = merged.data,
+                terminalStartOffset = merged.startOffset,
+                terminalAtStart = merged.atStart,
+            )
+        }
     }
 
     fun sendChat(text: String, attachmentUri: Uri? = null) = launchBusy {
@@ -508,12 +685,68 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         graph.sync.requestRosterSnapshot()
     }
 
-    fun approve(sessionId: String, itemId: String, accept: Boolean) = launchBusy {
-        graph.sync.sendCommand(chatAction("approve", sessionId), buildJsonObject {
+    /**
+     * `chat.approve` / `personalChats.approve`. [decision] is the wire value of
+     * `AgentChatApprovalDecision` — "accept" | "accept_for_session" | "decline"
+     * — and [feedback] carries plan-rejection text as `responseText`.
+     */
+    internal fun approve(
+        sessionId: String,
+        itemId: String,
+        decision: com.ade.android.ui.ApprovalDecision,
+        feedback: String? = null,
+    ) = launchBusy {
+        val action = chatAction("approve", sessionId)
+        require(graph.sync.canInvokeRemoteAction(action)) { "This machine does not allow approvals" }
+        graph.sync.sendCommand(action, buildJsonObject {
             put("sessionId", sessionId)
             put("itemId", itemId)
-            put("decision", if (accept) "accept" else "decline")
+            put("decision", decision.wire)
+            feedback?.trim()?.takeIf(String::isNotEmpty)?.let { put("responseText", it) }
         })
+    }
+
+    /**
+     * `chat.interrupt` / `personalChats.interrupt`. "stop_only" leaves any queued
+     * follow-up messages intact, matching the iOS stop button.
+     */
+    fun interruptSession(sessionId: String, clearQueue: Boolean = false) = launchBusy {
+        val action = chatAction("interrupt", sessionId)
+        require(graph.sync.canInvokeRemoteAction(action)) { "This machine does not allow stopping a turn" }
+        graph.sync.sendCommand(action, buildJsonObject {
+            put("sessionId", sessionId)
+            put("mode", if (clearQueue) "stop_and_clear" else "stop_only")
+        })
+        graph.sync.requestRosterSnapshot()
+    }
+
+    /**
+     * `chat.updateSession` / `personalChats.updateSession`. The host takes the
+     * catalog model id, an optional reasoning effort, and `fastMode` (aliased as
+     * `codexFastMode` host-side) — see `parseAgentChatUpdateSessionArgs`.
+     */
+    fun setSessionModel(
+        sessionId: String,
+        modelId: String,
+        effort: String?,
+        fastMode: Boolean,
+    ) = launchBusy {
+        val action = chatAction("updateSession", sessionId)
+        require(graph.sync.canInvokeRemoteAction(action)) { "This machine does not allow changing the model" }
+        graph.sync.sendCommand(action, buildJsonObject {
+            put("sessionId", sessionId)
+            put("modelId", modelId)
+            put("reasoningEffort", effort?.trim()?.takeIf(String::isNotEmpty))
+            put("fastMode", fastMode)
+        })
+        // The host has accepted these values, so update the cache directly rather
+        // than spending another chat.getSummary round-trip to read them back.
+        sessionModelSettings[sessionId] = SessionModelSettings(modelId, effort, fastMode)
+        _ui.update { it.copy(
+            sessions = applySessionModels(it.sessions),
+            personalChats = applySessionModels(it.personalChats),
+        ) }
+        pushModelRecent(modelId)
     }
 
     fun createFromHub(
@@ -600,6 +833,47 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         persistHubState { machineKey -> graph.preferences.setHubCollapsedLanes(machineKey, next.joinToString("\n")) }
     }
 
+    /**
+     * Collapse state for a Work tab group. [scope] is the project id; [id] is the
+     * group id (lane id, status bucket, or time bucket). Stored under its own
+     * DataStore key so it never collides with the Hub's lane collapse set.
+     */
+    fun setWorkCollapsed(scope: String, id: String, collapsed: Boolean) {
+        val key = "$scope:$id"
+        val next = _ui.value.workCollapsedKeys.toMutableSet().apply {
+            if (collapsed) add(key) else remove(key)
+        }
+        _ui.update { it.copy(workCollapsedKeys = next) }
+        persistHubState { machineKey -> graph.preferences.setWorkCollapsed(machineKey, next.joinToString("\n")) }
+    }
+
+    fun setWorkViewState(scope: String, value: WorkViewState) {
+        val next = _ui.value.workViewStates + (scope to value)
+        _ui.update { it.copy(workViewStates = next) }
+        persistHubState { machineKey ->
+            graph.preferences.setWorkViewState(
+                machineKey,
+                json.encodeToString(MapSerializer(String.serializer(), WorkViewState.serializer()), next),
+            )
+        }
+    }
+
+    /**
+     * Creates a lane through `lanes.create` (apps/desktop/src/shared/types/lanes.ts
+     * CreateLaneArgs). When [baseRef] is blank the host resolves the project's
+     * configured new-lane base itself, so we deliberately omit the field.
+     */
+    fun createLane(name: String, baseRef: String? = null) = launchBusy {
+        require(graph.sync.canInvokeRemoteAction("lanes.create")) { "This machine does not allow creating lanes" }
+        val trimmed = name.trim()
+        require(trimmed.isNotEmpty()) { "Name the lane first" }
+        graph.sync.sendCommand("lanes.create", buildJsonObject {
+            put("name", trimmed)
+            baseRef?.trim()?.takeIf(String::isNotEmpty)?.let { put("baseBranch", it) }
+        })
+        refreshLanesNow()
+    }
+
     fun setHubComposerDraft(value: String) {
         _ui.update { it.copy(hubComposerDraft = value) }
         persistHubState { machineKey -> graph.preferences.setComposerDraft(machineKey, value) }
@@ -656,9 +930,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _ui.update { it.copy(openingProjectName = project.displayName) }
         try {
             switchProjectNow(project)
-            refreshAllNow()
-            resumeSelectedStream()
             onSuccess()
+            // The project switch is the navigation contract. Personal chats,
+            // model catalogs, account attention, and even lane status can each
+            // involve independent network work; none should hold the user on
+            // the Hub after the host has already accepted the project.
+            launchQuiet {
+                refreshAllNow()
+                resumeSelectedStream()
+            }
         } finally {
             _ui.update { it.copy(openingProjectName = null) }
         }
@@ -798,17 +1078,29 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshLanes() = launchQuiet {
         if (!graph.sync.hasSelectedProject()) return@launchQuiet
         if (!graph.sync.canInvokeRemoteAction("lanes.refreshSnapshots")) return@launchQuiet
-        val result = graph.sync.sendCommand("lanes.refreshSnapshots", buildJsonObject { put("includeStatus", true) })
-        val lanes = parseLanes(result)
-        _ui.update { it.copy(lanes = lanes) }
-        cache("lanes", result)
+        // `refreshLanes` is fire-and-forget, so overlapping callers would
+        // otherwise put several full lane-status sweeps on the wire at once and
+        // let the slower reply overwrite the fresher one in `_ui.lanes`. One in
+        // flight is always enough: the next invalidation re-runs it.
+        if (!laneRefreshInFlight.compareAndSet(false, true)) return@launchQuiet
+        try {
+            val result = graph.sync.sendCommand(
+                "lanes.refreshSnapshots",
+                buildJsonObject { put("includeStatus", true) },
+            )
+            val lanes = parseLanes(result)
+            _ui.update { it.copy(lanes = lanes) }
+            cache("lanes", result)
+        } finally {
+            laneRefreshInFlight.set(false)
+        }
     }
 
     fun refreshSessions() = launchQuiet {
         if (!graph.sync.hasSelectedProject()) return@launchQuiet
         if (!graph.sync.canInvokeRemoteAction("work.listSessions")) return@launchQuiet
         val result = graph.sync.sendCommand("work.listSessions")
-        val sessions = parseSessions(result)
+        val sessions = applySessionModels(parseSessions(result))
         _ui.update { it.copy(sessions = sessions) }
         reconcileForegroundService(sessions + _ui.value.personalChats)
         cache("sessions", result)
@@ -857,6 +1149,73 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshModelCatalog() = launchQuiet { refreshModelCatalogNow() }
 
+    // -----------------------------------------------------------------------
+    // Model picker favourites + recents
+    //
+    // The host owns these when it registers the `modelPicker.*` remote commands
+    // (`modelPicker.getFavorites` / `toggleFavorite` / `getRecents` / `pushRecent`
+    // in syncRemoteCommandService.ts) — the same cr-sqlite store iOS and desktop
+    // share. Hosts that predate those commands fall back to the DataStore keys in
+    // AppPreferences, which also act as the cold-start mirror so the picker is not
+    // empty before the first round-trip.
+    // -----------------------------------------------------------------------
+
+    fun toggleModelFavourite(modelId: String) = launchQuiet {
+        val next = _ui.value.modelFavourites.toMutableSet().apply {
+            if (!add(modelId)) remove(modelId)
+        }.toSet()
+        _ui.update { it.copy(modelFavourites = next) }
+        persistModelPickerState()
+        if (graph.sync.canInvokeRemoteAction("modelPicker.toggleFavorite")) {
+            runCatching {
+                graph.sync.sendCommand("modelPicker.toggleFavorite", buildJsonObject { put("modelId", modelId) })
+            }
+            refreshModelPickerStateNow()
+        }
+    }
+
+    private suspend fun pushModelRecent(modelId: String) {
+        val next = (listOf(modelId) + _ui.value.modelRecents.filterNot { it == modelId }).take(MODEL_RECENTS_LIMIT)
+        _ui.update { it.copy(modelRecents = next) }
+        persistModelPickerState()
+        if (graph.sync.canInvokeRemoteAction("modelPicker.pushRecent")) {
+            runCatching {
+                graph.sync.sendCommand("modelPicker.pushRecent", buildJsonObject { put("modelId", modelId) })
+            }
+            refreshModelPickerStateNow()
+        }
+    }
+
+    private suspend fun refreshModelPickerStateNow() {
+        if (graph.sync.canInvokeRemoteAction("modelPicker.getFavorites")) {
+            runCatching { graph.sync.sendCommand("modelPicker.getFavorites") }.getOrNull()?.let { result ->
+                stringList(result, "favorites")?.let { favorites ->
+                    _ui.update { it.copy(modelFavourites = favorites.toSet()) }
+                }
+            }
+        }
+        if (graph.sync.canInvokeRemoteAction("modelPicker.getRecents")) {
+            runCatching { graph.sync.sendCommand("modelPicker.getRecents") }.getOrNull()?.let { result ->
+                stringList(result, "recents")?.let { recents ->
+                    _ui.update { it.copy(modelRecents = recents.take(MODEL_RECENTS_LIMIT)) }
+                }
+            }
+        }
+        persistModelPickerState()
+    }
+
+    private fun stringList(result: JsonElement, key: String): List<String>? =
+        ((result as? JsonObject)?.get(key) as? JsonArray)
+            ?.mapNotNull { (it as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotEmpty) }
+
+    private fun persistModelPickerState() {
+        val state = _ui.value
+        persistHubState { machineKey ->
+            graph.preferences.setModelFavourites(machineKey, state.modelFavourites.sorted().joinToString("\n"))
+            graph.preferences.setModelRecents(machineKey, state.modelRecents.joinToString("\n"))
+        }
+    }
+
     fun toggleSessionMute(sessionId: String) = launchBusy {
         val current = _ui.value.attentionPreferences ?: JsonObject(emptyMap())
         val muted = (current["mutedSessionIds"] as? JsonArray).orEmpty()
@@ -889,9 +1248,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun setAppForeground(foreground: Boolean) {
         appForeground = foreground
+        if (foreground) {
+            if (graph.sync.status.value.state != "connected") startAutoReconnect()
+        } else {
+            // Backgrounded: stop retrying in-process. WorkManager owns backoff
+            // from here, because it can wait without the app holding anything.
+            autoReconnectJob?.cancel()
+            autoReconnectJob = null
+            if (_ui.value.reconnecting) _ui.update { it.copy(reconnecting = false) }
+        }
         launchQuiet {
             sendAttentionPresence()
             if (foreground && graph.sync.status.value.state == "connected") resumeSelectedStream()
+        }
+    }
+
+    /**
+     * Retries a dropped connection while the app is in the foreground.
+     *
+     * Bounded exponential backoff, no wake lock, and every attempt goes through
+     * `PairingRepository.connect`, which serialises against the WorkManager
+     * path and short-circuits when a connection is already live — so this
+     * cannot reintroduce duplicate concurrent reconnects. Once the in-process
+     * budget is spent the retry is handed to `ReconnectWorker`.
+     */
+    private fun startAutoReconnect() {
+        if (!appForeground) return
+        if (autoReconnectJob?.isActive == true) return
+        val profile = currentMachine() ?: return
+        autoReconnectJob = viewModelScope.launch {
+            var attempt = 0
+            _ui.update { it.copy(reconnecting = true) }
+            try {
+                while (isActive && appForeground && attempt < FOREGROUND_RECONNECT_ATTEMPTS) {
+                    if (graph.sync.status.value.state == "connected") return@launch
+                    val backoff = (FOREGROUND_RECONNECT_BASE_MS shl attempt)
+                        .coerceAtMost(FOREGROUND_RECONNECT_MAX_MS)
+                    delay(backoff)
+                    attempt += 1
+                    if (!appForeground) return@launch
+                    if (graph.sync.status.value.state == "connected") return@launch
+                    val reconnected = runCatching { graph.pairing.connect(profile) }.isSuccess
+                    if (reconnected) {
+                        _ui.update { it.copy(savedMachines = graph.machineStore.list()) }
+                        runCatching {
+                            refreshAllNow()
+                            resumeSelectedStream()
+                        }
+                        return@launch
+                    }
+                }
+                if (appForeground) ReconnectWorker.enqueue(getApplication())
+            } finally {
+                _ui.update { it.copy(reconnecting = false) }
+            }
         }
     }
 
@@ -908,12 +1318,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendTerminalInput(text: String) {
         val id = _ui.value.selectedSessionId ?: return
-        graph.sync.sendTerminalInput(id, text)
+        runCatching { graph.sync.sendTerminalInput(id, text) }.onFailure { error ->
+            _ui.update { it.copy(error = error.message ?: "Terminal input could not be sent") }
+        }
     }
 
     fun resizeTerminal(rows: Int, columns: Int) {
         val id = _ui.value.selectedSessionId ?: return
-        graph.sync.resizeTerminal(id, columns, rows)
+        if (BuildConfig.DEBUG) android.util.Log.d("AdeTerminal", "resize session=$id cols=$columns rows=$rows")
+        runCatching { graph.sync.resizeTerminal(id, columns, rows) }
     }
 
     fun setAppearance(value: Appearance) = viewModelScope.launch { graph.preferences.setAppearance(value) }
@@ -987,6 +1400,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             refreshModelCatalogNow()
         }
         if (_ui.value.signedIn) refreshAttentionNow()
+        // Best-effort and only needed once the picker opens, so it goes last: it
+        // must never delay lanes/sessions/transcript on a slow link.
+        refreshModelPickerStateNow()
     }
 
     private suspend fun refreshAttentionNow() {
@@ -1096,7 +1512,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (!graph.sync.hasSelectedProject()) return
         if (!graph.sync.canInvokeRemoteAction("work.listSessions")) return
         val result = graph.sync.sendCommand("work.listSessions")
-        val sessions = parseSessions(result)
+        val sessions = applySessionModels(parseSessions(result))
         _ui.update { it.copy(sessions = sessions) }
         reconcileForegroundService(sessions + _ui.value.personalChats)
         cache("sessions", result)
@@ -1105,7 +1521,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun refreshPersonalChatsNow() {
         if (!graph.sync.canInvokeRemoteAction("personalChats.list")) return
         val result = graph.sync.sendCommand("personalChats.list", buildJsonObject { put("includeArchived", true) })
-        val personalChats = parsePersonalChats(result)
+        val personalChats = applySessionModels(parsePersonalChats(result))
         _ui.update { it.copy(personalChats = personalChats) }
         reconcileForegroundService(_ui.value.sessions + personalChats)
         cache("personal_chats", result)
@@ -1144,6 +1560,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                                 defaultReasoning = model.string("defaultReasoningEffort"),
                                 reasoningEfforts = (model["reasoningEfforts"] as? JsonArray).orEmpty().mapNotNull { effort ->
                                     (effort as? JsonObject)?.string("effort")
+                                },
+                                // `serviceTiers` is a flat string array on the catalog
+                                // model (see AgentChatModelCatalogModel in
+                                // apps/desktop/src/shared/types/chat.ts). Fast mode is
+                                // supported iff it contains "fast".
+                                serviceTiers = (model["serviceTiers"] as? JsonArray).orEmpty().mapNotNull { tier ->
+                                    (tier as? JsonPrimitive)?.contentOrNull?.trim()?.takeIf(String::isNotEmpty)
                                 },
                             ))
                         }
@@ -1196,12 +1619,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val composerPreferences = graph.preferences.composerPreferences(machineKey).first()?.let { raw ->
             runCatching { json.decodeFromString(HubComposerPreferences.serializer(), raw) }.getOrNull()
         } ?: HubComposerPreferences()
+        val workCollapsed = graph.preferences.workCollapsed(machineKey).first().orEmpty()
+            .lineSequence().filter(String::isNotBlank).toSet()
+        val modelFavourites = graph.preferences.modelFavourites(machineKey).first().orEmpty()
+            .lineSequence().filter(String::isNotBlank).toSet()
+        val modelRecents = graph.preferences.modelRecents(machineKey).first().orEmpty()
+            .lineSequence().filter(String::isNotBlank).toList()
+        val workViewStates = graph.preferences.workViewState(machineKey).first()?.let { raw ->
+            runCatching {
+                json.decodeFromString(MapSerializer(String.serializer(), WorkViewState.serializer()), raw)
+            }.getOrNull()
+        }.orEmpty()
         _ui.update { it.copy(
             hubCollapsedProjectIds = collapsed,
             hubCollapsedLaneKeys = collapsedLanes,
             hubProjectOrder = order,
             hubComposerDraft = draft,
             hubComposerPreferences = composerPreferences,
+            workCollapsedKeys = workCollapsed,
+            workViewStates = workViewStates,
+            modelFavourites = modelFavourites,
+            modelRecents = modelRecents,
         ) }
     }
 
@@ -1277,47 +1715,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             ?: error("The selected attachment could not be read")
         require(bytes.size <= MAX_ATTACHMENT_BYTES) { "Attachments must be 12 MB or smaller" }
         Triple(filename, mimeType, bytes)
-    }
-
-    private fun parseLanes(result: JsonElement): List<UiLane> {
-        val objectValue = result as? JsonObject
-        val snapshots = objectValue?.get("snapshots") as? JsonArray
-        val raw = snapshots ?: objectValue?.get("lanes") as? JsonArray ?: result as? JsonArray ?: JsonArray(emptyList())
-        return raw.mapNotNull { item ->
-            val source = item as? JsonObject ?: return@mapNotNull null
-            val lane = source["lane"] as? JsonObject ?: source
-            val id = lane.string("id") ?: source.string("laneId") ?: return@mapNotNull null
-            val runtime = source["runtime"] as? JsonObject
-            UiLane(
-                id = id,
-                name = lane.string("name") ?: lane.string("displayName") ?: "Lane",
-                branch = lane.string("branchRef") ?: lane.string("branch"),
-                state = runtime?.string("bucket") ?: lane.string("status"),
-                running = runtime?.get("runningCount")?.jsonPrimitive?.intOrNull ?: 0,
-                awaiting = runtime?.get("awaitingInputCount")?.jsonPrimitive?.intOrNull ?: 0,
-                archived = lane["archivedAt"] != null && lane["archivedAt"] !is JsonNull,
-                laneType = lane.string("laneType"),
-            )
-        }
-    }
-
-    private fun parseSessions(result: JsonElement): List<UiSession> = (result as? JsonArray).orEmpty().mapNotNull { item ->
-        val source = item as? JsonObject ?: return@mapNotNull null
-        val id = source.string("id") ?: source.string("sessionId") ?: return@mapNotNull null
-        val provider = source.string("provider")
-        val toolType = source.string("toolType")
-        UiSession(
-            id = id,
-            laneId = source.string("laneId"),
-            laneName = source.string("laneName"),
-            title = source.string("title") ?: source.string("goal") ?: "Untitled session",
-            provider = provider,
-            toolType = toolType,
-            runtimeState = source.string("runtimeState") ?: source.string("status"),
-            preview = source.string("lastOutputPreview") ?: source.string("preview"),
-            pendingInputItemId = source.string("pendingInputItemId"),
-            kind = if (toolType?.contains("chat", true) == true || provider != null) SessionKind.CHAT else SessionKind.TERMINAL,
-        )
     }
 
     private fun parsePersonalChats(result: JsonElement): List<UiSession> =
@@ -1404,17 +1801,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private fun applyTerminal(payload: JsonElement, replace: Boolean) {
         val source = payload as? JsonObject ?: return
         if (source.string("sessionId") != _ui.value.selectedSessionId) return
-        val text = source.string(if (replace) "transcript" else "data").orEmpty()
-        val deltaSnapshot = replace && source["delta"]?.jsonPrimitive?.content == "true"
-        val start = source["startOffset"]?.jsonPrimitive?.content?.toLongOrNull()
-        val end = source["endOffset"]?.jsonPrimitive?.content?.toLongOrNull()
-            ?: source["offset"]?.jsonPrimitive?.content?.toLongOrNull()
-        _ui.update { state -> state.copy(
-            terminalData = if (replace && !deltaSnapshot) text else state.terminalData + text,
-            terminalStartOffset = if (replace && !deltaSnapshot) start else state.terminalStartOffset,
-            terminalEndOffset = end ?: state.terminalEndOffset,
-            terminalAtStart = if (replace && !deltaSnapshot) (start ?: 0) <= 0 else state.terminalAtStart,
-        ) }
+        _ui.update { state ->
+            val merged = mergeTerminalPayload(state.terminalTranscript(), source, replace)
+            state.copy(
+                terminalData = merged.data,
+                terminalStartOffset = merged.startOffset,
+                terminalEndOffset = merged.endOffset,
+                terminalAtStart = merged.atStart,
+            )
+        }
     }
 
     private fun fallbackLaneName(prompt: String): String = prompt.lowercase()
@@ -1437,10 +1832,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun JsonObject.string(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull?.trim()?.takeIf(String::isNotEmpty)
-
     companion object {
         private const val MAX_ATTACHMENT_BYTES = 12 * 1024 * 1024
+        /** Collapses invalidation bursts so refreshes cannot feed themselves. */
+        private const val INVALIDATION_REFRESH_DEBOUNCE_MS = 750L
+        private const val FOREGROUND_RECONNECT_ATTEMPTS = 6
+        private const val FOREGROUND_RECONNECT_BASE_MS = 1_000L
+        private const val FOREGROUND_RECONNECT_MAX_MS = 20_000L
+        /** Matches MODEL_PICKER_MAX_RECENTS in apps/ade-cli/src/services/modelPickerStore.ts. */
+        private const val MODEL_RECENTS_LIMIT = 10
         private val ANALYTICS_SCREENS = setOf("onboarding", "hub", "project", "chat", "personal_chats", "settings")
     }
 }
@@ -1456,4 +1856,110 @@ internal fun findRosterProjectForSession(
     sessionId: String,
 ): RosterProject? = roster?.projects?.firstOrNull { project ->
     project.chats.any { it.id == sessionId }
+}
+
+// ---------------------------------------------------------------------------
+// Wire payload readers. Kept top-level so the parser tests can exercise them
+// against realistic `work.listSessions` / `lanes.refreshSnapshots` fixtures.
+// ---------------------------------------------------------------------------
+
+/**
+ * Null-safe primitive read. Using `.jsonPrimitive` directly throws when the key
+ * holds an object or array — which `lane.status` and `lane.linearIssue` both do.
+ */
+private fun JsonObject.primitive(key: String): JsonPrimitive? = get(key) as? JsonPrimitive
+
+internal fun JsonObject.string(key: String): String? =
+    primitive(key)?.contentOrNull?.trim()?.takeIf(String::isNotEmpty)
+
+internal fun JsonObject.int(key: String): Int? = primitive(key)?.intOrNull
+
+/** Accepts real JSON booleans and the `"true"`/`"false"` strings older hosts send. */
+internal fun JsonObject.bool(key: String): Boolean? =
+    when (primitive(key)?.contentOrNull?.lowercase()) {
+        "true" -> true
+        "false" -> false
+        else -> null
+    }
+
+/** True when the key carries a non-null value — the `archivedAt`/`settledAt` idiom. */
+internal fun JsonObject.present(key: String): Boolean {
+    val value = get(key) ?: return false
+    return value !is JsonNull
+}
+
+internal fun parseLanes(result: JsonElement): List<UiLane> {
+    val objectValue = result as? JsonObject
+    val snapshots = objectValue?.get("snapshots") as? JsonArray
+    val raw = snapshots ?: objectValue?.get("lanes") as? JsonArray ?: result as? JsonArray ?: JsonArray(emptyList())
+    return raw.mapNotNull { item ->
+        val source = item as? JsonObject ?: return@mapNotNull null
+        val lane = source["lane"] as? JsonObject ?: source
+        val id = lane.string("id") ?: source.string("laneId") ?: return@mapNotNull null
+        val runtime = source["runtime"] as? JsonObject
+        val status = lane["status"] as? JsonObject
+        UiLane(
+            id = id,
+            name = lane.string("name") ?: lane.string("displayName") ?: "Lane",
+            branch = lane.string("branchRef") ?: lane.string("branch"),
+            state = runtime?.string("bucket") ?: lane.string("status"),
+            running = runtime?.int("runningCount") ?: 0,
+            awaiting = runtime?.int("awaitingInputCount") ?: 0,
+            archived = lane.present("archivedAt"),
+            laneType = lane.string("laneType"),
+            description = lane.string("description"),
+            color = lane.string("color"),
+            dirty = status?.bool("dirty") == true,
+            ahead = status?.int("ahead") ?: 0,
+            behind = status?.int("behind") ?: 0,
+            remoteBehind = status?.int("remoteBehind") ?: 0,
+            rebaseInProgress = status?.bool("rebaseInProgress") == true,
+            hasStatus = status != null,
+            childCount = lane.int("childCount") ?: 0,
+            stackDepth = lane.int("stackDepth") ?: 0,
+            parentLaneId = lane.string("parentLaneId"),
+            linearIdentifier = (lane["linearIssue"] as? JsonObject)?.string("identifier"),
+            devicesOpen = (lane["devicesOpen"] as? JsonArray)?.size ?: 0,
+        )
+    }
+}
+
+internal fun parseSessions(result: JsonElement): List<UiSession> = (result as? JsonArray).orEmpty().mapNotNull { item ->
+    val source = item as? JsonObject ?: return@mapNotNull null
+    val id = source.string("id") ?: source.string("sessionId") ?: return@mapNotNull null
+    val wireProvider = source.string("provider")
+    val toolType = source.string("toolType")
+    // `work.listSessions` returns `TerminalSessionSummary`, which has no
+    // top-level `provider` column at all -- so `wireProvider` is null for every
+    // real row and the provider theming (logo + tint) would never engage. Derive
+    // it from `toolType` the way iOS and the host itself do. `kind` deliberately
+    // keeps reading the RAW wire provider: deriving into it would reclassify
+    // every tracked CLI session as a chat.
+    val provider = wireProvider ?: com.ade.android.ui.providerFromToolType(toolType)
+    UiSession(
+        id = id,
+        laneId = source.string("laneId"),
+        laneName = source.string("laneName"),
+        title = source.string("title") ?: source.string("goal") ?: "Untitled session",
+        provider = provider,
+        toolType = toolType,
+        runtimeState = source.string("runtimeState") ?: source.string("status"),
+        preview = source.string("lastOutputPreview") ?: source.string("preview"),
+        pendingInputItemId = source.string("pendingInputItemId"),
+        kind = if (toolType?.contains("chat", true) == true || wireProvider != null) SessionKind.CHAT else SessionKind.TERMINAL,
+        archived = source.present("archivedAt"),
+        status = source.string("status"),
+        startedAt = source.string("startedAt"),
+        lastActivityAt = source.string("lastActivityAt"),
+        settledAt = source.string("settledAt"),
+        statusNote = source.string("statusNote"),
+        attentionRequestedAt = source.string("attentionRequestedAt"),
+        attentionMessage = source.string("attentionMessage"),
+        lastTurnFailedAt = source.string("lastTurnFailedAt"),
+        exitCode = source.int("exitCode"),
+        pinned = source.bool("pinned") == true,
+        summary = source.string("summary"),
+        goal = source.string("goal"),
+        currentTurnStartedAt = source.string("currentTurnStartedAt"),
+    )
 }

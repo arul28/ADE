@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
+  codexComposerHoldsPendingInput,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
   parseTrackedCliLaunchConfig,
@@ -420,5 +421,40 @@ describe("terminalSessionSignals", () => {
   it("extracts Cursor resume commands printed by ADE launch wrappers", () => {
     const chunk = "[ADE] Resume with cursor-agent --resume chat-abc";
     expect(extractResumeCommandFromOutput(chunk, "cursor-cli")).toBe("cursor-agent --resume chat-abc");
+  });
+
+  it("detects a Codex composer still holding a collapsed pasted prompt", () => {
+    const visible = [
+      "OpenAI Codex (v0.146.0)",
+      "  Tip: use the OpenAI docs MCP",
+      "› [Pasted Content 4827 chars]",
+      "  gpt-5.6-terra low",
+    ].join("\n");
+    expect(codexComposerHoldsPendingInput(visible, "a".repeat(4827))).toBe(true);
+  });
+
+  it("detects a Codex composer still holding a short literal prompt", () => {
+    const visible = "OpenAI Codex\nmodel: gpt-5.6-terra\n› Reply exactly AUTO_SUBMIT_FIXED.";
+    expect(codexComposerHoldsPendingInput(visible, "Reply exactly AUTO_SUBMIT_FIXED. Do not use tools.")).toBe(true);
+  });
+
+  it("treats an empty Codex composer and its placeholder hint as submitted", () => {
+    const empty = "OpenAI Codex\nmodel: gpt-5.6-terra\n› ";
+    const hint = "OpenAI Codex\nmodel: gpt-5.6-terra\n› Implement {feature}";
+    expect(codexComposerHoldsPendingInput(empty, "Reply exactly AUTO_SUBMIT_FIXED.")).toBe(false);
+    expect(codexComposerHoldsPendingInput(hint, "Reply exactly AUTO_SUBMIT_FIXED.")).toBe(false);
+  });
+
+  it("reads the bottom-most prompt glyph so submitted history does not look pending", () => {
+    const visible = [
+      "› Reply exactly AUTO_SUBMIT_FIXED.",
+      "• Working (3s)",
+      "› ",
+    ].join("\n");
+    expect(codexComposerHoldsPendingInput(visible, "Reply exactly AUTO_SUBMIT_FIXED.")).toBe(false);
+  });
+
+  it("returns false when no Codex composer is on screen yet", () => {
+    expect(codexComposerHoldsPendingInput("Starting MCP servers (1/2)", "anything")).toBe(false);
   });
 });

@@ -50,15 +50,21 @@ data class MachineProfile(
 
 data class AttentionActionBinding(val ownerHash: String, val epoch: Long)
 
-class SecureMachineStore(context: Context) {
+private fun encryptedPreferences(context: Context) = EncryptedSharedPreferences.create(
+    context,
+    "ade_machine_credentials_v1",
+    MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
+    EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+    EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
+)
+
+class SecureMachineStore internal constructor(
+    private val preferences: android.content.SharedPreferences,
+    private val deleteDpopKey: (String) -> Unit,
+) {
+    constructor(context: Context) : this(encryptedPreferences(context), AndroidDpopKey::delete)
+
     private val json = Json { ignoreUnknownKeys = true; explicitNulls = false }
-    private val preferences = EncryptedSharedPreferences.create(
-        context,
-        "ade_machine_credentials_v1",
-        MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build(),
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
-    )
 
     fun list(): List<MachineProfile> = preferences.getStringSet(INDEX_KEY, emptySet()).orEmpty()
         .mapNotNull(::get)
@@ -93,7 +99,7 @@ class SecureMachineStore(context: Context) {
         val keys = preferences.getStringSet(INDEX_KEY, emptySet()).orEmpty().toMutableSet().apply { remove(machineKey) }
         if (preferences.getString(CURRENT_KEY, null) == machineKey) setCurrent(null)
         preferences.edit().remove(profileKey(machineKey)).putStringSet(INDEX_KEY, keys).apply()
-        AndroidDpopKey.delete(dpopAlias(machineKey))
+        deleteDpopKey(dpopAlias(machineKey))
     }
 
     fun dpopKey(context: Context, machineKey: String): AndroidDpopKey =

@@ -158,6 +158,48 @@ export function providerFromTool(toolType: TerminalToolType | null | undefined):
   return null;
 }
 
+const CODEX_PASTE_PLACEHOLDER_REGEX = /\[pasted content[^\]]*\]/i;
+const CODEX_COMPOSER_FINGERPRINT_LENGTH = 24;
+
+/**
+ * Codex renders its composer on the bottom-most line that starts with the
+ * prompt glyph. Everything above it is transcript history (which also uses the
+ * glyph for already-submitted user turns), so only the last one is the live
+ * composer.
+ */
+function codexComposerLine(visibleText: string): string | null {
+  const promptIndex = visibleText.lastIndexOf("›");
+  if (promptIndex < 0) return null;
+  const rest = visibleText.slice(promptIndex + 1);
+  const lineEnd = rest.search(/[\r\n]/);
+  return lineEnd < 0 ? rest : rest.slice(0, lineEnd);
+}
+
+function codexComposerFingerprint(raw: string): string {
+  return raw.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/**
+ * True when the Codex composer still visibly holds `pendingInput` — either as
+ * the collapsed `[Pasted Content N chars]` placeholder used for large pastes,
+ * or as the literal opening characters of a short prompt.
+ *
+ * This is the readiness signal ADE uses instead of guessing how long Codex
+ * takes to commit a bracketed paste: after Enter is delivered the composer
+ * empties, so "still holding" means the submission has not landed yet.
+ */
+export function codexComposerHoldsPendingInput(
+  visibleText: string,
+  pendingInput: string,
+): boolean {
+  const composer = codexComposerLine(visibleText);
+  if (composer == null) return false;
+  if (CODEX_PASTE_PLACEHOLDER_REGEX.test(composer)) return true;
+  const needle = codexComposerFingerprint(pendingInput).slice(0, CODEX_COMPOSER_FINGERPRINT_LENGTH);
+  if (needle.length === 0) return false;
+  return codexComposerFingerprint(composer).includes(needle);
+}
+
 export const OPENCODE_RESUME_REPLAY_LIMIT = CANONICAL_OPENCODE_RESUME_REPLAY_LIMIT;
 
 export function buildOpenCodeReplayResumeCommand(args: {

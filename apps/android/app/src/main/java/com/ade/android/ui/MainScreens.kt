@@ -6,6 +6,8 @@ import android.util.Base64
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
@@ -17,16 +19,31 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.rounded.Speed
+import androidx.compose.material.icons.rounded.Image
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.AltRoute
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Delete
+import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.FolderOpen
@@ -34,7 +51,6 @@ import androidx.compose.material.icons.rounded.Notifications
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.Button
-import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -62,11 +78,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.foundation.Image
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ade.android.MainUiState
 import com.ade.android.MainViewModel
@@ -75,6 +96,7 @@ import com.ade.android.SessionKind
 import com.ade.android.UiLane
 import com.ade.android.UiModel
 import com.ade.android.UiSession
+import com.ade.android.WorkViewState
 import com.ade.android.UiGitHubRepo
 import com.ade.android.UiProjectBrowseEntry
 import com.ade.sync.model.MobileProject
@@ -112,14 +134,18 @@ fun HubScreen(
     LaunchedEffect(attentionOpen) { viewModel.setAttentionDrawerVisible(attentionOpen) }
     DisposableEffect(Unit) { onDispose { viewModel.setAttentionDrawerVisible(false) } }
 
-    Scaffold(
+    Box(Modifier.fillMaxSize()) {
+        AdeAuroraBackground()
+        Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 12.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("ADE", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
+            Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 10.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                AdeWordmark(compact = true)
                 Surface(
                     Modifier.padding(start = 12.dp),
                     shape = CircleShape,
-                    color = if (status.state == "connected") MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.66f),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.72f)),
                 ) {
                     Row(
                         Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
@@ -129,22 +155,32 @@ fun HubScreen(
                         Surface(
                             Modifier.size(7.dp),
                             shape = CircleShape,
-                            color = if (status.state == "connected") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline,
+                            color = if (status.state == "connected") AdeSuccess
+                            else if (status.state == "connecting" || state.reconnecting) AdeWarning
+                            else MaterialTheme.colorScheme.outline,
                         ) {}
                         Text(
                             state.openingProjectName?.let { "Opening $it…" }
                                 ?: status.hostName
-                                ?: if (status.state == "connecting") "Connecting…" else "No machine",
+                                ?: when {
+                                    status.state == "connecting" -> "Connecting…"
+                                    // "No machine" while the app is actively
+                                    // retrying reads as "nothing is paired".
+                                    state.reconnecting -> "Reconnecting…"
+                                    else -> "No machine"
+                                },
                             style = MaterialTheme.typography.labelMedium,
                         )
                     }
                 }
                 Spacer(Modifier.weight(1f))
-                IconButton(onClick = { addProjectOpen = true; viewModel.loadProjectAddSheet() }) {
-                    Icon(Icons.Rounded.FolderOpen, "Add project")
+                GlassIconButton(onClick = { addProjectOpen = true; viewModel.loadProjectAddSheet() }, contentDescription = "Add project") {
+                    Icon(Icons.Rounded.Add, "Add project", Modifier.size(19.dp), tint = MaterialTheme.colorScheme.primary)
                 }
                 Box {
-                    IconButton(onClick = onPersonalChats) { Icon(Icons.Rounded.ChatBubbleOutline, "Personal chats") }
+                    GlassIconButton(onClick = onPersonalChats, contentDescription = "Personal chats") {
+                        Icon(Icons.Rounded.ChatBubbleOutline, "Personal chats", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     val awaiting = state.personalChats.count {
                         it.pendingInputItemId != null || it.runtimeState == "awaiting-input"
                     }
@@ -162,7 +198,9 @@ fun HubScreen(
                     }
                 }
                 Box {
-                    IconButton(onClick = { attentionOpen = true }) { Icon(Icons.Rounded.Notifications, "Attention") }
+                    GlassIconButton(onClick = { attentionOpen = true }, contentDescription = "Attention") {
+                        Icon(Icons.Rounded.Notifications, "Attention", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
                     if (state.attentionItems.isNotEmpty()) Surface(
                         Modifier.align(Alignment.TopEnd),
                         shape = CircleShape,
@@ -176,28 +214,31 @@ fun HubScreen(
                         )
                     }
                 }
-                IconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, "Settings") }
+                GlassIconButton(onClick = onSettings, contentDescription = "Settings") {
+                    Icon(Icons.Rounded.Settings, "Settings", Modifier.size(18.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
         },
-        floatingActionButton = {
-            ExtendedFloatingActionButton(
+        bottomBar = {
+            // SPEC §6.2 / iOS IMG_2445: the Hub ends in a collapsed composer
+            // pill, not a FAB. Tapping it expands the full destination picker
+            // (project · lane · Chat/CLI · model · mode · send) below.
+            HubComposerPill(
+                draft = state.hubComposerDraft,
                 onClick = { composerOpen = true },
-                icon = { Icon(Icons.Rounded.Add, null) },
-                text = { Text("Start work") },
             )
         },
-    ) { padding ->
+        ) { padding ->
         if (status.state != "connected" && roster == null) {
             NoMachineHub(state, onPair, viewModel)
         } else {
             LazyColumn(
                 Modifier.fillMaxSize().padding(padding).padding(horizontal = 14.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
                 item {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        SectionTitle("Projects", "Live work across this machine")
-                        Spacer(Modifier.weight(1f))
+                        SectionTitle("Projects", "Live work across this machine", Modifier.weight(1f))
                         IconButton(onClick = viewModel::refreshAll) { Icon(Icons.Rounded.Refresh, "Refresh") }
                     }
                 }
@@ -245,8 +286,11 @@ fun HubScreen(
                         Text("Open or clone a project from ADE on the machine, then refresh.", color = MaterialTheme.colorScheme.onSurfaceVariant)
                     }
                 }
-                item { Spacer(Modifier.height(88.dp)) }
+                // The composer pill is a Scaffold bottomBar, so its height is
+                // already in `padding`; this is just breathing room.
+                item { Spacer(Modifier.height(12.dp)) }
             }
+        }
         }
     }
     if (composerOpen) HubComposer(
@@ -353,20 +397,45 @@ private fun ProjectCard(
     collapsedLaneKeys: Set<String>,
     onToggleLane: (String, Boolean) -> Unit,
 ) {
-    AdeCard {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Surface(Modifier.size(40.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                ProjectIcon(project.iconDataUrl ?: roster?.iconDataUrl, project.displayName)
-            }
-            Column(Modifier.weight(1f).padding(horizontal = 12.dp).clickable(onClick = onOpen)) {
-                Text(project.displayName, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "${roster?.lanes?.size ?: project.laneCount} lanes · ${roster?.chats?.size ?: 0} chats",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+    AdeCard(padding = 10.dp) {
+        // One compact row: icon + name + counts + disclosure + chevron, matching
+        // iOS (IMG_2445). The row itself opens the project; the caret toggles
+        // the inline lane/chat list.
+        Row(
+            Modifier.fillMaxWidth().clip(RoundedCornerShape(10.dp)).clickable(onClick = onOpen).padding(vertical = 2.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onToggle, modifier = Modifier.size(28.dp)) {
+                Icon(
+                    if (collapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore,
+                    if (collapsed) "Expand project" else "Collapse project",
+                    Modifier.size(18.dp),
+                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
-            IconButton(onClick = onToggle) { Icon(if (collapsed) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess, "Toggle project") }
+            ProjectAvatar(project, roster)
+            Text(
+                // Hard cap first (a 200-char worktree name would otherwise
+                // starve the counts), then layout-accurate middle ellipsis.
+                middleTruncate(project.displayName, 38),
+                Modifier.weight(1f).padding(start = 10.dp, end = 8.dp),
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.Bold,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis,
+            )
+            Text(
+                laneChatSummary(roster?.lanes?.size ?: project.laneCount, roster?.chats?.size ?: 0),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1,
+            )
+            Icon(
+                Icons.Rounded.ChevronRight,
+                null,
+                Modifier.padding(start = 6.dp).size(18.dp),
+                tint = MaterialTheme.colorScheme.primary,
+            )
         }
         if (!collapsed && roster != null) {
             val knownLaneIds = roster.lanes.mapTo(mutableSetOf(), RosterLane::id)
@@ -377,14 +446,15 @@ private fun ProjectCard(
                     Modifier.fillMaxWidth().clickable { onToggleLane(lane.id, !laneCollapsed) }.padding(top = 10.dp, bottom = 3.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Text(lane.name, Modifier.weight(1f), style = MaterialTheme.typography.labelLarge)
-                    Icon(if (laneCollapsed) Icons.Rounded.ExpandMore else Icons.Rounded.ExpandLess, "Toggle lane", Modifier.size(18.dp))
+                    StatusDot(laneDisplayColor(lane.color), 9.dp)
+                    Text(lane.name, Modifier.weight(1f).padding(start = 8.dp), style = MaterialTheme.typography.labelLarge, color = laneDisplayColor(lane.color))
+                    Icon(if (laneCollapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore, "Toggle lane", Modifier.size(18.dp))
                 }
                 if (!laneCollapsed) {
                     roster.chats.filter { it.laneId == lane.id && it.chatSessionId == null && !it.archived }.forEach { chat ->
-                        RosterChatRow(chat, onOpenSession, onArchiveSession, onCloseSession, canArchive, canClose, nested = false)
+                        RosterChatRow(chat, onOpenSession, onArchiveSession, onCloseSession, canArchive, canClose, nested = false, laneTint = laneDisplayColor(lane.color))
                         roster.chats.filter { it.chatSessionId == chat.id }.forEach { shell ->
-                            RosterChatRow(shell, onOpenSession, onArchiveSession, onCloseSession, canArchive, canClose, nested = true)
+                            RosterChatRow(shell, onOpenSession, onArchiveSession, onCloseSession, canArchive, canClose, nested = true, laneTint = laneDisplayColor(lane.color))
                         }
                     }
                 }
@@ -401,15 +471,79 @@ private fun ProjectCard(
                     }
                 }
             }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onOpen) { Text("Open project") }
-            }
         }
     }
 }
 
+/** Collapsed Hub composer, iOS `Type to vibecode…` pill (IMG_2445). */
 @Composable
-private fun ProjectIcon(dataUrl: String?, name: String) {
+private fun HubComposerPill(draft: String, onClick: () -> Unit) {
+    val colors = AdeTokens.colors
+    Row(
+        Modifier.fillMaxWidth()
+            .navigationBarsPadding()
+            .padding(horizontal = 14.dp, vertical = 10.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(colors.composer)
+            .border(1.dp, colors.glassBorder, RoundedCornerShape(24.dp))
+            .pressableCard(onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.AutoAwesome, null, Modifier.size(17.dp), tint = colors.accent)
+        Text(
+            draft.trim().ifBlank { "Type to vibecode…" },
+            Modifier.weight(1f).padding(horizontal = 10.dp),
+            color = if (draft.isBlank()) colors.textMuted else colors.textPrimary,
+            style = MaterialTheme.typography.bodyLarge,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Surface(shape = CircleShape, color = colors.accent.copy(alpha = 0.14f)) {
+            Icon(
+                Icons.Rounded.ArrowUpward,
+                "Start work",
+                Modifier.padding(6.dp).size(16.dp),
+                tint = colors.accent,
+            )
+        }
+    }
+}
+
+/**
+ * Project tile. The catalog (`MobileProject`) supplies `iconDataUrl` — a real
+ * per-project icon — but only for projects the desktop has one for; every other
+ * project previously fell back to the first letter of the name, which made
+ * `ade-win-smoke-…` and `ADE` both render as an identical "A". The fallback now
+ * uses a two-character monogram on a tint derived from the project id.
+ */
+@Composable
+private fun ProjectAvatar(project: MobileProject, roster: RosterProject?) {
+    val dataUrl = project.iconDataUrl ?: roster?.iconDataUrl
+    val shape = RoundedCornerShape(9.dp)
+    // Same light-mode contrast clamp as lane colours: a raw #FFD60A monogram on
+    // its own 15%-alpha wash is unreadable on the light Hub.
+    val tint = readableOnLightArgb(projectTintArgb(project.id), AdeTokens.colors.isDark).toComposeColor()
+    Surface(
+        Modifier.size(34.dp).border(1.dp, tint.copy(alpha = 0.32f), shape),
+        shape = shape,
+        color = tint.copy(alpha = 0.15f),
+    ) {
+        ProjectIcon(dataUrl, project.displayName, monogramTint = tint)
+    }
+}
+
+@Composable
+private fun laneDisplayColor(raw: String?): Color {
+    val normalized = raw?.removePrefix("#")
+    val value = normalized?.toLongOrNull(16)
+    val argb = if (normalized == null || value == null) 0xFFD97706L
+    else if (normalized.length <= 6) value or 0xFF000000L else value
+    return readableOnLightArgb(argb, AdeTokens.colors.isDark).toComposeColor()
+}
+
+@Composable
+private fun ProjectIcon(dataUrl: String?, name: String, monogramTint: Color? = null) {
     val image = remember(dataUrl) {
         runCatching {
             val encoded = dataUrl?.takeIf { it.startsWith("data:image/") }?.substringAfter(";base64,")
@@ -422,7 +556,13 @@ private fun ProjectIcon(dataUrl: String?, name: String) {
         Image(image, name, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
     } else {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Text(name.take(1).uppercase(), fontWeight = FontWeight.Bold)
+            Text(
+                projectMonogram(name),
+                fontWeight = FontWeight.Bold,
+                fontSize = 12.sp,
+                lineHeight = 14.sp,
+                color = monogramTint ?: MaterialTheme.colorScheme.onSurfaceVariant,
+            )
         }
     }
 }
@@ -437,24 +577,40 @@ private fun RosterChatRow(
     canArchive: Boolean,
     canClose: Boolean,
     nested: Boolean,
+    laneTint: Color? = null,
 ) {
     var menuOpen by remember(chat.id) { mutableStateOf(false) }
     val isChat = chat.provider != null || chat.toolType?.contains("chat", ignoreCase = true) == true
+    // Roster rows carry `provider` only for rows the host could attribute to a
+    // chat; tracked CLI rows arrive with provider=null and just a `toolType`.
+    // Derive the same way the Work tab does, or every such row renders as a
+    // generic shell tile. `isChat` above deliberately still reads the RAW
+    // provider -- deriving into it would reclassify tracked CLI rows as chats.
+    val rowProvider = chat.provider ?: providerFromToolType(chat.toolType)
     Row(
         Modifier.fillMaxWidth()
-            .padding(start = if (nested) 28.dp else 0.dp)
+            .padding(start = if (nested) 26.dp else 8.dp)
+            .clip(RoundedCornerShape(9.dp))
             .combinedClickable(
                 onClick = { onOpenSession(chat.id) },
                 onLongClick = { menuOpen = true },
             )
-            .padding(vertical = 8.dp),
+            .padding(vertical = 5.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        ProviderMark(chat.provider, isChat)
-        Column(Modifier.weight(1f).padding(start = 10.dp)) {
-            Text(chat.title ?: if (nested) "Attached shell" else "Untitled", maxLines = 1, overflow = TextOverflow.Ellipsis)
+        // Branded provider tile shared with the Work tab. Providerless shells
+        // fall back to the lane's colour so a lane's rows read as a group
+        // instead of a column of identical accent-purple glyphs.
+        ProviderMark(rowProvider, isChat, fallbackTint = laneTint)
+        Column(Modifier.weight(1f).padding(start = 9.dp)) {
             Text(
-                listOfNotNull(chat.provider?.replaceFirstChar(Char::uppercase), relativeActivity(chat.lastActivityAt)).joinToString(" · ")
+                chat.title ?: if (nested) "Attached shell" else "Untitled",
+                style = MaterialTheme.typography.bodyMedium,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Text(
+                listOfNotNull(rowProvider?.replaceFirstChar(Char::uppercase), relativeActivity(chat.lastActivityAt)).joinToString(" · ")
                     .ifBlank { chat.status },
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -486,17 +642,18 @@ private fun RosterChatRow(
     }
 }
 
+/**
+ * Roster/personal-chat rows reuse the Work tab's branded provider tile
+ * (`ProviderTile` in WorkComponents.kt + `providerTintArgb` in
+ * WorkPresentation.kt) so a Codex chat looks the same everywhere in the app.
+ */
 @Composable
-private fun ProviderMark(provider: String?, isChat: Boolean) {
-    Surface(Modifier.size(22.dp), shape = CircleShape, color = MaterialTheme.colorScheme.surfaceVariant) {
-        Box(contentAlignment = Alignment.Center) {
-            if (provider.isNullOrBlank()) {
-                Icon(if (isChat) Icons.Rounded.ChatBubbleOutline else Icons.Rounded.Code, null, Modifier.size(15.dp))
-            } else {
-                Text(provider.take(1).uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold)
-            }
-        }
-    }
+private fun ProviderMark(provider: String?, isChat: Boolean, size: Int = 26, fallbackTint: Color? = null) {
+    val colors = AdeTokens.colors
+    val accent = fallbackTint ?: colors.accent
+    val accentArgb = accent.toArgb().toLong() and 0xFFFFFFFFL
+    val kind = if (isChat) SessionKind.CHAT else SessionKind.TERMINAL
+    ProviderTile(provider, kind, providerTintArgb(provider, accentArgb).toComposeColor(), size)
 }
 
 private fun relativeActivity(value: String?): String? {
@@ -554,85 +711,309 @@ private fun HubComposer(
         permissionMode = permissionMode,
         reasoning = reasoning,
     ))
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(horizontal = 20.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Start work", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Box {
-                    OutlinedButton(onClick = { projectMenu = true }) { Text(project?.displayName ?: "Project") }
-                    DropdownMenu(projectMenu, { projectMenu = false }) {
-                        projects.forEach { item -> DropdownMenuItem({ Text(item.displayName) }, onClick = {
-                            project = item; laneId = null; projectMenu = false; persistPreferences()
-                        }) }
-                    }
-                }
-                Box {
-                    OutlinedButton(onClick = { laneMenu = true }, enabled = project != null) { Text(laneId?.let { id -> roster.firstOrNull { it.projectId == project?.id }?.lanes?.firstOrNull { it.id == id }?.name } ?: "New lane") }
-                    DropdownMenu(laneMenu, { laneMenu = false }) {
-                        DropdownMenuItem({ Text("New lane") }, onClick = { laneId = null; laneMenu = false; persistPreferences() })
-                        roster.firstOrNull { it.projectId == project?.id }?.lanes.orEmpty().forEach { lane ->
-                            DropdownMenuItem({ Text(lane.name) }, onClick = { laneId = lane.id; laneMenu = false; persistPreferences() })
-                        }
-                    }
-                }
+    val colors = AdeTokens.colors
+    val laneName = laneId?.let { id -> roster.firstOrNull { it.projectId == project?.id }?.lanes?.firstOrNull { it.id == id }?.name }
+    val canSend = project != null && (laneId != null || canCreateLane) &&
+        (if (cli) canStartCli else canStartChat) &&
+        (text.isNotBlank() || (!cli && attachment != null))
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        containerColor = if (colors.isDark) Color(0xFF17152A) else Color(0xFFFCFBF9),
+        contentColor = colors.textPrimary,
+        // Material's default scrim is barely visible against the dark Hub, so
+        // the sheet read as a panel welded onto a fully-live page.
+        scrimColor = Color(0xFF06050A).copy(alpha = if (colors.isDark) 0.62f else 0.34f),
+        dragHandle = {
+            Box(Modifier.fillMaxWidth().padding(vertical = 10.dp), contentAlignment = Alignment.Center) {
+                Box(
+                    Modifier.size(width = 34.dp, height = 4.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(colors.border),
+                )
             }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("Chat", fontWeight = if (!cli) FontWeight.Bold else FontWeight.Normal)
-                Switch(cli, { cli = it; persistPreferences() }, Modifier.padding(horizontal = 10.dp))
-                Text("CLI", fontWeight = if (cli) FontWeight.Bold else FontWeight.Normal)
-            }
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                Box(Modifier.weight(1f)) {
-                    OutlinedButton({ modelMenu = true }, Modifier.fillMaxWidth()) {
-                        Text(model?.name ?: "Default model", maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    }
-                    DropdownMenu(modelMenu, { modelMenu = false }) {
-                        models.forEach { item ->
-                            DropdownMenuItem(
-                                { Text("${item.name} · ${item.provider}") },
-                                onClick = { model = item; reasoning = item.defaultReasoning; modelMenu = false; persistPreferences() },
-                            )
-                        }
-                    }
-                }
-                Box(Modifier.weight(1f)) {
-                    OutlinedButton({ modeMenu = true }, Modifier.fillMaxWidth()) { Text(permissionMode.replace('-', ' ')) }
-                    DropdownMenu(modeMenu, { modeMenu = false }) {
-                        listOf("default", "plan", "edit", "full-auto").forEach { item ->
-                            DropdownMenuItem({ Text(item.replace('-', ' ')) }, onClick = { permissionMode = item; modeMenu = false; persistPreferences() })
-                        }
-                    }
-                }
-                Box(Modifier.weight(1f)) {
-                    OutlinedButton({ reasoningMenu = true }, Modifier.fillMaxWidth(), enabled = model?.reasoningEfforts?.isNotEmpty() == true) {
-                        Text(reasoning ?: "Reasoning", maxLines = 1)
-                    }
-                    DropdownMenu(reasoningMenu, { reasoningMenu = false }) {
-                        model?.reasoningEfforts.orEmpty().forEach { item ->
-                            DropdownMenuItem({ Text(item) }, onClick = { reasoning = item; reasoningMenu = false; persistPreferences() })
-                        }
-                    }
-                }
-            }
-            OutlinedTextField(text, { text = it; onDraftChange(it) }, Modifier.fillMaxWidth(), minLines = 3, label = { Text("What should the agent do?") })
+        },
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 18.dp)
+                .padding(bottom = 18.dp),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
+            // The prompt leads, as in iOS's HubComposerDrawer: the destination
+            // controls are a qualifier on the thing you are typing, not a wizard
+            // step ahead of it.
+            AdeTextField(
+                text,
+                { text = it; onDraftChange(it) },
+                if (cli) "What should the CLI session start on?" else "What should the agent do?",
+                singleLine = false,
+                minLines = 3,
+            )
             attachment?.let { uri ->
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Text(uri.lastPathSegment ?: "Image attachment", Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    TextButton({ attachment = null }) { Text("Remove") }
+                Row(
+                    Modifier.fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.accent.copy(alpha = 0.10f))
+                        .border(0.75.dp, colors.accent.copy(alpha = 0.26f), RoundedCornerShape(10.dp))
+                        .padding(start = 10.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.Image, null, Modifier.size(14.dp), tint = colors.accent)
+                    Text(
+                        uri.lastPathSegment ?: "Image attachment",
+                        Modifier.weight(1f).padding(horizontal = 8.dp),
+                        color = colors.textSecondary,
+                        fontSize = 12.sp,
+                        maxLines = 1,
+                        overflow = TextOverflow.MiddleEllipsis,
+                    )
+                    IconButton({ attachment = null }, Modifier.size(28.dp)) {
+                        Icon(Icons.Rounded.Close, "Remove attachment", Modifier.size(14.dp), tint = colors.textMuted)
+                    }
                 }
             }
-            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedButton(onClick = { attachmentPicker.launch("image/*") }, enabled = !cli && attachmentsEnabled) { Text("Attach image") }
-                Button(
-                    onClick = { project?.let { onSend(it, laneId, text.trim(), cli, model, permissionMode, reasoning, attachment) } },
-                    enabled = project != null && (laneId != null || canCreateLane) &&
-                        (if (cli) canStartCli else canStartChat) &&
-                        (text.isNotBlank() || (!cli && attachment != null)),
+
+            // Destination row: project · lane.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ComposerPickerChip(
+                    label = project?.displayName ?: "Project",
+                    icon = Icons.Rounded.FolderOpen,
                     modifier = Modifier.weight(1f),
-                ) { Text("Send") }
+                    expanded = projectMenu,
+                    onExpand = { projectMenu = it },
+                ) {
+                    projects.forEach { item ->
+                        ComposerMenuItem(item.displayName, selected = item.id == project?.id) {
+                            project = item; laneId = null; projectMenu = false; persistPreferences()
+                        }
+                    }
+                }
+                ComposerPickerChip(
+                    label = laneName ?: "New lane",
+                    icon = Icons.Rounded.AltRoute,
+                    modifier = Modifier.weight(1f),
+                    enabled = project != null,
+                    expanded = laneMenu,
+                    onExpand = { laneMenu = it },
+                ) {
+                    ComposerMenuItem("New lane", selected = laneId == null) {
+                        laneId = null; laneMenu = false; persistPreferences()
+                    }
+                    roster.firstOrNull { it.projectId == project?.id }?.lanes.orEmpty().forEach { lane ->
+                        ComposerMenuItem(lane.name, selected = lane.id == laneId) {
+                            laneId = lane.id; laneMenu = false; persistPreferences()
+                        }
+                    }
+                }
             }
-            Spacer(Modifier.height(22.dp))
+
+            // Agent row: Chat/CLI segmented control, then model.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                ComposerSegmented(
+                    options = listOf(false to "Chat", true to "CLI"),
+                    selected = cli,
+                    onSelect = { cli = it; persistPreferences() },
+                )
+                ComposerPickerChip(
+                    label = model?.name ?: "Default model",
+                    icon = Icons.Rounded.AutoAwesome,
+                    modifier = Modifier.weight(1f),
+                    expanded = modelMenu,
+                    onExpand = { modelMenu = it },
+                ) {
+                    models.forEach { item ->
+                        ComposerMenuItem("${item.name} · ${item.provider}", selected = item.id == model?.id) {
+                            model = item; reasoning = item.defaultReasoning; modelMenu = false; persistPreferences()
+                        }
+                    }
+                }
+            }
+
+            // Behaviour row: permission mode · reasoning · attach · send.
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                ComposerPickerChip(
+                    label = permissionMode.replace('-', ' '),
+                    icon = Icons.Rounded.Tune,
+                    modifier = Modifier.weight(1f),
+                    expanded = modeMenu,
+                    onExpand = { modeMenu = it },
+                ) {
+                    listOf("default", "plan", "edit", "full-auto").forEach { item ->
+                        ComposerMenuItem(item.replace('-', ' '), selected = item == permissionMode) {
+                            permissionMode = item; modeMenu = false; persistPreferences()
+                        }
+                    }
+                }
+                val reasoningSupported = model?.reasoningEfforts?.isNotEmpty() == true
+                ComposerPickerChip(
+                    label = if (reasoningSupported) (reasoning ?: "Reasoning") else "No reasoning",
+                    icon = Icons.Rounded.Speed,
+                    modifier = Modifier.weight(1f),
+                    enabled = reasoningSupported,
+                    expanded = reasoningMenu,
+                    onExpand = { reasoningMenu = it },
+                ) {
+                    model?.reasoningEfforts.orEmpty().forEach { item ->
+                        ComposerMenuItem(item, selected = item == reasoning) {
+                            reasoning = item; reasoningMenu = false; persistPreferences()
+                        }
+                    }
+                }
+                ComposerRoundButton(
+                    icon = Icons.Rounded.Image,
+                    description = "Attach image",
+                    enabled = !cli && attachmentsEnabled,
+                    onClick = { attachmentPicker.launch("image/*") },
+                )
+                ComposerRoundButton(
+                    icon = Icons.Rounded.ArrowUpward,
+                    description = "Start work",
+                    enabled = canSend,
+                    filled = true,
+                    onClick = { project?.let { onSend(it, laneId, text.trim(), cli, model, permissionMode, reasoning, attachment) } },
+                )
+            }
         }
+    }
+}
+
+/** Token-styled dropdown trigger used by the Hub composer control rows. */
+@Composable
+private fun ComposerPickerChip(
+    label: String,
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    expanded: Boolean,
+    onExpand: (Boolean) -> Unit,
+    menu: @Composable ColumnScope.() -> Unit,
+) {
+    val colors = AdeTokens.colors
+    val shape = RoundedCornerShape(11.dp)
+    val tint = if (enabled) colors.textSecondary else colors.textMuted.copy(alpha = 0.55f)
+    Box(modifier) {
+        Row(
+            Modifier.fillMaxWidth()
+                .height(38.dp)
+                .clip(shape)
+                .background(colors.surface.copy(alpha = if (colors.isDark) 0.55f else 0.85f))
+                .border(0.75.dp, colors.border, shape)
+                .then(if (enabled) Modifier.pressableCard { onExpand(true) } else Modifier)
+                .padding(horizontal = 9.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(icon, null, Modifier.size(14.dp), tint = if (enabled) colors.accent else tint)
+            Text(
+                label,
+                Modifier.weight(1f).padding(horizontal = 6.dp),
+                color = if (enabled) colors.textPrimary else tint,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Medium,
+                maxLines = 1,
+                // Model names ("gpt-5.6-terra-preview") and lane names both run
+                // long in a third-width chip; the middle is the throwaway part.
+                overflow = TextOverflow.MiddleEllipsis,
+            )
+            Icon(Icons.Rounded.ExpandMore, null, Modifier.size(14.dp), tint = tint)
+        }
+        DropdownMenu(
+            expanded,
+            { onExpand(false) },
+            modifier = Modifier.background(if (colors.isDark) Color(0xFF1C1A2E) else Color(0xFFFCFBF9)),
+        ) {
+            menu()
+        }
+    }
+}
+
+@Composable
+private fun ComposerMenuItem(label: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = AdeTokens.colors
+    DropdownMenuItem(
+        text = {
+            Text(
+                label,
+                color = if (selected) colors.accent else colors.textPrimary,
+                fontSize = 14.sp,
+                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
+                maxLines = 1,
+                overflow = TextOverflow.MiddleEllipsis,
+            )
+        },
+        onClick = onClick,
+    )
+}
+
+/**
+ * Chat/CLI segmented control. This was a [Switch], which reads as "turn CLI on"
+ * rather than "pick one of two session kinds" — the two options are peers.
+ */
+@Composable
+private fun <T> ComposerSegmented(options: List<Pair<T, String>>, selected: T, onSelect: (T) -> Unit) {
+    val colors = AdeTokens.colors
+    val shape = RoundedCornerShape(11.dp)
+    Row(
+        Modifier.height(38.dp)
+            .clip(shape)
+            .background(colors.recessed.copy(alpha = if (colors.isDark) 0.75f else 1f))
+            .border(0.75.dp, colors.border, shape)
+            .padding(3.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        options.forEach { (value, label) ->
+            val active = value == selected
+            Box(
+                Modifier.fillMaxHeight()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(if (active) colors.accent.copy(alpha = 0.18f) else Color.Transparent)
+                    .pressableCard { onSelect(value) }
+                    .padding(horizontal = 11.dp),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    label,
+                    color = if (active) colors.accent else colors.textMuted,
+                    fontSize = 13.sp,
+                    fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ComposerRoundButton(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    description: String,
+    enabled: Boolean,
+    filled: Boolean = false,
+    onClick: () -> Unit,
+) {
+    val colors = AdeTokens.colors
+    val tint = when {
+        !enabled -> colors.textMuted.copy(alpha = 0.5f)
+        filled -> colors.onAccent
+        else -> colors.accent
+    }
+    Box(
+        Modifier.size(38.dp)
+            .clip(CircleShape)
+            .background(
+                when {
+                    filled && enabled -> colors.accent
+                    filled -> colors.accent.copy(alpha = 0.28f)
+                    else -> colors.surface.copy(alpha = if (colors.isDark) 0.55f else 0.85f)
+                },
+            )
+            .border(0.75.dp, if (filled) Color.Transparent else colors.border, CircleShape)
+            .then(if (enabled) Modifier.pressableCard(onClick) else Modifier),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(icon, description, Modifier.size(17.dp), tint = tint)
     }
 }
 
@@ -953,31 +1334,114 @@ fun WorkspaceScreen(viewModel: MainViewModel, project: MobileProject?, onBack: (
     val roster by viewModel.roster.collectAsStateWithLifecycle()
     var tab by remember { mutableStateOf("work") }
     var composerOpen by remember { mutableStateOf(false) }
-    Scaffold(
+    var addLaneOpen by remember { mutableStateOf(false) }
+    val accentArgb = if (AdeTokens.colors.isDark) 0xFFA78BFAL else 0xFF049068L
+    // Both cards are built from the two payloads the app already fetches:
+    // `work.listSessions` (timestamps, status note, attention text, pin state,
+    // summary/goal) and `lanes.refreshSnapshots` with includeStatus (colour,
+    // dirty/ahead/behind, childCount, Linear id, devicesOpen). No per-lane
+    // `lanes.getDetail` fan-out is needed for either tab.
+    val lanesById = remember(state.lanes) { state.lanes.associateBy(UiLane::id) }
+    val workCards = state.sessions.map { session ->
+        workCardModel(
+            session = session,
+            lane = session.laneId?.let(lanesById::get),
+            accentArgb = accentArgb,
+        )
+    }
+    Box(Modifier.fillMaxSize()) {
+        AdeAuroraBackground()
+        Scaffold(
+        containerColor = Color.Transparent,
         topBar = {
-            Row(Modifier.fillMaxWidth().padding(start = 8.dp, top = 12.dp, end = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                TextButton(onClick = onBack) { Text("Hub") }
-                Text(project?.displayName ?: "Project", Modifier.weight(1f), fontWeight = FontWeight.SemiBold, maxLines = 1)
-                IconButton(onClick = onSettings) { Icon(Icons.Rounded.Settings, "Settings") }
-            }
-        },
-        bottomBar = {
-            Surface(tonalElevation = 2.dp) {
-                Row(Modifier.fillMaxWidth().padding(8.dp), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    TextButton(onClick = { tab = "work" }) { Text("Work", fontWeight = if (tab == "work") FontWeight.Bold else FontWeight.Normal) }
-                    TextButton(onClick = { tab = "lanes" }) { Text("Lanes", fontWeight = if (tab == "lanes") FontWeight.Bold else FontWeight.Normal) }
+            val colors = AdeTokens.colors
+            Row(
+                Modifier.fillMaxWidth().height(60.dp).padding(horizontal = 16.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    Modifier.clip(CircleShape)
+                        .background(colors.glass)
+                        .border(1.dp, Color.White.copy(alpha = 0.12f), CircleShape)
+                        .pressableCard(onBack)
+                        .padding(horizontal = 8.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Back to Hub", Modifier.size(14.dp), tint = colors.accent)
+                    Surface(
+                        Modifier.size(24.dp),
+                        shape = RoundedCornerShape(6.dp),
+                        color = colors.accent.copy(alpha = 0.12f),
+                    ) { ProjectIcon(project?.iconDataUrl, project?.displayName ?: "Project") }
+                }
+                Text(
+                    if (tab == "work") "Work" else "Lanes",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Black,
+                    color = colors.textPrimary,
+                    maxLines = 1,
+                )
+                Spacer(Modifier.weight(1f))
+                if (tab == "work") WorkLivePill(workLiveCounts(workCards))
+                Surface(
+                    shape = CircleShape,
+                    color = colors.glass,
+                    border = androidx.compose.foundation.BorderStroke(1.dp, colors.glassBorder),
+                ) {
+                    // iOS groups a bell beside the gear here; Android v1 keeps
+                    // attention on the Hub screen, so the pill carries settings only.
+                    IconButton(onClick = onSettings, modifier = Modifier.size(34.dp)) {
+                        Icon(Icons.Rounded.Settings, "Settings", Modifier.size(16.dp), tint = colors.textSecondary)
+                    }
                 }
             }
         },
-        floatingActionButton = {
-            if (tab == "work" && project != null) FloatingActionButton({ composerOpen = true }) {
-                Icon(Icons.Rounded.Add, "Start chat or CLI session")
+        bottomBar = {
+            Box(Modifier.navigationBarsPadding()) {
+                AdeFloatingTabBar(
+                    items = listOf(
+                        AdeTabItem("work", "Work", badge = workCards.count { normalizeWorkStatus(it.status) == "active" }),
+                        AdeTabItem("lanes", "Lanes"),
+                    ),
+                    selected = tab,
+                    onSelect = { tab = it },
+                ) { id, selected ->
+                    Icon(
+                        if (id == "work") Icons.Rounded.ChatBubbleOutline else Icons.Rounded.FolderOpen,
+                        null,
+                        Modifier.size(17.dp),
+                        tint = if (selected) AdeTokens.colors.onAccent else AdeTokens.colors.textSecondary,
+                    )
+                }
             }
         },
-    ) { padding ->
-        if (tab == "work") WorkList(state.sessions, viewModel, Modifier.padding(padding), onSession)
-        else LaneList(state.lanes, viewModel, Modifier.padding(padding))
+        ) { padding ->
+        if (tab == "work") WorkList(
+            cards = workCards,
+            lanes = state.lanes,
+            viewModel = viewModel,
+            projectId = project?.id,
+            collapsedKeys = state.workCollapsedKeys,
+            offline = project == null,
+            modifier = Modifier.padding(padding),
+            onSession = onSession,
+            onStartChat = { composerOpen = true },
+            onAddLane = { addLaneOpen = true },
+        )
+        else LaneList(
+            state.lanes,
+            viewModel,
+            Modifier.padding(padding),
+            onAddLane = { addLaneOpen = true },
+        )
+        }
     }
+    if (addLaneOpen) AddLaneDialog(
+        onDismiss = { addLaneOpen = false },
+        onCreate = { name, baseRef -> viewModel.createLane(name, baseRef) },
+    )
     if (composerOpen && project != null) HubComposer(
         projects = listOf(project),
         roster = roster?.projects.orEmpty(),
@@ -998,85 +1462,189 @@ fun WorkspaceScreen(viewModel: MainViewModel, project: MobileProject?, onBack: (
     )
 }
 
+/** "Add lane" dialog. Gated by the caller on the `lanes.create` descriptor. */
 @Composable
-private fun WorkList(sessions: List<UiSession>, viewModel: MainViewModel, modifier: Modifier, onSession: (UiSession) -> Unit) {
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        item { SectionTitle("Work", "Chats and tracked terminal sessions") }
-        items(sessions, key = UiSession::id) { session ->
-            AdeCard(Modifier.clickable { onSession(session) }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(if (session.kind == SessionKind.CHAT) Icons.Rounded.ChatBubbleOutline else Icons.Rounded.Code, null)
-                    Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                        Text(session.title, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${session.laneName ?: "Lane"} · ${session.runtimeState ?: "idle"}", style = MaterialTheme.typography.bodySmall)
-                        session.preview?.let { Text(it, maxLines = 2, overflow = TextOverflow.Ellipsis, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-                    }
-                    Icon(Icons.Rounded.ChevronRight, null)
+private fun AddLaneDialog(onDismiss: () -> Unit, onCreate: (String, String?) -> Unit) {
+    var name by remember { mutableStateOf("") }
+    var baseRef by remember { mutableStateOf("") }
+    AdeDialog(
+        title = "New lane",
+        onDismiss = onDismiss,
+        icon = Icons.Rounded.Add,
+        confirmLabel = "Create",
+        confirmEnabled = name.isNotBlank(),
+        onConfirm = { onCreate(name.trim(), baseRef.trim().takeIf(String::isNotEmpty)); onDismiss() },
+    ) {
+        AdeTextField(name, { name = it }, "Name")
+        AdeTextField(baseRef, { baseRef = it }, "Base branch (optional)")
+        AdeDialogText("Leave the base blank to use this project's configured default.")
+    }
+}
+
+@Composable
+private fun WorkList(
+    cards: List<WorkCardModel>,
+    lanes: List<UiLane>,
+    viewModel: MainViewModel,
+    projectId: String?,
+    collapsedKeys: Set<String>,
+    offline: Boolean,
+    modifier: Modifier,
+    onSession: (UiSession) -> Unit,
+    onStartChat: () -> Unit,
+    onAddLane: () -> Unit,
+) {
+    val state by viewModel.ui.collectAsStateWithLifecycle()
+    // Search text, filters and grouping persist per project + host, matching the
+    // iOS `ade.work.viewStateByScope.v1` store.
+    val scope = projectId.orEmpty()
+    val persisted = state.workViewStates[scope] ?: WorkViewState()
+    var filtersOpen by remember { mutableStateOf(false) }
+    var view by remember(scope, persisted) { mutableStateOf(persisted) }
+    fun update(next: WorkViewState) {
+        view = next
+        if (projectId != null) viewModel.setWorkViewState(scope, next)
+    }
+    val query = view.query
+    val statusFilter = view.statusFilter
+    val laneFilter = view.laneFilter
+    val organization = runCatching { WorkOrganization.valueOf(view.organization) }
+        .getOrDefault(WorkOrganization.BY_LANE)
+
+    val filtered = cards
+        .filter { matchesWorkSearch(it, query) }
+        .filter { statusFilter == "all" || normalizeWorkStatus(it.status) == statusFilter }
+        .filter { laneFilter == null || it.laneId == laneFilter }
+    val groups = when (organization) {
+        WorkOrganization.BY_LANE -> groupWorkByLane(filtered, lanes)
+        WorkOrganization.BY_STATUS -> groupWorkByStatus(filtered)
+        WorkOrganization.BY_TIME -> groupWorkByTime(filtered)
+    }
+    val sessionsById = state.sessions.associateBy(UiSession::id)
+
+    LazyColumn(
+        modifier.fillMaxSize().padding(horizontal = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(top = 8.dp, bottom = 124.dp),
+    ) {
+        item { WorkSearchRow(query, { update(view.copy(query = it)) }, filtersOpen) { filtersOpen = !filtersOpen } }
+        item { WorkActionRow(offline, onStartChat = onStartChat, onAddLane = onAddLane) }
+        if (filtersOpen) item {
+            WorkFilterPanel(
+                statusFilter = statusFilter,
+                onStatusFilter = { update(view.copy(statusFilter = it)) },
+                organization = organization,
+                onOrganization = { update(view.copy(organization = it.name)) },
+                laneOptions = listOf<Pair<String?, String>>(null to "All lanes") +
+                    lanes.map { it.id as String? to it.name },
+                laneFilter = laneFilter,
+                onLaneFilter = { update(view.copy(laneFilter = it)) },
+            )
+        }
+        if (groups.isEmpty()) item {
+            AdeCard(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f)) {
+                Text(if (cards.isEmpty()) "No active work" else "No matching sessions", fontWeight = FontWeight.SemiBold)
+                Text(
+                    if (cards.isEmpty()) "Start a chat or terminal session above."
+                    else "Try another title, lane, or phrase.",
+                    Modifier.padding(top = 4.dp),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    style = MaterialTheme.typography.bodySmall,
+                )
+            }
+        }
+        groups.forEach { group ->
+            // Collapse state persists per project + host under its own DataStore
+            // key. Quiet groups invert the default, so for them the stored key
+            // means "explicitly opened" instead of "collapsed".
+            val stored = "$scope:${group.id}" in collapsedKeys
+            val collapsed = if (group.quiet) !stored else stored
+            item(key = "header-${group.id}") {
+                WorkGroupHeader(group, collapsed) {
+                    if (projectId != null) viewModel.setWorkCollapsed(scope, group.id, !stored)
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                    if (session.runtimeState in setOf("running", "starting", "needs_you")) {
-                        TextButton(
-                            { viewModel.runSessionAction("work.stopRuntime", session.id) },
-                            enabled = viewModel.canInvoke("work.stopRuntime"),
-                        ) { Text("Stop") }
-                    }
-                    if (session.kind == SessionKind.CHAT) {
-                        TextButton(
-                            { viewModel.runSessionAction("chat.archive", session.id) },
-                            enabled = viewModel.canInvoke("chat.archive"),
-                        ) { Text("Archive") }
-                    }
-                }
+            }
+            if (!collapsed) items(group.cards, key = { "card-${it.id}" }) { card ->
+                WorkSessionCard(card, onClick = { sessionsById[card.id]?.let(onSession) })
             }
         }
     }
 }
 
 @Composable
-private fun LaneList(lanes: List<UiLane>, viewModel: MainViewModel, modifier: Modifier) {
+private fun LaneList(lanes: List<UiLane>, viewModel: MainViewModel, modifier: Modifier, onAddLane: () -> Unit) {
     val state by viewModel.ui.collectAsStateWithLifecycle()
     var expandedLane by remember { mutableStateOf<String?>(null) }
     var renamingLane by remember { mutableStateOf<UiLane?>(null) }
     var renameText by remember { mutableStateOf("") }
     var deletingLane by remember { mutableStateOf<UiLane?>(null) }
     renamingLane?.let { lane ->
-        AlertDialog(
-            onDismissRequest = { renamingLane = null },
-            title = { Text("Rename lane") },
-            text = { OutlinedTextField(renameText, { renameText = it }, label = { Text("Name") }) },
-            confirmButton = { TextButton({ viewModel.renameLane(lane.id, renameText); renamingLane = null }) { Text("Save") } },
-            dismissButton = { TextButton({ renamingLane = null }) { Text("Cancel") } },
-        )
+        AdeDialog(
+            title = "Rename lane",
+            onDismiss = { renamingLane = null },
+            icon = Icons.Rounded.Edit,
+            confirmLabel = "Save",
+            confirmEnabled = renameText.isNotBlank(),
+            onConfirm = { viewModel.renameLane(lane.id, renameText); renamingLane = null },
+        ) {
+            AdeTextField(renameText, { renameText = it }, "Name")
+        }
     }
     deletingLane?.let { lane ->
-        AlertDialog(
-            onDismissRequest = { deletingLane = null },
-            title = { Text("Delete ${lane.name}?") },
-            text = { Text("This removes the lane worktree. This action cannot be undone from Android.") },
-            confirmButton = { TextButton({ viewModel.runLaneAction("lanes.delete", lane.id); deletingLane = null }) { Text("Delete", color = MaterialTheme.colorScheme.error) } },
-            dismissButton = { TextButton({ deletingLane = null }) { Text("Cancel") } },
-        )
+        AdeDialog(
+            title = "Delete ${lane.name}?",
+            onDismiss = { deletingLane = null },
+            icon = Icons.Rounded.Delete,
+            destructive = true,
+            confirmLabel = "Delete",
+            onConfirm = { viewModel.runLaneAction("lanes.delete", lane.id); deletingLane = null },
+        ) {
+            AdeDialogText("This removes the lane worktree. This action cannot be undone from Android.")
+        }
     }
-    LazyColumn(modifier.fillMaxSize().padding(horizontal = 14.dp), verticalArrangement = Arrangement.spacedBy(9.dp)) {
-        item { SectionTitle("Lanes", "Worktrees on this project") }
+    LazyColumn(
+        modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            top = 8.dp,
+            start = 16.dp,
+            end = 16.dp,
+            bottom = 124.dp,
+        ),
+    ) {
+        item { LaneAddButton(enabled = viewModel.canInvoke("lanes.create"), onClick = onAddLane) }
+        item { LaneSectionLabel("LANES") }
+        if (lanes.isEmpty()) item {
+            AdeCard(color = MaterialTheme.colorScheme.surface.copy(alpha = 0.62f)) {
+                Text("No lanes yet", fontWeight = FontWeight.SemiBold)
+                Text("Create one when starting new work.", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        }
         items(lanes, key = UiLane::id) { lane ->
             val expanded = expandedLane == lane.id
             val detail = state.laneDetails[lane.id]
-            AdeCard(Modifier.clickable {
+            // The card renders entirely from the `lanes.refreshSnapshots`
+            // snapshot; `lanes.getDetail` is fetched only when the row is
+            // expanded, for commits/sessions/upstream.
+            val model = LaneCardModel(
+                id = lane.id,
+                name = lane.name,
+                branch = lane.branch,
+                colorArgb = parseLaneColorArgb(lane.color) ?: laneFallbackColorArgb(lane.id),
+                laneType = lane.laneType,
+                archived = lane.archived,
+                git = laneGitState(lane),
+                devicesOpen = lane.devicesOpen,
+            )
+            Column {
+            LaneCard(model, open = expanded, onClick = {
                 expandedLane = if (expanded) null else lane.id
                 if (!expanded) viewModel.refreshLaneDetail(lane.id)
-            }) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(lane.name, Modifier.weight(1f), fontWeight = FontWeight.SemiBold)
-                    Icon(if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore, "Lane details")
-                }
-                Text(lane.branch ?: "No branch", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Text("${lane.state ?: "idle"} · ${lane.running} running · ${lane.awaiting} waiting", style = MaterialTheme.typography.bodySmall)
+            })
                 if (expanded) {
+                    lane.description?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                     if (detail == null) Text("Loading lane detail…", style = MaterialTheme.typography.bodySmall)
                     else {
-                        val laneSource = detail["lane"] as? JsonObject
-                        laneSource?.string("description")?.let { Text(it, style = MaterialTheme.typography.bodySmall) }
                         Text(
                             "${(detail["recentCommits"] as? JsonArray)?.size ?: 0} recent commits · " +
                                 "${(detail["sessions"] as? JsonArray)?.size ?: 0} terminals · " +
@@ -1123,3 +1691,62 @@ private fun LaneList(lanes: List<UiLane>, viewModel: MainViewModel, modifier: Mo
 }
 
 private fun JsonObject.string(key: String): String? = get(key)?.jsonPrimitive?.contentOrNull?.takeIf(String::isNotBlank)
+
+// ---------------------------------------------------------------------------
+// Previews
+// ---------------------------------------------------------------------------
+
+private val previewProjects = listOf(
+    MobileProject(id = "p-ade", displayName = "ADE", laneCount = 6),
+    MobileProject(id = "p-win", displayName = "ade-win-smoke-9f2c41", laneCount = 1),
+    MobileProject(id = "p-crumb", displayName = "crumb", laneCount = 1),
+)
+
+private val previewRoster = RosterProject(
+    projectId = "p-ade",
+    displayName = "ADE",
+    lanes = listOf(
+        RosterLane(id = "l1", name = "android app feasibility", color = "#A78BFA"),
+        RosterLane(id = "l2", name = "windows native build", color = "#0A84FF"),
+    ),
+    chats = listOf(
+        RosterChat(id = "c1", laneId = "l1", title = "Wire the Hub composer", provider = "codex", status = "running"),
+        RosterChat(id = "c2", laneId = "l1", title = "Lane snapshot parser", provider = "claude", status = "idle"),
+        RosterChat(id = "c3", laneId = "l2", title = "MSI packaging", provider = null, status = "idle"),
+    ),
+)
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Hub project rows dark", showBackground = true, backgroundColor = 0xFF0C0B10)
+@Composable
+private fun PreviewHubProjectsDark() = AdeTheme(dark = true) { PreviewHubProjects() }
+
+@androidx.compose.ui.tooling.preview.Preview(name = "Hub project rows light", showBackground = true, backgroundColor = 0xFFF5F3F0)
+@Composable
+private fun PreviewHubProjectsLight() = AdeTheme(dark = false) { PreviewHubProjects() }
+
+@Composable
+private fun PreviewHubProjects() {
+    Column(Modifier.padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("Projects", "Live work across this machine", Modifier.weight(1f))
+            IconButton(onClick = {}) { Icon(Icons.Rounded.Refresh, "Refresh") }
+        }
+        previewProjects.forEachIndexed { index, project ->
+            ProjectCard(
+                project = project,
+                roster = if (index == 0) previewRoster else null,
+                collapsed = index != 0,
+                onToggle = {},
+                onOpen = {},
+                onOpenSession = {},
+                onArchiveSession = {},
+                onCloseSession = {},
+                canArchive = true,
+                canClose = true,
+                collapsedLaneKeys = emptySet(),
+                onToggleLane = { _, _ -> },
+            )
+        }
+        HubComposerPill(draft = "", onClick = {})
+    }
+}

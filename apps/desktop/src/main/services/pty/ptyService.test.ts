@@ -1448,9 +1448,76 @@ describe("ptyService", () => {
         expect(mockPty.write).toHaveBeenCalledTimes(3);
         expect(mockPty.write).toHaveBeenLastCalledWith("\x1b[200~print cwd\x1b[201~");
 
-        await vi.advanceTimersByTimeAsync(180);
+        // Enter is withheld until Codex echoes the prompt into its composer.
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(mockPty.write).toHaveBeenCalledTimes(3);
+
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nMCP startup incomplete (failed: linear)\n› print cwd",
+        );
+        await vi.advanceTimersByTimeAsync(200);
         expect(mockPty.write).toHaveBeenCalledTimes(4);
         expect(mockPty.write).toHaveBeenLastCalledWith("\r");
+
+        // The composer empties, so no extra Enter is sent.
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[Hmodel: gpt-5.4 medium\nMCP startup incomplete (failed: linear)\n› ",
+        );
+        await vi.advanceTimersByTimeAsync(5_000);
+        expect(mockPty.write).toHaveBeenCalledTimes(4);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("re-sends Enter when the Codex composer still holds a pasted initialInput", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+        const submitKeyCount = (): number => (mockPty.write as unknown as ReturnType<typeof vi.fn>)
+          .mock.calls.filter((call: unknown[]) => call[0] === "\r").length;
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Codex CLI",
+          cols: 80,
+          rows: 24,
+          toolType: "codex",
+          command: "codex",
+          args: ["--no-alt-screen"],
+          startupCommand: "codex --no-alt-screen",
+          initialInput: "ADE_UNSUBMITTED_PROMPT_MARKER",
+        });
+
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\nMCP startup incomplete (failed: linear)\n› ",
+        );
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(mockPty.write).toHaveBeenLastCalledWith(
+          "\x1b[200~ADE_UNSUBMITTED_PROMPT_MARKER\x1b[201~",
+        );
+
+        // Codex collapses the paste into a placeholder but swallows the first Enter.
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\n› [Pasted Content 4827 chars]",
+        );
+        await vi.advanceTimersByTimeAsync(200);
+        expect(submitKeyCount()).toBe(1);
+
+        await vi.advanceTimersByTimeAsync(2_200);
+        expect(submitKeyCount()).toBe(2);
+
+        // Once the composer clears, retries stop and stay bounded.
+        mockPty._emitter.emit(
+          "data",
+          "\x1b[2J\x1b[HOpenAI Codex\nmodel: gpt-5.6-terra\n› ",
+        );
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect(submitKeyCount()).toBe(2);
       } finally {
         vi.useRealTimers();
       }
@@ -5936,6 +6003,33 @@ describe("ptyService", () => {
       expect(mockPty.resize).toHaveBeenLastCalledWith(100, 40);
       // Already back at the desktop size: nothing to restore.
       expect(service.restoreDesktopSizeBySessionId(sessionId)).toBe(false);
+    });
+
+    it("logs pty.resized with the applied dims and source", async () => {
+      const { service, logger } = createHarness();
+      const { sessionId } = await service.create({ laneId: "lane-1", title: "t", cols: 80, rows: 24 });
+
+      expect(service.resizeBySessionId(sessionId, 90, 30)).toBe(true);
+      expect(logger.debug).toHaveBeenCalledWith("pty.resized", {
+        sessionId,
+        cols: 90,
+        rows: 30,
+        source: "desktop",
+      });
+
+      expect(service.resizeBySessionId(sessionId, 61, 21, { source: "mobile" })).toBe(true);
+      expect(logger.debug).toHaveBeenCalledWith("pty.resized", {
+        sessionId,
+        cols: 61,
+        rows: 21,
+        source: "mobile",
+      });
+
+      // A no-op resize short-circuits before touching the pty, so it must not
+      // emit a second event for dims that never changed.
+      logger.debug.mockClear();
+      expect(service.resizeBySessionId(sessionId, 61, 21, { source: "mobile" })).toBe(true);
+      expect(logger.debug).not.toHaveBeenCalledWith("pty.resized", expect.anything());
     });
 
     it("records sizes from resizeBySessionId unless the source is mobile", async () => {

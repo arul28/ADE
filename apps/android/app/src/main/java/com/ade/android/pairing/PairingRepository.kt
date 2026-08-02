@@ -12,10 +12,12 @@ import com.ade.sync.client.AdeSyncClient
 import com.ade.sync.client.AccountAdoptionCredentials
 import com.ade.sync.client.PairedCredentials
 import com.ade.sync.model.DirectoryMachine
+import com.ade.sync.model.ReachableEndpoint
 import com.ade.sync.model.PairingQrPayload
 import com.ade.sync.model.SyncPeerMetadata
 import com.ade.sync.pairing.PinPairingClient
 import com.ade.sync.transport.RouteCandidate
+import com.ade.sync.transport.ConnectionRaceException
 import com.ade.sync.transport.RouteKind
 import java.util.UUID
 import java.security.MessageDigest
@@ -26,6 +28,9 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import okhttp3.OkHttpClient
 
 class PairingRepository(
@@ -36,6 +41,7 @@ class PairingRepository(
     private val sync: AdeSyncClient,
 ) {
     private val pairing = PinPairingClient(http)
+    private val connectionMutex = Mutex()
 
     fun candidates(payload: PairingQrPayload): List<RouteCandidate> {
         val direct = payload.addressCandidates.mapNotNull { candidate ->
@@ -85,7 +91,12 @@ class PairingRepository(
         return verified
     }
 
-    suspend fun connect(profile: MachineProfile): Unit {
+    suspend fun connect(profile: MachineProfile): Unit = connectionMutex.withLock {
+        if (canReuseActiveConnection(
+                statusState = sync.status.value.state,
+                currentMachineKey = store.current()?.machineKey,
+                targetMachineKey = profile.machineKey,
+            )) return@withLock
         val dpop = store.dpopKey(context, profile.machineKey)
         val fingerprint = networkFingerprint()
         if (profile.connectionAuthKind == "bootstrap") {
@@ -142,6 +153,18 @@ class PairingRepository(
         }
         val port = connection["port"]?.jsonPrimitive?.content?.toIntOrNull()
             ?: error("The project connection omitted its port")
+        val currentStatus = sync.status.value
+        if (canRetainProjectHandoffSocket(
+                statusState = currentStatus.state,
+                statusEndpoint = currentStatus.endpoint,
+                currentHostDeviceId = current.hostDeviceId,
+                targetHostDeviceId = hostDeviceId,
+                targetPort = port,
+            )) {
+            val retained = current.copy(name = identity.string("name") ?: current.name)
+            store.put(retained)
+            return retained
+        }
         val advertisedEndpoints = connection["addressCandidates"]?.jsonArray.orEmpty().mapNotNull { element ->
             val candidate = element.jsonObject
             val host = candidate.string("host") ?: return@mapNotNull null
@@ -164,12 +187,13 @@ class PairingRepository(
         // the route that just proved reachable when the host reports that same
         // port; advertised LAN addresses can be unusable behind an emulator,
         // VPN, container, or port forward even though the active route works.
-        val activeEndpoint = sync.status.value.takeIf { it.state == "connected" }?.let { status ->
-            val activeUrl = status.endpoint ?: return@let null
-            val activePort = runCatching { URI(activeUrl).port }.getOrNull()
-            val activeKind = status.route?.name?.lowercase() ?: return@let null
-            if (activePort == port) SavedEndpoint(activeUrl, activeKind) else null
-        }
+        val status = sync.status.value
+        val activeEndpoint = preferredProjectHandoffEndpoint(
+            statusEndpoint = status.endpoint,
+            statusRoute = status.route?.name?.lowercase(),
+            savedEndpoints = current.endpoints,
+            port = port,
+        )
         val endpoints = mergeProjectHandoffEndpoints(activeEndpoint, advertisedEndpoints)
         require(endpoints.isNotEmpty()) { "The project connection contains no reachable machine address" }
         val authKind = connection.string("authKind") ?: "paired"
@@ -184,27 +208,28 @@ class PairingRepository(
             } else null,
         )
         store.put(updated)
-        connect(updated)
+        connectProjectHandoff(updated)
         return store.get(updated.machineKey) ?: updated
+    }
+
+    private suspend fun connectProjectHandoff(profile: MachineProfile) {
+        var failureIndex = 0
+        while (true) {
+            try {
+                connect(profile)
+                return
+            } catch (error: Throwable) {
+                val retryDelay = projectHandoffRetryDelay(failureIndex, error) ?: throw error
+                failureIndex += 1
+                delay(retryDelay)
+            }
+        }
     }
 
     suspend fun adopt(machine: DirectoryMachine): MachineProfile {
         val expectedHostDeviceId = machine.deviceId?.takeIf(String::isNotBlank)
             ?: error("This directory entry does not include a machine identity")
-        val candidates = machine.reachableEndpoints.mapNotNull { endpoint ->
-            val kind = when (endpoint.kind) {
-                "lan" -> RouteKind.LAN
-                "tailnet" -> RouteKind.TAILNET
-                "relay" -> RouteKind.RELAY
-                else -> return@mapNotNull null
-            }
-            val url = endpoint.url?.takeIf(String::isNotBlank) ?: run {
-                val host = endpoint.host?.takeIf(String::isNotBlank) ?: return@mapNotNull null
-                val port = endpoint.port ?: return@mapNotNull null
-                "ws://${formatHost(host)}:$port"
-            }
-            RouteCandidate(url, kind)
-        }.distinctBy(RouteCandidate::url)
+        val candidates = accountMachineRouteCandidates(machine.reachableEndpoints)
         require(candidates.isNotEmpty()) { "This machine has no reachable endpoints" }
         val dpop = store.dpopKey(context, machine.machineKey)
         val localDeviceId = store.localDeviceId()
@@ -292,6 +317,70 @@ internal fun mergeProjectHandoffEndpoints(
     advertisedEndpoints: List<SavedEndpoint>,
 ): List<SavedEndpoint> = (listOfNotNull(activeEndpoint) + advertisedEndpoints)
     .distinctBy(SavedEndpoint::url)
+
+internal fun canReuseActiveConnection(
+    statusState: String,
+    currentMachineKey: String?,
+    targetMachineKey: String,
+): Boolean = statusState == "connected" && currentMachineKey == targetMachineKey
+
+/**
+ * Keeps a route that already reached this machine across the brain's project-host
+ * swap. The old socket can close before the switch response is processed, so the
+ * last status is useful even after it stops saying `connected`; the persisted
+ * candidates are the final fallback for that same-machine, same-port handoff.
+ */
+internal fun preferredProjectHandoffEndpoint(
+    statusEndpoint: String?,
+    statusRoute: String?,
+    savedEndpoints: List<SavedEndpoint>,
+    port: Int,
+): SavedEndpoint? {
+    val live = statusEndpoint?.let { url ->
+        val route = statusRoute ?: return@let null
+        if (runCatching { URI(url).port }.getOrNull() == port) SavedEndpoint(url, route) else null
+    }
+    if (live != null) return live
+    return savedEndpoints.firstOrNull { endpoint ->
+        runCatching { URI(endpoint.url).port }.getOrNull() == port
+    }
+}
+
+internal fun accountMachineRouteCandidates(endpoints: List<ReachableEndpoint>): List<RouteCandidate> =
+    endpoints.flatMap { endpoint ->
+        val kind = when (endpoint.kind) {
+            "lan" -> RouteKind.LAN
+            "tailnet" -> RouteKind.TAILNET
+            "relay" -> RouteKind.RELAY
+            else -> return@flatMap emptyList()
+        }
+        buildList {
+            endpoint.url?.trim()?.takeIf(String::isNotEmpty)?.let { add(RouteCandidate(it, kind)) }
+            val host = endpoint.host?.trim()?.takeIf(String::isNotEmpty)
+            val port = endpoint.port
+            if (kind != RouteKind.RELAY && host != null && port != null && port in 1..65535) {
+                val normalizedHost = host.removePrefix("[").removeSuffix("]")
+                val formattedHost = if (':' in normalizedHost) "[$normalizedHost]" else normalizedHost
+                add(RouteCandidate("ws://$formattedHost:$port", kind))
+            }
+        }
+    }.distinctBy(RouteCandidate::url)
+
+internal fun projectHandoffRetryDelay(failureIndex: Int, error: Throwable): Long? {
+    if (error !is ConnectionRaceException) return null
+    return listOf(400L, 900L).getOrNull(failureIndex)
+}
+
+internal fun canRetainProjectHandoffSocket(
+    statusState: String,
+    statusEndpoint: String?,
+    currentHostDeviceId: String,
+    targetHostDeviceId: String,
+    targetPort: Int,
+): Boolean = statusState == "connected" &&
+    currentHostDeviceId == targetHostDeviceId &&
+    statusEndpoint != null &&
+    runCatching { URI(statusEndpoint).port }.getOrNull() == targetPort
 
 internal fun mergeLearnedRelayEndpoint(
     endpoints: List<SavedEndpoint>,

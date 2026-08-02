@@ -109,6 +109,7 @@ fun AppRouteContent(
                 activity = activity,
                 onBack = back,
                 onPair = { navigate(AppRoute.Pairing) },
+                onSignIn = { navigate(AppRoute.SignInEmail) },
                 onSignedOut = { replaceAll(AppRoute.Access) },
                 onForgot = { replaceAll(AppRoute.Access) },
             )

@@ -1606,6 +1606,31 @@ export function createLaneService({
       last_checked_out_at: options.lastCheckedOutAt !== undefined ? options.lastCheckedOutAt : existing?.last_checked_out_at ?? null,
     };
     if (existing) {
+      // Every `lanes.list`/`lanes.refreshSnapshots` sweep re-derives a branch
+      // profile for every lane (`backfillLaneBranchProfiles` +
+      // `ensureBranchProfileForRow`). `lane_branch_profiles` is a cr-sqlite CRR
+      // table, so writing an unchanged row with a fresh `updated_at` still
+      // produces a changeset row -> the host broadcasts a LANES invalidation ->
+      // invalidation-only peers (phone/web) call `lanes.refreshSnapshots` ->
+      // that sweep writes the rows again. That is a self-sustaining refresh
+      // loop that ran a full `includeStatus` sweep (a `git status` per
+      // worktree) several times a second on large projects.
+      //
+      // Nothing here is derived from a clock, so an unchanged row means
+      // "observed again", not "changed". Skip the write: no changeset row, no
+      // invalidation, and `updated_at` keeps its true last-modified meaning
+      // (it is only ever read as an ordering fallback behind
+      // `last_checked_out_at`). Genuine changes to any tracked column still
+      // write and still invalidate for every peer.
+      if (
+        existing.branch_ref === profile.branch_ref
+        && existing.base_ref === profile.base_ref
+        && (existing.parent_lane_id ?? null) === (profile.parent_lane_id ?? null)
+        && (existing.source_branch_ref ?? null) === (profile.source_branch_ref ?? null)
+        && (existing.last_checked_out_at ?? null) === (profile.last_checked_out_at ?? null)
+      ) {
+        return toLaneBranchProfile(existing);
+      }
       db.run(
         `
           update lane_branch_profiles

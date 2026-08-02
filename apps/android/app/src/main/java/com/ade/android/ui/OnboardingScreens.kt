@@ -6,6 +6,9 @@ import android.os.Build
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -14,11 +17,16 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Computer
@@ -26,6 +34,7 @@ import androidx.compose.material.icons.rounded.QrCodeScanner
 import androidx.compose.material.icons.rounded.Radar
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -47,6 +56,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.BasicTextField
@@ -54,6 +64,7 @@ import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 import androidx.compose.foundation.layout.offset
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.ade.android.BuildConfig
 import com.ade.android.MainUiState
 import com.ade.android.MainViewModel
 import com.ade.sync.model.AddressCandidate
@@ -63,33 +74,53 @@ import androidx.core.content.ContextCompat
 
 @Composable
 fun AccessGateScreen(onSignIn: () -> Unit, onContinue: () -> Unit) {
-    Column(
-        Modifier.fillMaxSize().padding(horizontal = 28.dp, vertical = 44.dp),
-        verticalArrangement = Arrangement.SpaceBetween,
-    ) {
-        Column {
-            Surface(Modifier.size(58.dp), shape = CircleShape, color = MaterialTheme.colorScheme.primaryContainer) {
-                Box(contentAlignment = Alignment.Center) {
-                    Text("A", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Black)
-                }
+    Box(Modifier.fillMaxSize()) {
+        AdeAuroraBackground(stronger = true)
+        Column(
+            Modifier.fillMaxSize()
+                .verticalScroll(rememberScrollState())
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .imePadding()
+                .padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Spacer(Modifier.height(54.dp))
+            Box(Modifier.height(150.dp).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                AdeWordmark()
+            }
+            Text(
+                "Your agents, anywhere.",
+                style = MaterialTheme.typography.titleLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+            Spacer(Modifier.weight(1f, fill = true).height(52.dp))
+            Column(
+                Modifier.fillMaxWidth().widthIn(max = 420.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Button(
+                    onClick = onSignIn,
+                    modifier = Modifier.fillMaxWidth().height(52.dp),
+                    shape = RoundedCornerShape(16.dp),
+                ) { Text("Sign in", fontWeight = FontWeight.SemiBold) }
+                OutlinedButton(
+                    onClick = onContinue,
+                    modifier = Modifier.fillMaxWidth().height(50.dp),
+                    shape = RoundedCornerShape(16.dp),
+                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline.copy(alpha = 0.78f)),
+                    colors = ButtonDefaults.outlinedButtonColors(containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.45f)),
+                ) { Text("Continue without an account", fontWeight = FontWeight.SemiBold) }
+                Text(
+                    "Pair directly with your machine using its six-digit PIN.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
             }
             Spacer(Modifier.height(34.dp))
-            Text("Your agents, anywhere.", style = MaterialTheme.typography.displaySmall, fontWeight = FontWeight.Bold)
-            Spacer(Modifier.height(14.dp))
-            Text(
-                "Follow live work, answer approvals, and start a new lane from your phone.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = onSignIn, modifier = Modifier.fillMaxWidth()) { Text("Sign in") }
-            OutlinedButton(onClick = onContinue, modifier = Modifier.fillMaxWidth()) { Text("Continue without account") }
-            Text(
-                "Without an account, pair on the same network with your machine's six-digit PIN.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
         }
     }
 }
@@ -218,7 +249,13 @@ private fun MachineRow(name: String, detail: String, enabled: Boolean, onClick: 
 @Composable
 fun PairingEntryScreen(onBack: () -> Unit, onQr: () -> Unit, onNearby: () -> Unit) {
     AdeScreen("Add a machine", onBack) {
-        Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text(
+                "Connect to the ADE brain running on your computer.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+            )
             PairingChoice(Icons.Rounded.QrCodeScanner, "Scan QR code", "Fastest — open Connections on your machine.", onQr)
             PairingChoice(Icons.Rounded.Radar, "Find nearby", "Discover ADE machines on this network.", onNearby)
             PairingChoice(Icons.Rounded.Security, "SSH bootstrap", "Deferred from Android v1.", {}, enabled = false)
@@ -229,13 +266,21 @@ fun PairingEntryScreen(onBack: () -> Unit, onQr: () -> Unit, onNearby: () -> Uni
 @Composable
 private fun PairingChoice(icon: androidx.compose.ui.graphics.vector.ImageVector, title: String, detail: String, onClick: () -> Unit, enabled: Boolean = true) {
     AdeCard(Modifier.clickable(enabled = enabled, onClick = onClick)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(icon, null, tint = MaterialTheme.colorScheme.primary)
-            Column(Modifier.weight(1f).padding(horizontal = 14.dp)) {
+        Row(Modifier.padding(vertical = 2.dp), verticalAlignment = Alignment.CenterVertically) {
+            Surface(
+                Modifier.size(38.dp),
+                shape = CircleShape,
+                color = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 0.12f else 0.05f),
+            ) {
+                Box(contentAlignment = Alignment.Center) {
+                    Icon(icon, null, Modifier.size(20.dp), tint = MaterialTheme.colorScheme.primary.copy(alpha = if (enabled) 1f else 0.45f))
+                }
+            }
+            Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
                 Text(title, fontWeight = FontWeight.SemiBold)
                 Text(detail, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
-            Icon(Icons.Rounded.ChevronRight, null)
+            Icon(Icons.Rounded.ChevronRight, null, tint = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = if (enabled) 0.8f else 0.3f))
         }
     }
 }
@@ -286,6 +331,24 @@ fun NearbyScreen(viewModel: MainViewModel, onBack: () -> Unit, onSelected: () ->
                         port = machine.port,
                         addressCandidates = machine.hosts.map { AddressCandidate(it, "lan") },
                         pinConfigured = machine.pinConfigured,
+                    )
+                    if (viewModel.setPairingText(com.ade.sync.pairing.PairingQr.encode(payload))) onSelected()
+                }
+            }
+            if (BuildConfig.DEBUG) item {
+                MachineRow("Local ADE brain", "Android emulator gateway", true) {
+                    val payload = PairingQrPayload(
+                        version = 3,
+                        hostIdentity = PairingHostIdentity(
+                            deviceId = "nearby-android-emulator-local-host",
+                            siteId = "",
+                            name = "Local ADE brain",
+                            platform = "windows",
+                            deviceType = "desktop",
+                        ),
+                        port = 8787,
+                        addressCandidates = listOf(AddressCandidate("10.0.2.2", "lan")),
+                        pinConfigured = true,
                     )
                     if (viewModel.setPairingText(com.ade.sync.pairing.PairingQr.encode(payload))) onSelected()
                 }

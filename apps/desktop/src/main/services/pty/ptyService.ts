@@ -80,6 +80,7 @@ import { derivePreviewFromChunk } from "../../utils/terminalPreview";
 import {
   buildOpenCodeReplayResumeCommand,
   buildTrackedCliResumeCommand,
+  codexComposerHoldsPendingInput,
   defaultResumeCommandForTool,
   extractResumeCommandFromOutput,
   normalizeResumeCommand,
@@ -160,7 +161,17 @@ const AGENT_CLI_INPUT_CHUNK_DELAY_MS = 5;
 const AGENT_CLI_INPUT_CLEAR_DELAY_MS = 25;
 const AGENT_CLI_LINE_SUBMIT_KEY = "\r";
 const AGENT_CLI_SUBMIT_DELAY_MS = 25;
+// Codex commits bracketed pastes asynchronously, and how long that takes
+// depends on paste size, MCP/plugin startup and TUI redraws — so ADE never
+// guesses. This is only a floor before the composer is first inspected; the
+// real gate is `codexComposerHoldsPendingInput` (see submitAgentCliInput).
 const CODEX_CLI_PASTE_SUBMIT_DELAY_MS = 180;
+// How long to wait for Codex to echo the pasted prompt into its composer.
+const CODEX_CLI_PASTE_ECHO_TIMEOUT_MS = 8_000;
+// How long to wait for the composer to empty after Enter before re-sending it.
+const CODEX_CLI_SUBMIT_CONFIRM_TIMEOUT_MS = 2_000;
+// Bounded retries so a swallowed Enter cannot strand the prompt forever.
+const CODEX_CLI_SUBMIT_MAX_ATTEMPTS = 3;
 const CURSOR_CLI_PASTE_SUBMIT_DELAY_MS = 500;
 const AGENT_CLI_READY_TIMEOUT_MS = 20_000;
 const CODEX_CLI_READY_TIMEOUT_MS = 60_000;
@@ -3946,6 +3957,67 @@ export function createPtyService({
     return true;
   };
 
+  const codexComposerStillHolds = (sessionId: string, pendingInput: string): boolean => {
+    const readiness = agentCliInputReadiness(sessionId, "codex");
+    if (!readiness) return false;
+    return codexComposerHoldsPendingInput(readiness.text, pendingInput);
+  };
+
+  const waitForCodexComposerState = async (
+    sessionId: string,
+    pendingInput: string,
+    wantHolding: boolean,
+    timeoutMs: number,
+  ): Promise<boolean> => {
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      if (codexComposerStillHolds(sessionId, pendingInput) === wantHolding) return true;
+      if (Date.now() >= deadline) return false;
+      await delay(AGENT_CLI_READY_POLL_MS);
+    }
+  };
+
+  /**
+   * Deliver the submit key once the CLI has actually taken the input.
+   *
+   * For Codex this waits for the pasted prompt to appear in the composer, then
+   * sends Enter and confirms the composer emptied — re-sending Enter (bounded)
+   * if it did not. Other providers keep their previous fixed-delay behaviour.
+   */
+  const submitAgentCliInput = async (
+    sessionId: string,
+    provider: TerminalResumeProvider,
+    write: (data: string) => boolean,
+    submittedText: string,
+  ): Promise<boolean> => {
+    if (provider !== "codex") {
+      await delay(provider === "cursor" ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS : AGENT_CLI_SUBMIT_DELAY_MS);
+      return write(AGENT_CLI_LINE_SUBMIT_KEY);
+    }
+    await delay(CODEX_CLI_PASTE_SUBMIT_DELAY_MS);
+    const echoed = await waitForCodexComposerState(
+      sessionId,
+      submittedText,
+      true,
+      CODEX_CLI_PASTE_ECHO_TIMEOUT_MS,
+    );
+    if (!echoed) {
+      logger.warn("pty.codex_paste_echo_not_observed", { sessionId });
+    }
+    for (let attempt = 1; attempt <= CODEX_CLI_SUBMIT_MAX_ATTEMPTS; attempt += 1) {
+      if (!write(AGENT_CLI_LINE_SUBMIT_KEY)) return false;
+      const cleared = await waitForCodexComposerState(
+        sessionId,
+        submittedText,
+        false,
+        CODEX_CLI_SUBMIT_CONFIRM_TIMEOUT_MS,
+      );
+      if (cleared) return true;
+      logger.warn("pty.codex_submit_key_retry", { sessionId, attempt });
+    }
+    return true;
+  };
+
   const computeRuntimeState = (sessionId: string, fallbackStatus: TerminalSessionStatus): TerminalRuntimeState => {
     const runtime = runtimeStates.get(sessionId);
     return runtime ? runtime.state : runtimeFromStatus(fallbackStatus);
@@ -4944,13 +5016,10 @@ export function createPtyService({
                   return true;
                 }, submittedInitialInput, provider);
                 if (!wrote) throw new Error("PTY rejected initial input writes.");
-                const submitDelayMs = provider === "codex"
-                  ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
-                  : provider === "cursor"
-                    ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
-                    : AGENT_CLI_SUBMIT_DELAY_MS;
-                await delay(submitDelayMs);
-                pty.write(AGENT_CLI_LINE_SUBMIT_KEY);
+                await submitAgentCliInput(sessionId, provider, (data) => {
+                  pty.write(data);
+                  return true;
+                }, submittedInitialInput);
               }
             } else {
               pty.write(`\x1b[200~${normalizedInitialInput}\x1b[201~\r`);
@@ -5125,7 +5194,6 @@ export function createPtyService({
         options: { waitForReady?: boolean } = {},
       ): Promise<boolean> => {
         const previous = submitInputFlights.get(targetSessionId) ?? Promise.resolve(true);
-        const submitKey = AGENT_CLI_LINE_SUBMIT_KEY;
         const flight = previous
           .catch(() => true)
           .then(async () => {
@@ -5139,12 +5207,12 @@ export function createPtyService({
               provider,
             );
             if (!textWritten) return false;
-            await delay(provider === "codex"
-              ? CODEX_CLI_PASTE_SUBMIT_DELAY_MS
-              : provider === "cursor"
-                ? CURSOR_CLI_PASTE_SUBMIT_DELAY_MS
-                : AGENT_CLI_SUBMIT_DELAY_MS);
-            return service.writeBySessionId(targetSessionId, submitKey);
+            return submitAgentCliInput(
+              targetSessionId,
+              provider,
+              (data) => service.writeBySessionId(targetSessionId, data),
+              inputText,
+            );
           });
         submitInputFlights.set(targetSessionId, flight);
         try {
@@ -5741,6 +5809,15 @@ export function createPtyService({
         entry.lastResizeCols = safe.cols;
         entry.lastResizeRows = safe.rows;
         resizeTerminalSnapshot(entry, safe.cols, safe.rows);
+        // PTY dimensions are otherwise neither logged nor persisted anywhere, so
+        // remote-resize behaviour could previously only be proven indirectly (by
+        // watching a codex TUI reflow). This makes it directly assertable.
+        logger.debug("pty.resized", {
+          sessionId,
+          cols: safe.cols,
+          rows: safe.rows,
+          source: opts?.source ?? "desktop",
+        });
         return true;
       } catch (err) {
         logger.warn("pty.resize_by_session_failed", { sessionId, err: String(err) });

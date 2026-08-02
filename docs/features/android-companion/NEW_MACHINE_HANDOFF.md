@@ -118,12 +118,229 @@ The original implementation Mac had JDK 17, SDK 36/build-tools 36.0.0, and an
 API 34 arm64 image, but those paths are machine-specific and must not be copied.
 Its emulator was stopped and app data was cleared after the earlier proof.
 
+### Windows execution record (2026-08-01)
+
+Phase 1 was subsequently exercised on the AMD Windows machine in this lane:
+
+- Installed/configured Node 22, JDK 17, Android Studio 2025.3, SDK platform 36,
+  build-tools 36.0.0, platform-tools, emulator, and an API 36 Google Play
+  x86_64 `medium_phone` AVD. The ignored `local.properties` uses the SDK under
+  `%LOCALAPPDATA%`; no machine path or credential was committed.
+- The full Android gate passed on Windows: `:sync:test`,
+  `:app:testDebugUnitTest`, `:app:lintDebug`, `:app:assembleDebug`, and
+  `:app:bundleRelease`. R8 emitted its existing Kotlin-metadata compatibility
+  warning while producing the unsigned release bundle, but the build passed.
+- A Node 22 branch-built ADE brain was run against this lane and paired from
+  the emulator through `ws://10.0.2.2:8787`. Debug builds now expose that
+  emulator gateway as a local Nearby entry; it is absent from release builds.
+- Authenticated `hello_ok`, roster/catalog, the three real ADE lanes, the
+  existing chat listing, project open, Work/Lanes rendering, background and
+  foreground transitions, and force-stop/relaunch reconnect were observed in
+  the real emulator. Opening the project retains the authenticated socket when
+  the brain adopts it during a same-host/same-port project switch.
+- The cold-start exercise found and fixed two lifecycle races: background
+  catalog/roster refreshes no longer throw when a closing socket rejects a
+  frame, and simultaneous UI/WorkManager reconnect attempts are serialized and
+  reuse an already-active machine connection. Regression tests cover both.
+- The Android shell was restyled from the iOS Swift implementation: the exact
+  iOS wordmark asset, aurora/glass surfaces, compact status controls, richer
+  project/lane/work cards, and capsule tab navigation are now shared visual
+  language rather than a generic Compose scaffold.
+- Android terminal input now follows the iOS structure instead of relying only
+  on the embedded terminal widget: a visible buffered composer plus Esc,
+  Tab/back-tab, arrows, Return/soft return, common control sequences, shell
+  symbols, Paste, and keyboard dismissal. The emulator used here initially had
+  Gboard in stylus-handwriting/floating mode; its **Show on-screen keyboard**
+  action restores QWERTY and is emulator keyboard state, not an ADE setting.
+- The apparent upside-down app was an emulator virtual-sensor rotation while
+  the outer emulator window stayed portrait. Restoring orientation `0` fixed
+  it; no app transform or manifest orientation bug was involved.
+- Production Clerk email-code sign-in was proven with the user's existing
+  Google-created account. The production account directory returned both
+  existing account machines online (the Mac Studio and MacBook Pro) while the
+  Windows machine remained a separate saved direct pairing.
+- The first Android auth build accidentally selected the iOS Debug `pk_test_`
+  value because the project file contains both Debug and Release Clerk keys.
+  Its native JWT correctly identified the development tenant and the production
+  directory rejected it. Android now uses the iOS Release `pk_live_` value, and
+  the Gradle build rejects a `pk_test_` key while targeting production.
+- Clerk initialization is non-blocking. Android now waits for initialization,
+  refreshes the persisted client snapshot on startup, explicitly activates the
+  session created by email-code verification, and bypasses Clerk's token cache
+  for the one allowed directory retry after a 401. Directory errors retain only
+  the Worker's bounded safe classification instead of hiding every cause behind
+  a generic status.
+
+### Windows execution record, continued (2026-08-02)
+
+The session that produced the record above ended abruptly without writing a
+handoff. The following was completed after it and is reconstructed from its
+transcript plus subsequent verification. All of it is uncommitted on this
+branch.
+
+**Routing and transport**
+
+- The route planner allowed one candidate per class (LAN, first tailnet,
+  relay) and the first tailnet candidate is the `.ts.net` DNS name, so the
+  working numeric Tailscale IP was dropped before dialing. A phone with
+  Tailscale DNS hides this; the emulator exposes it. The planner now prefers
+  literal private/Tailscale IPs over DNS aliases *within* each direct route
+  class, preserving LAN -> tailnet -> relay ordering and remembered-route
+  priority.
+- Directory endpoints advertise both a canonical URL and a concrete host/IP.
+  Android discarded the host whenever a URL existed; desktop keeps both.
+  Fixed, with a regression test.
+- **Relay fallback had never worked**: the relay path parsed its `wss://`
+  WebSocket URL with an HTTP-only URL parser. Fixed.
+- Android reached and authenticated with the Mac Studio over its direct
+  Tailscale IP. The remaining blocker there is host version: the ADE runtimes
+  installed on both Macs predate the Android thin-sync protocol and reject the
+  session. Testing against a Mac requires running a branch-built runtime on it,
+  not merely pushing this branch.
+
+**Sync client lifecycle**
+
+- Inbound frames arriving after `hello_ok` resolved but before `activeSocket`
+  was published were **silently discarded** (`else -> Unit` in the socket
+  listener). A freshly restarted host pushes its full state immediately after
+  `hello_ok`, landing squarely in that window; when the dropped frame was a
+  reply to a `pendingRequests` entry, the deferred never completed and the UI
+  sat on "Opening ADE..." until the 120s `project_open_request` timeout. This
+  was the intermittent open-project hang. Fixed with a bounded (512-frame)
+  per-socket handoff buffer that is armed at `hello_ok`, drained in order on
+  activation, and discarded for losing sockets.
+- `activeSocket` and the negotiated codec parameters were non-`@Volatile`
+  fields written by the connect coroutine and read on OkHttp reader threads,
+  which could make the above window persistent for a connection rather than
+  momentary. Now `@Volatile`.
+- A failed send leaked its `pendingRequests`/`pendingCommands` entry; the send
+  is now inside the `try`.
+
+**CLI launch and PTY (shared desktop code, not Android-specific)**
+
+- The `service_tier` failure observed earlier was **Codex-version-specific**.
+  Codex 0.130 rejected `default` and then rejected `flex` at the subscription
+  request. Codex 0.146 accepts `default`, `flex`, and `fast`. Updating Codex
+  was the real fix; the interim change to emit `flex` for "fast off" was
+  reverted, as was a `check_for_update_on_startup=false` flag that was
+  redundant with the existing readiness gate and broke launch-command
+  round-tripping.
+- ADE typed the initial prompt into the CLI composer and then sent Enter on a
+  **blind timer**. Codex commits bracketed pastes asynchronously and the delay
+  depends on paste size, MCP server startup, and TUI redraws, so Enter was
+  frequently swallowed and the session stranded at
+  `> [Pasted Content N chars]` with nothing ever noticing or retrying.
+  Replaced with an observed state transition: wait for the paste to appear in
+  the composer, send Enter, wait for the composer to empty, and re-send Enter
+  (bounded, 3 attempts) if it did not. Non-Codex providers are unchanged.
+
+**UI**
+
+- Dark mode was functionally broken (black-on-dark labels and quota cards);
+  fixed at the theme-token level rather than per component.
+- The chat transcript rendered raw protocol envelopes -- session IDs,
+  timestamps, sequence numbers, token-usage payloads -- as plain text.
+  Normalization now keeps transport metadata out of the transcript.
+- Navigation 3's default transition left the previous screen ghosted; replaced
+  with a 180ms directional transition.
+- The composer's Send button sat inside the system gesture inset and was only
+  tappable at its upper edge; the terminal command bar was overlaid by the IME.
+  Both fixed with proper insets.
+- Project open blocked navigation on a sequential refresh of chats, lanes,
+  sessions, models, and attention, making it look hung. It now navigates
+  immediately, paints cached data, and refreshes in the background.
+- The Lanes tab removed the only creation control; an explicit "Add lane"
+  action was restored.
+
+**Environment hazards discovered on this machine (read before debugging)**
+
+- A running `ade serve` can silently serve a **stale bundle**. The runtime in
+  use was executing `apps/ade-cli/dist/cli.cjs` from the *main checkout* dated
+  2026-06-02 while the branch's own bundle was hours newer. A fix that is
+  present in source but absent from the running bundle looks exactly like a fix
+  that does not work. Always confirm the deployed bundle contains the change
+  before concluding anything about behavior.
+- `C:\Program Files\nodejs\node.exe` is **Node 24**; ADE requires Node 22.
+  Use `%LOCALAPPDATA%\Programs\node-v22.23.2-win-x64\node.exe`.
+- Port 8787 was at one point bound only on a Tailscale IPv6 address with no
+  loopback listener, which breaks the emulator's `ws://10.0.2.2:8787` route.
+  A stale Tailscale port proxy from an earlier run is the likely cause. Verify
+  reachability from inside the emulator, not just from the host.
+- The desktop test suites have **85 pre-existing failures on Windows** caused
+  by tests hard-coding Unix expectations (`/bin/bash`, `/bin/zsh`, Unix JSON
+  quoting) while the harness produces `powershell.exe`. These are a
+  cross-platform test defect, unrelated to Android work. Do not treat them as
+  regressions, and do not let them mask real ones -- always compare against a
+  true HEAD baseline.
+
+**Later continuation (same day) — additional fixes and traps**
+
+- **Starting the runtime:** use plain `node apps/ade-cli/dist/cli.cjs serve`. Do
+  **not** pass `--port` expecting to set the mobile sync port -- `--port` is the
+  local JSON-RPC endpoint, and pointing it at 8787 collides with the mobile sync
+  host and makes the phone fail with "Unexpected status line". Plain `serve`
+  binds `0.0.0.0:8787` for mobile sync correctly.
+- **There is no `provider` column.** `terminal_sessions` stores only
+  `tool_type`, and `TerminalSessionSummary` has no top-level `provider` (only
+  `toolType` and a nested `resumeMetadata.provider`). `work.listSessions`
+  therefore returns no provider for every row, permanently. iOS and the host
+  both derive it (`providerFromTool` in `terminalSessionSignals.ts`;
+  `workChatProviderFamilyFromToolType` on iOS). Android now derives it the same
+  way. Do not "fix" this by adding a column.
+- **Lane invalidation feedback loop (fixed at source).**
+  `upsertBranchProfileForRow` in `laneService.ts` unconditionally rewrote
+  `updated_at` for every lane on every sweep. `lane_branch_profiles` is a
+  cr-sqlite CRR table, so writing an unchanged row still produces a changeset
+  row, which became a LANES invalidation, which made clients call
+  `lanes.refreshSnapshots`, which rewrote the rows again -- about 1.3 writes/sec
+  with a `git status` per worktree across 14 lanes. It starved unrelated
+  commands badly enough that `chat.approve` timed out, so a session parked on an
+  approval could not be approved. Fixed by skipping the write when content is
+  unchanged, matching the guard `lane_state_snapshots` already had. Measured
+  1.31 writes/s -> 0.
+  **Consequence:** there is no host-side git-status watcher. Filesystem-
+  originated lane changes (the `dirty` badge) were only appearing promptly
+  because that loop polled constantly. Near-live dirty state now needs a real
+  watcher; the old behavior was accidental.
+- **Client command diagnostics.** `:sync` now logs enqueue/sent/done/timeout/
+  failed with action name, opaque request id and elapsed ms, plus
+  `sync.inbound_dropped` with a reason for the silent-discard paths. Timeouts
+  now name the stalled action. No content, paths, tokens or payloads are logged.
+- **Action-scoped command timeouts** replace the flat 30s (iOS's pattern):
+  120s for `chat.create`/`chat.send`/`work.startCliSession`/`lanes.create`,
+  240s for `lanes.delete`. The old flat timeout let the phone give up while the
+  host went on to succeed, leaving an error beside a session that really exists.
+- **Unexplained client-side wedge, still open.** Twice, an outbound command
+  (`chat.create`) or an inbound reply (`project_switch_result`) went missing
+  while the same socket carried other traffic normally; host-side inspection
+  proved the runtime sent the reply. Force-stopping the app cleared it both
+  times and it does not reproduce on demand. The new inbound/outbound logging
+  above exists specifically to catch the next occurrence.
+- **Pre-existing CRR-repair defect (not from this branch).** `ade lanes list`
+  once failed with invalid generated DDL in the `__ade_crr_repair_*` table
+  rebuild path -- a table-level `references` emitted without `foreign key`. It
+  rolled back cleanly and did not recur; the DB passed `integrity_check`.
+
+**Known UX gap, not yet fixed**
+
+- After a host runtime restart the app does not auto-reconnect while in the
+  foreground. The Hub keeps painting stale cached data under a "No machine"
+  chip and refresh does nothing visible; the user must go to
+  Settings -> Reconnect.
+
+This record does **not** yet prove ordinary sign-out retaining pairing, real
+FCM delivery, physical-device behavior, Play signing/install, LAN/tailnet/Relay
+roaming, or any Mac-to-Android path. Keep those as explicit remaining proofs
+rather than inferring them from the successful local connection.
+
 ### Existing Clerk and Google context
 
 ADE already has Clerk in production, including Google sign-in. Reuse the same
 Clerk application and user pool; do not create a second auth system. The
-production Clerk publishable key already exists in the iOS project configuration
-and is public configuration, but supply it to Android as
+production Clerk publishable key already exists in the iOS project's **Release**
+build configuration and is public configuration. Do not select the first Clerk
+key in the project file: Debug intentionally uses `pk_test_`, while Release uses
+`pk_live_`. Supply the Release value to Android as
 `ADE_CLERK_PUBLISHABLE_KEY` rather than duplicating it in a new tracked file.
 Confirm Clerk Native API support for Android and test email-code sign-in first;
 Google OAuth UI can be verified after basic auth.
@@ -156,8 +373,9 @@ but background attention/approval notifications do not work.
 After Phase 1 is proven, walk through these items with me. Resolve existing
 resources before creating new ones and keep every external mutation explicit.
 
-1. **Clerk:** reuse the production ADE application, enable/confirm Native API,
-   set `ADE_CLERK_PUBLISHABLE_KEY`, and prove sign-in on Android.
+1. **Clerk (complete locally):** the production ADE application and Release
+   publishable key are configured; Native API email-code sign-in, session
+   restoration, and the production machine directory are proven on Android.
 2. **GCP/Firebase client:** add Firebase to the confirmed existing GCP project
    or create a dedicated project only if we explicitly choose that. Register
    Android application ID `com.ade.android`. Obtain the client configuration
@@ -233,7 +451,6 @@ original Mac's keychain moved with the branch.
 
 Do not report these complete until they are demonstrated live:
 
-- Production Clerk config in the Android build on this machine.
 - Firebase Android registration and the four FCM client values.
 - `FCM_SERVICE_ACCOUNT_JSON` installed in the production push relay.
 - Remote D1 migration/trigger deployment and production Worker rollout.

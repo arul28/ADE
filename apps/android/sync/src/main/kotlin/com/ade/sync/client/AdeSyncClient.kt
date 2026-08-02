@@ -41,6 +41,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -121,6 +122,92 @@ internal fun requireExpectedHostIdentity(hello: HelloOkPayload, expectedHostDevi
 
 class RemoteCommandException(val code: String, message: String) : IllegalStateException(message)
 
+/**
+ * Per-action command deadlines.
+ *
+ * A single flat budget is wrong in both directions: it is generous for a cheap
+ * metadata read and far too tight for the handful of actions that spawn a
+ * process on the host. Those slow actions are not merely slow to *show* — a
+ * client-side timeout on `chat.create` or `work.startCliSession` abandons a
+ * request the host then completes, so the user is shown a failure next to a
+ * session that really exists. Give the process-spawning actions room to finish
+ * rather than racing them.
+ *
+ * Mirrors iOS `SyncRequestTimeout.commandTimeoutNanoseconds(for:)` in
+ * apps/ios/ADE/Services/SyncService.swift: a small action table over a default,
+ * not a per-call-site sprinkle of magic numbers.
+ */
+object SyncCommandTimeouts {
+    const val DEFAULT_MILLIS: Long = 30_000
+
+    /** Spawning an agent CLI on Windows regularly outruns the default budget. */
+    const val SESSION_START_MILLIS: Long = 120_000
+
+    /** Creating a worktree runs several git operations back to back. */
+    const val LANE_CREATE_MILLIS: Long = 120_000
+
+    /** Lane teardown waits on git plus any residual-worktree cleanup. */
+    const val LANE_DELETE_MILLIS: Long = 240_000
+
+    /** Fans out to the GitHub API host-side. */
+    const val REMOTE_FANOUT_MILLIS: Long = 120_000
+
+    fun forAction(action: String): Long = when (action) {
+        "chat.create",
+        "chat.send",
+        "personalChats.create",
+        "work.startCliSession",
+        -> SESSION_START_MILLIS
+        "lanes.create" -> LANE_CREATE_MILLIS
+        "lanes.delete" -> LANE_DELETE_MILLIS
+        "prs.refresh", "prs.getGitHubSnapshot", "usage.refreshQuota" -> REMOTE_FANOUT_MILLIS
+        else -> DEFAULT_MILLIS
+    }
+}
+
+/**
+ * Holds the frames a socket receives between authenticating and becoming the
+ * active transport.
+ *
+ * A host answers `hello_ok` and immediately starts pushing: its roster, its
+ * catalog, an invalidation batch, and the replies to anything the app asked for
+ * over the previous connection. Those frames land on OkHttp's reader thread
+ * while the connect coroutine is still unwinding the route race, so the socket
+ * is authenticated but not yet published as `activeSocket`. Without this buffer
+ * they match no branch of the pre-auth handler and are discarded silently,
+ * which strands the matching `pendingRequests` entry until its timeout.
+ */
+internal class InboundHandoff(private val capacity: Int = 512) {
+    private val buffers = ConcurrentHashMap<Any, ArrayDeque<String>>()
+
+    /** Begins buffering for a socket that authenticated but is not active yet. */
+    fun arm(key: Any) {
+        buffers.putIfAbsent(key, ArrayDeque())
+    }
+
+    /** Buffers a frame, reporting whether this handoff took ownership of it. */
+    fun record(key: Any, frame: String): Boolean {
+        val buffer = buffers[key] ?: return false
+        synchronized(buffer) {
+            if (buffer.size >= capacity) return false
+            buffer.addLast(frame)
+        }
+        return true
+    }
+
+    /** Returns the buffered frames in arrival order and stops buffering. */
+    fun drain(key: Any): List<String> {
+        val buffer = buffers.remove(key) ?: return emptyList()
+        return synchronized(buffer) { buffer.toList() }
+    }
+
+    fun discard(key: Any) {
+        buffers.remove(key)
+    }
+
+    fun clear() = buffers.clear()
+}
+
 class AdeSyncClient(
     private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .pingInterval(30, TimeUnit.SECONDS)
@@ -147,13 +234,19 @@ class AdeSyncClient(
     private val connectionGeneration = AtomicLong(0)
     private val invalidations = InvalidationScheduler(scope) { _invalidated.emit(it) }
     private val _invalidated = MutableSharedFlow<Set<InvalidationDomain>>(extraBufferCapacity = 8)
-    private var activeSocket: WebSocket? = null
-    private var relayCredentials: PairedCredentials? = null
+    private val handoff = InboundHandoff()
+
+    // Written by the connecting coroutine, read on every OkHttp reader thread.
+    // Without @Volatile a reader thread may keep observing a pre-`activate`
+    // value and route every frame of the new connection into the pre-auth
+    // handler, which drops it.
+    @Volatile private var activeSocket: WebSocket? = null
+    @Volatile private var relayCredentials: PairedCredentials? = null
     private var relayReauthorizationJob: Job? = null
-    private var activeCompression = "none"
-    private var activeCompressionThresholdBytes = 512
-    private var maximumFrameBytes: Int? = null
-    private var defaultProject: com.ade.sync.model.MobileProject? = null
+    @Volatile private var activeCompression = "none"
+    @Volatile private var activeCompressionThresholdBytes = 512
+    @Volatile private var maximumFrameBytes: Int? = null
+    @Volatile private var defaultProject: com.ade.sync.model.MobileProject? = null
 
     init {
         scope.launch {
@@ -328,7 +421,7 @@ class AdeSyncClient(
         args: JsonElement = JsonObject(emptyMap()),
         projectId: String? = null,
         projectRootPath: String? = null,
-        timeoutMillis: Long = 30_000,
+        timeoutMillis: Long = SyncCommandTimeouts.forAction(action),
     ): JsonElement {
         require(canInvokeRemoteAction(action)) { "The connected machine does not allow $action from Android" }
         val descriptor = _hello.value?.features?.commandRouting?.actions?.firstOrNull { it.action == action }
@@ -345,8 +438,8 @@ class AdeSyncClient(
             }
         }
         val commandId = UUID.randomUUID().toString()
-        val result = CompletableDeferred<JsonElement>()
-        pendingCommands[commandId] = result
+        val pending = CompletableDeferred<JsonElement>()
+        pendingCommands[commandId] = pending
         val payload = buildJsonObject {
             put("commandId", commandId)
             if (project.projectId != null) put("projectId", project.projectId)
@@ -354,9 +447,20 @@ class AdeSyncClient(
             put("action", action)
             put("args", args)
         }
-        send("command", payload, commandId, project.projectId)
+        val startedAt = System.nanoTime()
+        SyncLog.log("sync.command_enqueue action=$action id=$commandId")
         return try {
-            withTimeout(timeoutMillis) { result.await() }
+            send("command", payload, commandId, project.projectId)
+            SyncLog.log("sync.command_sent action=$action id=$commandId elapsedMs=${elapsedMs(startedAt)}")
+            val value = awaitPending(pending, timeoutMillis, "command", action, commandId, startedAt)
+            SyncLog.log("sync.command_done action=$action id=$commandId elapsedMs=${elapsedMs(startedAt)}")
+            value
+        } catch (error: Throwable) {
+            SyncLog.log(
+                "sync.command_failed action=$action id=$commandId elapsedMs=${elapsedMs(startedAt)} " +
+                    "cause=${diagnosticCause(error)}",
+            )
+            throw error
         } finally {
             pendingCommands.remove(commandId)
         }
@@ -366,24 +470,75 @@ class AdeSyncClient(
         type: String,
         payload: JsonElement = JsonObject(emptyMap()),
         projectId: String? = null,
-        timeoutMillis: Long = 30_000,
+        timeoutMillis: Long = SyncCommandTimeouts.DEFAULT_MILLIS,
     ): JsonElement {
         val requestId = UUID.randomUUID().toString()
-        val result = CompletableDeferred<JsonElement>()
-        pendingRequests[requestId] = result
-        send(type, payload, requestId, projectId)
+        val pending = CompletableDeferred<JsonElement>()
+        pendingRequests[requestId] = pending
+        val startedAt = System.nanoTime()
+        SyncLog.log("sync.request_enqueue type=$type id=$requestId")
         return try {
-            withTimeout(timeoutMillis) { result.await() }
+            send(type, payload, requestId, projectId)
+            SyncLog.log("sync.request_sent type=$type id=$requestId elapsedMs=${elapsedMs(startedAt)}")
+            val value = awaitPending(pending, timeoutMillis, "request", type, requestId, startedAt)
+            SyncLog.log("sync.request_done type=$type id=$requestId elapsedMs=${elapsedMs(startedAt)}")
+            value
+        } catch (error: Throwable) {
+            SyncLog.log(
+                "sync.request_failed type=$type id=$requestId elapsedMs=${elapsedMs(startedAt)} " +
+                    "cause=${diagnosticCause(error)}",
+            )
+            throw error
         } finally {
             pendingRequests.remove(requestId)
         }
     }
 
-    fun requestProjectCatalog() = send("project_catalog_request", JsonObject(emptyMap()), UUID.randomUUID().toString())
+    private fun elapsedMs(startedAtNanos: Long): Long =
+        (System.nanoTime() - startedAtNanos) / 1_000_000
 
-    fun requestRosterSnapshot(sinceSeq: Long? = _roster.value?.seq) {
-        send("roster_subscribe", buildJsonObject { if (sinceSeq != null) put("sinceSeq", sinceSeq) })
+    /**
+     * Names the class of a failure without ever quoting its message, which can
+     * carry host paths or command text.
+     */
+    private fun diagnosticCause(error: Throwable): String = when (error) {
+        is RemoteCommandException -> "remote:${error.code}"
+        else -> error::class.simpleName ?: "unknown"
     }
+
+    /**
+     * Awaits a reply and converts the bare coroutine timeout into an error that
+     * names the action that never came back. "Timed out waiting for 30000 ms"
+     * tells a user nothing about which part of the app stalled.
+     */
+    private suspend fun awaitPending(
+        pending: CompletableDeferred<JsonElement>,
+        timeoutMillis: Long,
+        kind: String,
+        action: String,
+        id: String,
+        startedAtNanos: Long,
+    ): JsonElement = try {
+        withTimeout(timeoutMillis) { pending.await() }
+    } catch (timeout: TimeoutCancellationException) {
+        SyncLog.log("sync.${kind}_timeout action=$action id=$id elapsedMs=${elapsedMs(startedAtNanos)}")
+        throw RemoteCommandException(
+            "timeout",
+            "ADE did not answer \"$action\" within ${timeoutMillis / 1000}s. " +
+                "The machine may be busy or the connection stale.",
+        )
+    }
+
+    fun requestProjectCatalog(): Boolean = trySend(
+        "project_catalog_request",
+        JsonObject(emptyMap()),
+        UUID.randomUUID().toString(),
+    )
+
+    fun requestRosterSnapshot(sinceSeq: Long? = _roster.value?.seq): Boolean = trySend(
+        "roster_subscribe",
+        buildJsonObject { if (sinceSeq != null) put("sinceSeq", sinceSeq) },
+    )
 
     fun subscribeChat(
         sessionId: String,
@@ -444,6 +599,24 @@ class AdeSyncClient(
         ).forEach { frame -> check(socket.send(frame)) { "The ADE socket rejected an outgoing frame" } }
     }
 
+    private fun trySend(
+        type: String,
+        payload: JsonElement = JsonNull,
+        requestId: String? = null,
+        projectId: String? = null,
+    ): Boolean {
+        val socket = activeSocket ?: return false
+        return codec.encodeFrames(
+            type = type,
+            payload = payload,
+            requestId = requestId,
+            projectId = projectId,
+            compression = activeCompression,
+            maximumFrameBytes = maximumFrameBytes,
+            compressionThresholdBytes = activeCompressionThresholdBytes,
+        ).all(socket::send)
+    }
+
     fun disconnect() {
         connectionGeneration.incrementAndGet()
         val active = activeSocket
@@ -454,6 +627,7 @@ class AdeSyncClient(
         relayCredentials = null
         sockets.forEach { it.close(1000, "Disconnected") }
         sockets.clear()
+        handoff.clear()
         pendingCommands.values.forEach { it.completeExceptionally(IllegalStateException("ADE disconnected")) }
         pendingCommands.clear()
         pendingRequests.values.forEach { it.completeExceptionally(IllegalStateException("ADE disconnected")) }
@@ -473,7 +647,10 @@ class AdeSyncClient(
 
     private fun activate(candidate: RouteCandidate, connection: AuthenticatedSocket) {
         activeSocket = connection.socket
-        sockets.filter { it !== activeSocket }.forEach { it.close(1000, "Connection race lost") }
+        sockets.filter { it !== activeSocket }.forEach {
+            handoff.discard(it)
+            it.close(1000, "Connection race lost")
+        }
         activeCompression = connection.hello.compression?.codec ?: "none"
         activeCompressionThresholdBytes = connection.hello.compression?.thresholdBytes?.coerceAtLeast(0) ?: 512
         maximumFrameBytes = connection.hello.features.chunkedEnvelopes?.maxFrameBytes
@@ -486,6 +663,10 @@ class AdeSyncClient(
             route = candidate.kind,
             hostName = connection.hello.brain?.deviceName,
         )
+        // Replay what the host pushed while this socket was authenticated but
+        // not yet active, in arrival order, now that the codec parameters and
+        // `activeSocket` are published.
+        handoff.drain(connection.socket).forEach { frame -> handleEnvelope(connection.socket, frame) }
         invalidations.fullRefresh()
         requestProjectCatalog()
         requestRosterSnapshot()
@@ -566,9 +747,7 @@ class AdeSyncClient(
         suspendCancellableCoroutine { continuation ->
             val helloJson = codec.json.encodeToJsonElement(HelloPayload.serializer(), hello)
             val relay = candidate.kind == RouteKind.RELAY
-            val url = if (relay) candidate.url.toHttpUrl().newBuilder()
-                .setQueryParameter("ready", "2")
-                .build().toString() else candidate.url
+            val url = if (relay) relayReadyUrl(candidate.url) else candidate.url
             var helloSent = false
             var accepted = false
             val listener = object : WebSocketListener() {
@@ -582,6 +761,7 @@ class AdeSyncClient(
                         handleEnvelope(webSocket, text)
                         return
                     }
+                    if (handoff.record(webSocket, text)) return
                     if (relay && !helloSent) {
                         val control = runCatching { codec.json.parseToJsonElement(text).jsonObject }.getOrNull()
                         val kind = control?.get("t")?.jsonPrimitive?.content
@@ -618,7 +798,10 @@ class AdeSyncClient(
                                     return
                                 }
                             }
-                            if (continuation.isActive) continuation.resume(AuthenticatedSocket(webSocket, result))
+                            if (continuation.isActive) {
+                                handoff.arm(webSocket)
+                                continuation.resume(AuthenticatedSocket(webSocket, result))
+                            }
                         }
                         "hello_error", "account_challenge_error" -> if (continuation.isActive) {
                             val message = (envelope.payload as? JsonObject)?.get("message")?.jsonPrimitive?.content
@@ -633,12 +816,14 @@ class AdeSyncClient(
 
                 override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                     sockets -= webSocket
+                    handoff.discard(webSocket)
                     if (continuation.isActive) continuation.resumeWithException(t)
                     if (webSocket === activeSocket) handleDisconnect(t.message)
                 }
 
                 override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                     sockets -= webSocket
+                    handoff.discard(webSocket)
                     if (continuation.isActive) continuation.resumeWithException(IllegalStateException(reason.ifBlank { "ADE disconnected" }))
                     if (webSocket === activeSocket) handleDisconnect(reason)
                 }
@@ -664,9 +849,7 @@ class AdeSyncClient(
         check(directorySigningPublicKey != null || relay) {
             "Refusing to send account credentials over an unsealed direct route"
         }
-        val url = if (relay) candidate.url.toHttpUrl().newBuilder()
-            .setQueryParameter("ready", "2")
-            .build().toString() else candidate.url
+        val url = if (relay) relayReadyUrl(candidate.url) else candidate.url
         val adoption = directorySigningPublicKey?.let { SealedAdoption.create() }
         var session: SealedAdoption.Session? = null
         var accepted = false
@@ -744,6 +927,7 @@ class AdeSyncClient(
                     handleEnvelope(webSocket, text)
                     return
                 }
+                if (handoff.record(webSocket, text)) return
                 if (relay && !started) {
                     val control = runCatching { codec.json.parseToJsonElement(text).jsonObject }.getOrNull()
                     val kind = control?.get("t")?.jsonPrimitive?.content
@@ -800,14 +984,19 @@ class AdeSyncClient(
                             ))
                             return
                         }
-                        if (continuation.isActive) continuation.resume(AuthenticatedSocket(webSocket, result))
+                        if (continuation.isActive) {
+                            handoff.arm(webSocket)
+                            continuation.resume(AuthenticatedSocket(webSocket, result))
+                        }
                     }
                     "hello_error", "account_challenge_error" -> {
                         val message = (envelope.payload as? JsonObject)?.get("message")?.jsonPrimitive?.content
                             ?: "The ADE machine rejected account adoption"
                         fail(webSocket, RemoteCommandException("account_adoption_rejected", message))
                     }
-                    else -> Unit
+                    else -> SyncLog.log(
+                        "sync.inbound_dropped reason=pre_active type=${envelope.type} id=${envelope.requestId}",
+                    )
                 }
             }
 
@@ -815,12 +1004,14 @@ class AdeSyncClient(
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
                 sockets -= webSocket
+                handoff.discard(webSocket)
                 if (continuation.isActive) continuation.resumeWithException(t)
                 if (webSocket === activeSocket) handleDisconnect(t.message)
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
                 sockets -= webSocket
+                handoff.discard(webSocket)
                 if (continuation.isActive) continuation.resumeWithException(
                     IllegalStateException(reason.ifBlank { "ADE disconnected" }),
                 )
@@ -840,7 +1031,10 @@ class AdeSyncClient(
     }
 
     private fun handleEnvelope(webSocket: WebSocket, text: String) {
-        if (webSocket !== activeSocket) return
+        if (webSocket !== activeSocket) {
+            SyncLog.log("sync.inbound_dropped reason=inactive_socket bytes=${text.length}")
+            return
+        }
         val envelope = runCatching { decodeMaybeChunk(text) }.getOrElse {
             handleDisconnect(it.message)
             return
@@ -851,7 +1045,13 @@ class AdeSyncClient(
             handleDisconnect("The Android stream fell behind; reconnect to resume safely")
             return
         }
-        envelope.requestId?.let { pendingRequests.remove(it)?.complete(envelope.payload) }
+        envelope.requestId?.let { requestId ->
+            val matched = pendingRequests.remove(requestId)
+            matched?.complete(envelope.payload)
+            SyncLog.log(
+                "sync.inbound type=${envelope.type} id=$requestId matchedRequest=${matched != null}",
+            )
+        }
         when (envelope.type) {
             "heartbeat" -> send("heartbeat_ack", envelope.payload, envelope.requestId)
             "invalidation_batch" -> invalidations.receive(validatedInvalidationBatch(envelope.payload))
@@ -908,6 +1108,7 @@ class AdeSyncClient(
         activeSocket = null
         disconnectedSocket?.close(4002, "Connection lost")
         if (disconnectedSocket != null) sockets -= disconnectedSocket
+        handoff.clear()
         relayReauthorizationJob?.cancel()
         relayReauthorizationJob = null
         _status.value = SyncConnectionStatus(state = "error", error = message ?: "ADE disconnected")
@@ -917,6 +1118,21 @@ class AdeSyncClient(
         pendingRequests.clear()
     }
 
+}
+
+/** OkHttp's URL builder accepts HTTP(S), while newWebSocket upgrades those
+ * schemes to WS(S). Convert only for query construction; the authenticated
+ * route retained in connection status remains the directory's original WSS URL. */
+internal fun relayReadyUrl(rawUrl: String): String {
+    val httpUrl = when {
+        rawUrl.startsWith("wss://", ignoreCase = true) -> "https://${rawUrl.substring(6)}"
+        rawUrl.startsWith("ws://", ignoreCase = true) -> "http://${rawUrl.substring(5)}"
+        else -> rawUrl
+    }
+    return httpUrl.toHttpUrl().newBuilder()
+        .setQueryParameter("ready", "2")
+        .build()
+        .toString()
 }
 
 internal sealed interface RosterDeltaOutcome {

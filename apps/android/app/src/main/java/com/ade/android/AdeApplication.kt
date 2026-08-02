@@ -1,6 +1,7 @@
 package com.ade.android
 
 import android.app.Application
+import android.util.Log
 import com.ade.android.account.AccountDirectoryClient
 import com.ade.android.account.AuthRepository
 import com.ade.android.account.AttentionRepository
@@ -8,6 +9,7 @@ import com.ade.android.data.AppPreferences
 import com.ade.android.pairing.PairingRepository
 import com.ade.android.security.SecureMachineStore
 import com.ade.sync.client.AdeSyncClient
+import com.ade.sync.client.SyncLog
 import com.clerk.api.Clerk
 import com.google.firebase.FirebaseApp
 import com.google.firebase.FirebaseOptions
@@ -20,6 +22,9 @@ class AdeApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // Local operational diagnostics only: protocol action names, opaque
+        // request ids, elapsed millis. Never frame payloads. See docs/logging.md.
+        SyncLog.sink = { line -> Log.i("AdeSync", line) }
         if (BuildConfig.CLERK_PUBLISHABLE_KEY.isNotBlank()) {
             Clerk.initialize(this, BuildConfig.CLERK_PUBLISHABLE_KEY)
         }

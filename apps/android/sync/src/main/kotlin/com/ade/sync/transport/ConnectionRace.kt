@@ -1,6 +1,7 @@
 package com.ade.sync.transport
 
 import java.util.LinkedHashMap
+import java.net.URI
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
@@ -89,7 +90,14 @@ class ConnectionRace(
 
     fun plan(candidates: List<RouteCandidate>): List<RouteCandidate> {
         val ranked = candidates.distinctBy(RouteCandidate::url).sortedWith(
-            compareByDescending<RouteCandidate> { it.remembered }.thenBy { it.kind.rank },
+            compareByDescending<RouteCandidate> { it.remembered }
+                .thenBy { it.kind.rank }
+                // A Tailscale DNS alias only resolves when MagicDNS is present on
+                // the dialing device. Keep aliases as fallbacks, but prefer the
+                // simultaneously advertised numeric address so emulators and
+                // other tailnet-routed clients do not spend their one Tailnet
+                // race slot on an unresolvable hostname.
+                .thenBy(::directHostRank),
         )
         if (ranked.isEmpty()) return emptyList()
         val selected = mutableListOf(ranked.first())
@@ -103,6 +111,15 @@ class ConnectionRace(
             if (candidate !in selected) selected += candidate
         }
         return selected
+    }
+
+    private fun directHostRank(candidate: RouteCandidate): Int {
+        if (candidate.kind == RouteKind.RELAY) return 0
+        val host = runCatching { URI(candidate.url).host }.getOrNull().orEmpty()
+        return if (host.count { it == '.' } == 3 && host.split('.').all { part ->
+                part.toIntOrNull()?.let { it in 0..255 } == true
+            } || ':' in host
+        ) 0 else 1
     }
 }
 

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Ported from apps/ios/ADE/Assets.xcassets/ProviderCursor.imageset/cursor.svg -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp" android:height="24dp"
+    android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="#FFA78BFA" android:fillType="evenOdd"
+        android:pathData="M22.106,5.68L12.5,0.135a0.998,0.998 0,0 0,-0.998 0L1.893,5.68a0.84,0.84 0,0 0,-0.419 0.726v11.186c0,0.3 0.16,0.577 0.42,0.727l9.607,5.547a0.999,0.999 0,0 0,0.998 0l9.608,-5.547a0.84,0.84 0,0 0,0.42 -0.727V6.407a0.84,0.84 0,0 0,-0.42 -0.726zM21.503,6.856L12.228,22.92c-0.063,0.108 -0.228,0.064 -0.228,-0.061V12.34a0.59,0.59 0,0 0,-0.295 -0.51l-9.11,-5.26c-0.107,-0.062 -0.063,-0.228 0.062,-0.228h18.55c0.264,0 0.428,0.286 0.296,0.514z" />
+</vector>
