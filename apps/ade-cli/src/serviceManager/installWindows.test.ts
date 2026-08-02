@@ -15,6 +15,7 @@ import {
   buildWindowsCreateTaskArgs,
   buildWindowsDeleteTaskArgs,
   buildWindowsEndTaskArgs,
+  buildWindowsQueryTaskActionArgs,
   buildWindowsQueryTaskArgs,
   buildWindowsRunKeyAddArgs,
   buildWindowsRunKeyDeleteArgs,
@@ -23,6 +24,7 @@ import {
   buildWindowsStartLauncherArgs,
   getWindowsServiceStatus,
   installWindowsService,
+  isWindowsLegacyTaskOwnedByCommand,
   readWindowsServicePidRecord,
   resolveWindowsServiceLauncherPath,
   resolveWindowsTaskName,
@@ -31,6 +33,7 @@ import {
   WINDOWS_POWERSHELL_COMMAND,
   WINDOWS_REG_COMMAND,
   WINDOWS_SCHTASKS_COMMAND,
+  WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
   renderWindowsServiceLauncher,
 } from "./installWindows";
 
@@ -87,6 +90,22 @@ describe("Windows background service helpers", () => {
     readPidRecord: () => readyPidRecord,
     readinessProbe: () => ({ ready: true, diagnostic: "ready" }),
   };
+  // Get-ScheduledTask reports each action as an Execute/Arguments pair; the
+  // helper emits them unit-separator delimited in that order.
+  function taskActionOutput(execute: string, argumentsText: string): string {
+    return [execute, argumentsText].join(WINDOWS_TASK_ACTION_FIELD_SEPARATOR);
+  }
+  // A legacy `ADE Runtime` task that this Beta install created before the
+  // channel-scoped naming scheme existed.
+  const ownLegacyAction = taskActionOutput(
+    "C:\\Program Files\\ADE\\ade.exe",
+    "\"C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs\" \"serve\"",
+  );
+  // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
+  const stableLegacyAction = taskActionOutput(
+    "C:\\Program Files\\ADE Stable\\ADE.exe",
+    "\"C:\\Program Files\\ADE Stable\\resources\\ade-cli\\cli.cjs\" \"serve\"",
+  );
 
   it("builds schtasks create, run, query, and delete arguments without invoking schtasks", () => {
     const renderedCommand = renderWindowsCommand({
@@ -385,10 +404,11 @@ describe("Windows background service helpers", () => {
     expect(calls.at(-1)?.args).toEqual(buildWindowsStartLauncherArgs(launcherPath));
   });
 
-  it("ends and deletes only the exact legacy task before installing the channel task", async () => {
+  it("ends and deletes only the exact legacy task it owns before installing the channel task", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: ownLegacyAction, stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
@@ -408,18 +428,161 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
-    expect(calls.slice(0, 3)).toEqual([
+    expect(calls.slice(0, 4)).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
     ]);
     expect(calls.flatMap((call) => call.args)).not.toContain("ADE Runtime ");
   });
 
+  it("leaves another channel's legacy scheduled task running when Beta installs", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: stableLegacyAction, stderr: "" },
+      { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      { status: 0, stdout: "The operation completed successfully.", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
+    ]);
+    const launcherPath = path.join(
+      makeTempHome("ade-windows-service-foreign-legacy-"),
+      "brain-service.ps1",
+    );
+    const scheduledCommand = renderWindowsCommand({
+      command: WINDOWS_POWERSHELL_COMMAND,
+      args: [
+        "-NoProfile",
+        "-NonInteractive",
+        "-WindowStyle",
+        "Hidden",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        launcherPath,
+      ],
+    });
+
+    const result = await installWindowsService({
+      ...immediateReadiness,
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result.ok).toBe(true);
+    // The Stable brain is never ended or deleted: no schtasks call names the
+    // global legacy task, and the recorded argv proves it.
+    expect(calls).toEqual([
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsStartLauncherArgs(launcherPath) },
+    ]);
+    expect(calls.filter((call) => call.command === WINDOWS_SCHTASKS_COMMAND)).toEqual([]);
+    expect(calls.some((call) => call.args.includes("ADE Runtime") && call.args.includes("/End")))
+      .toBe(false);
+    expect(calls.some((call) => call.args.includes("ADE Runtime") && call.args.includes("/Delete")))
+      .toBe(false);
+  });
+
+  it("leaves another channel's legacy scheduled task running when Beta uninstalls", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },
+      { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: stableLegacyAction, stderr: "" },
+      { status: 1, stdout: "", stderr: "ERROR: value not found" },
+    ]);
+    const launcherPath = path.join(
+      makeTempHome("ade-windows-service-foreign-legacy-uninstall-"),
+      "brain-service.ps1",
+    );
+    fs.writeFileSync(launcherPath, "old launcher", "utf8");
+
+    const result = uninstallWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(calls).toEqual([
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+    ]);
+    expect(calls.filter((call) => call.command === WINDOWS_SCHTASKS_COMMAND)).toEqual([]);
+    expect(fs.existsSync(launcherPath)).toBe(false);
+  });
+
+  it("fails the install instead of guessing when the legacy task action cannot be read", async () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 0, stdout: "Running", stderr: "" },
+      { status: 4, stdout: "", stderr: "ERROR: access is denied" },
+    ]);
+    const launcherPath = path.join(
+      makeTempHome("ade-windows-service-legacy-owner-fail-"),
+      "brain-service.ps1",
+    );
+
+    const result = await installWindowsService({
+      command: serviceCommand,
+      launcherPath,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toBe(
+      "Unable to query the legacy ADE Runtime scheduled task: ERROR: access is denied",
+    );
+    expect(calls).toEqual([
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+    ]);
+  });
+
+  it("recognises only the current channel install as the legacy task owner", () => {
+    expect(isWindowsLegacyTaskOwnedByCommand(ownLegacyAction, serviceCommand)).toBe(true);
+    expect(isWindowsLegacyTaskOwnedByCommand(stableLegacyAction, serviceCommand)).toBe(false);
+    expect(isWindowsLegacyTaskOwnedByCommand("", serviceCommand)).toBe(false);
+    expect(isWindowsLegacyTaskOwnedByCommand(null, serviceCommand)).toBe(false);
+    // Same executable, different packaged CLI entry: still not ours. Development
+    // builds of every channel share process.execPath.
+    expect(isWindowsLegacyTaskOwnedByCommand(
+      taskActionOutput(
+        "C:\\Program Files\\ADE\\ade.exe",
+        "\"C:\\Program Files\\ADE Stable\\resources\\ade-cli\\cli.cjs\" \"serve\"",
+      ),
+      serviceCommand,
+    )).toBe(false);
+    // Quoting and path-separator differences must not defeat the match.
+    expect(isWindowsLegacyTaskOwnedByCommand(
+      taskActionOutput(
+        "\"C:/Program Files/ADE/ADE.EXE\"",
+        "\"C:/Program Files/ADE/resources/ade-cli/cli.cjs\" \"serve\"",
+      ),
+      serviceCommand,
+    )).toBe(true);
+  });
+
   it("does not register or start a channel task when the running legacy task cannot be ended", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: ownLegacyAction, stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-migrate-fail-"), "brain-service.ps1");
@@ -436,6 +599,7 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("legacy ADE Runtime scheduled task");
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
     ]);
   });
@@ -519,6 +683,7 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "Ready", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: ownLegacyAction, stderr: "" },
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 0, stdout: "startup value", stderr: "" },
@@ -528,6 +693,7 @@ describe("Windows background service helpers", () => {
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
 
     const result = uninstallWindowsService({
+      command: serviceCommand,
       launcherPath,
       serviceName,
       spawnSync,
@@ -545,6 +711,7 @@ describe("Windows background service helpers", () => {
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
       { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
       { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
@@ -633,11 +800,13 @@ describe("Windows background service helpers", () => {
     }> = [];
     const results: ServiceManagerProcessResult[] = [
       { status: 0, stdout: "Running", stderr: "" },
+      { status: 0, stdout: ownLegacyAction, stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
+      { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "", stderr: "" },
-      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "1234", stderr: "" },
     ];
     const spawnSync: ServiceManagerSpawnSync = (command, args, options) => {
       calls.push({ command, args, options });

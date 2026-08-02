@@ -8,6 +8,7 @@ import {
   type AdeServiceCommand,
   cmdQuote,
   renderWindowsCommand,
+  resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   resolveRuntimeServiceName,
   serviceManagerResultText,
@@ -185,6 +186,72 @@ export function buildWindowsQueryTaskArgs(
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
+/** Delimits the Execute/Arguments fields emitted by the task action query. */
+export const WINDOWS_TASK_ACTION_FIELD_SEPARATOR = "\u001f";
+
+/**
+ * The pre-channel installer registered a single global `ADE Runtime` task whose
+ * name carried no channel or user identity, so the only durable ownership
+ * evidence it left behind is its action: the packaged executable plus CLI entry
+ * of the channel that created it. (Legacy actions never carried the runtime
+ * environment, so `ADE_HOME` is not recoverable from them.) This query returns
+ * the Execute/Arguments pair of every action, unit-separator delimited, so
+ * migration can prove the task belongs to the current install before ending it.
+ */
+export function buildWindowsQueryTaskActionArgs(
+  taskName = resolveWindowsTaskName(),
+): string[] {
+  const taskNameLiteral = powerShellSingleQuotedLiteral(taskName);
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `try { $task = Get-ScheduledTask -TaskPath '\\' -ErrorAction Stop | Where-Object { $_.TaskName -eq ${taskNameLiteral} } | Select-Object -First 1 } catch { [Console]::Error.Write($_.Exception.Message); exit 4 }`,
+    `if ($null -eq $task) { exit ${TASK_NOT_FOUND_EXIT_CODE} }`,
+    "$separator = [string][char]31",
+    "$fields = @($task.Actions | ForEach-Object { [string]$_.Execute; [string]$_.Arguments })",
+    "[Console]::Out.Write($fields -join $separator)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+function normalizeWindowsPathText(value: string): string {
+  return value
+    .trim()
+    .replace(/^"+|"+$/g, "")
+    .replace(/\//g, "\\")
+    .replace(/\\+$/, "")
+    .toLowerCase();
+}
+
+/**
+ * True when a legacy task action launches *this* channel's install. Both the
+ * executable and the CLI entry must match, because development builds of every
+ * channel share `process.execPath`; requiring the entry script as well keeps a
+ * Beta operation from claiming a Stable task that happens to run the same Node.
+ */
+export function isWindowsLegacyTaskOwnedByCommand(
+  output: string | Buffer | null | undefined,
+  command: AdeServiceCommand,
+): boolean {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8") : output ?? "";
+  if (!text.trim()) return false;
+  const executable = normalizeWindowsPathText(command.command);
+  if (!executable) return false;
+  const cliScript = normalizeWindowsPathText(resolveAdeServeCliScriptPath(command));
+  const fields = text.split(WINDOWS_TASK_ACTION_FIELD_SEPARATOR);
+  for (let index = 0; index + 1 < fields.length; index += 2) {
+    const execute = normalizeWindowsPathText(fields[index] ?? "");
+    if (execute !== executable) continue;
+    // An absolute entry path can only appear at a real token boundary, because
+    // its drive prefix cannot occur mid-token.
+    if (cliScript && cliScript !== executable) {
+      const args = normalizeWindowsPathText(fields[index + 1] ?? "");
+      if (!args.includes(cliScript)) continue;
+    }
+    return true;
+  }
+  return false;
+}
+
 export function buildWindowsDeleteTaskArgs(
   taskName = resolveWindowsTaskName(),
 ): string[] {
@@ -241,6 +308,13 @@ function removeWindowsTaskIfPresent(
   run: ServiceManagerSpawnSync,
   taskName: string,
   description: string,
+  /**
+   * Present only for the unnamespaced legacy task. Channel task names already
+   * encode the channel and the Windows principal, so they need no extra proof
+   * of ownership; the legacy name is global and shared across every channel on
+   * the machine, so it must not be touched without one.
+   */
+  ownedBy?: AdeServiceCommand,
 ): WindowsTaskRemovalResult {
   const query = run(
     WINDOWS_POWERSHELL_COMMAND,
@@ -255,6 +329,27 @@ function removeWindowsTaskIfPresent(
       ok: false,
       message: `Unable to query the ${description}: ${serviceManagerResultText(query) || "PowerShell task query failed."}`,
     };
+  }
+  if (ownedBy) {
+    const action = run(
+      WINDOWS_POWERSHELL_COMMAND,
+      buildWindowsQueryTaskActionArgs(taskName),
+      { encoding: "utf8", windowsHide: true },
+    );
+    if (action.status === TASK_NOT_FOUND_EXIT_CODE) {
+      return { ok: true, removed: false };
+    }
+    if (action.status !== 0) {
+      return {
+        ok: false,
+        message: `Unable to query the ${description}: ${serviceManagerResultText(action) || "PowerShell task action query failed."}`,
+      };
+    }
+    // Another channel's always-on brain. Leaving it running is the whole point
+    // of side-by-side isolation; `ade brain status` still reports it.
+    if (!isWindowsLegacyTaskOwnedByCommand(action.stdout, ownedBy)) {
+      return { ok: true, removed: false };
+    }
   }
   if (isWindowsTaskStateRunning(query.stdout)) {
     const end = run(WINDOWS_SCHTASKS_COMMAND, buildWindowsEndTaskArgs(taskName), {
@@ -394,6 +489,7 @@ export async function installWindowsService(
     run,
     TASK_NAME,
     "legacy ADE Runtime scheduled task",
+    serviceCommand,
   );
   if (!legacyRemoval.ok) {
     return {
@@ -502,6 +598,7 @@ export async function installWindowsService(
 export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
+  const serviceCommand = deps.command ?? resolveAdeServeCommand();
   const serviceName = resolvedServiceName(deps);
   let userName: string;
   try {
@@ -529,6 +626,7 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
       run,
       TASK_NAME,
       "legacy ADE Runtime scheduled task",
+      serviceCommand,
     );
   const startupRemoval = removeWindowsRunEntryIfPresent(
     run,
