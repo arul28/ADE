@@ -21,6 +21,7 @@ import type {
   GitHubStatus,
 } from "../../../shared/types";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
   RADII,
@@ -609,7 +610,7 @@ function YourMacsCard() {
                 </span>
                 {thisMac ? (
                   <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                    This computer
+                    {THIS_MACHINE_NAME}
                   </span>
                 ) : null}
                 <span style={{ flex: 1 }} />
@@ -631,7 +632,9 @@ function YourMacsCard() {
                 ) : (
                   <button
                     type="button"
-                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "this computer"}`}
+                    // Only non-local rows get this button, so the fallback must
+                    // match the row label — never the local machine's name.
+                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "Unnamed computer"}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) =>
@@ -762,10 +765,16 @@ function YourMacsCard() {
           )
         : null}
 
+      {/*
+        Removal is only reachable from a row's options menu, and that menu is
+        withheld for the local machine — so this sheet always names some OTHER
+        machine. It must never borrow THIS_MACHINE_NAME, and it can't assume the
+        machine on the far end runs macOS.
+      */}
       {pendingRemoval ? (
         <ConfirmSheet
-          title="Remove this computer from your account?"
-          body={`${accountMachineDisplayName(pendingRemoval) ?? "This computer"} will no longer connect through your account. You can add it back by signing in to ADE on that computer.`}
+          title={`Remove ${accountMachineDisplayName(pendingRemoval) ?? "Unnamed computer"} from your account?`}
+          body="It will no longer connect through your account. You can add it back by signing in to ADE on that computer."
           confirmLabel="Remove"
           danger
           busy={removing}
@@ -780,7 +789,7 @@ function YourMacsCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: sign-out card (honest single-Mac scope, behind a confirmation).
+// Signed-in: sign-out card (honest single-machine scope, behind a confirmation).
 // ---------------------------------------------------------------------------
 
 function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {

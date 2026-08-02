@@ -17,6 +17,7 @@ import type {
   SyncRoleSnapshot,
 } from "../../../shared/types";
 import { buildPairingQrPayload, encodePairingQrUrl } from "../../../shared/pairingQr";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { publicAssetUrl } from "../onboarding/WelcomeVideoGate";
 import { WEB_CLIENT_BASE_URL } from "../../../shared/webClientUrl";
 import {
@@ -211,7 +212,10 @@ export function ThisMacCard({
   }
 
   const host = isSyncHost(status);
-  const machineName = status.runtimeName?.trim() || status.localDevice.name || "This computer";
+  // Falls back to the absolute name for the machine ADE runs on. Never spell it
+  // out here: it was macOS-only copy until ADE shipped on Windows, and every
+  // copy of the literal is a place the next rename can miss.
+  const machineName = status.runtimeName?.trim() || status.localDevice.name || THIS_MACHINE_NAME;
   const crdtUnavailable = isCrdtSyncUnavailable(status);
   const acceptsConnections = acceptsConnectionsState(status, host);
   const routeLabels = reachableRouteLabels(status);
@@ -252,7 +256,7 @@ export function ThisMacCard({
               {machineName}
             </span>
             <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-              This computer
+              {THIS_MACHINE_NAME}
             </span>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
@@ -370,7 +374,7 @@ function acceptsConnectionsState(
   host: boolean,
 ): { ready: boolean; label: string } {
   if (!host) {
-    return { ready: false, label: "This computer connects through your main ADE host" };
+    return { ready: false, label: `${THIS_MACHINE_NAME} connects through your main ADE host` };
   }
   if (isCrdtSyncUnavailable(status)) {
     return { ready: false, label: "Phone sync is unavailable" };
@@ -476,8 +480,8 @@ function PinManagerRemoteNote({
   const stateLine = !pinConfigured
     ? "No pairing code set on this computer yet."
     : pin
-      ? `This computer's pairing code is ${pin}.`
-      : "This computer has a pairing code set.";
+      ? `${THIS_MACHINE_NAME}'s pairing code is ${pin}.`
+      : `${THIS_MACHINE_NAME} has a pairing code set.`;
   return (
     <div style={{ ...panelStyle, gap: 8 }}>
       <div style={LABEL_STYLE}>Pairing code</div>
@@ -495,7 +499,7 @@ function PinManagerRemoteNote({
 // ---------------------------------------------------------------------------
 
 // Section title that names which machine a device list belongs to. The list is
-// always scoped to this physical Mac; the "on {name}" line only appears when a
+// always scoped to this physical machine; the "on {name}" line only appears when a
 // remote binding could otherwise make the reader assume it is the bound machine.
 function ScopedListTitle({ title, sync }: { title: string; sync: SyncConnections }) {
   return (
@@ -553,8 +557,8 @@ function ConnectNewPhone({ status }: { status: SyncRoleSnapshot }) {
   const pinReadout = status.pairingPin
     ? status.pairingPin
     : status.pairingPinConfigured
-      ? "Pairing code is set — see This computer above"
-      : "Set a pairing code in This computer above";
+      ? `Pairing code is set — see ${THIS_MACHINE_NAME} above`
+      : `Set a pairing code in ${THIS_MACHINE_NAME} above`;
 
   return (
     <div style={cardStyle({ display: "grid", gap: 14 })}>

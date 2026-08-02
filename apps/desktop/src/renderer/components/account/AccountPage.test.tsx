@@ -7,6 +7,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { AccountPage, SignInCard } from "./AccountPage";
 import { docs } from "../../onboarding/docsLinks";
 import type { AdeAccountMachine, AdeAccountStatus } from "../../../shared/types";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 
 const beginLogin = vi.fn(async () => undefined);
 const refreshAccount = vi.fn(async () => SIGNED_OUT);
@@ -209,7 +210,10 @@ describe("AccountPage signed-in", () => {
 
     const rows = screen.getAllByText(/MacBook Pro|Studio/);
     expect(rows[0].textContent).toBe("MacBook Pro");
-    expect(screen.getByText("This computer")).toBeTruthy();
+    // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
+    // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
+    // literal here is what let Settings and Account miss the rename.
+    expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
 
     // Only the other computer exposes an options (removal) menu.
     expect(screen.queryByRole("button", { name: /Options for MacBook Pro/ })).toBeNull();
@@ -241,7 +245,10 @@ describe("AccountPage signed-in", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: /Remove from account/ }));
 
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByText(/Remove this computer from your account\?/)).toBeTruthy();
+    // The sheet names the machine being removed. "This computer" would collide
+    // with the local-machine badge, and removal never targets the local machine.
+    expect(within(dialog).getByText(/Remove Studio from your account\?/)).toBeTruthy();
+    expect(dialog.textContent).not.toContain(THIS_MACHINE_NAME);
 
     fireEvent.click(within(dialog).getByRole("button", { name: "Remove" }));
     await waitFor(() => expect(removeMachine).toHaveBeenCalledWith("studio-key"));

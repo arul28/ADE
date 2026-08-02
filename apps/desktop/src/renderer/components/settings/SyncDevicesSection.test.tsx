@@ -11,6 +11,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type {
   SyncDeviceRuntimeState,
   SyncPeerConnectionState,
@@ -248,7 +249,10 @@ describe("ThisMacCard", () => {
     });
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    expect(screen.getByText("This computer")).toBeTruthy();
+    // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
+    // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
+    // literal here is what let Settings and Account miss the rename.
+    expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
     expect(screen.getByText("Reachable via Wi-Fi · Tailscale · Relay")).toBeTruthy();
     expect(await screen.findByText("ADE 1.2.28 · macOS")).toBeTruthy();
   });
@@ -301,7 +305,7 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
-    expect(screen.getByText("This computer's pairing code is 123456.")).toBeTruthy();
+    expect(screen.getByText(`${THIS_MACHINE_NAME}'s pairing code is 123456.`)).toBeTruthy();
     expect(
       screen.getByText(/Pairing changes aren.t available while this window is connected to/),
     ).toBeTruthy();
