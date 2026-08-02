@@ -7,7 +7,9 @@ description: >-
   only CI. Pure loop — it does not replace the baseline /quality or /test runs;
   run those first. It does revalidate quality after any ship-loop mutation so
   the final result is bound to the exact reviewed PR head and content tree.
-  Full phase logic lives
+  Opt-in --stack-ready runs the same loop for one layer of a coordinator-owned
+  stack: it fixes and pushes its own layer but stops at ready-stacked instead of
+  merging, rebasing, or running any gh stack command. Full phase logic lives
   in docs/playbooks/ship-lane.md.
 ---
 
@@ -25,41 +27,62 @@ Print a compact status line each iteration (no banner):
 ship · iter 2/5 · PR #184 · POLL → DECIDE → FIX → MERGE · FIXING CI (test-desktop 3) + 2 comments
 ```
 
+Stack mode prints the layer and its terminal instead of `MERGE`:
+
+```
+ship · stack 12 layer 2/5 · iter 2/5 · PR #1007 · POLL → DECIDE → FIX → READY · FIXING CI (windows-foundation) + 1 comment
+```
+
 **Invocation:** `/ship` (auto-detect state), `/ship <pr-number>`, or the opt-in
 `/ship --stack-ready [<pr-number>] --base <direct-parent-branch>`.
 
 ### Stack-ready mode (opt-in only)
 
-`--stack-ready` prepares one dependent PR for its coordinator; it does not land
-the stack. Resolve the direct parent from `--base`, an existing PR's
+`--stack-ready` drives one layer of a coordinator-owned stack to *ready*, not to
+*merged*. It is the same loop — Phase 0 through Phase 5, the same poll/fix
+machinery, the same 5-iteration budget — with merging and every stack-wide
+operation removed. Resolve the direct parent from `--base`, an existing PR's
 `baseRefName`, then non-interactive `gh stack view --json`; normalize it with
 the `/quality` rules. Persist `mode: "stack"` plus the complete stack binding:
-stack number, position, expected parent branch, validated head SHA, base SHA,
-content-tree SHA, test-evidence SHA, proof links, and quality/test status.
+stack number, size, position, expected parent branch, validated head SHA, base
+SHA, content-tree SHA, test-evidence SHA, required and deferred proof scenarios,
+proof links, and quality/test status.
 
-After the exact head is green, review-terminal, quality-clean, test-clean, and
-every proof scenario required at this PR's current stack position has a current
-evidence link, write `status: "ready-stacked"` and return the binding to the
-coordinator. Cumulative clean-host/cross-client/release scenarios are assigned
-to the top proof PR; they do not masquerade as lower-layer evidence. Any
-missing required scenario is `blocked`, never `ready-stacked` with a caveat. A
-branch change, commit/rebase, or any lower-parent movement invalidates this
-entry and every entry above it. Missing or ambiguous metadata is `blocked`, not
-a fallback to `main`.
+**The lane owns its layer; the coordinator owns the stack.** The lane commits
+and pushes its own layer branch, opens its PR against the resolved direct parent
+when none exists, polls CI and review bots, fixes red CI and verified findings on
+its own layer, reruns commit-bound quality revalidation against the exact
+resulting head, and repeats until the layer is genuinely clean. A red check on
+its own code is work to do, not a reason to stop.
 
-**Coordinator ownership is absolute in stack mode.** Before any cap,
-force-finalize, rebase, push, merge, or branch-deletion decision, branch on
-`mode == "stack"`. The per-PR loop must never independently rebase a canonical
-stack branch, mutate descendants, or push/submit it. It reports
-`stack-coordinator-sync-required`; the coordinator alone runs the
-non-interactive `gh stack sync --remote origin`, `gh stack rebase --upstack
---remote origin`, `gh stack push --remote origin`, or `gh stack submit --auto
---remote origin` workflow. Stack mode can never enter force-finalize or any
-bypass-review logic. It also requires an existing coordinator-created PR and a
-clean, already-tested head: it never commits, pushes, creates/updates a PR, or
-fixes red CI/review on the canonical branch. Those cases return
-`stack-coordinator-pr-required`, `stack-coordinator-sync-required`, or
-`stack-coordinator-fix-required` with exact evidence.
+The lane never merges, never enables auto-merge, never deletes a branch, never
+rebases or restacks (`git rebase`, `gh stack sync --remote origin`, `gh stack
+rebase --upstack --remote origin`, `gh stack push --remote origin`, and `gh
+stack submit --auto --remote origin` are all coordinator-only), never retargets
+a PR base, never touches another layer's branch or files, and never enters
+force-finalize or any bypass-review path. Before any cap, force-finalize,
+rebase, merge, or branch-deletion decision, branch on `mode == "stack"`.
+
+Escalate only what the lane genuinely cannot do, with exact evidence:
+`stack-coordinator-sync-required` (a restack or base retarget is needed — the
+parent moved, a lower layer changed, or the PR base is not the direct parent),
+`stack-coordinator-fix-required` (the fix belongs to a lower layer, or the
+iteration budget is spent and the layer is still red),
+`stack-coordinator-pr-required` (the parent branch is missing on `origin`, or PR
+creation failed on auth or an unusable base ref), and
+`stack-coordinator-merged` (the coordinator already landed it). The playbook's
+**Stack escalation states** table is authoritative. None of them is a general
+stop at the first red check.
+
+Write `status: "ready-stacked"` only when the exact head is green,
+review-terminal, quality-clean, test-clean, and every mandatory proof scenario
+either has a current evidence link bound to the validated head or is recorded in
+`deferredProofScenarios` against a named higher layer that exists in this stack.
+The top layer defers nothing, and cumulative clean-host/cross-client/release
+scenarios never masquerade as lower-layer evidence. A known-missing mandatory
+scenario is `blocked` with the scenario ids listed — never `ready-stacked` with
+a caveat. Missing or ambiguous stack metadata is `blocked`, not a fallback to
+`main`.
 
 Without `--stack-ready`, every existing `/ship` default and merge behavior is
 unchanged: the base is `main`, green work proceeds through Phase 3c, and the
@@ -73,8 +96,11 @@ terminal success state is `done-clean` only after merge confirmation.
 commands, decision rules, and bot-ping rules live there. This skill is the
 runtime-neutral entrypoint and the ADE-specific deltas below. If re-invoked by a
 scheduled wake, read the state file first; if `status == running`, skip Phase 0
-and go to Phase 1. If `status == ready-stacked`, print the persisted coordinator
-handoff and exit without scheduling or mutating anything.
+and go to Phase 1. If `status == ready-stacked`, revalidate the complete binding
+first: when it holds, print the persisted coordinator handoff and exit without
+scheduling or mutating anything; when it is stale, external movement exits
+`stack-coordinator-sync-required` and this lane's own newer head re-enters the
+loop at Phase 1.
 
 The playbook's Phase 0 is **checkpoint → commit-bound quality revalidation →
 push → open PR**. Baseline test generation and the local-CI gate are NOT part
@@ -100,8 +126,10 @@ change this branch was not asked to make. Both need the author.
   available in the lane handoff, stop with `blocked`; unknown is not empty.
 - Any base movement, rebase, conflict resolution, Phase 3b edit, or
   force-finalize edit clears all three quality binding fields. In stack mode,
-  any such movement clears the complete stack binding and returns control to
-  the coordinator without rebasing or pushing. Run the
+  this lane's own Phase 3b edit clears them and is rebound by revalidation on
+  the head it then pushes; external movement of the parent, base, or head
+  instead clears the complete stack binding and returns
+  `stack-coordinator-sync-required` without rebasing. Run the
   playbook's single canonical **Commit-bound
   quality revalidation** procedure before pushing that mutation.
 - Never enter Phase 3c with a missing or mismatched binding. Revalidate first;
@@ -153,7 +181,10 @@ Computer Use evidence is capability-specific: native OS capture/control may be
 explicitly blocked while App Control and proof ingestion remain supported and
 tested. Clean-host Stable/Beta coexistence, second-account pipe denial,
 restart/reboot, installed-update, and GUI artifacts remain named external proof
-blockers until captured; never mark them proven from simulated tests.
+blockers until captured; never mark them proven from simulated tests. A stack
+entry cannot reach `ready-stacked` while any of them is required at its position
+and still uncaptured — record it as `blocked` with the scenario id, or defer it
+to a named higher layer in `deferredProofScenarios`.
 
 ---
 
@@ -193,7 +224,8 @@ after quality validation: the final tree is no longer the reviewed head tree,
 so ordinary merge mode rebases and reruns the canonical quality procedure even
 when GitHub reports a clean merge. Stack mode instead invalidates the current
 and upstack bindings and returns `stack-coordinator-sync-required`; it never
-rebases or pushes. Otherwise, skip needless rebases.
+rebases and never pushes another layer, though it does push its own layer branch
+in Phase 0 and Phase 3b. Otherwise, skip needless rebases.
 
 **Bot pings by iteration.** Never ping GitHub Copilot and never treat Copilot as
 an expected review signal; quota exhaustion otherwise leaves the loop waiting
@@ -275,6 +307,10 @@ self-resume signal. Either:
   CI, never delete/skip tests or weaken lint/tsconfig, then merge on green.
 - **Phase 4/5:** post the iteration's `@codex review` ping after a fix push,
   update state, schedule the next wake (or stop per harness above).
+- **Stack mode:** the same phases run, minus 3a, 3c.1–3c.5, and 3d. Phase 2
+  routes remaining fix work to 3b and terminal-green to 3c.0
+  (`ready-stacked`); the spent iteration budget escalates via
+  `stack-coordinator-fix-required` instead of forcing.
 
 ---
 
@@ -282,10 +318,10 @@ self-resume signal. Either:
 
 | Status | Meaning |
 |--------|---------|
-| `ready-stacked` | Opt-in stacked PR has a complete head/base/tree/test/proof binding with no proof blocker required at its current position; coordinator owns all stack mutation and landing |
+| `ready-stacked` | Opt-in stacked layer is green, review-terminal, quality/test-clean, and every mandatory proof scenario is linked to the validated head or validly deferred to a named higher layer. The lane fixed its own layer; the coordinator owns restacking, base retargeting, submission, and landing |
 | `done-clean` | PR merged on main |
 | `done-max` | 5 normal + 1 force-finalize exhausted, merge genuinely blocked |
-| `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, or a non-empty `/quality` gate awaiting an author decision |
+| `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, a non-empty `/quality` gate awaiting an author decision, a missing mandatory proof scenario, or a `stack-coordinator-*` escalation |
 
 Always print the final summary (PR, branch, iterations, status, reason,
 per-iteration log, unaddressed items) on exit. Do NOT schedule a wake when
