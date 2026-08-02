@@ -1,6 +1,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const repoRoot = process.cwd();
 const ignoredTopLevel = new Set([
@@ -13,54 +14,68 @@ const ignoredTopLevel = new Set([
   "dist",
 ]);
 
-const docFiles = [];
+/**
+ * Doc identifiers (the values in `docFiles`, every `routeSet` entry, and every
+ * link target) live in a URL-ish namespace that is always forward-slash
+ * separated, on every host OS. Filesystem access keeps native paths.
+ *
+ * `toRouteId` is the single boundary where a native path becomes an identifier;
+ * call it there and nowhere else, so the rest of the script can compare route
+ * ids against link targets without caring about `path.sep`. On POSIX this is
+ * the identity function, because a backslash is a legal filename character
+ * there and must not be rewritten.
+ *
+ * `sep` is injectable so the Windows behaviour stays testable on a POSIX CI box.
+ */
+export function toRouteId(nativeRelativePath, sep = path.sep) {
+  if (sep === "/") return nativeRelativePath;
+  return nativeRelativePath.split(sep).join("/");
+}
 
-async function walkDocs(dir) {
+/** `routeId` is a repo-relative, forward-slash id produced by `toRouteId`. */
+export function isDocFile(routeId) {
+  return (
+    routeId === "README.md" ||
+    routeId === "AGENTS.md" ||
+    routeId.endsWith(".mdx") ||
+    (routeId.startsWith("docs/") && routeId.endsWith(".md"))
+  );
+}
+
+/** Maps an `.mdx` route id onto the absolute docs route it publishes. */
+export function docRouteForFile(routeId) {
+  const withoutExtension = routeId.replace(/\.mdx$/, "");
+  if (withoutExtension === "index") return "/";
+  if (withoutExtension.endsWith("/index")) {
+    return `/${withoutExtension.slice(0, -"/index".length)}`;
+  }
+  return `/${withoutExtension}`;
+}
+
+async function walkDocs(dir, docFiles) {
   const entries = await fs.readdir(dir, { withFileTypes: true });
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
   for (const entry of entries) {
     if (entry.name.startsWith(".")) {
       if (entry.name !== ".well-known") continue;
     }
 
     const fullPath = path.join(dir, entry.name);
-    const relPath = path.relative(repoRoot, fullPath);
+    const routeId = toRouteId(path.relative(repoRoot, fullPath));
 
     if (entry.isDirectory()) {
       if (dir === repoRoot && ignoredTopLevel.has(entry.name)) continue;
-      await walkDocs(fullPath);
+      await walkDocs(fullPath, docFiles);
       continue;
     }
 
-    if (
-      relPath === "README.md" ||
-      relPath === "AGENTS.md" ||
-      relPath.endsWith(".mdx") ||
-      (relPath.startsWith("docs/") && relPath.endsWith(".md"))
-    ) {
-      docFiles.push(relPath);
+    if (isDocFile(routeId)) {
+      docFiles.push(routeId);
     }
   }
 }
 
-await walkDocs(repoRoot);
-
-const routeSet = new Set(
-  docFiles
-    .filter((file) => file.endsWith(".mdx"))
-    .map((file) => {
-      const withoutExtension = file.replace(/\.mdx$/, "");
-      if (withoutExtension === "index") return "/";
-      if (withoutExtension.endsWith("/index")) {
-        return `/${withoutExtension.slice(0, -"/index".length)}`;
-      }
-      return `/${withoutExtension}`;
-    })
-);
-
-const docsConfig = JSON.parse(await fs.readFile(path.join(repoRoot, "docs.json"), "utf8"));
-const errors = [];
-
-function normalizeTarget(rawTarget, fromFile) {
+export function normalizeTarget(rawTarget, fromFile) {
   const stripped = rawTarget.split("#")[0]?.split("?")[0] ?? "";
   if (stripped === "…" || stripped === "...") return null;
   if (!stripped || stripped.startsWith("http://") || stripped.startsWith("https://") || stripped.startsWith("mailto:") || stripped.startsWith("tel:")) {
@@ -71,19 +86,23 @@ function normalizeTarget(rawTarget, fromFile) {
     return { absolute: stripped, source: rawTarget, fromFile };
   }
 
-  const fromDir = path.posix.dirname(fromFile.replaceAll(path.sep, "/"));
+  // `fromFile` is already a forward-slash route id, so posix path maths applies
+  // unchanged on every OS.
+  const fromDir = path.posix.dirname(fromFile);
   const resolved = path.posix.normalize(path.posix.join(fromDir === "." ? "" : fromDir, stripped));
   return { absolute: `/${resolved}`, source: rawTarget, fromFile };
 }
 
-function targetExists(target) {
+function targetExists(target, routeSet) {
   const clean = target.absolute;
 
   if (routeSet.has(clean)) {
     return true;
   }
 
-  const repoPath = path.join(repoRoot, clean.slice(1));
+  // Cross back out of the route namespace: split on "/" and rejoin natively
+  // rather than handing a forward-slash string to the filesystem.
+  const repoPath = path.join(repoRoot, ...clean.slice(1).split("/").filter(Boolean));
   return fs.access(repoPath).then(() => true).catch(() => false);
 }
 
@@ -120,12 +139,6 @@ function collectConfigTargets(config) {
   return targets;
 }
 
-for (const target of collectConfigTargets(docsConfig)) {
-  if (!(await targetExists(target))) {
-    errors.push(`${target.fromFile}: missing target ${target.source}`);
-  }
-}
-
 const inlineHrefPattern = /\b(?:href|src)=["']([^"']+)["']/g;
 const markdownLinkPattern = /!?\[[^\]]*\]\(([^)]+)\)/g;
 const leakedAgentMarkupPattern = /<\/(?:invoke|content)>|<parameter\b|antml:/g;
@@ -138,31 +151,39 @@ function lineNumberForIndex(content, index) {
   return line;
 }
 
-for (const file of docFiles) {
-  const content = await fs.readFile(path.join(repoRoot, file), "utf8");
-  const seenTargets = new Set();
-
-  if (file.endsWith(".mdx")) {
-    leakedAgentMarkupPattern.lastIndex = 0;
-    let artifactMatch;
-    while ((artifactMatch = leakedAgentMarkupPattern.exec(content)) !== null) {
-      errors.push(`${file}:${lineNumberForIndex(content, artifactMatch.index)}: remove leaked agent tool-call markup ${artifactMatch[0]}`);
+async function validateLinks({ docFiles, routeSet, docsConfig, errors }) {
+  for (const target of collectConfigTargets(docsConfig)) {
+    if (!(await targetExists(target, routeSet))) {
+      errors.push(`${target.fromFile}: missing target ${target.source}`);
     }
   }
 
-  for (const pattern of [inlineHrefPattern, markdownLinkPattern]) {
-    pattern.lastIndex = 0;
-    let match;
-    while ((match = pattern.exec(content)) !== null) {
-      const rawTarget = match[1]?.trim();
-      const normalized = normalizeTarget(rawTarget, file);
-      if (!normalized) continue;
-      const dedupeKey = `${file}:${normalized.absolute}`;
-      if (seenTargets.has(dedupeKey)) continue;
-      seenTargets.add(dedupeKey);
+  for (const file of docFiles) {
+    const content = await fs.readFile(path.join(repoRoot, ...file.split("/")), "utf8");
+    const seenTargets = new Set();
 
-      if (!(await targetExists(normalized))) {
-        errors.push(`${file}: missing target ${rawTarget}`);
+    if (file.endsWith(".mdx")) {
+      leakedAgentMarkupPattern.lastIndex = 0;
+      let artifactMatch;
+      while ((artifactMatch = leakedAgentMarkupPattern.exec(content)) !== null) {
+        errors.push(`${file}:${lineNumberForIndex(content, artifactMatch.index)}: remove leaked agent tool-call markup ${artifactMatch[0]}`);
+      }
+    }
+
+    for (const pattern of [inlineHrefPattern, markdownLinkPattern]) {
+      pattern.lastIndex = 0;
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const rawTarget = match[1]?.trim();
+        const normalized = normalizeTarget(rawTarget, file);
+        if (!normalized) continue;
+        const dedupeKey = `${file}:${normalized.absolute}`;
+        if (seenTargets.has(dedupeKey)) continue;
+        seenTargets.add(dedupeKey);
+
+        if (!(await targetExists(normalized, routeSet))) {
+          errors.push(`${file}: missing target ${rawTarget}`);
+        }
       }
     }
   }
@@ -203,7 +224,7 @@ function semverGitTags() {
     .sort(compareSemver);
 }
 
-async function validateReleaseDocs() {
+async function validateReleaseDocs({ routeSet, errors }) {
   const gitTags = semverGitTags();
   if (gitTags === null) {
     errors.push("CHANGELOG.md: failed to read git tags; ensure git is installed and this is a git checkout");
@@ -250,13 +271,13 @@ async function validateReleaseDocs() {
     }
   }
 
-  if (!(await targetExists({ absolute: `/changelog/${docsLatestTag.raw}`, source: docsLatestTag.raw, fromFile: "CHANGELOG.md" }))) {
+  if (!(await targetExists({ absolute: `/changelog/${docsLatestTag.raw}`, source: docsLatestTag.raw, fromFile: "CHANGELOG.md" }, routeSet))) {
     errors.push(`changelog/${docsLatestTag.raw}.mdx: missing docs page for latest release ${docsLatestTag.raw}`);
   }
 
   let changelogIndex;
   try {
-    changelogIndex = await fs.readFile(path.join(repoRoot, "changelog/index.mdx"), "utf8");
+    changelogIndex = await fs.readFile(path.join(repoRoot, "changelog", "index.mdx"), "utf8");
   } catch {
     errors.push("changelog/index.mdx: file is missing; create it with a latest-release Card");
     return;
@@ -286,14 +307,29 @@ async function validateReleaseDocs() {
   }
 }
 
-await validateReleaseDocs();
+async function main() {
+  const docFiles = [];
+  await walkDocs(repoRoot, docFiles);
 
-if (errors.length > 0) {
-  console.error("Documentation validation failed:");
-  for (const error of errors) {
-    console.error(`- ${error}`);
+  const routeSet = new Set(docFiles.filter((file) => file.endsWith(".mdx")).map(docRouteForFile));
+  const docsConfig = JSON.parse(await fs.readFile(path.join(repoRoot, "docs.json"), "utf8"));
+  const errors = [];
+
+  await validateLinks({ docFiles, routeSet, docsConfig, errors });
+  await validateReleaseDocs({ routeSet, errors });
+
+  if (errors.length > 0) {
+    console.error("Documentation validation failed:");
+    for (const error of errors) {
+      console.error(`- ${error}`);
+    }
+    process.exit(1);
   }
-  process.exit(1);
+
+  console.log(`Documentation validation passed for ${docFiles.length} files.`);
 }
 
-console.log(`Documentation validation passed for ${docFiles.length} files.`);
+const isDirectRun = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isDirectRun) {
+  await main();
+}
