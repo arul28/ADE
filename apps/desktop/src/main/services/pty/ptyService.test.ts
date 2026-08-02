@@ -2733,7 +2733,9 @@ describe("ptyService", () => {
     });
 
     it("moves node_modules bins behind user paths for Codex CLI launches", async () => {
-      const previousPath = process.env.PATH;
+      const previousPathEntries = Object.entries(process.env)
+        .filter(([key]) => key.toLowerCase() === "path");
+      for (const [key] of previousPathEntries) delete process.env[key];
       process.env.PATH = [
         "/repo/apps/desktop/node_modules/.bin",
         "/opt/homebrew/bin",
@@ -2758,9 +2760,17 @@ describe("ptyService", () => {
         const spawnArgs = ptyLib.spawn.mock.calls.at(-1);
         const opts = spawnArgs?.[2] as { env?: NodeJS.ProcessEnv } | undefined;
         const pathEntries = opts?.env?.PATH?.split(path.delimiter) ?? [];
+        const normalizedPathEntries = pathEntries.map((entry) => entry.replace(/\\/g, "/"));
         const yarnGlobalBin = path.join(os.homedir(), ".config", "yarn", "global", "node_modules", ".bin");
-        expect(pathEntries.slice(0, 2)).toEqual(["/opt/homebrew/bin", "/usr/bin"]);
-        expect(pathEntries.slice(-2)).toEqual([
+        const firstNodeModulesBin = normalizedPathEntries.findIndex((entry) =>
+          entry.endsWith("/repo/apps/desktop/node_modules/.bin"),
+        );
+        expect(firstNodeModulesBin).toBeGreaterThanOrEqual(0);
+        expect(pathEntries).toContain("/opt/homebrew/bin");
+        expect(pathEntries).toContain("/usr/bin");
+        expect(pathEntries.indexOf("/opt/homebrew/bin")).toBeLessThan(firstNodeModulesBin);
+        expect(pathEntries.indexOf("/usr/bin")).toBeLessThan(firstNodeModulesBin);
+        expect(normalizedPathEntries.slice(-2).map((entry) => entry.replace(/^[A-Za-z]:/, ""))).toEqual([
           "/repo/apps/desktop/node_modules/.bin",
           "/tmp/project/node_modules/.bin",
         ]);
@@ -2768,8 +2778,10 @@ describe("ptyService", () => {
         expect(pathEntries.indexOf(yarnGlobalBin)).toBeGreaterThanOrEqual(0);
         expect(pathEntries.indexOf(yarnGlobalBin)).toBeLessThan(pathEntries.indexOf("/repo/apps/desktop/node_modules/.bin"));
       } finally {
-        if (previousPath == null) delete process.env.PATH;
-        else process.env.PATH = previousPath;
+        for (const key of Object.keys(process.env)) {
+          if (key.toLowerCase() === "path") delete process.env[key];
+        }
+        for (const [key, value] of previousPathEntries) process.env[key] = value;
       }
     });
 
