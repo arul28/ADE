@@ -3,7 +3,9 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { recordLastFailure } from "../runtime/lastFailureStore";
 
 vi.mock("electron", () => ({
@@ -119,12 +121,48 @@ class RawRuntimeSocketClient {
   }
 }
 
-function withTsxNodeOptions(value: string | undefined, loaderPath: string): string {
-  const existing = value?.trim();
-  return existing ? `${existing} --import ${loaderPath}` : `--import ${loaderPath}`;
+/**
+ * Resolve the machine runtime endpoint for a temp `ADE_HOME` exactly the way
+ * production does, so daemon-backed tests exercise the real per-platform
+ * transport: a Unix domain socket at `<ADE_HOME>/sock/ade.sock` on macOS and
+ * Linux, and a per-user named pipe on Windows.
+ *
+ * Hardcoding `<adeHome>/sock/ade.sock` is not portable. Node's `net` maps a
+ * path-style endpoint onto a named pipe on Windows, so a filesystem path is
+ * not a connectable address there and every such test dies with
+ * `connect ENOENT`. Deriving the endpoint keeps the POSIX expectation
+ * byte-identical while giving Windows the address the runtime actually listens
+ * on.
+ */
+function machineRuntimeSocketPath(adeHome: string): string {
+  return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
 }
 
-async function waitForRuntimeSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
+function withTsxNodeOptions(value: string | undefined, loaderPath: string): string {
+  // `--import` must be given a file:// URL, not a bare absolute path. Node's
+  // ESM loader rejects a Windows absolute path outright
+  // (ERR_UNSUPPORTED_ESM_URL_SCHEME: "Received protocol 'c:'"), which kills the
+  // spawned daemon before it can listen and surfaces here only as a downstream
+  // connect ENOENT. A file URL is equally valid on macOS/Linux and also
+  // percent-encodes spaces, which keeps NODE_OPTIONS parseable either way.
+  const loaderUrl = pathToFileURL(loaderPath).href;
+  const existing = value?.trim();
+  return existing ? `${existing} --import ${loaderUrl}` : `--import ${loaderUrl}`;
+}
+
+// Mirrors LOCAL_RUNTIME_STARTUP_TIMEOUT_MS in the pool itself: a cold Windows
+// runtime start (process spawn + tsx transform + SQLite init) is genuinely
+// slower than on macOS/Linux, so production already waits 30s there against 10s
+// elsewhere. The readiness budget below is a ceiling, not a sleep — a healthy
+// daemon is reachable in a few seconds on every platform — so widening it on
+// Windows only removes a false failure under load without slowing the suite or
+// relaxing a single assertion.
+const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+
+async function waitForRuntimeSocket(
+  socketPath: string,
+  timeoutMs = RUNTIME_SOCKET_READY_TIMEOUT_MS,
+): Promise<void> {
   await vi.waitFor(async () => {
     let client: RawRuntimeSocketClient | null = null;
     try {
@@ -296,18 +334,24 @@ describe("local runtime connection pool", () => {
   });
 
   it("builds packaged runtime NODE_PATH for macOS universal app layouts", () => {
+    const resourcesPath = "/Applications/ADE.app/Contents/Resources";
     const nodePath = buildLocalRuntimeNodePath({
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
+      resourcesPath,
       platform: "darwin",
       arch: "arm64",
       existingNodePath: "/custom/node_modules",
     });
 
+    // The helper joins with the *host* path module, which is correct: it builds
+    // NODE_PATH for a runtime spawned on this machine. Only the app *layout*
+    // is macOS-specific, so join the expectation the same way rather than
+    // hardcoding separators. On macOS/Linux these are the same strings as
+    // before; on Windows they are the same segments with `\`.
     expect(nodePath?.split(path.delimiter)).toEqual([
-      "/Applications/ADE.app/Contents/Resources/app-arm64.asar.unpacked/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app-arm64.asar/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app.asar/node_modules",
+      path.join(resourcesPath, "app-arm64.asar.unpacked", "node_modules"),
+      path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
+      path.join(resourcesPath, "app-arm64.asar", "node_modules"),
+      path.join(resourcesPath, "app.asar", "node_modules"),
       "/custom/node_modules",
     ]);
   });
@@ -342,8 +386,16 @@ describe("local runtime connection pool", () => {
   });
 
   it("does not auto-install channel services from local release build output paths", () => {
-    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
-    const installedCliPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    // `localReleaseBuildOutputRuntimeBlock` reports the *resolved* CLI path, so
+    // resolve the fixtures the same way. A bare POSIX literal is a no-op here
+    // on macOS/Linux but picks up a drive letter and `\` separators on Windows,
+    // which the raw literal would then fail to match.
+    const releaseCliPath = path.resolve(
+      "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
+    const installedCliPath = path.resolve(
+      "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
     const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
 
     try {
@@ -368,7 +420,11 @@ describe("local runtime connection pool", () => {
   });
 
   it("records skipped service install status for local release build output paths", async () => {
-    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    // Resolved for the same reason as the sibling test above: the reported
+    // `serviceInstall.path` is the resolved CLI path, not the raw literal.
+    const releaseCliPath = path.resolve(
+      "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
     const originalCliJs = process.env.ADE_CLI_JS;
     const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
     const logger = {
@@ -413,7 +469,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-skip-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2027,7 +2083,7 @@ describe("local runtime connection pool", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
     const expectedProjectRoot = fs.realpathSync.native(projectRoot);
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2111,7 +2167,7 @@ describe("local runtime connection pool", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
     const secondProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2244,7 +2300,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-newer-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2334,7 +2390,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-eq-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2414,7 +2470,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
     const originalEnv = {
@@ -2493,7 +2549,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2614,7 +2670,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
     const originalEnv = {
@@ -3179,13 +3235,13 @@ describe("local runtime connection pool", () => {
         /refusing to spawn an app-owned brain on a primary channel socket/i,
       );
 
-      expect(tryConnect).toHaveBeenCalledWith(path.join(adeHome, "sock", "ade.sock"));
+      expect(tryConnect).toHaveBeenCalledWith(machineRuntimeSocketPath(adeHome));
       expect(tryRepair).toHaveBeenCalled();
       expect(spawnRuntime).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
         "local_runtime.primary_runtime_spawn_blocked",
         expect.objectContaining({
-          socketPath: path.join(adeHome, "sock", "ade.sock"),
+          socketPath: machineRuntimeSocketPath(adeHome),
           preferServiceRepair: false,
         }),
       );

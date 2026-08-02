@@ -453,6 +453,13 @@ jobs:
       - name: Test Windows desktop, SQLite, and capability contracts
         run: cd apps/desktop && npx vitest run src/main/packagedRuntimeSmoke.test.ts src/main/services/computerUse/localComputerUse.test.ts src/renderer/lib/platform.test.ts
 
+      # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
+      # retry path. This suite spawns real `ade serve` daemons and connects to
+      # them over the platform transport, so on this runner it is the only gate
+      # that exercises the named-pipe endpoint end to end.
+      - name: Test Windows local runtime connection pool contracts
+        run: cd apps/desktop && npx vitest run src/main/services/localRuntime/localRuntimeConnectionPool.test.ts
+
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
