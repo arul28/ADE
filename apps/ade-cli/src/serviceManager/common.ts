@@ -109,10 +109,16 @@ function readWindowsParentPid(run: ServiceManagerSpawnSync, pid: number): Parent
   try {
     // Resolve through the hardened GLOBALROOT lookup: a bare `powershell` is
     // redirectable via PATH/SystemRoot, and this guard protects a teardown.
+    // 5s was not enough: powershell.exe cold start plus the first CIM call in a
+    // session routinely exceeds it on a contended Windows host, and the timeout
+    // is indistinguishable from a real failure, so the guard below falls back to
+    // PARENT_PID_UNKNOWN and refuses a teardown the user is entitled to. The
+    // walk in isCurrentProcessDescendantOfPid stops at the first
+    // PARENT_PID_UNKNOWN, so this budget is spent at most once per lookup chain.
     result = run(
       resolveTrustedWindowsTool("powershell"),
       buildWindowsParentPidQueryArgs(pid),
-      { encoding: "utf8", timeout: 5_000, windowsHide: true },
+      { encoding: "utf8", timeout: 15_000, windowsHide: true },
     );
   } catch {
     return PARENT_PID_UNKNOWN;

@@ -29,6 +29,9 @@ describe("modelPickerStore (db-backed)", () => {
   const cleanupRoots: string[] = [];
   const openDbs: AdeDb[] = [];
 
+  // Closing SQLite handles and unlinking the db trees is IO-bound, and the
+  // default 10s hook budget was exhausted on a loaded Windows CI runner,
+  // reporting "Hook timed out in 10000ms" on top of the real failure.
   afterEach(async () => {
     vi.useRealTimers();
     for (const db of openDbs.splice(0)) {
@@ -37,7 +40,7 @@ describe("modelPickerStore (db-backed)", () => {
     for (const root of cleanupRoots.splice(0)) {
       await removeTestTree(root);
     }
-  });
+  }, 60_000);
 
   async function makeDb(): Promise<{ db: AdeDb; root: string }> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-model-picker-db-"));
@@ -60,21 +63,31 @@ describe("modelPickerStore (db-backed)", () => {
       cleanupRoots.push(root);
       const workerPath = path.resolve(process.cwd(), "src", "test", "crrModelPickerWorker.ts");
       const tsxPath = path.resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      // tsx has to transform the worker and load the crsqlite native extension
+      // in a cold child process; 15s is not enough headroom on a loaded Windows
+      // CI runner, where the kill left status null and the message below empty.
       const result = spawnSync(process.execPath, [tsxPath, workerPath, path.join(root, "ade.db")], {
         encoding: "utf8",
         env: process.env,
-        timeout: 15_000,
+        timeout: 60_000,
         windowsHide: true,
       });
 
-      expect(result.status, result.stderr || result.stdout).toBe(0);
+      // A timeout kill reports status null with no output, so name that case
+      // explicitly rather than failing with a bare "expected null to be 0".
+      const failure = result.error
+        ? `spawn failed: ${result.error.message}`
+        : result.signal
+          ? `worker killed by ${result.signal} (timed out?)`
+          : result.stderr || result.stdout;
+      expect(result.status, failure).toBe(0);
       expect(JSON.parse(result.stdout.trim())).toEqual({
         crsqliteAvailable: true,
         favorites: ["gpt-5"],
         recents: ["claude-sonnet-5"],
       });
     },
-    20_000,
+    90_000,
   );
 
   it("starts empty on a fresh db", async () => {

@@ -286,7 +286,9 @@ describe("Windows background service helpers", () => {
       );
       try {
         expect(bootstrap.status).toBe(0);
-        const deadline = Date.now() + 5_000;
+        // Waits on a detached powershell.exe cold start plus a node child; 5s
+        // is not enough headroom on a loaded Windows CI runner.
+        const deadline = Date.now() + 45_000;
         while (!fs.existsSync(outputPath) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -295,7 +297,19 @@ describe("Windows background service helpers", () => {
           args: ["quoted \"value\"", "O'Brien", "100% & $HOME", "naïve-東京-🚀"],
         });
       } finally {
-        const record = readWindowsServicePidRecord({ pidPath: `${launcherPath}.pid.json` });
+        // The supervisor is detached via Start-Process, so this pid record is
+        // the only handle on it. Reading it once races the supervisor's first
+        // Write-PidRecord: when the read lost, the supervisor was never killed
+        // and kept restarting its child for the rest of the run, holding the
+        // temp tree open (EBUSY on unlink) and starving every later suite.
+        // Wait for the record before giving up on the kill.
+        const pidPath = `${launcherPath}.pid.json`;
+        const killDeadline = Date.now() + 15_000;
+        let record = readWindowsServicePidRecord({ pidPath });
+        while (!record?.supervisorPid && Date.now() < killDeadline) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+          record = readWindowsServicePidRecord({ pidPath });
+        }
         if (record?.supervisorPid) {
           spawnChildSync("taskkill.exe", ["/PID", String(record.supervisorPid), "/T", "/F"], {
             encoding: "utf8",
@@ -304,7 +318,7 @@ describe("Windows background service helpers", () => {
         }
       }
     },
-    10_000,
+    90_000,
   );
 
   it("registers and starts the per-user background service without Task Scheduler", async () => {

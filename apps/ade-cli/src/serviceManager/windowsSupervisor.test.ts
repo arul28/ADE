@@ -134,7 +134,12 @@ describe("Windows runtime supervisor", () => {
         launcherPath,
       ], { stdio: "ignore", windowsHide: true });
       try {
-        const deadline = Date.now() + 5_000;
+        // The supervisor is a real detached PowerShell process, so this waits on
+        // powershell.exe cold start plus two full launch-failure backoff cycles.
+        // A 5s budget is a coin flip on a loaded Windows CI runner, where the
+        // record simply had not been written yet and the assertion below read
+        // null. Widen the patience; the assertion itself is unchanged.
+        const deadline = Date.now() + 45_000;
         let record = readWindowsServicePidRecord({ pidPath });
         while ((!record?.lastLaunchError || record.restartCount < 2) && Date.now() < deadline) {
           await new Promise((resolve) => setTimeout(resolve, 20));
@@ -157,6 +162,6 @@ describe("Windows runtime supervisor", () => {
         }
       }
     },
-    10_000,
+    60_000,
   );
 });
