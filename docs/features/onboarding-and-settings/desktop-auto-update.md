@@ -48,14 +48,15 @@ Windows x64 uses electron-builder's per-user NSIS target and
    to match `ADE_RELEASE_REPOSITORY`, preventing a fork build from silently
    checking a different repository.
 
-Release generation and public availability are separate gates.
-`ADE_WINDOWS_SIGNED_BUILD_ENABLED=1` enables a fail-closed Authenticode build;
-the installer and packaged `ADE.exe` must share the pinned publisher identity
-and carry a trusted RFC3161 timestamp. `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1`
-adds the installer, blockmap, and `latest.yml` to the draft release. Keep the
-public gate disabled until the signed installer passes the clean standard-user
-Windows checks. Validate version-to-version automatic updating after two signed
-Windows releases exist.
+`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1` is the single gate. It builds Windows
+fresh on the release tag and adds the installer, blockmap, and `latest.yml` to
+the draft release. The build is fail-closed on Authenticode: the installer and
+packaged `ADE.exe` must share the pinned publisher identity and carry a trusted
+RFC3161 timestamp, or the release fails. Keep the gate disabled until the signed
+installer has passed the clean standard-user Windows checks, which the
+`windows_proof` dispatch input on `prepare-release.yml` produces without
+publishing anything. Validate version-to-version automatic updating after two
+signed Windows releases exist.
 
 ## Required-space estimate
 

@@ -15,11 +15,12 @@ the existing approved download may disrupt users.
 
 ## Inputs and outputs
 
-Run `.github/workflows/prepare-release.yml` with a version and the lowercase,
-40-character commit SHA intended for release. The workflow requires
-`ADE_WINDOWS_SIGNED_BUILD_ENABLED=1`, refuses to run when public Windows
-publication is enabled, checks out the exact SHA, verifies `ci-pass` for it,
-builds without publication, and uploads `ade-win-release-v<VERSION>` containing:
+Run `.github/workflows/prepare-release.yml` with a version, the lowercase,
+40-character commit SHA intended for release, and `windows_proof=true`. Proof
+mode requires only the Windows signing secrets, so it can run before Windows
+publication is enabled and again afterwards as a regression check. The workflow
+checks out the exact SHA, verifies `ci-pass` for it, builds without publication,
+and uploads `ade-win-proof-v<VERSION>` containing:
 
 - `ADE-<VERSION>-win-x64.exe`
 - `ADE-<VERSION>-win-x64.exe.blockmap`
@@ -226,15 +227,13 @@ person's name or account identifier. Run `--phase publication-readiness` with
 both roots. This phase still requires `publicReleaseEnabled` and
 `websiteReleaseReady` to be false.
 
-After that validation succeeds, set the protected repository variables
-`ADE_WINDOWS_APPROVED_PROOF_SHA`, `ADE_WINDOWS_APPROVED_PROOF_RUN_ID`, and
-`ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256` to the exact approved source SHA,
-the original non-publishing workflow run id, and the SHA-256 of the original
-`proof_pending` build manifest. The public release workflow downloads that
-immutable Actions artifact, verifies the manifest digest, run id, tag, exact
-source SHA, and all artifact hashes, and promotes those same installer bytes.
-It does not rebuild Windows with a new signing timestamp. Enabling publication
-and the website remains a separate explicit maintainer action described in the
+After that validation succeeds, the proof is complete. It is the record that
+this commit was exercised on clean Windows hosts; it is not a release gate.
+Releases build Windows fresh on the tag, so a published installer carries its
+own signing timestamp and is not the byte-identical artifact this proof
+indexes. Re-run proof mode against a later commit whenever you want a fresh
+clean-host record. Enabling publication and the website remains a separate
+explicit maintainer action described in the
 signed-release playbook.
 
 After the tag workflow creates the unpublished draft, collect the bounded
