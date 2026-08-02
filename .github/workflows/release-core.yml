@@ -105,8 +105,9 @@ jobs:
         env:
           PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
           WINDOWS_PROOF: ${{ inputs.windows_proof }}
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
           WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
@@ -117,12 +118,19 @@ jobs:
             exit 0
           fi
 
-          if [ -z "$WINDOWS_CSC_LINK" ] || [ -z "$WINDOWS_CSC_KEY_PASSWORD" ]; then
-            echo "::error::Windows releases require the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets."
+          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "::error::Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets."
             exit 1
           fi
-          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ] && [ -z "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
-            echo "::error::Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret to pin the approved publisher."
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ]; then
+            echo "::error::Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher."
+            exit 1
+          fi
+          # Azure Artifact Signing renews the certificate daily and expires it
+          # after 72 hours, so a thumbprint pin would start failing releases
+          # within days. Refuse the secret rather than ignore it.
+          if [ -n "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline. Delete the secret and pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
             exit 1
           fi
 
@@ -336,16 +344,20 @@ jobs:
       - name: Require Windows Authenticode signing secrets
         shell: pwsh
         env:
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
           WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_LINK) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_KEY_PASSWORD)) {
-            throw "Public Windows releases require WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD."
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_SECRET)) {
+            throw "Public Windows releases require AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET."
           }
-          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_SUBJECT) -and [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
-            throw "Public Windows releases require WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT."
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_SUBJECT)) {
+            throw "Public Windows releases require WINDOWS_SIGNING_EXPECTED_SUBJECT."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
+            throw "WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline; pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
           }
 
       - name: Download ADE runtime binaries
@@ -378,10 +390,13 @@ jobs:
           ADE_RELEASE_REPOSITORY: ${{ github.repository }}
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          # Azure Artifact Signing service principal. EnvironmentCredential
+          # reads exactly these three names and is tried ahead of the managed
+          # identity probe that a GitHub-hosted runner cannot answer.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
-          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: cd apps/desktop && npm run dist:win:signed
 
       - name: Test installed signed Windows product lifecycle
@@ -575,10 +590,10 @@ jobs:
         if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}
         shell: pwsh
         env:
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
-          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
           & apps/ade-cli/scripts/sign-windows-runtime.ps1 `
             -BinaryPath "apps/ade-cli/dist-static/${{ matrix.binary }}"

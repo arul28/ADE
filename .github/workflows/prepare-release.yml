@@ -44,19 +44,24 @@ jobs:
       - name: Prepare signed Windows proof mode
         if: ${{ inputs.windows_proof }}
         env:
-          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
-          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
           WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
           WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
         run: |
           set -euo pipefail
 
-          if [ -z "$WINDOWS_CSC_LINK" ] || [ -z "$WINDOWS_CSC_KEY_PASSWORD" ]; then
-            echo "::error::Signed Windows proof requires the WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD secrets."
+          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "::error::Signed Windows proof requires the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets."
             exit 1
           fi
-          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ] && [ -z "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
-            echo "::error::Signed Windows proof requires the WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT secret."
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ]; then
+            echo "::error::Signed Windows proof requires the WINDOWS_SIGNING_EXPECTED_SUBJECT secret."
+            exit 1
+          fi
+          if [ -n "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline. Delete the secret and pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
             exit 1
           fi
 
