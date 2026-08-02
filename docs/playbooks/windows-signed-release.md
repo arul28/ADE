@@ -25,7 +25,9 @@ Complete these actions in order:
 3. Build a signed test version in GitHub Actions.
 4. Complete the exact-SHA proof inventory on clean Windows 10 and Windows 11 computers, including a signed N to N+1 private update.
 5. Validate and approve the redacted proof bundle while publication and the website remain disabled.
-6. Bind the approved proof SHA and enable Windows in the production release workflow.
+6. Bind the approved proof SHA, run id, and build-manifest digest, attest the
+   installed-update proof, and enable Windows in the production release
+   workflow.
 7. Tag the approved commit. GitHub Actions builds the other platforms, promotes
    the exact approved Windows artifact, and creates one unpublished release.
 8. Check the release, make it public, and only then enable the Windows website link.
@@ -69,6 +71,14 @@ gh variable set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \
 
 ### 2. Run the signed build in GitHub Actions
 
+`prepare-release.yml` is the platform-neutral non-publishing dry run. Pass
+`windows_proof=true` to also assert the signed Windows proof preconditions:
+`ADE_WINDOWS_SIGNED_BUILD_ENABLED` must be `1` and
+`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` must not be `1`, so proof is always
+collected while publication is disabled. Without that input the same workflow
+stays the ordinary macOS and standalone runtime validation run and can be
+dispatched in any Windows flag state.
+
 Use the version and commit intended for the first Windows release:
 
 ```bash
@@ -78,7 +88,8 @@ gh workflow run prepare-release.yml \
   --repo arul28/ADE \
   --ref main \
   -f version="$VERSION" \
-  -f target_sha="$RELEASE_SHA"
+  -f target_sha="$RELEASE_SHA" \
+  -f windows_proof=true
 gh run list \
   --repo arul28/ADE \
   --workflow prepare-release.yml \
@@ -99,8 +110,17 @@ The run passes only when:
 - No GitHub Release is created.
 - A machine-readable proof manifest is generated for the exact checked-out SHA.
 
-Download the `ade-win-release-v<VERSION>` artifact from the successful run. Its
-manifest-indexed files must include:
+Download the `ade-win-release-v<VERSION>` artifact from the successful run.
+
+> **Retention window.** That artifact is uploaded with `retention-days: 90`. A
+> public release promotes those exact bytes, so the tag in Publish step 2 must
+> happen within 90 days of this proof run. After that the artifact expires,
+> promotion stops with an explicit retention error, and you must repeat steps 2
+> through 4 for the approved commit and rebind
+> `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` and
+> `ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256`.
+
+Its manifest-indexed files must include:
 
 - `ADE-<VERSION>-win-x64.exe`
 - `ADE-<VERSION>-win-x64.exe.blockmap`
@@ -193,16 +213,82 @@ or release-file hashes differ.
 
 ### 5. Enable Windows releases
 
-After the recorded test results pass:
+After the recorded test results pass, set both publication gates. They are
+separate settings and `release-core.yml` requires both; setting only the public
+flag makes the tagged release stop in its `verify` job with
+`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires approved two-version
+installed-update proof.`
 
 ```bash
+gh variable set ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED \
+  --repo arul28/ADE --body 1
 gh variable set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \
   --repo arul28/ADE --body 1
 ```
 
-This setting allows the existing release workflow to add validated Windows files to its combined draft. It does not publish a release by itself.
+`ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED=1` is a maintainer attestation, not
+a machine check. It states that an authorized Windows release maintainer has
+seen and accepted the two-version installed-update proof for this exact commit:
+two signed, non-public builds N and N+1 installed on clean Windows 10 x64 and
+Windows 11 x64 hosts, with the private N to N+1 updater path completed
+end-to-end, including timestamp and signature validation, tamper rejection,
+desktop relaunch, brain service recovery, and user data preservation.
+
+Set it only when all of the following are true:
+
+- Every `pre-tag` result in the proof manifest is `pass` and the manifest state
+  is `proof_complete` (Step 4).
+- The `publication-readiness` validator passed while both the public release and
+  website flags were still disabled (Step 4).
+- The updater scenarios in the
+  [full-system scenario inventory](../development/windows-full-system-scenarios.json)
+  that cover the signed N to N+1 private update are recorded as `pass`.
+- `ADE_WINDOWS_APPROVED_PROOF_SHA` names the same commit that produced that
+  proof.
+
+The supporting evidence lives in the redacted proof bundle assembled in Step 2
+and validated in Step 4: `windows-proof-manifest.json` at the bundle root, the
+manifest-indexed release files under `artifacts/`, and the redacted GUI, log,
+DB, process, IPC, and network evidence under `evidence/`. The contract for both
+is [Windows release proof](../development/windows-release-proof.md). Clear this
+variable back to `0` whenever the approved proof no longer describes the commit
+being released.
+
+These settings allow the existing release workflow to add validated Windows files to its combined draft. They do not publish a release by themselves.
 Keep `VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` unset or `0`; website readiness is not
 publication approval.
+
+### Required GitHub Actions settings
+
+`release-core.yml` reads exactly these repository variables and secrets. Every
+name below is required unless marked optional.
+
+| Repository variable | Required when | Meaning |
+| --- | --- | --- |
+| `ADE_WINDOWS_SIGNED_BUILD_ENABLED` | Any signed Windows build or proof | `1` runs the signed Windows proof job and signs the standalone `ade-win32-x64.exe`. Set in Step 1. |
+| `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` | Publishing Windows files | `1` lets the tagged release promote and attach the Windows files. Set in Step 5. |
+| `ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED` | Publishing Windows files | `1` attests the accepted two-version installed-update proof. Set in Step 5. |
+| `ADE_WINDOWS_APPROVED_PROOF_SHA` | Publishing Windows files | The approved 40-character commit SHA. Must equal the commit being released. Set in Step 4. |
+| `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` | Publishing Windows files | The non-publishing proof run whose artifact is promoted. Its artifact expires 90 days after that run. Set in Step 4. |
+| `ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256` | Publishing Windows files | SHA-256 of the original `windows-proof-manifest.json`. Set in Step 4. |
+
+| Secret | Required when | Meaning |
+| --- | --- | --- |
+| `WINDOWS_CSC_LINK` | Signed Windows builds | Base64 PFX/P12 or a private HTTPS URL returning it. Step 1. |
+| `WINDOWS_CSC_KEY_PASSWORD` | Signed Windows builds | Certificate password. Step 1. |
+| `WINDOWS_SIGNING_EXPECTED_SUBJECT` | Signed Windows builds, unless the thumbprint is set | Pinned certificate Subject. Step 1. |
+| `WINDOWS_SIGNING_EXPECTED_THUMBPRINT` | Signed Windows builds, unless the subject is set | Pinned certificate fingerprint. Step 1. |
+| `CSC_LINK` | Every release | Existing macOS Developer ID certificate. Not used by Windows signing. |
+| `CSC_KEY_PASSWORD` | Every release | Existing macOS certificate password. |
+| `MACOS_DEVELOPER_ID_PROFILE_B64` | Every release | Existing macOS Developer ID provisioning profile. |
+| `APPLE_API_KEY_P8` | Every release | Existing App Store Connect API key material. |
+| `APPLE_API_KEY_ID` | Every release | Existing App Store Connect key id. |
+| `APPLE_API_ISSUER` | Every release | Existing App Store Connect issuer id, used by notarization. |
+| `ADE_POSTHOG_PROJECT_TOKEN` | Optional | Analytics token baked into packaged builds. |
+| `ADE_POSTHOG_HOST` | Optional | Analytics host baked into packaged builds. |
+
+`VITE_ADE_WINDOWS_DOWNLOAD_ENABLED` is not a GitHub setting. It is a Vercel
+Production variable for the website and is covered in Publish step 5.
 
 ## Publish a release
 
@@ -216,18 +302,31 @@ Confirm:
 - The normal `ci-pass` check succeeded for that exact commit.
 - The version tag does not already exist.
 - The signed-build and public-release settings are `1`.
+- `ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED` is `1` for this exact commit. It
+  is required at every Windows gate in `release-core.yml`; without it the tagged
+  run fails in `verify` with `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires
+  approved two-version installed-update proof.` See
+  [Required GitHub Actions settings](#required-github-actions-settings).
 - `ADE_WINDOWS_APPROVED_PROOF_SHA` equals the approved 40-character commit SHA.
-- `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` identifies the approved non-publishing run.
+- `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` identifies the approved non-publishing run,
+  and that run finished less than 90 days ago so its artifact has not expired.
 - `ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256` equals the recorded original
   build-manifest digest.
 - The proof manifest passed `publication-readiness` with public release and
   website gates still disabled.
 
-For later releases, first set `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0`, then run
-the non-publishing workflow and collect fresh exact-SHA proof for the approved
-version and commit. Restore the public gate only after that proof is approved.
-For the first Windows release, reuse the Step 2 result if its version and commit
-are unchanged.
+Confirm the current values before tagging:
+
+```bash
+gh variable list --repo arul28/ADE | grep ADE_WINDOWS_
+```
+
+For later releases, first set `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=0` and
+`ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED=0`, then run the non-publishing
+workflow and collect fresh exact-SHA proof for the approved version and commit.
+Restore both gates only after that proof is approved. For the first Windows
+release, reuse the Step 2 result if its version and commit are unchanged and its
+artifact is still within its 90-day retention window.
 
 ```bash
 VERSION="<VERSION>"
@@ -236,7 +335,8 @@ gh workflow run prepare-release.yml \
   --repo arul28/ADE \
   --ref main \
   -f version="$VERSION" \
-  -f target_sha="$RELEASE_SHA"
+  -f target_sha="$RELEASE_SHA" \
+  -f windows_proof=true
 ```
 
 Do not tag until that run succeeds for `RELEASE_SHA`.
@@ -275,6 +375,17 @@ Require:
 - The installed app points to `arul28/ADE` for updates.
 - The approved proof SHA equals the release target and the downloaded Windows
   files match the proof manifest hashes.
+- `SHA256SUMS` lists exactly `install.sh`, `install.ps1`, the four
+  `ade-darwin-*` and four `ade-linux-*` files, and `ade-win32-x64.exe` with its
+  native archive, and every listed digest matches the uploaded asset.
+
+The draft mixes two runs on purpose, one asset name per run. `install.sh` and
+the `ade-darwin-*` and `ade-linux-*` files come from the tagged run, because the
+darwin runtime binaries are notarized per run and must be byte-identical to the
+copies inside the DMGs beside them. The installer, its `.blockmap`, `latest.yml`,
+`install.ps1`, and the signed `ade-win32-x64` files come from the approved proof
+run. `SHA256SUMS` is regenerated over that merged set, so it is not the same file
+as the `SHA256SUMS` inside the proof artifact.
 
 Add the redacted draft-asset and disabled-website evidence to the proof bundle,
 set `draft-assets-website-explicit` to `pass`, then run the final gate:
@@ -327,6 +438,12 @@ does not exist yet.
 - Existing macOS or standalone runtime job fails: stop the release and fix the shared workflow.
 - Problem found in an unpublished release: leave it unpublished, fix the source, choose a higher version, and rebuild.
 - Problem found after publication: hide the website link, disable Windows publication, fix and test a higher version, then re-enable Windows before tagging it.
+- Promotion stops with a retention or missing-artifact error: the approved proof
+  run is older than its 90-day artifact retention window, its run was deleted, or
+  `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` points at the wrong run. Repeat One-time
+  setup steps 2 through 4 for the approved commit and rebind
+  `ADE_WINDOWS_APPROVED_PROOF_RUN_ID` and
+  `ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256`. Never hand-upload a replacement.
 - Signing certificate changes: update the signing secrets and repeat the signed installer tests.
 - Release workflow is rerun after publication: the workflow stops instead of replacing public files. Publish a higher version for any correction.
 
