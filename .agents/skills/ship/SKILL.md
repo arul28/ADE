@@ -25,7 +25,41 @@ Print a compact status line each iteration (no banner):
 ship · iter 2/5 · PR #184 · POLL → DECIDE → FIX → MERGE · FIXING CI (test-desktop 3) + 2 comments
 ```
 
-**Invocation:** `/ship` (auto-detect state) or `/ship <pr-number>`.
+**Invocation:** `/ship` (auto-detect state), `/ship <pr-number>`, or the opt-in
+`/ship --stack-ready [<pr-number>] --base <direct-parent-branch>`.
+
+### Stack-ready mode (opt-in only)
+
+`--stack-ready` prepares one dependent PR for its coordinator; it does not land
+the stack. Resolve the direct parent from `--base`, an existing PR's
+`baseRefName`, then non-interactive `gh stack view --json`; normalize it with
+the `/quality` rules. Persist `mode: "stack"` plus the complete stack binding:
+stack number, position, expected parent branch, validated head SHA, base SHA,
+content-tree SHA, test-evidence SHA, proof links, and quality/test status.
+
+After the exact head is green, review-terminal, quality-clean, and test-clean,
+write `status: "ready-stacked"` and return the binding to the coordinator. A
+branch change, commit/rebase, or any lower-parent movement invalidates this
+entry and every entry above it. Missing or ambiguous metadata is `blocked`, not
+a fallback to `main`.
+
+**Coordinator ownership is absolute in stack mode.** Before any cap,
+force-finalize, rebase, push, merge, or branch-deletion decision, branch on
+`mode == "stack"`. The per-PR loop must never independently rebase a canonical
+stack branch, mutate descendants, or push/submit it. It reports
+`stack-coordinator-sync-required`; the coordinator alone runs the
+non-interactive `gh stack sync --remote origin`, `gh stack rebase --upstack
+--remote origin`, `gh stack push --remote origin`, or `gh stack submit --auto
+--remote origin` workflow. Stack mode can never enter force-finalize or any
+bypass-review logic. It also requires an existing coordinator-created PR and a
+clean, already-tested head: it never commits, pushes, creates/updates a PR, or
+fixes red CI/review on the canonical branch. Those cases return
+`stack-coordinator-pr-required`, `stack-coordinator-sync-required`, or
+`stack-coordinator-fix-required` with exact evidence.
+
+Without `--stack-ready`, every existing `/ship` default and merge behavior is
+unchanged: the base is `main`, green work proceeds through Phase 3c, and the
+terminal success state is `done-clean` only after merge confirmation.
 
 ---
 
@@ -35,7 +69,8 @@ ship · iter 2/5 · PR #184 · POLL → DECIDE → FIX → MERGE · FIXING CI (t
 commands, decision rules, and bot-ping rules live there. This skill is the
 runtime-neutral entrypoint and the ADE-specific deltas below. If re-invoked by a
 scheduled wake, read the state file first; if `status == running`, skip Phase 0
-and go to Phase 1.
+and go to Phase 1. If `status == ready-stacked`, print the persisted coordinator
+handoff and exit without scheduling or mutating anything.
 
 The playbook's Phase 0 is **checkpoint → commit-bound quality revalidation →
 push → open PR**. Baseline test generation and the local-CI gate are NOT part
@@ -60,7 +95,9 @@ change this branch was not asked to make. Both need the author.
 - If `/quality` was never run on this lane, or its final gate result is not
   available in the lane handoff, stop with `blocked`; unknown is not empty.
 - Any base movement, rebase, conflict resolution, Phase 3b edit, or
-  force-finalize edit clears all three quality binding fields. Run the
+  force-finalize edit clears all three quality binding fields. In stack mode,
+  any such movement clears the complete stack binding and returns control to
+  the coordinator without rebasing or pushing. Run the
   playbook's single canonical **Commit-bound
   quality revalidation** procedure before pushing that mutation.
 - Never enter Phase 3c with a missing or mismatched binding. Revalidate first;
@@ -98,10 +135,21 @@ only user-visible output is the per-iteration status line and the final summary.
   `gh pr checks` / the `ade-pr-workflows` skill — do not hardcode.
 - **PR creation:** prefer the `ade` CLI (registers the PR in ADE's tracking — lane
   ↔ PR link, check/comment inventory). `gh pr create --base main --head <branch>
-  --fill` is the fallback, not the default. See the playbook's discovery protocol.
+  --fill` is the ordinary fallback; stack mode substitutes the persisted direct
+  parent for `main`. See the playbook's discovery protocol.
 - **State file:** `.ade/shipLane/<branch-with-slashes-as-__>.json`. `status`:
-  `running` | `done-clean` | `done-max` | `blocked`. Rebase rebates the iteration
-  counter by 2 (floor 0).
+  `running` | `ready-stacked` | `done-clean` | `done-max` | `blocked`; it also
+  records `mode` and the complete stack binding. Rebase rebates the iteration counter by 2
+  (floor 0).
+
+**Windows proof gate.** For a Windows-relevant stack entry, require the native
+Windows foundation check to be terminal-green on the bound head. Require the
+packaged Windows check when packaging or native bundle contents changed.
+Computer Use evidence is capability-specific: native OS capture/control may be
+explicitly blocked while App Control and proof ingestion remain supported and
+tested. Clean-host Stable/Beta coexistence, second-account pipe denial,
+restart/reboot, installed-update, and GUI artifacts remain named external proof
+blockers until captured; never mark them proven from simulated tests.
 
 ---
 
@@ -135,11 +183,13 @@ terminal-neutral, and continue. Record it under `inactiveReviewBots`, never
 If branch protection requires an absent check, Phase 3c will surface that as a
 merge-policy block.
 
-**Rebase only on real conflicts or a stale quality base.** `behindMain` alone
+**Rebase only on real conflicts or a stale quality base.** `behindBase` alone
 does not normally trigger a rebase. The one safety exception is base movement
 after quality validation: the final tree is no longer the reviewed head tree,
-so rebase and rerun the canonical quality procedure even when GitHub reports a
-clean merge. Otherwise, skip needless rebases.
+so ordinary merge mode rebases and reruns the canonical quality procedure even
+when GitHub reports a clean merge. Stack mode instead invalidates the current
+and upstack bindings and returns `stack-coordinator-sync-required`; it never
+rebases or pushes. Otherwise, skip needless rebases.
 
 **Bot pings by iteration.** Never ping GitHub Copilot and never treat Copilot as
 an expected review signal; quota exhaustion otherwise leaves the loop waiting
@@ -228,10 +278,11 @@ self-resume signal. Either:
 
 | Status | Meaning |
 |--------|---------|
+| `ready-stacked` | Opt-in stacked PR has a complete head/base/tree/test/proof binding; coordinator owns all stack mutation and landing |
 | `done-clean` | PR merged on main |
 | `done-max` | 5 normal + 1 force-finalize exhausted, merge genuinely blocked |
 | `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, or a non-empty `/quality` gate awaiting an author decision |
 
 Always print the final summary (PR, branch, iterations, status, reason,
 per-iteration log, unaddressed items) on exit. Do NOT schedule a wake when
-`status` is `done-clean` / `done-max` / `blocked`.
+`status` is `ready-stacked` / `done-clean` / `done-max` / `blocked`.

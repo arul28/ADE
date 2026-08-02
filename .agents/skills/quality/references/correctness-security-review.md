@@ -14,14 +14,15 @@ and security/safety issues. Be rigorous — nothing should slip through.
 ## Scope
 
 - ONLY report issues in code being **added or modified** on this lane. Focus on
-  the diff against `main`.
+  the diff against the resolved `QUALITY_REVIEW_BASE` (`main` ordinarily; the
+  direct parent for a stacked PR).
 - Do NOT report pre-existing issues in untouched code.
 - Trace cross-module side effects of the changed code even into unchanged files,
   but the *finding* must trace back to something this lane changed.
 
 ```bash
-git diff main
-git diff main --name-only
+git diff "$QUALITY_REVIEW_BASE"
+git diff "$QUALITY_REVIEW_BASE" --name-only
 ```
 
 ---

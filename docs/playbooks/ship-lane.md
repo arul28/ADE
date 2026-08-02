@@ -12,10 +12,36 @@ Run this playbook once per lane, when the code on the branch is done (or nearly 
 - Rebasing when teammates merge into `main` ahead of you
 - Repeating until the PR is clean, capped, or a human is required
 
+### Optional stacked-PR mode
+
+`/ship --stack-ready --base <direct-parent-branch>` is an opt-in preparation
+mode for a coordinator-owned stack. Persist `mode: "stack"` and a complete
+`stackBinding`. Resolve the base from the explicit flag first, an existing PR's
+`baseRefName` second, and non-interactive `gh stack view --json` last. It must
+be the current entry's direct parent; an ambiguous or unfetchable parent blocks
+the run. Never silently substitute `main`.
+
+In this mode, quality and test scope use the direct parent. When the exact head
+is terminal-green and the complete binding is current, set `status:
+"ready-stacked"`, print the evidence, and return control to the coordinator.
+Do not merge, enable auto-merge, delete branches, mutate any stack branch,
+rebase, push, submit, or touch release publication flags. The coordinator alone
+uses non-interactive `gh stack ... --remote origin` commands to mutate or
+publish the canonical stack.
+
+Invoking ordinary `/ship` without `--stack-ready` keeps every existing behavior
+in this playbook: `main` is the base and a green lane proceeds through Phase 3c
+until it is merged or genuinely blocked.
+
 ## Execution contract
 
 - **Autonomous.** Do not pause for user confirmation mid-loop.
-- **Bounded with a force-finalize escape hatch.** Soft cap: 5 normal iterations of fix-and-poll. Exit earlier if clean or blocked. **At the cap, the loop must land the lane**: if the PR is not merged after iteration 5, run **one** additional force-finalize iteration (Phase 3d) that ignores all open review comments, fixes only CI failures so every required check goes green, then routes through Phase 3c. Only if iteration 6 cannot make CI green, or Phase 3c is genuinely blocked by base-branch policy with no authorized direct/admin path, do you stop and leave a handoff comment for a human. The playbook's exit contract is "PR merged into `main`, or merge genuinely impossible" — never "PR green and parked".
+- **Bounded with a force-finalize escape hatch in ordinary mode only.** Before
+  evaluating a cap or any force path, hard-branch on `mode == "stack"` and
+  return `ready-stacked` or `blocked` to the coordinator. Stack mode must never
+  enter force-finalize or bypass review. In ordinary merge mode, the existing
+  contract is unchanged: after 5 normal iterations, run the one Phase 3d
+  force-finalize pass and land the PR or report a genuine policy/CI block.
 - **Rebase budget rebate.** A rebase, merge-from-main, or conflict-resolution pass moves the current iteration count down by 2 before the next cap check, with a floor of 0. Example: if the lane is on iteration 4 and must rebase because `main` moved, record the rebase and continue as iteration 2.
 - **Scoped checks.** Never run the full test suite between iterations. For CI, fix and rerun only the failing test file(s) or failing check target. For review-only changes, rerun only directly affected existing tests, plus the narrow package typecheck/lint when the touched surface needs it.
 - **One push per iteration. Wait for BOTH signals before fixing anything.** Never push a CI-only fix while review bots are still running, and never push a review-only fix while CI is still running. Both signals must be **terminal** before the iteration commits — that is, every required check has a final conclusion AND every review bot with current-head start evidence has posted or settled. This is not just an efficiency rule: **review-comment fixes routinely introduce new CI failures**, so applying them on a partial signal means the next push fails and you've thrown away the prior CI cycle. Wait for both, then dispatch ci-fix-agent and review-fix-agent in parallel with full knowledge of both, and combine their edits into one commit. If only one signal has landed when you wake, do not iterate — reschedule and sleep.
@@ -102,6 +128,8 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 ```json
 {
   "branch": "ade/chat-title-summaries-xyz",
+  "mode": "merge",
+  "baseBranch": "main",
   "prNumber": 1234,
   "iteration": 2,
   "lastPushSha": "abc123...",
@@ -116,7 +144,58 @@ Path: `.ade/shipLane/<sanitized-branch>.json` (sanitize by replacing `/` with `_
 }
 ```
 
-`status` values: `running`, `done-clean`, `done-max`, `blocked`.
+`status` values are `running`, `ready-stacked`, `done-clean`, `done-max`, and
+`blocked`. `mode` is `merge` for ordinary `/ship` and `stack` only when
+`--stack-ready` was explicitly supplied. A resumed run must reject mode/base
+changes rather than accidentally switching lifecycle semantics.
+
+Stack mode additionally requires this machine-checkable binding (full 40-hex
+SHAs are abbreviated here only for readability):
+
+```json
+{
+  "branch": "codex/windows-foundation",
+  "mode": "stack",
+  "prNumber": 1006,
+  "stackBinding": {
+    "stackNumber": 12,
+    "position": 1,
+    "expectedParentBranch": "main",
+    "validatedHeadSha": "1111111111111111111111111111111111111111",
+    "baseSha": "2222222222222222222222222222222222222222",
+    "contentTreeSha": "3333333333333333333333333333333333333333",
+    "testEvidenceSha": "4444444444444444444444444444444444444444",
+    "proofLinks": ["https://github.com/example/ADE/actions/runs/123"],
+    "qualityStatus": "passed",
+    "testStatus": "passed"
+  },
+  "status": "ready-stacked"
+}
+```
+
+Validate the shape before accepting the terminal state, for example:
+
+```bash
+jq -e '
+  .mode == "stack" and .status == "ready-stacked" and
+  (.stackBinding.stackNumber | type == "number" and . > 0) and
+  (.stackBinding.position | type == "number" and . > 0) and
+  ([.stackBinding.validatedHeadSha, .stackBinding.baseSha,
+    .stackBinding.contentTreeSha, .stackBinding.testEvidenceSha]
+    | all(test("^[0-9a-f]{40}$"))) and
+  (.stackBinding.expectedParentBranch | length > 0) and
+  (.stackBinding.proofLinks | type == "array" and length > 0) and
+  .stackBinding.testEvidenceSha == .stackBinding.validatedHeadSha and
+  .stackBinding.qualityStatus == "passed" and
+  .stackBinding.testStatus == "passed"
+' "$STATE_FILE"
+```
+
+On every resume, compare the current branch and `gh stack view --json` stack
+number, position, direct-parent branch/SHA, head SHA, and content tree with the
+binding. Also require `testEvidenceSha == validatedHeadSha`. Any commit, rebase,
+branch change, or lower-parent movement invalidates this entry and every entry
+above it. Clear their bindings and return `stack-coordinator-sync-required`.
 
 The `iteration` value is the active turn budget counter, not a raw count of pushes. Normal fix iterations increment it by 1. Rebase/merge/conflict recovery decrements it by 2 first, then the current pass records its result. Never let it go below 0.
 
@@ -131,8 +210,9 @@ base, narrow test targets, and push command; they do not restate this algorithm.
    `QUALITY_VALIDATED_BASE_SHA` to that fetched commit, and require it to be an
    ancestor of the candidate head. If it is not, preserve the work, route
    through Phase 3a, and restart this procedure after the rebase; do not bind a
-   behind-base tree. This works before PR creation; Phase 0 uses `main` as the
-   intended base.
+   behind-base tree. This works before PR creation; Phase 0 uses `main` in
+   ordinary mode and the persisted direct parent in stack mode. If stack mode
+   needs a rebase or push, stop this procedure and return coordinator action.
 2. Run both `/quality` tracks on the final combined diff, fix every accepted
    finding, and repeat both tracks until the same pass is clean.
 3. Build the validation scope from the union of committed, unstaged, staged,
@@ -198,6 +278,9 @@ Only then may state become `done-clean`. A head mismatch is
 ## Phase 0 — Setup (first invocation only)
 
 Skip this phase if `.ade/shipLane/<branch>.json` exists with `status: running`.
+If it exists with `status: ready-stacked`, first revalidate the complete binding,
+then print the persisted coordinator
+handoff and exit without a poll, wake, push, rebase, merge, or branch deletion.
 
 ### 0.1 Detect current state
 
@@ -208,7 +291,24 @@ CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 gh pr view --json number,state,headRefOid,baseRefName 2>/dev/null
 ```
 
-If a PR exists for the current branch, skip to 0.4 (bot pings) with `prNumber` captured.
+Set `SHIP_MODE=merge` and `SHIP_BASE_BRANCH=main` for ordinary `/ship`. With
+`--stack-ready`, set `SHIP_MODE=stack`, resolve and validate the direct
+parent as described above, and set `SHIP_BASE_BRANCH` to it. If an existing PR
+is present, its `baseRefName` must equal the resolved base. Export
+`ADE_REVIEW_BASE_REF="$SHIP_BASE_BRANCH"` so baseline `/quality` and `/test`
+review only the incremental stack entry.
+
+In ordinary mode, if a PR exists for the current branch, skip to 0.4 (bot
+pings) with `prNumber` captured. Stack mode follows the hard branch below.
+
+**Hard stack-mode branch:** stack mode is read-only with respect to the
+canonical branch and PR. It requires an existing coordinator-created PR whose
+head/base match the supplied binding and a clean working tree already bound to
+completed `/quality` and `/test` evidence. If no PR exists, exit `blocked` with
+`stack-coordinator-pr-required`. If the head/base or working tree differs, exit
+with `stack-coordinator-sync-required`. Write the initial stack state and go
+directly to Phase 1; do not execute 0.2–0.4, commit, push, create/update a PR,
+or ping bots. The coordinator owns those mutations through `gh stack`.
 
 ### 0.2 Pre-push expectation (no existing PR)
 
@@ -244,14 +344,14 @@ git add -A
 git diff --cached --quiet || git commit -m "ship: prepare lane for review"
 ```
 
-Fetch `origin/main`, bind the intended base, and set `QUALITY_DIFF_BASE` to the
+Fetch the selected origin base, bind it, and set `QUALITY_DIFF_BASE` to the
 feature merge-base before running the canonical Commit-bound quality
 revalidation procedure. This includes every committed feature file rather than
 only edits made after the checkpoint:
 
 ```bash
-git fetch origin main
-QUALITY_VALIDATED_BASE_SHA=$(git rev-parse origin/main)
+git fetch origin "$SHIP_BASE_BRANCH"
+QUALITY_VALIDATED_BASE_SHA=$(git rev-parse "origin/$SHIP_BASE_BRANCH")
 QUALITY_DIFF_BASE=$(git merge-base HEAD "$QUALITY_VALIDATED_BASE_SHA")
 QUALITY_COMMIT_MESSAGE="ship: apply initial quality revalidation"
 # Push command for canonical step 5:
@@ -288,7 +388,7 @@ The `ade` surface evolves. Don't assume flag names or output shapes from this pl
 Only after steps 1–6 have been genuinely attempted should the fallback run:
 
 ```bash
-gh pr create --base main --head "$CURRENT_BRANCH" --fill
+gh pr create --base "$SHIP_BASE_BRANCH" --head "$CURRENT_BRANCH" --fill
 PR_NUMBER=$(gh pr view --json number -q .number)
 ```
 
@@ -308,6 +408,8 @@ actual PR head and base.
 ```json
 {
   "branch": "<CURRENT_BRANCH>",
+  "mode": "<merge | stack>",
+  "baseBranch": "<main | direct parent branch>",
   "prNumber": <PR_NUMBER>,
   "iteration": 0,
   "lastPushSha": "<current HEAD sha>",
@@ -393,7 +495,9 @@ Filter out any comment whose `id` is in `addressedCommentIds`.
 ```json
 {
   "merged": false,
-  "behindMain": true,
+  "behindBase": true,
+  "baseBranch": "<SHIP_BASE_BRANCH>",
+  "baseSha": "<current fetched base sha>",
   "isDraft": false,
   "ciRunning": false,
   "reviewBotsRunning": false,
@@ -422,7 +526,12 @@ evidence. Populate `inactiveReviewBots` when the 12-minute grace window has
 elapsed and every available surface has zero evidence for that bot. Do not infer
 that a bot is running merely because it is usually expected in this repository.
 
-`behindMain` is derived from `mergeStateStatus` being `BEHIND` or `DIRTY`, or from `git merge-base --is-ancestor origin/main HEAD` returning non-zero.
+`behindBase` is the canonical poll field. It is derived from `mergeStateStatus`
+being `BEHIND` or `DIRTY`, or
+from `git merge-base --is-ancestor "origin/$SHIP_BASE_BRANCH" HEAD` returning
+non-zero. When resuming an older ordinary-mode state file only, map its legacy
+`behindMain` value to `behindBase`; never emit both fields, and never use the
+legacy field for stack state.
 
 ---
 
@@ -432,8 +541,9 @@ Pure logic on the poll summary:
 
 | Condition | Action |
 | --- | --- |
+| `mode == "stack"` (evaluate before every ordinary row) | If externally merged, report `stack-coordinator-merged` without running merge confirmation/deletion; if any binding changed, clear this/upstack bindings and exit `stack-coordinator-sync-required`; if CI/review is pending, schedule a read-only poll; if terminal-red/actionable, exit `stack-coordinator-fix-required`; if terminal-green, go only to 3c.0. Never enter 3a, 3b, 3c.1–3c.5, or 3d. |
 | `merged == true` | Run **Confirm the validated merge result**; exit `done-clean` only when it succeeds. |
-| `behindMain == true` | Go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
+| `behindBase == true` | In ordinary mode, go to Phase 3a (rebase), apply the rebase budget rebate, then schedule/poll according to Phase 5. |
 | `ciRunning == true` OR `reviewBotsRunning == true` | Do NOT iterate on a partial signal. Go to Phase 5 (schedule next wake). This applies even if the other signal already shows failures/comments — pushing a fix now means the next CI+review cycle races the fix and you likely re-push for the other half. |
 | `ciFailed` empty, `newComments` empty, `ciRunning == false`, `reviewBotsRunning == false` | Go to **Phase 3c**. Done-clean does not mean "stop and leave for human" — it means everything is green, and the lane should land on `main`. |
 | Otherwise (both signals terminal, fix work exists) | Go to Phase 3b (fix). Fix CI failures and review comments **in the same iteration / same push**. |
@@ -442,23 +552,31 @@ Pure logic on the poll summary:
 
 ## Phase 3a — Rebase / merge
 
+**Hard stack-mode branch:** if `SHIP_MODE=stack`, do not execute any command in
+this phase. Clear the current and upstack bindings, set `status: "blocked"` and
+`exitReason: "stack-coordinator-sync-required"`, and tell the coordinator to
+inspect `gh stack view --json` then use the appropriate non-interactive
+`gh stack sync --remote origin` or `gh stack rebase --upstack --remote origin`,
+followed by `gh stack submit --auto --remote origin`. The per-PR loop never
+rebases or pushes a canonical stack branch and never mutates descendants.
+
 ```bash
 git fetch origin
-git rebase origin/main
+git rebase "origin/$SHIP_BASE_BRANCH"
 ```
 
 **On conflict:** the lead resolves using full repo context. The agent has the codebase; it reads both sides of each conflict and produces a merged result. If the conflict spans many files or touches shared contracts (IPC types, DB schema, sync payloads), the lead spawns a **conflict-resolver sub-agent** with:
 
 - The conflicted file list
 - The two divergent diffs per file (`git diff :1:<path> :2:<path>` base→ours, `git diff :1:<path> :3:<path>` base→theirs)
-- The branch's feature context (`git log main..HEAD --oneline`)
+- The branch's feature context (`git log "origin/$SHIP_BASE_BRANCH"..HEAD --oneline`)
 - Explicit instruction to preserve both sides' intent rather than picking one
 
 If rebase becomes unrecoverable (agent's own judgment):
 
 ```bash
 git rebase --abort
-git merge origin/main
+git merge "origin/$SHIP_BASE_BRANCH"
 ```
 
 Resolve merge conflicts the same way. If the merge is **still** unrecoverable, exit `blocked` with `exitReason: "conflict-unrecoverable"` and post a PR comment flagging a human, listing the files involved.
@@ -510,6 +628,12 @@ Post bot pings (Phase 4), update state (Phase 5), and schedule the next wake. Do
 ---
 
 ## Phase 3b — Fix
+
+**Hard stack-mode branch:** if `SHIP_MODE=stack`, do not execute this phase.
+Set `status: "blocked"` and `exitReason: "stack-coordinator-fix-required"`,
+return the failing checks/actionable comments, and leave all branch/PR mutation
+to the coordinator. Stack mode never dispatches fix agents, commits, pushes, or
+mutates descendants.
 
 ### 3b.1 Parse failed CI
 
@@ -603,6 +727,27 @@ before merging. If the gate is non-empty or unavailable, exit
 `blocked` with `quality-gate-nonempty` or `quality-result-missing`; never merge
 and disclose deferred findings afterwards.
 
+For a Windows-relevant diff, the bound head must have a terminal-green native
+`windows-foundation` check. Also require the packaged Windows job when the diff
+changes packaging, native bundle contents, or release-contract inputs. Record
+Computer Use evidence by capability: native screenshot/video/OS GUI control
+may be explicitly unavailable on Windows while App Control and proof-file
+ingestion remain supported and independently tested. Clean-host Stable/Beta
+coexistence, second-account pipe denial, reboot/restart recovery,
+signed/installed update proof, and real GUI captures are external host evidence;
+list missing artifacts as blockers rather than claiming them from mocks.
+
+### 3c.0 Finish stack-ready mode
+
+If `SHIP_MODE=stack`, validate the full `stackBinding`: stack number, position,
+expected parent branch, parent SHA, PR head SHA, content-tree SHA,
+test-evidence SHA, proof links, and passed quality/test status. Required
+CI/review evidence must be terminal. Then set `status: "ready-stacked"`, retain
+the state file, print the full binding and external proof blockers, and return
+to the stack coordinator. Do not execute 3c.1–3c.5 or Phase 3d. A moved branch,
+parent, head, or lower layer invalidates this and all higher bindings and exits
+`stack-coordinator-sync-required`; the per-PR loop does not rebase or push.
+
 ### 3c.1 Resolve repo merge style
 
 ```bash
@@ -658,6 +803,11 @@ Do NOT schedule another wake-up.
 ## Phase 3d — Force-finalize (iteration 6 only)
 
 Runs at most once per lane, only when iteration 5 has just completed and the PR is still not merged. The point of this phase is to **land** the lane — review feedback is intentionally bypassed; CI must end green.
+
+**Hard precondition before every other check:** `SHIP_MODE` must equal `merge`.
+If it equals `stack`, return to Phase 3c.0 or exit
+`stack-coordinator-sync-required`. Stack mode must never set `forceFinalize`,
+ignore review feedback, or enter any bypass-review path.
 
 ### 3d.1 Preconditions
 
@@ -725,7 +875,7 @@ Schedule the next wake at the normal post-push cadence (270s if CI hasn't starte
 When the next wake polls:
 
 - `merged == true` → run **Confirm the validated merge result**; exit `done-clean` only when it succeeds.
-- `behindMain == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
+- `behindBase == true` → run Phase 3a (rebase) once, push, schedule next wake. Do NOT count it as a new iteration; force-finalize already ran.
 - CI terminal AND green → route **immediately** through Phase 3c. Do NOT wait on review bots; review is intentionally bypassed in this phase.
 - CI terminal AND any required check still failing → exit `blocked`, `exitReason: "force-finalize-ci-failed"`, post a PR comment listing the failing job names + links. Do not start a seventh iteration.
 - CI still running → sleep on the normal cadence; do not act on a partial signal.
@@ -780,6 +930,9 @@ These are separate comments (not a single body) so each bot handler parses its o
 
 ### 5.2 Decide exit vs next wake
 
+- `mode == "stack"` → before evaluating iteration caps or `forceFinalize`, run
+  Phase 3c.0. Return `ready-stacked` when the complete binding is current;
+  otherwise exit `stack-coordinator-sync-required`. Never enter Phase 3d.
 - `merged == true` → run **Confirm the validated merge result**; set `done-clean` only when it succeeds.
 - `iteration >= 5` AND `forceFinalize` unset/false AND not merged → run Phase 3d (force-finalize) on the next wake's fix turn. Do not exit; the cap is not a stop sign, it's a "land it now" trigger that switches the loop into review-ignoring CI-only mode.
 - `forceFinalize == true` AND CI green AND not merged → route immediately through Phase 3c. Only if Phase 3c has no authorized direct/admin path do you set `status: done-max` and leave a handoff comment.
@@ -812,6 +965,7 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 
 | status | meaning | next action |
 | --- | --- | --- |
+| `ready-stacked` | Opt-in stacked PR has a complete current head/base/tree/test/proof binding; no mutation or merge was attempted | retain state and return the binding to the stack coordinator |
 | `done-clean` | PR merged on `main` (Phase 3c succeeded, possibly after Phase 3d force-finalize) | clear state file; print summary |
 | `done-max` | 5 normal iterations + 1 force-finalize iteration exhausted AND Phase 3c has no authorized direct/admin merge path | leave state file; post PR handoff comment to human |
 | `blocked` | Unrecoverable conflict, missing/non-empty quality gate, API error, or `force-finalize-ci-failed` (iteration 6 could not turn CI green) | leave state file; post PR comment with reason |
@@ -823,8 +977,9 @@ The cadence is a hint, not a live polling budget. Prefer longer sleeps over freq
 
 - PR: #<number> — <title>
 - Branch: <branch>
+- Mode/base: <merge | stack> / <base branch @ sha>
 - Iterations: <0..5>
-- Status: <done-clean | done-max | blocked>
+- Status: <ready-stacked | done-clean | done-max | blocked>
 - Reason: <one line>
 
 ### Per-iteration log

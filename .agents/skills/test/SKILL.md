@@ -66,7 +66,65 @@ Run end-to-end without user interaction. Do not ask, pause, or request clarifica
 
 **Do all the work yourself in the main loop.** Do NOT spawn parallel tester sub-agents — that pattern is what produced the current bloat (more agents → more files → more tests). One agent, one judgment.
 
-**Argument:** `$ARGUMENTS` — optional feature hint (e.g. `/test prs` or `/test orchestrator, focus on merge queue`). If empty, infer the feature from `git diff main --name-only` **plus `git status --short`** (the latter catches new untracked test/source files that `git diff main` omits).
+**Arguments:** `$ARGUMENTS` — optional feature hint plus optional
+`--base <ref>` (for example `/test prs --base codex/stack-parent`). If the
+feature hint is empty, infer it from `git diff "$TEST_REVIEW_BASE" --name-only`
+**plus `git status --short`** (the latter catches new untracked test/source files
+that the tracked diff omits).
+
+### Review scope (ordinary and stacked PRs)
+
+Resolve the review base once before Pass 1. Use the same precedence and
+normalization as `/quality`: explicit `--base`, existing PR `baseRefName`, the
+current parent from `gh stack view --json`, trusted `ADE_REVIEW_BASE_REF`, then
+`main`. Normalize `refs/heads/`, `refs/remotes/origin/`, `origin/`, and plain
+branch spellings to a validated plain name. Reject other remotes, symbolic refs,
+revision syntax, or anything failing `git check-ref-format --branch`.
+
+Do not stop after an existing PR supplies `baseRefName`; still query `gh stack
+view --json`. Set `TEST_EXACT_BASE=true` when the current branch is in that
+stack (including a bottom layer targeting `main`) or when the PR targets a
+non-default branch. Only an ordinary unstacked PR targeting the repository
+default branch retains merge-base behavior. PR and stack parent names/SHAs must
+agree when both exist.
+
+```bash
+# TEST_BASE_REF is the validated, normalized plain branch name selected above.
+# TEST_EXACT_BASE is true for --base, stack metadata/trusted state, a
+# non-default PR base, or a PR confirmed in gh-stack.
+git check-ref-format --branch "$TEST_BASE_REF"
+git fetch origin "refs/heads/$TEST_BASE_REF:refs/remotes/origin/$TEST_BASE_REF"
+TEST_BASE_SHA=$(git rev-parse "origin/$TEST_BASE_REF")
+if [ "$TEST_EXACT_BASE" = true ]; then
+  git merge-base --is-ancestor "$TEST_BASE_SHA" HEAD || {
+    echo "stack-coordinator-sync-required: direct parent is not an ancestor of HEAD"
+    exit 1
+  }
+  TEST_REVIEW_BASE="$TEST_BASE_SHA"
+else
+  TEST_REVIEW_BASE=$(git merge-base HEAD "$TEST_BASE_SHA")
+fi
+```
+
+Every pass below uses `TEST_REVIEW_BASE`. It must be the current stack entry's
+direct parent. When stack metadata is available, require its parent SHA to
+equal `TEST_BASE_SHA`; a branch-name match is insufficient. Record parent
+branch/SHA, merge-base, exact tested head SHA and
+tree SHA, test-evidence SHA, status, and proof links in the summary. Any commit,
+rebase, branch change, or lower-parent movement invalidates that evidence and
+all evidence above it. A missing or unfetchable parent is a blocker, not
+permission to fall back to `main`.
+
+### Host parity and evidence binding
+
+Classify affected behavior across **Windows**, **macOS**, **Linux/headless**,
+**iOS**, and **hosted web**. Mark each host applicable, capability-blocked, or
+not applicable with a concrete reason; do not use one desktop run as proof for
+the matrix. GUI proof requires both (1) direct UI observation and (2) an
+independent corroborating log, database, process, IPC, or network signal. Bind
+every artifact/link to the exact tested commit SHA and content-tree SHA. A new
+commit or rebase makes prior GUI and Computer Use evidence stale even when the
+visible diff looks unrelated.
 
 ---
 
@@ -238,13 +296,13 @@ Spawn a general-purpose agent with this prompt:
 ```
 You are the documentation updater for the ADE project.
 
-Analyze all changes on the current branch vs main and update relevant internal
+Analyze all changes on the current branch vs the resolved review base and update relevant internal
 docs under `docs/`. The public Mintlify site (docs.json + root-level .mdx files)
 is out of scope — do NOT touch it.
 
 Step 1: Get changed files
-  git diff main --name-only
-  git diff main --stat | tail -30
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git diff "$TEST_REVIEW_BASE" --stat | tail -30
 
 Step 2: Map changed source to internal docs
 
@@ -311,14 +369,14 @@ Spawn a general-purpose agent with this prompt:
 ```
 You are the mobile parity reviewer for the ADE project.
 
-Analyze all work on the current branch vs main, including changes that are
+Analyze all work on the current branch vs the resolved direct review base, including changes that are
 already under review and any simplifications made during `/finalize`. Determine
 whether the iOS companion app under `apps/ios/` needs matching updates.
 
 Step 1: Get branch context
-  git diff main --name-only
-  git diff main --stat | tail -30
-  git log main..HEAD --oneline
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git diff "$TEST_REVIEW_BASE" --stat | tail -30
+  git log "$TEST_REVIEW_BASE"..HEAD --oneline
 
 Step 2: Identify cross-platform changes
 - Shared contracts: apps/desktop/src/shared/**, preload IPC types, sync payloads,
@@ -386,9 +444,9 @@ must change with it. Your job is to detect drift on this branch and patch
 apps/ade-cli/ so the CLI stays in lockstep with desktop.
 
 Step 1: Get branch context
-  git diff main --name-only
-  git diff main --stat | tail -30
-  git log main..HEAD --oneline
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git diff "$TEST_REVIEW_BASE" --stat | tail -30
+  git log "$TEST_REVIEW_BASE"..HEAD --oneline
 
 Step 2: Identify CLI-relevant desktop changes
 Treat anything under these paths as a candidate for new / changed / removed
@@ -467,8 +525,8 @@ commonly because a new git/lane/PR action becomes available, a slash
 command is renamed, or a lane summary field is added.
 
 Step 1: Get branch context
-  git diff main --name-only
-  git diff main --stat | tail -30
+  git diff "$TEST_REVIEW_BASE" --name-only
+  git diff "$TEST_REVIEW_BASE" --stat | tail -30
 
 Step 2: Identify TUI-relevant changes. Treat as candidates:
 - apps/desktop/src/shared/types/lanes.ts, /chat, /sync — TUI imports these directly.
@@ -509,6 +567,32 @@ Report:
 ```
 
 Wait for all four parity agents to complete before moving to Verification.
+
+### Windows parity and Computer Use evidence
+
+If the review scope touches paths, processes, executables, local IPC, native
+SQLite, startup services, or Computer Use, the test summary must include a
+Windows evidence ledger:
+
+- Run the narrow contract tests locally with injectable `win32`, `darwin`, and
+  `linux` cases. Native Windows CI must repeat the Windows-sensitive files on a
+  `windows-latest` runner; a Linux simulation alone is insufficient.
+- Prove Stable/Beta service identity, per-user/channel pipe naming and listen
+  restrictions, `.exe` and argument-array launch resolution, supervisor
+  restart/backoff, runtime readiness and stale-PID diagnostics, and packaged
+  SQLite/CRR loading whenever those owners changed.
+- For Computer Use, list evidence by capability. Windows may explicitly report
+  native screenshot/video/OS GUI control as unavailable; do not treat that as
+  evidence that App Control or proof-file ingestion is unavailable. Test those
+  platform-neutral paths independently.
+- Record external evidence honestly. Installed Stable/Beta coexistence,
+  second-account named-pipe denial, reboot/restart recovery, signed/installed
+  upgrades, and real GUI captures require the corresponding Windows hosts.
+  Attach artifact paths when available and list the missing proof as a blocker
+  when it is not. Never replace host proof with a mocked assertion.
+- Preserve macOS/Linux parity with parameterized contract tests and the
+  existing CI shards. A Windows-specific pass does not waive regression
+  coverage for launchd, Unix sockets, or Linux capability degradation.
 
 ---
 

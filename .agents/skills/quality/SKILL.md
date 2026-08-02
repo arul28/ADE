@@ -39,25 +39,107 @@ synthesis step owns all edits so dedupe and severity-gating happen in one place.
   teammate per track, lead runs synthesis. Per the global git-worktrees policy,
   do **not** pass worktree isolation. Never *require* a team to run this skill.
 
-Each reviewer receives the same scoped context: `git diff main` plus the full
+Each reviewer receives the same scoped context: `git diff "$QUALITY_REVIEW_BASE"`
+plus the full
 contents of the changed files — **including new untracked files**, which
-`git diff main` omits — so it evaluates without guessing.
+the tracked diff omits — so it evaluates without guessing.
 
 ---
 
 ## Setup
 
+**Invocation:** `/quality [feature] [--base <ref>]`. `--base` is the explicit
+direct-parent binding for a stacked layer. Resolve the base in this order:
+
+1. a validated `--base <ref>` argument;
+2. an existing PR's `baseRefName`;
+3. the current entry's parent from non-interactive `gh stack view --json`;
+4. `ADE_REVIEW_BASE_REF` from a trusted ship state file;
+5. `main` for the unchanged ordinary workflow.
+
+Do not stop discovery after reading an existing PR. Still inspect `gh stack
+view --json`: a current branch present in that stack makes its PR base exact,
+including a bottom layer based on `main`. A PR with a non-default base is also
+an exact direct-parent binding. Only an ordinary unstacked PR targeting the
+repository default branch keeps `QUALITY_EXACT_BASE=false` and the historical
+merge-base behavior. When both PR and stack metadata exist, their parent names
+and SHAs must agree.
+
+Normalize `refs/heads/<name>`, `refs/remotes/origin/<name>`, `origin/<name>`, and
+plain `<name>` to one plain branch name. Reject another remote, symbolic refs,
+revision syntax (`..`, `~`, `^`, `:`), an empty value, or a name that fails
+`git check-ref-format --branch`; never concatenate an unvalidated ref into a
+command. Fetch the normalized name into its exact remote-tracking ref:
+
 ```bash
-git diff main --name-only          # tracked changes vs main
+# QUALITY_BASE_REF is the validated, normalized plain branch name selected
+# above. QUALITY_EXACT_BASE is true for --base, stack metadata, or trusted
+# stack ship state, a non-default PR base, or a PR confirmed in gh-stack;
+# ordinary unstacked /quality against the default branch keeps it false.
+git check-ref-format --branch "$QUALITY_BASE_REF"
+git fetch origin "refs/heads/$QUALITY_BASE_REF:refs/remotes/origin/$QUALITY_BASE_REF"
+QUALITY_BASE_SHA=$(git rev-parse "origin/$QUALITY_BASE_REF")
+if [ "$QUALITY_EXACT_BASE" = true ]; then
+  git merge-base --is-ancestor "$QUALITY_BASE_SHA" HEAD || {
+    echo "stack-coordinator-sync-required: direct parent is not an ancestor of HEAD"
+    exit 1
+  }
+  QUALITY_REVIEW_BASE="$QUALITY_BASE_SHA"
+else
+  QUALITY_REVIEW_BASE=$(git merge-base HEAD "$QUALITY_BASE_SHA")
+fi
+git diff "$QUALITY_REVIEW_BASE" --name-only
 git status --short                 # NEW (untracked) files — git diff omits these
-git diff main --stat | tail -20
-git log main..HEAD --oneline
+git diff "$QUALITY_REVIEW_BASE" --stat | tail -20
+git log "$QUALITY_REVIEW_BASE"..HEAD --oneline
 ```
 
+For stack metadata, also require its reported parent SHA to equal
+`QUALITY_BASE_SHA`; a name match alone is insufficient. The base must be the
+**direct parent** of the current stack entry, not `main`
+and not the root of the stack. Record the normalized parent branch, fetched
+parent SHA, merge-base, reviewed head SHA, and content-tree SHA. If the parent
+cannot be fetched or sources disagree, stop; silently widening or narrowing a
+stacked review is not valid evidence. A parent-head or branch change invalidates
+this result and every result above it in the stack.
+
+Run quality once per layer against its direct parent. For the fifth/top layer,
+also run both review tracks cumulatively against `origin/main`; the layer passes
+only when both the incremental and cumulative gates are empty. Record both
+bindings. A lower-parent change cascades invalidation through all higher-layer
+bindings, so the coordinator must sync/rebase the stack and rerun them in order.
+
 A new service or module added but not yet committed will not appear in
-`git diff main`. Fold the untracked files from `git status` into the review set
+the tracked diff. Fold the untracked files from `git status` into the review set
 and read their full contents — an unreviewed new file is the easiest place for a
 Blocker to hide.
+
+### Windows parity rules
+
+When the scoped diff touches filesystem paths, process launch, executable
+resolution, IPC, SQLite/native modules, startup services, or Computer Use:
+
+- Treat Windows as a first-class runtime. Verify drive letters, native and mixed
+  separators, UNC paths, quoting, `PATHEXT` and executable discovery. Audit
+  PowerShell, `cmd.exe`, and Git Bash invocation separately for argument loss,
+  shell injection, and environment drift. Require process-tree termination,
+  per-user/per-channel named-pipe ACL isolation, Stable/Beta identity isolation,
+  semantic runtime readiness (not merely a live supervisor PID), stale-PID
+  cleanup, bounded supervisor restart/backoff, and packaged native dependencies.
+- Trace installer, updater, signing, Windows Firewall, Relay, and capability-gate
+  effects. Verify IPC/preload/shared contracts, CLI/RPC, SQLite/CRR, mobile,
+  hosted web, and release-manifest compatibility rather than treating a native
+  host fix as isolated.
+- Require platform gates to state the capability, not infer the whole product
+  is unsupported. Native screenshot/video/OS GUI automation may be blocked on
+  Windows while App Control and proof-file ingestion remain available.
+- Trace the same change through macOS and Linux owners and tests. A Windows fix
+  that regresses launchd, Unix sockets, POSIX executable lookup, or graceful
+  Linux capability degradation is a correctness finding.
+- Separate code-backed evidence from external proof. Native Windows tests and
+  CI can prove contracts; installed Stable/Beta isolation, second-account pipe
+  denial, clean-host restart, and GUI evidence remain explicit blockers until
+  captured on the corresponding hosts.
 
 ---
 
