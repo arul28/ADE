@@ -283,11 +283,12 @@ test("standalone Windows release assets remain behind every publication and proo
   assert.match(publish, /test -s release-assets\/win\/ade-win32-x64\.exe/);
   assert.match(publish, /test -s release-assets\/win\/ade-win32-x64\.native\.tar\.gz/);
   assert.match(publish, /\(cd release-assets\/win && sha256sum -c SHA256SUMS\)/);
-  assert.match(publish, /release-assets\/win\/install\.ps1[\s\S]*release-assets\/win\/SHA256SUMS[\s\S]*release-assets\/win\/ade-\*/);
+  assert.match(publish, /release-assets\/win\/install\.ps1[\s\S]*release-assets\/win\/SHA256SUMS[\s\S]*release-assets\/win\/ade-darwin-arm64[\s\S]*release-assets\/win\/ade-win32-x64\.exe/);
+  assert.doesNotMatch(publish, /release-assets\/win\/ade-\*/);
   assert.match(publish, /\[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]/);
-  assert.match(publish, /install\.ps1\|ade-win32-x64\.exe\|ade-win32-x64\.native\.tar\.gz/);
+  assert.match(publish, /for asset in "\$\{existing_assets\[@\]\}"; do[\s\S]*gh release delete-asset/);
   assert.match(publish, /gh release delete-asset "\$TAG_NAME" "\$asset" --repo "\$GH_REPO" --yes/);
-  assert.match(publish, /"\$BUILD_WINDOWS" != "1"[\s\S]*"\$PUBLISH_WINDOWS" != "1"[\s\S]*"\$WINDOWS_UPDATE_PROOF_APPROVED" != "1"/);
+  assert.match(publish, /Draft release asset inventory differs from the exact validated set/);
   assert.match(runtimeBuild, /name: Assemble signed Windows standalone proof bundle/);
   assert.match(runtimeBuild, /matrix\.target == 'win32-x64' && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
   assert.match(runtimeBuild, /sha256sum install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz/);
@@ -386,11 +387,17 @@ test("Windows NSIS install and uninstall own only their per-user channel integra
 });
 
 test("release preflight validates the exact approved commit", () => {
+  const verify = jobBlock(releaseWorkflow, "verify", "build-mac-release");
   assert.match(prepareWorkflow, /target_sha:\s*\n\s+description: Exact 40-character commit SHA/);
   assert.match(prepareWorkflow, /ref: \$\{\{ inputs\.target_sha \}\}/);
   assert.match(prepareWorkflow, /target_sha must be the exact 40-character commit SHA approved for release/);
   assert.match(prepareWorkflow, /target_ref: \$\{\{ needs\.resolve\.outputs\.target_sha \}\}/);
   assert.doesNotMatch(prepareWorkflow, /ref: main/);
+  assert.match(verify, /name: Validate release tag and target binding/);
+  assert.match(verify, /\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+/);
+  assert.match(verify, /git ls-remote --exit-code --tags origin "refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(verify, /git rev-list -n 1 "refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(verify, /Release tag \$RELEASE_TAG resolves to \$tag_sha, not approved target \$target_sha/);
 });
 
 test("signed Windows proof workflow is non-publishing and emits an exact-SHA manifest", () => {
@@ -423,10 +430,29 @@ test("public Windows release promotes the approved immutable proof artifact", ()
   assert.match(windowsRelease, /Get-FileHash -LiteralPath \$manifestPath -Algorithm SHA256/);
   assert.match(windowsRelease, /APPROVED_BUILD_MANIFEST_SHA256/);
   assert.match(windowsRelease, /--expected-run-id "\$\{\{ vars\.ADE_WINDOWS_APPROVED_PROOF_RUN_ID \}\}"/);
-  assert.match(windowsRelease, /apps\/desktop\/release\/ade-\*/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/ade-darwin-arm64/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/ade-win32-x64\.exe/);
+  assert.doesNotMatch(windowsRelease, /apps\/desktop\/release\/ade-\*/);
   assert.match(windowsRelease, /apps\/desktop\/release\/install\.ps1/);
   assert.match(windowsRelease, /apps\/desktop\/release\/SHA256SUMS/);
   assert.match(windowsRelease, /inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars\.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'/);
+});
+
+test("Windows proof and draft assembly enforce exact runtime and remote asset inventories", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-proof", "promote-approved-win-proof");
+  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  assert.match(windowsRelease, /\$unexpectedRuntimeFiles = @\(\$actualRuntimeFiles \| Where-Object \{ \$_ -notin \$runtimeFiles \}\)/);
+  assert.match(windowsRelease, /Runtime artifact inventory mismatch/);
+  assert.doesNotMatch(windowsRelease, /Get-ChildItem[^\n]+-Filter "ade-\*"[^\n]+ForEach-Object \{/);
+  assert.match(publish, /Windows proof contains an unauthorized or missing runtime artifact/);
+  assert.match(publish, /Windows proof checksum manifest does not name the exact authorized runtime set/);
+  assert.match(publish, /gh api "repos\/\$GH_REPO\/commits\/\$TAG_NAME" --jq '\.sha'/);
+  assert.match(publish, /Existing draft tag \$TAG_NAME resolves to \$release_tag_target, not approved target \$approved_target/);
+  assert.match(publish, /Draft release tag \$TAG_NAME resolves to \$final_tag_target, not approved target \$approved_target/);
+  assert.match(publish, /for asset in "\$\{existing_assets\[@\]\}"; do[\s\S]*gh release delete-asset/);
+  assert.doesNotMatch(publish, /case "\$asset" in/);
+  assert.match(publish, /Draft release asset inventory differs from the exact validated set/);
+  assert.match(publish, /gh release view "\$TAG_NAME" --repo "\$GH_REPO" --json assets --jq '\.assets\[\]\.name'/);
 });
 
 test("normal public workflow skips Windows promotion while its public gate is disabled", () => {

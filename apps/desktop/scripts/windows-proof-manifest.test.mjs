@@ -20,6 +20,18 @@ const provenancePath = path.join(repoRoot, "docs", "development", "windows-sourc
 const inventory = JSON.parse(fs.readFileSync(inventoryPath, "utf8"));
 const provenance = JSON.parse(fs.readFileSync(provenancePath, "utf8"));
 const targetSha = "0123456789abcdef0123456789abcdef01234567";
+const runtimeFiles = [
+  "ade-darwin-arm64",
+  "ade-darwin-arm64.native.tar.gz",
+  "ade-darwin-x64",
+  "ade-darwin-x64.native.tar.gz",
+  "ade-linux-arm64",
+  "ade-linux-arm64.native.tar.gz",
+  "ade-linux-x64",
+  "ade-linux-x64.native.tar.gz",
+  "ade-win32-x64.exe",
+  "ade-win32-x64.native.tar.gz",
+];
 
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
@@ -34,10 +46,12 @@ function createFixture() {
   fs.writeFileSync(path.join(releaseDir, "ADE-1.2.3-win-x64.exe"), "signed installer fixture");
   fs.writeFileSync(path.join(releaseDir, "ADE-1.2.3-win-x64.exe.blockmap"), "blockmap fixture");
   fs.writeFileSync(path.join(releaseDir, "latest.yml"), "version: 1.2.3\n");
-  fs.writeFileSync(path.join(releaseDir, "ade-win32-x64.exe"), "standalone runtime fixture");
-  fs.writeFileSync(path.join(releaseDir, "ade-win32-x64.native.tar.gz"), "standalone native archive fixture");
+  for (const file of runtimeFiles) {
+    fs.writeFileSync(path.join(releaseDir, file), `${file} fixture`);
+  }
+  fs.writeFileSync(path.join(releaseDir, "install.sh"), "#!/bin/sh\n");
   fs.writeFileSync(path.join(releaseDir, "install.ps1"), "Write-Output 'install fixture'\n");
-  const checksummedFiles = ["ade-win32-x64.exe", "ade-win32-x64.native.tar.gz", "install.ps1"];
+  const checksummedFiles = ["install.sh", "install.ps1", ...runtimeFiles].sort();
   fs.writeFileSync(path.join(releaseDir, "SHA256SUMS"), checksummedFiles
     .map((file) => `${sha256File(path.join(releaseDir, file))}  ${file}`)
     .join("\n") + "\n");
@@ -233,6 +247,33 @@ test("build validation rejects a checksum manifest that does not bind standalone
     provenancePath,
   });
   assert.ok(errors.some((error) => error.includes("does not bind the declared SHA-256 for ade-win32-x64.exe")));
+});
+
+test("build validation rejects unauthorized runtime files and checksum entries", (t) => {
+  const fixture = createFixture();
+  t.after(() => fs.rmSync(fixture.root, { recursive: true, force: true }));
+  const unexpectedFile = "ade-win32-arm64.exe";
+  fs.writeFileSync(path.join(fixture.releaseDir, unexpectedFile), "unexpected runtime fixture");
+  const checksumPath = path.join(fixture.releaseDir, "SHA256SUMS");
+  fs.appendFileSync(
+    checksumPath,
+    `${sha256File(path.join(fixture.releaseDir, unexpectedFile))}  ${unexpectedFile}\n`,
+  );
+  const checksumArtifact = fixture.manifest.artifacts.find(({ role }) => role === "runtime-checksums");
+  checksumArtifact.sha256 = sha256File(checksumPath);
+  checksumArtifact.sizeBytes = fs.statSync(checksumPath).size;
+
+  const errors = validateManifest(fixture.manifest, {
+    inventory,
+    provenance,
+    expectedSha: targetSha,
+    phase: "build",
+    artifactRoot: fixture.releaseDir,
+    inventoryPath,
+    provenancePath,
+  });
+  assert.ok(errors.some((error) => error.includes(`contains unauthorized entry ${unexpectedFile}`)));
+  assert.ok(errors.some((error) => error.includes(`contains unauthorized runtime file ${unexpectedFile}`)));
 });
 
 test("complete validation re-hashes indexed evidence and enforces independent signals", (t) => {

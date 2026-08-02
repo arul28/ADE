@@ -22,6 +22,23 @@ const SAFE_HOST_ALIAS_PATTERN = /^win(?:10|11)-[a-z0-9][a-z0-9-]*$/;
 const MAX_EVIDENCE_BYTES = 20 * 1024 * 1024;
 const GUI_EVIDENCE_EXTENSIONS = new Set([".jpeg", ".jpg", ".png", ".webp"]);
 const STRUCTURED_EVIDENCE_EXTENSIONS = new Set([".csv", ".json", ".jsonl", ".log", ".txt"]);
+const AUTHORIZED_RUNTIME_FILES = [
+  "ade-darwin-arm64",
+  "ade-darwin-arm64.native.tar.gz",
+  "ade-darwin-x64",
+  "ade-darwin-x64.native.tar.gz",
+  "ade-linux-arm64",
+  "ade-linux-arm64.native.tar.gz",
+  "ade-linux-x64",
+  "ade-linux-x64.native.tar.gz",
+  "ade-win32-x64.exe",
+  "ade-win32-x64.native.tar.gz",
+];
+const AUTHORIZED_RUNTIME_CHECKSUM_FILES = [
+  "install.sh",
+  "install.ps1",
+  ...AUTHORIZED_RUNTIME_FILES,
+];
 const REDACTED_VALUE_PATTERNS = [
   { pattern: /\bBearer\s+[A-Za-z0-9._~+\/-]+=*/i, label: "bearer credential" },
   { pattern: /\b(?:gh[pousr]_|github_pat_|sk-|xox[baprs]-)[A-Za-z0-9_-]{8,}/i, label: "token-shaped value" },
@@ -378,6 +395,25 @@ function validateRuntimeChecksums(errors, artifactRoot, artifacts) {
     listed.set(file, digest);
   }
 
+  const authorizedChecksums = new Set(AUTHORIZED_RUNTIME_CHECKSUM_FILES);
+  for (const file of listed.keys()) {
+    if (!authorizedChecksums.has(file)) {
+      addError(errors, "artifacts.runtime-checksums", `contains unauthorized entry ${file}`);
+    }
+  }
+  for (const file of AUTHORIZED_RUNTIME_CHECKSUM_FILES) {
+    if (!listed.has(file)) {
+      addError(errors, "artifacts.runtime-checksums", `is missing authorized runtime file ${file}`);
+      continue;
+    }
+    const runtimePath = path.join(path.resolve(artifactRoot), file);
+    if (!fs.existsSync(runtimePath) || !fs.statSync(runtimePath).isFile()) {
+      addError(errors, "artifactRoot", `is missing checksummed runtime file ${file}`);
+    } else if (sha256File(runtimePath) !== listed.get(file)) {
+      addError(errors, "artifacts.runtime-checksums", `does not match runtime file ${file}`);
+    }
+  }
+
   for (const role of ["standalone-runtime", "standalone-native-archive", "standalone-installer"]) {
     const artifact = byRole.get(role);
     if (!artifact || typeof artifact.file !== "string" || typeof artifact.sha256 !== "string") continue;
@@ -385,6 +421,22 @@ function validateRuntimeChecksums(errors, artifactRoot, artifacts) {
       addError(errors, "artifacts.runtime-checksums", `is missing ${artifact.file}`);
     } else if (listed.get(artifact.file) !== artifact.sha256) {
       addError(errors, "artifacts.runtime-checksums", `does not bind the declared SHA-256 for ${artifact.file}`);
+    }
+  }
+
+  const runtimeFiles = fs.readdirSync(path.resolve(artifactRoot), { withFileTypes: true })
+    .filter((entry) => entry.isFile() && entry.name.startsWith("ade-"))
+    .map((entry) => entry.name)
+    .sort();
+  const expectedRuntimeFiles = [...AUTHORIZED_RUNTIME_FILES].sort();
+  for (const file of runtimeFiles) {
+    if (!AUTHORIZED_RUNTIME_FILES.includes(file)) {
+      addError(errors, "artifactRoot", `contains unauthorized runtime file ${file}`);
+    }
+  }
+  for (const file of expectedRuntimeFiles) {
+    if (!runtimeFiles.includes(file)) {
+      addError(errors, "artifactRoot", `is missing authorized runtime file ${file}`);
     }
   }
 }
