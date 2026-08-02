@@ -29,6 +29,8 @@ import {
   resolveWindowsTaskUser,
   uninstallWindowsService,
   WINDOWS_POWERSHELL_COMMAND,
+  WINDOWS_REG_COMMAND,
+  WINDOWS_SCHTASKS_COMMAND,
   renderWindowsServiceLauncher,
 } from "./installWindows";
 
@@ -338,11 +340,14 @@ describe("Windows background service helpers", () => {
         launcherPath,
       ],
     });
+    expect(path.win32.isAbsolute(WINDOWS_POWERSHELL_COMMAND)).toBe(true);
+    expect(scheduledCommand).toContain(WINDOWS_POWERSHELL_COMMAND);
+    expect(scheduledCommand.toLowerCase()).not.toMatch(/^powershell\.exe\b/);
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: "reg.exe", args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsStartLauncherArgs(launcherPath) },
     ]);
   });
@@ -373,8 +378,8 @@ describe("Windows background service helpers", () => {
     expect(calls.slice(0, 4)).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "schtasks.exe", args: buildWindowsEndTaskArgs(taskName) },
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs(taskName) },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
     expect(calls.at(-2)?.args).toEqual(expect.arrayContaining(["ADD", "/V", taskName]));
     expect(calls.at(-1)?.args).toEqual(buildWindowsStartLauncherArgs(launcherPath));
@@ -405,8 +410,8 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(true);
     expect(calls.slice(0, 3)).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: "schtasks.exe", args: buildWindowsEndTaskArgs("ADE Runtime") },
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs("ADE Runtime") },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
     ]);
     expect(calls.flatMap((call) => call.args)).not.toContain("ADE Runtime ");
   });
@@ -431,7 +436,7 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("legacy ADE Runtime scheduled task");
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: "schtasks.exe", args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
     ]);
   });
 
@@ -503,8 +508,8 @@ describe("Windows background service helpers", () => {
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
-      expect.objectContaining({ command: "reg.exe", args: expect.arrayContaining(["ADD"]) }),
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      expect.objectContaining({ command: WINDOWS_REG_COMMAND, args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
 
@@ -538,12 +543,12 @@ describe("Windows background service helpers", () => {
     });
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: "schtasks.exe", args: buildWindowsEndTaskArgs("ADE Runtime") },
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs("ADE Runtime") },
-      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: "reg.exe", args: buildWindowsRunKeyDeleteArgs(taskName) },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyDeleteArgs(taskName) },
     ]);
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
@@ -563,9 +568,9 @@ describe("Windows background service helpers", () => {
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
     expect(calls).toEqual([
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
       { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: "reg.exe", args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
   });
 

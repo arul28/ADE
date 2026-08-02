@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
@@ -171,7 +172,7 @@ function defaultProcessMatchesOwner(
   let raw = "";
   try {
     raw = execFileSync(
-      "powershell.exe",
+      resolveTrustedWindowsTool("powershell"),
       ["-NoProfile", "-NonInteractive", "-Command", script],
       {
         encoding: "utf8",

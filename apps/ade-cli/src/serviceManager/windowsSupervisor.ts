@@ -1,5 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import {
   type AdeServiceCommand,
   cmdQuote,
@@ -7,7 +8,7 @@ import {
   type ServiceManagerSpawnSync,
 } from "./common";
 
-export const WINDOWS_POWERSHELL_COMMAND = "powershell.exe";
+export const WINDOWS_POWERSHELL_COMMAND = resolveTrustedWindowsTool("powershell");
 
 export type WindowsServicePidRecord = {
   supervisorPid: number;

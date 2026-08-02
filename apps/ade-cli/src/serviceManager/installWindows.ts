@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import {
   type AdeServiceCommand,
   cmdQuote,
@@ -38,6 +39,9 @@ export const TASK_NAME = "ADE Runtime";
 export const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const TASK_NOT_FOUND_EXIT_CODE = 3;
 const REGISTRY_VALUE_NOT_FOUND_EXIT_CODE = 1;
+export const WINDOWS_REG_COMMAND = resolveTrustedWindowsTool("reg");
+export const WINDOWS_SCHTASKS_COMMAND = resolveTrustedWindowsTool("schtasks");
+export const WINDOWS_TASKKILL_COMMAND = resolveTrustedWindowsTool("taskkill");
 
 type WindowsServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -253,7 +257,7 @@ function removeWindowsTaskIfPresent(
     };
   }
   if (isWindowsTaskStateRunning(query.stdout)) {
-    const end = run("schtasks.exe", buildWindowsEndTaskArgs(taskName), {
+    const end = run(WINDOWS_SCHTASKS_COMMAND, buildWindowsEndTaskArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -264,7 +268,7 @@ function removeWindowsTaskIfPresent(
       };
     }
   }
-  const remove = run("schtasks.exe", buildWindowsDeleteTaskArgs(taskName), {
+  const remove = run(WINDOWS_SCHTASKS_COMMAND, buildWindowsDeleteTaskArgs(taskName), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -299,7 +303,7 @@ function removeWindowsRunEntryIfPresent(
   launcherPath: string,
   pidPath: string,
 ): WindowsTaskRemovalResult {
-  const query = run("reg.exe", buildWindowsRunKeyQueryArgs(valueName), {
+  const query = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyQueryArgs(valueName), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -314,7 +318,7 @@ function removeWindowsRunEntryIfPresent(
   const supervisor = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
   if (supervisor.error) return { ok: false, message: supervisor.error };
   if (supervisor.running && supervisor.pid) {
-    const stop = run("taskkill.exe", ["/PID", String(supervisor.pid), "/T", "/F"], {
+    const stop = run(WINDOWS_TASKKILL_COMMAND, ["/PID", String(supervisor.pid), "/T", "/F"], {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -330,7 +334,7 @@ function removeWindowsRunEntryIfPresent(
   }
 
   if (installed) {
-    const remove = run("reg.exe", buildWindowsRunKeyDeleteArgs(valueName), {
+    const remove = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyDeleteArgs(valueName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -431,7 +435,7 @@ export async function installWindowsService(
   }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(
-    "reg.exe",
+    WINDOWS_REG_COMMAND,
     buildWindowsRunKeyAddArgs(taskName, command),
     { encoding: "utf8", windowsHide: true },
   );
@@ -449,7 +453,7 @@ export async function installWindowsService(
     windowsHide: true,
   });
   if (start.status !== 0) {
-    run("reg.exe", buildWindowsRunKeyDeleteArgs(taskName), {
+    run(WINDOWS_REG_COMMAND, buildWindowsRunKeyDeleteArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -619,7 +623,7 @@ export function getWindowsServiceStatus(
         "A legacy ADE Scheduled Task is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
     };
   }
-  const startupResult = run("reg.exe", buildWindowsRunKeyQueryArgs(taskName), {
+  const startupResult = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyQueryArgs(taskName), {
     encoding: "utf8",
     windowsHide: true,
   });

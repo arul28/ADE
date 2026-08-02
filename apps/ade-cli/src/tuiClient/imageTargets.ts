@@ -2,6 +2,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
 import type { AgentChatEventEnvelope, AgentChatFileRef } from "../../../desktop/src/shared/types/chat";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 
 const IMAGE_FILE_EXTENSION_RE = /\.(png|jpe?g|gif|webp|bmp|svg|ico|tiff?|heic|heif|avif)$/i;
 const CLIPBOARD_MAX_BUFFER = 120 * 1024 * 1024;
@@ -86,7 +87,7 @@ export function readClipboardImageAttachment(cacheRoot: string): AgentChatFileRe
     if (filePath) return { path: filePath, type: "image" };
   }
 
-  if (process.platform === "win32" && commandAvailable("powershell")) {
+  if (process.platform === "win32") {
     const target = clipboardImageTarget(cacheRoot);
     if (!target) return null;
     const command = [
@@ -95,7 +96,7 @@ export function readClipboardImageAttachment(cacheRoot: string): AgentChatFileRe
       "$image = [System.Windows.Forms.Clipboard]::GetImage();",
       `if ($image -ne $null) { $image.Save(${powershellQuoted(target)}, [System.Drawing.Imaging.ImageFormat]::Png) }`,
     ].join(" ");
-    const result = spawnSync("powershell", ["-NoProfile", "-Command", command], { stdio: "ignore" });
+    const result = spawnSync(resolveTrustedWindowsTool("powershell"), ["-NoProfile", "-Command", command], { stdio: "ignore" });
     if (result.status === 0 && nonEmptyFile(target)) return { path: target, type: "image" };
   }
 
@@ -210,10 +211,10 @@ function readClipboardText(): string | null {
   const candidates = process.platform === "darwin"
     ? [["pbpaste"]]
     : process.platform === "win32"
-      ? [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+      ? [[resolveTrustedWindowsTool("powershell"), "-NoProfile", "-Command", "Get-Clipboard"]]
       : [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]];
   for (const [command, ...args] of candidates) {
-    if (!commandAvailable(command)) continue;
+    if (process.platform !== "win32" && !commandAvailable(command)) continue;
     const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
     if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
   }
