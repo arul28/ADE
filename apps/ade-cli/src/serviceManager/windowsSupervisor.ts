@@ -215,7 +215,13 @@ export function buildWindowsRuntimeQueryArgs(pid: number, command: AdeServiceCom
     expectedEntry === "$null"
       ? "$matchesEntry = $true"
       : `$matchesEntry = $commandLine.IndexOf(${expectedEntry}, [StringComparison]::OrdinalIgnoreCase) -ge 0`,
-    "$matchesServe = $commandLine -match '(?:^|\\s)serve(?:\\s|$)'",
+    // Windows quotes spawned arguments, so a live brain's command line ends
+    // `... "cli.cjs" "serve"` -- the verb is wrapped in quotes, not delimited by
+    // whitespace. Requiring a bare whitespace boundary made this predicate
+    // always false on Windows, so every readiness probe reported a healthy
+    // runtime as stale. Optional quotes accept both spellings without matching
+    // a different verb (`serveless`) or a different subcommand.
+    "$matchesServe = $commandLine -match '(?:^|\\s)\"?serve\"?(?:\\s|$)'",
     "if (-not $matchesExecutable -or -not $matchesEntry -or -not $matchesServe) { exit 4 }",
     "[Console]::Out.Write($process.ProcessId)",
   ].join("; ");
