@@ -831,13 +831,117 @@ describe("Windows background service helpers", () => {
     expect(calls.every((call) => call.options?.windowsHide === true)).toBe(true);
   });
 
+  it("reports a legacy global runtime task this channel owns as migratable", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const status = getWindowsServiceStatus({
+      command: serviceCommand,
+      serviceName,
+      spawnSync: spawnSequence(calls, [
+        { status: 3, stdout: "", stderr: "" },
+        { status: 1, stdout: "", stderr: "" },
+        { status: 0, stdout: "Ready", stderr: "" },
+        { status: 0, stdout: ownLegacyAction, stderr: "" },
+      ]),
+      userName: taskUser,
+    });
+
+    expect(status).toMatchObject({
+      ok: true,
+      installed: true,
+      running: false,
+      path: "ADE Runtime",
+    });
+    expect(status.message).toBe(
+      "A legacy ADE Runtime scheduled task from a pre-channel install belongs to this channel, "
+      + "but runtime readiness cannot be verified for it. Run `ade brain start` to migrate it to "
+      + "the per-user startup supervisor.",
+    );
+    expect(calls).toEqual([
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+    ]);
+  });
+
+  it("reports another install's legacy global runtime task without claiming it", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const status = getWindowsServiceStatus({
+      command: serviceCommand,
+      serviceName,
+      spawnSync: spawnSequence(calls, [
+        { status: 3, stdout: "", stderr: "" },
+        { status: 1, stdout: "", stderr: "" },
+        { status: 0, stdout: "Running", stderr: "" },
+        { status: 0, stdout: stableLegacyAction, stderr: "" },
+      ]),
+      userName: taskUser,
+    });
+
+    expect(status).toMatchObject({
+      ok: true,
+      installed: false,
+      running: false,
+      path: taskName,
+    });
+    expect(status.message).toBe(
+      "ADE background service startup entry is not installed for this channel. A legacy ADE "
+      + "Runtime scheduled task belongs to a different ADE install and was left running. Run "
+      + "`ade brain start` to install this channel's startup entry, and uninstall the other ADE "
+      + "to clear its legacy task.",
+    );
+    expect(calls.at(-1)?.args).toEqual(buildWindowsQueryTaskActionArgs("ADE Runtime"));
+  });
+
+  it("does not claim ownership when the legacy global task action cannot be read", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const status = getWindowsServiceStatus({
+      command: serviceCommand,
+      serviceName,
+      spawnSync: spawnSequence(calls, [
+        { status: 3, stdout: "", stderr: "" },
+        { status: 1, stdout: "", stderr: "" },
+        { status: 0, stdout: "Running", stderr: "" },
+        { status: 4, stdout: "", stderr: "ERROR: access is denied" },
+      ]),
+      userName: taskUser,
+    });
+
+    expect(status).toMatchObject({ ok: true, installed: false, running: false });
+    expect(status.message).toContain("its owning install could not be determined");
+  });
+
+  it("keeps status answerable when the legacy global task probe itself fails", () => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const status = getWindowsServiceStatus({
+      command: serviceCommand,
+      serviceName,
+      spawnSync: spawnSequence(calls, [
+        { status: 3, stdout: "", stderr: "" },
+        { status: 1, stdout: "", stderr: "" },
+        { status: 4, stdout: "", stderr: "PowerShell unavailable" },
+      ]),
+      userName: taskUser,
+    });
+
+    expect(status).toMatchObject({ ok: true, installed: false, running: false });
+    expect(status.message).toBe("ADE background service startup entry is not installed.");
+    expect(calls).toEqual([
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
+      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+    ]);
+  });
+
   it("distinguishes an absent task from a failed locale-independent status query", () => {
     const absentCalls: Array<{ command: string; args: string[] }> = [];
     const absent = getWindowsServiceStatus({
+      command: serviceCommand,
       serviceName,
       spawnSync: spawnSequence(absentCalls, [
         { status: 3, stdout: "", stderr: "" },
         { status: 1, stdout: "", stderr: "" },
+        { status: 3, stdout: "", stderr: "" },
       ]),
       userName: taskUser,
     });
@@ -852,6 +956,9 @@ describe("Windows background service helpers", () => {
     });
 
     expect(absent).toMatchObject({ ok: true, installed: false, running: false });
+    expect(absent.message).toBe("ADE background service startup entry is not installed.");
+    // The failing query short-circuits before the supplementary legacy probe.
+    expect(failedCalls).toHaveLength(2);
     expect(failed).toMatchObject({ ok: false, installed: null, running: null });
   });
 

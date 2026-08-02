@@ -668,6 +668,38 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
   };
 }
 
+type WindowsLegacyTaskProbe =
+  | { present: false }
+  | { present: true; owned: boolean | null };
+
+/**
+ * Looks for the global pre-channel `ADE Runtime` task and decides whether it
+ * belongs to this install. Install deliberately leaves a foreign legacy task
+ * running, so status is the only place a user can learn that one exists.
+ *
+ * This is a supplementary diagnostic on an already-answered status, so a probe
+ * failure degrades to "no legacy task detected" rather than failing the whole
+ * status call.
+ */
+function probeGlobalLegacyTask(
+  run: ServiceManagerSpawnSync,
+  command: AdeServiceCommand,
+): WindowsLegacyTaskProbe {
+  const query = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsQueryTaskArgs(TASK_NAME), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (query.status !== 0) return { present: false };
+  const action = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsQueryTaskActionArgs(TASK_NAME), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (action.status === TASK_NOT_FOUND_EXIT_CODE) return { present: false };
+  // Present, but we cannot read its action: never claim it either way.
+  if (action.status !== 0) return { present: true, owned: null };
+  return { present: true, owned: isWindowsLegacyTaskOwnedByCommand(action.stdout, command) };
+}
+
 export function getWindowsServiceStatus(
   deps: Pick<
     WindowsServiceManagerDeps,
@@ -718,7 +750,7 @@ export function getWindowsServiceStatus(
       running: false,
       path: taskName,
       message:
-        "A legacy ADE Scheduled Task is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
+        "A legacy ADE scheduled task for this channel is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
     };
   }
   const startupResult = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyQueryArgs(taskName), {
@@ -797,6 +829,32 @@ export function getWindowsServiceStatus(
       running: null,
       path: taskName,
       message: serviceManagerResultText(startupResult) || "Unable to query the ADE per-user startup entry.",
+    };
+  }
+  const legacy = probeGlobalLegacyTask(run, command);
+  if (legacy.present && legacy.owned === true) {
+    return {
+      ok: true,
+      serviceName,
+      action: "status",
+      installed: true,
+      running: false,
+      path: TASK_NAME,
+      message:
+        "A legacy ADE Runtime scheduled task from a pre-channel install belongs to this channel, but runtime readiness cannot be verified for it. Run `ade brain start` to migrate it to the per-user startup supervisor.",
+    };
+  }
+  if (legacy.present) {
+    return {
+      ok: true,
+      serviceName,
+      action: "status",
+      installed: false,
+      running: false,
+      path: taskName,
+      message: legacy.owned === false
+        ? "ADE background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task belongs to a different ADE install and was left running. Run `ade brain start` to install this channel's startup entry, and uninstall the other ADE to clear its legacy task."
+        : "ADE background service startup entry is not installed for this channel. A legacy ADE Runtime scheduled task is registered on this machine, but its owning install could not be determined, so it was left running. Run `ade brain start` to install this channel's startup entry.",
     };
   }
   return {
