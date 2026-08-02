@@ -126,7 +126,6 @@ import { snoozeWakeLabel } from "../../desktop/src/renderer/lib/sessionSnooze";
 import type { AdeRuntime } from "./bootstrap";
 import { cleanupLegacyBundledAdeSkillsForCli } from "./bootstrap";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
-import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import type { AccountMachinePublisherService } from "./services/account/accountMachinePublisherService";
 import type { SyncHostSingletonLease } from "./services/sync/syncHostSingleton";
 import {
