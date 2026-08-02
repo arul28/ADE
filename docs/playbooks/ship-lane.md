@@ -164,8 +164,13 @@ SHAs are abbreviated here only for readability):
     "validatedHeadSha": "1111111111111111111111111111111111111111",
     "baseSha": "2222222222222222222222222222222222222222",
     "contentTreeSha": "3333333333333333333333333333333333333333",
-    "testEvidenceSha": "4444444444444444444444444444444444444444",
-    "proofLinks": ["https://github.com/example/ADE/actions/runs/123"],
+    "testEvidenceSha": "1111111111111111111111111111111111111111",
+    "requiredProofScenarioIds": ["windows-foundation-ci"],
+    "proofLinks": [{
+      "scenarioId": "windows-foundation-ci",
+      "url": "https://github.com/example/ADE/actions/runs/123",
+      "evidenceSha": "1111111111111111111111111111111111111111"
+    }],
     "qualityStatus": "passed",
     "testStatus": "passed"
   },
@@ -177,6 +182,7 @@ Validate the shape before accepting the terminal state, for example:
 
 ```bash
 jq -e '
+  .stackBinding.validatedHeadSha as $head |
   .mode == "stack" and .status == "ready-stacked" and
   (.stackBinding.stackNumber | type == "number" and . > 0) and
   (.stackBinding.position | type == "number" and . > 0) and
@@ -184,7 +190,12 @@ jq -e '
     .stackBinding.contentTreeSha, .stackBinding.testEvidenceSha]
     | all(test("^[0-9a-f]{40}$"))) and
   (.stackBinding.expectedParentBranch | length > 0) and
-  (.stackBinding.proofLinks | type == "array" and length > 0) and
+  (.stackBinding.requiredProofScenarioIds | type == "array") and
+  (.stackBinding.proofLinks | type == "array") and
+  ([.stackBinding.requiredProofScenarioIds[] as $scenario
+    | any(.stackBinding.proofLinks[]?; .scenarioId == $scenario and
+        (.url | type == "string" and length > 0) and
+        .evidenceSha == $head)] | all) and
   .stackBinding.testEvidenceSha == .stackBinding.validatedHeadSha and
   .stackBinding.qualityStatus == "passed" and
   .stackBinding.testStatus == "passed"
@@ -736,14 +747,20 @@ ingestion remain supported and independently tested. Clean-host Stable/Beta
 coexistence, second-account pipe denial, reboot/restart recovery,
 signed/installed update proof, and real GUI captures are external host evidence;
 list missing artifacts as blockers rather than claiming them from mocks.
+Cumulative full-system scenarios are assigned to the top proof PR. A missing
+scenario required at the current stack position is `blocked`, never
+`ready-stacked`.
 
 ### 3c.0 Finish stack-ready mode
 
 If `SHIP_MODE=stack`, validate the full `stackBinding`: stack number, position,
 expected parent branch, parent SHA, PR head SHA, content-tree SHA,
 test-evidence SHA, proof links, and passed quality/test status. Required
-CI/review evidence must be terminal. Then set `status: "ready-stacked"`, retain
-the state file, print the full binding and external proof blockers, and return
+CI/review evidence must be terminal. Every proof scenario required at this
+stack position must have a link whose evidence SHA equals the validated head;
+otherwise set `status: "blocked"` and report the missing scenario IDs. Only
+then set `status: "ready-stacked"`, retain the state file, print the full
+binding, and return
 to the stack coordinator. Do not execute 3c.1–3c.5 or Phase 3d. A moved branch,
 parent, head, or lower layer invalidates this and all higher bindings and exits
 `stack-coordinator-sync-required`; the per-PR loop does not rebase or push.

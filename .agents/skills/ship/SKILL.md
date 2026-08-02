@@ -37,8 +37,12 @@ the `/quality` rules. Persist `mode: "stack"` plus the complete stack binding:
 stack number, position, expected parent branch, validated head SHA, base SHA,
 content-tree SHA, test-evidence SHA, proof links, and quality/test status.
 
-After the exact head is green, review-terminal, quality-clean, and test-clean,
-write `status: "ready-stacked"` and return the binding to the coordinator. A
+After the exact head is green, review-terminal, quality-clean, test-clean, and
+every proof scenario required at this PR's current stack position has a current
+evidence link, write `status: "ready-stacked"` and return the binding to the
+coordinator. Cumulative clean-host/cross-client/release scenarios are assigned
+to the top proof PR; they do not masquerade as lower-layer evidence. Any
+missing required scenario is `blocked`, never `ready-stacked` with a caveat. A
 branch change, commit/rebase, or any lower-parent movement invalidates this
 entry and every entry above it. Missing or ambiguous metadata is `blocked`, not
 a fallback to `main`.
@@ -278,7 +282,7 @@ self-resume signal. Either:
 
 | Status | Meaning |
 |--------|---------|
-| `ready-stacked` | Opt-in stacked PR has a complete head/base/tree/test/proof binding; coordinator owns all stack mutation and landing |
+| `ready-stacked` | Opt-in stacked PR has a complete head/base/tree/test/proof binding with no proof blocker required at its current position; coordinator owns all stack mutation and landing |
 | `done-clean` | PR merged on main |
 | `done-max` | 5 normal + 1 force-finalize exhausted, merge genuinely blocked |
 | `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, or a non-empty `/quality` gate awaiting an author decision |

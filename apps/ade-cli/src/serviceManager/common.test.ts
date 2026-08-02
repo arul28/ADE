@@ -10,10 +10,37 @@ import {
   isStaleChannelServeCommandLine,
   renderCommand,
   resolveAdeServeCommand,
+  serviceManagerOwnsRuntimeRecovery,
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
 } from "./common";
+
+describe("serviceManagerOwnsRuntimeRecovery", () => {
+  const base = {
+    serviceName: "com.ade.runtime",
+    action: "install" as const,
+    path: "runtime",
+    message: "test",
+  };
+
+  it("keeps manual fallback blocked while a registered replacement owns readiness retries", () => {
+    expect(serviceManagerOwnsRuntimeRecovery({
+      ...base,
+      ok: false,
+      failureStep: "replacement_responsive",
+    })).toBe(true);
+  });
+
+  it("allows fallback before the replacement reaches supervisor-owned recovery", () => {
+    expect(serviceManagerOwnsRuntimeRecovery({
+      ...base,
+      ok: false,
+      failureStep: "replacement_pid",
+    })).toBe(false);
+    expect(serviceManagerOwnsRuntimeRecovery({ ...base, ok: true })).toBe(false);
+  });
+});
 import {
   installLaunchdService,
   isLaunchdPrintRunning,

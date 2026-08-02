@@ -17,6 +17,15 @@ export type ServiceManagerResult = {
   failureStep?: "predecessor_exit" | "replacement_pid" | "replacement_responsive";
 };
 
+/**
+ * A replacement that reached its readiness phase is already registered with
+ * the platform supervisor. That supervisor owns subsequent retries; starting
+ * an unmanaged daemon for the same endpoint would create a competing brain.
+ */
+export function serviceManagerOwnsRuntimeRecovery(result: ServiceManagerResult): boolean {
+  return !result.ok && result.failureStep === "replacement_responsive";
+}
+
 export type ServiceManagerStatusResult = {
   ok: boolean;
   serviceName: string;

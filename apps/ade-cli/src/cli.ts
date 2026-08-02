@@ -14887,6 +14887,7 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 }
 
 class RuntimeSelfShutdownBlockedError extends Error {}
+class RuntimeServiceRecoveryOwnedError extends Error {}
 
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
@@ -14982,12 +14983,25 @@ async function repairMachineRuntimeServiceConnection(args: {
 }): Promise<SocketJsonRpcClient | null> {
   let client: SocketJsonRpcClient | null = null;
   try {
-    const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
+    const [
+      { installRuntimeService, uninstallRuntimeService },
+      { serviceManagerOwnsRuntimeRecovery },
+    ] = await Promise.all([
+      import("./serviceManager"),
+      import("./serviceManager/common"),
+    ]);
     const result = await withAdeDefaultRole(
       args.options.role,
       () => installRuntimeService(),
     );
-    if (!result.ok) return null;
+    if (!result.ok) {
+      if (serviceManagerOwnsRuntimeRecovery(result)) {
+        throw new RuntimeServiceRecoveryOwnedError(
+          `${result.message} The registered service still owns recovery for this endpoint, so ADE did not start a competing manual brain.`,
+        );
+      }
+      return null;
+    }
     client = await SocketJsonRpcClient.connect(
       args.socketPath,
       args.options.timeoutMs,
@@ -15016,7 +15030,10 @@ async function repairMachineRuntimeServiceConnection(args: {
     client = null;
     return repaired;
   } catch (error) {
-    if (error instanceof RuntimeSelfShutdownBlockedError) throw error;
+    if (
+      error instanceof RuntimeSelfShutdownBlockedError
+      || error instanceof RuntimeServiceRecoveryOwnedError
+    ) throw error;
     return null;
   } finally {
     try {
