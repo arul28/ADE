@@ -719,7 +719,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    return this.readAll({ allowRewrite: false })[normalized] ?? null;
+    return this.withLock(
+      () => this.readAll({ allowRewrite: false, migrateLegacy: true })[normalized] ?? null,
+    );
   }
 
   getLastReadState(): CredentialStoreReadState {
@@ -786,7 +788,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     return this.readAll({ allowRewrite: false });
   }
 
-  private readAll(args: { allowRewrite: boolean }): Record<string, string> {
+  private readAll(args: { allowRewrite: boolean; migrateLegacy?: boolean }): Record<string, string> {
     const credentialsExist = fs.existsSync(this.credentialsPath);
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
@@ -809,12 +811,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
           throw error;
         }
         this.lastReadState = credentialsExist ? "available" : "missing";
-        if (args.allowRewrite) {
-          try {
-            this.writeAll(values);
-          } catch {
-            // Preserve read compatibility if migration cannot rewrite right now.
-          }
+        if (args.allowRewrite || args.migrateLegacy) {
+          this.writeAllWithKey(values, key);
         }
         return values;
       }
@@ -843,7 +841,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       throw new Error("Unsupported ADE credential store format.");
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, await this.keyMaterialProviderAsync());
+    const osMaterial = await this.keyMaterialProviderAsync();
+    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
     if (!key.equals(machineKey)) {
       try {
         const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
@@ -851,7 +850,16 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         return values;
       } catch {
         try {
-          const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+          deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        } catch (error) {
+          this.lastReadState = "unreadable";
+          throw error;
+        }
+        try {
+          if (!osMaterial || osMaterial.length === 0) {
+            throw new Error("OS-bound credential material is unavailable during migration.");
+          }
+          const values = this.withLock(() => this.migrateLegacyUnderLock(osMaterial));
           this.lastReadState = "available";
           return values;
         } catch (error) {
@@ -873,7 +881,24 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private writeAll(values: Record<string, string>): void {
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
+    this.writeAllWithKey(values, key);
+  }
+
+  private writeAllWithKey(values: Record<string, string>, key: Buffer): void {
     writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
+  }
+
+  private migrateLegacyUnderLock(osMaterial: Buffer): Record<string, string> {
+    const raw = readJsonObject(this.credentialsPath);
+    const machineKey = readOrCreateMachineKey(this.machineKeyPath);
+    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
+    try {
+      return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+    } catch {
+      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+      this.writeAllWithKey(values, key);
+      return values;
+    }
   }
 
   private withLock<T>(fn: () => T): T {

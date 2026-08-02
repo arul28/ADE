@@ -7,6 +7,8 @@ const WINDOWS_DPAPI_KEY_FILE = ".credential-key.dpapi";
 const WINDOWS_DPAPI_KEY_MAGIC = "ADE_WINDOWS_DPAPI_KEY_V1";
 const WINDOWS_DPAPI_TIMEOUT_MS = 5_000;
 const WINDOWS_DPAPI_MAX_OUTPUT_BYTES = 64 * 1024;
+const WINDOWS_DPAPI_POWERSHELL_KERNEL_PATH =
+  "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
 const cachedKeyMaterial = new Map<string, Buffer>();
 const keyMaterialReadInFlight = new Map<string, Promise<Buffer>>();
@@ -88,8 +90,35 @@ function dpapiArguments(): string[] {
   ];
 }
 
+/**
+ * Resolve Windows PowerShell through the kernel-owned SystemRoot link. The
+ * mutable SystemRoot/windir environment and CreateProcess executable search
+ * are intentionally not involved, so an untrusted project or poisoned launch
+ * environment cannot redirect the DPAPI helper.
+ */
+export function resolveWindowsDpapiPowerShellPath(): string {
+  try {
+    const resolved = path.win32.normalize(
+      fs.realpathSync.native(WINDOWS_DPAPI_POWERSHELL_KERNEL_PATH),
+    );
+    const parsed = path.win32.parse(resolved);
+    const expectedSuffix = "\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
+    if (
+      !path.win32.isAbsolute(resolved)
+      || !/^[A-Za-z]:\\$/.test(parsed.root)
+      || !resolved.toLowerCase().endsWith(expectedSuffix.toLowerCase())
+      || !fs.statSync(resolved).isFile()
+    ) {
+      throw new Error("invalid system PowerShell path");
+    }
+    return resolved;
+  } catch {
+    throw new Error("Windows DPAPI credential protection is unavailable.");
+  }
+}
+
 function runDpapiSync(operation: "protect" | "unprotect", value: Buffer): Buffer {
-  const result = spawnSync("powershell.exe", dpapiArguments(), {
+  const result = spawnSync(resolveWindowsDpapiPowerShellPath(), dpapiArguments(), {
     encoding: "utf8",
     env: dpapiChildEnv(operation),
     input: value.toString("base64"),
@@ -108,7 +137,7 @@ function runDpapiSync(operation: "protect" | "unprotect", value: Buffer): Buffer
 
 function runDpapiAsync(operation: "protect" | "unprotect", value: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    const child = spawn("powershell.exe", dpapiArguments(), {
+    const child = spawn(resolveWindowsDpapiPowerShellPath(), dpapiArguments(), {
       stdio: ["pipe", "pipe", "pipe"],
       env: dpapiChildEnv(operation),
       windowsHide: true,
