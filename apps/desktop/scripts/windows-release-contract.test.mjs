@@ -281,7 +281,11 @@ test("standalone Windows release assets remain behind the publication gate", () 
   assert.match(publish, /test -s release-assets\/runtime\/install\.ps1/);
   assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.exe/);
   assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
-  assert.match(publish, /\(cd release-assets\/runtime && sha256sum -c SHA256SUMS\)/);
+  // The Windows standalone manifest is written by Git Bash on windows-latest,
+  // where sha256sum marks binary reads with a leading '*'. It is normalized
+  // before it is parsed or verified.
+  assert.match(publish, /sed 's\/\^\\\(\[0-9a-f\]\\\{64\\\}\\\) \[ \*\]\/\\1  \/'/);
+  assert.match(publish, /\(cd release-assets\/runtime && sha256sum -c "\$windows_sums"\)/);
   // Windows standalone assets are named only inside the publication-gated
   // branch, and every published asset is sourced from this run.
   assert.match(publish, /if \[ "\$PUBLISH_WINDOWS" = "1" \]; then[\s\S]*release-assets\/runtime\/install\.ps1[\s\S]*release-assets\/runtime\/ade-win32-x64\.exe/);
