@@ -275,17 +275,16 @@ test("standalone Windows release assets remain behind every publication and proo
     path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
     "utf8",
   );
-  const releaseFiles = publish.slice(publish.indexOf("files=("), publish.indexOf("if [ \"$BUILD_WINDOWS\"", publish.indexOf("files=(")));
+  const releaseFiles = publish.slice(publish.indexOf("base_files=("), publish.indexOf("if [ \"$BUILD_WINDOWS\"", publish.indexOf("base_files=(")));
   assert.doesNotMatch(releaseFiles, /install\.ps1|ade-win32-x64/);
-  assert.match(publish, /runtime_assets\+=\(install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz\)/);
-  assert.match(publish, /test -s release-assets\/runtime\/install\.ps1/);
-  assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.exe/);
-  assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
-  assert.match(publish, /release-assets\/runtime\/install\.ps1[\s\S]*release-assets\/runtime\/ade-win32-x64\.exe[\s\S]*release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
-  assert.ok(
-    (publish.match(/\[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]/g) ?? []).length >= 3,
-    "copying, checksumming, and publishing standalone Windows assets must all require every gate",
-  );
+  assert.doesNotMatch(publish, /runtime_assets\+=\(install\.ps1|release-assets\/runtime\/ade-win32-x64/);
+  assert.match(publish, /installers=\(release-assets\/win\/ADE-\*-win-x64\.exe\)/);
+  assert.match(publish, /test -s release-assets\/win\/install\.ps1/);
+  assert.match(publish, /test -s release-assets\/win\/ade-win32-x64\.exe/);
+  assert.match(publish, /test -s release-assets\/win\/ade-win32-x64\.native\.tar\.gz/);
+  assert.match(publish, /\(cd release-assets\/win && sha256sum -c SHA256SUMS\)/);
+  assert.match(publish, /release-assets\/win\/install\.ps1[\s\S]*release-assets\/win\/SHA256SUMS[\s\S]*release-assets\/win\/ade-\*/);
+  assert.match(publish, /\[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]/);
   assert.match(publish, /install\.ps1\|ade-win32-x64\.exe\|ade-win32-x64\.native\.tar\.gz/);
   assert.match(publish, /gh release delete-asset "\$TAG_NAME" "\$asset" --repo "\$GH_REPO" --yes/);
   assert.match(publish, /"\$BUILD_WINDOWS" != "1"[\s\S]*"\$PUBLISH_WINDOWS" != "1"[\s\S]*"\$WINDOWS_UPDATE_PROOF_APPROVED" != "1"/);
@@ -329,8 +328,8 @@ test("Windows release assets are validated and published as one release set", ()
   assert.match(publish, /BUILD_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED \}\}/);
   assert.match(publish, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
   assert.match(publish, /if \[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]; then/);
-  assert.match(publish, /release-assets\/win\/\*\.exe/);
-  assert.match(publish, /release-assets\/win\/\*\.exe\.blockmap/);
+  assert.match(publish, /release-assets\/win\/ADE-\*-win-x64\.exe/);
+  assert.match(publish, /release-assets\/win\/ADE-\*-win-x64\.exe\.blockmap/);
   assert.match(publish, /release-assets\/win\/latest\.yml/);
   assert.match(publish, /--json isDraft/);
   assert.match(publish, /Refusing to overwrite published assets/);
@@ -427,12 +426,12 @@ test("public Windows release promotes the approved immutable proof artifact", ()
   assert.match(windowsRelease, /apps\/desktop\/release\/ade-\*/);
   assert.match(windowsRelease, /apps\/desktop\/release\/install\.ps1/);
   assert.match(windowsRelease, /apps\/desktop\/release\/SHA256SUMS/);
-  assert.match(windowsRelease, /inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
+  assert.match(windowsRelease, /inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars\.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'/);
 });
 
 test("normal public workflow skips Windows promotion while its public gate is disabled", () => {
   const promotion = jobBlock(releaseWorkflow, "promote-approved-win-proof", "build-runtime-binaries");
-  assert.match(promotion, /if: \$\{\{ inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \}\}/);
+  assert.match(promotion, /if: \$\{\{ inputs\.publish && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars\.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' \}\}/);
   const publish = jobBlock(releaseWorkflow, "publish-release", null);
   assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'/);
 });

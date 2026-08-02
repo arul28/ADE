@@ -437,7 +437,7 @@ jobs:
           if-no-files-found: error
 
   promote-approved-win-proof:
-    if: ${{ inputs.publish && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
+    if: ${{ inputs.publish && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
     needs: verify
     runs-on: windows-latest
     concurrency:
@@ -732,22 +732,11 @@ jobs:
           merge-multiple: true
 
       - name: Add standalone runtime installer
-        env:
-          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
-          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
-          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
           chmod 755 release-assets/runtime/install.sh
-          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
-            cp apps/ade-cli/scripts/install-runtime.ps1 release-assets/runtime/install.ps1
-          fi
 
       - name: Generate standalone runtime checksums
-        env:
-          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
-          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
-          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           set -euo pipefail
           runtime_assets=(
@@ -761,9 +750,6 @@ jobs:
             ade-linux-x64
             ade-linux-x64.native.tar.gz
           )
-          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
-            runtime_assets+=(install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz)
-          fi
           (cd release-assets/runtime && sha256sum "${runtime_assets[@]}" | LC_ALL=C sort -k2 > SHA256SUMS)
 
       - name: Validate publish asset manifest
@@ -822,8 +808,8 @@ jobs:
         run: |
           set -euo pipefail
           shopt -s nullglob
-          installers=(release-assets/win/*.exe)
-          blockmaps=(release-assets/win/*.exe.blockmap)
+          installers=(release-assets/win/ADE-*-win-x64.exe)
+          blockmaps=(release-assets/win/ADE-*-win-x64.exe.blockmap)
           if [ "${#installers[@]}" -ne 1 ] || [ "${#blockmaps[@]}" -ne 1 ]; then
             echo "::error::Expected exactly one signed Windows installer and blockmap."
             exit 1
@@ -831,12 +817,12 @@ jobs:
           test -s "${installers[0]}"
           test -s "${blockmaps[0]}"
           test -s release-assets/win/latest.yml
-          test -s release-assets/runtime/install.ps1
-          test -s release-assets/runtime/ade-win32-x64.exe
-          test -s release-assets/runtime/ade-win32-x64.native.tar.gz
-          grep -Eq '[[:space:]]install\.ps1$' release-assets/runtime/SHA256SUMS
-          grep -Eq '[[:space:]]ade-win32-x64\.exe$' release-assets/runtime/SHA256SUMS
-          grep -Eq '[[:space:]]ade-win32-x64\.native\.tar\.gz$' release-assets/runtime/SHA256SUMS
+          test -s release-assets/win/install.sh
+          test -s release-assets/win/install.ps1
+          test -s release-assets/win/ade-win32-x64.exe
+          test -s release-assets/win/ade-win32-x64.native.tar.gz
+          test -s release-assets/win/SHA256SUMS
+          (cd release-assets/win && sha256sum -c SHA256SUMS)
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -852,26 +838,31 @@ jobs:
           # consumes; DMGs are the human downloads. Mac blockmaps stay omitted.
           # Only an exact-SHA-approved Windows proof allows the public gate to
           # add the signed installer, blockmap, and latest.yml as one set.
-          files=(
+          base_files=(
             release-assets/mac/*.dmg
             release-assets/mac/*.zip
             release-assets/mac/latest-mac.yml
+          )
+          runtime_files=(
             release-assets/runtime/install.sh
             release-assets/runtime/SHA256SUMS
             release-assets/runtime/ade-darwin-*
             release-assets/runtime/ade-linux-*
           )
+          files=("${base_files[@]}" "${runtime_files[@]}")
 
           # This repository variable stays disabled until the signed installer
           # passes the clean-host release checks.
           if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
-            files+=(
-              release-assets/win/*.exe
-              release-assets/win/*.exe.blockmap
+            files=(
+              "${base_files[@]}"
+              release-assets/win/ADE-*-win-x64.exe
+              release-assets/win/ADE-*-win-x64.exe.blockmap
               release-assets/win/latest.yml
-              release-assets/runtime/install.ps1
-              release-assets/runtime/ade-win32-x64.exe
-              release-assets/runtime/ade-win32-x64.native.tar.gz
+              release-assets/win/install.sh
+              release-assets/win/install.ps1
+              release-assets/win/SHA256SUMS
+              release-assets/win/ade-*
             )
           fi
 
