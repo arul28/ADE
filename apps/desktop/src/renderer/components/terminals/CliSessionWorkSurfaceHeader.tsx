@@ -1,7 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { DotsThreeVertical, Info, StopCircle } from "@phosphor-icons/react";
 import { useNavigate } from "react-router-dom";
-import type { LaneSummary, TerminalSessionSummary } from "../../../shared/types";
+import type { LaneSummary, OpenProjectBinding, TerminalSessionSummary } from "../../../shared/types";
 import { openLaneInLanesTabPath } from "../../lib/laneNavigation";
 import { shouldShowClaudeCacheTtl } from "../../lib/claudeCacheTtl";
 import { formatToolTypeLabel, primarySessionLabel, truncateSessionLabel } from "../../lib/sessions";
@@ -190,16 +190,19 @@ export function GridTileSessionHeaderActions({
   onInfoClick,
   onContextMenu,
   onStopRunningSession,
+  runtimePin = null,
 }: {
   session: TerminalSessionSummary;
   stopping?: boolean;
   onInfoClick?: SessionMouseHandler;
   onContextMenu?: SessionMouseHandler;
   onStopRunningSession?: (session: TerminalSessionSummary) => void;
+  /** See `ChatGitToolbar.runtimePin`. */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   return (
     <div className="flex items-center gap-1.5">
-      {session.laneId ? <ChatGitToolbar laneId={session.laneId} /> : null}
+      {session.laneId ? <ChatGitToolbar laneId={session.laneId} runtimePin={runtimePin} /> : null}
       <StopSessionButton session={session} stopping={stopping} onStopRunningSession={onStopRunningSession} />
       <SessionStatusDot session={session} />
       <SessionInfoButton session={session} onInfoClick={onInfoClick} />
@@ -231,6 +234,7 @@ export function CliSessionWorkSurfaceHeader({
   toolsPaneOpen,
   onTogglePrPane,
   prPaneOpen,
+  runtimePin = null,
 }: {
   session: TerminalSessionSummary;
   lanes: LaneSummary[];
@@ -248,6 +252,8 @@ export function CliSessionWorkSurfaceHeader({
    * instead of opening the inline slide-out menu. */
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  /** See `ChatGitToolbar.runtimePin`. */
+  runtimePin?: OpenProjectBinding | null;
 }) {
   const navigate = useNavigate();
   const lane = lanes.find((entry) => entry.id === session.laneId) ?? null;
@@ -282,6 +288,7 @@ export function CliSessionWorkSurfaceHeader({
       showGitToolbar
       onTogglePrPane={onTogglePrPane}
       prPaneOpen={prPaneOpen}
+      runtimePin={runtimePin}
       onContextMenu={
         onContextMenu
           ? (event) => {

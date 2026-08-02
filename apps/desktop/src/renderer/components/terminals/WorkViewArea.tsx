@@ -795,14 +795,14 @@ function CliSessionSurface({
 }) {
   // Persist the pane per CLI session so reopening the surface restores it, the
   // same way the ADE chat pane keys its companion UI state.
-  // PR data lives on the owning machine, but the prs preload surface is
-  // unpinned. Foreign CLI sessions therefore expose neither auto-pop nor pane.
-  const prLaneId = runtimePin ? null : session.laneId;
-  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(prLaneId, {
+  // PR reads follow the lane's machine now, so a foreign CLI session gets the
+  // same pill, auto-pop and pane as a local one — the pin just routes them.
+  const { prPaneOpen, setPrPaneOpen, prPaneDelta } = useChatPrAutoPop(session.laneId, {
     persistKey: session.id,
+    runtimePin,
   });
   const supportsSplit = layoutVariant !== "grid-tile";
-  const prFloating = prPaneOpen && Boolean(prLaneId) && supportsSplit;
+  const prFloating = prPaneOpen && Boolean(session.laneId) && supportsSplit;
   return (
     <div className="flex h-full min-h-0 w-full flex-col overflow-hidden">
       {layoutVariant !== "grid-tile" ? (
@@ -818,8 +818,9 @@ function CliSessionSurface({
           sessionsPaneCount={sessionsPaneCount}
           onToggleToolsPane={onToggleToolsPane}
           toolsPaneOpen={toolsPaneOpen}
-          onTogglePrPane={prLaneId ? () => setPrPaneOpen((v) => !v) : undefined}
+          onTogglePrPane={session.laneId ? () => setPrPaneOpen((v) => !v) : undefined}
           prPaneOpen={prPaneOpen}
+          runtimePin={runtimePin}
         />
       ) : null}
       <div className="relative min-h-0 w-full flex-1 overflow-hidden">
@@ -834,7 +835,7 @@ function CliSessionSurface({
           className="h-full w-full"
         />
         <AnimatePresence initial={false}>
-          {prFloating && prLaneId ? (
+          {prFloating && session.laneId ? (
             <motion.div
               key="cli-pr-floating-pane"
               className="absolute left-3 top-3 z-20 flex max-h-[calc(100%-1.5rem)] w-[min(16.5rem,calc(100%-1.5rem))]"
@@ -845,10 +846,11 @@ function CliSessionSurface({
             >
               <div className={CLI_FLOATING_PANE_CARD_CLASS}>
                 <ChatPrPane
-                  laneId={prLaneId}
+                  laneId={session.laneId}
                   branchName={null}
                   delta={prPaneDelta}
                   onClose={() => setPrPaneOpen(false)}
+                  runtimePin={runtimePin}
                 />
               </div>
             </motion.div>

@@ -100,6 +100,7 @@ function LocationProbe() {
 function renderToolbar(props: {
   onTogglePrPane?: () => void;
   prPaneOpen?: boolean;
+  runtimePin?: any;
 } = {}) {
   return render(
     <MemoryRouter initialEntries={["/work"]}>
@@ -149,9 +150,108 @@ describe("ChatGitToolbar", () => {
 
     renderToolbar();
 
-    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1"));
+    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", null));
 
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+  });
+
+  // The bug: every PR read routed to the machine the project TAB is bound to, so
+  // a chat whose lane lives on another machine found no PR and showed the bare
+  // "PR" create button for a session that already had one.
+  it("routes PR reads to the lane's own machine when the chat is pinned", async () => {
+    const runtimePin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      projectId: "project-b",
+      runtimeName: "Machine B",
+      displayName: "Repo B",
+      rootPath: "/repo-b",
+    };
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-foreign",
+      laneId: "lane-1",
+      githubPrNumber: 91,
+      githubUrl: "https://github.com/acme/repo/pull/91",
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+    } as any);
+
+    renderToolbar({ runtimePin });
+
+    await waitFor(() => expect(window.ade.prs.getForLane)
+      .toHaveBeenCalledWith("lane-1", runtimePin));
+    // The event feed has to come from the same machine, or the pill goes stale.
+    expect(window.ade.prs.onEvent).toHaveBeenCalledWith(expect.any(Function), runtimePin);
+    // The pill renders the foreign machine's PR — before the fix this surface
+    // showed the bare "PR" create button for a session that already had one.
+    // (Where the click goes is `openLanePr`'s contract, pinned directly in
+    // lib/lanePrBadge.test.ts.)
+    expect(await screen.findByRole("button", { name: /#91/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "PR" })).toBeNull();
+    // The dirty-file read is NOT pin-aware, so for a foreign lane it would only
+    // ask the bound machine about a lane it does not have.
+    expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
+  });
+
+  // CodeRabbit on #1012: creating a PR is impossible for a lane on another
+  // machine, and a surface with no PR pane has nothing to open instead — so the
+  // create button must not accept a click it will silently drop.
+  it("does not offer a dead PR-create click for a pinned lane with no pane", async () => {
+    const runtimePin = {
+      kind: "remote",
+      key: "remote:target-b:project-b",
+      targetId: "target-b",
+      projectId: "project-b",
+      runtimeName: "Machine B",
+      displayName: "Repo B",
+      rootPath: "/repo-b",
+    };
+
+    renderToolbar({ runtimePin });
+
+    const button = await screen.findByRole("button", { name: "PR" });
+    await waitFor(() => expect(button.hasAttribute("disabled")).toBe(true));
+    expect(button.getAttribute("title")).toContain("Machine B");
+    fireEvent.click(button);
+    expect(screen.getByTestId("location").textContent).toBe("/work");
+  });
+
+  it("keeps the PR-create click live on the machine that owns the lane", async () => {
+    renderToolbar();
+
+    const button = await screen.findByRole("button", { name: "PR" });
+    expect(button.hasAttribute("disabled")).toBe(false);
+    fireEvent.click(button);
+    expect(screen.getByTestId("location").textContent).toBe(
+      "/prs?tab=normal&create=1&sourceLaneId=lane-1&target=primary",
+    );
+  });
+
+  // On the pinned path `prs.onEvent` is a polling pump that re-anchors to the
+  // live head on every subscribe, so a subscription keyed on the PR row dropped
+  // whatever the runtime buffered in the teardown gap.
+  it("keeps its PR event subscription across PR row changes", async () => {
+    renderToolbar();
+    await waitFor(() => expect(window.ade.prs.getForLane).toHaveBeenCalled());
+    const subscriptionsAfterMount = vi.mocked(window.ade.prs.onEvent).mock.calls.length;
+
+    vi.mocked(window.ade.prs.getForLane).mockResolvedValue({
+      id: "pr-1",
+      laneId: "lane-1",
+      githubPrNumber: 7,
+      githubUrl: "https://github.com/acme/repo/pull/7",
+      state: "open",
+      checksStatus: "passing",
+      reviewStatus: "approved",
+    } as any);
+    await act(async () => {
+      emitPrEvent({ type: "prs-updated", prs: [{ id: "pr-1", laneId: "lane-1" }] });
+    });
+
+    expect(await screen.findByRole("button", { name: /#7/ })).toBeTruthy();
+    expect(vi.mocked(window.ade.prs.onEvent).mock.calls.length).toBe(subscriptionsAfterMount);
   });
 
   it("shows native GitHub stack position in the chat PR badge", async () => {
@@ -204,7 +304,7 @@ describe("ChatGitToolbar", () => {
     await waitFor(() => {
       expect(screen.getByTestId("location").textContent).toBe("/prs?tab=normal&prId=pr-1");
     });
-    expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1");
+    expect(window.ade.prs.getForLane).toHaveBeenCalledWith("lane-1", null);
     expect(window.ade.diff.getChanges).not.toHaveBeenCalled();
   });
 
@@ -281,7 +381,7 @@ describe("ChatGitToolbar", () => {
     fireEvent.click(badge.closest("button")!);
 
     await waitFor(() => {
-      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] });
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-1"] }, null);
     });
     expect(await screen.findByText("MERGED #333")).toBeTruthy();
   });
@@ -463,7 +563,7 @@ describe("ChatGitToolbar", () => {
     fireEvent.click((await screen.findByText("PR #111")).closest("button")!);
 
     await waitFor(() => {
-      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-lane-1"] });
+      expect(window.ade.prs.refresh).toHaveBeenCalledWith({ prIds: ["pr-lane-1"] }, null);
     });
 
     fireEvent.click(screen.getByRole("button", { name: "Switch lane" }));

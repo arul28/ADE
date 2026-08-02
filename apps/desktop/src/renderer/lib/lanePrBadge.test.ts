@@ -1,6 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PrState } from "../../shared/types";
-import { pickPrimaryPr, primaryPrStateRank } from "./lanePrBadge";
+import { openLanePr, pickPrimaryPr, primaryPrStateRank } from "./lanePrBadge";
 
 type TestPr = { id: string; state: PrState; updatedAt: string; githubPrNumber: number };
 
@@ -68,4 +68,64 @@ describe("pickPrimaryPr", () => {
       expect(pickPrimaryPr(prs)?.id ?? null).toBe(expected);
     });
   }
+});
+
+describe("openLanePr", () => {
+  const foreignPr = {
+    id: "pr-on-other-machine",
+    githubUrl: "https://github.com/arul28/ADE/pull/91",
+  } as unknown as Parameters<typeof openLanePr>[0];
+
+  beforeEach(() => {
+    (globalThis as unknown as { window: unknown }).window = {
+      ade: { app: { openExternal: vi.fn(async () => {}) } },
+      open: vi.fn(),
+    };
+  });
+
+  it("deep-links a local PR into the PRs tab", () => {
+    const navigate = vi.fn();
+    openLanePr(foreignPr, { foreign: false, navigate });
+
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenCalledWith("/prs?tab=normal&prId=pr-on-other-machine");
+    expect(window.ade.app.openExternal).not.toHaveBeenCalled();
+  });
+
+  it("honours a caller's richer local route over the default deep link", () => {
+    const navigate = vi.fn();
+    openLanePr(foreignPr, { foreign: false, navigate, localPath: "/prs?tab=normal&laneId=lane-1" });
+
+    expect(navigate).toHaveBeenCalledWith("/prs?tab=normal&laneId=lane-1");
+  });
+
+  // The regression: a PR id only resolves on the machine that owns it, so
+  // deep-linking a foreign PR landed on an empty PRs tab. GitHub is the one
+  // destination that means the same thing from either machine.
+  it("sends a foreign PR to GitHub instead of the machine-scoped PRs tab", () => {
+    const navigate = vi.fn();
+    openLanePr(foreignPr, { foreign: true, navigate });
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(window.ade.app.openExternal)
+      .toHaveBeenCalledWith("https://github.com/arul28/ADE/pull/91");
+  });
+
+  it("falls back to window.open when the external open is refused", async () => {
+    const navigate = vi.fn();
+    (window.ade.app.openExternal as ReturnType<typeof vi.fn>)
+      .mockRejectedValueOnce(new Error("blocked scheme"));
+
+    openLanePr(foreignPr, { foreign: true, navigate });
+    // The fallback runs in the rejected promise's catch; flush the microtask
+    // queue rather than guessing a tick count.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(navigate).not.toHaveBeenCalled();
+    expect(window.open).toHaveBeenCalledWith(
+      "https://github.com/arul28/ADE/pull/91",
+      "_blank",
+      "noopener,noreferrer",
+    );
+  });
 });

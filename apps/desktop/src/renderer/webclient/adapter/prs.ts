@@ -4,6 +4,7 @@ import type {
   PrSummary,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
+import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   const { commands, events } = infra;
@@ -68,14 +69,17 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     linkToLane: (args: unknown) => call("prs.linkToLane", args, null, false),
     preflightCreateLaneFromPrBranch: (args: unknown) => call("prs.preflightCreateLaneFromPrBranch", args, null),
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
-    getForLane: async (laneId: string) =>
-      (await mobileSnapshot()).prs.find((pr) => pr.laneId === laneId) ?? null,
+    getForLane: async (laneId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.getForLane", pin);
+      return (await mobileSnapshot()).prs.find((pr) => pr.laneId === laneId) ?? null;
+    },
     // Manual ⟳ PR-sync (ChatGitToolbar) — force a fresh reconcile for one lane.
     // Mirrors the preload runtime action `pr.syncLanePr` (single positional
     // laneId); the sync command layer marshals a named record, exactly like the
     // `prs.getForLane` host handler that reads `{ laneId }`. It mutates, so the
     // read cache is dropped afterward like `refresh` does.
-    syncLanePr: async (laneId: string) => {
+    syncLanePr: async (laneId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.syncLanePr", pin);
       const result = await call<PrSummary | null>("prs.syncLanePr", { laneId }, null, false);
       commands.invalidateCache(["prs."]);
       return result;
@@ -86,17 +90,33 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       await call("prs.reconcileOnFocus", { force: true }, undefined, false);
       commands.invalidateCache(["prs."]);
     },
-    listAll: async () => (await mobileSnapshot()).prs,
+    listAll: async (pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.listAll", pin);
+      return (await mobileSnapshot()).prs;
+    },
     listOpenForRepo: () => read("prs.listOpenForRepo", {}, []),
-    refresh: async (args?: unknown) => {
+    refresh: async (args?: unknown, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.refresh", pin);
       const result = await call<unknown>("prs.refresh", args, [], false);
       commands.invalidateCache(["prs."]);
       return arrayField<PrSummary>(result, "prs");
     },
-    getStatus: (prId: string) => read("prs.getStatus", { prId }, null),
-    getChecks: (prId: string) => read("prs.getChecks", { prId }, []),
-    getComments: (prId: string) => read("prs.getComments", { prId }, []),
-    getReviews: (prId: string) => read("prs.getReviews", { prId }, []),
+    getStatus: (prId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.getStatus", pin);
+      return read("prs.getStatus", { prId }, null);
+    },
+    getChecks: (prId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.getChecks", pin);
+      return read("prs.getChecks", { prId }, []);
+    },
+    getComments: (prId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.getComments", pin);
+      return read("prs.getComments", { prId }, []);
+    },
+    getReviews: (prId: string, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.getReviews", pin);
+      return read("prs.getReviews", { prId }, []);
+    },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
     updateDescription: async (args: unknown) => {
       await call("prs.updateDescription", args, undefined, false);
@@ -173,7 +193,10 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return result;
     },
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
-    onEvent: (listener: (event: unknown) => void) => events.on("prsEvent", listener as never),
+    onEvent: (listener: (event: unknown) => void, pin?: unknown) => {
+      assertWebRuntimePinUnsupported("prs.onEvent", pin);
+      return events.on("prsEvent", listener as never);
+    },
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
     getFiles: (prId: string) => read("prs.getFiles", { prId }, []),
     getCommits: (prId: string) => read("prs.getCommits", { prId }, []),

@@ -246,7 +246,7 @@ describe("ChatPrPane", () => {
     expect(screen.queryByText("Checks running")).toBeNull();
 
     await waitFor(() => {
-      expect((window.ade.prs.refresh as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ prIds: ["pr-333"] });
+      expect((window.ade.prs.refresh as ReturnType<typeof vi.fn>)).toHaveBeenCalledWith({ prIds: ["pr-333"] }, null);
     });
     // Exactly two stable subscriptions: PR rows + reconcile-on-focus. Neither
     // may be torn down and re-created as PR state changes.
@@ -454,7 +454,7 @@ describe("ChatPrPane title bar", () => {
     fireEvent.click(screen.getByRole("button", { name: "Refresh pull request" }));
 
     await waitFor(() => {
-      expect(window.ade.prs.syncLanePr).toHaveBeenCalledWith("lane1");
+      expect(window.ade.prs.syncLanePr).toHaveBeenCalledWith("lane1", null);
     });
     await waitFor(() => {
       expect((window.ade.prs.getForLane as ReturnType<typeof vi.fn>).mock.calls.length)

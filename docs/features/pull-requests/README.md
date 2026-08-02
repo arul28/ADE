@@ -58,6 +58,86 @@ local-bound windows the desktop main process still owns its own
 allowlisted in startup stability mode) and is also lazily started on
 the first PR read through `ensurePrPolling` in `registerIpc.ts`.
 
+## Which machine answers a PR read
+
+A lane's PR row lives in the `.ade` database of the machine that owns the
+lane — the same ownership rule that governs the lane itself (`worktree_path`
+is an absolute path on exactly one machine) and the sessions that inherit
+their machine through `laneId`. A PR read therefore has to name a machine,
+exactly as a chat or terminal read does.
+
+Every `pr` domain read in preload takes an optional trailing
+`OpenProjectBinding` pin. `callPrReadRuntimeActionOr(pin, action, request,
+local)` routes through `callPinnedOrBoundRuntimeActionOr`, so a pinned read
+resolves on the lane's own machine while an unpinned one resolves on the
+machine the project tab is bound to. `pin: null` is a stated choice rather
+than an absence: the PRs tab is bound-machine-scoped by design, so every
+tab-scoped call site passes `null` explicitly. `prs.onEvent(cb, pin)` obeys
+the same rule — a pinned surface subscribes to the owning machine's
+`prs-updated` / `pr-reconcile` feed, because the bound runtime's feed
+describes a different database and would leave a pinned PR pill permanently
+stale.
+
+Reads are pinned; writes are not. Creating a PR is a write against the lane's
+worktree, and the inline creator derives branch, base, and Linear links from
+the bound machine's lanes, so a pinned `ChatPrPane` renders
+`Switch to <machine> to open one` in place of `ChatPrInlineCreator` instead
+of offering a button that cannot work. Opening a PR is machine-bound in one
+direction: the PRs tab resolves a PR id against the bound machine only, so a
+foreign PR's chip opens GitHub — the one destination that means the same
+thing from either machine. `openLanePr` in
+`apps/desktop/src/renderer/lib/lanePrBadge.ts` is the single implementation of
+that decision, shared by the sidebar badge, the session card and its hover
+card, the chat Git toolbar, and the chat PR pane, so a fourth caller cannot
+reintroduce the dead end. Its foreign branch falls back to `window.open` when
+the main process's `openExternal` allowlist rejects a URL that arrived from a
+paired machine.
+
+Cross-machine PR rows reach the renderer through the Work union
+(`apps/desktop/src/renderer/state/crossMachineLanes.ts`): each machine's slice
+(`CrossMachineMachineLanes`) carries `prs` alongside `lanes` and `sessions`,
+read with `pr.listAll` on the **lane** cadence rather than the faster chat
+cadence — a PR is only ever rendered by joining it to a lane and changes on
+the same slow scale a lane does, so paying for a foreign round trip every ten
+seconds would buy nothing the cadence does not already exist to avoid. The PR
+read goes out in parallel with the lane and session reads on a cadence tick,
+so it costs no extra latency; only the off-cadence catch-up (a chat naming a
+lane the machine has never reported forces a mid-tick lane read) issues a
+sequential PR read, deliberately, so a slow PR round trip never holds a
+machine's lanes and chats out of the store. The read is best-effort: a machine
+that answers `lane.list` but fails `pr.listAll` still contributes its lanes and
+sessions, and `mergeCrossMachineLanes` retains the machine's last reported PR
+rows whenever the key is omitted. `decodeForeignPrs` validates every field the
+badge path actually reads — `id`, `laneId`, `headBranch`, `githubPrNumber`,
+`githubUrl`, `state` — and drops a row missing any of them, because a badge
+reading `PR #undefined` or one whose click is a silent no-op is worse than no
+badge.
+
+`useLanePrsByLaneId` folds the bound machine's event-driven read together with
+each union machine's rows into one map with three namespaced key spaces and no
+bare lane ids. Lane ids are not unique across machines — cross-machine handoff
+copies a lane, id included — so "which machine" is part of the identity of a PR
+lookup, and a bare id that doubled as "the bound machine's answer" let a
+foreign machine's PR render on a bound-machine row whose badge deep-linked into
+a PRs tab that could not resolve it.
+
+| Key space | Accessor | Read by |
+|-----------|----------|---------|
+| `bound:<laneId>` | `boundMachineLanePrs` | every row on the machine the tab is bound to, so purely local render paths need no machine id |
+| `<machineId>:<laneId>` | `lanePrsForMachine` | a foreign row — its own machine's answer, never another's |
+| `any:<laneId>` | `laneHasAnyPr` | the Has PR filter chip, the only lookup that may ignore machine identity |
+
+The GitHub repo snapshot is deliberately not re-read per machine: it describes
+the repository, not a machine, so one snapshot joins correctly against every
+machine's lanes. Per-machine maps are memoized on the reference-stable `lanes`
+/ `prs` arrays `mergeCrossMachineLanes` hands out, so chat churn on one machine
+does not rebuild the union.
+
+The hosted web client has a single host and cannot route a pin to a second
+one, so its `prs` adapter shims (`renderer/webclient/adapter/prs.ts`) reject a
+pin loudly through `assertWebRuntimePinUnsupported` rather than silently
+answering from the only host they have.
+
 ## Source file map
 
 Services. The canonical implementations run inside the runtime
@@ -170,6 +250,15 @@ Renderer components (`apps/desktop/src/renderer/components/prs/`):
 | `ConflictFilePreview.tsx` | File-level conflict marker preview |
 | `PrRebaseBanner.tsx` | Rebase banner on a PR |
 | `PrConflictBadge.tsx` | Lightweight conflict chip |
+
+Renderer PR helpers outside the PRs tab (the Work-surface badge/pill path):
+
+| File | Responsibility |
+|------|---------------|
+| `apps/desktop/src/renderer/lib/lanePrBadge.ts` | Lane-PR presentation and navigation contract. `selectPrimaryLanePr` picks the row a lane badges with, `lanePrStateLabel` / `lanePrStateColor` render its state, `lanePrDeepLinkPath` builds the in-app `/prs?tab=normal&prId=…` target, and `openLanePr(pr, { foreign, navigate, localPath? })` is the single answer to "where does this PR open" for every Work surface. A foreign PR goes to GitHub because a PR id resolves only on the machine that owns it; the local branch takes `localPath` when a caller (the chat Git toolbar) wants the richer route that also selects the lane. |
+| `apps/desktop/src/renderer/components/terminals/useLanePrs.ts` | The lane→PR map every Work surface reads. Builds the bound machine's map from a coalesced `prs.listAll` + GitHub snapshot refreshed by `prs-updated`, then folds in each union machine's `prs` slice. Exports the three namespaced key builders (`laneBoundMachineKey`, `lanePrCompositeKey`, `laneAnyMachineKey`) and their accessors `boundMachineLanePrs`, `lanePrsForMachine`, and `laneHasAnyPr` — see [Which machine answers a PR read](#which-machine-answers-a-pr-read). |
+| `apps/desktop/src/renderer/lib/prReadCache.ts` | In-flight coalescing and cooldown for renderer PR reads (`listPrsCoalesced`, `refreshPrsCoalesced`, `refreshLinkedPrCoalesced`, `getGitHubSnapshotCoalesced`). The cache key is scoped by pin ahead of project root, so two reads differing only by pin are treated as reads of two different databases and never share an entry. |
+| `apps/desktop/src/renderer/components/terminals/LanePrBadge.tsx` | The compact PR chip itself. Presentation only — its host supplies `onOpen`, which is always `openLanePr`. |
 
 Shared contracts:
 
@@ -328,7 +417,11 @@ the best-effort fetch returns `[]` on a 403, which is indistinguishable from
 
 ## IPC surface
 
-Selected channels exposed through `preload.ts`:
+Selected channels exposed through `preload.ts`. Read methods take an optional
+trailing `OpenProjectBinding` pin — `getForLane`, `syncLanePr`, `listAll`,
+`refresh`, `getStatus`, `getChecks`, `getComments`, `getReviews`, and the
+`onEvent` subscription — routing the read to the machine that owns the lane.
+See [Which machine answers a PR read](#which-machine-answers-a-pr-read).
 
 - `ade.prs.createFromLane`, `ade.prs.createIntegration`
 - `ade.prs.listAll`, `ade.prs.listProposals`, `ade.prs.listGithubStacks`
@@ -1204,6 +1297,21 @@ best-effort — failures log a warning and do not abort the tick.
   when a lane has no PR the pane embeds `ChatPrInlineCreator`, whose title
   defaults to the chat session title before falling back to the
   `<lane> -> <target>` derivation.
+- Every chat-side PR surface takes a `runtimePin`: `ChatGitToolbar`,
+  `ChatPrPane`, and `useChatPrAutoPop`, threaded from their hosts
+  (`AgentChatPane` passes its `chatRuntimePin`; `WorkSurfaceHeader`,
+  `CliSessionWorkSurfaceHeader` / `GridTileSessionHeaderActions`, and
+  `WorkViewArea`'s CLI surface pass the session's owning binding). A chat or
+  CLI session on another machine therefore gets the same PR pill, auto-pop,
+  and pane as a local one — the pin just routes the reads and the event
+  subscription to the lane's machine. Effects key on the pin's **key**, never
+  its object identity: a local pin is reconstructed on every cross-machine
+  merge, and depending on the object would blank the pill and re-anchor the
+  pinned event pump on that timer. Two things stay bound-machine-only inside a
+  pinned toolbar: `diff.getChanges` is unpinned, so the dirty-file count is
+  skipped rather than asked about a lane the bound machine does not have; and
+  PR creation falls through to the "switch machines" copy instead of the
+  create-PR handoff.
 - `PrDetailPane` is where most rich behavior concentrates:
   issue resolver modal, rebase banner, check/review/comment sections
   with running indicators (`PrCiRunningIndicator`), merge readiness

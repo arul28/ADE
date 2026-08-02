@@ -31,6 +31,7 @@ import type {
   AgentChatSession,
   LaneSummary,
   OpenProjectBinding,
+  PrSummary,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
@@ -762,6 +763,35 @@ export function decodeForeignLanes(result: unknown): LaneSummary[] {
   return lanes;
 }
 
+/**
+ * Same contract as `decodeForeignLanes`, for `pr.listAll`.
+ *
+ * Validates every field the badge path actually reads, not just the joining
+ * ones: a peer on an older build that omits `githubPrNumber` would render
+ * "PR #undefined", and one that omits `githubUrl` would render a badge whose
+ * click is a silent no-op (the foreign click-through has nowhere else to go).
+ * Dropping the row shows no badge, which is honest; a half-decoded one is not.
+ */
+export function decodeForeignPrs(result: unknown): PrSummary[] {
+  const list = Array.isArray(result)
+    ? result
+    : isRecord(result) && Array.isArray(result.prs)
+      ? result.prs
+      : [];
+  const prs: PrSummary[] = [];
+  for (const candidate of list) {
+    if (!isRecord(candidate)) continue;
+    if (typeof candidate.id !== "string" || !candidate.id.trim()) continue;
+    if (typeof candidate.laneId !== "string" || !candidate.laneId.trim()) continue;
+    if (typeof candidate.headBranch !== "string") continue;
+    if (typeof candidate.githubPrNumber !== "number") continue;
+    if (typeof candidate.githubUrl !== "string" || !candidate.githubUrl.trim()) continue;
+    if (typeof candidate.state !== "string") continue;
+    prs.push(candidate as unknown as PrSummary);
+  }
+  return prs;
+}
+
 /** Same contract as `decodeForeignLanes`, for `session.list`. */
 export function decodeForeignSessions(result: unknown): TerminalSessionSummary[] {
   const list = Array.isArray(result)
@@ -897,9 +927,31 @@ async function readMachine(
       MACHINE_READ_TIMEOUT_MS,
       `lane.list on ${machineName}`,
     );
+  // PRs ride the lane cadence, not the chat cadence. A PR is only ever rendered
+  // by joining it to a lane, it changes on the same slow scale a lane does, and
+  // the read is a foreign round trip — paying for it every ten seconds would
+  // buy a fresher check dot at the cost this cadence exists to avoid.
+  // Best-effort: a machine that answers `lane.list` but fails `pr.listAll` (an
+  // older build, a transient error) must still contribute its lanes and chats.
+  // No bound-machine skip needed: `isEligibleMachineOption` already excludes the
+  // tab's machine from every target this function is called with, so the rows
+  // read here are always a machine `useLanePrsByLaneId` cannot answer itself.
+  const readPrs = async (): Promise<PrSummary[] | null> => {
+    try {
+      const response = await withTimeout(
+        callAction(targetId, projectId, { domain: "pr", action: "listAll", args: {} }),
+        MACHINE_READ_TIMEOUT_MS,
+        `pr.listAll on ${machineName}`,
+      );
+      return decodeForeignPrs(response.result);
+    } catch {
+      return null;
+    }
+  };
   try {
-    const [laneResult, sessionResult] = await Promise.all([
-      shouldReadLanes(machineId) ? readLanes() : null,
+    const lanesDue = shouldReadLanes(machineId);
+    const [laneResult, sessionResult, duePrs] = await Promise.all([
+      lanesDue ? readLanes() : null,
       withTimeout(
         callAction(targetId, projectId, {
           domain: "session",
@@ -909,6 +961,7 @@ async function readMachine(
         MACHINE_READ_TIMEOUT_MS,
         `session.list on ${machineName}`,
       ),
+      lanesDue ? readPrs() : null,
     ]);
     // Cancellation: a scope change or a newer snapshot bumped the generation
     // while this read was in flight, so its answer is about a different world.
@@ -925,6 +978,15 @@ async function readMachine(
       async () => decodeForeignLanes((await readLanes()).result),
     );
     if (generation !== runtime.generation) return;
+    // On a cadence tick the PR read already went out alongside the lane read, so
+    // it costs no extra latency. Only the off-cadence catch-up (a chat on a lane
+    // we had never seen forces a lane read mid-tick) has to fetch here — without
+    // it that lane renders with no PR badge until the next 30s tick, the exact
+    // blank this change exists to remove. Deliberately NOT a blanket sequential
+    // read: that would hold this machine's lanes and chats out of the store
+    // behind an 8s PR timeout, and stall every other machine's cadence with it.
+    const prResult = duePrs ?? (lanes && !lanesDue ? await readPrs() : null);
+    if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
       machineId,
       machineName,
@@ -938,6 +1000,9 @@ async function readMachine(
       // happens to fire. Omitting the flag retains that verdict.
       ...(isMachineEligibleNow(machineId) ? { online: true } : {}),
       ...(lanes ? { lanes } : {}),
+      // Same retention contract as lanes: a PR read that failed or was not due
+      // this tick omits the key, so the machine keeps what it last reported.
+      ...(prResult ? { prs: prResult } : {}),
       sessions: reconcileCrossMachineOptimisticSessions(binding, sessions),
       error: null,
     });
@@ -969,9 +1034,27 @@ async function readThisMachine(
       MACHINE_READ_TIMEOUT_MS,
       "lane.list on This Mac",
     );
+  // See `readMachine`: PRs ride the lane cadence for the same reasons, and the
+  // read is best-effort — a machine that fails only this read must still
+  // contribute its lanes and chats rather than falling into the error path and
+  // blanking the whole slice. No active-binding skip here: this function only
+  // runs when the tab is bound to a REMOTE machine (see its one caller), so
+  // This Mac is never the machine `useLanePrsByLaneId` already answers.
+  const readPrs = async (): Promise<PrSummary[] | null> => {
+    try {
+      return await withTimeout(
+        window.ade.prs.listAll(binding),
+        MACHINE_READ_TIMEOUT_MS,
+        "pr.listAll on This Mac",
+      );
+    } catch {
+      return null;
+    }
+  };
   try {
-    const [laneResult, sessions] = await Promise.all([
-      shouldReadLanes(THIS_MACHINE_ID) ? readLanes() : null,
+    const lanesDue = shouldReadLanes(THIS_MACHINE_ID);
+    const [laneResult, sessions, duePrs] = await Promise.all([
+      lanesDue ? readLanes() : null,
       withTimeout(
         window.ade.sessions.list(
           { limit: FOREIGN_SESSION_LIMIT },
@@ -980,6 +1063,7 @@ async function readThisMachine(
         MACHINE_READ_TIMEOUT_MS,
         "session.list on This Mac",
       ),
+      lanesDue ? readPrs() : null,
     ]);
     if (generation !== runtime.generation) return;
     const lanes = await resolveLaneCadence(
@@ -990,6 +1074,10 @@ async function readThisMachine(
       readLanes,
     );
     if (generation !== runtime.generation) return;
+    // See `readMachine`: parallel on a cadence tick, sequential only for the
+    // off-cadence catch-up, so a slow PR read never holds back lanes and chats.
+    const prs = duePrs ?? (lanes && !lanesDue ? await readPrs() : null);
+    if (generation !== runtime.generation) return;
     store.mergeCrossMachineLanes({
       machineId: THIS_MACHINE_ID,
       machineName: THIS_MACHINE_NAME,
@@ -998,6 +1086,7 @@ async function readThisMachine(
       binding,
       online: true,
       ...(lanes ? { lanes } : {}),
+      ...(prs ? { prs } : {}),
       sessions: reconcileCrossMachineOptimisticSessions(binding, sessions),
       error: null,
     });
