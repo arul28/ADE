@@ -58,7 +58,7 @@ const registerIpc = fs.readFileSync(
   "utf8",
 );
 
-const remoteTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const remoteTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
 
 function jobBlock(workflow, jobName, nextJobName) {
   const start = workflow.indexOf(`\n  ${jobName}:\n`);
@@ -73,7 +73,8 @@ test("Windows package carries every remote runtime sidecar its validator require
     .filter((entry) => entry.to === "runtime");
   const runtimeFilter = runtimeResources.flatMap((entry) => entry.filter);
   for (const target of remoteTargets) {
-    assert.ok(runtimeFilter.includes(`ade-${target}`), target);
+    const binary = target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`;
+    assert.ok(runtimeFilter.includes(binary), target);
     assert.ok(runtimeFilter.includes(`ade-${target}.native.tar.gz`), `${target} native archive`);
   }
   const commonRuntimeFilter = pkg.build.extraResources.find((entry) => entry.to === "runtime").filter;

@@ -30,7 +30,11 @@ const DEFAULT_MAX_APP_ASAR_BYTES = 900 * 1024 * 1024;
 // packaged runtime can launch OpenCode. Keep a ceiling to catch runaway bloat,
 // but size it to the current required toolset.
 const DEFAULT_MAX_UNPACKED_BYTES = 1000 * 1024 * 1024;
-const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const REMOTE_RUNTIME_TARGETS = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
+
+function remoteRuntimeBinaryName(target) {
+  return target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`;
+}
 const isLocalWindowsTestBuild =
   process.platform === "win32" &&
   process.env.ADE_WINDOWS_TEST_BUILD === "1" &&
@@ -301,8 +305,7 @@ function validatePreflight() {
 
   const runtimeFilter = new Set(runtimeResourceFilter());
   for (const target of REMOTE_RUNTIME_TARGETS) {
-    for (const suffix of ["", ".native.tar.gz"]) {
-      const fileName = `ade-${target}${suffix}`;
+    for (const fileName of [remoteRuntimeBinaryName(target), `ade-${target}.native.tar.gz`]) {
       if (!runtimeFilter.has(fileName)) {
         fail(`package.json build.extraResources runtime filter must include ${fileName}`);
       }
@@ -438,7 +441,7 @@ async function assertRemoteRuntimeBundle(resourcesPath) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
   await assertPathExists(runtimeRoot, "remote runtime bundle directory");
   for (const target of REMOTE_RUNTIME_TARGETS) {
-    const binaryPath = path.join(runtimeRoot, `ade-${target}`);
+    const binaryPath = path.join(runtimeRoot, remoteRuntimeBinaryName(target));
     const nativeArchivePath = path.join(runtimeRoot, `ade-${target}.native.tar.gz`);
     await assertPathExists(binaryPath, `remote runtime binary ${target}`);
     await assertExecutable(binaryPath, `remote runtime binary ${target}`);

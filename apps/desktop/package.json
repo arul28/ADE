@@ -279,7 +279,9 @@
           "ade-darwin-arm64",
           "ade-darwin-arm64.native.tar.gz",
           "ade-darwin-x64",
-          "ade-darwin-x64.native.tar.gz"
+          "ade-darwin-x64.native.tar.gz",
+          "ade-win32-x64.exe",
+          "ade-win32-x64.native.tar.gz"
         ]
       },
       {

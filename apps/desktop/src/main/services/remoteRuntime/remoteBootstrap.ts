@@ -19,13 +19,17 @@ import { RuntimeRpcClient } from "./runtimeRpcClient";
 import { connectSshWithRoute, execSsh, execSshWithInput, openSshRuntimeTransport, type ConnectedSshRoute, type OpenSshResolvedConfig } from "./sshTransport";
 import { routeKey } from "./routeUtils";
 import { syncEndpointForHost } from "./pairedRuntimeRoutes";
-import { DesktopPairedMachineStore, generateDesktopDpopKeyPair } from "./syncPairedMachineStore";
+import { generateDesktopDpopKeyPair, type DesktopPairedMachineStore } from "./syncPairedMachineStore";
 import {
   normalizeRemoteTargetRoutes,
   type RemoteTargetRegistry,
 } from "./remoteTargetRegistry";
 
-export function normalizeRemoteArch(raw: string): { platform: string; arch: string; label: string } {
+export function normalizeRemoteArch(raw: string): {
+  platform: "darwin" | "linux";
+  arch: "arm64" | "x64";
+  label: string;
+} {
   const lower = raw.toLowerCase();
   const platform = lower.includes("darwin")
     ? "darwin"
@@ -41,7 +45,7 @@ export function normalizeRemoteArch(raw: string): { platform: string; arch: stri
     const detectedPlatform = raw.trim() || "unknown";
     throw new RemoteRuntimeConnectError({
       kind: "unsupported_os",
-      message: `Unsupported remote ADE service platform: ${detectedPlatform}. Supported targets are macOS/Linux on arm64 or x64.`,
+      message: `Unsupported remote ADE service platform: ${detectedPlatform}. Supported targets are macOS/Linux on arm64 or x64, and Windows 10 22H2/Windows 11 on x64.`,
       detail: detectedPlatform,
     });
   }
@@ -173,6 +177,108 @@ export function validateRemoteRuntimeInitializeResult(args: {
 
 type RemoteRuntimeChannel = "alpha" | "beta" | null;
 
+type WindowsRemotePlatform = {
+  platform: "win32";
+  arch: "x64";
+  label: "win32-x64";
+  productName: string;
+  displayVersion: string;
+  buildNumber: number;
+  userProfile: string;
+};
+
+type DetectedRemotePlatform = ReturnType<typeof normalizeRemoteArch> | WindowsRemotePlatform;
+
+const WINDOWS_REMOTE_DETECTION_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$cv = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion'
+$service = Get-Service -Name 'sshd' -ErrorAction SilentlyContinue
+[ordered]@{
+  platform = 'win32'
+  arch = [Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+  productName = [string]$cv.ProductName
+  displayVersion = [string]$cv.DisplayVersion
+  buildNumber = [int]$cv.CurrentBuildNumber
+  userProfile = [Environment]::GetFolderPath('UserProfile')
+  sshdStatus = if ($service) { [string]$service.Status } else { 'Missing' }
+} | ConvertTo-Json -Compress
+`;
+
+export function encodeWindowsPowerShellCommand(script: string): string {
+  return Buffer.from(script, "utf16le").toString("base64");
+}
+
+export function windowsPowerShellCommand(script: string): string {
+  return `powershell.exe -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodeWindowsPowerShellCommand(script)}`;
+}
+
+export function parseWindowsRemoteDetection(raw: string): WindowsRemotePlatform {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw.trim());
+  } catch (error) {
+    throw new Error("Windows OpenSSH returned invalid platform metadata.", { cause: error });
+  }
+  if (!isRecord(value)) throw new Error("Windows OpenSSH returned invalid platform metadata.");
+  const productName = typeof value.productName === "string" ? value.productName.trim() : "";
+  const displayVersion = typeof value.displayVersion === "string" ? value.displayVersion.trim() : "";
+  const buildNumber = typeof value.buildNumber === "number" ? value.buildNumber : Number(value.buildNumber);
+  const userProfile = typeof value.userProfile === "string" ? value.userProfile.trim() : "";
+  const archRaw = typeof value.arch === "string" ? value.arch.trim().toLowerCase() : "";
+  const sshdStatus = typeof value.sshdStatus === "string" ? value.sshdStatus.trim().toLowerCase() : "";
+  if (sshdStatus === "missing") {
+    throw new Error("Windows OpenSSH Server is not installed. Install OpenSSH Server, start the sshd service, and allow it through Windows Firewall before reconnecting.");
+  }
+  if (productName.toLowerCase().includes("server")) {
+    throw new RemoteRuntimeConnectError({
+      kind: "unsupported_os",
+      message: `Unsupported remote ADE service platform: ${productName}. Windows v1 supports Windows 10 22H2 and Windows 11 x64, not Windows Server.`,
+      detail: productName,
+    });
+  }
+  if (archRaw !== "x64" && archRaw !== "amd64") {
+    throw new RemoteRuntimeConnectError({
+      kind: "unsupported_os",
+      message: `Unsupported remote ADE service architecture: ${archRaw || "unknown"}. Windows v1 supports x64 only; ARM64 and WSL are not supported.`,
+      detail: archRaw || "unknown",
+    });
+  }
+  if (!productName.toLowerCase().includes("windows") || !Number.isInteger(buildNumber) || buildNumber < 19045) {
+    throw new RemoteRuntimeConnectError({
+      kind: "unsupported_os",
+      message: `Unsupported remote ADE service platform: ${productName || "Windows"} build ${Number.isFinite(buildNumber) ? buildNumber : "unknown"}. Windows v1 requires Windows 10 22H2 (build 19045) or Windows 11 x64.`,
+      detail: `${productName || "Windows"} ${displayVersion} build ${Number.isFinite(buildNumber) ? buildNumber : "unknown"}`.trim(),
+    });
+  }
+  if (!path.win32.isAbsolute(userProfile)) {
+    throw new Error("Windows OpenSSH did not report an absolute user profile path.");
+  }
+  return {
+    platform: "win32",
+    arch: "x64",
+    label: "win32-x64",
+    productName,
+    displayVersion,
+    buildNumber,
+    userProfile: path.win32.normalize(userProfile),
+  };
+}
+
+async function detectRemotePlatform(client: Client): Promise<DetectedRemotePlatform> {
+  const uname = await execSsh(client, "uname -sm");
+  if (uname.code === 0 && !/(?:mingw|msys|cygwin|windows_nt)/iu.test(uname.stdout)) {
+    return normalizeRemoteArch(uname.stdout.trim());
+  }
+  const windows = await execSsh(client, windowsPowerShellCommand(WINDOWS_REMOTE_DETECTION_SCRIPT));
+  if (windows.code !== 0) {
+    throw new Error(
+      windows.stderr.trim()
+      || "Unable to detect the remote platform. On Windows, install and start OpenSSH Server and ensure Windows PowerShell 5.1 is available to the SSH account.",
+    );
+  }
+  return parseWindowsRemoteDetection(windows.stdout);
+}
+
 type RemoteRuntimeLayout = {
   channel: RemoteRuntimeChannel;
   homeDirName: ".ade" | ".ade-alpha" | ".ade-beta";
@@ -284,10 +390,11 @@ function shellQuote(value: string): string {
 }
 
 function bundledRuntimePath(resourcesPath: string, archLabel: string): string | null {
+  const binaryName = archLabel === "win32-x64" ? `ade-${archLabel}.exe` : `ade-${archLabel}`;
   const candidates = [
-    path.join(resourcesPath, "runtime", `ade-${archLabel}`),
-    path.join(resourcesPath, "app.asar.unpacked", "runtime", `ade-${archLabel}`),
-    path.resolve(process.cwd(), "resources", "runtime", `ade-${archLabel}`),
+    path.join(resourcesPath, "runtime", binaryName),
+    path.join(resourcesPath, "app.asar.unpacked", "runtime", binaryName),
+    path.resolve(process.cwd(), "resources", "runtime", binaryName),
   ];
   return candidates.find((candidate) => {
     try {
@@ -496,6 +603,15 @@ async function uploadSftpFile(
   totalBytes: number,
 ): Promise<void> {
   const remotePath = await resolveRemoteUploadPath(client, remoteFileExpr);
+  await uploadSftpResolvedFile(client, localPath, remotePath, totalBytes);
+}
+
+async function uploadSftpResolvedFile(
+  client: Client,
+  localPath: string,
+  remotePath: string,
+  totalBytes: number,
+): Promise<void> {
   const sftp = await openSftp(client);
   try {
     await new Promise<void>((resolve, reject) => {
@@ -1435,6 +1551,7 @@ async function upgradeSshTargetToPairedCredentials(args: {
   appVersion: string;
   connectedRoute: RemoteRuntimeTargetRoute;
   store: DesktopPairedMachineStore;
+  commandOverride?: string;
 }): Promise<DesktopPairedMachineCredentials> {
   const keys = generateDesktopDpopKeyPair();
   const deviceId = crypto.randomUUID();
@@ -1459,7 +1576,8 @@ async function upgradeSshTargetToPairedCredentials(args: {
       appVersion: args.appVersion,
     },
   };
-  const command = `${args.runtimeEnvPrefix}${args.binaryExpr} --socket ${args.layout.socketExpr} --json sync pair-device --json-stdin`;
+  const command = args.commandOverride
+    ?? `${args.runtimeEnvPrefix}${args.binaryExpr} --socket ${args.layout.socketExpr} --json sync pair-device --json-stdin`;
   const result = await execSshWithInput(
     args.ssh,
     command,
@@ -1656,6 +1774,475 @@ export function markRemoteTargetRouteSucceeded(args: {
   return updated;
 }
 
+type WindowsRemoteRuntimeLayout = {
+  channelLayout: RemoteRuntimeLayout;
+  adeHome: string;
+  binDir: string;
+  runtimeDir: string;
+  binary: string;
+  versionMarker: string;
+  sha256Marker: string;
+  nativeDir: string;
+  nativeVersionMarker: string;
+  ptyHostWorker: string;
+  ptyHostWorkerSha256: string;
+  agentSkillsDir: string;
+  agentSkillsSha256: string;
+};
+
+export function resolveWindowsRemoteRuntimeLayout(
+  userProfile: string,
+  env: NodeJS.ProcessEnv = process.env,
+): WindowsRemoteRuntimeLayout {
+  if (!path.win32.isAbsolute(userProfile)) {
+    throw new Error("Windows OpenSSH did not report an absolute user profile path.");
+  }
+  const channelLayout = resolveRemoteRuntimeLayout(env);
+  const adeHome = path.win32.join(path.win32.normalize(userProfile), channelLayout.homeDirName);
+  const binDir = path.win32.join(adeHome, "bin");
+  const runtimeDir = path.win32.join(adeHome, "runtime");
+  const nativeDir = path.win32.join(runtimeDir, "win32-x64");
+  return {
+    channelLayout,
+    adeHome,
+    binDir,
+    runtimeDir,
+    binary: path.win32.join(binDir, "ade.exe"),
+    versionMarker: path.win32.join(binDir, "ade.version"),
+    sha256Marker: path.win32.join(binDir, "ade.sha256"),
+    nativeDir,
+    nativeVersionMarker: path.win32.join(nativeDir, ".ade-version"),
+    ptyHostWorker: path.win32.join(runtimeDir, "ptyHostWorker.cjs"),
+    ptyHostWorkerSha256: path.win32.join(runtimeDir, "ptyHostWorker.cjs.sha256"),
+    agentSkillsDir: path.win32.join(adeHome, "agent-skills"),
+    agentSkillsSha256: path.win32.join(adeHome, "agent-skills.sha256"),
+  };
+}
+
+export function windowsSftpPath(nativePath: string): string {
+  const normalized = path.win32.normalize(nativePath);
+  const match = /^([a-z]):\\(.*)$/i.exec(normalized);
+  if (!match) throw new Error(`Windows SFTP requires an absolute drive-letter path: ${nativePath}`);
+  return `/${match[1].toUpperCase()}:/${match[2].replace(/\\/g, "/")}`;
+}
+
+function powerShellLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+async function execWindowsPowerShellJson<T>(
+  client: Client,
+  script: string,
+  params: Record<string, unknown>,
+  fallback: string,
+  timeoutMs = 30_000,
+): Promise<T> {
+  const result = await execSshWithInput(
+    client,
+    windowsPowerShellCommand(script),
+    JSON.stringify(params),
+    { timeoutMs },
+  );
+  if (result.code !== 0) {
+    throw new Error(result.stderr.trim() || result.stdout.trim() || fallback);
+  }
+  const output = result.stdout.trim();
+  if (!output) return undefined as T;
+  try {
+    return JSON.parse(output) as T;
+  } catch (error) {
+    throw new Error(`${fallback} Windows PowerShell returned invalid JSON.`, { cause: error });
+  }
+}
+
+const WINDOWS_ENSURE_DIRECTORIES_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+foreach ($directory in $p.directories) {
+  [IO.Directory]::CreateDirectory([string]$directory) | Out-Null
+}
+@{ ok = $true } | ConvertTo-Json -Compress
+`;
+
+const WINDOWS_RUNTIME_IDENTITY_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$binary = [string]$p.binary
+$pathBinary = $null
+if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+  $candidate = Get-Command ade.exe, ade -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($candidate) { $pathBinary = [string]$candidate.Source }
+}
+$selected = if (Test-Path -LiteralPath $binary -PathType Leaf) { $binary } else { $pathBinary }
+$version = $null
+if ($selected) {
+  $versionOutput = & $selected '--version' 2>$null | Out-String
+  if ($LASTEXITCODE -eq 0) { $version = $versionOutput.Trim() }
+}
+@{
+  selectedBinary = $selected
+  executableVersion = $version
+  markerVersion = if (Test-Path -LiteralPath $p.versionMarker) { [IO.File]::ReadAllText([string]$p.versionMarker).Trim() } else { $null }
+  markerSha256 = if (Test-Path -LiteralPath $p.sha256Marker) { [IO.File]::ReadAllText([string]$p.sha256Marker).Trim().ToLowerInvariant() } else { $null }
+  actualSha256 = if ($selected) { (Get-FileHash -LiteralPath $selected -Algorithm SHA256).Hash.ToLowerInvariant() } else { $null }
+} | ConvertTo-Json -Compress
+`;
+
+const WINDOWS_FINALIZE_FILE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$file = Get-Item -LiteralPath $p.temp -ErrorAction Stop
+if ($file.Length -ne [int64]$p.size) { throw "Uploaded file size mismatch." }
+$hash = (Get-FileHash -LiteralPath $p.temp -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hash -ne ([string]$p.sha256).ToLowerInvariant()) { throw "Uploaded file checksum mismatch." }
+[IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName([string]$p.destination)) | Out-Null
+Move-Item -LiteralPath $p.temp -Destination $p.destination -Force
+if ($p.markerPath) { [IO.File]::WriteAllText([string]$p.markerPath, [string]$p.markerValue + [Environment]::NewLine) }
+@{ ok = $true; sha256 = $hash } | ConvertTo-Json -Compress
+`;
+
+const WINDOWS_NATIVE_DEPS_STATUS_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+@{ ready = (Test-Path -LiteralPath $p.nodeModules -PathType Container) -and (Test-Path -LiteralPath $p.versionMarker -PathType Leaf) -and ([IO.File]::ReadAllText([string]$p.versionMarker).Trim() -eq [string]$p.version) } | ConvertTo-Json -Compress
+`;
+
+const WINDOWS_INSTALL_NATIVE_DEPS_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$archive = Get-Item -LiteralPath $p.temp -ErrorAction Stop
+if ($archive.Length -ne [int64]$p.size) { throw "Native dependency archive size mismatch." }
+$hash = (Get-FileHash -LiteralPath $p.temp -Algorithm SHA256).Hash.ToLowerInvariant()
+if ($hash -ne ([string]$p.sha256).ToLowerInvariant()) { throw "Native dependency archive checksum mismatch." }
+$tar = Get-Command tar.exe -ErrorAction SilentlyContinue
+if (-not $tar) { throw "Windows tar.exe is unavailable. Install the Windows tar component before reconnecting." }
+if (Test-Path -LiteralPath $p.staging) { Remove-Item -LiteralPath $p.staging -Recurse -Force }
+[IO.Directory]::CreateDirectory([string]$p.staging) | Out-Null
+& $tar.Source '-xzf' $p.temp '-C' $p.staging
+if ($LASTEXITCODE -ne 0) { throw "Unable to unpack ADE native dependencies." }
+if (-not (Test-Path -LiteralPath (Join-Path $p.staging 'node_modules') -PathType Container)) { throw "ADE native dependency archive did not contain node_modules." }
+if (Test-Path -LiteralPath $p.destination) { Remove-Item -LiteralPath $p.destination -Recurse -Force }
+Move-Item -LiteralPath $p.staging -Destination $p.destination -Force
+[IO.File]::WriteAllText([string]$p.versionMarker, [string]$p.version + [Environment]::NewLine)
+Remove-Item -LiteralPath $p.temp -Force
+@{ ok = $true; sha256 = $hash } | ConvertTo-Json -Compress
+`;
+
+const WINDOWS_FREE_SPACE_SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+$p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$root = [IO.Path]::GetPathRoot([string]$p.path)
+$drive = [IO.DriveInfo]::new($root)
+@{ availableBytes = [int64]$drive.AvailableFreeSpace } | ConvertTo-Json -Compress
+`;
+
+async function windowsUploadVerifiedFile(args: {
+  ssh: Client;
+  localPath: string;
+  destination: string;
+  markerPath?: string;
+  markerValue?: string;
+}): Promise<void> {
+  const temp = `${args.destination}.tmp-${crypto.randomBytes(8).toString("hex")}`;
+  await execWindowsPowerShellJson(args.ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, {
+    directories: [path.win32.dirname(temp)],
+  }, "Unable to prepare the Windows ADE upload directory.");
+  try {
+    await uploadSftpResolvedFile(args.ssh, args.localPath, windowsSftpPath(temp), fileSizeBytes(args.localPath));
+    await execWindowsPowerShellJson(args.ssh, WINDOWS_FINALIZE_FILE_SCRIPT, {
+      temp,
+      destination: args.destination,
+      size: fileSizeBytes(args.localPath),
+      sha256: hashLocalFile(args.localPath),
+      markerPath: args.markerPath ?? null,
+      markerValue: args.markerValue ?? null,
+    }, "Uploaded Windows ADE artifact did not pass size and checksum verification.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+  } catch (error) {
+    await execWindowsPowerShellJson(args.ssh, String.raw`
+      $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+      Remove-Item -LiteralPath $p.path -Force -ErrorAction SilentlyContinue
+      @{ ok = $true } | ConvertTo-Json -Compress
+    `, { path: temp }, "Unable to clean up a partial Windows ADE upload.").catch(() => undefined);
+    throw error;
+  }
+}
+
+function windowsRuntimeEnvironmentScript(args: {
+  layout: WindowsRemoteRuntimeLayout;
+  nativeDepsReady: boolean;
+  ptyHostWorkerReady: boolean;
+}): string {
+  const assignments = [
+    `$env:ADE_HOME = ${powerShellLiteral(args.layout.adeHome)}`,
+    `$env:ADE_DEFAULT_ROLE = 'cto'`,
+    `$env:PATH = ${powerShellLiteral(`${args.layout.binDir};`)} + $env:PATH`,
+  ];
+  if (args.layout.channelLayout.channel) {
+    assignments.push(`$env:ADE_PACKAGE_CHANNEL = ${powerShellLiteral(args.layout.channelLayout.channel)}`);
+  }
+  if (args.nativeDepsReady) {
+    assignments.push(`$env:NODE_PATH = ${powerShellLiteral(path.win32.join(args.layout.nativeDir, "node_modules"))}`);
+  }
+  if (args.ptyHostWorkerReady) {
+    assignments.push(`$env:ADE_PTY_HOST_WORKER_PATH = ${powerShellLiteral(args.layout.ptyHostWorker)}`);
+    assignments.push(`$env:ADE_PTY_HOST_WORKER_COMMAND = ${powerShellLiteral(args.layout.binary)}`);
+  }
+  return assignments.join("\n");
+}
+
+export function windowsRuntimeRpcCommand(args: {
+  layout: WindowsRemoteRuntimeLayout;
+  nativeDepsReady: boolean;
+  ptyHostWorkerReady: boolean;
+  pairDevice?: boolean;
+}): string {
+  const commandArgs = args.pairDevice
+    ? "'--json', 'sync', 'pair-device', '--json-stdin'"
+    : "'rpc', '--stdio'";
+  return windowsPowerShellCommand(String.raw`
+$ErrorActionPreference = 'Stop'
+${windowsRuntimeEnvironmentScript(args)}
+& ${powerShellLiteral(args.layout.binary)} ${commandArgs}
+exit $LASTEXITCODE
+`);
+}
+
+type WindowsRuntimeIdentity = {
+  selectedBinary: string | null;
+  executableVersion: string | null;
+  markerVersion: string | null;
+  markerSha256: string | null;
+  actualSha256: string | null;
+};
+
+async function readWindowsRuntimeIdentity(
+  ssh: Client,
+  layout: WindowsRemoteRuntimeLayout,
+): Promise<WindowsRuntimeIdentity> {
+  return execWindowsPowerShellJson<WindowsRuntimeIdentity>(ssh, WINDOWS_RUNTIME_IDENTITY_SCRIPT, {
+    binary: layout.binary,
+    versionMarker: layout.versionMarker,
+    sha256Marker: layout.sha256Marker,
+  }, "Unable to inspect the Windows ADE runtime.");
+}
+
+async function bootstrapWindowsRemoteRuntime(args: {
+  request: Parameters<typeof bootstrapRemoteRuntime>[0];
+  ssh: Client;
+  connectedRoute: ConnectedSshRoute;
+  platform: WindowsRemotePlatform;
+}): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
+  const { request, ssh, connectedRoute, platform } = args;
+  const preferredLayout = resolveWindowsRemoteRuntimeLayout(platform.userProfile);
+  let layout = preferredLayout;
+  let identity = await readWindowsRuntimeIdentity(ssh, layout);
+  const localBinary = bundledRuntimePath(request.resourcesPath, platform.label);
+  const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
+  const localNativeDeps = bundledNativeDepsPath(request.resourcesPath, platform.label);
+  const localPtyHostWorker = bundledPtyHostWorkerPath(request.resourcesPath, localBinary);
+  const localAgentSkillsRoot = bundledAgentSkillsPath(request.resourcesPath, localBinary);
+  const installedVersion = selectRemoteRuntimeVersion({
+    markerVersion: identity.markerVersion,
+    executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
+  });
+  const shouldUploadRuntime = Boolean(localBinary && localBinarySha256 && shouldUploadBundledRuntime({
+    localBinaryAvailable: true,
+    executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
+    markerVersion: identity.markerVersion,
+    appVersion: request.appVersion,
+    localBinarySha256,
+    remoteBinarySha256: identity.actualSha256,
+    remoteBinaryMatchesLocal: identity.actualSha256 === localBinarySha256,
+  }));
+  const uploadBytes = (shouldUploadRuntime && localBinary ? fileSizeBytes(localBinary) : 0)
+    + (localNativeDeps ? fileSizeBytes(localNativeDeps) : 0)
+    + (localPtyHostWorker ? fileSizeBytes(localPtyHostWorker) : 0);
+  if (uploadBytes > 0) {
+    const disk = await execWindowsPowerShellJson<{ availableBytes: number }>(
+      ssh,
+      WINDOWS_FREE_SPACE_SCRIPT,
+      { path: layout.adeHome },
+      "Unable to inspect free disk space on the Windows ADE runtime.",
+    );
+    const requiredBytes = uploadBytes + REMOTE_INSTALL_MARGIN_BYTES;
+    if (!Number.isFinite(disk.availableBytes) || disk.availableBytes < requiredBytes) {
+      throw new RemoteRuntimeConnectError({
+        kind: "disk_full",
+        message: "ADE needs more free disk space on the Windows machine before it can install the remote runtime.",
+        detail: `Required ${formatInstallMegabytes(requiredBytes)}; available ${formatInstallMegabytes(Number(disk.availableBytes) || 0)}.`,
+      });
+    }
+  }
+  if (shouldUploadRuntime && localBinary) {
+    await windowsUploadVerifiedFile({
+      ssh,
+      localPath: localBinary,
+      destination: layout.binary,
+      markerPath: layout.versionMarker,
+      markerValue: request.appVersion,
+    });
+    await execWindowsPowerShellJson(ssh, String.raw`
+      $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+      [IO.File]::WriteAllText([string]$p.path, [string]$p.value + [Environment]::NewLine)
+      @{ ok = $true } | ConvertTo-Json -Compress
+    `, { path: layout.sha256Marker, value: localBinarySha256 }, "Unable to record the Windows ADE runtime checksum.");
+    identity = await readWindowsRuntimeIdentity(ssh, layout);
+  }
+  if (!identity.selectedBinary) {
+    throw new Error(`ADE is not installed on the Windows machine and no bundled ade-win32-x64.exe is available. Rebuild the desktop runtime resources, or install the standalone Windows ADE runtime and reconnect.`);
+  }
+  layout = { ...layout, binary: identity.selectedBinary };
+  const runtimeVersion = selectRemoteRuntimeVersion({
+    markerVersion: identity.markerVersion,
+    executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
+  });
+  if (localBinary && runtimeVersion !== request.appVersion) {
+    throw new Error(`Uploaded Windows ADE runtime version mismatch: expected ${request.appVersion}, got ${runtimeVersion ?? "unknown"}.`);
+  }
+
+  let nativeDepsReady = false;
+  if (localNativeDeps) {
+    const nativeStatus = await execWindowsPowerShellJson<{ ready: boolean }>(ssh, WINDOWS_NATIVE_DEPS_STATUS_SCRIPT, {
+      nodeModules: path.win32.join(layout.nativeDir, "node_modules"),
+      versionMarker: layout.nativeVersionMarker,
+      version: request.appVersion,
+    }, "Unable to inspect Windows ADE native dependencies.");
+    if (!nativeStatus.ready) {
+      const suffix = crypto.randomBytes(8).toString("hex");
+      const temp = path.win32.join(layout.runtimeDir, `ade-win32-x64.native.tar.gz.tmp-${suffix}`);
+      const staging = `${layout.nativeDir}.tmp-${suffix}`;
+      await execWindowsPowerShellJson(ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, {
+        directories: [layout.runtimeDir],
+      }, "Unable to prepare the Windows ADE native dependency directory.");
+      try {
+        await uploadSftpResolvedFile(ssh, localNativeDeps, windowsSftpPath(temp), fileSizeBytes(localNativeDeps));
+        await execWindowsPowerShellJson(ssh, WINDOWS_INSTALL_NATIVE_DEPS_SCRIPT, {
+          temp,
+          staging,
+          destination: layout.nativeDir,
+          versionMarker: layout.nativeVersionMarker,
+          version: request.appVersion,
+          size: fileSizeBytes(localNativeDeps),
+          sha256: hashLocalFile(localNativeDeps),
+        }, "Unable to install Windows ADE native dependencies.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+      } catch (error) {
+        await execWindowsPowerShellJson(ssh, String.raw`
+          $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+          Remove-Item -LiteralPath $p.temp -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $p.staging -Recurse -Force -ErrorAction SilentlyContinue
+          @{ ok = $true } | ConvertTo-Json -Compress
+        `, { temp, staging }, "Unable to clean up Windows ADE native dependency staging.").catch(() => undefined);
+        throw error;
+      }
+    }
+    nativeDepsReady = true;
+  }
+
+  let ptyHostWorkerReady = false;
+  if (localPtyHostWorker) {
+    const workerSha256 = hashLocalFile(localPtyHostWorker);
+    const status = await execWindowsPowerShellJson<{ ready: boolean }>(ssh, String.raw`
+      $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+      $ready = (Test-Path -LiteralPath $p.path -PathType Leaf) -and ((Get-FileHash -LiteralPath $p.path -Algorithm SHA256).Hash.ToLowerInvariant() -eq ([string]$p.sha256).ToLowerInvariant())
+      @{ ready = $ready } | ConvertTo-Json -Compress
+    `, { path: layout.ptyHostWorker, sha256: workerSha256 }, "Unable to inspect the Windows ADE PTY worker.");
+    if (!status.ready) {
+      await windowsUploadVerifiedFile({
+        ssh,
+        localPath: localPtyHostWorker,
+        destination: layout.ptyHostWorker,
+        markerPath: layout.ptyHostWorkerSha256,
+        markerValue: workerSha256,
+      });
+    }
+    ptyHostWorkerReady = true;
+  }
+
+  if (localAgentSkillsRoot) {
+    const files = listLocalAgentSkillFiles(localAgentSkillsRoot);
+    const directorySha256 = hashAgentSkillsDirectory(files);
+    const status = await execWindowsPowerShellJson<{ ready: boolean }>(ssh, String.raw`
+      $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+      $ready = (Test-Path -LiteralPath $p.directory -PathType Container) -and (Test-Path -LiteralPath $p.marker -PathType Leaf) -and ([IO.File]::ReadAllText([string]$p.marker).Trim() -eq [string]$p.sha256)
+      @{ ready = $ready } | ConvertTo-Json -Compress
+    `, { directory: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, "Unable to inspect Windows ADE agent skills.");
+    if (!status.ready) {
+      const staging = `${layout.agentSkillsDir}.tmp-${crypto.randomBytes(8).toString("hex")}`;
+      await execWindowsPowerShellJson(ssh, WINDOWS_ENSURE_DIRECTORIES_SCRIPT, { directories: [staging] }, "Unable to prepare Windows ADE agent skills.");
+      for (const file of files) {
+        await windowsUploadVerifiedFile({
+          ssh,
+          localPath: file.localPath,
+          destination: path.win32.join(staging, ...file.relativePath.split("/")),
+        });
+      }
+      await execWindowsPowerShellJson(ssh, String.raw`
+        $p = [Console]::In.ReadToEnd() | ConvertFrom-Json
+        if (Test-Path -LiteralPath $p.destination) { Remove-Item -LiteralPath $p.destination -Recurse -Force }
+        Move-Item -LiteralPath $p.staging -Destination $p.destination -Force
+        [IO.File]::WriteAllText([string]$p.marker, [string]$p.sha256 + [Environment]::NewLine)
+        @{ ok = $true } | ConvertTo-Json -Compress
+      `, { staging, destination: layout.agentSkillsDir, marker: layout.agentSkillsSha256, sha256: directorySha256 }, "Unable to finalize Windows ADE agent skills.", REMOTE_ARTIFACT_UPLOAD_TIMEOUT_MS);
+    }
+  }
+
+  const runtimeCommand = windowsRuntimeRpcCommand({ layout, nativeDepsReady, ptyHostWorkerReady });
+  const opened = await openValidatedRuntimeClient({
+    ssh,
+    command: runtimeCommand,
+    appVersion: request.appVersion,
+    expectedVersion: localBinary ? request.appVersion : null,
+    expectedLayout: layout.channelLayout,
+  });
+  const projects = coerceProjects(await opened.client.call("projects.list", {}));
+  const connectedAt = Date.now();
+  let pairedCredentials: DesktopPairedMachineCredentials | null = null;
+  const compatibilityWarnings = [...opened.initializeInfo.compatibilityWarnings];
+  if (request.pairedStore && request.target.transport !== "paired") {
+    try {
+      pairedCredentials = await upgradeSshTargetToPairedCredentials({
+        ssh,
+        layout: layout.channelLayout,
+        runtimeEnvPrefix: "",
+        binaryExpr: "",
+        commandOverride: windowsRuntimeRpcCommand({ layout, nativeDepsReady, ptyHostWorkerReady, pairDevice: true }),
+        appVersion: request.appVersion,
+        connectedRoute,
+        store: request.pairedStore,
+      });
+    } catch (error) {
+      console.warn("remote_runtime.ssh_pairing_upgrade_failed", { detail: runtimeErrorMessage(error) });
+      compatibilityWarnings.push("Connected, but ADE couldn't save the faster reconnect method. You can keep using this machine now and reconnect later to try again.");
+    }
+  }
+  const updated = request.registry.update(request.target.id, {
+    lastSeenArch: platform.label,
+    runtimeBinaryVersion: opened.initializeInfo.version ?? runtimeVersion ?? installedVersion,
+    lastConnectedAt: connectedAt,
+    routes: markRemoteTargetRouteSucceeded({ target: request.target, route: connectedRoute, nowMs: connectedAt }),
+    ...(pairedCredentials ? {
+      transport: "paired" as const,
+      pairedMachine: { hostIdentity: pairedCredentials.hostIdentity.deviceId, machineKey: pairedCredentials.machineKey ?? null },
+    } : {}),
+  });
+  const host = connectedRoute.hostname.includes(":") && !connectedRoute.hostname.startsWith("[")
+    ? `[${connectedRoute.hostname}]`
+    : connectedRoute.hostname;
+  return {
+    client: opened.client,
+    ssh,
+    result: {
+      target: updated,
+      arch: platform.label,
+      version: opened.initializeInfo.version ?? runtimeVersion,
+      route: { kind: "ssh", endpoint: `${host}:${connectedRoute.port ?? request.target.port ?? 22}` },
+      capabilities: opened.initializeInfo.capabilities,
+      compatibilityWarnings,
+      projects,
+    },
+  };
+}
+
 export async function bootstrapRemoteRuntime(args: {
   target: RemoteRuntimeTarget;
   registry: RemoteTargetRegistry;
@@ -1672,11 +2259,10 @@ export async function bootstrapRemoteRuntime(args: {
   const uploadConnectionConfig = openSshConfig ?? connectedConfig;
   let installDiskSpace: RemoteInstallDiskSpace | null = null;
   try {
-    const uname = await execSsh(ssh, "uname -sm");
-    if (uname.code !== 0) {
-      throw new Error(uname.stderr.trim() || "Unable to detect remote architecture.");
+    const arch = await detectRemotePlatform(ssh);
+    if (arch.platform === "win32") {
+      return await bootstrapWindowsRemoteRuntime({ request: args, ssh, connectedRoute, platform: arch });
     }
-    const arch = normalizeRemoteArch(uname.stdout.trim());
     const preferredLayout = resolveRemoteRuntimeLayout();
     let layout = preferredLayout;
     let runtimeLayoutFallbackReason: string | null = null;

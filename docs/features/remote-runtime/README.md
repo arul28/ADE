@@ -616,7 +616,7 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 
 ## Standalone runtime install
 
-For headless macOS / Linux machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows x64 machines can install the same standalone brain locally. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. SSH-reachable macOS/Linux machines can still skip the standalone installer because desktop bootstrap uploads bundled runtime artifacts on first connect; Windows remains a local standalone target, not an SSH-bootstrap target.
+For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `ade rpc --stdio` with the channel-specific ADE home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
 
 ```bash
 curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
