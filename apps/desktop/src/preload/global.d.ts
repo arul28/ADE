@@ -722,6 +722,13 @@ declare global {
         setEnabled: (enabled: boolean) => Promise<ProductAnalyticsStatus>;
       };
       app: {
+        /**
+         * Host platform/arch, captured in preload so the renderer can gate
+         * synchronously at first paint. `app.getInfo()` carries the same values
+         * but is an async IPC round trip, which is too late for module-scope
+         * and first-render decisions.
+         */
+        runtimeTarget: { platform: string; arch: string };
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;

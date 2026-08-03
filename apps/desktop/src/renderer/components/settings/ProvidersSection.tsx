@@ -44,7 +44,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
-import { rendererPlatformAttribute } from "../../lib/platform";
+import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
@@ -1136,7 +1136,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         })()}
 
         {/* ── Cursor ── */}
-        {(() => {
+        {/* Hidden entirely on Windows on ARM: @cursor/sdk has no win32-arm64
+            build, so the card could only ever offer a provider that cannot
+            start. See shared/providerPlatformSupport.ts. */}
+        {!cursorProviderAvailable() ? null : (() => {
           const tool = CLI_TOOLS.find((t) => t.cli === "cursor")!;
           const connection = providerConnections?.[tool.cli] ?? null;
           const credentialSourceDesc = describeCredentialSource(connection);
