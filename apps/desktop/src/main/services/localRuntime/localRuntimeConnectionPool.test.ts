@@ -4,7 +4,8 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { signalChildProcessTree } from "../shared/utils";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
 import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
@@ -200,17 +201,47 @@ async function waitForRuntimeSocket(
   }, { timeout: timeoutMs, interval: 100 });
 }
 
+/**
+ * Every real `ade serve` daemon this suite starts, so teardown can reap them
+ * even when a test throws before reaching its own `finally`.
+ *
+ * Per-test cleanup alone is not enough on Windows: a daemon is not a leaf
+ * process (it spawns `node` children of its own), and an unreaped tree keeps
+ * holding the runtime named pipe, so the next test -- or the next CI job --
+ * inherits a live listener it did not start.
+ */
+const spawnedDaemons = new Set<ChildProcess>();
+
+/** Kill a daemon and everything it started. `taskkill /T` on Windows, process group on POSIX. */
+function reapDaemonTree(child: ChildProcess): void {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    signalChildProcessTree(child, "SIGKILL");
+  } catch {
+    // Best effort: the tree may already be gone.
+  }
+}
+
+afterEach(() => {
+  for (const child of spawnedDaemons) reapDaemonTree(child);
+  spawnedDaemons.clear();
+});
+
 function startServeProcess(args: {
   cliPath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   socketPath: string;
 }): ChildProcess {
-  return spawn(process.execPath, [args.cliPath, "serve", "--socket", args.socketPath, "--no-sync"], {
+  const child = spawn(process.execPath, [args.cliPath, "serve", "--socket", args.socketPath, "--no-sync"], {
     cwd: args.cwd,
     env: args.env,
     stdio: ["ignore", "ignore", "ignore"],
+    detached: process.platform !== "win32",
   });
+  spawnedDaemons.add(child);
+  child.once("exit", () => spawnedDaemons.delete(child));
+  return child;
 }
 
 function runningTestServiceStatus() {
@@ -557,7 +588,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -932,7 +963,7 @@ describe("local runtime connection pool", () => {
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(0);
       expect(client.close).toHaveBeenCalledTimes(1);
     } finally {
-      if (child && !child.killed) child.kill();
+      if (child) reapDaemonTree(child);
       if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalAdeCliJs;
       removeTempDir(tempDir);
@@ -992,8 +1023,8 @@ describe("local runtime connection pool", () => {
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(1);
       expect(replacementClient.close).not.toHaveBeenCalled();
     } finally {
-      if (oldChild && !oldChild.killed) oldChild.kill();
-      if (replacementChild && !replacementChild.killed) replacementChild.kill();
+      if (oldChild) reapDaemonTree(oldChild);
+      if (replacementChild) reapDaemonTree(replacementChild);
       if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalAdeCliJs;
       removeTempDir(tempDir);
@@ -2165,7 +2196,7 @@ describe("local runtime connection pool", () => {
       firstPool?.dispose();
       secondPool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2297,9 +2328,7 @@ describe("local runtime connection pool", () => {
       secondPool?.dispose();
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2391,7 +2420,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2470,7 +2499,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2548,7 +2577,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!devDaemon.killed) devDaemon.kill();
+      reapDaemonTree(devDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2667,9 +2696,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2791,9 +2818,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
