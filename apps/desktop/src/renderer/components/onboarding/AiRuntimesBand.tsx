@@ -12,6 +12,7 @@ import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { openExternalUrl } from "../../lib/openExternal";
+import { rendererPlatformAttribute } from "../../lib/platform";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
@@ -34,10 +35,22 @@ type RuntimeMeta = {
   authCommand?: string;
 };
 
+/**
+ * Cursor ships a PowerShell installer for native Windows; the `curl … | bash`
+ * one-liner is documented for macOS, Linux and WSL only. Keep this in step with
+ * `cursorInstallCommand()` in apps/ade-cli/src/services/agentRegistry.ts.
+ */
+export function cursorInstallCommand(platform = rendererPlatformAttribute()): string {
+  if (platform === "win32") {
+    return `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`;
+  }
+  return 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash';
+}
+
 const RUNTIMES: RuntimeMeta[] = [
   { id: "claude", label: "Claude Code", brand: BRAND.claude, Logo: ClaudeLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @anthropic-ai/claude-code", authCommand: "claude /login" },
   { id: "codex", label: "Codex", brand: BRAND.codex, Logo: CodexLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @openai/codex", authCommand: "codex login" },
-  { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash' },
+  { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: cursorInstallCommand() },
   { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", authCommand: "droid login" },
   { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup },
 ];
