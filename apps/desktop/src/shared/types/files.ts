@@ -100,6 +100,12 @@ export type FilesGitStatusEvent = {
   workspaceId: string;
   files: FileTreeStatusEntry[];
   directories: FileTreeStatusEntry[];
+  /**
+   * Set when a dirty tree was large enough that the entry lists were capped
+   * (shallowest paths kept). Deep files then render undecorated instead of the
+   * response growing past the sync transport's byte budget.
+   */
+  truncated?: boolean;
 };
 
 export type FilePreviewKind = "text" | "image" | "binary";
@@ -226,6 +232,13 @@ export type FileChangeEvent = {
   path: string;
   oldPath?: string;
   ts: string;
+  /**
+   * Set when this client caused the change. The web adapter tags its own
+   * writes so the Files workbench can skip reloading bytes it just sent — the
+   * relay transport has no host-side watcher, so an untagged `modified` event
+   * is a genuine remote change.
+   */
+  origin?: "self";
 };
 
 export type FilesQuickOpenArgs = {

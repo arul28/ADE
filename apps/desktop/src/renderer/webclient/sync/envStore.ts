@@ -1,9 +1,10 @@
 import type {
   SyncAddressCandidate,
+  SyncMobileProjectSummary,
   SyncPairingHostIdentity,
 } from "../../../shared/types/sync";
 
-export type WebClientStorageArea = "environments" | "meta" | "account";
+export type WebClientStorageArea = "environments" | "meta" | "account" | "catalogs";
 
 export type WebClientStorage = {
   get<T>(area: WebClientStorageArea, key: string): Promise<T | null>;
@@ -50,10 +51,34 @@ export type WebClientEnvironmentRecord = {
   hostIdentity?: SyncPairingHostIdentity;
 };
 
+/**
+ * A machine's project catalog as last seen by this browser.
+ *
+ * Persisted so the welcome surface can paint recents on load, before any relay
+ * connection exists. `savedAt` is what marks a row stale until live catalog
+ * data replaces it; `ownerUserId` keeps one account's project names from
+ * surfacing to the next account signed in on the same browser.
+ */
+export type WebClientMachineCatalogRecord = {
+  machineKey: string;
+  machineName: string;
+  hostDeviceId: string | null;
+  envId: string | null;
+  ownerUserId: string | null;
+  projects: SyncMobileProjectSummary[];
+  savedAt: number;
+};
+
 const DB_NAME = "ade-web-client";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const DB_UPGRADE_BLOCKED_TIMEOUT_MS = 5_000;
 const SELECTED_ENV_ID_KEY = "selectedEnvId";
+const LAST_ACTIVE_MACHINE_KEY = "lastActiveMachineKey";
+/** Bounds on the catalog cache: it is a paint accelerator, not a database. */
+export const MAX_PERSISTED_MACHINE_CATALOGS = 8;
+export const MAX_PERSISTED_CATALOG_PROJECTS = 24;
+/** Icons are data URLs; an oversized one is dropped rather than stored. */
+const MAX_PERSISTED_ICON_CHARS = 24_000;
 export const WEB_TRUST_RESET_VERSION = 1;
 const TRUST_RESET_VERSION_KEY = "machineTrustResetVersion";
 export const INDEXED_DB_OPEN_TIMEOUT_MS = 4_000;
@@ -93,6 +118,20 @@ function pruneResult(
   return {
     removedIds: [...removedIds],
     environments: sortEnvironments(environments),
+  };
+}
+
+function boundCatalogRecord(
+  record: WebClientMachineCatalogRecord,
+): WebClientMachineCatalogRecord {
+  return {
+    ...record,
+    savedAt: record.savedAt || Date.now(),
+    projects: record.projects.slice(0, MAX_PERSISTED_CATALOG_PROJECTS).map((project) => (
+      project.iconDataUrl && project.iconDataUrl.length > MAX_PERSISTED_ICON_CHARS
+        ? { ...project, iconDataUrl: null }
+        : project
+    )),
   };
 }
 
@@ -228,6 +267,7 @@ export class IndexedDbStorage implements WebClientStorage {
           if (!db.objectStoreNames.contains("environments")) db.createObjectStore("environments");
           if (!db.objectStoreNames.contains("meta")) db.createObjectStore("meta");
           if (!db.objectStoreNames.contains("account")) db.createObjectStore("account");
+          if (!db.objectStoreNames.contains("catalogs")) db.createObjectStore("catalogs");
         };
         request.onblocked = () => {
           if (blockedTimer || settled) return;
@@ -283,6 +323,7 @@ export class MemoryStorage implements WebClientStorage {
     environments: new Map(),
     meta: new Map(),
     account: new Map(),
+    catalogs: new Map(),
   };
 
   async get<T>(area: WebClientStorageArea, key: string): Promise<T | null> {
@@ -427,6 +468,77 @@ export class WebClientEnvStore {
         );
       },
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Machine project catalogs.
+  //
+  // Read at boot so the welcome surface paints recents before the first relay
+  // dial, written through whenever a live catalog arrives. Every entry is a
+  // cache: a failure to read or write one is never fatal to the caller.
+  // -------------------------------------------------------------------------
+
+  async listMachineCatalogs(): Promise<WebClientMachineCatalogRecord[]> {
+    const records = await this.storage.list<WebClientMachineCatalogRecord>("catalogs");
+    return records
+      .filter((record) => record && typeof record.machineKey === "string")
+      .sort((left, right) => (right.savedAt ?? 0) - (left.savedAt ?? 0));
+  }
+
+  async saveMachineCatalog(record: WebClientMachineCatalogRecord): Promise<void> {
+    const bounded = boundCatalogRecord(record);
+    await this.storage.transaction(["catalogs"], "readwrite", async (transaction) => {
+      const existing = (await transaction.list<WebClientMachineCatalogRecord>("catalogs"))
+        .filter((entry) => entry && entry.machineKey !== bounded.machineKey);
+      transaction.put("catalogs", bounded.machineKey, bounded);
+      const overflow = existing
+        .sort((left, right) => (right.savedAt ?? 0) - (left.savedAt ?? 0))
+        .slice(MAX_PERSISTED_MACHINE_CATALOGS - 1);
+      for (const entry of overflow) transaction.delete("catalogs", entry.machineKey);
+    });
+  }
+
+  async removeMachineCatalog(machineKey: string): Promise<void> {
+    await this.storage.delete("catalogs", machineKey);
+  }
+
+  /**
+   * Drop catalogs that belong to a different account than the one signed in.
+   *
+   * Deliberately stricter than `pruneAccountOwnedEnvironments` in the one case
+   * where they differ: a null `currentOwnerUserId` here means "signed out" (the
+   * only caller, `applyAccountPrivacy`, runs after the account has bootstrapped,
+   * so the owner is never merely unresolved), and cached project names from the
+   * account that just signed out must not survive on the welcome surface.
+   * Environments stay because a pairing is this browser's own credential, and
+   * they get a second owner filter before they are ever rendered.
+   *
+   * A null `ownerUserId` on a RECORD is exempt for the same reason it is exempt
+   * on an environment: it was saved outside any account, so it belongs to this
+   * browser rather than to someone else's account.
+   */
+  async pruneMachineCatalogs(currentOwnerUserIdValue: string | null): Promise<string[]> {
+    const currentOwnerUserId = currentOwnerUserIdValue?.trim() || null;
+    return await this.storage.transaction(["catalogs"], "readwrite", async (transaction) => {
+      const records = await transaction.list<WebClientMachineCatalogRecord>("catalogs");
+      const removed = records
+        .filter((record) => record?.ownerUserId != null && record.ownerUserId !== currentOwnerUserId)
+        .map((record) => record.machineKey);
+      for (const machineKey of removed) transaction.delete("catalogs", machineKey);
+      return removed;
+    });
+  }
+
+  async getLastActiveMachineKey(): Promise<string | null> {
+    return await this.storage.get<string>("meta", LAST_ACTIVE_MACHINE_KEY);
+  }
+
+  async setLastActiveMachineKey(machineKey: string | null): Promise<void> {
+    if (machineKey) {
+      await this.storage.put("meta", LAST_ACTIVE_MACHINE_KEY, machineKey);
+      return;
+    }
+    await this.storage.delete("meta", LAST_ACTIVE_MACHINE_KEY);
   }
 
   async getSelectedEnvId(): Promise<string | null> {

@@ -14,7 +14,6 @@ import {
   DesktopTower,
   Folder,
   FolderOpen,
-  House,
   Plus,
   Minus,
   Plugs,
@@ -85,6 +84,14 @@ import {
   ADE_BROWSER_VIEW_OCCLUSION_END_EVENT,
   ADE_BROWSER_VIEW_OCCLUSION_START_EVENT,
 } from "../../lib/workSidebarBrowserResize";
+
+// Hosted-client only: kept out of the desktop bundle's critical path, and out
+// of the desktop bundle's dependency graph for the sync client entirely.
+const WebConnectionsChip = React.lazy(() =>
+  import("../../webclient/workspace/WebConnectionsChip").then((module) => ({
+    default: module.WebConnectionsChip,
+  })),
+);
 
 const ADE_PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const ADE_PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
@@ -1037,7 +1044,14 @@ export function TopBar({
   const connectionsPanelRef = useRef<HTMLDivElement | null>(null);
   const closeConnections = useCallback(() => setConnectionsOpen(false), []);
   const openConnections = useCallback((tab: ConnectionsPanelTab = "machines") => {
-    if (webMode) return;
+    if (webMode) {
+      // The hosted client has no header Connections panel — the connections
+      // chip in the top right owns that surface, and it listens for this event
+      // (WEB_OPEN_CONNECTIONS_EVENT in webclient/workspace/WebConnectionsChip).
+      // Returning early here is what left "Connect another machine…" inert.
+      window.dispatchEvent(new CustomEvent("ade-web:open-connections", { detail: { tab } }));
+      return;
+    }
     setConnectionsTab(tab);
     setConnectionsOpen(true);
   }, [webMode]);
@@ -1576,13 +1590,9 @@ export function TopBar({
 
   const handleOpenNew = useCallback(() => {
     if (isProjectBusy) return;
-    if (webMode) {
-      onNavigate?.("/hub");
-      return;
-    }
     openNewTab();
     if (personalChatsRouteActive || accountRouteActive || hubRouteActive) onNavigate?.("/work");
-  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive, webMode]);
+  }, [accountRouteActive, hubRouteActive, isProjectBusy, onNavigate, openNewTab, personalChatsRouteActive]);
 
   const handleOpenNewWindow = useCallback(() => {
     if (isProjectBusy) return;
@@ -2120,7 +2130,13 @@ export function TopBar({
         options?.onActivate?.();
       };
 
-      const connectionsChip = webMode ? null : (
+      // On the hosted client the machine IS the connection: the chip names it,
+      // and its popover is where machines are managed now that the Hub is gone.
+      const connectionsChip = webMode ? (
+        <React.Suspense fallback={null}>
+          <WebConnectionsChip />
+        </React.Suspense>
+      ) : (
         <ShellConnectionChip
           layout={menuLayout ? "menu-row" : "chip"}
           label="Connections"
@@ -2222,18 +2238,6 @@ export function TopBar({
         onDragOver={handleProjectTabDragOver}
         onDrop={handleProjectTabDrop}
       >
-        {webMode ? (
-          <ShellNavTab
-            active={hubRouteActive}
-            label="Hub"
-            onActivate={() => {
-              if (!hubRouteActive) onNavigate?.("/hub");
-            }}
-          >
-            <House size={14} weight={hubRouteActive ? "fill" : "duotone"} className="shrink-0 text-accent" />
-            <span className="min-w-0 flex-1 truncate text-center text-[12px]">Hub</span>
-          </ShellNavTab>
-        ) : null}
         {tabGroups.length > 0 ||
         isNewTabOpen ||
         personalChatsTabOpen ? (
@@ -2655,7 +2659,7 @@ export function TopBar({
           disabled={isProjectBusy}
           title={
             webMode
-              ? "Open a project from the Hub"
+              ? "Open another project"
               : remoteStatusCount > 0
               ? `${remoteStatusCount} remote device${remoteStatusCount === 1 ? "" : "s"} available`
               : "Open another project"

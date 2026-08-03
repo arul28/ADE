@@ -6465,6 +6465,9 @@ export function registerIpc({
       prompt: record.prompt.trim(),
       modelId: record.modelId.trim(),
       laneId: record.laneId.trim(),
+      ...(typeof record.chatModelId === "string" && record.chatModelId.trim().length
+        ? { chatModelId: record.chatModelId.trim() }
+        : {}),
       ...(typeof record.fallbackName === "string" && record.fallbackName.trim().length
         ? { fallbackName: record.fallbackName.trim() }
         : {}),

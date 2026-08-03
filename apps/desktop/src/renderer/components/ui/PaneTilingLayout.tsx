@@ -47,6 +47,120 @@ export type PaneConfig = {
 const RESIZE_TARGET_MINIMUM_SIZE = { coarse: 37, fine: 27 } as const;
 /* Direction-aware compaction: width needs more space for readable headers;
    height just needs enough for stacked header rows. */
+/** Companion key recording the child count a split's sizes were captured at. */
+const SPLIT_ARITY_SUFFIX = "arity";
+/**
+ * Floor for a RESTORED panel percentage.
+ *
+ * A pane persisted at a sliver is unusable and unrecoverable by eye: a terminal
+ * restored into ~18% of the width renders ~20 columns of a 155-column session,
+ * which reads as corruption rather than as a small pane (observed in the wild).
+ * Deliberate minimizing does not travel through here — it compacts to a pixel
+ * width at runtime and restores from `previousSize` — so nothing legitimate
+ * lands below this.
+ */
+const MIN_RESTORED_PANEL_PERCENT = 10;
+/** Re-normalization passes before accepting the result; convergence is far faster. */
+const RENORMALIZE_MAX_PASSES = 4;
+
+/**
+ * A saved size is only meaningful when the split still has the shape it had
+ * when the size was written. Sizes are position-keyed, so a split that gained
+ * or lost a child would otherwise apply the old percentages to entirely
+ * different panels — the classic "one pane is a sliver" corruption. Layouts
+ * saved before the arity stamp existed are treated as trustworthy for their
+ * value but still floored.
+ */
+export function savedSizeFor(
+  layout: Record<string, number>,
+  key: string,
+  idx: number,
+  childCount: number,
+): number | undefined {
+  const savedArity = layout[`${key}:${SPLIT_ARITY_SUFFIX}`];
+  if (savedArity != null && Number(savedArity) !== childCount) return undefined;
+  const group = savedGroupSizes(layout, key, childCount);
+  if (group) return group[idx];
+  const size = parseSavedSize(layout, key, idx);
+  return size == null ? undefined : Math.max(size, MIN_RESTORED_PANEL_PERCENT);
+}
+
+/**
+ * One saved percentage, or null when it is absent or unusable. A size at or
+ * past the extremes describes no split at all, so it is treated as missing
+ * rather than clamped into one.
+ */
+function parseSavedSize(
+  layout: Record<string, number>,
+  key: string,
+  idx: number,
+): number | null {
+  const raw = layout[`${key}:${idx}:size`];
+  if (raw == null) return null;
+  const size = Number(raw);
+  if (!Number.isFinite(size) || size <= 0 || size >= 100) return null;
+  return size;
+}
+
+/**
+ * The whole sibling group's restored sizes, floored and re-normalized to 100.
+ *
+ * Flooring one panel at a time is what makes the arithmetic wrong: raising a
+ * 4% sliver to 10% adds six points the siblings never gave up, so the group
+ * sums to more than 100 and the layout engine absorbs the excess wherever it
+ * likes — which is how a floor meant to rescue one pane ends up shrinking
+ * another. Taking the group together lets the surplus come out of the panels
+ * that actually have room, proportionally, and never out of one already at the
+ * floor.
+ *
+ * Returns undefined unless EVERY child has a usable saved size; a partially
+ * saved group has no total to preserve, so the caller falls back to flooring
+ * that one value.
+ */
+function savedGroupSizes(
+  layout: Record<string, number>,
+  key: string,
+  childCount: number,
+): number[] | undefined {
+  if (childCount < 2) return undefined;
+  const sizes: number[] = [];
+  for (let i = 0; i < childCount; i += 1) {
+    const size = parseSavedSize(layout, key, i);
+    if (size == null) return undefined;
+    sizes.push(size);
+  }
+
+  let scaled = sizes.map((size) => Math.max(size, MIN_RESTORED_PANEL_PERCENT));
+
+  // Scaling can push an above-floor panel BELOW the floor, where the clamp
+  // pins it — which adds back percentage the scale had just removed, so one
+  // pass does not always land on 100. ([1, 1, 11, 87] floors to
+  // [10, 10, 11, 87]; a single pass clamps the 11 back to 10 and totals
+  // 101.02.) Each pass moves at least one panel into the fixed set, so this
+  // converges quickly; the cap just bounds the worst case.
+  for (let pass = 0; pass < RENORMALIZE_MAX_PASSES; pass += 1) {
+    const total = scaled.reduce((sum, size) => sum + size, 0);
+    if (Math.abs(total - 100) < 0.01) return scaled;
+
+    // Only the panels above the floor can absorb the correction; scale them so
+    // the group lands on 100 while the floored ones stay exactly at it.
+    const fixed = scaled.reduce(
+      (sum, size) => sum + (size <= MIN_RESTORED_PANEL_PERCENT ? size : 0),
+      0,
+    );
+    const flexible = total - fixed;
+    const budget = 100 - fixed;
+    // Every panel is pinned at the floor, or the floors alone already exceed
+    // 100: there is nothing left to redistribute, so leave them be.
+    if (flexible <= 0 || budget <= 0) return scaled;
+    const scale = budget / flexible;
+    scaled = scaled.map((size) => (
+      size <= MIN_RESTORED_PANEL_PERCENT ? size : Math.max(MIN_RESTORED_PANEL_PERCENT, size * scale)
+    ));
+  }
+  return scaled;
+}
+
 const COMPACTED_WIDTH_PX = 180;
 const COMPACTED_HEIGHT_PER_LEAF_PX = 44;
 const LEAF_MINIMIZED_HEIGHT_PX = 44;
@@ -488,15 +602,18 @@ export function PaneTilingLayout({
             }
           }
           if (Object.keys(updates).length > 0) {
+            // Sizes are keyed by POSITION (`:0:size`, `:1:size`), so they only
+            // mean anything against the child count they were captured at.
+            // Stamp it, and `savedSizeFor` discards the group when the split's
+            // shape has changed since.
+            updates[`${key}:${SPLIT_ARITY_SUFFIX}`] = node.children.length;
             saveLayout((prev) => ({ ...prev, ...updates }));
           }
         }}
       >
         {node.children.map((child, idx) => {
           const childKey = `${key}:${idx}`;
-          const sizeKey = `${key}:${idx}:size`;
-          const savedSize =
-            layout[sizeKey] != null ? Number(layout[sizeKey]) : undefined;
+          const savedSize = savedSizeFor(layout, key, idx, node.children.length);
           const defaultSize = savedSize ?? child.defaultSize;
           const isSplitNode = child.node.type === "split";
           const isMinimizedLeaf = child.node.type === "pane" && (minimized[child.node.id] ?? false);

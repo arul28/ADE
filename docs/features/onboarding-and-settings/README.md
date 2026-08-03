@@ -236,8 +236,21 @@ Renderer — settings:
   in the top bar, not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
-  `keywords`, `tab`, `anchor`, `scope`, `group`). Add a setting here and
+  `keywords`, `tab`, `anchor`, `scope`, `web`, `group`). Add a setting here and
   it becomes navigable, searchable, and deep-linkable at once.
+  `scope` answers *who does this affect*; `web` (`SettingWebScope`) answers
+  *does it work at all from a browser, and what do we tell the user about where
+  it went*. A hosted browser has no Electron shell and reaches its machine only
+  through the actions the sync host registers, so a setting either travels to
+  that machine, syncs through the ADE account, never leaves the browser tab, or
+  is `hidden`. `hidden` is why Secrets, providers, GitHub credentials,
+  dictation, the CLI installer, auto-updates, storage, session lifecycle, and
+  lane templates stay off the web nav: their reads would land, but their writes
+  would resolve against a missing descriptor and silently vanish.
+  `sectionWebScope` resolves a section's scope, and `WebScopeBanner.tsx` prints
+  it as the section's opening line — so a toggle that will not follow you to
+  another browser says so before you flip it. Desktop renders sections exactly
+  as before, with no banner.
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,

@@ -1,13 +1,17 @@
 import {
   peerToRuntimeDeviceState,
+  type AgentChatSession,
   type AiConfig,
   type CtoAttentionState,
+  type CtoOnboardingState,
+  type CtoSnapshot,
   type GitHubStatus,
   type PersonalChatStreamEventsResult,
   type SyncDeviceRuntimeState,
   type SyncRoleSnapshot,
 } from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
+import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export type MiscNamespaces = {
@@ -420,9 +424,12 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
       const providerId = oauthProviderId(args);
       await startOAuthDrain(providerId);
       try {
-        return await call<OpenCodeOAuthStartResult>("ai.opencodeOAuthStart", args, () => {
-          throw new Error("OpenCode sign-in is unavailable in the web client while offline");
-        }, false);
+        return await call<OpenCodeOAuthStartResult>(
+          "ai.opencodeOAuthStart",
+          args,
+          unavailableOnHost("OpenCode sign-in is unavailable in the web client while offline"),
+          false,
+        );
       } catch (error) {
         if (providerId) oauthActiveProviders.delete(providerId);
         if (oauthActiveProviders.size === 0) stopOAuthDrain();
@@ -475,7 +482,15 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const projectConfig: Record<string, unknown> = {
     get: () => call("projectConfig.get", {}, projectConfigSnapshot(state.getProject()?.rootPath ?? "")),
     validate: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").validation,
-    save: (candidate: unknown) => call("projectConfig.save", { candidate }, projectConfigSnapshot(state.getProject()?.rootPath ?? ""), false),
+    // A snapshot fallback here would echo the settings back as if they were
+    // stored: Settings renders "Saved" and the write is gone. Fail loudly
+    // instead when the host has no descriptor for it.
+    save: (candidate: unknown) => call<Record<string, unknown>>(
+      "projectConfig.save",
+      { candidate },
+      unavailableOnHost("This Mac is running an older ADE that can't save these settings."),
+      false,
+    ),
     diffAgainstDisk: async () => ({
       sharedChanged: false,
       localChanged: false,
@@ -487,7 +502,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     confirmTrust: async () => projectConfigSnapshot(state.getProject()?.rootPath ?? "").trust,
   };
 
-  const zoom = createZoomNamespace(localState, events);
+  const zoom = createZoomNamespace(infra);
   const localNamespaces = createLocalPersistenceNamespaces(localState);
 
   const rebase: Record<string, unknown> = {
@@ -522,7 +537,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     graphState: localNamespaces.graphState as AdeNamespace<"graphState">,
     rebase: rebase as AdeNamespace<"rebase">,
     history: history as AdeNamespace<"history">,
-    cto: createCtoNamespace(call),
+    cto: createCtoNamespace(call, localState),
     orchestration: createOrchestrationNamespace(call),
     projectSecrets: createProjectSecretsNamespace(),
     transcription: createTranscriptionNamespace(),
@@ -545,25 +560,35 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   };
 }
 
-function createZoomNamespace(localState: AdapterInfra["localState"], events: AdapterInfra["events"]): Record<string, unknown> {
-  function setCssZoom(level: number): void {
-    const factor = zoomFactor(level);
-    if (typeof document !== "undefined") {
-      document.documentElement.style.setProperty("--ade-web-zoom-factor", String(factor));
-      (document.documentElement.style as CSSStyleDeclaration & { zoom?: string }).zoom = String(factor);
+function createZoomNamespace(infra: AdapterInfra): Record<string, unknown> {
+  const { localState } = infra;
+  function setCssZoom(factor: number): void {
+    if (typeof document === "undefined") return;
+    try {
+      document.documentElement?.style?.setProperty("--ade-web-zoom-factor", String(factor));
+      // Zoom the <body>, not the root element: percentages resolve across the
+      // zoom boundary, so body/#root still measure exactly one viewport at every
+      // level (verified in Chrome 150 and Chromium 146 — no page scrollbar in or
+      // out), while the root element is the one place engines have historically
+      // reserved for browser/pinch zoom.
+      const bodyStyle = document.body?.style as (CSSStyleDeclaration & { zoom?: string }) | undefined;
+      if (bodyStyle) bodyStyle.zoom = String(factor);
+    } catch {
+      // A display preference must never take the adapter down — this also runs
+      // during install, where the document may be a partial stub.
     }
   }
+  // AppShell re-applies the stored level on mount; doing it at install too means
+  // a reload paints at the user's zoom instead of flashing 100% first.
+  setCssZoom(zoomFactorForDisplay(getStoredZoomLevel()));
   return {
     getLevel: () => localState.get("zoomLevel", 0),
     setLevel: (level: number) => {
       localState.set("zoomLevel", level);
-      setCssZoom(level);
+      setCssZoom(zoomFactorForLevel(level));
     },
-    getFactor: () => zoomFactor(localState.get("zoomLevel", 0)),
-    onCommand: () => {
-      void events;
-      return () => {};
-    },
+    getFactor: () => zoomFactorForLevel(localState.get("zoomLevel", 0)),
+    onCommand: () => () => {},
   };
 }
 
@@ -590,13 +615,85 @@ function createLocalPersistenceNamespaces(localState: AdapterInfra["localState"]
   };
 }
 
-function createCtoNamespace(call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>): NonNullable<Window["ade"]["cto"]> {
+// Mirrors createMiscNamespaces' local `call`: the fallback is either an eager
+// value or a lazy resolver that may throw for calls with no offline shape.
+type MiscCall = <T>(
+  action: string,
+  args: unknown,
+  fallback: T | (() => T | Promise<T>),
+  idempotent?: boolean,
+) => Promise<T>;
+
+// The onboarding wizard is a desktop-first flow — the host registers no
+// `cto.*Onboarding` descriptors, and the wizard itself writes through
+// cto.updateIdentity, which this namespace deliberately leaves unwired. Left to
+// the fallback proxy the reads resolve to null, and CtoPage then parks forever:
+// its ensure-session effect bails while onboardingState is null, so the chat
+// never starts. Synthesize a completed state in browser-local storage instead,
+// so the web CTO opens straight into the chat.
+const WEB_CTO_ONBOARDING_KEY = "ctoOnboarding";
+
+function createCtoOnboardingShims(localState: AdapterInfra["localState"]): Record<string, unknown> {
+  // "identity" is the step CtoPage treats as completing onboarding, so the
+  // default reads as done without inventing a completion timestamp.
+  const read = (): CtoOnboardingState =>
+    localState.get<CtoOnboardingState>(WEB_CTO_ONBOARDING_KEY, { completedSteps: ["identity"] });
+  const write = (next: CtoOnboardingState): CtoOnboardingState => {
+    localState.set(WEB_CTO_ONBOARDING_KEY, next);
+    return next;
+  };
   return {
+    getOnboardingState: async (): Promise<CtoOnboardingState> => read(),
+    dismissOnboarding: async (): Promise<CtoOnboardingState> =>
+      write({ ...read(), dismissedAt: new Date().toISOString() }),
+    resetOnboarding: async (): Promise<CtoOnboardingState> => write({ completedSteps: [] }),
+  };
+}
+
+// Wired method-by-method on purpose. The host registers every `cto.*` action as
+// viewerAllowed, including `setLinearToken`/`clearLinearToken`, so completing
+// this namespace mechanically would hand any connected browser write access to
+// the host's Linear credential store. Only reads and the session ensure are
+// wired; identity/token writes stay with the fallback proxy.
+function createCtoNamespace(
+  call: MiscCall,
+  localState: AdapterInfra["localState"],
+): NonNullable<Window["ade"]["cto"]> {
+  return {
+    ...createCtoOnboardingShims(localState),
+    getState: (args?: unknown) => call<CtoSnapshot>(
+      "cto.getState",
+      { recentLimit: asRecord(args).recentLimit ?? 20 },
+      unavailableOnHost("The CTO isn't available on the connected ADE host."),
+    ),
+    // Materializes the primary lane's CTO chat session, so it is a write: never
+    // let it resolve to a fabricated session the chat pane would then address.
+    ensureSession: async (args?: unknown) => {
+      const summary = await call<Record<string, unknown>>(
+        "cto.ensureSession",
+        args,
+        unavailableOnHost("The CTO chat isn't available on the connected ADE host."),
+        false,
+      );
+      return ctoSessionFromRemoteSummary(summary);
+    },
     getAttention: () => call<CtoAttentionState>(
       "cto.getAttention",
       {},
       { status: "unknown", awaitingInput: false, since: null },
     ),
+    // The host registers this one `viewerAllowed`, and the CTO tab ships on web
+    // now, so leaving it unwired made the Linear panel fall through to the
+    // fallback proxy and report a permanently disconnected Linear.
+    getLinearConnectionStatus: () => call("cto.getLinearConnectionStatus", {}, {
+      tokenStored: false,
+      connected: false,
+      authMode: null,
+      tokenExpiresAt: null,
+      oauthConfigured: false,
+      message: "Linear status is unavailable while disconnected from this machine.",
+      checkedAt: new Date().toISOString(),
+    }),
     getLinearProjects: () => call("cto.getLinearProjects", {}, []),
     getLinearQuickView: () => call("cto.getLinearQuickView", {}, null),
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
@@ -604,7 +701,20 @@ function createCtoNamespace(call: <T>(action: string, args: unknown, fallback: T
   } as unknown as NonNullable<Window["ade"]["cto"]>;
 }
 
-function createOrchestrationNamespace(call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>): Partial<Window["ade"]["orchestration"]> {
+// The host answers cto.ensureSession with an AgentChatSessionSummary, while
+// CtoPage consumes an AgentChatSession (`id`, `createdAt`). Translate rather
+// than pass through, or the chat pane addresses `undefined` as its session id.
+// Summary-only fields (title, endedAt, lastOutputPreview…) ride along unread.
+function ctoSessionFromRemoteSummary(summary: Record<string, unknown>): AgentChatSession {
+  const { sessionId, startedAt, ...rest } = summary ?? {};
+  return {
+    ...rest,
+    id: typeof sessionId === "string" ? sessionId : String(rest.id ?? ""),
+    createdAt: typeof startedAt === "string" ? startedAt : String(rest.createdAt ?? ""),
+  } as unknown as AgentChatSession;
+}
+
+function createOrchestrationNamespace(call: MiscCall): Partial<Window["ade"]["orchestration"]> {
   return {
     runCreate: (args: unknown) => call("orchestration.runCreate", args, { ok: false, error: "unsupported" }, false),
   } as unknown as Partial<Window["ade"]["orchestration"]>;
@@ -666,13 +776,19 @@ function createNativeUnavailableNamespace(): Record<string, unknown> {
   };
 }
 
-function createUsageStubs(
-  call: <T>(action: string, args: unknown, fallback: T, idempotent?: boolean) => Promise<T>,
-): Partial<Window["ade"]["usage"]> {
+function createUsageStubs(call: MiscCall): Partial<Window["ade"]["usage"]> {
   return {
     getAdeStats: (args = {}) => call("usage.getAdeStats", args, null),
-    getSummary: async () => null,
-    listSessions: async () => [],
+    getSnapshot: () => call("usage.getQuotaSnapshot", {}, null),
+    // Refresh is the user pressing the button: mark it non-idempotent so it
+    // reaches the host instead of replaying a cached read, and so a failure
+    // surfaces rather than resolving to a fake null snapshot.
+    refresh: () => call("usage.refreshQuota", {}, null, false),
+    // refreshHistory is deliberately NOT mapped onto usage.refreshQuota: the
+    // host keeps the cost-log rescan decoupled from quota polling, so aliasing
+    // them would do unrelated work and still leave the stats stale. It needs
+    // its own descriptor. onUpdate/noteDemand have no streaming descriptor at
+    // all; all three stay with the fallback proxy rather than faking liveness.
   } as Partial<Window["ade"]["usage"]>;
 }
 
@@ -767,8 +883,14 @@ function oauthProviderId(args: unknown): string {
   return typeof providerId === "string" ? providerId : "";
 }
 
-function zoomFactor(level: number): number {
-  return Math.round(Math.pow(1.2, level) * 1_000) / 1_000;
+/**
+ * Fallback for a host call that has no honest offline shape: reject rather than
+ * resolve to a fabricated result the caller would go on to act on.
+ */
+export function unavailableOnHost(message: string): () => never {
+  return () => {
+    throw new Error(message);
+  };
 }
 
 function parseEndpoint(endpoint: string | null): { host: string | null; port: number | null } {

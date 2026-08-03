@@ -54,6 +54,7 @@ import {
 } from "./commandPaletteThreads";
 import { fadeScale } from "../../lib/motion";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
+import { isWebClientMode } from "../../lib/webClientMode";
 import {
   selectActiveProjectStateKey,
   useAppStore,
@@ -70,8 +71,10 @@ import { WorktreeBadge } from "../projects/WorktreeBadge";
 import { ReadmeMarkdown } from "./ReadmeMarkdown";
 import { RemoteTargetList } from "../remoteTargets/RemoteTargetList";
 import {
-  SETTINGS_ENTRIES,
-  SETTINGS_TABS,
+  availableSettingsEntries,
+  availableSettingsTabs,
+  clearWebMachineBindingResolver,
+  setWebMachineBindingResolver,
   settingsEntryPath,
   settingsTabLabel,
 } from "../settings/settingsManifest";
@@ -288,6 +291,24 @@ export function CommandPalette({
   const selectLane = useAppStore((s) => s.selectLane);
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
+  // The palette lists settings, so it has to agree with the settings page about
+  // which ones exist. On web that depends on whether a project tab is bound —
+  // the manifest reads it back through this resolver.
+  // Installed during render because `isSettingAvailable` is consulted mid-render
+  // (nav, search, the palette) and an effect would install it a render too late.
+  // The effect exists only to take it back down on unmount, and only if it is
+  // still ours — the module global outlives this component otherwise.
+  const machineBoundRef = useRef(false);
+  machineBoundRef.current = projectBinding != null;
+  // One stable function identity for this component's whole life, so the
+  // unmount cleanup can tell its own resolver from the other surface's.
+  const resolverRef = useRef<() => boolean>();
+  if (!resolverRef.current) resolverRef.current = () => machineBoundRef.current;
+  setWebMachineBindingResolver(resolverRef.current);
+  useEffect(() => {
+    const installed = resolverRef.current!;
+    return () => clearWebMachineBindingResolver(installed);
+  }, []);
   const hasActiveProject = Boolean(project?.rootPath);
 
   // Thread results are read straight out of the Work tab's per-project session
@@ -640,6 +661,14 @@ export function CommandPalette({
         run: () => navigate("/work"),
       },
       {
+        id: "go-cto",
+        title: "Go to CTO",
+        hint: "The persistent project CTO, its team, and its Linear sync",
+        keywords: ["cto", "agent", "org", "team", "linear"],
+        group: "Navigation",
+        run: () => navigate("/cto"),
+      },
+      {
         id: "go-graph",
         title: "Go to Graph",
         shortcut: "G G",
@@ -660,13 +689,19 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/history"),
       },
-      {
-        id: "go-automations",
-        title: "Go to Automations",
-        hint: "Automation rules and agent workflows",
-        group: "Navigation",
-        run: () => navigate("/automations"),
-      },
+      // Automations is the one tab the web client hides outright: the host
+      // registers no `automations.*` action, so its page is a coming-soon
+      // screen there. Offering a command that leads to it would be the palette
+      // disagreeing with the nav.
+      ...(isWebClientMode()
+        ? []
+        : [{
+          id: "go-automations",
+          title: "Go to Automations",
+          hint: "Automation rules and agent workflows",
+          group: "Navigation",
+          run: () => navigate("/automations"),
+        }]),
       {
         id: "go-settings",
         title: "Go to Settings",
@@ -674,8 +709,11 @@ export function CommandPalette({
         group: "Navigation",
         run: () => navigate("/settings"),
       },
-      // One command per settings *tab*, generated from the manifest.
-      ...SETTINGS_TABS.map((tab) => ({
+      // One command per settings *tab*, generated from the manifest. The
+      // manifest reports only the tabs this renderer can serve, so the web
+      // client stops offering Secrets, Providers, Storage and the rest —
+      // whose pages it hides. The desktop gets the full list, as before.
+      ...availableSettingsTabs().map((tab) => ({
         id: `go-settings-${tab.id}`,
         title: `Go to ${tab.label}`,
         hint: tab.description,
@@ -685,7 +723,7 @@ export function CommandPalette({
       // ...and one per individual setting, so Cmd-K "rebase" finds the
       // auto-rebase toggle rather than only commits that mention rebasing.
       // Each lands on its own card via the manifest's anchor.
-      ...SETTINGS_ENTRIES.map((entry) => ({
+      ...availableSettingsEntries().map((entry) => ({
         id: `setting-${entry.id}`,
         title: entry.label,
         hint: `${settingsTabLabel(entry.tab)} · ${entry.group}`,
@@ -1595,10 +1633,18 @@ export function CommandPalette({
     mode === "project-remote" ||
     mode === "project-success";
   const isWideAddFlow = mode === "project-clone" || mode === "project-remote";
+  // Percentages, not vh/vw: the hosted client scales the UI with `body { zoom }`
+  // (`webclient/adapter/misc.ts`), and viewport units ignore that zoom while
+  // everything they size gets painted `zoom`x larger. At 110% a `86vh` cap is
+  // really 95% of the screen, at 173% it is 148% — so the dialog outgrew the
+  // viewport, `m-auto` centred the overflow off both edges, and `overflow-hidden`
+  // left it unreachable. A percentage resolves against this fixed element's
+  // containing block (the viewport, already in zoomed units) and caps correctly
+  // at every zoom level. Desktop, which zooms natively, is unaffected either way.
   const resultHeightClass = isBrowsing
-    ? "h-[620px] max-h-[86vh]"
+    ? "h-[620px] max-h-[86%]"
     : isAddFlow
-      ? "max-h-[86vh]"
+      ? "max-h-[86%]"
       : "max-h-[400px]";
   const widthClass = isBrowsing
     ? "w-[1080px]"
@@ -1709,7 +1755,7 @@ export function CommandPalette({
                 className={cn(
                   positionClass,
                   widthClass,
-                  "max-w-[96vw]",
+                  "max-w-[96%]",
                   resultHeightClass,
                   "overflow-hidden rounded-2xl",
                   "flex flex-col focus:outline-none",

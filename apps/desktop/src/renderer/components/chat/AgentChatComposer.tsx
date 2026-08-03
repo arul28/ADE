@@ -78,6 +78,7 @@ import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
 import { modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import {
   deriveSmartLinkPreview,
   findSmartLinks,
@@ -3634,7 +3635,11 @@ export function AgentChatComposer({
         return;
       }
     }
-    if (isMacPasteShortcut(event)) {
+    // The fallback reads the clipboard on a timer, which in a browser lands
+    // after the user activation has lapsed — Safari answers that with a "Paste"
+    // permission callout over the composer. A browser always fires the paste
+    // event this is insuring against, so on web the insurance is pure cost.
+    if (isMacPasteShortcut(event) && !isWebClientMode()) {
       const handledPasteGeneration = clipboardImagePasteHandledRef.current;
       if (clipboardImagePasteFallbackTimerRef.current != null) {
         window.clearTimeout(clipboardImagePasteFallbackTimerRef.current);

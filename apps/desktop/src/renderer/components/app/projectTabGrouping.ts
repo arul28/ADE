@@ -78,15 +78,20 @@ function remoteMachine(binding: RemoteProjectTabBinding): ProjectTabMachine {
  * Collapses the open local and remote project tabs into one tab per repository,
  * with the machine as a dimension inside it.
  *
- * The join key is the repo's normalized git origin. Two rules keep it honest:
+ * The join key is the repo's normalized git origin. Three rules keep it honest:
  *
  * - A project with no resolvable origin is never merged with anything. It gets
  *   its own group keyed by its binding, so two unrelated origin-less folders
  *   can't collapse into one tab.
+ * - An OPEN tab is never absorbed by another open tab. Only checkouts the user
+ *   has not opened join an existing group. Two open tabs are two things the
+ *   user asked to keep in front of them, and collapsing them produced a single
+ *   tab whose machine changed every time the other tab was activated — the tab
+ *   you left appeared to jump machines. Merging is for reaching a checkout you
+ *   do NOT have open, which is exactly what the machine switcher is for.
  * - At most one checkout per machine joins a group. A lane worktree shares its
- *   parent repo's origin, so without this a worktree tab and its parent tab
- *   would silently become one tab that can't represent both. Extra checkouts on
- *   an already-claimed machine stay as their own tabs.
+ *   parent repo's origin, so without this a worktree and its parent would
+ *   silently become one tab that can't represent both.
  */
 export function groupProjectTabs(args: {
   localTabs: readonly RecentProjectSummary[];
@@ -160,18 +165,12 @@ export function groupProjectTabs(args: {
       groups.push(group);
       continue;
     }
-    const claimed = claimedMachines.get(origin)!;
-    if (claimed.has(machine.machineId)) {
-      // Second checkout of this repo on a machine that already has one — a lane
-      // worktree beside its parent, typically. Keep it addressable on its own.
-      groups.push(standalone(machine));
-      continue;
-    }
-    claimed.add(machine.machineId);
-    existing.machines.push(machine);
-    if (machine.bindingKey === activeBindingKey) {
-      existing.activeBindingKey = machine.bindingKey;
-    }
+    // Another open tab already holds this origin. Claim this machine so a
+    // discovered counterpart cannot re-add it below, and give the tab its own
+    // group — an open tab always keeps its own tab, and therefore its own
+    // machine, no matter which tab is active.
+    claimedMachines.get(origin)!.add(machine.machineId);
+    groups.push(standalone(machine));
   }
 
   // Attach discovered counterparts only after open entries establish the tab

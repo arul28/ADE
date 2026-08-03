@@ -57,6 +57,66 @@ function webClientDevEntry(): Plugin {
   };
 }
 
+/**
+ * Local dev against the real account directory.
+ *
+ * The directory Worker answers a browser only from the one hosted origin it is
+ * configured with (https://app.ade-app.dev) and 403s any other `Origin` — but
+ * it treats a request with no `Origin` at all as a native/daemon caller, which
+ * is how the desktop app and the CLI reach it. So the dev server proxies the
+ * account routes and strips `Origin` on the way out: the browser sees a
+ * same-origin request (no CORS at all), the Worker sees a native caller, and
+ * nothing about production config changes. `server.proxy` exists only on the
+ * dev server, so builds are untouched.
+ *
+ * Recipe — the hosted client uses production Clerk, so dev must too, or the
+ * production directory rejects the token:
+ *
+ *   VITE_ADE_ACCOUNT_DIRECTORY_URL=http://localhost:5174 \
+ *   VITE_ADE_CLERK_ISSUER=https://clerk.ade-app.dev \
+ *   VITE_ADE_CLERK_OAUTH_CLIENT_ID=Az7TbviBocyXjZk1 \
+ *   npm --prefix apps/desktop run dev:webclient
+ *
+ * `http://localhost:5174` is accepted as a directory base because
+ * `parseTrustedAccountDirectoryBaseUrl` allows loopback HTTP; the client then
+ * requests `/account/machines` on it, which lands here. Signing in also needs
+ * `http://localhost:5174/account/callback` registered as a redirect URI on that
+ * Clerk OAuth client. Point somewhere else (the development Worker, a `wrangler
+ * dev` instance) with ADE_DEV_DIRECTORY_PROXY_TARGET.
+ */
+const DEV_DIRECTORY_PROXY_TARGET =
+  process.env.ADE_DEV_DIRECTORY_PROXY_TARGET?.trim()
+  || "https://ade-account-directory-production.arulsharma1028.workers.dev";
+
+/**
+ * The directory's account routes, and only those: `/account/callback` is the
+ * OAuth landing route owned by the web client's own router, so proxying the
+ * whole `/account` prefix would send sign-in returns to the Worker.
+ */
+const DEV_DIRECTORY_PROXY_ROUTE = "^/account/machines(?:[/?]|$)";
+
+/**
+ * Same treatment for the push relay, which the Activity surface calls straight
+ * from the browser and which applies the same browser-origin gate as the
+ * directory. Without this a dev origin is rejected at CORS PREFLIGHT, so the
+ * failure never even reaches the response handler — it surfaces as an endless
+ * "preflight 403" in the console.
+ *
+ * Recipe mirrors the directory one:
+ *
+ *   VITE_ADE_PUSH_RELAY_URL=http://localhost:5174 \
+ *   VITE_ADE_ACCOUNT_DIRECTORY_URL=http://localhost:5174 \
+ *   npm --prefix apps/desktop run dev:webclient
+ */
+const DEV_PUSH_RELAY_PROXY_TARGET =
+  process.env.ADE_DEV_PUSH_RELAY_PROXY_TARGET?.trim()
+  || "https://ade-push-relay.arulsharma1028.workers.dev";
+
+// Matches `/attention`, `/attention?…` and any `/attention/…` path, but not a
+// sibling like `/attentionfoo`. The previous pattern required a trailing slash
+// followed by another character, so a bare `/attention` request was not proxied.
+const DEV_PUSH_RELAY_PROXY_ROUTE = "^/attention(?:[/?]|$)";
+
 export default defineConfig({
   root: "src/renderer",
   base: "/",
@@ -67,6 +127,31 @@ export default defineConfig({
     strictPort: true,
     fs: {
       allow: [path.resolve(__dirname), path.resolve(__dirname, "src")]
+    },
+    proxy: {
+      [DEV_DIRECTORY_PROXY_ROUTE]: {
+        target: DEV_DIRECTORY_PROXY_TARGET,
+        changeOrigin: true,
+        // The whole point: no Origin reaches the Worker, so its browser-origin
+        // gate never fires. Vite's `headers` option can only add or overwrite,
+        // never delete, so remove it on the outgoing request itself.
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.removeHeader("origin");
+            proxyReq.removeHeader("referer");
+          });
+        }
+      },
+      [DEV_PUSH_RELAY_PROXY_ROUTE]: {
+        target: DEV_PUSH_RELAY_PROXY_TARGET,
+        changeOrigin: true,
+        configure(proxy) {
+          proxy.on("proxyReq", (proxyReq) => {
+            proxyReq.removeHeader("origin");
+            proxyReq.removeHeader("referer");
+          });
+        }
+      }
     }
   },
   build: {

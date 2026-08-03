@@ -134,9 +134,10 @@ machine's lanes. Per-machine maps are memoized on the reference-stable `lanes`
 does not rebuild the union.
 
 The hosted web client has a single host and cannot route a pin to a second
-one, so its `prs` adapter shims (`renderer/webclient/adapter/prs.ts`) reject a
-pin loudly through `assertWebRuntimePinUnsupported` rather than silently
-answering from the only host they have.
+one, so its `prs` adapter shims (`renderer/webclient/adapter/prs.ts`) run every
+pin through `assertWebRuntimePinRoutable`. A pin naming the host and project
+this adapter is already bound to is a no-op and proceeds unpinned; anything
+else throws rather than silently answering from the only host they have.
 
 ## Source file map
 
