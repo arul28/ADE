@@ -46,7 +46,7 @@ jobs:
       IOS_SUBMIT_FOR_APP_REVIEW: ${{ inputs.submit_for_app_review }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.git_ref }}
           fetch-depth: 0

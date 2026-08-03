@@ -26,7 +26,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
@@ -89,7 +89,7 @@ jobs:
       group: release-${{ inputs.release_tag }}-mac-${{ matrix.arch }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
@@ -255,7 +255,7 @@ jobs:
   #     group: release-${{ inputs.release_tag }}-win
   #     cancel-in-progress: true
   #   steps:
-  #     - uses: actions/checkout@v4
+  #     - uses: actions/checkout@v7
   #       with:
   #         ref: ${{ inputs.target_ref }}
   #         fetch-depth: 0
@@ -334,7 +334,7 @@ jobs:
       group: release-${{ inputs.release_tag }}-runtime-${{ matrix.target }}
       cancel-in-progress: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
@@ -456,7 +456,7 @@ jobs:
       - build-mac-release
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 1

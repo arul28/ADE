@@ -24,7 +24,7 @@ jobs:
       # the per-arch (arm64 + x64) cask from the published release's DMG digests.
       # Check out ADE at the release tag so we run that release's script.
       - name: Check out ADE at the release tag
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ github.event.release.tag_name }}
 
