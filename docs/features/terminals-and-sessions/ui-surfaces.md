@@ -710,6 +710,20 @@ Key behaviors:
   to xterm's Option-based force-selection gesture only while mouse tracking is
   active, so local text selection and copy remain available without sending
   that gesture to the CLI.
+- **Keyboard-scroll hint (hosted web only)** — every agent CLI runs on the
+  alternate screen with mouse reporting on, so the wheel is forwarded to the app
+  as mouse reports rather than scrolling xterm's scrollback. Over sync each of
+  those reports costs a full ACK-gated round trip (the terminal input queue in
+  `webclient/sync/client.ts` sends one input and waits for its ack), so a wheel
+  spin advances a few lines per round trip while `PgUp` moves half a screen for
+  the same single trip. When a web user wheel-scrolls a mouse-tracking session,
+  `TerminalView` shows a dismissible pill naming that session's scroll keys.
+  Copy is per provider and vendor-documented (`terminalScrollHint.ts`): Claude
+  and OpenCode take `PgUp`/`PgDn`, Codex needs `Ctrl+T` to open its transcript
+  overlay first, and Apple keyboards are told `Fn+↑`/`Fn+↓` because they have no
+  dedicated PgUp/PgDn keys. Droid and cursor-agent get no hint — their binaries
+  carry pageup handling but neither vendor documents it, and a wrong key hint is
+  worse than none. Dismissal is remembered per provider, since the keys differ.
 - **Cmd+C → SIGINT on macOS** — when the terminal is focused on macOS,
   ⌘C with no current selection sends `\x03` to the PTY (matches the
   Terminal.app behaviour TUI users expect). Selection-aware copy is
