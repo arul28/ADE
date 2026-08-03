@@ -61,6 +61,10 @@ const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 const MACOS_KEYCHAIN_READ_TIMEOUT_MS = 2_000;
 const MACOS_KEYCHAIN_NEGATIVE_CACHE_MS = 30_000;
 let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
+// Keyed by resolved secrets directory: DPAPI material is protected per
+// directory, so unlike the single macOS keychain item these cannot share a slot.
+const windowsDpapiMaterialCache = new Map<string, Buffer>();
+const windowsDpapiReadInFlight = new Map<string, Promise<Buffer | null>>();
 let defaultOsBoundKeyMaterialReadInFlight: Promise<Buffer | null> | null = null;
 let lastMissingDefaultOsBoundKeyMaterialAt = 0;
 
@@ -609,7 +613,21 @@ function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
   if (process.platform === "win32") {
-    return readOrCreateWindowsDpapiMaterial(secretsDir);
+    // Windows re-spawned `powershell.exe` on every credential read, where macOS
+    // spawns `security` once and caches. That is a far worse trade than it
+    // looks: PowerShell 5.1 pays CLR load, System.Security from disk, and
+    // Defender's on-access scan each time.
+    //
+    // The cache must be keyed by directory, unlike macOS. Keychain material is
+    // one global item, but DPAPI material is protected per secrets directory
+    // (`<secretsDir>/.credential-key.dpapi`), so a single shared slot would
+    // hand one store another store's key.
+    const key = path.resolve(secretsDir);
+    const cached = windowsDpapiMaterialCache.get(key);
+    if (cached) return cached;
+    const material = readOrCreateWindowsDpapiMaterial(secretsDir);
+    if (material) windowsDpapiMaterialCache.set(key, material);
+    return material;
   }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   const material = readOrCreateMacKeychainMaterial();
@@ -626,7 +644,29 @@ async function readDefaultOsBoundKeyMaterialAsync(secretsDir: string): Promise<B
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
   if (process.platform === "win32") {
-    return await readOrCreateWindowsDpapiMaterialAsync(secretsDir);
+    const key = path.resolve(secretsDir);
+    const cached = windowsDpapiMaterialCache.get(key);
+    if (cached) return cached;
+    // In-flight dedup matters more here than it ever did on macOS: without it,
+    // concurrent credential reads each spawn their own PowerShell, and that
+    // contention is what makes a cold start slow enough to hit the timeout.
+    // No negative cache -- a locked keychain is a durable state worth backing
+    // off from, but a DPAPI failure is usually a transient timeout, and
+    // suppressing retries would make one slow cold start look permanent.
+    const pending = windowsDpapiReadInFlight.get(key);
+    if (pending) return await pending;
+    const inFlight = readOrCreateWindowsDpapiMaterialAsync(secretsDir).then((material) => {
+      if (material) windowsDpapiMaterialCache.set(key, material);
+      return material;
+    });
+    windowsDpapiReadInFlight.set(key, inFlight);
+    try {
+      return await inFlight;
+    } finally {
+      if (windowsDpapiReadInFlight.get(key) === inFlight) {
+        windowsDpapiReadInFlight.delete(key);
+      }
+    }
   }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   if (
