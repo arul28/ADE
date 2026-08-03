@@ -36,6 +36,7 @@ import {
 } from "@phosphor-icons/react";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
 import { ProviderLogo } from "../shared/ProviderLogos";
+import { rendererPlatformAttribute } from "../../lib/platform";
 import {
   COLORS,
   MONO_FONT,
@@ -67,11 +68,28 @@ type ProvidersStatus = AiSettingsStatus & {
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 
-const OPENCODE_INSTALL_COMMANDS = [
-  "brew install anomalyco/tap/opencode",
-  "npm i -g opencode-ai",
-  "curl -fsSL https://opencode.ai/install | bash",
-];
+/**
+ * OpenCode's own documented install methods, per platform. Windows has neither
+ * Homebrew nor a POSIX shell to pipe the install script into, so it gets the
+ * package managers OpenCode actually documents for Windows (npm, Scoop,
+ * Chocolatey) instead of commands that cannot run there.
+ */
+export function openCodeInstallCommands(
+  platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
+): string[] {
+  if (platform === "win32") {
+    return [
+      "npm i -g opencode-ai",
+      "scoop install opencode",
+      "choco install opencode",
+    ];
+  }
+  return [
+    "brew install anomalyco/tap/opencode",
+    "npm i -g opencode-ai",
+    "curl -fsSL https://opencode.ai/install | bash",
+  ];
+}
 
 const CUSTOM_PROVIDER_NPM_OPTIONS = [
   "@ai-sdk/openai-compatible",
@@ -1275,7 +1293,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               OpenCode powers every subscription, API key, and local model below. Install it, then re-check:
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {OPENCODE_INSTALL_COMMANDS.map((cmd) => (
+              {openCodeInstallCommands().map((cmd) => (
                 <CopyableCommand key={cmd} command={cmd} />
               ))}
             </div>
