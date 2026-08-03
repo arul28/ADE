@@ -123,12 +123,91 @@ async function assertSeaCapableNodeBinary(binaryPath) {
   ].join(" "));
 }
 
-async function removeSignatureIfNeeded(binaryPath) {
-  if (process.platform !== "darwin") return;
+/**
+ * Locate signtool.exe. It ships with the Windows SDK and is normally absent
+ * from PATH, so fall back to scanning the SDK's versioned bin directories and
+ * take the newest. Returns null when no SDK is installed.
+ */
+async function resolveSignTool() {
   try {
-    await run("codesign", ["--remove-signature", binaryPath]);
+    await run("signtool", ["/?"]);
+    return "signtool";
   } catch {
-    // Some Node builds are unsigned. postject can proceed in that case.
+    // Not on PATH; fall through to the SDK layout.
+  }
+  const roots = [process.env["ProgramFiles(x86)"], process.env.ProgramFiles]
+    .filter(Boolean)
+    .map((base) => path.join(base, "Windows Kits", "10", "bin"));
+  for (const root of roots) {
+    let versions = [];
+    try {
+      versions = (await fs.readdir(root, { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory())
+        .map((entry) => entry.name)
+        .sort()
+        .reverse();
+    } catch {
+      continue;
+    }
+    for (const version of versions) {
+      for (const arch of ["x64", "x86"]) {
+        const candidate = path.join(root, version, arch, "signtool.exe");
+        try {
+          await fs.access(candidate);
+          return candidate;
+        } catch {
+          // Try the next SDK layout.
+        }
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * Strip the vendor signature before postject injects the SEA blob.
+ *
+ * Official Node.js releases are signed on BOTH macOS and Windows. postject
+ * rewrites the executable, so a signature left in place ends up covering bytes
+ * that no longer exist -- and the platform's signing tool then refuses to
+ * re-sign the result. On Windows that surfaces as
+ *
+ *   SignTool Error: SignedCode::Sign returned error: 0x800700C1
+ *
+ * which is ERROR_BAD_EXE_FORMAT, i.e. "this is not a valid PE". Node's SEA
+ * documentation requires removing the signature first on both platforms; only
+ * the darwin half was ever implemented here, so every signed Windows runtime
+ * build failed at the signing step.
+ */
+async function removeSignatureIfNeeded(binaryPath) {
+  if (process.platform === "darwin") {
+    try {
+      await run("codesign", ["--remove-signature", binaryPath]);
+    } catch {
+      // Some Node builds are unsigned. postject can proceed in that case.
+    }
+    return;
+  }
+
+  if (process.platform === "win32") {
+    const signTool = await resolveSignTool();
+    if (!signTool) {
+      // Only a signed release needs this; an unsigned local build is fine
+      // without it, and failing here would break `build:static` on a dev box
+      // that has no Windows SDK.
+      console.warn(
+        "[build-static] signtool.exe not found; skipping signature removal. "
+        + "A signed release build requires the Windows SDK, or signing will "
+        + "fail with 0x800700C1.",
+      );
+      return;
+    }
+    try {
+      await run(signTool, ["remove", "/s", binaryPath]);
+    } catch {
+      // `remove /s` exits non-zero when the binary carries no signature, which
+      // is the desired end state, so treat that as success.
+    }
   }
 }
 
