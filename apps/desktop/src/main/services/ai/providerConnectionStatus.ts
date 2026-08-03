@@ -8,6 +8,10 @@ import {
 import { getAllApiKeys } from "./apiKeyStore";
 import { getProviderRuntimeHealth } from "./providerRuntimeHealth";
 import { isCursorAdminApiKey } from "./utils";
+import {
+  CURSOR_WINDOWS_ARM_BLOCKER,
+  isCursorProviderSupported,
+} from "../../../shared/providerPlatformSupport";
 import { nowIso } from "../shared/utils";
 
 function createUnavailableStatus(
@@ -179,6 +183,14 @@ export async function buildProviderConnections(
     health: codexRuntimeHealth,
   });
 
+  // Windows on ARM ships no @cursor/sdk runtime, so Cursor is reported as hard
+  // unavailable before any key or runtime-health work happens. See
+  // shared/providerPlatformSupport.ts for the reason and the revisit condition.
+  // This is the authoritative decision point: `availableProviders.cursor`, the
+  // cursor-family model filter and every settings/onboarding surface downstream
+  // all derive from the connection built here.
+  const cursorSupported = isCursorProviderSupported(process.platform, process.arch);
+
   const cursorCli = cliStatuses.find((entry) => entry.cli === "cursor") ?? null;
   const cursorEnvKey = process.env.CURSOR_API_KEY?.trim() ?? "";
   const cursorAdminEnvKey = process.env.CURSOR_ADMIN_API_KEY?.trim() ?? "";
@@ -209,16 +221,18 @@ export async function buildProviderConnections(
   // ready after verification/model discovery proves the SDK can load and the
   // key can access agent models.
   const cursorFlags = {
-    runtimeDetected: true,
+    runtimeDetected: cursorSupported,
     cliAuthenticated: false,
     cliExplicitlyUnauthenticated: false,
-    localCredsDetected: cursorAuthAvailable,
-    authAvailable: cursorAuthAvailable,
-    runtimeAvailable: cursorRuntimeHealth?.state === "ready",
+    localCredsDetected: cursorSupported && cursorAuthAvailable,
+    authAvailable: cursorSupported && cursorAuthAvailable,
+    runtimeAvailable: cursorSupported && cursorRuntimeHealth?.state === "ready",
   };
 
   let cursorBlocker: string | null;
-  if (cursorFlags.runtimeAvailable) {
+  if (!cursorSupported) {
+    cursorBlocker = CURSOR_WINDOWS_ARM_BLOCKER;
+  } else if (cursorFlags.runtimeAvailable) {
     cursorBlocker = null;
   } else if (cursorSdkAuth) {
     cursorBlocker = "Verify the Cursor API key to enable Cursor chat.";
@@ -237,25 +251,29 @@ export async function buildProviderConnections(
     authAvailable: cursorFlags.authAvailable,
     runtimeDetected: cursorFlags.runtimeDetected,
     runtimeAvailable: cursorFlags.runtimeAvailable,
-    usageAvailable: cursorUsageAuth,
-    path: "@cursor/sdk",
-    sources: [
-      {
-        kind: "local-credentials",
-        detected: cursorAuthAvailable,
-        source: cursorCredsSource,
-      },
-      {
-        kind: "cli",
-        detected: Boolean(cursorCli?.installed),
-        authenticated: cursorCli?.authenticated,
-        verified: cursorCli?.verified,
-        path: cursorCli?.path ?? null,
-      },
-    ],
+    usageAvailable: cursorSupported && cursorUsageAuth,
+    path: cursorSupported ? "@cursor/sdk" : null,
+    sources: cursorSupported
+      ? [
+        {
+          kind: "local-credentials",
+          detected: cursorAuthAvailable,
+          source: cursorCredsSource,
+        },
+        {
+          kind: "cli",
+          detected: Boolean(cursorCli?.installed),
+          authenticated: cursorCli?.authenticated,
+          verified: cursorCli?.verified,
+          path: cursorCli?.path ?? null,
+        },
+      ]
+      : [],
     blocker: cursorBlocker,
   };
-  applyRuntimeHealth(cursor, cursorRuntimeHealth);
+  // Runtime health can only promote the connection, so it must not run once the
+  // platform gate has decided Cursor is unavailable.
+  if (cursorSupported) applyRuntimeHealth(cursor, cursorRuntimeHealth);
 
   const droidCli = cliStatuses.find((entry) => entry.cli === "droid") ?? null;
   const factoryEnvAuth = Boolean(process.env.FACTORY_API_KEY?.trim());

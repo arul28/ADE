@@ -12,7 +12,7 @@ import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { openExternalUrl } from "../../lib/openExternal";
-import { rendererPlatformAttribute } from "../../lib/platform";
+import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
@@ -63,6 +63,16 @@ const RUNTIMES: RuntimeMeta[] = [
   { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup },
 ];
 
+/**
+ * Runtimes offered on this machine. Cursor drops out on Windows on ARM because
+ * `@cursor/sdk` has no win32-arm64 build, so onboarding must not ask the user to
+ * install something that cannot run. See shared/providerPlatformSupport.ts.
+ */
+export function availableRuntimes(): RuntimeMeta[] {
+  if (cursorProviderAvailable()) return RUNTIMES;
+  return RUNTIMES.filter((rt) => rt.id !== "cursor");
+}
+
 const FEATURES: Array<{ key: FeatureKey; label: string }> = [
   { key: "terminal_summaries", label: "Terminal summaries" },
   { key: "pr_descriptions", label: "PR descriptions" },
@@ -93,12 +103,14 @@ export function AiRuntimesBand() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const runtimes = useMemo(() => availableRuntimes(), []);
+
   const readyCount = useMemo(() => {
     if (!status) return 0;
     let n = 0;
     if (status.availableProviders.claude.binary.present && status.availableProviders.claude.auth.ready) n++;
     if (status.providerConnections?.codex?.runtimeAvailable) n++;
-    if (status.providerConnections?.cursor?.runtimeAvailable) n++;
+    if (cursorProviderAvailable() && status.providerConnections?.cursor?.runtimeAvailable) n++;
     if (status.providerConnections?.droid?.runtimeAvailable) n++;
     if (status.opencodeBinaryInstalled !== false) n++;
     return n;
@@ -196,14 +208,14 @@ export function AiRuntimesBand() {
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span style={SECTION_LABEL}>AI runtimes</span>
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            {loading ? "Checking…" : `${readyCount} of ${RUNTIMES.length} ready`}
+            {loading ? "Checking…" : `${readyCount} of ${runtimes.length} ready`}
           </span>
         </div>
         <RescanButton loading={loading} onClick={() => void refresh(true)} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 }}>
-        {RUNTIMES.map((rt) => (
+        {runtimes.map((rt) => (
           <RuntimeCard key={rt.id} meta={rt} status={status} onSaveCursorKey={saveCursorKey} />
         ))}
       </div>

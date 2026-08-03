@@ -1545,4 +1545,48 @@ describe("ModelPicker", () => {
       expect(trigger.getAttribute("aria-expanded")).toBe("false");
     });
   });
+  // The rail lists Cursor unconditionally so it stays reachable before the
+  // catalog refresh streams in — except on Windows on ARM, where @cursor/sdk has
+  // no build. See apps/desktop/src/shared/providerPlatformSupport.ts.
+  describe("Cursor rail platform gating", () => {
+    function setRuntimeTarget(platform: string, arch: string) {
+      (globalThis.window as unknown as { ade?: Record<string, unknown> }).ade = {
+        ...((globalThis.window as unknown as { ade?: Record<string, unknown> }).ade ?? {}),
+        app: { runtimeTarget: { platform, arch } },
+      };
+    }
+
+    it("omits the Cursor rail on Windows on ARM but keeps every other provider", async () => {
+      const user = userEvent.setup();
+      setRuntimeTarget("win32", "arm64");
+      renderPicker();
+
+      await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+      const rail = document.querySelector('[data-model-picker-rail="true"]')!;
+      const keys = Array.from(rail.querySelectorAll("[data-rail-selection]"))
+        .map((el) => el.getAttribute("data-rail-selection"));
+      expect(keys).not.toContain("provider:cursor");
+      expect(keys).toContain("provider:anthropic");
+      expect(keys).toContain("provider:openai");
+      expect(keys).toContain("provider:factory");
+      expect(keys).toContain("provider:opencode");
+    });
+
+    it("keeps the Cursor rail on Windows x64 and on macOS", async () => {
+      for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"]] as const) {
+        const user = userEvent.setup();
+        setRuntimeTarget(platform, arch);
+        renderPicker();
+
+        await user.click(screen.getByRole("button", { name: /Select model/i }));
+
+        const rail = document.querySelector('[data-model-picker-rail="true"]')!;
+        const keys = Array.from(rail.querySelectorAll("[data-rail-selection]"))
+          .map((el) => el.getAttribute("data-rail-selection"));
+        expect(keys, `${platform}-${arch}`).toContain("provider:cursor");
+        cleanup();
+      }
+    });
+  });
 });
