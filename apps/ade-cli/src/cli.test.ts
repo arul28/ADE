@@ -5836,8 +5836,7 @@ describe("ADE CLI", () => {
     expect(buildCliPlan(["doctor", "--online"])).toEqual({ kind: "doctor", online: true });
   });
 
-  it("bounds doctor when a dead socket accepts a connection but never responds", async () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("bounds doctor when a dead socket accepts a connection but never responds", async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-doctor-dead-sock-"));
     const socketPath = path.join(root, "ade.sock");
     const acceptedSockets = new Set<net.Socket>();

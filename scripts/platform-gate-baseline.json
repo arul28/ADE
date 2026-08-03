@@ -21,39 +21,11 @@
       "count": 1
     },
     {
-      "file": "apps/ade-cli/src/cli.test.ts",
-      "kind": "vacuous-return",
-      "form": "vacuous-return",
-      "requires": "n/a",
-      "count": 1
-    },
-    {
-      "file": "apps/ade-cli/src/services/credentials/credentialStore.test.ts",
-      "kind": "vacuous-return",
-      "form": "vacuous-return",
-      "requires": "n/a",
-      "count": 1
-    },
-    {
       "file": "apps/ade-cli/src/services/sync/syncLoopbackCollision.test.ts",
       "kind": "uncovered-gate",
       "form": "it.runIf",
       "requires": "darwin",
       "count": 3
-    },
-    {
-      "file": "apps/desktop/src/main/services/chat/cursorSdkHooks.test.ts",
-      "kind": "vacuous-return",
-      "form": "vacuous-return",
-      "requires": "n/a",
-      "count": 4
-    },
-    {
-      "file": "apps/desktop/src/main/services/chat/cursorSdkPolicy.test.ts",
-      "kind": "vacuous-return",
-      "form": "vacuous-return",
-      "requires": "n/a",
-      "count": 2
     },
     {
       "file": "apps/desktop/src/main/services/state/kvDb.rebuildRecovery.test.ts",

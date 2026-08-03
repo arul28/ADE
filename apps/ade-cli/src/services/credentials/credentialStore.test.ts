@@ -82,8 +82,7 @@ describe("EncryptedFileCredentialStore", () => {
     expect(sibling).toHaveBeenCalledTimes(1);
   });
 
-  it("creates the secrets directory and files with private permissions", async () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("creates the secrets directory and files with private permissions", async () => {
     const secretsDir = path.join(tempDir, "secrets");
     const store = new EncryptedFileCredentialStore({ secretsDir });
 
