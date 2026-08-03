@@ -1157,29 +1157,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
         };
       }
       if (cli === "droid") {
-        // Prefer the path we already proved via resolveCommandLocation() above;
-        // only fall back to resolveDroidExecutable() when that failed.
-        let droidPath: string;
-        if (path) {
-          droidPath = path;
-        } else {
-          const resolved = resolveDroidExecutable({ env: process.env });
-          if (resolved.source === "fallback-command") {
-            return {
-              cli,
-              installed: false,
-              path: null,
-              authenticated: false,
-              verified: false,
-            };
-          }
-          droidPath = resolved.path;
-        }
-        const auth = await inspectDroidCliPresence(droidPath, { deep: options?.force === true });
+        // `path` is a file resolveCommandLocation() proved exists, so it is
+        // strictly better than resolveDroidExecutable(), whose last resort is
+        // the bare command name. Reached only when installed, so the shallow
+        // presence check below is asking about credentials, not existence.
+        const auth = await inspectDroidCliPresence(cmd, { deep: options?.force === true });
         return {
           cli,
           installed: auth.installed,
-          path: droidPath,
+          path,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };
