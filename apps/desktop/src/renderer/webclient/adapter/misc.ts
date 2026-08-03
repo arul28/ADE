@@ -12,6 +12,7 @@ import {
 } from "../../../shared/types";
 import { KEYBINDING_DEFINITIONS } from "../../../shared/keybindings";
 import { getStoredZoomLevel, zoomFactorForDisplay, zoomFactorForLevel } from "../../lib/zoom";
+import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import type { AdapterInfra, AdeNamespace } from "./types";
 
 export type MiscNamespaces = {
@@ -507,12 +508,8 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
 
   const rebase: Record<string, unknown> = {
     scanNeeds: () => call("rebase.scanNeeds", {}, []),
-    getNeed: (laneId: string) => call("rebase.getNeed", { laneId }, null),
     dismiss: async (laneId: string) => {
       await call("rebase.dismiss", { laneId }, undefined, false);
-    },
-    defer: async (laneId: string, until: string) => {
-      await call("rebase.defer", { laneId, until }, undefined, false);
     },
     execute: (args: unknown) => call("rebase.execute", args, { ok: false, error: "unsupported" }, false),
     onEvent: (listener: (event: unknown) => void) => events.on("rebaseEvent", listener as never),
@@ -675,7 +672,7 @@ function createCtoNamespace(
         unavailableOnHost("The CTO chat isn't available on the connected ADE host."),
         false,
       );
-      return ctoSessionFromRemoteSummary(summary);
+      return chatSessionFromRemoteSummary(summary);
     },
     getAttention: () => call<CtoAttentionState>(
       "cto.getAttention",
@@ -699,19 +696,6 @@ function createCtoNamespace(
     getLinearIssuePickerData: () => call("cto.getLinearIssuePickerData", {}, null),
     searchLinearIssues: (args?: unknown) => call("cto.searchLinearIssues", args, { issues: [] }),
   } as unknown as NonNullable<Window["ade"]["cto"]>;
-}
-
-// The host answers cto.ensureSession with an AgentChatSessionSummary, while
-// CtoPage consumes an AgentChatSession (`id`, `createdAt`). Translate rather
-// than pass through, or the chat pane addresses `undefined` as its session id.
-// Summary-only fields (title, endedAt, lastOutputPreview…) ride along unread.
-function ctoSessionFromRemoteSummary(summary: Record<string, unknown>): AgentChatSession {
-  const { sessionId, startedAt, ...rest } = summary ?? {};
-  return {
-    ...rest,
-    id: typeof sessionId === "string" ? sessionId : String(rest.id ?? ""),
-    createdAt: typeof startedAt === "string" ? startedAt : String(rest.createdAt ?? ""),
-  } as unknown as AgentChatSession;
 }
 
 function createOrchestrationNamespace(call: MiscCall): Partial<Window["ade"]["orchestration"]> {

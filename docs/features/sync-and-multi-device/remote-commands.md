@@ -867,8 +867,45 @@ see the chat README for the passive/active contract. The iOS companion's
 `cursorSource: "sdk"` for cursor so a fresh key surfaces SDK models on the
 first fetch instead of returning an empty passive cache.
 
+## Unregistered actions are a silent-write hazard
+
+A client learns what the brain can do from the descriptor list it receives at
+connection time. The hosted web client's `CommandCaller`
+(`apps/desktop/src/renderer/webclient/adapter/infra/commandCaller.ts`) looks the
+action up there before sending anything, and an action the brain never
+registered never reaches the wire.
+
+For a **read** that is correct: no descriptor means no data, and the caller's
+fallback (an empty list, a null summary) is the right offline shape. For a
+**write** it is not — resolving a fallback reports a mutation that was never
+sent. `CommandCaller` therefore throws `UnsupportedRemoteCommandError` for any
+`idempotent: false` call whose action has no descriptor, instead of returning
+the fallback. Surfaces render that as "unavailable on the connected ADE host".
+
+Two rules follow:
+
+- A web-reachable write needs a `register(...)` entry here, not just an adapter
+  method. `apps/desktop/src/renderer/webclient/adapter/__tests__/hostCommandContract.test.ts`
+  fails CI when the adapter calls an action the brain does not serve, and its
+  `KNOWN_UNSUPPORTED` map is where a deliberate omission is recorded with its
+  reason.
+- Some actions are deliberately absent. `ai.storeApiKey` is the canonical
+  example: the web adapter redacts the key before sending, so a handler here
+  would persist the placeholder rather than the credential. Adding a provider
+  key stays a desktop-only operation.
+
+Note that lane presence (`lanes.presence.announce` / `.release`) is served
+through synthetic descriptors declared in `syncHostService`, outside this
+registry — a reader auditing coverage has to count those too.
+
 ## Gotchas
 
+- **`viewerAllowed: false` means no paired device, not "controllers only".**
+  The brain rejects such an action for every remote peer
+  (`Remote command … is not available to paired controller devices`), so a
+  handler registered that way is unreachable from iOS and the hosted web client
+  alike. Use it only for operations that genuinely must be performed at the
+  machine itself.
 - **`chat.models` returns the brain's model catalog.** A controller
   must not hardcode model IDs. The brain is authoritative about
   which models are wired up, which providers have credentials, and

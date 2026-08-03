@@ -229,20 +229,13 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       return read("prs.getReviews", { prId }, []);
     },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
-    updateDescription: async (args: unknown) => {
-      await call("prs.updateDescription", args, undefined, false);
-    },
     delete: (args: unknown) => call("prs.delete", args, { ok: false, error: "unsupported" }, false),
     draftDescription: (args: unknown) => call("prs.draftDescription", args, { title: "", body: "" }),
     land: (args: unknown) => call("prs.land", args, null, false),
     updateBranch: (args: unknown) => call("prs.updateBranch", args, null, false),
-    retargetBase: async (args: unknown) => {
-      await call("prs.retargetBase", args, undefined, false);
-    },
     openInGitHub: async (prId: string) => {
       if (/^https?:\/\//.test(prId) && typeof window !== "undefined") window.open(prId, "_blank", "noopener,noreferrer");
     },
-    createIntegration: (args: unknown) => call("prs.createIntegration", args, null, false),
     simulateIntegration: (args: unknown) => call("prs.simulateIntegration", args, null),
     commitIntegration: (args: unknown) => call("prs.commitIntegration", args, null, false),
     listProposals: () => call("prs.listProposals", {}, []),
@@ -256,15 +249,7 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     getIntegrationResolutionState: (proposalId: string) => call("prs.getIntegrationResolutionState", { proposalId }, null),
     aiResolutionStart: (args: unknown) => call("prs.aiResolutionStart", args, { ok: false, error: "unsupported" }, false),
     aiResolutionGetSession: (args: unknown) => call("prs.aiResolutionGetSession", args, null),
-    aiResolutionInput: async (args: unknown) => {
-      await call("prs.aiResolutionInput", args, undefined, false);
-    },
-    aiResolutionStop: async (args: unknown) => {
-      await call("prs.aiResolutionStop", args, undefined, false);
-    },
     onAiResolutionEvent: () => () => {},
-    getHealth: (prId: string) => call("prs.getHealth", { prId }, null),
-    getConflictAnalysis: (prId: string) => call("prs.getConflictAnalysis", { prId }, null),
     getMergeContext: (prId: string) => read("prs.getMergeContext", { prId }, null),
     getMergeContexts: (prIds: string[]) => read(
       "prs.getMergeContexts",
@@ -345,23 +330,10 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       invalidatePrsReads();
       return result;
     },
-    // Mutates the GitHub thread the detail batch caches, so drop it.
-    updateComment: async (args: unknown) => {
-      const result = await call("prs.updateComment", args, null, false);
-      invalidatePrsReads();
-      return result;
-    },
-    // Mutates the GitHub thread the detail batch caches, so drop it.
     replyToReviewThread: async (args: unknown) => {
       const result = await call("prs.replyToReviewThread", args, null, false);
       invalidatePrsReads();
       return result;
-    },
-    // Mutates the GitHub thread the detail batch caches, so drop it — same as
-    // the comment writes above.
-    resolveReviewThread: async (args: unknown) => {
-      await call("prs.resolveReviewThread", args, undefined, false);
-      invalidatePrsReads();
     },
     updateTitle: async (args: unknown) => {
       await call("prs.updateTitle", args, undefined, false);

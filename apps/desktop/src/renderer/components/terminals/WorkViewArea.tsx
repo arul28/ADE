@@ -831,6 +831,7 @@ function CliSessionSurface({
           isActive={surfaceActive}
           isVisible={pageActive && terminalVisible}
           runtimePin={runtimePin}
+          toolType={session.toolType}
           imagePasteMode="runtime-attachment"
           className="h-full w-full"
         />
@@ -988,6 +989,7 @@ function SessionSurface({
         isActive={surfaceActive}
         isVisible={pageActive && terminalVisible}
         runtimePin={runtimePin}
+        toolType={session.toolType}
         className="h-full w-full"
       />
     );
