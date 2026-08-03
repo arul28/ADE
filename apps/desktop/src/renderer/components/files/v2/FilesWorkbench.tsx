@@ -217,6 +217,13 @@ export function FilesWorkbench({
     column?: number;
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
+  // The consuming effect below clears `pendingWorkspaceOpen`, but that clear is
+  // a React state update while `openFile` can commit the editor-groups store
+  // synchronously (cache hit). The store re-render is a higher-priority
+  // (sync-lane) pass, so it can re-run this effect before the clear lands and
+  // hand it the same request again. Identity is the durable "already handled"
+  // record — every request is a fresh object.
+  const consumedWorkspaceOpenRef = useRef<unknown>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
   const workspacesProjectRootRef = useRef(projectRootPath);
   const workspacesCacheKeyRef = useRef(projectCacheKey);
@@ -1084,6 +1091,8 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
+    if (consumedWorkspaceOpenRef.current === pendingWorkspaceOpen) return;
+    consumedWorkspaceOpenRef.current = pendingWorkspaceOpen;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
