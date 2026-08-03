@@ -697,7 +697,10 @@ describe("externalSessionsService", () => {
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
     const binDir = path.join(root, "bin");
-    const openCodePath = path.join(binDir, "opencode");
+    // Windows cannot execute an extension-less file, and `resolveFromDirs`
+    // resolves through PATHEXT only there — an `opencode` with no extension is
+    // a macOS-shaped fixture that no Windows install would ever produce.
+    const openCodePath = path.join(binDir, process.platform === "win32" ? "opencode.cmd" : "opencode");
     const id = "open-missing-cwd";
     fs.mkdirSync(laneCwd, { recursive: true });
     fs.mkdirSync(binDir, { recursive: true });
