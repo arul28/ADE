@@ -115,6 +115,5 @@ jobs:
     with:
       release_tag: ${{ needs.resolve.outputs.tag_name }}
       target_ref: ${{ needs.resolve.outputs.target_sha }}
-      publish: false
       windows_proof: ${{ inputs.windows_proof }}
     secrets: inherit

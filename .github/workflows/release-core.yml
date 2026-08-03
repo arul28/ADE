@@ -11,11 +11,6 @@ on:
         description: Commit SHA or ref to build and release.
         required: true
         type: string
-      publish:
-        description: Whether to upload validated artifacts to a draft GitHub release.
-        required: false
-        default: false
-        type: boolean
       windows_proof:
         description: >-
           Collect clean-host Windows proof evidence. Builds Windows even while
@@ -25,7 +20,24 @@ on:
         required: false
         default: false
         type: boolean
+    outputs:
+      runtime_result:
+        description: Aggregate result of the build-runtime-binaries matrix.
+        value: ${{ jobs.build-results.outputs.runtime_result }}
+      mac_result:
+        description: Aggregate result of the build-mac-release matrix.
+        value: ${{ jobs.build-results.outputs.mac_result }}
+      windows_result:
+        description: >-
+          Result of build-win-release. 'skipped' when the Windows publication
+          gate is off and no proof run was requested.
+        value: ${{ jobs.build-results.outputs.windows_result }}
 
+# No job in this workflow may request more than these permissions. It is called
+# by prepare-release.yml with a read-only token, and GitHub rejects a called
+# workflow at parse time if any nested job requests more than the caller grants,
+# regardless of whether that job would ever run. Publishing lives in
+# release-publish.yml for exactly this reason.
 permissions:
   actions: read
   checks: read
@@ -141,7 +153,8 @@ jobs:
     # One job per arch, in parallel on native runners (arm64 -> macos-15,
     # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
     # both serialized. Each job signs+notarizes+staples its own arch; the
-    # per-arch updater manifests are merged in publish-release.
+    # per-arch updater manifests are merged by the publish-release job in
+    # release-publish.yml.
     strategy:
       fail-fast: false
       matrix:
@@ -310,7 +323,7 @@ jobs:
 
   build-win-release:
     # Same shape as build-mac-release: the tagged commit is built, signed and
-    # validated in-run, and its output is published by publish-release. The
+    # validated in-run, and its output is published by release-publish.yml. The
     # windows_proof input additionally builds Windows while the publication gate
     # is still off, so clean-host evidence can be collected deliberately.
     if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof }}
@@ -695,336 +708,31 @@ jobs:
           if-no-files-found: error
           compression-level: 0
 
-  publish-release:
-    # Windows is a first-class release platform: when its gate is on, a failed
-    # or skipped Windows build blocks the draft exactly as a failed macOS build
-    # does. always() is still needed so the job evaluates when build-win-release
-    # is legitimately skipped with the gate off.
-    if: >-
-      ${{
-        always()
-        && inputs.publish
-        && needs.build-runtime-binaries.result == 'success'
-        && needs.build-mac-release.result == 'success'
-        && (
-          vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
-          || needs.build-win-release.result == 'success'
-        )
-      }}
+  build-results:
+    # This workflow deliberately holds no job that can write to the repository,
+    # so the publish gate cannot be evaluated here (see release-publish.yml).
+    # Republish the three build results the gate reads as workflow outputs.
+    # always() so a failed or skipped build is still reported rather than
+    # collapsing the outputs to empty, which is what lets the caller keep the
+    # original semantics: with the Windows gate on, a failed or skipped Windows
+    # build blocks the draft exactly as a failed macOS build does.
+    if: always()
     needs:
       - build-runtime-binaries
       - build-mac-release
       - build-win-release
-    permissions:
-      actions: read
-      contents: write
     runs-on: ubuntu-latest
+    outputs:
+      runtime_result: ${{ needs.build-runtime-binaries.result }}
+      mac_result: ${{ needs.build-mac-release.result }}
+      windows_result: ${{ needs.build-win-release.result }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Download per-arch macOS release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-mac-release-${{ inputs.release_tag }}-*
-          path: release-assets/mac
-          merge-multiple: true
-
-      - name: Merge per-arch updater manifests into latest-mac.yml
-        run: |
-          set -euo pipefail
-          # Each per-arch build uploaded latest-mac-<arch>.yml; merge them into a
-          # single latest-mac.yml whose files[] lists both arch zips (electron-updater
-          # picks the right one by arch). --ignore-scripts skips the heavy electron
-          # postinstall — we only need the pure-JS `yaml` dep for the merge.
-          (cd apps/desktop && npm ci --ignore-scripts)
-          node apps/desktop/scripts/merge-mac-latest-yml.mjs \
-            release-assets/mac/latest-mac-arm64.yml \
-            release-assets/mac/latest-mac-x64.yml \
-            release-assets/mac/latest-mac.yml
-          rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
-
-      - name: Download Windows release artifacts
-        if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
-        uses: actions/download-artifact@v4
-        with:
-          name: ade-win-release-${{ inputs.release_tag }}
-          path: release-assets/win
-
-      - name: Download ADE runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: release-assets/runtime
-          merge-multiple: true
-
-      - name: Add standalone runtime installer
-        run: |
-          cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
-          chmod 755 release-assets/runtime/install.sh
-
-      # The published SHA256SUMS is generated later, over the exact merged set of
-      # standalone assets this release uploads. Hashing release-assets/runtime on
-      # its own would describe a set that is never published once the Windows
-      # gate contributes the signed win32 standalone files.
-      - name: Validate publish asset manifest
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          require_file() {
-            local file="$1"
-            local label="${2:-$1}"
-            if [ ! -s "$file" ]; then
-              echo "::error::Missing or empty $label: $file"
-              exit 1
-            fi
-          }
-
-          require_glob() {
-            local pattern="$1"
-            local label="${2:-$1}"
-            mapfile -t matches < <(compgen -G "$pattern" || true)
-            if [ "${#matches[@]}" -eq 0 ]; then
-              echo "::error::Missing $label matching $pattern"
-              exit 1
-            fi
-            for file in "${matches[@]}"; do
-              require_file "$file" "$label"
-            done
-          }
-
-          require_glob 'release-assets/mac/*.dmg' 'macOS DMG'
-          require_glob 'release-assets/mac/*.zip' 'macOS zip'
-          require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
-
-          require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
-          if [ ! -x 'release-assets/runtime/install.sh' ]; then
-            echo "::error::Standalone runtime installer is not executable."
-            exit 1
-          fi
-
-          # Cross-platform runtime allowlist. Every ade-* file in the runtime
-          # download must be one of the ten this release is allowed to carry, in
-          # every flag state, so an extra or missing sidecar can never reach the
-          # draft. All ten are produced by build-runtime-binaries in this run.
-          runtime_files=(
-            ade-darwin-arm64
-            ade-darwin-arm64.native.tar.gz
-            ade-darwin-x64
-            ade-darwin-x64.native.tar.gz
-            ade-linux-arm64
-            ade-linux-arm64.native.tar.gz
-            ade-linux-x64
-            ade-linux-x64.native.tar.gz
-            ade-win32-x64.exe
-            ade-win32-x64.native.tar.gz
-          )
-          mapfile -t actual_runtime_files < <(
-            find release-assets/runtime -maxdepth 1 -type f -name 'ade-*' -printf '%f\n' | LC_ALL=C sort
-          )
-          mapfile -t expected_runtime_files < <(printf '%s\n' "${runtime_files[@]}" | LC_ALL=C sort)
-          if ! diff -u <(printf '%s\n' "${expected_runtime_files[@]}") <(printf '%s\n' "${actual_runtime_files[@]}"); then
-            echo "::error::Runtime artifacts contain an unauthorized or missing entry."
-            exit 1
-          fi
-
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            binary="release-assets/runtime/ade-$target"
-            require_file "$binary" "ADE runtime binary for $target"
-            require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
-            archive_listing="$RUNNER_TEMP/ade-$target-native-files.txt"
-            tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" > "$archive_listing"
-            grep -q '^\./node_modules/' "$archive_listing" || {
-              echo "::error::ADE native dependency archive for $target is missing node_modules."
-              exit 1
-            }
-          done
-
-      - name: Validate gated Windows publish asset manifest
-        if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' }}
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          # Desktop installer set, built and signed by build-win-release in this
-          # same run.
-          installers=(release-assets/win/ADE-*-win-x64.exe)
-          blockmaps=(release-assets/win/ADE-*-win-x64.exe.blockmap)
-          if [ "${#installers[@]}" -ne 1 ] || [ "${#blockmaps[@]}" -ne 1 ]; then
-            echo "::error::Expected exactly one signed Windows installer and blockmap."
-            exit 1
-          fi
-          test -s "${installers[0]}"
-          test -s "${blockmaps[0]}"
-          test -s release-assets/win/latest.yml
-
-          # Updater feed correctness: latest.yml must name the installer that is
-          # actually being published beside it, the same contract the merged
-          # latest-mac.yml carries for macOS.
-          installer_name="$(basename "${installers[0]}")"
-          if ! grep -Fq "$installer_name" release-assets/win/latest.yml; then
-            echo "::error::release-assets/win/latest.yml does not reference the published installer $installer_name."
-            exit 1
-          fi
-
-          # Standalone Windows runtime, built and signed by build-runtime-binaries
-          # in this same run.
-          test -s release-assets/runtime/install.ps1
-          test -s release-assets/runtime/ade-win32-x64.exe
-          test -s release-assets/runtime/ade-win32-x64.native.tar.gz
-          # Cross-check the Windows standalone bytes against the digests computed
-          # on the signing runner, so a corrupted artifact transfer cannot reach
-          # the draft. That manifest is written by Git Bash on windows-latest,
-          # where sha256sum reads in binary mode and marks each name with a
-          # leading '*'; normalize it before parsing. Text and binary mode are
-          # identical here on Linux, so the normalized form verifies correctly.
-          test -s release-assets/runtime/SHA256SUMS
-          windows_sums="$RUNNER_TEMP/windows-standalone-SHA256SUMS"
-          sed 's/^\([0-9a-f]\{64\}\) [ *]/\1  /' release-assets/runtime/SHA256SUMS > "$windows_sums"
-          if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$windows_sums"; then
-            echo "::error::Windows standalone checksum manifest has an invalid entry."
-            exit 1
-          fi
-          mapfile -t actual_checksum_files < <(awk '{ print $2 }' "$windows_sums" | LC_ALL=C sort)
-          mapfile -t expected_checksum_files < <(
-            printf '%s\n' install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz | LC_ALL=C sort
-          )
-          if ! diff -u <(printf '%s\n' "${expected_checksum_files[@]}") <(printf '%s\n' "${actual_checksum_files[@]}"); then
-            echo "::error::Windows standalone checksum manifest does not name the exact authorized Windows runtime set."
-            exit 1
-          fi
-          (cd release-assets/runtime && sha256sum -c "$windows_sums")
-
-      - name: Create or update draft GitHub release
+      - name: Report build results
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ inputs.release_tag }}
-          TARGET_REF: ${{ inputs.target_ref }}
-          GH_REPO: ${{ github.repository }}
-          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          RUNTIME_RESULT: ${{ needs.build-runtime-binaries.result }}
+          MAC_RESULT: ${{ needs.build-mac-release.result }}
+          WINDOWS_RESULT: ${{ needs.build-win-release.result }}
         run: |
-          set -euo pipefail
-          shopt -s nullglob
-          # Every asset comes from this run. The per-arch macOS zips +
-          # latest-mac.yml are what electron-updater consumes; DMGs are the human
-          # downloads. Mac blockmaps stay omitted. The Windows installer,
-          # blockmap and latest.yml are the electron-updater equivalents.
-          base_files=(
-            release-assets/mac/*.dmg
-            release-assets/mac/*.zip
-            release-assets/mac/latest-mac.yml
-          )
-          # Cross-platform standalone runtime. These are notarized or signed by
-          # the build-runtime-binaries jobs of this same run, which is what keeps
-          # them byte-identical to the copies bundled inside the desktop
-          # installers published beside them.
-          runtime_files=(
-            release-assets/runtime/install.sh
-            release-assets/runtime/ade-darwin-*
-            release-assets/runtime/ade-linux-*
-          )
-          files=("${base_files[@]}" "${runtime_files[@]}")
-          checksum_files=("${runtime_files[@]}")
-
-          # One switch decides whether this release carries Windows at all.
-          if [ "$PUBLISH_WINDOWS" = "1" ]; then
-            windows_files=(
-              release-assets/win/ADE-*-win-x64.exe
-              release-assets/win/ADE-*-win-x64.exe.blockmap
-              release-assets/win/latest.yml
-              release-assets/runtime/install.ps1
-              release-assets/runtime/ade-win32-x64.exe
-              release-assets/runtime/ade-win32-x64.native.tar.gz
-            )
-            files=("${files[@]}" "${windows_files[@]}")
-            checksum_files+=(
-              release-assets/runtime/install.ps1
-              release-assets/runtime/ade-win32-x64.exe
-              release-assets/runtime/ade-win32-x64.native.tar.gz
-            )
-          fi
-
-          # One checksum manifest over exactly the standalone assets uploaded
-          # below, regenerated so the digests always describe the bytes actually
-          # published rather than any per-job manifest staged upstream.
-          # install-runtime.sh and install-runtime.ps1 resolve their own
-          # platform's entries from this file.
-          mkdir -p release-assets/publish
-          published_checksums=release-assets/publish/SHA256SUMS
-          for checksum_file in "${checksum_files[@]}"; do
-            printf '%s  %s\n' \
-              "$(sha256sum "$checksum_file" | cut -d ' ' -f 1)" \
-              "$(basename "$checksum_file")"
-          done | LC_ALL=C sort -k2 > "$published_checksums"
-          if grep -Ev '^[0-9a-f]{64}  [A-Za-z0-9._-]+$' "$published_checksums"; then
-            echo "::error::Published checksum manifest has an invalid entry."
-            exit 1
-          fi
-          mapfile -t expected_published_checksums < <(
-            for checksum_file in "${checksum_files[@]}"; do basename "$checksum_file"; done | LC_ALL=C sort
-          )
-          mapfile -t actual_published_checksums < <(awk '{ print $2 }' "$published_checksums")
-          if ! diff -u \
-            <(printf '%s\n' "${expected_published_checksums[@]}") \
-            <(printf '%s\n' "${actual_published_checksums[@]}"); then
-            echo "::error::Published checksum manifest does not name the exact published standalone asset set."
-            exit 1
-          fi
-          files+=("$published_checksums")
-
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::No release artifacts were found after validation."
-            exit 1
-          fi
-
-          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
-            is_draft="$(gh release view "$TAG_NAME" --repo "$GH_REPO" --json isDraft --jq '.isDraft')"
-            if [ "$is_draft" != "true" ]; then
-              echo "::error::Release $TAG_NAME is already public. Refusing to overwrite published assets."
-              exit 1
-            fi
-            approved_target="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-            release_tag_target="$(gh api "repos/$GH_REPO/commits/$TAG_NAME" --jq '.sha' | tr '[:upper:]' '[:lower:]')"
-            if [ "$release_tag_target" != "$approved_target" ]; then
-              echo "::error::Existing draft tag $TAG_NAME resolves to $release_tag_target, not approved target $approved_target."
-              exit 1
-            fi
-            mapfile -t existing_assets < <(
-              gh release view "$TAG_NAME" --repo "$GH_REPO" --json assets --jq '.assets[].name'
-            )
-            for asset in "${existing_assets[@]}"; do
-              gh release delete-asset "$TAG_NAME" "$asset" --repo "$GH_REPO" --yes
-            done
-            gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
-          else
-            gh release create "$TAG_NAME" "${files[@]}" \
-              --repo "$GH_REPO" \
-              --draft \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              --target "$TARGET_REF"
-          fi
-
-          approved_target="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
-          final_tag_target="$(gh api "repos/$GH_REPO/commits/$TAG_NAME" --jq '.sha' | tr '[:upper:]' '[:lower:]')"
-          if [ "$final_tag_target" != "$approved_target" ]; then
-            echo "::error::Draft release tag $TAG_NAME resolves to $final_tag_target, not approved target $approved_target."
-            exit 1
-          fi
-          mapfile -t expected_assets < <(
-            for file in "${files[@]}"; do basename "$file"; done | LC_ALL=C sort
-          )
-          mapfile -t actual_assets < <(
-            gh release view "$TAG_NAME" --repo "$GH_REPO" --json assets --jq '.assets[].name' | LC_ALL=C sort
-          )
-          if ! diff -u <(printf '%s\n' "${expected_assets[@]}") <(printf '%s\n' "${actual_assets[@]}"); then
-            echo "::error::Draft release asset inventory differs from the exact validated set."
-            exit 1
-          fi
+          echo "build-runtime-binaries: $RUNTIME_RESULT"
+          echo "build-mac-release: $MAC_RESULT"
+          echo "build-win-release: $WINDOWS_RESULT"

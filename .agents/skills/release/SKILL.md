@@ -142,6 +142,7 @@ relevant preflights pass.
    ```bash
    test -f .github/workflows/release.yml
    test -f .github/workflows/release-core.yml
+   test -f .github/workflows/release-publish.yml
    gh workflow view release.yml --repo arul28/ADE
    ```
 
@@ -373,7 +374,9 @@ Expected shape:
 - `build-win-release` builds/signs/validates Windows independently, in parallel
   with the mac jobs, when `platforms` includes `win`. With the gate off it is
   skipped, and a skipped Windows job does not block the mac release.
-- `publish-release` merges the per-arch updater manifests and creates the draft
+- `publish-release` (in `release-publish.yml`, called by `release.yml` after
+  `run-release` succeeds) merges the per-arch updater manifests and creates the
+  draft
 - `update-brew-tap` runs after publication
 
 If `platforms=mac,win` and `build-win-release` did not run, stop. The gate and

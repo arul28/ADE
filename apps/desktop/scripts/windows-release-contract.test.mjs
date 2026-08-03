@@ -18,6 +18,7 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(desktopRoot, "package.json"), "utf8"));
 const releaseWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release-core.yml"), "utf8").replace(/\r\n/g, "\n");
 const releaseTriggerWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8").replace(/\r\n/g, "\n");
+const releasePublishWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release-publish.yml"), "utf8").replace(/\r\n/g, "\n");
 const prepareWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "prepare-release.yml"), "utf8").replace(/\r\n/g, "\n");
 const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n/g, "\n");
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
@@ -296,7 +297,7 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
   const alpha = resolveWindowsPackageIdentity("alpha");
   // electron-builder writes the installer from ${productName} but rewrites
   // latest.yml's url/path to a space-free "safe" name for GitHub, and
-  // release-core.yml publishes the on-disk file through `gh release upload`,
+  // release-publish.yml publishes the on-disk file through `gh release upload`,
   // where GitHub normalizes disallowed characters again. Any space in the
   // artifact name therefore points the updater feed at a file nobody published.
   for (const identity of [stable, beta, alpha]) {
@@ -330,7 +331,7 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
 });
 
 test("standalone Windows runtime signing uses only canonical credentials and validates publisher identity", () => {
-  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "build-results");
   const windowsSignStep = runtimeBuild.slice(
     runtimeBuild.indexOf("- name: Sign and validate standalone Windows runtime"),
     runtimeBuild.indexOf("- name: Materialize runtime notarization API key"),
@@ -364,8 +365,8 @@ test("standalone Windows runtime signing uses only canonical credentials and val
 });
 
 test("standalone Windows release assets remain behind the publication gate", () => {
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
-  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "build-results");
   const installer = fs.readFileSync(
     path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
     "utf8",
@@ -406,18 +407,42 @@ test("standalone Windows release assets remain behind the publication gate", () 
 });
 
 test("Windows release assets are validated and published as one release set", () => {
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
   const verify = jobBlock(releaseWorkflow, "verify", "build-mac-release");
   const workflowHeader = releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n"));
   assert.match(workflowHeader, /contents: read/);
   assert.doesNotMatch(workflowHeader, /contents: write/);
   assert.match(releaseTriggerWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: write/);
-  assert.match(publish, /- build-win-release/);
+  // GitHub validates a called workflow's job permissions statically, before any
+  // job-level `if:` runs, so release-core.yml must not contain a write-capable
+  // job at all or the read-only prepare-release.yml caller fails to parse.
+  // Publishing therefore lives in its own reusable workflow.
+  assert.doesNotMatch(releaseWorkflow, /contents: write/);
+  assert.equal(releaseWorkflow.includes("\n  publish-release:\n"), false);
   assert.match(publish, /permissions:\s*\n\s+actions: read\s*\n\s+contents: write/);
   assert.match(publish, /name: ade-win-release-/);
+  // Only the tag-triggered release workflow may call the publishing workflow.
+  assert.match(releaseTriggerWorkflow, /uses: \.\/\.github\/workflows\/release-publish\.yml/);
+  assert.doesNotMatch(prepareWorkflow, /release-publish\.yml/);
   // Windows is a first-class platform: with its gate on, a failed or skipped
-  // Windows build blocks the draft exactly as a failed macOS build does.
-  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
+  // Windows build blocks the draft exactly as a failed macOS build does, and
+  // always() still lets the gate evaluate when Windows is legitimately skipped.
+  assert.match(releaseTriggerWorkflow, /always\(\)\s*\n\s+&& needs\.run-release\.outputs\.runtime_result == 'success'/);
+  assert.match(releaseTriggerWorkflow, /needs\.run-release\.outputs\.mac_result == 'success'/);
+  assert.match(
+    releaseTriggerWorkflow,
+    /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'\s*\n\s+\|\| needs\.run-release\.outputs\.windows_result == 'success'/,
+  );
+  // The gate reads release-core.yml's outputs, so they must exist and be fed by
+  // an always() job that reports every build result.
+  for (const output of ["runtime_result", "mac_result", "windows_result"]) {
+    assert.match(releaseWorkflow, new RegExp(`value: \\$\\{\\{ jobs\\.build-results\\.outputs\\.${output} \\}\\}`));
+  }
+  const buildResults = jobBlock(releaseWorkflow, "build-results", null);
+  assert.match(buildResults, /if: always\(\)/);
+  assert.match(buildResults, /runtime_result: \$\{\{ needs\.build-runtime-binaries\.result \}\}/);
+  assert.match(buildResults, /mac_result: \$\{\{ needs\.build-mac-release\.result \}\}/);
+  assert.match(buildResults, /windows_result: \$\{\{ needs\.build-win-release\.result \}\}/);
   // verify fails fast on missing signing material instead of on stale proof
   // bindings, which no longer exist.
   assert.match(verify, /Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
@@ -502,7 +527,11 @@ test("Windows proof collection is opt-in, non-publishing, and emits an exact-SHA
   assert.match(prepareWorkflow, /name: Prepare signed Windows proof/);
   assert.match(prepareWorkflow, /Signed Windows proof requires the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
   assert.match(prepareWorkflow, /windows_proof: \$\{\{ inputs\.windows_proof \}\}/);
-  assert.match(prepareWorkflow, /publish: false/);
+  // There is no publish input any more. The dry run cannot publish because it
+  // holds a read-only token and never calls the publishing workflow, not
+  // because it passes a flag the shared workflow is trusted to honour.
+  assert.doesNotMatch(prepareWorkflow, /publish:/);
+  assert.match(prepareWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: read/);
   assert.doesNotMatch(prepareWorkflow, /contents: write/);
   // Proof collection never depends on a repository variable state, so it can
   // run before Windows is enabled and again as a regression check after.
@@ -568,7 +597,7 @@ test("Windows builds fresh on the release tag with no approved-proof promotion",
 
 test("Windows proof and draft assembly enforce exact runtime and remote asset inventories", () => {
   const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
   assert.match(windowsRelease, /\$unexpectedRuntimeFiles = @\(\$actualRuntimeFiles \| Where-Object \{ \$_ -notin \$runtimeFiles \}\)/);
   assert.match(windowsRelease, /Runtime artifact inventory mismatch/);
   assert.doesNotMatch(windowsRelease, /Get-ChildItem[^\n]+-Filter "ade-\*"[^\n]+ForEach-Object \{/);
@@ -588,13 +617,16 @@ test("Windows proof and draft assembly enforce exact runtime and remote asset in
 
 test("one repository variable decides whether a release carries Windows", () => {
   const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
   // Exactly one maintainer-facing switch, matching the macOS bar: secrets are
   // provisioned once, the gate is flipped once, then tags just work.
   assert.match(windowsRelease, /if: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof \}\}/);
-  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'/);
+  assert.match(releaseTriggerWorkflow, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'/);
+  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
   const windowsVariables = new Set(
-    (releaseWorkflow.match(/vars\.ADE_WINDOWS_[A-Z0-9_]+/g) ?? []).map((entry) => entry.slice("vars.".length)),
+    ([releaseWorkflow, releaseTriggerWorkflow, releasePublishWorkflow]
+      .join("\n")
+      .match(/vars\.ADE_WINDOWS_[A-Z0-9_]+/g) ?? []).map((entry) => entry.slice("vars.".length)),
   );
   assert.deepEqual([...windowsVariables], ["ADE_WINDOWS_PUBLIC_RELEASE_ENABLED"]);
 });

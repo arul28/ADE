@@ -454,7 +454,7 @@ public signed release as an ongoing regression check.
 - Before publication: keep Windows and the website link disabled, fix the problem, and repeat the failed test.
 - Existing macOS or standalone runtime job fails: stop the release and fix the shared workflow.
 - `build-win-release` fails while the gate is on: no draft is created, because
-  `publish-release` requires a successful Windows build. Fix the source, choose a
+  the publish gate in `release.yml` requires a successful Windows build. Fix the source, choose a
   higher version, and tag again. Do not turn the gate off to force a draft out.
 - Gate is on but the draft carries no Windows assets: the draft did not come
   from a complete run of this workflow. Leave it unpublished, delete it, and
@@ -502,6 +502,7 @@ WinGet, the Microsoft Store, MSIX, and enterprise deployment can be added later.
 - [Non-publishing workflow](../../.github/workflows/prepare-release.yml)
 - [Tag-triggered release workflow](../../.github/workflows/release.yml)
 - [Shared release jobs](../../.github/workflows/release-core.yml)
+- [Publishing workflow](../../.github/workflows/release-publish.yml)
 - [Contract tests](../../apps/desktop/scripts/windows-release-contract.test.mjs)
 - [Proof manifest generator and validator](../../apps/desktop/scripts/windows-proof-manifest.mjs)
 - [Exact-SHA Windows proof](../development/windows-release-proof.md)

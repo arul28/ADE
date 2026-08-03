@@ -26,5 +26,34 @@ jobs:
     with:
       release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
       target_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_sha || github.sha }}
-      publish: true
+    secrets: inherit
+
+  # Publishing is the only part of the release that needs contents: write, and
+  # it lives in its own reusable workflow so release-core.yml can also be called
+  # by the read-only prepare-release.yml dry run. See release-publish.yml.
+  #
+  # This is the gate release-core.yml's publish-release job used to carry
+  # verbatim, rebuilt from the build results release-core.yml exposes as
+  # outputs. Windows is a first-class release platform: when its gate is on, a
+  # failed or skipped Windows build blocks the draft exactly as a failed macOS
+  # build does. always() is still needed so the job evaluates when
+  # build-win-release is legitimately skipped with the gate off. There is no
+  # publish input any more; only this workflow calls release-publish.yml, so a
+  # dry run cannot reach it at all.
+  publish-release:
+    if: >-
+      ${{
+        always()
+        && needs.run-release.outputs.runtime_result == 'success'
+        && needs.run-release.outputs.mac_result == 'success'
+        && (
+          vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
+          || needs.run-release.outputs.windows_result == 'success'
+        )
+      }}
+    needs: run-release
+    uses: ./.github/workflows/release-publish.yml
+    with:
+      release_tag: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+      target_ref: ${{ github.event_name == 'workflow_dispatch' && inputs.target_sha || github.sha }}
     secrets: inherit
