@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
+import { signalChildProcessTree } from "../shared/utils";
 import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
@@ -713,10 +714,26 @@ export function isRetryableReadAction(domain: string, action: string): boolean {
   );
 }
 
+/**
+ * Signal an owned `ade serve` daemon and everything it started.
+ *
+ * A runtime daemon is not a leaf: it spawns its own `node` children (agent
+ * runners, the brain, tool subprocesses). `child.kill()` signals exactly one
+ * pid. On POSIX that at least leaves the orphans reparented to init and
+ * reachable by group signal; on Windows there is no process group and no
+ * reaping parent, so every grandchild survives indefinitely and keeps holding
+ * the runtime named pipe -- which is how `ade serve` trees were observed still
+ * alive hours after the process that owned them exited.
+ *
+ * `signalChildProcessTree` is the repo's existing answer to this (process-group
+ * signal on POSIX, `taskkill /T` on Windows, same helper `ptyService` and
+ * `agentChatService` use), and it falls back to a direct `child.kill()` if the
+ * tree signal fails.
+ */
 function signalRuntimeChildProcess(child: ChildProcess | null, signal: NodeJS.Signals): void {
   if (!child?.pid) return;
   try {
-    child.kill(signal);
+    signalChildProcessTree(child, signal);
   } catch {}
 }
 
@@ -2371,7 +2388,11 @@ export class LocalRuntimeConnectionPool {
     const child = spawn(process.execPath, args, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
+      // Put the daemon in its own process group on POSIX so disposal can signal
+      // the whole tree with `process.kill(-pid)` instead of just the daemon --
+      // the same convention `spawnAsync` in shared/utils already uses. Windows
+      // has no process groups here; `signalChildProcessTree` uses `taskkill /T`.
+      detached: process.platform !== "win32",
       windowsHide: true,
     });
     this.ownedRuntimeChild = child;
