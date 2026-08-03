@@ -4,17 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { discoverCursorSessions } from "./discoverCursor";
 
-/**
- * Mirrors `cursorProjectSlugForCwd` in discoverCursor.ts. A Windows drive
- * prefix has to be dropped rather than hyphenated, because `C:-Users-…`
- * contains a colon and can therefore never be a real directory name.
- */
-function cursorProjectSlug(cwd: string): string {
-  return cwd
-    .replace(/^([A-Za-z]):[\\/]+/u, "")
-    .replace(/^[/\\]+/u, "")
-    .replace(/[\\/]/gu, "-");
-}
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 function writeTranscript(home: string, slug: string, agentId: string, cwd: string): void {
   const dir = path.join(home, ".cursor", "projects", slug, "agent-transcripts", agentId);
@@ -48,11 +38,17 @@ describe("discoverCursorSessions", () => {
     }
   });
 
+  it("matches Cursor's own project slug rule", () => {
+    // Byte-for-byte from @cursor/sdk's shipped slug function.
+    expect(cursorProjectSlug("C:\\Users\\me\\repo")).toBe("C-Users-me-repo");
+    expect(cursorProjectSlug("/Users/me/repo")).toBe("Users-me-repo");
+    expect(cursorProjectSlug("/Users/me/my.app/node_modules")).toBe("Users-me-my-app-node-modules");
+    expect(cursorProjectSlug("C:\\repo\\.ade\\worktrees\\lane-1")).toBe("C-repo-ade-worktrees-lane-1");
+  });
+
   it("keeps a transcript in scope when its workspace directory no longer exists", async () => {
-    // Without the drive-prefix fix this drops the session on Windows: the
-    // slug-to-cwd resolver cannot help once the directory is gone, so the
-    // structural slug comparison is the only thing left, and it can never
-    // match a slug containing `C:`. macOS has no drive prefix and passes.
+    // The slug-to-cwd resolver cannot help once the directory is gone, so the
+    // structural slug comparison is the only thing left.
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-import-gone-"));
     const home = path.join(root, "home");
     const workspace = path.join(root, "deleted-repo");

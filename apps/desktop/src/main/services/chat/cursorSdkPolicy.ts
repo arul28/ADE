@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import type { AgentChatSession } from "../../../shared/types";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import type {
   CursorSdkApprovalPolicy,
   CursorSdkChatMode,
@@ -371,12 +372,7 @@ function resolveCandidatePath(candidate: string, cwd: string, userHomeDir?: stri
 }
 
 export function cursorProjectSlugForPath(projectPath: string): string {
-  return path.resolve(projectPath)
-    .split(/[\\/]+/)
-    .filter(Boolean)
-    .map((component) => component.replace(/^\.+/, "").replace(/[^A-Za-z0-9_-]+/g, ""))
-    .filter(Boolean)
-    .join("-");
+  return cursorProjectSlug(path.resolve(projectPath));
 }
 
 function cursorSupportReadRoots(laneRoot: string, userHomeDir?: string | null): string[] {

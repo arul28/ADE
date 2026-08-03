@@ -10,6 +10,7 @@ import {
   resolveCursorSdkPolicy,
   summarizeCursorHook,
 } from "./cursorSdkPolicy";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 describe("Cursor SDK policy", () => {
   it("maps Cursor modes to ADE permission policies", () => {
@@ -205,11 +206,11 @@ describe("Cursor SDK policy", () => {
     const userHomeDir = path.join(fsRoot, "Users", "admin");
     const laneRoot = path.join(userHomeDir, "Projects", "Versic", ".ade", "worktrees", "private-sharing-5d14c47a");
     const slug = cursorProjectSlugForPath(laneRoot);
-    const expectedSlug = [
-      ...fsRoot.split(/[\\/]+/u).filter(Boolean).map((part) => part.replace(/[^A-Za-z0-9_-]+/gu, "")),
-      "Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a",
-    ].filter(Boolean).join("-");
-    expect(slug).toBe(expectedSlug);
+    // Cursor's own rule: every non-alphanumeric character becomes a dash, runs
+    // collapse, leading/trailing dashes are trimmed. The Windows drive letter
+    // therefore survives as a leading `C-` segment.
+    expect(slug).toBe(cursorProjectSlug(path.resolve(laneRoot)));
+    expect(slug).toMatch(/Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a$/u);
 
     const transcript = summarizeCursorHook({
       toolName: "read",

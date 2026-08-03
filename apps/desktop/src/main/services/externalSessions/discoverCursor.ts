@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import {
   asEpochMs,
   asRecord,
@@ -39,14 +40,30 @@ const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 function cursorProjectSlugForCwd(cwd: string): string {
-  return cwd
-    // A Windows drive prefix must be dropped, not hyphenated: `C:-Users-…`
-    // contains a colon, so it can never equal a real directory name, and
-    // `resolveCursorCwdFromSlug` (which walks down from the drive root) cannot
-    // invert it either. The drive-less slug round-trips correctly.
-    .replace(/^([A-Za-z]):[\\/]+/u, "")
-    .replace(/^[/\\]+/u, "")
-    .replace(/[\\/]/gu, "-");
+  return cursorProjectSlug(cwd);
+}
+
+/**
+ * Cursor's slug keeps the Windows drive letter as its first segment
+ * (`C:\repo` becomes `C-repo`), but the shared slug resolver walks down from
+ * the current drive root and so never finds a directory literally named `C`.
+ * Retry without the drive segment when the slug starts with one.
+ */
+function resolveCursorProjectCwd(slug: string): string | null {
+  const direct = resolveCursorCwdFromSlug(slug);
+  if (direct) return direct;
+  if (process.platform !== "win32") return null;
+  const withoutDrive = /^([A-Za-z])-(.+)$/u.exec(slug)?.[2];
+  return withoutDrive ? resolveCursorCwdFromSlug(withoutDrive) : null;
+}
+
+function cursorProjectCwdCandidates(slug: string): string[] {
+  const candidates = [...cursorSlugCwdCandidates(slug)];
+  if (process.platform === "win32") {
+    const withoutDrive = /^([A-Za-z])-(.+)$/u.exec(slug)?.[2];
+    if (withoutDrive) candidates.push(...cursorSlugCwdCandidates(withoutDrive));
+  }
+  return candidates;
 }
 
 type CursorStoreCandidate = ExternalSessionFileCandidate<{
@@ -72,7 +89,7 @@ function cursorWorkspaceByHash(
   for (const projectEntry of safeReadDir(projectsDir)) {
     if (!projectEntry.isDirectory()) continue;
     const projectDir = path.join(projectsDir, projectEntry.name);
-    const cwd = trustedCursorWorkspacePath(projectDir) ?? resolveCursorCwdFromSlug(projectEntry.name);
+    const cwd = trustedCursorWorkspacePath(projectDir) ?? resolveCursorProjectCwd(projectEntry.name);
     if (!cwd || !cwdIsInScope(cwd, scopeRoots)) continue;
     result.set(cursorWorkspaceHash(cwd), cwd);
   }
@@ -176,7 +193,7 @@ export async function discoverCursorSessions(
     if (
       !cwdIsInScope(trustedCwd, args.scopeRoots)
       && !slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, cursorProjectSlugForCwd)
-      && !cwdCandidatesIncludeScope(cursorSlugCwdCandidates(projectEntry.name), args.scopeRoots)
+      && !cwdCandidatesIncludeScope(cursorProjectCwdCandidates(projectEntry.name), args.scopeRoots)
     ) {
       continue;
     }
@@ -228,7 +245,7 @@ export async function discoverCursorSessions(
     if (!jsonl.length) continue;
     const first = asRecord(jsonl[0]);
     const transcriptCwd = cursorCwdFromRecords(jsonl);
-    const cwd = transcriptCwd ?? candidate.trustedCwd ?? resolveCursorCwdFromSlug(candidate.projectSlug);
+    const cwd = transcriptCwd ?? candidate.trustedCwd ?? resolveCursorProjectCwd(candidate.projectSlug);
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const existing = recordsById.get(candidate.agentId);
     const firstPrompt = firstUserTextFromRecords(jsonl);
