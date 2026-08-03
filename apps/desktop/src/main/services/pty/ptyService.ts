@@ -99,6 +99,7 @@ import {
   quoteShellArg,
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
+import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -2533,7 +2534,15 @@ export function createPtyService({
   };
 
   function claudeProjectDirForCwd(cwd: string): string {
-    return path.join(os.homedir(), ".claude", "projects", cwd.replace(/\//g, "-"));
+    // Replacing only `/` leaves a Windows path untouched — its separators are
+    // backslashes — so this used to join a whole drive-qualified path onto the
+    // projects directory and look for `…\.claude\projects\C:\Users\me\repo`,
+    // which no NTFS volume can hold. Claude's own rule, read off this machine's
+    // `~/.claude/projects` (`C--Users-arul2-Documents-Programming-ADE`), turns
+    // every non-alphanumeric character into `-` without collapsing runs or
+    // trimming. Cursor and Droid each escape differently; reuse the one that
+    // already encodes Claude's rule rather than generalise across vendors.
+    return path.join(os.homedir(), ".claude", "projects", claudeProjectSlugForCwd(cwd));
   }
 
   function claudeSessionFilePathForCwd(cwd: string, claudeSessionId: string): string {
@@ -2945,21 +2954,48 @@ export function createPtyService({
     }
   };
 
+  /**
+   * Droid's directory name for a project, per `sanitizePathToDirectoryName` in
+   * `@factory/droid-sdk`. Unlike Claude's rule this replaces *only* path
+   * separators — dots, underscores and spaces survive — collapses runs of them,
+   * strips the drive colon as a deliberate special case, and always prefixes a
+   * dash. Replacing only `/` here matched nothing on Windows, where separators
+   * are backslashes and the drive colon cannot appear in a name at all; the
+   * lookup silently fell through to scanning every project directory instead.
+   *
+   * TODO: unify with `droidProjectSlugForCwd()` in `externalSessions/
+   * discoverDroid.ts` once that branch and this one share a base — three
+   * providers with three incompatible rules should each have exactly one home.
+   */
+  function droidProjectSlugForCwd(cwd: string): string {
+    if (process.platform === "win32") {
+      return `-${cwd.replace(/^([A-Z]):/iu, "$1").replace(/[\\/]+/gu, "-")}`;
+    }
+    return `-${cwd.replace(/^\/+/u, "").replace(/\/+/gu, "-")}`;
+  }
+
+  /** Windows paths are case-insensitive; the vendor's escaping is not. */
+  function foldDroidProjectSlug(slug: string): string {
+    return process.platform === "win32" ? slug.toLowerCase() : slug;
+  }
+
   const resolveDroidSessionIdFromStorage = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const escapedCwd = args.cwd.replace(/\//g, "-");
       const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
-      const expectedProjectDir = path.join(droidSessionsDir, escapedCwd);
       if (!fs.existsSync(droidSessionsDir)) return null;
-      const projectDirs = fs.existsSync(expectedProjectDir)
-        ? [expectedProjectDir]
-        : fs.readdirSync(droidSessionsDir, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => path.join(droidSessionsDir, entry.name));
+      const projectEntries = fs.readdirSync(droidSessionsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory());
+      const expectedSlug = foldDroidProjectSlug(droidProjectSlugForCwd(args.cwd));
+      const expectedEntry = projectEntries.find(
+        (entry) => foldDroidProjectSlug(entry.name) === expectedSlug,
+      );
+      const projectDirs = expectedEntry
+        ? [path.join(droidSessionsDir, expectedEntry.name)]
+        : projectEntries.map((entry) => path.join(droidSessionsDir, entry.name));
       const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; mtimeMs: number } | null = null;
