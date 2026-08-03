@@ -79,7 +79,12 @@ export async function buildProviderConnections(
       return `${providerLabel} CLI is installed but no login was detected. Run: ${loginHint}`;
     }
     if (!flags.runtimeDetected) {
-      return `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH, login-shell PATH, interactive-shell PATH, and common install directories. If ${providerLabel} is installed elsewhere, add that bin directory to your shell PATH and refresh.`;
+      // The login-shell/interactive-shell PATH probe is a POSIX-only step —
+      // `augmentProcessPathWithShellAndKnownCliDirs` skips it on Windows — so
+      // do not claim it happened, and give the right place to fix PATH.
+      return process.platform === "win32"
+        ? `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH (honouring PATHEXT) and the common Windows install directories: %APPDATA%\\npm, %USERPROFILE%\\.local\\bin, %LOCALAPPDATA%\\Programs, %LOCALAPPDATA%\\Microsoft\\WinGet\\Links. If ${providerLabel} is installed elsewhere, add that folder to your PATH in System Properties -> Environment Variables, reopen ADE, and refresh.`
+        : `Local credentials exist but ADE could not find the ${providerLabel} CLI. ADE checks the app PATH, login-shell PATH, interactive-shell PATH, and common install directories. If ${providerLabel} is installed elsewhere, add that bin directory to your shell PATH and refresh.`;
     }
     if (extraBlocker) return extraBlocker;
     return null;

@@ -50,6 +50,7 @@ import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
 import { ClaudeLoginPromptButton, revealTerminalSessionInWork } from "../work/ClaudeLoginPromptButton";
 import { OAuthConnectModal } from "./OAuthConnectModal";
+import { rendererPlatformAttribute } from "../../lib/platform";
 
 type CliName = "claude" | "codex" | "cursor" | "droid";
 type ApiKeySource = "config" | "env" | "store";
@@ -85,6 +86,8 @@ const CLI_TOOLS: Array<{
   authStory: string;
   loginCmd: string;
   installHint: string;
+  /** Used instead of installHint on Windows, where the vendor ships a different installer. */
+  windowsInstallHint?: string;
 }> = [
   {
     cli: "claude",
@@ -92,6 +95,9 @@ const CLI_TOOLS: Array<{
     authStory: "Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.",
     loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
     installHint: "npm install -g @anthropic-ai/claude-code",
+    // Anthropic's documented Windows installs: the PowerShell native installer
+    // (drops claude.exe in %USERPROFILE%\.localin) or WinGet.
+    windowsInstallHint: "irm https://claude.ai/install.ps1 | iex (PowerShell), or winget install Anthropic.ClaudeCode",
   },
   {
     cli: "codex",
@@ -387,6 +393,12 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   return null;
 }
 
+const isWindowsRenderer = rendererPlatformAttribute() === "win32";
+
+function installHintFor(tool: (typeof CLI_TOOLS)[number]): string {
+  return (isWindowsRenderer && tool.windowsInstallHint) || tool.installHint;
+}
+
 function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProviderConnectionStatus | null | undefined): string {
   if (connection?.runtimeAvailable) {
     return "Connection verified.";
@@ -398,9 +410,12 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
     return `CLI detected but not signed in. Run: ${tool.loginCmd}`;
   }
   if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `Local credentials exist but CLI not found in PATH. Install: ${tool.installHint}`;
+    return `Local credentials exist but CLI not found in PATH. Install: ${installHintFor(tool)}`;
   }
-  return `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it is on your shell PATH and use Refresh.`;
+  const pathAdvice = isWindowsRenderer
+    ? "If already installed, add its folder to your Windows PATH (System Properties -> Environment Variables), reopen ADE, and use Refresh."
+    : "If already installed, ensure it is on your shell PATH and use Refresh.";
+  return `CLI not found in PATH. Install: ${installHintFor(tool)}. ${pathAdvice}`;
 }
 
 function formatLocalModelLabel(modelId: string): string {
