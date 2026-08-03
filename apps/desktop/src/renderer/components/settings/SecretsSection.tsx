@@ -4,6 +4,7 @@ import type { ProjectSecretSummary, ProjectSecretsImportPreview, ProjectSecretsL
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
 import { SecretsImportEnvModal } from "./SecretsImportEnvModal";
 import { SettingsSectionShell } from "./settingsSectionUi";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 const inputStyle: React.CSSProperties = {
   border: `1px solid ${COLORS.outlineBorder}`,
@@ -75,7 +76,22 @@ export function SecretsSection() {
   const [value, setValue] = React.useState("");
   const [revealedValues, setRevealedValues] = React.useState<Record<string, string>>({});
   const [visibleNames, setVisibleNames] = React.useState<Record<string, boolean>>({});
-  const [copiedName, setCopiedName] = React.useState<string | null>(null);
+  // Keyed so only the row that was copied shows its confirmation. The hook
+  // reports a failed write as `false` rather than rethrowing, so the transport
+  // stashes the underlying IPC message for `copySecret` to surface.
+  const copyErrorRef = React.useRef<string | null>(null);
+  const { copy: copyToClipboard, isCopied, copiedKey: copiedName, reset: resetCopied } = useCopyToClipboard({
+    write: async (value) => {
+      copyErrorRef.current = null;
+      try {
+        await window.ade.app.writeClipboardText(value);
+        return true;
+      } catch (err) {
+        copyErrorRef.current = err instanceof Error ? err.message : String(err);
+        return false;
+      }
+    },
+  });
   const [confirmDeleteName, setConfirmDeleteName] = React.useState<string | null>(null);
   const [busyName, setBusyName] = React.useState<string | null>(null);
   const [saving, setSaving] = React.useState(false);
@@ -88,7 +104,6 @@ export function SecretsSection() {
   const [selectedImportNames, setSelectedImportNames] = React.useState<Set<string>>(new Set());
   const [message, setMessage] = React.useState<string | null>(null);
   const [error, setError] = React.useState<string | null>(null);
-  const copyResetTimerRef = React.useRef<number | null>(null);
 
   const load = React.useCallback(async () => {
     try {
@@ -103,23 +118,6 @@ export function SecretsSection() {
   React.useEffect(() => {
     void load();
   }, [load]);
-
-  React.useEffect(() => () => {
-    if (copyResetTimerRef.current != null) {
-      window.clearTimeout(copyResetTimerRef.current);
-    }
-  }, []);
-
-  const markCopied = React.useCallback((secretName: string) => {
-    setCopiedName(secretName);
-    if (copyResetTimerRef.current != null) {
-      window.clearTimeout(copyResetTimerRef.current);
-    }
-    copyResetTimerRef.current = window.setTimeout(() => {
-      setCopiedName((current) => current === secretName ? null : current);
-      copyResetTimerRef.current = null;
-    }, 1500);
-  }, []);
 
   const fetchSecretValue = React.useCallback(async (secretName: string, cache: boolean): Promise<string> => {
     const cached = revealedValues[secretName];
@@ -186,8 +184,15 @@ export function SecretsSection() {
     setMessage(null);
     try {
       const secretValue = revealedValues[secretName] ?? await fetchSecretValue(secretName, false);
-      await window.ade.app.writeClipboardText(secretValue);
-      markCopied(secretName);
+      // The hook reports a failed write as `false` rather than throwing, so the
+      // success message must be gated on it — otherwise a denied clipboard
+      // still tells the user the secret was copied.
+      const copiedOk = await copyToClipboard(secretValue, secretName);
+      if (!copiedOk) {
+        const reason = copyErrorRef.current;
+        setError(`Couldn't copy ${secretName} to the clipboard.${reason ? ` ${reason}` : ""}`);
+        return;
+      }
       setMessage(`Copied ${secretName}.`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -207,7 +212,7 @@ export function SecretsSection() {
     try {
       await window.ade.projectSecrets.delete({ name: secretName, confirmName: secretName });
       setConfirmDeleteName(null);
-      setCopiedName((current) => current === secretName ? null : current);
+      if (copiedName === secretName) resetCopied();
       setVisibleNames((current) => {
         const next = { ...current };
         delete next[secretName];
@@ -447,7 +452,7 @@ export function SecretsSection() {
               const isVisible = Boolean(visibleNames[secret.name]);
               const isBusy = busyName === secret.name;
               const isConfirmingDelete = confirmDeleteName === secret.name;
-              const isCopied = copiedName === secret.name;
+              const rowCopied = isCopied(secret.name);
               return (
                 <div
                   key={secret.name}
@@ -487,19 +492,19 @@ export function SecretsSection() {
                     </button>
                     <button
                       type="button"
-                      title={isCopied ? "Copied" : "Copy secret"}
-                      aria-label={isCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
+                      title={rowCopied ? "Copied" : "Copy secret"}
+                      aria-label={rowCopied ? `Copied ${secret.name}` : `Copy ${secret.name}`}
                       disabled={isBusy}
                       onClick={() => void copySecret(secret.name)}
                       style={{
                         ...iconButtonStyle,
-                        color: isCopied ? "#15803d" : COLORS.textSecondary,
-                        borderColor: isCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
-                        background: isCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
+                        color: rowCopied ? "#15803d" : COLORS.textSecondary,
+                        borderColor: rowCopied ? "color-mix(in srgb, #15803d 42%, transparent)" : COLORS.outlineBorder,
+                        background: rowCopied ? "color-mix(in srgb, #15803d 12%, var(--color-card))" : "var(--color-card)",
                         opacity: isBusy ? 0.5 : 1,
                       }}
                     >
-                      {isCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
+                      {rowCopied ? <Check size={15} weight="bold" /> : <Copy size={15} />}
                     </button>
                     <button
                       type="button"

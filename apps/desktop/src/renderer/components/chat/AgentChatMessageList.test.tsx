@@ -1215,8 +1215,37 @@ describe("AgentChatMessageList transcript rendering", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
 
+    // The invariant is that the hidden prompt never reaches the clipboard. The
+    // shared copy hook no-ops on empty text rather than writing "", so the
+    // clipboard is left untouched instead of being wiped. Asserting "not called
+    // at all" is the exact new contract and is not vacuous: the sibling test
+    // below proves the same button does reach `writeText` for a visible message.
+    // The early return happens before any await, so no settling wait is needed.
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it("copies the visible message text when it is not hidden", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+
+    renderMessageList([
+      {
+        sessionId: "session-1",
+        timestamp: "2026-03-17T10:00:00.000Z",
+        event: {
+          type: "user_message",
+          text: "A perfectly ordinary message.",
+        },
+      },
+    ]);
+
+    fireEvent.click(screen.getByRole("button", { name: "Copy message" }));
+
     await waitFor(() => {
-      expect(writeText).toHaveBeenCalledWith("");
+      expect(writeText).toHaveBeenCalledWith("A perfectly ordinary message.");
     });
   });
 

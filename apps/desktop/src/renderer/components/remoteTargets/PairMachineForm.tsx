@@ -8,6 +8,7 @@ import {
 import { CheckCircle } from "@phosphor-icons/react";
 import { COLORS, LABEL_STYLE, MONO_FONT, SANS_FONT, primaryButton } from "../lanes/laneDesignTokens";
 import { extractError } from "../../lib/format";
+import { useAsyncAction } from "../../hooks/useAsyncAction";
 import type { RemoteRuntimeParsedPairingInput } from "../../../shared/types";
 
 const fieldStyle: CSSProperties = {
@@ -62,7 +63,6 @@ export function PairMachineForm({
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
   const [pin, setPin] = useState("");
-  const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const deviceName = defaultDeviceName.trim() || "This computer";
 
@@ -100,32 +100,33 @@ export function PairMachineForm({
   }, [trimmedInput]);
 
   const pinValid = /^\d{6}$/.test(pin.trim());
-  const canSubmit = useMemo(
-    () => Boolean(parsed) && pinValid && !busy && !submitting,
-    [parsed, pinValid, busy, submitting],
-  );
 
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canSubmit || !trimmedInput) return;
-    setSubmitting(true);
-    setError(null);
-    try {
+  const { run: submitPairing, pending: submitting } = useAsyncAction({
+    action: async () => {
+      setError(null);
       const { targetId } = await window.ade.remoteRuntime.pairWithMachine({
         input: trimmedInput,
         pin: pin.trim(),
         deviceName,
       });
       await onPaired(targetId);
-    } catch (err) {
-      setError(friendlyPairError(err));
-    } finally {
-      setSubmitting(false);
-    }
+    },
+    onError: (err) => setError(friendlyPairError(err)),
+  });
+
+  const canSubmit = useMemo(
+    () => Boolean(parsed) && pinValid && !busy && !submitting,
+    [parsed, pinValid, busy, submitting],
+  );
+
+  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit || !trimmedInput) return;
+    submitPairing();
   }
 
   return (
-    <form onSubmit={(event) => void handleSubmit(event)} style={{ display: "grid", gap: 12 }}>
+    <form onSubmit={handleSubmit} style={{ display: "grid", gap: 12 }}>
       <div style={{ color: COLORS.textMuted, fontFamily: SANS_FONT, fontSize: 12, lineHeight: 1.45 }}>
         You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer.
       </div>

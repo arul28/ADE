@@ -30,7 +30,7 @@ const mockLocalStorage = {
       openRepo: vi.fn(async () => null),
       // openRepo picks a folder, then runs the worktree gate. inspectPath is
       // deliberately left unmocked here so the gate falls through (its catch)
-      // to a normal open — the gate itself is covered in appStore.worktreeGate.test.ts.
+      // to a normal open — the gate itself is covered in appStoreWorktreeGate.test.ts.
       chooseDirectory: vi.fn(async () => "/p/picked"),
       listRecent: vi.fn(async () => []),
       switchToPath: vi.fn(async () => null),
@@ -643,7 +643,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[];
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
@@ -693,7 +692,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[]);
 
@@ -805,7 +803,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[];
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
@@ -894,7 +891,6 @@ describe("appStore", () => {
             autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
-            adoptableAttached: false,
           },
           {
             lane: { id: "lane-2", name: "Lane 2" },
@@ -909,7 +905,6 @@ describe("appStore", () => {
             autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
-            adoptableAttached: false,
           },
         ] as any[],
       });

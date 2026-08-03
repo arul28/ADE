@@ -165,6 +165,11 @@ func matchesLaneToken(snapshot: LaneListSnapshot, isPinned: Bool, token: String)
     case "pinned": return isPinned
     case "primary": return snapshot.lane.laneType == "primary"
     case "worktree": return snapshot.lane.laneType == "worktree"
+    // No lane is created as `attached` any more, but rows written before that
+    // keep the type and are never migrated, so the token still has matches —
+    // and desktop's `matchesLaneFilterToken` still answers it. An unknown `is:`
+    // value returns false rather than falling through to free text, so dropping
+    // the case here would empty the list instead of degrading to a name search.
     case "attached": return snapshot.lane.laneType == "attached"
     default: return false
     }

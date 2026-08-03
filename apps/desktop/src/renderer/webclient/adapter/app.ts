@@ -24,7 +24,11 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       return {
         appVersion: "web",
         isPackaged: false,
-        automationsEnabled: true,
+        // No `automations.*` action is registered host-side, so the builder's
+        // saves would resolve against a missing descriptor and vanish. Reporting
+        // the feature as off gives anyone who reaches /automations by URL or
+        // palette the coming-soon screen instead of a rule editor that lies.
+        automationsEnabled: false,
         platform: browserPlatform(),
         arch: "web",
         versions: {
@@ -148,14 +152,21 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
     async readClipboardText() {
       return await safeClipboardRead();
     },
+    // `data` is bare base64 on desktop (the IPC handler does
+    // Buffer.from(data, "base64")), and callers rely on that: AgentChatComposer
+    // both forwards it to saveTempAttachment and builds `data:<mime>;base64,`
+    // previews from it. Returning a data URL here corrupted both.
     async readClipboardImage() {
       const image = await readClipboardImage();
-      return image ? { data: image.dataUrl, filename: image.filename, mimeType: image.mimeType } : null;
+      return image ? { data: image.base64, filename: image.filename, mimeType: image.mimeType } : null;
     },
     async saveClipboardImageAttachment(args: Record<string, unknown> = {}) {
       const image = await readClipboardImage();
       if (!image) return null;
-      return await commands.call("chat.saveTempAttachment", { ...args, data: image.dataUrl, filename: image.filename }, {
+      // Send the data URL under its own key: that host branch reads the mime
+      // from the URL itself. Under `data` it would be decoded as raw base64 and
+      // rejected as invalid.
+      return await commands.call("chat.saveTempAttachment", { ...args, dataUrl: image.dataUrl, filename: image.filename }, {
         fallback: { path: "", mimeType: image.mimeType, previewDataUrl: image.dataUrl },
         idempotent: false,
       });
@@ -298,7 +309,25 @@ async function safeClipboardRead(): Promise<string> {
   }
 }
 
-async function readClipboardImage(): Promise<{ dataUrl: string; filename: string; mimeType: string } | null> {
+// Attachment sinks resolve the stored file's type from the filename extension
+// when no mime is supplied, then reject the payload if the sniffed bytes
+// disagree — so a webp on the clipboard must not be announced as .png.
+const CLIPBOARD_IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/bmp": ".bmp",
+  "image/x-icon": ".ico",
+  "image/svg+xml": ".svg",
+};
+
+async function readClipboardImage(): Promise<{
+  base64: string;
+  dataUrl: string;
+  filename: string;
+  mimeType: string;
+} | null> {
   const clipboard = typeof navigator === "undefined" ? null : navigator.clipboard;
   const read = (clipboard as Clipboard & { read?: () => Promise<ClipboardItems> } | null)?.read;
   if (!read) return null;
@@ -307,9 +336,18 @@ async function readClipboardImage(): Promise<{ dataUrl: string; filename: string
     for (const item of items) {
       const imageType = item.types.find((type) => type.startsWith("image/"));
       if (!imageType) continue;
+      const extension = CLIPBOARD_IMAGE_EXTENSION_BY_MIME[imageType.toLowerCase()];
+      if (!extension) continue;
       const blob = await item.getType(imageType);
       const dataUrl = await blobToDataUrl(blob);
-      return { dataUrl, filename: "clipboard-image.png", mimeType: imageType };
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) continue;
+      return {
+        base64: dataUrl.slice(comma + 1),
+        dataUrl,
+        filename: `clipboard-image${extension}`,
+        mimeType: imageType,
+      };
     }
   } catch {
     return null;

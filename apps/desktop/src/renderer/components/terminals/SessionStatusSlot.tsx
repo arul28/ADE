@@ -84,7 +84,11 @@ export function SessionStatusSlot({
   }, [actionsEnabled]);
 
   const canonicalPhase = sessionCanonicalUiState(canonicalInputFromSummary(session)).phase;
-  const elapsedSince = canonicalPhase === "running" && isChatToolType(session.toolType)
+  // Every session type prefers the turn anchor: chats get it from the chat
+  // projection, PTY-backed CLIs from the runtime-state transition in
+  // ptyService. Without it the timer counts time-since-last-output-write,
+  // which for a CLI repainting its TUI resets every few seconds.
+  const elapsedSince = canonicalPhase === "running"
     ? session.currentTurnStartedAt ?? session.lastActivityAt ?? session.startedAt
     : session.lastActivityAt ?? session.startedAt;
   const isActivelyRunning = canonicalPhase === "starting"
@@ -93,7 +97,10 @@ export function SessionStatusSlot({
   const canDismissNeedsYou =
     canonicalPhase !== "needs_you"
     || isChatToolType(session.toolType)
-    || Boolean(session.attentionRequestedAt);
+    || Boolean(session.attentionRequestedAt)
+    // A CLI raised by TUI-marker detection rather than by a structured provider
+    // event: the read is a heuristic, so the row must always stay settleable.
+    || session.attentionSource === "provider_structured";
   const canSettle = settled || (!isActivelyRunning && canDismissNeedsYou);
 
   return (

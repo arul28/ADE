@@ -192,10 +192,18 @@ over the wire. A controller only invokes an action the host advertises in
   Local history scanners remain behind the separate desktop/CLI Activity path.
 
 **Lanes** (`lanes.*`)
-- `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`,
-  `listUnregisteredWorktrees`
-- `create`, `createChild`, `createFromUnstaged`, `importBranch`,
-  `attach`, `adoptAttached`
+- `list`, `listDeleteProgress`, `refreshSnapshots`, `getDetail`
+- `create`, `createChild`, `createFromUnstaged`, `importBranch`
+- `listUnregisteredWorktrees`, `attach`, `adoptAttached` —
+  **compatibility stubs.** Every git worktree is now a lane the moment it
+  exists, so there is nothing to select or attach. They stay registered
+  because they are in `MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS`:
+  unregistering them would drop them from
+  `hello_ok.features.commandRouting.actions` and flip a healthy host into
+  "limited" mode for every phone. `listUnregisteredWorktrees` returns an
+  empty array (an older phone's attach sheet renders its own empty state);
+  `attach` and `adoptAttached` fail with a "no longer supported" message
+  the phone surfaces verbatim.
 - `rename`, `reparent`, `updateAppearance`
 - `archive`, `unarchive`, `delete`
 - `getStackChain`, `getChildren`
@@ -714,7 +722,7 @@ A handful have more logic:
 `syncHostService` wraps command results for `lanes.list`,
 `lanes.getDetail`, `lanes.refreshSnapshots`, `lanes.getChildren`,
 `lanes.create`, `lanes.createChild`, `lanes.createFromUnstaged`,
-`lanes.importBranch`, `lanes.attach`, and `lanes.adoptAttached` to
+and `lanes.importBranch` to
 inject `LaneSummary.devicesOpen` from the presence map. Controllers
 therefore see up-to-date presence without a separate query.
 

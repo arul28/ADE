@@ -45,6 +45,15 @@ export function getStoredZoomLevel(): number {
 }
 
 /**
+ * Render factor for an Electron zoom LEVEL (the log-based scale where 0 = 100%
+ * and each step is 20%). Distinct from `zoomFactorForDisplay`, which takes a
+ * display percentage; both exist because the two scales are both real.
+ */
+export function zoomFactorForLevel(level: number): number {
+  return Math.round(Math.pow(1.2, level) * 1_000) / 1_000;
+}
+
+/**
  * Effective render factor for a display percentage. Because of the +10% offset,
  * a displayed 100% renders at factor 1.1, 70% at 0.8, 150% at 1.6, etc.
  */

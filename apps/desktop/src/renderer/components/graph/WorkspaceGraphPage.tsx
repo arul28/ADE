@@ -55,6 +55,7 @@ import {
   isIntegrationLaneFromMetadata,
 } from "../../lib/integrationLanes";
 import { listSessionsCached } from "../../lib/sessionListCache";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { laneMatchesFilter } from "../lanes/laneUtils";
 import { Button } from "../ui/Button";
 import { Chip } from "../ui/Chip";
@@ -169,6 +170,7 @@ function GraphInner({ active = true }: { active?: boolean }) {
   const project = useAppStore((s) => s.project);
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const isWebClient = isWebClientMode();
   const lanes = useAppStore((s) => s.lanes);
   const lanesKey = React.useMemo(() => lanes.map((l) => l.id).join(","), [lanes]);
   const refreshLanes = useAppStore((s) => s.refreshLanes);
@@ -3576,7 +3578,11 @@ function GraphInner({ active = true }: { active?: boolean }) {
                 title: "Navigate",
                 items: [
                   { key: "open-lane", label: "Open Lane" },
-                  isRemoteProject
+                  // Opening a folder needs a native shell. The browser client
+                  // has none — `lanes.openFolder` resolves to nothing there —
+                  // so it always gets the path-copy variant, even in the window
+                  // between mount and the binding arriving.
+                  isRemoteProject || isWebClient
                     ? { key: "copy-remote-path", label: "Copy Remote Path" }
                     : { key: "open-folder", label: "Open Folder" },
                   { key: "view-pr", label: "Open PR", disabled: !hasPr, reason: "No linked PR for this lane." },

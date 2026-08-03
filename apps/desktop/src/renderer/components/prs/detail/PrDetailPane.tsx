@@ -38,6 +38,7 @@ import type { PrReviewEvent } from "../shared/PrReviewSubmitModal";
 import type { ReviewerRequest } from "../shared/PrDetailRightMetadataRail";
 import { navigateToAppTarget } from "../../../lib/openExternal";
 import { queueAgentChatDraftHandoff } from "../../../lib/agentChatDraftHandoff";
+import { isWebClientMode } from "../../../lib/webClientMode";
 
 // ---- Sub-tab type ----
 type DetailTab = PrDetailRouteTab;
@@ -45,6 +46,11 @@ const DETAIL_TAB_STORAGE_KEY = "ade:prs:detailTabs:v1";
 const DETAIL_BACKGROUND_ACTIVITY_DELAY_MS = 250;
 const DETAIL_PANE_WARM_CACHE_TTL_MS = 5 * 60_000;
 const DETAIL_PANE_WARM_CACHE_MAX_ENTRIES = 50;
+// On the web client every poll tick is a relay round trip that serializes with
+// the rest of the tab's reads, so the readiness polls run at a slower cadence
+// there. Desktop talks to the host in-process and keeps the tight loop.
+const checksPollPeriodMs = () => (isWebClientMode() ? 15_000 : 5_000);
+const mergeabilityPollPeriodMs = () => (isWebClientMode() ? 10_000 : 2_500);
 
 type PrDetailPaneWarmCache = {
   prId: string;
@@ -1084,7 +1090,7 @@ export function PrDetailPane({
     if (!windowVisible) return undefined;
     const checksTabOpen = activeTab === "checks";
     if (checksTabOpen && checksTerminal) return undefined;
-    const periodMs = checksTabOpen && !checksTerminal ? 5_000 : 60_000;
+    const periodMs = checksTabOpen && !checksTerminal ? checksPollPeriodMs() : 60_000;
 
     let cancelled = false;
     const id = window.setInterval(() => {
@@ -1156,7 +1162,9 @@ export function PrDetailPane({
     };
     let cancelled = false;
     let attempts = 0;
-    const MAX_ATTEMPTS = 24; // ~1 minute ceiling, then defer to background poll
+    // ~1 minute ceiling either way, then defer to the background poll.
+    const pollPeriodMs = mergeabilityPollPeriodMs();
+    const MAX_ATTEMPTS = Math.round(60_000 / pollPeriodMs);
     const seqAtStart = detailLoadSeqRef.current;
     const id = window.setInterval(() => {
       if (attempts >= MAX_ATTEMPTS) {
@@ -1175,7 +1183,7 @@ export function PrDetailPane({
           }
         })
         .catch(() => {});
-    }, 2_500);
+    }, pollPeriodMs);
     return () => {
       cancelled = true;
       window.clearInterval(id);

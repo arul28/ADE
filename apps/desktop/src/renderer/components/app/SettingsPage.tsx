@@ -36,16 +36,22 @@ import { SecretsSection } from "../settings/SecretsSection";
 import { SessionLifecycleSection } from "../settings/SessionLifecycleSection";
 import { StorageSection } from "../settings/StorageSection";
 import { RemoteSettingsBanner } from "../settings/RemoteContextBadge";
+import { WebSettingsSection } from "../settings/WebScopeBanner";
 import {
-  SETTINGS_TABS,
+  SETTINGS_ENTRIES,
+  availableSettingsTabs,
   resolveSettingsHash,
   resolveSettingsTab,
   searchSettingsEntries,
+  clearWebMachineBindingResolver,
+  setWebMachineBindingResolver,
   settingsEntriesForTab,
   settingsTabLabel,
   type SettingEntry,
   type SettingsTabId,
 } from "../settings/settingsManifest";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useAppStore } from "../../state/appStore";
 import { COLORS, SANS_FONT, LABEL_STYLE } from "../lanes/laneDesignTokens";
 
 /**
@@ -76,63 +82,170 @@ const TOUR_IDS: Partial<Record<SettingsTabId, string>> = {
   "lanes-git": "laneTemplates",
 };
 
+/**
+ * Every setting on a tab, unreachable ones included. `WebSettingsSection` needs
+ * the full list to tell "this section has nowhere to write" apart from "this
+ * section was handed no ids".
+ */
+function settingsEntryIdsForTab(tab: SettingsTabId): string[] {
+  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab).map((entry) => entry.id);
+}
+
+/** Whether anything on this tab needs a machine to write to. */
+function tabHasMachineSettings(tab: SettingsTabId): boolean {
+  return SETTINGS_ENTRIES.some((entry) => entry.tab === tab && entry.web === "machine");
+}
+
+/**
+ * What sits where the machine-scoped sections would be when the hosted client
+ * has no project tab open. Saying nothing would read as "this tab is just
+ * short" — the sections are absent for a reason the user can act on.
+ */
+function WebNoMachineNotice() {
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 10,
+        padding: "10px 14px",
+        marginBottom: 20,
+        borderRadius: 8,
+        background: COLORS.recessedBg,
+        border: `1px solid ${COLORS.borderMuted}`,
+        fontFamily: SANS_FONT,
+        fontSize: 12,
+        color: COLORS.textSecondary,
+      }}
+    >
+      <HardDrives size={16} weight="regular" style={{ flexShrink: 0, color: COLORS.textDim }} />
+      <span>Connect to a project to edit machine settings.</span>
+    </div>
+  );
+}
+
+/**
+ * Sections, each declaring which manifest settings it holds. On the desktop
+ * `WebSettingsSection` is a passthrough and this renders exactly as it always
+ * has; in the browser it drops the sections the manifest marks unreachable and
+ * heads the rest with their scope.
+ */
 function TabContent({ tab }: { tab: SettingsTabId }) {
   switch (tab) {
     case "general":
       return (
         <>
-          <ProjectSection />
-          <LaunchPromptSection />
-          <AutoUpdatesSection />
-          <ProductAnalyticsSection />
-          <div id="about">
-            <AboutSection />
-          </div>
+          <WebSettingsSection entryIds={["general.project"]}>
+            <ProjectSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.launch-prompt"]}>
+            <LaunchPromptSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.auto-updates"]}>
+            <AutoUpdatesSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.analytics"]}>
+            <ProductAnalyticsSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["general.about"]}>
+            <div id="about">
+              <AboutSection />
+            </div>
+          </WebSettingsSection>
         </>
       );
     case "appearance":
-      return <AppearanceSection />;
+      return (
+        <WebSettingsSection entryIds={settingsEntryIdsForTab("appearance")}>
+          <AppearanceSection />
+        </WebSettingsSection>
+      );
     case "agents":
       return (
         <>
-          <ProvidersSection />
-          <AiFeaturesSection />
-          <DictationSection />
+          <WebSettingsSection entryIds={["agents.providers"]}>
+            <ProvidersSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["agents.background-jobs", "agents.scheduled-work", "agents.budget"]}>
+            <AiFeaturesSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["agents.dictation"]}>
+            <DictationSection />
+          </WebSettingsSection>
         </>
       );
     case "lanes-git":
       return (
         <>
-          <LaneBehaviorSection />
-          <LaneTemplatesSection />
-          <PrChatTranscriptsSection />
+          <WebSettingsSection
+            entryIds={[
+              "lanes-git.new-lane-base",
+              "lanes-git.auto-rebase",
+              "lanes-git.rebase-suggestions",
+              "lanes-git.rebase-min-behind",
+            ]}
+          >
+            <LaneBehaviorSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["lanes-git.lane-templates"]}>
+            <LaneTemplatesSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["lanes-git.pr-chat-transcripts"]}>
+            <PrChatTranscriptsSection />
+          </WebSettingsSection>
         </>
       );
     case "integrations":
       return (
         <>
-          <GitHubIntegrationSection />
-          <LinearIntegrationSection />
-          <div id="ade-cli">
-            <AdeCliSection />
-          </div>
+          <WebSettingsSection entryIds={["integrations.github"]}>
+            <GitHubIntegrationSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["integrations.linear"]}>
+            <LinearIntegrationSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["integrations.ade-cli"]}>
+            <div id="ade-cli">
+              <AdeCliSection />
+            </div>
+          </WebSettingsSection>
         </>
       );
     case "notifications":
-      return <NotificationsSection />;
+      return (
+        <WebSettingsSection entryIds={settingsEntryIdsForTab("notifications")}>
+          <NotificationsSection />
+        </WebSettingsSection>
+      );
     case "activity":
-      return <ActivitySection />;
+      return (
+        <WebSettingsSection entryIds={settingsEntryIdsForTab("activity")}>
+          <ActivitySection />
+        </WebSettingsSection>
+      );
     case "secrets":
-      return <SecretsSection />;
+      return (
+        <WebSettingsSection entryIds={["secrets.secrets"]}>
+          <SecretsSection />
+        </WebSettingsSection>
+      );
     case "storage":
       return (
         <>
-          <StorageSection />
-          <SessionLifecycleSection />
+          <WebSettingsSection entryIds={["storage.usage", "storage.lane-rules", "storage.diagnostics"]}>
+            <StorageSection />
+          </WebSettingsSection>
+          <WebSettingsSection entryIds={["storage.session-lifecycle"]}>
+            <SessionLifecycleSection />
+          </WebSettingsSection>
         </>
       );
     case "stats":
-      return <AdeUsageSection />;
+      return (
+        <WebSettingsSection entryIds={["stats.usage"]}>
+          <AdeUsageSection />
+        </WebSettingsSection>
+      );
     default:
       return null;
   }
@@ -191,9 +304,41 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const tabParam = searchParams.get("tab");
-  const resolvedTab = resolveSettingsTab(tabParam);
+  // Machine-scoped settings write to the machine the active project tab is
+  // bound to, so on web they exist only while one is open. The manifest is what
+  // nav, search and the palette all consult, and it has no store of its own —
+  // it reads this binding through the resolver, refreshed here because this is
+  // the surface that re-renders when the binding changes.
+  const machineBound = useAppStore((state) => state.projectBinding) != null;
+  // Installed during render because `isSettingAvailable` is consulted mid-render
+  // (nav, search, the palette) and an effect would install it a render too late.
+  // The effect exists only to take it back down on unmount, and only if it is
+  // still ours — the module global outlives this component otherwise.
+  const machineBoundRef = useRef(false);
+  machineBoundRef.current = machineBound;
+  // One stable function identity for this component's whole life, so the
+  // unmount cleanup can tell its own resolver from the other surface's.
+  const resolverRef = useRef<() => boolean>();
+  if (!resolverRef.current) resolverRef.current = () => machineBoundRef.current;
+  setWebMachineBindingResolver(resolverRef.current);
+  useEffect(() => {
+    const installed = resolverRef.current!;
+    return () => clearWebMachineBindingResolver(installed);
+  }, []);
+  const webMachineSectionsHidden = isWebClientMode() && !machineBound;
+  // Tabs the web client cannot serve still resolve — a deeplink or palette
+  // entry naming one should land somewhere real rather than on an empty page,
+  // so it falls through to the first tab this renderer does serve.
+  const tabs = useMemo(() => availableSettingsTabs(), [machineBound]);
+  const defaultTab = tabs[0]?.id ?? "general";
+  const requestedTab = resolveSettingsTab(tabParam);
+  const resolvedTab = requestedTab && tabs.some((tab) => tab.id === requestedTab)
+    ? requestedTab
+    : requestedTab
+      ? defaultTab
+      : null;
 
-  const [section, setSection] = useState<SettingsTabId>(resolvedTab ?? "general");
+  const [section, setSection] = useState<SettingsTabId>(resolvedTab ?? defaultTab);
   const [hoveredId, setHoveredId] = useState<string | null>(null);
   const [query, setQuery] = useState("");
   const deferredQuery = useDeferredValue(query);
@@ -306,7 +451,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
     });
   }, [trimmedQuery, matchesThisTab, section]);
 
-  const activeTab = SETTINGS_TABS.find((tab) => tab.id === section) ?? SETTINGS_TABS[0];
+  const activeTab = tabs.find((tab) => tab.id === section) ?? tabs[0];
   const tabEntryCount = settingsEntriesForTab(section).length;
   const noMatchesHere = trimmedQuery.length > 0 && (matchesThisTab?.length ?? 0) === 0;
 
@@ -328,7 +473,7 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
           SETTINGS
         </div>
 
-        {SETTINGS_TABS.map((tab) => {
+        {tabs.map((tab) => {
           const Icon = TAB_ICONS[tab.id];
           const isActive = section === tab.id;
           const isHovered = hoveredId === tab.id;
@@ -376,7 +521,11 @@ export function SettingsPage({ active = true }: { active?: boolean } = {}) {
       </nav>
 
       <div ref={contentRef} style={{ flex: 1, overflow: "auto", background: COLORS.pageBg, padding: 24 }}>
-        <RemoteSettingsBanner />
+        {/* The remote banner contrasts a remote machine against this desktop.
+            A browser has no "this one", and every section already states its
+            own scope, so web gets the per-section lines instead. */}
+        {isWebClientMode() ? null : <RemoteSettingsBanner />}
+        {webMachineSectionsHidden && tabHasMachineSettings(section) ? <WebNoMachineNotice /> : null}
 
         <header style={{ marginBottom: 20 }}>
           <div

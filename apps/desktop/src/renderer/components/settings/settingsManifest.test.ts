@@ -1,5 +1,8 @@
-import { describe, expect, it } from "vitest";
+/* @vitest-environment jsdom */
+import { afterEach, describe, expect, it } from "vitest";
 import {
+  availableSettingsEntries,
+  setWebMachineBindingResolver,
   SETTINGS_TABS,
   settingsTabLabel,
   LEGACY_HASH_ALIASES,
@@ -245,5 +248,38 @@ describe("settings command palette entries", () => {
         expect(paletteIds, `palette missed ${entry.id} for "${query}"`).toContain(entry.id);
       }
     }
+  });
+});
+
+/**
+ * A machine-scoped setting on the hosted client writes to whichever machine the
+ * active project tab is bound to. With no tab open there is no such machine, so
+ * the control has nowhere to write — the same condition `hidden` describes.
+ */
+describe("web machine-scoped availability", () => {
+  afterEach(() => {
+    setWebMachineBindingResolver(null);
+    delete (window as { __adeWebClient?: boolean }).__adeWebClient;
+  });
+
+  const machineEntryIds = () => new Set(
+    SETTINGS_ENTRIES.filter((entry) => entry.web === "machine").map((entry) => entry.id),
+  );
+
+  it("keeps every setting on the desktop, bound or not", () => {
+    expect(availableSettingsEntries()).toHaveLength(SETTINGS_ENTRIES.length);
+  });
+
+  it("drops machine-scoped settings on web while no project tab is bound", () => {
+    (window as { __adeWebClient?: boolean }).__adeWebClient = true;
+    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+    for (const id of machineEntryIds()) expect(available.has(id)).toBe(false);
+  });
+
+  it("restores them once a tab is bound", () => {
+    (window as { __adeWebClient?: boolean }).__adeWebClient = true;
+    setWebMachineBindingResolver(() => true);
+    const available = new Set(availableSettingsEntries().map((entry) => entry.id));
+    for (const id of machineEntryIds()) expect(available.has(id)).toBe(true);
   });
 });

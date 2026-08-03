@@ -30,7 +30,6 @@ export function PrLaneCleanupBanner({
   if (!pr || !lane) return null;
   if (pr.state !== "merged" && pr.state !== "closed") return null;
 
-  const isAttached = lane.laneType === "attached";
   const prHeadBranch = branchNameFromRef(pr.headBranch);
   const laneBranch = branchNameFromRef(lane.branchRef);
   const isPrimaryBranchMismatch = lane.laneType === "primary" && prHeadBranch && prHeadBranch !== laneBranch;
@@ -222,7 +221,7 @@ export function PrLaneCleanupBanner({
         <div style={{ display: "flex", alignItems: compact ? "flex-start" : "center", justifyContent: "space-between", gap: 12, padding: compact ? "10px 12px" : "10px 14px", background: "color-mix(in srgb, var(--color-error) 6%, transparent)", border: "1px solid color-mix(in srgb, var(--color-error) 18%, transparent)", borderRadius: 8, flexDirection: compact ? "column" : "row" }}>
           <div>
             <div style={{ fontFamily: SANS_FONT, fontSize: titleSize, fontWeight: 600, color: COLORS.danger }}>
-              {isAttached ? "Detach / Delete" : "Delete Lane"}
+              Delete lane
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: textSize, color: COLORS.textMuted, marginTop: 2 }}>
               Open the lane manager for a pre-flight check, scope picker, and live progress.

@@ -9,6 +9,9 @@ import {
   WORK_STYLE_ROWS,
 } from "./personalityTheme";
 import { Segmented } from "./Segmented";
+import { useAsyncAction } from "../../hooks/useAsyncAction";
+
+const CTO_UNAVAILABLE = "The CTO isn't available right now. Try reopening ADE.";
 
 const CTO_DISPLAY_NAME = "CTO";
 
@@ -37,7 +40,6 @@ export function CtoOnboardingCard({
     customPersonality: "",
     communicationStyle: DEFAULT_COMMUNICATION_STYLE,
   });
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -68,19 +70,11 @@ export function CtoOnboardingCard({
 
   const activeTheme = getPersonalityTheme(draft.personality);
 
-  const handleStart = useCallback(async () => {
-    const bridge = window.ade?.cto;
-    if (!bridge) {
-      setError("The CTO isn't available right now. Try reopening ADE.");
-      return;
-    }
-    if (draft.personality === "custom" && !draft.customPersonality.trim()) {
-      setError("Describe the custom personality, or pick one of the presets.");
-      return;
-    }
-    setSaving(true);
-    setError(null);
-    try {
+  const { run: saveIdentity, pending: saving } = useAsyncAction({
+    action: async () => {
+      // `handleStart` already gated on this; the throw only narrows the type.
+      const bridge = window.ade?.cto;
+      if (!bridge) throw new Error(CTO_UNAVAILABLE);
       const preset = getCtoPersonalityPreset(draft.personality);
       await bridge.updateIdentity({
         patch: {
@@ -97,12 +91,24 @@ export function CtoOnboardingCard({
       });
       await bridge.completeOnboardingStep({ stepId: "identity" });
       onComplete();
-    } catch (err) {
+    },
+    onError: (err) => {
       setError(err instanceof Error ? err.message : "Couldn't save your setup. Try again.");
-    } finally {
-      setSaving(false);
+    },
+  });
+
+  const handleStart = useCallback(() => {
+    setError(null);
+    if (!window.ade?.cto) {
+      setError(CTO_UNAVAILABLE);
+      return;
     }
-  }, [draft, onComplete]);
+    if (draft.personality === "custom" && !draft.customPersonality.trim()) {
+      setError("Describe the custom personality, or pick one of the presets.");
+      return;
+    }
+    saveIdentity();
+  }, [draft.personality, draft.customPersonality, saveIdentity]);
 
   return (
     <div className="flex h-full items-center justify-center overflow-y-auto p-6">
@@ -243,7 +249,7 @@ export function CtoOnboardingCard({
           <button
             type="button"
             disabled={saving}
-            onClick={() => void handleStart()}
+            onClick={handleStart}
             className="h-9 flex-1 rounded-lg text-[13px] font-semibold text-[#0A0A0F] transition-opacity disabled:opacity-60"
             style={{ background: activeTheme.hex }}
           >

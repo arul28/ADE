@@ -27,12 +27,12 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
-  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
 
   const runLaneAction = useCallback(async (
     fn: () => Promise<void>,
     status: string,
-    kind: "delete" | "archive" | "adopt",
+    kind: "delete" | "archive",
   ) => {
     setLaneActionBusy(true);
     setLaneActionKind(kind);
@@ -91,7 +91,6 @@ export const PrManageLaneDialogHost = memo(function PrManageLaneDialogHost({
       laneActionStatus={laneActionStatus}
       laneActionError={laneActionError}
       laneActionKind={laneActionKind}
-      onAdoptAttached={() => {}}
       onArchive={() => { void handleArchive(); }}
       onDelete={() => { void handleDelete(); }}
       onAppearanceChanged={() => { void refreshLanes({ includeStatus: false }); }}

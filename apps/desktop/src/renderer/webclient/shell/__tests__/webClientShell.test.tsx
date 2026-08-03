@@ -3,7 +3,7 @@
 
 import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import type { DeeplinkTarget } from "../../../../shared/deeplinks";
 import type { SyncRemoteCommandDescriptor } from "../../../../shared/types/sync";
 import type { BrowserAccountClient, BrowserAccountSnapshot } from "../../account/client";
@@ -36,7 +36,11 @@ const mocks = vi.hoisted(() => {
     openProject: vi.fn(),
     activateChats: vi.fn(),
     forgetEnvironment: vi.fn(),
-    subscribeActiveAdapter: vi.fn(() => () => undefined),
+    activeAdapterListeners: new Set<() => void>(),
+    subscribeActiveAdapter: vi.fn(function (this: void, listener: () => void) {
+      federated.activeAdapterListeners.add(listener);
+      return () => federated.activeAdapterListeners.delete(listener);
+    }),
   };
   return {
     federated,
@@ -167,6 +171,7 @@ function accountClient(
 beforeEach(() => {
   federated.restore.mockResolvedValue(null);
   federated.dispose.mockReset();
+  federated.activeAdapterListeners.clear();
   createFederatedAdapter.mockClear();
 });
 
@@ -177,7 +182,7 @@ afterEach(() => {
 });
 
 describe("WebClientRoot workspace bootstrap", () => {
-  it("retires the pairing route and opens the permanent Hub", async () => {
+  it("retires the pairing route and lands on the project welcome surface", async () => {
     window.history.replaceState(null, "", "/pair#legacy-pairing-payload");
 
     render(
@@ -187,7 +192,7 @@ describe("WebClientRoot workspace bootstrap", () => {
       />,
     );
 
-    expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+    expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
     expect(window.location.hash).toBe("");
     expect(createFederatedAdapter).toHaveBeenCalledOnce();
   });
@@ -208,7 +213,7 @@ describe("WebClientRoot workspace bootstrap", () => {
 
     expect(screen.getByRole("heading", { name: "Signing in…" })).toBeTruthy();
     resolveBootstrap(signedInAccount);
-    expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+    expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
   });
 
   it("prunes account-owned browser trust before publishing environments", async () => {
@@ -249,6 +254,26 @@ describe("WebClientRoot workspace bootstrap", () => {
     expect(window.location.search).toBe("?laneId=lane-1");
   });
 
+  it("keeps the app tree mounted when the displayed adapter swaps", async () => {
+    render(
+      <WebClientRoot
+        client={syncClient()}
+        accountClient={accountClient(signedOutAccount)}
+      />,
+    );
+    const before = await screen.findByTestId("app-root");
+
+    // What a tab switch does: the federated surface swaps the adapter behind
+    // the proxy and notifies. Remounting here is what made switching tabs cost
+    // a cold boot of every pane.
+    await act(async () => {
+      for (const listener of federated.activeAdapterListeners) listener();
+    });
+
+    expect(screen.getByTestId("app-root")).toBe(before);
+    expect(createFederatedAdapter).toHaveBeenCalledOnce();
+  });
+
   it("keeps browser storage failure non-fatal", async () => {
     const pruneAccountOwnedEnvironments = vi.fn(async () => {
       throw new Error("IndexedDB blocked");
@@ -261,11 +286,11 @@ describe("WebClientRoot workspace bootstrap", () => {
       />,
     );
 
-    expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+    expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
     expect(createFederatedAdapter).toHaveBeenCalledOnce();
   });
 
-  it("keeps a fresh-browser deeplink pending while the Hub chooses a project", async () => {
+  it("keeps a fresh-browser deeplink pending until a project is chosen", async () => {
     window.history.replaceState(null, "", "/work?sessionId=session-1");
 
     render(
@@ -275,11 +300,11 @@ describe("WebClientRoot workspace bootstrap", () => {
       />,
     );
 
-    expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+    expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
     expect(sessionStorage.getItem("ade-web:pending-target")).toContain("session-1");
   });
 
-  it("boots the Hub under React strict mode", async () => {
+  it("boots the welcome surface under React strict mode", async () => {
     render(
       <React.StrictMode>
         <WebClientRoot
@@ -289,7 +314,7 @@ describe("WebClientRoot workspace bootstrap", () => {
       </React.StrictMode>,
     );
 
-    expect((await screen.findByTestId("app-root")).textContent).toBe("/hub");
+    expect((await screen.findByTestId("app-root")).textContent).toBe("/work");
   });
 
   it("detaches the old account adapter and restores the signed-out workspace", async () => {

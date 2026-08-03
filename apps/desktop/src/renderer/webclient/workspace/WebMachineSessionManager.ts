@@ -7,14 +7,30 @@ import type {
 } from "../../../shared/types";
 import type { SyncMobileProjectSummary } from "../../../shared/types/sync";
 import type { BrowserAccountClient } from "../account/client";
+import { machineCatalogKey } from "./machineIdentity";
 import {
   AdeSyncClient,
   type AdeSyncClientStatus,
   type WebClientEnvironmentRecord,
+  type WebClientMachineCatalogRecord,
   type WebRelayAccess,
 } from "../sync";
 
 export const WEB_MACHINE_SESSION_LIMIT = 4;
+
+/**
+ * The slice of `WebClientEnvStore` this manager needs to keep recents paintable
+ * across reloads. Injected so a manager without browser storage (tests, a
+ * hardened browser) simply runs without the cache.
+ */
+export type WebMachineCatalogStore = {
+  listMachineCatalogs(): Promise<WebClientMachineCatalogRecord[]>;
+  saveMachineCatalog(record: WebClientMachineCatalogRecord): Promise<void>;
+  removeMachineCatalog(machineKey: string): Promise<void>;
+  getLastActiveMachineKey(): Promise<string | null>;
+  setLastActiveMachineKey(machineKey: string | null): Promise<void>;
+};
+
 
 export type WebMachineSessionState =
   | "live"
@@ -37,6 +53,10 @@ export type WebMachineWorkspaceSnapshot = {
   sessions: WebMachineSessionSnapshot[];
   environments: WebClientEnvironmentRecord[];
   activeTargetId: string | null;
+  /** Last-seen project catalogs, keyed by `machineCatalogKey`. */
+  catalogs: WebClientMachineCatalogRecord[];
+  /** Machine this browser was last working on, restored from storage at boot. */
+  lastActiveMachineKey: string | null;
   updatedAt: number;
 };
 
@@ -133,14 +153,76 @@ export class WebMachineSessionManager {
   private readonly environmentConnects = new Map<string, Promise<WebMachineSessionSnapshot>>();
   private readonly accountMachineConnects = new Map<string, Promise<WebMachineSessionSnapshot>>();
   private admissionTail: Promise<void> = Promise.resolve();
+  private readonly catalogs = new Map<string, WebClientMachineCatalogRecord>();
+  private catalogStore: WebMachineCatalogStore | null = null;
+  private catalogOwnerUserId: string | null = null;
+  private lastActiveMachineKey: string | null = null;
 
   constructor(
     private readonly primaryClient: AdeSyncClient,
     private readonly accountClient: BrowserAccountClient,
     private readonly clientFactory: () => AdeSyncClient = () => new AdeSyncClient(),
+    catalogStore: WebMachineCatalogStore | null = null,
   ) {
     this.allClients.add(primaryClient);
     this.availableClients.push(primaryClient);
+    this.catalogStore = catalogStore;
+  }
+
+  /**
+   * Load the persisted catalogs so recents can paint before the first dial.
+   * Storage failures leave the manager running without the cache.
+   */
+  async hydrateCatalogs(ownerUserId: string | null): Promise<void> {
+    this.catalogOwnerUserId = ownerUserId?.trim() || null;
+    const store = this.catalogStore;
+    if (!store) return;
+    try {
+      const [records, lastActiveMachineKey] = await Promise.all([
+        store.listMachineCatalogs(),
+        store.getLastActiveMachineKey(),
+      ]);
+      this.catalogs.clear();
+      for (const record of records) this.catalogs.set(record.machineKey, record);
+      this.lastActiveMachineKey = lastActiveMachineKey;
+      this.emit();
+    } catch {
+      // A blocked or absent IndexedDB only costs the instant-paint optimization.
+    }
+  }
+
+  listCatalogs(): WebClientMachineCatalogRecord[] {
+    return [...this.catalogs.values()].sort((left, right) => right.savedAt - left.savedAt);
+  }
+
+  getLastActiveMachineKey(): string | null {
+    return this.lastActiveMachineKey;
+  }
+
+  /** Remember which machine to auto-dial on the next load. */
+  markMachineActive(targetId: string): void {
+    const environment = this.environments.get(targetId) ?? this.sessions.get(targetId)?.environment;
+    if (!environment) return;
+    const key = machineCatalogKey(environment);
+    if (this.lastActiveMachineKey === key) return;
+    this.lastActiveMachineKey = key;
+    void this.catalogStore?.setLastActiveMachineKey(key).catch(() => undefined);
+    this.emit();
+  }
+
+  private rememberCatalog(session: SessionRecord): void {
+    if (session.projects.length === 0) return;
+    const record: WebClientMachineCatalogRecord = {
+      machineKey: machineCatalogKey(session.environment),
+      machineName: session.environment.machineName,
+      hostDeviceId: session.environment.hostDeviceId || null,
+      envId: session.environment.envId,
+      ownerUserId: this.catalogOwnerUserId,
+      projects: session.projects.slice(),
+      savedAt: Date.now(),
+    };
+    this.catalogs.set(record.machineKey, record);
+    void this.catalogStore?.saveMachineCatalog(record).catch(() => undefined);
   }
 
   setRelayAccess(relayAccess: WebRelayAccess): void {
@@ -213,6 +295,8 @@ export class WebMachineSessionManager {
         .sort((a, b) => b.lastUsedAt - a.lastUsedAt),
       environments: this.listEnvironments(),
       activeTargetId: this.activeTargetId,
+      catalogs: this.listCatalogs(),
+      lastActiveMachineKey: this.lastActiveMachineKey,
       updatedAt: this.updatedAt,
     };
   }
@@ -304,6 +388,8 @@ export class WebMachineSessionManager {
       await sessionClient.connect(environment.envId, this.relayAccess);
       session.projects = (await sessionClient.getProjectCatalog()).projects;
       session.lastStatus = sessionClient.getStatus();
+      this.rememberCatalog(session);
+      this.markMachineActive(targetId);
     } catch (error) {
       session.lastStatus = sessionClient.getStatus();
       this.releaseClient(session);
@@ -363,6 +449,8 @@ export class WebMachineSessionManager {
       session.projects = (await client.getProjectCatalog()).projects;
       session.lastStatus = client.getStatus();
       this.activeTargetId = environment.envId;
+      this.rememberCatalog(session);
+      this.markMachineActive(environment.envId);
       this.touch(session);
       this.emit();
       return this.snapshotSession(session);
@@ -394,8 +482,28 @@ export class WebMachineSessionManager {
       if (!result.ok) {
         throw new Error(result.message?.trim() || `Could not open ${project.displayName}.`);
       }
-      record.projects = (await recordClient.getProjectCatalog()).projects;
+      // No catalog RPC here. Switching already costs a host scope boot and a
+      // socket re-dial, and the reconnect that follows delivers a fresh
+      // `projectCatalog` push that `attachClient` folds into `record.projects`
+      // (and that every adapter's project state subscribes to). Awaiting one
+      // more round-trip only delays the first paint; the switch result already
+      // carries the authoritative summary for the project we asked for.
+      if (result.project) {
+        const switched = result.project;
+        const merged = record.projects.some((entry) => entry.id === switched.id)
+          ? record.projects.map((entry) => entry.id === switched.id ? switched : entry)
+          : [...record.projects, switched];
+        // A machine hosts one open project, so the outgoing one stops being
+        // open the moment this one does. Leaving both flagged would make the
+        // catalog read as two open projects until the push lands.
+        record.projects = merged.map((entry) => (
+          entry.id === switched.id || entry.isOpen !== true
+            ? entry
+            : { ...entry, isOpen: false }
+        ));
+      }
       record.lastStatus = recordClient.getStatus();
+      this.rememberCatalog(record);
       project = record.projects.find((entry) => entry.id === projectId) ?? project;
       this.touch(record);
       this.activeTargetId = targetId;
@@ -416,11 +524,23 @@ export class WebMachineSessionManager {
 
   async forgetEnvironment(targetId: string): Promise<void> {
     const session = this.sessions.get(targetId);
+    const environment = this.environments.get(targetId) ?? session?.environment ?? null;
     const client = session?.client ?? this.primaryClient;
     await client.removeEnvironment(targetId);
     this.environments.delete(targetId);
     this.disposeSession(targetId);
+    if (environment) this.forgetCatalog(machineCatalogKey(environment));
     this.emit();
+  }
+
+  /** Drop a machine's cached catalog so a forgotten machine leaves no recents. */
+  forgetCatalog(machineKey: string): void {
+    this.catalogs.delete(machineKey);
+    void this.catalogStore?.removeMachineCatalog(machineKey).catch(() => undefined);
+    if (this.lastActiveMachineKey === machineKey) {
+      this.lastActiveMachineKey = null;
+      void this.catalogStore?.setLastActiveMachineKey(null).catch(() => undefined);
+    }
   }
 
   dispose(): void {
@@ -477,6 +597,7 @@ export class WebMachineSessionManager {
       client.onProjectCatalog((payload) => {
         if (session.client !== client) return;
         session.projects = payload.projects;
+        this.rememberCatalog(session);
         this.emit();
       }),
     );

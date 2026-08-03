@@ -1678,9 +1678,11 @@ export function createMultiProjectRpcRequestHandler(
           "projects.inspectPath requires path.",
         );
       }
-      // Deliberately uncached: desktop main's inspectProjectPathCached relies
-      // on lane attach/adopt IPC hooks for invalidation, which never fire in
-      // this long-lived daemon — a cache here could serve pre-attach results.
+      // Deliberately uncached: desktop main's inspectProjectPathCached is
+      // invalidated by lane lifecycle IPC, which never fires in this
+      // long-lived daemon. A worktree becomes a lane the moment `lanes.list`
+      // next reconciles, so a cache here would keep reporting a path as
+      // laneless well after it stopped being so.
       return await inspectProjectPath(targetPath);
     }
 

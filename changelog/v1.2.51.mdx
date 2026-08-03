@@ -1,0 +1,24 @@
+---
+title: "v1.2.51"
+description: "Release notes for ADE v1.2.51 - August 3, 2026"
+---
+
+v1.2.51 overhauls the web client's pre-project experience and terminal fidelity, brings every git worktree into the lanes model automatically, fixes a clipboard "Copied" lie, and closes a duplicate-row bug in the Work sidebar.
+
+---
+
+## Web client overhaul
+
+- **Pre-project experience, terminal fidelity, and sync-host hardening.** The hosted web client gets a reworked pre-project flow, more faithful terminal rendering, hardened sync-host handling, and richer CLI connection states.
+
+## Auto-lanes: every git worktree is a lane
+
+- **Worktrees no longer need manual attaching.** Every git worktree of a project now auto-appears as a lane and reaps automatically when the worktree is gone from both git and disk. Ownership is scoped per project so a linked worktree only adopts its own lanes.
+- **External-session import overhaul across all five providers** (Claude, Codex, Cursor, Droid, OpenCode) — more accurate discovery, deduping, and fork/continuation handling, plus a durable imported-refs store that survives closing the session.
+- The old attach/multi-attach/adopt UI is removed in favor of the unified lane model; sync remote commands stay in place as compatibility stubs for existing mobile clients.
+
+## Fixes
+
+- **Copy-to-clipboard no longer reports success when the write failed.** A shared `useCopyToClipboard` hook now returns `false` on a failed write instead of flashing "Copied" anyway — most consequential in the secrets panel, where a false "it's on your clipboard" risked pasting a stale value into a `.env` or terminal.
+- **The Work sidebar no longer double-lists a session.** Starting a chat could briefly render it twice — once bare, once under its lane with a machine badge — until an optimistic entry reconciled away. Session claiming across machines is now content-scoped instead of machine-scoped.
+- Global reduced-motion support: renderer-wide `AnimatePresence`/`layoutId` animations now respect the system's reduce-motion setting in one place instead of per-site opt-ins.

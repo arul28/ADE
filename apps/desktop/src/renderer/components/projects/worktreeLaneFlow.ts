@@ -1,5 +1,4 @@
 import type { ProjectPathInspection } from "../../../shared/types";
-import { parseCodedErrorMessage } from "../../../shared/codedError";
 
 function basename(input: string): string {
   const parts = input.split(/[\\/]/).filter(Boolean);
@@ -34,40 +33,26 @@ export async function openWorktreeAsLane(
     return;
   }
 
-  // A lane wraps a branch. A detached-HEAD worktree has none, so attach would
-  // fall back to the owning project's base ref and either collide with the
-  // primary lane ("Branch 'main' is already linked") or persist a lane pointing
-  // at the wrong branch. Refuse it before switching projects.
-  if (!inspection.branchRef?.trim()) {
-    throw new Error(
-      "This worktree has a detached HEAD, so it can't be added as a lane. Check out a branch in it, or open it as a separate project.",
-    );
-  }
-
+  // Every git worktree is a lane, so there is nothing to attach — but the row
+  // is created by the reconcile inside `lanes.list`, and nothing else triggers
+  // it. `project.inspectPath` only reads the parent project's database from
+  // disk, so without this call it can look before the row exists. The reconcile
+  // runs ahead of the lane-list cache check, so a cache hit still adopts, and
+  // `includeStatus: false` skips per-lane git status for a cheap round trip.
+  // It targets the bound runtime, hence after the switch.
   await deps.switchProjectToPath(parent.rootPath, { skipWorktreeGate: true });
+  await window.ade.lanes.list({ includeStatus: false });
 
-  let laneId: string | null = null;
-  try {
-    const lane = await window.ade.lanes.attach({
-      name: deriveLaneName(inspection),
-      attachedPath: worktreeRoot,
-    });
-    laneId = lane.id;
-  } catch (error) {
-    if (parseCodedErrorMessage(error).code !== "lane_already_linked") {
-      throw error;
-    }
-
-    try {
-      const fresh = await window.ade.project.inspectPath(worktreeRoot, {
-        fresh: true,
-      });
-      const existingLaneId = fresh.parent?.existingLane?.id;
-      if (existingLaneId) laneId = existingLaneId;
-    } catch {
-      // Preserve the original attach error when recovery cannot resolve a lane.
-    }
-    if (!laneId) throw error;
+  const fresh = await window.ade.project.inspectPath(worktreeRoot, { fresh: true });
+  const laneId = fresh.parent?.existingLane?.id;
+  if (!laneId) {
+    // A lane wraps a branch, so a detached-HEAD worktree is the one case that
+    // predictably has no lane. Name it rather than reporting a generic miss.
+    throw new Error(
+      inspection.branchRef?.trim()
+        ? "ADE could not open this worktree as a lane. Open its owning project and check the Lanes tab."
+        : "This worktree has a detached HEAD, so it can't be opened as a lane. Check out a branch in it, or open it as a separate project.",
+    );
   }
   await deps.navigate(`/lanes?laneId=${laneId}&focus=single`);
 }
