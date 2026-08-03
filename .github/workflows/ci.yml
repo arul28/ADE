@@ -356,12 +356,19 @@ jobs:
         include:
           - target: darwin-arm64
             os: macos-15
+            binary: ade-darwin-arm64
           - target: darwin-x64
             os: macos-15-intel
+            binary: ade-darwin-x64
           - target: linux-x64
             os: ubuntu-latest
+            binary: ade-linux-x64
           - target: linux-arm64
             os: ubuntu-24.04-arm
+            binary: ade-linux-arm64
+          - target: win32-x64
+            os: windows-latest
+            binary: ade-win32-x64.exe
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -386,8 +393,9 @@ jobs:
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
 
       - name: Smoke test ADE runtime binary
+        shell: bash
         run: |
-          apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
+          apps/ade-cli/dist-static/${{ matrix.binary }} --version
           archive="apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz"
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
@@ -402,7 +410,7 @@ jobs:
         with:
           name: ade-runtime-${{ matrix.target }}
           path: |
-            apps/ade-cli/dist-static/ade-${{ matrix.target }}
+            apps/ade-cli/dist-static/${{ matrix.binary }}
             apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
           if-no-files-found: error
           compression-level: 0
@@ -524,6 +532,79 @@ jobs:
           src/main/services/sync/deviceRegistryService.test.ts
           src/main/services/sync/syncHostService.test.ts
           src/main/services/sync/syncService.test.ts
+
+  package-win:
+    needs: build-runtime-binaries
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Download ADE runtime sidecars
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Validate Windows release contract
+        run: npm --prefix apps/desktop run test:win:release-contract
+
+      - name: Build unsigned Stable Windows preview
+        env:
+          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+        run: cd apps/desktop && npm run dist:win
+
+      - name: Record Stable installer
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one Stable Windows installer, found $($installers.Count)." }
+          "ADE_STABLE_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build unsigned Beta Windows preview
+        env:
+          ADE_PACKAGE_CHANNEL: beta
+          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+        run: cd apps/desktop && npm run dist:win
+
+      - name: Test Stable and Beta installed-product lifecycles
+        shell: pwsh
+        run: |
+          $betaInstallers = @(Get-ChildItem "apps/desktop/release/ADE-Beta-[0-9]*-win-x64.exe" -File)
+          if ($betaInstallers.Count -ne 1) { throw "Expected exactly one Beta Windows installer, found $($betaInstallers.Count)." }
+          & apps/desktop/scripts/windows-installed-product-smoke.ps1 `
+            -InstallerPath $env:ADE_STABLE_INSTALLER `
+            -CompanionInstallerPath $betaInstallers[0].FullName
+
+      - name: Upload Windows preview artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-preview-${{ github.sha }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+          retention-days: 14
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
@@ -574,6 +655,7 @@ jobs:
       - build
       - build-runtime-binaries
       - windows-foundation
+      - package-win
       - validate-docs
     runs-on: ubuntu-latest
     steps:

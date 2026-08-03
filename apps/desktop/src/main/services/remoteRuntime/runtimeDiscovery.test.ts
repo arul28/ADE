@@ -131,7 +131,7 @@ describe("runtimeDiscovery", () => {
     });
   });
 
-  it("keeps Windows Bonjour hosts visible but marks them unsupported", () => {
+  it("keeps Windows Bonjour hosts visible and connectable", () => {
     const discovered = discoveredRuntimeFromBonjourService({
       name: "ADE Sync Build PC",
       host: "build-pc.local",
@@ -147,8 +147,7 @@ describe("runtimeDiscovery", () => {
     expect(discovered).toMatchObject({
       machineName: "Build PC",
       os: "windows",
-      connectable: false,
-      unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+      connectable: true,
     });
   });
 
@@ -219,7 +218,7 @@ describe("runtimeDiscovery", () => {
     expect(discovered[0]?.machineName).toBe("studio");
   });
 
-  it("keeps Windows peers visible but marks them unsupported", () => {
+  it("keeps online Windows peers visible and connectable", () => {
     const discovered = discoveredRuntimesFromTailscaleStatus({
       Peer: {
         "nodekey:windows": {
@@ -237,8 +236,7 @@ describe("runtimeDiscovery", () => {
     expect(discovered[0]).toMatchObject({
       machineName: "build-pc",
       os: "windows",
-      connectable: false,
-      unsupportedReason: "Windows machines can't run the ADE remote runtime yet.",
+      connectable: true,
     });
   });
 

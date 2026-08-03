@@ -13,13 +13,19 @@ import {
   bootstrapRemoteRuntime,
   buildRemoteRuntimeEnvironmentPrefix,
   coerceProjects,
+  formatOpenSshSpawnError,
   normalizeRemoteArch,
+  parseWindowsRemoteDetection,
   normalizeRuntimeVersion,
   resolveRemoteRuntimeLayout,
   resolveRemoteRuntimeLayoutCandidates,
+  resolveWindowsRemoteRuntimeLayout,
   selectRemoteRuntimeVersion,
   shouldUploadBundledRuntime,
   validateRemoteRuntimeInitializeResult,
+  windowsPowerShellCommand,
+  windowsRuntimeRpcCommand,
+  windowsSftpPath,
 } from "./remoteBootstrap";
 
 const connectSshWithRouteMock = vi.hoisted(() => vi.fn());
@@ -80,6 +86,84 @@ describe("normalizeRemoteArch", () => {
       }),
     );
     expect(() => normalizeRemoteArch("Linux riscv64")).toThrow(/unsupported remote ade service platform/i);
+  });
+});
+
+describe("formatOpenSshSpawnError", () => {
+  it("turns a missing Windows OpenSSH client into an actionable prerequisite diagnostic", () => {
+    const error = Object.assign(new Error("spawn ssh ENOENT"), { code: "ENOENT" });
+    expect(formatOpenSshSpawnError(error, "win32")).toMatch(
+      /Windows OpenSSH Client is unavailable.*Optional Features.*Add-WindowsCapability.*restart ADE/i,
+    );
+  });
+
+  it("preserves ordinary OpenSSH spawn failures on other platforms", () => {
+    expect(formatOpenSshSpawnError(new Error("permission denied"), "linux"))
+      .toBe("SSH upload process failed: permission denied");
+  });
+});
+
+describe("Windows remote runtime bootstrap contracts", () => {
+  const detection = (overrides: Record<string, unknown> = {}) => JSON.stringify({
+    platform: "win32",
+    arch: "X64",
+    productName: "Windows 11 Pro",
+    displayVersion: "24H2",
+    buildNumber: 26100,
+    userProfile: "C:\\Users\\Ada Dev",
+    sshdStatus: "Running",
+    ...overrides,
+  });
+
+  it("accepts supported Windows 10/11 x64 metadata and rejects ARM64, Server, and pre-22H2", () => {
+    expect(parseWindowsRemoteDetection(detection())).toMatchObject({
+      platform: "win32",
+      arch: "x64",
+      label: "win32-x64",
+      buildNumber: 26100,
+    });
+    expect(parseWindowsRemoteDetection(detection({
+      productName: "Windows 10 Pro",
+      displayVersion: "22H2",
+      buildNumber: 19045,
+    })).buildNumber).toBe(19045);
+    expect(() => parseWindowsRemoteDetection(detection({ arch: "Arm64" }))).toThrow(/x64 only/i);
+    expect(() => parseWindowsRemoteDetection(detection({ productName: "Windows Server 2025" }))).toThrow(/not Windows Server/i);
+    expect(() => parseWindowsRemoteDetection(detection({ productName: "Windows 10 Pro", buildNumber: 19044 }))).toThrow(/build 19045/i);
+  });
+
+  it("builds channel-separated native paths and SFTP paths when the profile contains spaces", () => {
+    const layout = resolveWindowsRemoteRuntimeLayout("C:\\Users\\Ada Dev", {
+      ADE_PACKAGE_CHANNEL: "beta",
+    } as NodeJS.ProcessEnv);
+    expect(layout.adeHome).toBe("C:\\Users\\Ada Dev\\.ade-beta");
+    expect(layout.binary).toBe("C:\\Users\\Ada Dev\\.ade-beta\\bin\\ade.exe");
+    expect(windowsSftpPath(layout.binary)).toBe("/C:/Users/Ada Dev/.ade-beta/bin/ade.exe");
+  });
+
+  it("encodes PowerShell so profile spaces and metacharacters never appear in the SSH command", () => {
+    const profile = "C:\\Users\\Ada Dev & Ops's [lab]";
+    const layout = resolveWindowsRemoteRuntimeLayout(profile, {} as NodeJS.ProcessEnv);
+    const command = windowsRuntimeRpcCommand({
+      layout,
+      nativeDepsReady: true,
+      ptyHostWorkerReady: true,
+    });
+    expect(command).toMatch(/^powershell.exe .* -EncodedCommand [A-Za-z0-9+/=]+$/);
+    expect(command).not.toContain(profile);
+    expect(command).not.toContain("& Ops");
+    const encoded = command.split(" ").at(-1) ?? "";
+    const script = Buffer.from(encoded, "base64").toString("utf16le");
+    expect(script).toContain("Ada Dev & Ops''s [lab]");
+    expect(script).toContain("'rpc', '--stdio'");
+    expect(script).toContain("$env:NODE_PATH");
+  });
+
+  it("uses a fixed encoded command for platform probes", () => {
+    const command = windowsPowerShellCommand("Write-Output 'ok'");
+    expect(command).toMatch(/^powershell.exe .* -EncodedCommand [A-Za-z0-9+/=]+$/);
+    expect(Buffer.from(command.split(" ").at(-1) ?? "", "base64").toString("utf16le"))
+      .toBe("Write-Output 'ok'");
   });
 });
 
@@ -462,7 +546,9 @@ function createTempResources(
   const resourcesPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-remote-runtime-"));
   const runtimeDir = path.join(resourcesPath, "runtime");
   fs.mkdirSync(runtimeDir, { recursive: true });
-  const binaryPath = path.join(runtimeDir, `ade-${archLabel}`);
+  const binaryPath = path.join(runtimeDir, archLabel === "win32-x64"
+    ? `ade-${archLabel}.exe`
+    : `ade-${archLabel}`);
   fs.writeFileSync(binaryPath, "#!/bin/sh\n");
   if (options.nativeDeps) {
     fs.writeFileSync(path.join(runtimeDir, `ade-${archLabel}.native.tar.gz`), "native deps fixture\n");
@@ -622,6 +708,144 @@ describe("bootstrapRemoteRuntime upload flow", () => {
     if (originalPackageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
     else process.env.ADE_PACKAGE_CHANNEL = originalPackageChannel;
     cleanupResources?.();
+  });
+
+  it("bootstraps Windows x64 through encoded PowerShell and verified SFTP", async () => {
+    const resources = createTempResources("win32-x64", {
+      agentSkills: true,
+      nativeDeps: true,
+      ptyHostWorker: true,
+    });
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    const registry = createRegistry();
+    const userProfile = "C:\\Users\\Ada Dev & Ops's [lab]";
+    connectSshWithRouteMock.mockResolvedValue({
+      client: fakeSsh.ssh,
+      route: uploadRoute,
+      config: { host: uploadRoute.hostname, port: 22, username: "ada" },
+    });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => {
+      if (command === "uname -sm") return { code: 1, stdout: "", stderr: "'uname' is not recognized" };
+      return ok(JSON.stringify({
+        platform: "win32",
+        arch: "X64",
+        productName: "Windows 11 Pro",
+        displayVersion: "24H2",
+        buildNumber: 26100,
+        userProfile,
+        sshdStatus: "Running",
+      }));
+    });
+    let identityReads = 0;
+    execSshWithInputMock.mockImplementation(async (_client: Client, command: string, input: string) => {
+      expect(command).toMatch(/^powershell.exe .* -EncodedCommand [A-Za-z0-9+/=]+$/);
+      expect(command).not.toContain(userProfile);
+      const script = Buffer.from(command.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+      const params = JSON.parse(input) as Record<string, unknown>;
+      if (script.includes("selectedBinary = $selected")) {
+        identityReads += 1;
+        return ok(JSON.stringify(identityReads === 1 ? {
+          selectedBinary: null,
+          executableVersion: null,
+          markerVersion: null,
+          markerSha256: null,
+          actualSha256: null,
+        } : {
+          selectedBinary: path.win32.join(userProfile, ".ade", "bin", "ade.exe"),
+          executableVersion: `ade ${APP_VERSION}`,
+          markerVersion: APP_VERSION,
+          markerSha256: resources.binarySha256,
+          actualSha256: resources.binarySha256,
+        }));
+      }
+      if (script.includes("AvailableFreeSpace")) {
+        return ok(JSON.stringify({ availableBytes: 2 * 1024 * 1024 * 1024 }));
+      }
+      if (script.includes("Uploaded file checksum mismatch") && params.destination === path.win32.join(userProfile, ".ade", "bin", "ade.exe")) {
+        expect(params).toMatchObject({
+          destination: path.win32.join(userProfile, ".ade", "bin", "ade.exe"),
+          sha256: resources.binarySha256,
+        });
+      }
+      return ok(JSON.stringify({ ok: true }));
+    });
+
+    const connected = await bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry,
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    });
+
+    expect(connected.result).toMatchObject({ arch: "win32-x64", version: APP_VERSION });
+    expect(identityReads).toBe(2);
+    expect(fakeSsh.sftp).toHaveBeenCalledTimes(4);
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.binaryPath,
+      expect.stringContaining("/C:/Users/Ada Dev & Ops's [lab]/.ade/bin/ade.exe.tmp-"),
+      expect.objectContaining({ fileSize: fs.statSync(resources.binaryPath).size }),
+      expect.any(Function),
+    );
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      expect.stringContaining("ade-win32-x64.native.tar.gz"),
+      expect.stringContaining("/C:/Users/Ada Dev & Ops's [lab]/.ade/runtime/ade-win32-x64.native.tar.gz.tmp-"),
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(fakeSsh.sftpWrapper.fastPut).toHaveBeenCalledWith(
+      resources.ptyHostWorkerPath,
+      expect.stringContaining("/C:/Users/Ada Dev & Ops's [lab]/.ade/runtime/ptyHostWorker.cjs.tmp-"),
+      expect.any(Object),
+      expect.any(Function),
+    );
+    expect(fakeSsh.sftpWrapper.fastPut.mock.calls.some((call) =>
+      call[0] === resources.agentSkillPath
+      && String(call[1]).includes("agent-skills.tmp-")
+      && String(call[1]).includes("/ade-cli-control-plane/SKILL.md.tmp-"),
+    )).toBe(true);
+    const rpcCommand = openSshRuntimeTransportMock.mock.calls[0]?.[1] as string;
+    expect(rpcCommand).not.toContain(userProfile);
+    const rpcScript = Buffer.from(rpcCommand.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+    expect(rpcScript).toContain("Ada Dev & Ops''s [lab]");
+    expect(rpcScript).toContain("'rpc', '--stdio'");
+  });
+
+  it("rejects a Windows runtime upload when remote checksum verification fails", async () => {
+    const resources = createTempResources("win32-x64");
+    cleanupResources = resources.cleanup;
+    const fakeSsh = createFakeSsh();
+    connectSshWithRouteMock.mockResolvedValue({ client: fakeSsh.ssh, route: uploadRoute, config: {} });
+    execSshMock.mockImplementation(async (_client: Client, command: string) => command === "uname -sm"
+      ? { code: 1, stdout: "", stderr: "not found" }
+      : ok(JSON.stringify({
+          platform: "win32",
+          arch: "X64",
+          productName: "Windows 10 Pro",
+          displayVersion: "22H2",
+          buildNumber: 19045,
+          userProfile: "C:\\Users\\Ada",
+          sshdStatus: "Running",
+        })));
+    execSshWithInputMock.mockImplementation(async (_client: Client, command: string) => {
+      const script = Buffer.from(command.split(" ").at(-1) ?? "", "base64").toString("utf16le");
+      if (script.includes("selectedBinary = $selected")) {
+        return ok(JSON.stringify({ selectedBinary: null, executableVersion: null, markerVersion: null, markerSha256: null, actualSha256: null }));
+      }
+      if (script.includes("AvailableFreeSpace")) return ok(JSON.stringify({ availableBytes: 2 * 1024 * 1024 * 1024 }));
+      if (script.includes("Uploaded file checksum mismatch")) {
+        return { code: 1, stdout: "", stderr: "Uploaded file checksum mismatch." };
+      }
+      return ok(JSON.stringify({ ok: true }));
+    });
+
+    await expect(bootstrapRemoteRuntime({
+      target: uploadTarget,
+      registry: createRegistry(),
+      resourcesPath: resources.resourcesPath,
+      appVersion: APP_VERSION,
+    })).rejects.toThrow(/checksum mismatch/i);
+    expect(fakeSsh.end).toHaveBeenCalled();
   });
 
   it("uploads a missing bundled runtime, verifies its version, and opens stdio RPC from ~/.ade/bin", async () => {

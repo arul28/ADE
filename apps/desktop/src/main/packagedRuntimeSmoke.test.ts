@@ -3,7 +3,9 @@ import {
   classifyClaudeStartupFailure,
   getClaudeNativeBinaryFileName,
   getClaudeNativeBinaryPackageName,
+  probeCrsqliteExtension,
 } from "./packagedRuntimeSmokeShared";
+import path from "node:path";
 
 describe("packagedRuntimeSmoke", () => {
   it("classifies a missing bundled Claude binary distinctly", () => {
@@ -45,5 +47,12 @@ describe("packagedRuntimeSmoke", () => {
     expect(getClaudeNativeBinaryPackageName("freebsd", "x64")).toBeNull();
     expect(getClaudeNativeBinaryFileName("win32")).toBe("claude.exe");
     expect(getClaudeNativeBinaryFileName("darwin")).toBe("claude");
+  });
+
+  it.skipIf(process.platform !== "win32")("loads the packaged Windows CR-SQLite extension and records a CRR change", () => {
+    const result = probeCrsqliteExtension(
+      path.resolve(process.cwd(), "vendor", "crsqlite", "win32-x64", "crsqlite.dll"),
+    );
+    expect(result).toEqual({ ok: true, changeRows: 1 });
   });
 });

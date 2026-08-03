@@ -7,6 +7,10 @@ on:
         description: Version to release. Accepts 1.2.3 or v1.2.3.
         required: true
         type: string
+      target_sha:
+        description: Exact 40-character commit SHA on main to validate.
+        required: true
+        type: string
 
 permissions:
   actions: read
@@ -22,14 +26,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: main
+          ref: ${{ inputs.target_sha }}
           fetch-depth: 0
 
       - name: Resolve version and target commit
         id: resolve
         env:
           INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TARGET_SHA: ${{ inputs.target_sha }}
         run: |
+          set -euo pipefail
+
           version="$(printf '%s' "$INPUT_VERSION" | tr -d '[:space:]')"
           if [ -z "$version" ]; then
             echo "::error::Version input cannot be empty."
@@ -46,8 +53,20 @@ jobs:
             exit 1
           fi
 
+          if ! printf '%s' "$INPUT_TARGET_SHA" | grep -Eq '^[0-9a-fA-F]{40}$'; then
+            echo "::error::target_sha must be the exact 40-character commit SHA approved for release."
+            exit 1
+          fi
+
+          requested_sha="$(printf '%s' "$INPUT_TARGET_SHA" | tr '[:upper:]' '[:lower:]')"
+          resolved_sha="$(git rev-parse HEAD)"
+          if [ "$resolved_sha" != "$requested_sha" ]; then
+            echo "::error::Checked out $resolved_sha instead of requested commit $requested_sha."
+            exit 1
+          fi
+
           echo "tag_name=$tag_name" >> "$GITHUB_OUTPUT"
-          echo "target_sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "target_sha=$resolved_sha" >> "$GITHUB_OUTPUT"
 
   validate:
     needs: resolve

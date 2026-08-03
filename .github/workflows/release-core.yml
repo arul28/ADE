@@ -20,7 +20,7 @@ on:
 permissions:
   actions: read
   checks: read
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -67,6 +67,21 @@ jobs:
           fi
 
           echo "ci-pass succeeded for $TARGET_REF: $url"
+
+      - name: Validate Windows release configuration
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
+        run: |
+          if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$BUILD_WINDOWS" != "1" ]; then
+            echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1."
+            exit 1
+          fi
+          if [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" != "1" ]; then
+            echo "::error::ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires approved two-version installed-update proof."
+            exit 1
+          fi
 
   build-mac-release:
     needs:
@@ -242,78 +257,101 @@ jobs:
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
-  # Windows release builds are disabled for now — ADE ships macOS-only releases.
-  # To re-enable: uncomment this job, add `build-win-release` back to
-  # publish-release `needs`, and restore the win blocks in the publish job
-  # (artifact download, manifest validation, upload list).
-  # build-win-release:
-  #   needs:
-  #     - verify
-  #     - build-runtime-binaries
-  #   runs-on: windows-latest
-  #   concurrency:
-  #     group: release-${{ inputs.release_tag }}-win
-  #     cancel-in-progress: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         ref: ${{ inputs.target_ref }}
-  #         fetch-depth: 0
-  #
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: 22
-  #         cache: npm
-  #         cache-dependency-path: |
-  #           apps/desktop/package-lock.json
-  #           apps/ade-cli/package-lock.json
-  #
-  #     - name: Install desktop dependencies
-  #       run: cd apps/desktop && npm ci
-  #
-  #     - name: Install ADE CLI dependencies
-  #       run: cd apps/ade-cli && npm ci
-  #
-  #     - name: Download ADE runtime binaries
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: ade-runtime-*
-  #         path: apps/desktop/resources/runtime
-  #         merge-multiple: true
-  #
-  #     - name: Materialize ADE runtime resources
-  #       env:
-  #         ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
-  #       run: cd apps/desktop && npm run materialize:runtime-resources
-  #
-  #     - name: Stamp release version
-  #       env:
-  #         ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-  #       run: cd apps/desktop && npm run version:release
-  #
-  #     - name: Reset release output
-  #       shell: pwsh
-  #       run: |
-  #         Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
-  #         New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
-  #
-  #     - name: Build and validate Windows release
-  #       env:
-  #         ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-  #         ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-  #         CSC_LINK: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) || '' }}
-  #         CSC_KEY_PASSWORD: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD) || '' }}
-  #       run: cd apps/desktop && npm run dist:win
-  #
-  #     - name: Upload validated Windows artifacts to workflow run
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: ade-win-release-${{ inputs.release_tag }}
-  #         path: |
-  #           apps/desktop/release/*.exe
-  #           apps/desktop/release/*.exe.blockmap
-  #           apps/desktop/release/latest.yml
-  #         if-no-files-found: error
+  build-win-release:
+    if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+    needs:
+      - verify
+      - build-runtime-binaries
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ inputs.release_tag }}-win
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Require Windows Authenticode signing secrets
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_LINK) -or [string]::IsNullOrWhiteSpace($env:WINDOWS_CSC_KEY_PASSWORD)) {
+            throw "Public Windows releases require WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_SUBJECT) -and [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
+            throw "Public Windows releases require WINDOWS_SIGNING_EXPECTED_SUBJECT or WINDOWS_SIGNING_EXPECTED_THUMBPRINT."
+          }
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Materialize ADE runtime resources
+        env:
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
+        run: cd apps/desktop && npm run materialize:runtime-resources
+
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Reset release output
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
+
+      - name: Build and validate Windows release
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: cd apps/desktop && npm run dist:win:signed
+
+      - name: Test installed signed Windows product lifecycle
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
+          & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
+
+      - name: Upload validated Windows artifacts to workflow run
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/*.exe
+            apps/desktop/release/*.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
 
   build-runtime-binaries:
     needs: verify
@@ -323,12 +361,19 @@ jobs:
         include:
           - target: darwin-arm64
             os: macos-15
+            binary: ade-darwin-arm64
           - target: darwin-x64
             os: macos-15-intel
+            binary: ade-darwin-x64
           - target: linux-x64
             os: ubuntu-latest
+            binary: ade-linux-x64
           - target: linux-arm64
             os: ubuntu-24.04-arm
+            binary: ade-linux-arm64
+          - target: win32-x64
+            os: windows-latest
+            binary: ade-win32-x64.exe
     runs-on: ${{ matrix.os }}
     concurrency:
       group: release-${{ inputs.release_tag }}-runtime-${{ matrix.target }}
@@ -367,6 +412,18 @@ jobs:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
+
+      - name: Sign and validate standalone Windows runtime
+        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+        shell: pwsh
+        env:
+          WINDOWS_CSC_LINK: ${{ secrets.WINDOWS_CSC_LINK }}
+          WINDOWS_CSC_KEY_PASSWORD: ${{ secrets.WINDOWS_CSC_KEY_PASSWORD }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          & apps/ade-cli/scripts/sign-windows-runtime.ps1 `
+            -BinaryPath "apps/ade-cli/dist-static/${{ matrix.binary }}"
 
       - name: Materialize runtime notarization API key
         if: ${{ startsWith(matrix.target, 'darwin-') }}
@@ -428,8 +485,9 @@ jobs:
         run: cd apps/ade-cli && npm run notarize:static -- --binary=dist-static/ade-${{ matrix.target }}
 
       - name: Smoke test ADE runtime binary
+        shell: bash
         run: |
-          apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
+          apps/ade-cli/dist-static/${{ matrix.binary }} --version
           archive="apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz"
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
@@ -439,21 +497,53 @@ jobs:
             exit 1
           fi
 
+      - name: Assemble signed Windows standalone proof bundle
+        if: ${{ matrix.target == 'win32-x64' && vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp apps/ade-cli/scripts/install-runtime.ps1 apps/ade-cli/dist-static/install.ps1
+          (
+            cd apps/ade-cli/dist-static
+            sha256sum install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz \
+              | LC_ALL=C sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
       - name: Upload ADE runtime binary
         uses: actions/upload-artifact@v4
         with:
           name: ade-runtime-${{ matrix.target }}
           path: |
-            apps/ade-cli/dist-static/ade-${{ matrix.target }}
+            apps/ade-cli/dist-static/${{ matrix.binary }}
             apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
+            apps/ade-cli/dist-static/install.ps1
+            apps/ade-cli/dist-static/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
 
   publish-release:
-    if: ${{ inputs.publish }}
+    if: >-
+      ${{
+        always()
+        && inputs.publish
+        && needs.build-runtime-binaries.result == 'success'
+        && needs.build-mac-release.result == 'success'
+        && (
+          vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'
+          || (
+            vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'
+            && needs.build-win-release.result == 'success'
+          )
+        )
+      }}
     needs:
       - build-runtime-binaries
       - build-mac-release
+      - build-win-release
+    permissions:
+      actions: read
+      contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -486,15 +576,12 @@ jobs:
             release-assets/mac/latest-mac.yml
           rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
 
-      # Windows artifacts are intentionally NOT published right now. The
-      # standalone runtime assets are published because headless brains and
-      # mobile-driven recovery updates depend on the same release payloads the
-      # desktop bundle uploads for remote runtime bootstrap.
-      # - name: Download Windows release artifacts
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: ade-win-release-${{ inputs.release_tag }}
-      #     path: release-assets/win
+      - name: Download Windows release artifacts
+        if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: release-assets/win
 
       - name: Download ADE runtime binaries
         uses: actions/download-artifact@v4
@@ -504,14 +591,39 @@ jobs:
           merge-multiple: true
 
       - name: Add standalone runtime installer
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
           chmod 755 release-assets/runtime/install.sh
+          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
+            cp apps/ade-cli/scripts/install-runtime.ps1 release-assets/runtime/install.ps1
+          fi
 
       - name: Generate standalone runtime checksums
+        env:
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           set -euo pipefail
-          (cd release-assets/runtime && sha256sum install.sh ade-* | LC_ALL=C sort -k2 > SHA256SUMS)
+          runtime_assets=(
+            install.sh
+            ade-darwin-arm64
+            ade-darwin-arm64.native.tar.gz
+            ade-darwin-x64
+            ade-darwin-x64.native.tar.gz
+            ade-linux-arm64
+            ade-linux-arm64.native.tar.gz
+            ade-linux-x64
+            ade-linux-x64.native.tar.gz
+          )
+          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
+            runtime_assets+=(install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz)
+          fi
+          (cd release-assets/runtime && sha256sum "${runtime_assets[@]}" | LC_ALL=C sort -k2 > SHA256SUMS)
 
       - name: Validate publish asset manifest
         run: |
@@ -544,10 +656,6 @@ jobs:
           require_glob 'release-assets/mac/*.zip' 'macOS zip'
           require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
 
-          # Windows artifacts are not published right now.
-          # require_glob 'release-assets/win/*.exe' 'Windows installer'
-          # require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
-          # require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
           require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
           if [ ! -x 'release-assets/runtime/install.sh' ]; then
             echo "::error::Standalone runtime installer is not executable."
@@ -557,7 +665,8 @@ jobs:
           (cd release-assets/runtime && sha256sum -c SHA256SUMS)
 
           for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
+            binary="release-assets/runtime/ade-$target"
+            require_file "$binary" "ADE runtime binary for $target"
             require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
             archive_listing="$RUNNER_TEMP/ade-$target-native-files.txt"
             tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" > "$archive_listing"
@@ -567,30 +676,63 @@ jobs:
             }
           done
 
+      - name: Validate gated Windows publish asset manifest
+        if: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' && vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          installers=(release-assets/win/*.exe)
+          blockmaps=(release-assets/win/*.exe.blockmap)
+          if [ "${#installers[@]}" -ne 1 ] || [ "${#blockmaps[@]}" -ne 1 ]; then
+            echo "::error::Expected exactly one signed Windows installer and blockmap."
+            exit 1
+          fi
+          test -s "${installers[0]}"
+          test -s "${blockmaps[0]}"
+          test -s release-assets/win/latest.yml
+          test -s release-assets/runtime/install.ps1
+          test -s release-assets/runtime/ade-win32-x64.exe
+          test -s release-assets/runtime/ade-win32-x64.native.tar.gz
+          grep -Eq '[[:space:]]install\.ps1$' release-assets/runtime/SHA256SUMS
+          grep -Eq '[[:space:]]ade-win32-x64\.exe$' release-assets/runtime/SHA256SUMS
+          grep -Eq '[[:space:]]ade-win32-x64\.native\.tar\.gz$' release-assets/runtime/SHA256SUMS
       - name: Create or update draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           TAG_NAME: ${{ inputs.release_tag }}
           TARGET_REF: ${{ inputs.target_ref }}
           GH_REPO: ${{ github.repository }}
+          BUILD_WINDOWS: ${{ vars.ADE_WINDOWS_SIGNED_BUILD_ENABLED }}
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_UPDATE_PROOF_APPROVED: ${{ vars.ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED }}
         run: |
           shopt -s nullglob
-          # macOS-only, per-arch release surface. The per-arch zips + latest-mac.yml
-          # are what electron-updater consumes; the per-arch DMGs are the human
-          # downloads. Blockmaps are intentionally NOT published (they only enable
-          # differential downloads, which don't help the mac in-memory update path)
-          # to keep the asset list clean: 2 dmg + 2 zip + latest-mac.yml.
+          # The per-arch macOS zips + latest-mac.yml are what electron-updater
+          # consumes; DMGs are the human downloads. Mac blockmaps stay omitted.
+          # When the post-upgrade proof gate is enabled, Windows adds its signed
+          # installer, blockmap, and latest.yml as one validated draft-release set.
           files=(
             release-assets/mac/*.dmg
             release-assets/mac/*.zip
             release-assets/mac/latest-mac.yml
-            # release-assets/win/*.exe
-            # release-assets/win/*.exe.blockmap
-            # release-assets/win/latest.yml
             release-assets/runtime/install.sh
             release-assets/runtime/SHA256SUMS
-            release-assets/runtime/ade-*
+            release-assets/runtime/ade-darwin-*
+            release-assets/runtime/ade-linux-*
           )
+
+          # This repository variable stays disabled until the signed installer
+          # passes the clean-host release checks.
+          if [ "$BUILD_WINDOWS" = "1" ] && [ "$PUBLISH_WINDOWS" = "1" ] && [ "$WINDOWS_UPDATE_PROOF_APPROVED" = "1" ]; then
+            files+=(
+              release-assets/win/*.exe
+              release-assets/win/*.exe.blockmap
+              release-assets/win/latest.yml
+              release-assets/runtime/install.ps1
+              release-assets/runtime/ade-win32-x64.exe
+              release-assets/runtime/ade-win32-x64.native.tar.gz
+            )
+          fi
 
           if [ "${#files[@]}" -eq 0 ]; then
             echo "::error::No release artifacts were found after validation."
@@ -598,6 +740,23 @@ jobs:
           fi
 
           if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
+            is_draft="$(gh release view "$TAG_NAME" --repo "$GH_REPO" --json isDraft --jq '.isDraft')"
+            if [ "$is_draft" != "true" ]; then
+              echo "::error::Release $TAG_NAME is already public. Refusing to overwrite published assets."
+              exit 1
+            fi
+            if [ "$BUILD_WINDOWS" != "1" ] || [ "$PUBLISH_WINDOWS" != "1" ] || [ "$WINDOWS_UPDATE_PROOF_APPROVED" != "1" ]; then
+              mapfile -t existing_assets < <(
+                gh release view "$TAG_NAME" --repo "$GH_REPO" --json assets --jq '.assets[].name'
+              )
+              for asset in "${existing_assets[@]}"; do
+                case "$asset" in
+                  install.ps1|ade-win32-x64.exe|ade-win32-x64.native.tar.gz|ADE*-win-x64.exe|ADE*-win-x64.exe.blockmap|latest.yml)
+                    gh release delete-asset "$TAG_NAME" "$asset" --repo "$GH_REPO" --yes
+                    ;;
+                esac
+              done
+            fi
             gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
           else
             gh release create "$TAG_NAME" "${files[@]}" \

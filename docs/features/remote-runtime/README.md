@@ -540,6 +540,10 @@ run a local repair against data owned by the remote machine. See
    back to bounded SSH chunk uploads / OpenSSH. Without a bundled binary, ADE
    probes alternate channel homes for a compatible installed runtime and
    reports the selected fallback as a compatibility warning.
+   Windows clients require the built-in OpenSSH Client for the bounded fallback
+   upload path. If `ssh.exe` is unavailable, ADE reports the missing Windows
+   Optional Feature and the `Add-WindowsCapability` repair command instead of a
+   raw process-spawn error.
 7. Once SSH RPC succeeds, ADE asks that exact runtime to authorize this desktop
    as a paired DPoP device using a bounded JSON request on stdin. The resulting
    secret, private key, host identity, and endpoints are stored locally, and
@@ -619,10 +623,14 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 
 ## Standalone runtime install
 
-For headless macOS / Linux machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Release publishing includes `install.sh`, `SHA256SUMS`, the `ade-<platform-arch>` binaries, and the matching native dependency archives for darwin/linux arm64/x64. SSH-reachable machines can still skip the standalone installer because desktop bootstrap uploads bundled runtime artifacts on first connect.
+For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `ade rpc --stdio` with the channel-specific ADE home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
 
 ```bash
 curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+```
+
+```powershell
+irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
 ```
 
 `install.sh` (lives at `apps/ade-cli/scripts/install-runtime.sh`):

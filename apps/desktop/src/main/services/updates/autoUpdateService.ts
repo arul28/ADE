@@ -28,6 +28,7 @@ import {
   buildReleaseNotesUrl,
   compareUpdateVersions,
   DEFAULT_RELEASE_NOTES_BASE_URL,
+  DEFAULT_RELEASE_REPOSITORY,
 } from "./autoUpdateVersions";
 
 const DEFAULT_INSTALL_WATCHDOG_MS = 30_000;
@@ -108,6 +109,7 @@ type CreateAutoUpdateServiceArgs = {
   now?: () => string;
   nowMs?: () => number;
   releaseNotesBaseUrl?: string;
+  releaseRepository?: string;
   startupDelayMs?: number;
   periodicCheckMs?: number;
   updaterCacheDir?: string;
@@ -200,14 +202,16 @@ function cloneRecentlyInstalledUpdate(
   return update ? { ...update } : null;
 }
 
-// Backfills the GitHub release URL for updates persisted before that field
-// existed, so the renderer always has a "View on GitHub" target.
+// Backfill missing links and replace stale links from packages that did not
+// persist their configured update repository yet.
 function withGithubReleaseUrl(
   update: RecentlyInstalledUpdate | null,
+  releaseRepository: string,
 ): RecentlyInstalledUpdate | null {
   if (!update) return null;
-  if (update.githubReleaseUrl) return update;
-  return { ...update, githubReleaseUrl: buildGithubReleaseUrl(update.version) };
+  const githubReleaseUrl = buildGithubReleaseUrl(update.version, releaseRepository);
+  if (update.githubReleaseUrl === githubReleaseUrl) return update;
+  return { ...update, githubReleaseUrl };
 }
 
 function cloneSnapshot(snapshot: AutoUpdateSnapshot): AutoUpdateSnapshot {
@@ -266,6 +270,7 @@ function reconcilePersistedUpdateState(args: {
   currentVersion: string;
   now: string;
   releaseNotesBaseUrl: string;
+  releaseRepository: string;
 }): {
   state: GlobalState;
   changed: boolean;
@@ -309,7 +314,7 @@ function reconcilePersistedUpdateState(args: {
         installedAt: args.now,
         releaseNotesUrl: buildReleaseNotesUrl(args.currentVersion, args.releaseNotesBaseUrl)
           ?? pendingInstall.releaseNotesUrl,
-        githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion),
+        githubReleaseUrl: buildGithubReleaseUrl(args.currentVersion, args.releaseRepository),
       };
       cacheCleanupReason = "installed";
       nextState.failedInstallAttempts = undefined;
@@ -337,12 +342,22 @@ function reconcilePersistedUpdateState(args: {
     changed = true;
   }
 
+  const recentlyInstalled = withGithubReleaseUrl(
+    cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
+    args.releaseRepository,
+  );
+  if (
+    recentlyInstalled
+    && nextState.recentlyInstalledUpdate?.githubReleaseUrl !== recentlyInstalled.githubReleaseUrl
+  ) {
+    nextState.recentlyInstalledUpdate = recentlyInstalled;
+    changed = true;
+  }
+
   return {
     state: nextState,
     changed,
-    recentlyInstalled: withGithubReleaseUrl(
-      cloneRecentlyInstalledUpdate(nextState.recentlyInstalledUpdate ?? null),
-    ),
+    recentlyInstalled,
     cacheCleanupReason,
     failedInstall,
   };
@@ -374,6 +389,7 @@ export function createAutoUpdateService({
   now = () => new Date().toISOString(),
   nowMs = () => Date.now(),
   releaseNotesBaseUrl = DEFAULT_RELEASE_NOTES_BASE_URL,
+  releaseRepository = DEFAULT_RELEASE_REPOSITORY,
   startupDelayMs = 5_000,
   periodicCheckMs = 30 * 60 * 1_000,
   updaterCacheDir,
@@ -411,13 +427,10 @@ export function createAutoUpdateService({
     if (overrideFeedUrl) {
       updater.setFeedURL?.({ provider: "generic", url: overrideFeedUrl });
       logger.info("autoUpdate.feed_override", { url: overrideFeedUrl });
-    } else {
-      updater.setFeedURL?.({
-        provider: "github",
-        owner: "arul28",
-        repo: "ADE",
-      });
     }
+    // Packaged builds intentionally keep electron-builder's generated
+    // app-update.yml as the sole update-feed authority. Calling setFeedURL here
+    // would silently replace build-time repository configuration.
   } catch (error) {
     logger.warn("autoUpdate.feed_config_failed", {
       message: formatErrorMessage(error),
@@ -429,6 +442,7 @@ export function createAutoUpdateService({
     currentVersion,
     now: now(),
     releaseNotesBaseUrl,
+    releaseRepository,
   });
   if (initialState.changed) {
     writeGlobalState(globalStatePath, initialState.state);

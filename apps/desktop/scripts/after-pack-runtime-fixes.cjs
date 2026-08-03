@@ -66,7 +66,14 @@ function copyDirectoryIfPresent(sourcePath, targetPath) {
 
 function openCodeNativePackagesForPlatform(platform) {
   if (platform === "darwin") return ["opencode-darwin-arm64", "opencode-darwin-x64"];
-  if (platform === "win32") return ["opencode-windows-x64", "opencode-windows-arm64"];
+  // Windows x64 materializes the `-baseline` build, never `opencode-windows-x64`.
+  // The default x64 build requires AVX2 and aborts with an illegal instruction on
+  // x64 CPUs without it; `-baseline` targets the lower instruction set, is the same
+  // size, and runs everywhere. This list must stay in sync with
+  // OPENCODE_PLATFORM_PACKAGES in src/main/services/opencode/openCodeBinaryManager.ts,
+  // because the resolver only ever looks for the package named there - anything else
+  // materialized here is dead weight the installer still pays for.
+  if (platform === "win32") return ["opencode-windows-x64-baseline", "opencode-windows-arm64"];
   if (platform === "linux") {
     return [
       "opencode-linux-arm64",
@@ -128,10 +135,10 @@ function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
 }
 
 function pruneOpenCodeInstallShim(runtimeRoot, platform) {
-  if (platform === "win32") return;
   const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
   if (removeIfPresent(runtimeRoot, shimPath)) {
-    console.log(`[afterPack] Pruned non-target OpenCode install shim: ${shimPath}`);
+    const reason = platform === "win32" ? "duplicate" : "non-target";
+    console.log(`[afterPack] Pruned ${reason} OpenCode install shim: ${shimPath}`);
   }
 }
 
@@ -197,12 +204,13 @@ function channelCliName(channel) {
   return "ade";
 }
 
-function materializeChannelCliWrapper(resourcesRoot, channel) {
+function materializeChannelCliWrapper(resourcesRoot, channel, platform = "darwin") {
   if (!channel) return null;
   const cliRoot = path.join(resourcesRoot, "ade-cli");
   const binRoot = path.join(cliRoot, "bin");
-  const sourcePath = path.join(binRoot, "ade");
-  const targetPath = path.join(binRoot, channelCliName(channel));
+  const extension = platform === "win32" ? ".cmd" : "";
+  const sourcePath = path.join(binRoot, `ade${extension}`);
+  const targetPath = path.join(binRoot, `${channelCliName(channel)}${extension}`);
   requireFile(sourcePath, "bundled ADE CLI wrapper");
   fs.copyFileSync(sourcePath, targetPath);
   fs.chmodSync(targetPath, 0o755);
@@ -415,13 +423,20 @@ module.exports = async function afterPack(context) {
     requireFile(bundledCliInstallerPath, "bundled ADE CLI PATH installer");
     fs.chmodSync(bundledCliBinPath, 0o755);
     fs.chmodSync(bundledCliInstallerPath, 0o755);
-    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel);
+    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel, platform);
     if (channelWrapperPath) {
       console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
     }
   } else if (platform === "win32") {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade.cmd"), "bundled ADE CLI Windows wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-uninstall-cleanup.ps1"), "bundled Windows uninstall cleanup script");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-install-setup.ps1"), "bundled Windows install setup script");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-firewall-rules.ps1"), "bundled Windows firewall rule script");
+    const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel, platform);
+    if (channelWrapperPath) {
+      console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
+    }
   } else {
     requireFile(path.join(resourcesRoot, "ade-cli", "bin", "ade"), "bundled ADE CLI wrapper");
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.sh"), "bundled ADE CLI PATH installer");
