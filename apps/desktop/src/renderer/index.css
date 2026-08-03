@@ -139,14 +139,6 @@
   --shell-sidebar-item-active-fg: var(--color-accent);
   --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
 
-  &[data-ade-platform="darwin"] {
-    --shell-header-padding-start: 80px;
-  }
-
-  &[data-ade-platform="win32"] {
-    /* Keep utility controls clear of minimize/maximize/close in the overlay. */
-    --shell-header-padding-end: 150px;
-  }
   --shell-sidebar-item-active-rail: var(--color-accent);
   --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
 
@@ -205,6 +197,36 @@
   --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --work-popover-item-hover: rgba(255, 255, 255, 0.06);
   --work-popover-item-active: rgba(255, 255, 255, 0.08);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Native title-bar insets (platform chrome clearance)
+   ═══════════════════════════════════════════════════════════
+
+   The OS draws its own window controls on top of the title bar: the traffic
+   lights at the start on macOS, the caption buttons at the end on Windows. The
+   shell header has to leave room for whichever applies.
+
+   These deliberately do NOT live in the theme token block above. `data-theme`
+   is set on <html>, <body>, AND the shell wrapper (see App.tsx), so every one
+   of those elements re-declares the `--shell-header-padding-*` defaults — which
+   would shadow a platform value inherited from <html> long before it reached
+   the header. Only <html> carries `data-ade-platform`, so a dedicated property
+   name declared here survives all the way down.
+
+   Both values are only the pre-paint fallback. `applyShellHeaderInset()`
+   (renderer/lib/zoom.ts) and `trackWindowsCaptionInset()`
+   (renderer/lib/windowControlsOverlay.ts) overwrite them with live geometry,
+   because the native controls are a fixed physical size that does not follow
+   the renderer's zoom factor. */
+
+:root[data-ade-platform="darwin"] {
+  --shell-header-inset-start: 80px;
+}
+
+:root[data-ade-platform="win32"] {
+  /* Three 46 DIP caption buttons plus an 8px gutter. */
+  --shell-header-inset-end: 146px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -444,8 +466,8 @@ h6 {
 
 .ade-shell-header {
   height: var(--shell-header-height);
-  padding-left: var(--shell-header-padding-start);
-  padding-right: var(--shell-header-padding-end);
+  padding-left: var(--shell-header-inset-start, var(--shell-header-padding-start));
+  padding-right: var(--shell-header-inset-end, var(--shell-header-padding-end));
   color: var(--shell-header-fg);
   background: var(--shell-header-bg);
   backdrop-filter: blur(20px);

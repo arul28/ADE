@@ -142,6 +142,9 @@ describe("AccountPage signed-in", () => {
   const listMachines = vi.fn();
   const getLocalMachineIdentity = vi.fn();
   const removeMachine = vi.fn(async (machineKey: string) => ({ ok: true as const, machineKey }));
+  const renameMachine = vi.fn(async (machineKey: string, customName: string | null) =>
+    machine({ machineKey, deviceId: "this-dev", name: "MacBook Pro", customName }),
+  );
   const signOut = vi.fn(async () => SIGNED_OUT);
 
   beforeEach(() => {
@@ -171,7 +174,7 @@ describe("AccountPage signed-in", () => {
         getStatus: vi.fn(async () => ({ connected: false })),
         onStatusChanged: vi.fn(() => () => {}),
       },
-      account: { listMachines, getLocalMachineIdentity, removeMachine, signOut },
+      account: { listMachines, getLocalMachineIdentity, removeMachine, renameMachine, signOut },
     } as unknown as typeof window.ade;
   });
 
@@ -181,6 +184,7 @@ describe("AccountPage signed-in", () => {
     listMachines.mockReset();
     getLocalMachineIdentity.mockReset();
     removeMachine.mockClear();
+    renameMachine.mockClear();
     signOut.mockClear();
     window.ade = originalAde;
   });
@@ -204,7 +208,7 @@ describe("AccountPage signed-in", () => {
     expect(screen.queryByText(/you're in/i)).toBeNull();
   });
 
-  it("pins this computer first with a badge and hides its removal menu", async () => {
+  it("pins this computer first with a badge and offers rename but never removal", async () => {
     renderPage();
     await screen.findByText("MacBook Pro");
 
@@ -215,9 +219,35 @@ describe("AccountPage signed-in", () => {
     // literal here is what let Settings and Account miss the rename.
     expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
 
-    // Only the other computer exposes an options (removal) menu.
-    expect(screen.queryByRole("button", { name: /Options for MacBook Pro/ })).toBeNull();
-    expect(screen.getByRole("button", { name: /Options for Studio/ })).toBeTruthy();
+    // This list is the only place the local machine appears, so it is the only
+    // place its name can be changed — but removal stays withheld for it.
+    fireEvent.click(screen.getByRole("button", { name: /Options for MacBook Pro/ }));
+    expect(screen.getByRole("menuitem", { name: /Rename/ })).toBeTruthy();
+    expect(screen.queryByRole("menuitem", { name: /Remove from account/ })).toBeNull();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+
+    // Another computer can be both renamed and evicted.
+    fireEvent.click(screen.getByRole("button", { name: /Options for Studio/ }));
+    expect(screen.getByRole("menuitem", { name: /Rename/ })).toBeTruthy();
+    expect(screen.getByRole("menuitem", { name: /Remove from account/ })).toBeTruthy();
+  });
+
+  it("renames this computer through the account directory", async () => {
+    renderPage();
+    await screen.findByText("MacBook Pro");
+
+    fireEvent.click(screen.getByRole("button", { name: /Options for MacBook Pro/ }));
+    fireEvent.click(screen.getByRole("menuitem", { name: /Rename/ }));
+
+    const input = screen.getByLabelText(/Name for MacBook Pro/);
+    fireEvent.change(input, { target: { value: "Arul's PC" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    // The local machine goes through the same bridge call as a remote peer;
+    // there is no second rename mechanism to keep in sync.
+    await waitFor(() =>
+      expect(renameMachine).toHaveBeenCalledWith("this-key", "Arul's PC"),
+    );
   });
 
   it("portals the machine menu and manages focus through Escape", async () => {
@@ -230,7 +260,9 @@ describe("AccountPage signed-in", () => {
     // Portaled directly under document.body, outside the scrolling account column.
     expect(menu.parentElement).toBe(document.body);
     expect(menu.style.position).toBe("fixed");
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("menuitem")));
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: /Rename/ })),
+    );
 
     fireEvent.keyDown(menu, { key: "Escape" });
     expect(screen.queryByRole("menu")).toBeNull();
