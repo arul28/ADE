@@ -182,6 +182,8 @@ import type {
   SessionWakeReason,
   UpdateSessionMetaArgs,
   UpdateIntegrationProposalArgs,
+  AgentChatLaunchCliArgs,
+  AiConfig,
   TerminalToolType,
   UpdateBranchArgs,
   UpdateLaneAppearanceArgs,
@@ -237,6 +239,9 @@ import { buildAiSettingsStatus, getUnavailableAiStatus, isDatabaseClosedError } 
 import type { createAiIntegrationService } from "../../../../desktop/src/main/services/ai/aiIntegrationService";
 import type { createAgentChatService } from "../../../../desktop/src/main/services/chat/agentChatService";
 import { resolveSmartLinkPreview } from "../../../../desktop/src/main/services/chat/smartLinkPreviewService";
+import { launchAgentChatCli } from "../../../../desktop/src/main/services/chat/agentChatCliLaunch";
+import { mergeAiConfig } from "../../../../desktop/src/main/services/config/projectConfigService";
+import { deleteApiKey } from "../../../../desktop/src/main/services/ai/apiKeyStore";
 import { resolveCodexComputerUseMcpConfig } from "../../../../desktop/src/main/utils/codexComputerUse";
 import type { createCtoStateService } from "../../../../desktop/src/main/services/cto/ctoStateService";
 import type { CtoMemoryService } from "../../../../desktop/src/main/services/cto/ctoMemoryService";
@@ -1351,6 +1356,37 @@ function parseCreateLaneArgs(value: Record<string, unknown>): CreateLaneArgs {
     ...(asTrimmedString(value.branchName) ? { branchName: asTrimmedString(value.branchName)! } : {}),
     ...(asTrimmedString(value.startPoint) ? { startPoint: asTrimmedString(value.startPoint)! } : {}),
     ...(isRecord(value.linearIssue) ? { linearIssue: value.linearIssue as CreateLaneArgs["linearIssue"] } : {}),
+  };
+}
+
+/**
+ * Parse at the boundary, like every other remote handler. `launchAgentChatCli`
+ * validates laneId/provider/kickoffPrompt itself and rejects unknown providers,
+ * but the optional fields reach a spawned CLI's flags, so they are typed here
+ * rather than passed through as whatever the peer sent.
+ */
+function parseAgentChatLaunchCliArgs(value: Record<string, unknown>): AgentChatLaunchCliArgs {
+  const model = asTrimmedString(value.model);
+  const reasoningEffort = asTrimmedString(value.reasoningEffort);
+  const permissionMode = asTrimmedString(value.permissionMode);
+  const orchestrationRole = asTrimmedString(value.orchestrationRole);
+  const title = asTrimmedString(value.title);
+  const disposition = value.disposition === "background" ? "background" : undefined;
+  const fastMode = asOptionalBoolean(value.fastMode);
+  return {
+    laneId: requireString(value.laneId, "chat.launchCli requires laneId."),
+    provider: requireString(value.provider, "chat.launchCli requires provider.") as AgentChatLaunchCliArgs["provider"],
+    kickoffPrompt: requireString(value.kickoffPrompt, "chat.launchCli requires kickoffPrompt."),
+    ...(model ? { model } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(fastMode !== undefined ? { fastMode } : {}),
+    ...(permissionMode ? { permissionMode: permissionMode as AgentChatLaunchCliArgs["permissionMode"] } : {}),
+    ...(orchestrationRole ? { orchestrationRole: orchestrationRole as AgentChatLaunchCliArgs["orchestrationRole"] } : {}),
+    ...(title ? { title } : {}),
+    ...(disposition ? { disposition } : {}),
+    ...(Array.isArray(value.linearIssues)
+      ? { linearIssues: value.linearIssues as AgentChatLaunchCliArgs["linearIssues"] }
+      : {}),
   };
 }
 
@@ -3935,6 +3971,39 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
   });
   register("lanes.listTemplates", { viewerAllowed: true }, async () => args.laneTemplateService?.listTemplates() ?? []);
   register("lanes.getDefaultTemplate", { viewerAllowed: true }, async () => args.laneTemplateService?.getDefaultTemplateId() ?? null);
+  // The template reads above shipped without their writes, so a remote client
+  // could list templates and "save" one into nothing.
+  register("lanes.saveTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const laneTemplateService = requireService(args.laneTemplateService, "Lane template service not available.");
+    if (!isRecord(payload.template)) throw new Error("lanes.saveTemplate requires a template object.");
+    laneTemplateService.saveTemplate(payload.template as Parameters<typeof laneTemplateService.saveTemplate>[0]);
+    return { ok: true };
+  });
+  register("lanes.deleteTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const laneTemplateService = requireService(args.laneTemplateService, "Lane template service not available.");
+    laneTemplateService.deleteTemplate(requireString(payload.templateId, "lanes.deleteTemplate requires templateId."));
+    return { ok: true };
+  });
+  register("lanes.setDefaultTemplate", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const laneTemplateService = requireService(args.laneTemplateService, "Lane template service not available.");
+    // Clearing the default is `null`, which is meaningfully different from a
+    // wrong type — accept null, reject anything that isn't a string.
+    if (payload.templateId !== null && typeof payload.templateId !== "string") {
+      throw new Error("lanes.setDefaultTemplate requires templateId as a string or null.");
+    }
+    laneTemplateService.setDefaultTemplateId(
+      payload.templateId === null ? null : asTrimmedString(payload.templateId),
+    );
+    return { ok: true };
+  });
+  // Risk reads for the delete/reclaim confirmations. Without these the web
+  // client fell back to an all-clear verdict (no dirty files, no unpushed
+  // commits, no active chats) and the dialog under-reported what a delete
+  // would destroy.
+  register("lanes.getDeleteRisk", { viewerAllowed: true }, async (payload) =>
+    args.laneService.getDeleteRisk(requireString(payload.laneId, "lanes.getDeleteRisk requires laneId.")));
+  register("lanes.getReclaimRisk", { viewerAllowed: true }, async (payload) =>
+    args.laneService.getReclaimRisk(requireString(payload.laneId, "lanes.getReclaimRisk requires laneId.")));
   register("lanes.getEnvStatus", { viewerAllowed: true }, async (payload) => args.laneEnvironmentService?.getProgress(requireString(payload.laneId, "lanes.getEnvStatus requires laneId.")) ?? null);
   register("lanes.initEnv", { viewerAllowed: true, queueable: true }, async (payload) => {
     const laneEnvironmentService = requireService(args.laneEnvironmentService, "Lane environment service not available.");
@@ -4270,6 +4339,21 @@ function registerChatRemoteCommands({ args, register }: RemoteCommandRegistratio
     const session = await agentChatService.launchHeadless(await resolveChatCreateArgs(agentChatService, parsed));
     return summarizeChatSessionForRemote(agentChatService, session);
   });
+  // Tracked CLI launch (the Linear batch-launch path). Without it the web
+  // client's launch resolved to `null` and reported a launch that never
+  // spawned a pty.
+  register("chat.launchCli", { viewerAllowed: true, queueable: true }, async (payload) =>
+    launchAgentChatCli(parseAgentChatLaunchCliArgs(payload), {
+      laneService: args.laneService,
+      ptyService: args.ptyService,
+      logger: args.logger,
+    }));
+  // Auto-lane naming. It degrades to a deterministic name on the client, so an
+  // unregistered action was survivable — but every web auto-created lane was
+  // silently denied its AI-generated name.
+  register("chat.generateAutoLaneIdentity", { viewerAllowed: true }, async (payload) =>
+    requireService(args.agentChatService, "Agent chat service not available.")
+      .generateAutoLaneIdentity(parseSuggestLaneNameArgs(payload)));
   register("chat.getImageDataUrl", { viewerAllowed: true }, async (payload) => {
     const filePath = resolveAllowedProjectPath(args, payload.path, "chat.getImageDataUrl");
     const { data, mimeType } = await readImageFileAndSniffMime(filePath);
@@ -5194,6 +5278,39 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
       if (isDatabaseClosedError(error)) return getUnavailableAiStatus();
       throw error;
     }
+  });
+  // Settings writes. `ai.getStatus` shipped without them, so every AI settings
+  // change made from the web client resolved to its fallback and persisted
+  // nothing while the UI reported success.
+  //
+  // `ai.storeApiKey` is deliberately NOT registered: the web adapter redacts
+  // the key before sending (`webclient/adapter/misc.ts`), so a handler here
+  // would persist the literal placeholder as the provider's key. Adding a key
+  // stays a desktop-only operation, and the web control says so.
+  register("ai.updateConfig", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
+    const snapshot = projectConfigService.get();
+    const merged = mergeAiConfig(snapshot.shared?.ai ?? {}, payload as Partial<AiConfig>) ?? {};
+    projectConfigService.save({
+      shared: { ...snapshot.shared, ai: merged },
+      local: snapshot.local ?? {},
+    });
+    // Mirrors the desktop IPC handler: a changed AI config can retarget the
+    // model scheduled work runs on.
+    void args.agentChatService?.refreshScheduledWork();
+    return { ok: true };
+  });
+  register("ai.deleteApiKey", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const provider = requireString(payload.provider, "ai.deleteApiKey requires provider.");
+    deleteApiKey(provider);
+    try {
+      // The key store mutation already succeeded; cache invalidation is a
+      // freshness step and must not fail the delete.
+      args.aiIntegrationService?.invalidateProviderReadinessCaches();
+    } catch {
+      // ignore
+    }
+    return { ok: true };
   });
   register("orchestration.runCreate", { viewerAllowed: true }, async (payload) => {
     const orchestrationService = requireService(args.orchestrationService, "Orchestration service not available.");
