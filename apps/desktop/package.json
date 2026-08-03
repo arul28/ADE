@@ -215,7 +215,7 @@
       "node_modules/opencode-linux-arm64-musl/**",
       "node_modules/opencode-linux-x64-musl/**",
       "node_modules/opencode-windows-arm64/**",
-      "node_modules/opencode-windows-x64/**",
+      "node_modules/opencode-windows-x64-baseline/**",
       "node_modules/@cursor/sdk/**",
       "node_modules/@cursor/sdk-darwin-arm64/**",
       "node_modules/@cursor/sdk-darwin-x64/**",

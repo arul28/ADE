@@ -278,6 +278,17 @@ function validatePreflight() {
   if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-ai/**")) {
     fail("package.json build.asarUnpack must unpack node_modules/opencode-ai/** for the bundled OpenCode CLI");
   }
+  // The default `opencode-windows-x64` build requires AVX2 and aborts with an
+  // illegal instruction on x64 CPUs without it. The `-baseline` build targets
+  // the lower instruction set, runs on every x64 CPU, and is the same size, so
+  // Windows x64 ships baseline only. Keep this in sync with
+  // OPENCODE_PLATFORM_PACKAGES in src/main/services/opencode/openCodeBinaryManager.ts.
+  if (!Array.isArray(pkg.build?.asarUnpack) || !pkg.build.asarUnpack.includes("node_modules/opencode-windows-x64-baseline/**")) {
+    fail("package.json build.asarUnpack must unpack node_modules/opencode-windows-x64-baseline/** so non-AVX2 x64 machines get a runnable OpenCode binary");
+  }
+  if (Array.isArray(pkg.build?.asarUnpack) && pkg.build.asarUnpack.includes("node_modules/opencode-windows-x64/**")) {
+    fail("package.json build.asarUnpack must not unpack node_modules/opencode-windows-x64/**; it is the AVX2-only build that crashes on older x64 CPUs");
+  }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
   }
