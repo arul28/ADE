@@ -1,20 +1,32 @@
 import type { SyncChatEventPayload } from "../../../shared/types/sync";
 import type {
+  AgentChatCancelDispatchedSteerResult,
   AgentChatCancelScheduledWorkResult,
   AgentChatCreateScheduledWorkResult,
+  AgentChatDispatchSteerResult,
+  AgentChatHandoffResult,
   AgentChatInterruptResult,
+  AgentChatLaunchCliResult,
+  AgentChatModelCatalog,
+  AgentChatReloadClaudePluginsResult,
   AgentChatRestoreCancelledQueueResult,
   AgentChatScheduledWorkItem,
+  AgentChatSession,
+  AgentChatSessionCapabilities,
+  AgentChatSessionSummary,
   AgentChatSetScheduledWorkPausedResult,
   AgentChatSteerResult,
+  AutoLaneIdentitySuggestion,
   PromptStashCreateArgs,
   PromptStashDeleteArgs,
   PromptStashEntry,
 } from "../../../shared/types/chat";
 import { deriveSmartLinkPreview } from "../../../shared/smartLinks";
+import { NO_SUBAGENT_CAPABILITY } from "../../../shared/subagentCapabilities";
 import type { AdapterInfra, AdeNamespace } from "./types";
 import { requestDataUrl, requestFileBlob } from "./infra/fileBlob";
 import { chatEventDedupKey } from "./infra/chatEventDedup";
+import { chatSessionFromRemoteSummary } from "./infra/chatSessionShape";
 import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
 
 // The browser gets authoritative ordered history through
@@ -147,36 +159,48 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     return callRequired<T>(action, args, "Chat", false);
   }
 
-  const agentChat: Record<string, unknown> = {
-    list: async (args?: unknown) => {
+  // Typed, not cast: `AdeNamespace` compares every method implemented here
+  // against the real `window.ade.agentChat` contract. The previous
+  // `Record<string, unknown>` + `as` cast is what let `create`/`launch`
+  // return the host's session SUMMARY (`sessionId`) where callers read an
+  // `AgentChatSession` (`id`) — a mismatch TypeScript would have caught.
+  const agentChat: AdeNamespace<"agentChat"> = {
+    list: async (args?) => {
       // Session lists drive UI metadata only. Subscribing every result eagerly
       // replays each transcript tail and can block the selected chat's
       // hydration behind background sessions.
-      return await call<unknown[]>("chat.listSessions", args, []);
+      return await call<AgentChatSessionSummary[]>("chat.listSessions", args, []);
     },
-    getSummary: async (args: unknown) => {
-      const result = await call("chat.getSummary", args, null);
+    getSummary: async (args) => {
+      const result = await call<AgentChatSessionSummary | null>("chat.getSummary", args, null);
       ensureFromResult(result);
       return result;
     },
-    create: async (args: unknown) => {
-      const result = await call("chat.create", args, null, false);
+    // Both answer with an AgentChatSessionSummary; every caller consumes an
+    // AgentChatSession. Translate rather than pass through — see
+    // `chatSessionFromRemoteSummary`.
+    create: async (args) => {
+      const result = await callRequiredMutation<unknown>("chat.create", args);
       ensureFromResult(result);
+      return chatSessionFromRemoteSummary(result);
+    },
+    launch: async (args) => {
+      const result = await callRequiredMutation<unknown>("chat.launch", args);
+      ensureFromResult(result);
+      return chatSessionFromRemoteSummary(result);
+    },
+    launchCli: async (args) => {
+      const result = await callRequiredMutation<AgentChatLaunchCliResult>("chat.launchCli", args);
+      ensureFromResult(result);
+      // The launch answers with ids, not a session summary; bind the pty so
+      // terminal writes for this session resolve without waiting for a roster
+      // read. (The previous `result.terminalSession` field never existed on
+      // this type and registered `undefined` on every launch.)
+      if (result?.sessionId && result?.ptyId) terminalRegistry.register(result.sessionId, result.ptyId);
       return result;
     },
-    launch: async (args: unknown) => {
-      const result = await call("chat.launch", args, null, false);
-      ensureFromResult(result);
-      return result;
-    },
-    launchCli: async (args: unknown) => {
-      const result = await call("chat.launchCli", args, null, false);
-      ensureFromResult(result);
-      terminalRegistry.registerSummary((result as { terminalSession?: unknown } | null)?.terminalSession as never);
-      return result;
-    },
-    suggestLaneName: (args: unknown) => call("chat.suggestLaneName", args, ""),
-    generateAutoLaneIdentity: (args: unknown) => call("chat.generateAutoLaneIdentity", args, null, false),
+    generateAutoLaneIdentity: (args) =>
+      callRequiredMutation<AutoLaneIdentitySuggestion>("chat.generateAutoLaneIdentity", args),
     parallelLaunchState: {
       get: (args: unknown) => call("chat.getParallelLaunchState", args, null),
       set: async (args: unknown) => {
@@ -193,7 +217,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       delete: (args: PromptStashDeleteArgs) =>
         callRequiredMutation<boolean>("chat.deletePromptStash", args),
     },
-    handoff: (args: unknown) => call("chat.handoff", args, null, false),
+    handoff: (args) => callRequiredMutation<AgentChatHandoffResult>("chat.handoff", args),
     send: async (args: unknown) => {
       await call("chat.send", args, undefined, false);
       ensureChatSubscription(stringField(asRecord(args), "sessionId"));
@@ -221,8 +245,10 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     editSteer: async (args: unknown) => {
       await call("chat.editSteer", args, undefined, false);
     },
-    dispatchSteer: (args: unknown) => call("chat.dispatchSteer", args, { ok: false, error: "unsupported" }, false),
-    cancelDispatchedSteer: (args: unknown) => call("chat.cancelDispatchedSteer", args, { ok: false, error: "unsupported" }, false),
+    dispatchSteer: (args) =>
+      callRequiredMutation<AgentChatDispatchSteerResult>("chat.dispatchSteer", args),
+    cancelDispatchedSteer: (args) =>
+      callRequiredMutation<AgentChatCancelDispatchedSteerResult>("chat.cancelDispatchedSteer", args),
     interrupt: (args: unknown) => call<AgentChatInterruptResult>(
       "chat.interrupt",
       args,
@@ -242,7 +268,12 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
       await call("chat.respondToInput", args, undefined, false);
     },
     models: (args: unknown) => call("chat.models", args, []),
-    modelCatalog: (args?: unknown) => call("chat.modelCatalog", args, { providers: [], models: [] }),
+    modelCatalog: (args?) =>
+      call<AgentChatModelCatalog>("chat.modelCatalog", args, {
+        groups: [],
+        fetchedAt: new Date(0).toISOString(),
+        stale: true,
+      }),
     archive: async (args: unknown) => {
       await call("chat.archive", args, undefined, false);
     },
@@ -252,7 +283,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     delete: async (args: unknown) => {
       await call("chat.delete", args, undefined, false);
     },
-    updateSession: (args: unknown) => call("chat.updateSession", args, null, false),
+    updateSession: (args) => callRequiredMutation<AgentChatSession>("chat.updateSession", args),
     createScheduledWork: (args: unknown) =>
       callRequired<AgentChatCreateScheduledWorkResult>("chat.createScheduledWork", args, "Scheduled work", false),
     listScheduledWork: (args?: unknown) =>
@@ -264,15 +295,11 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     warmupModel: async (args: unknown) => {
       await call("chat.warmupModel", args, undefined, false);
     },
-    onEvent: (listener: (event: unknown) => void) => events.on("agentChatEvent", listener as never),
+    onEvent: (listener) => events.on("agentChatEvent", listener as never),
     slashCommands: (args: unknown) => call("chat.getSlashCommands", args, []),
-    listClaudePlugins: (args?: unknown) => call("chat.listClaudePlugins", args, []),
-    reloadClaudePlugins: (args: unknown) => call("chat.reloadClaudePlugins", args, { plugins: [] }, false),
-    listClaudeOutputStyles: (args?: unknown) => call("chat.listClaudeOutputStyles", args, []),
-    setClaudeOutputStyle: (args: unknown) => call("chat.setClaudeOutputStyle", args, null, false),
-    listClaudeSessions: (args?: unknown) => call("chat.listClaudeSessions", args, []),
-    getClaudeSessionInfo: (args: unknown) => call("chat.getClaudeSessionInfo", args, null),
-    getClaudeSessionMessages: (args: unknown) => call("chat.getClaudeSessionMessages", args, []),
+    reloadClaudePlugins: (args) =>
+      callRequiredMutation<AgentChatReloadClaudePluginsResult>("chat.reloadClaudePlugins", args),
+    setClaudeOutputStyle: (args) => callRequiredMutation<AgentChatSession>("chat.setClaudeOutputStyle", args),
     getSubagentTranscript: (args: unknown) => call("chat.getSubagentTranscript", args, null),
     getMainTranscript: (args: unknown) => call("chat.getMainTranscript", args, null),
     getContextUsage: (args: unknown) => call("chat.getContextUsage", args, null),
@@ -299,10 +326,13 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
     getTurnFileDiff: (args: unknown) => call("chat.getTurnFileDiff", args, null),
     listSubagents: (args: unknown) => call("chat.listSubagents", args, []),
-    killDroidWorker: async (args: unknown) => {
-      await call("chat.killDroidWorker", args, undefined, false);
-    },
-    getSessionCapabilities: (args: unknown) => call("chat.getSessionCapabilities", args, { capabilities: [] }),
+    getSessionCapabilities: (args) =>
+      call<AgentChatSessionCapabilities>("chat.getSessionCapabilities", args, {
+        supportsSubagentInspection: false,
+        supportsSubagentControl: false,
+        supportsReviewMode: false,
+        subagent: NO_SUBAGENT_CAPABILITY,
+      }),
     saveTempAttachment: (args: unknown, pin?: unknown) => {
       assertWebRuntimePinRoutable("agentChat.saveTempAttachment", pin, infra);
       return call("chat.saveTempAttachment", args, { path: "" }, false);
@@ -373,7 +403,7 @@ export function createAgentChatNamespace(infra: AdapterInfra): AdeNamespace<"age
     },
   };
 
-  return agentChat as AdeNamespace<"agentChat">;
+  return agentChat;
 }
 
 function boundedPositiveInteger(value: unknown, maximum: number): number {
