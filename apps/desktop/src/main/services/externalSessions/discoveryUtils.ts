@@ -7,7 +7,10 @@ import type {
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
-import { commandArrayToLine as sharedCommandArrayToLine } from "../../../shared/shell";
+import {
+  commandArrayToLine as sharedCommandArrayToLine,
+  resolveCanonicalCommandLineLaunch,
+} from "../../../shared/shell";
 
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
@@ -633,9 +636,32 @@ export function commandArrayToLine(parts: string[]): string {
   return sharedCommandArrayToLine(parts);
 }
 
-export function directShellLaunchForCommandLine(commandLine: string): { command?: string; args?: string[] } {
+/**
+ * Turn a canonical POSIX startup command into a direct launch.
+ *
+ * On macOS the line is handed to `/bin/bash -lc`, whose quoting rules it was
+ * written in, so it survives verbatim. Windows has no such shell: the PTY lands
+ * in powershell.exe, pwsh.exe or cmd.exe, whose rules are mutually incompatible
+ * and none of which are POSIX. Returning nothing here used to leave the caller
+ * with a bare `startupCommand`, which ptyService then *typed* at PowerShell —
+ * turning `-c "model_reasoning_effort=\"high\""` into `model_reasoning_effort=\`
+ * plus a stray positional. Recover the argv instead and spawn it directly, so
+ * no shell gets a say in the quoting.
+ */
+export function directShellLaunchForCommandLine(
+  commandLine: string,
+): { command?: string; args?: string[]; env?: Record<string, string> } {
   const trimmed = commandLine.trim();
-  if (!trimmed || process.platform === "win32") return {};
+  if (!trimmed) return {};
+  if (process.platform === "win32") {
+    const launch = resolveCanonicalCommandLineLaunch(trimmed);
+    if (!launch) return {};
+    return {
+      command: launch.command,
+      args: launch.args,
+      ...(launch.env ? { env: launch.env } : {}),
+    };
+  }
   return { command: "/bin/bash", args: ["--noprofile", "--norc", "-lc", trimmed] };
 }
 

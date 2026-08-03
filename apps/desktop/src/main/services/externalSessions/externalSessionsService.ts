@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import {
   buildTrackedCliResumeCommand,
+  buildTrackedCliResumeLaunchCommand,
   withCodexNoAltScreen,
 } from "../../../shared/cliLaunch";
 import type {
@@ -775,8 +776,8 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       codexSandbox: resolvedCodexSandbox,
       codexConfigSource: resolvedCodexConfigSource,
     });
-    const startupCommand = importArgs.mode === "resume"
-      ? buildTrackedCliResumeCommand(metadata, {
+    const resumeOverrides = importArgs.mode === "resume"
+      ? {
           model: resolvedModel,
           reasoningEffort: resolvedReasoningEffort,
           fastMode: resolvedFastMode,
@@ -785,7 +786,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           codexSandbox: resolvedCodexSandbox,
           codexConfigSource: resolvedCodexConfigSource,
           ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
-        })
+        }
+      : null;
+    const startupCommand = resumeOverrides
+      ? buildTrackedCliResumeCommand(metadata, resumeOverrides)
       : await forkCommandFor({
           provider,
           metadata,
@@ -800,6 +804,23 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           transplantedClaude,
         });
 
+    // `startupCommand` is the canonical POSIX rendering — what gets persisted and
+    // shown. What actually launches has to be argv, because the Windows PTY lands
+    // in a shell that does not read POSIX quoting. Droid's resume line is the one
+    // shape that is genuinely a shell script rather than a command, so take the
+    // platform-aware structured launch when one exists and recover argv from the
+    // canonical line otherwise.
+    const structuredResumeLaunch = resumeOverrides
+      ? buildTrackedCliResumeLaunchCommand(metadata, resumeOverrides, { platform: process.platform })
+      : null;
+    const launchFields = structuredResumeLaunch?.command
+      ? {
+          command: structuredResumeLaunch.command,
+          args: structuredResumeLaunch.args,
+          ...(structuredResumeLaunch.env ? { env: structuredResumeLaunch.env } : {}),
+        }
+      : directShellLaunchForCommandLine(startupCommand);
+
     const ptyArgs: PtyCreateArgs = {
       laneId,
       cwd: runCwd,
@@ -811,7 +832,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       toolType: toolTypeForProvider(provider),
       startupCommand,
       resumeMetadata: metadata,
-      ...directShellLaunchForCommandLine(startupCommand),
+      ...launchFields,
     };
 
     const created = await args.ptyService.create(ptyArgs);
