@@ -12,6 +12,11 @@ import { logRendererDebugEvent } from "./lib/debugLog";
 import { initPerfRuntime } from "./perf/harness";
 import { rendererPlatformAttribute } from "./lib/platform";
 import { trackWindowsCaptionInset } from "./lib/windowControlsOverlay";
+import { installLayoutSettleResizeObserver } from "./lib/layoutSettle";
+
+// Must run before anything constructs a ResizeObserver — react-resizable-panels
+// reads `ownerDocument.defaultView.ResizeObserver` when a pane group mounts.
+installLayoutSettleResizeObserver();
 
 document.documentElement.dataset.adePlatform = rendererPlatformAttribute();
 

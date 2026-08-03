@@ -693,32 +693,27 @@ h6 {
    Collapsible Sidebar
    ═══════════════════════════════════════════════════════════ */
 
-/* Outer rail — a FIXED width in normal flow. It must never animate its own
-   width: it is a flex item, so any width change re-runs layout for the whole
-   shell on every animation frame. That resizes the react-resizable-panels
-   groups in <main>, whose ResizeObserver responds by reading offsetWidth for
-   every panel (forced layout) and re-rendering every pane. Measured on a
-   240 Hz Windows display, hovering the rail pinned the renderer main thread at
-   99.3% busy for the length of the hover; making the rail a fixed-width flow
-   box with an absolutely positioned flyout dropped that to 26.7%. */
-.ade-sidebar-clip {
-  position: relative;
-  width: var(--shell-sidebar-collapsed-width);
-}
+/* Outer clip container — the rail animates its own width in normal flow, so
+   the shell's main row genuinely reflows and content is pushed aside as the
+   rail grows. That is the macOS behaviour and it is the behaviour we keep.
+   Only the icons never reflow, because the inner .ade-sidebar is always at the
+   expanded width and this box clips it.
 
-/* Animated clip layer — out of flow, so its width transition is confined to
-   this subtree and the panes to the right never see a resize. */
-.ade-sidebar-flyout {
-  position: absolute;
-  inset-block: 0;
-  left: 0;
+   Layout every frame is not what made this expensive on Windows — the
+   ResizeObserver storm it triggered inside <main> was. See
+   renderer/lib/layoutSettle.ts: AppShell holds ResizeObserver delivery inside
+   <main> for the length of this transition and flushes once on transitionend,
+   so react-resizable-panels stops doing a forced synchronous layout plus a
+   full re-render of every pane on every one of the ~48 frames a 240 Hz display
+   packs into 200ms. */
+.ade-sidebar-clip {
   width: var(--shell-sidebar-collapsed-width);
   overflow: hidden;
-  border-right: 1px solid rgba(255, 255, 255, 0.04);
+  border-right-color: rgba(255, 255, 255, 0.04);
   transition: width 200ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.ade-sidebar-clip:hover .ade-sidebar-flyout {
+.ade-sidebar-clip:hover {
   width: var(--shell-sidebar-expanded-width);
 }
 
@@ -743,7 +738,7 @@ h6 {
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .ade-sidebar-flyout {
+  .ade-sidebar-clip {
     transition: width 0ms;
   }
   .ade-tab-label,

@@ -68,6 +68,7 @@ import {
 } from "../../lib/zoom";
 import { ONBOARDING_STATUS_UPDATED_EVENT } from "../../lib/onboardingStatusEvents";
 import { logRendererDebugEvent } from "../../lib/debugLog";
+import { holdLayoutSettle } from "../../lib/layoutSettle";
 import { cn } from "../ui/cn";
 import { disposeTerminalRuntimesForProjectChange } from "../terminals/TerminalView";
 import { buildPrsRouteSearch, type PrDetailRouteTab } from "../prs/prsRouteState";
@@ -265,8 +266,29 @@ function getPrToastIcon(kind: PrToast["event"]["kind"]) {
   return GitPullRequest;
 }
 
+/**
+ * Backstop for the tab-rail ResizeObserver hold. The rail's width transition is
+ * 200ms; this only has to outlast it, and exists so a `transitionend` that
+ * never arrives (reduced motion, an interrupted transition) cannot leave the
+ * panes' observers held.
+ */
+const RAIL_SETTLE_MAX_MS = 400;
+
+/** True when the element's `width` transition has a non-zero duration. */
+function hasRunningWidthTransition(element: HTMLElement): boolean {
+  const style = window.getComputedStyle(element);
+  const properties = style.transitionProperty.split(",").map((value) => value.trim());
+  const durations = style.transitionDuration.split(",").map((value) => value.trim());
+  return properties.some((property, index) => {
+    if (property !== "width" && property !== "all") return false;
+    const duration = durations[index % durations.length] ?? "0s";
+    return Number.parseFloat(duration) > 0;
+  });
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  const shellMainRef = useRef<HTMLElement | null>(null);
   const navigate = useNavigate();
   useLaneEventToasts(navigate);
   const setProject = useAppStore((s) => s.setProject);
@@ -1184,6 +1206,29 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         lastActivityAt: staleCliNotice.oldestActivityAt,
       }) ?? 24
     : 0;
+  // The tab rail expands by animating its own width as a flex item, so <main>
+  // and every pane inside it really do get narrower frame by frame — content is
+  // pushed aside, exactly as on macOS. What we do not want is for
+  // react-resizable-panels to answer each of those frames with a forced
+  // synchronous layout and a re-render of every pane. Hold ResizeObserver
+  // delivery inside <main> for the length of the transition and let the panels
+  // settle once, on transitionend. Their flex-grow ratios keep the panes
+  // correctly proportioned in the meantime, for free, in the browser's layout.
+  const releaseRailHoldRef = useRef<(() => void) | null>(null);
+  const releasePanesOnRailSettle = useCallback((event?: React.TransitionEvent<HTMLElement>) => {
+    if (event && (event.propertyName !== "width" || event.target !== event.currentTarget)) return;
+    releaseRailHoldRef.current?.();
+    releaseRailHoldRef.current = null;
+  }, []);
+  const holdPanesUntilRailSettles = useCallback((event: React.MouseEvent<HTMLElement>) => {
+    // Under `prefers-reduced-motion` the rail snaps instead of animating, so
+    // there is no run of frames to protect and no `transitionend` to release on.
+    if (!hasRunningWidthTransition(event.currentTarget)) return;
+    releaseRailHoldRef.current?.();
+    releaseRailHoldRef.current = holdLayoutSettle(shellMainRef.current, RAIL_SETTLE_MAX_MS);
+  }, []);
+  useEffect(() => () => releasePanesOnRailSettle(), [releasePanesOnRailSettle]);
+
   const dismissStaleCliNotice = useCallback(() => {
     // Intentionally re-arms (resets) the snooze from the dismiss moment, not
     // just the first-show moment: "if dismissed, don't show again for an hour"
@@ -1338,16 +1383,20 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex min-h-0">
         {hideSidebar ? null : (
           // Graph page uses `fixed` viewport layers up to z-[96]; keep the tab rail above them.
-          <aside className="ade-sidebar-clip shrink-0 z-[100]" data-tour="app.sidebar">
-            <div className="ade-sidebar-flyout">
-              <div className="ade-sidebar flex flex-col py-2 h-full">
-                <TabNav githubStatus={githubStatus} />
-              </div>
+          <aside
+            className="ade-sidebar-clip shrink-0 z-[100] border-r"
+            data-tour="app.sidebar"
+            onMouseEnter={holdPanesUntilRailSettles}
+            onMouseLeave={holdPanesUntilRailSettles}
+            onTransitionEnd={releasePanesOnRailSettle}
+          >
+            <div className="ade-sidebar flex flex-col py-2 h-full">
+              <TabNav githubStatus={githubStatus} />
             </div>
           </aside>
         )}
 
-        <main className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
+        <main ref={shellMainRef} className={cn("relative flex flex-col min-h-0 min-w-0 flex-1", tintClass)}>
           <TabBackground />
           <div
             className="relative z-[1] min-h-0 flex-1 w-full"
