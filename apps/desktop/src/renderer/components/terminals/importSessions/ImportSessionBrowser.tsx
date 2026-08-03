@@ -160,7 +160,12 @@ export function ImportSessionBrowser({
           const detail = error instanceof Error ? error.message.trim() : "";
           setProviderNotices((prev) => ({
             ...prev,
-            [provider]: detail || `${providerDisplayName(provider)} sessions couldn't be scanned.`,
+            // The panel joins every provider's notice into one line, so a bare
+            // provider error message would read as if it came from the scan as
+            // a whole once a second provider fails too.
+            [provider]: detail
+              ? `${providerDisplayName(provider)}: ${detail}`
+              : `${providerDisplayName(provider)} sessions couldn't be scanned.`,
           }));
         } finally {
           if (seq === requestSeq.current) {

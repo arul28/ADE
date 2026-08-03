@@ -110,7 +110,26 @@ type DatabaseSyncConstructor = new (
 ) => DatabaseSyncType;
 
 const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
-const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+
+/**
+ * `node:sqlite` is resolved on first use, not at module load: a runtime built
+ * without it would otherwise take down every importer of this module — including
+ * the file-based discovery paths that never touch sqlite — with a throw far from
+ * the call that needed it. Resolution is cached either way, so the failing build
+ * degrades to the same null-and-warn as an unreadable DB.
+ */
+let databaseSyncConstructor: DatabaseSyncConstructor | null | undefined;
+
+function resolveDatabaseSync(): DatabaseSyncConstructor | null {
+  if (databaseSyncConstructor !== undefined) return databaseSyncConstructor;
+  try {
+    const { DatabaseSync } = require("node:sqlite") as { DatabaseSync?: DatabaseSyncConstructor };
+    databaseSyncConstructor = typeof DatabaseSync === "function" ? DatabaseSync : null;
+  } catch {
+    databaseSyncConstructor = null;
+  }
+  return databaseSyncConstructor;
+}
 
 /**
  * A handle on another tool's sqlite store — Codex's thread DB, a Cursor chat
@@ -125,6 +144,14 @@ export function openExternalSessionDb(
 ): DatabaseSyncType | null {
   if (!safeStat(dbPath)?.isFile()) return null;
   try {
+    const DatabaseSync = resolveDatabaseSync();
+    if (!DatabaseSync) {
+      logger?.warn?.("external_sessions.sqlite_db_unavailable", {
+        dbPath,
+        error: "node:sqlite is unavailable in this runtime.",
+      });
+      return null;
+    }
     return new DatabaseSync(dbPath, { readOnly: true });
   } catch (error) {
     logger?.warn?.("external_sessions.sqlite_db_unavailable", {

@@ -10,6 +10,7 @@ import {
   closeExternalSessionDb,
   countJsonlUserMessagesCheap,
   cwdIsInScope,
+  EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
   firstUserTextFromRecords,
   isCanonicalCodexUserRecord,
   normalizeExternalSessionLimit,
@@ -783,9 +784,13 @@ function codexSeedsFromFiles(
     });
   }
 
+  // `scanLimit` bounds how many candidates are cheaply inspected; every seed
+  // that survives is then read in full (512KiB prefix plus a message count), so
+  // the returned list gets the same read budget the state-DB path enforces.
+  const seedLimit = scoped ? limit : Math.max(limit * EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER, limit);
   return Array.from(seedsById.values())
     .sort((left, right) => right.mtimeMs - left.mtimeMs || left.id.localeCompare(right.id))
-    .slice(0, scoped ? limit : scanLimit);
+    .slice(0, seedLimit);
 }
 
 async function codexRecordFromSeed(

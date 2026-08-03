@@ -930,9 +930,10 @@ describe("externalSessionsService", () => {
       },
     ]);
     const chatImporter = {
-      importExternalChatSession: vi.fn(async () => ({
+      importExternalChatSession: vi.fn(async (importArgs: { externalSessionId: string }) => ({
         chatSessionId: "chat-import",
         chatSummary: makeImportedChatSummary("chat-import"),
+        providerTargetId: importArgs.externalSessionId,
       })),
     };
     const create = vi.fn(async (_args: PtyCreateArgs) => ({ sessionId: "terminal-import", ptyId: "pty-import", pid: 456 }));

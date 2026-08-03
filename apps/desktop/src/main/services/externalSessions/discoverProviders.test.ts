@@ -533,6 +533,47 @@ describe("external session provider discovery", () => {
     expect(sessions.map((session) => session.id)).toEqual([sessionId]);
   });
 
+  it("bounds Codex rollout-scan content reads to the newest seeds", async () => {
+    const homeDir = path.join(root, "home");
+    const cwd = path.join(root, "repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    // No state DB, so discovery walks the rollout tree: every candidate gets a
+    // cheap session_meta read, but only the newest few may be read in full.
+    const rolloutPaths = Array.from({ length: 6 }, (_, index) => {
+      const id = `3900000${index}-0000-4000-8000-000000000000`;
+      const rolloutPath = codexRolloutPath(homeDir, id, String(10 + index));
+      writeCodexRollout(rolloutPath, { id, cwd }, [codexUserRow(`request ${index}`)]);
+      const at = new Date(Date.parse("2026-07-10T10:00:00.000Z") + index * 60_000);
+      fs.utimesSync(rolloutPath, at, at);
+      return { id, rolloutPath };
+    });
+
+    const openSync = vi.spyOn(fs, "openSync");
+    const opensByPath = new Map<string, number>();
+    try {
+      const sessions = await discoverCodexSessions({ homeDir, limit: 2 });
+      expect(sessions.map((session) => session.id)).toEqual([
+        rolloutPaths[5]?.id,
+        rolloutPaths[4]?.id,
+      ]);
+      for (const call of openSync.mock.calls) {
+        const opened = String(call[0]);
+        opensByPath.set(opened, (opensByPath.get(opened) ?? 0) + 1);
+      }
+    } finally {
+      openSync.mockRestore();
+    }
+
+    // limit 2 buys a read budget of 4 seeds; the two oldest rollouts are only
+    // ever opened for the candidate meta probe.
+    for (const { rolloutPath } of rolloutPaths.slice(0, 2)) {
+      expect(opensByPath.get(rolloutPath)).toBe(1);
+    }
+    for (const { rolloutPath } of rolloutPaths.slice(4)) {
+      expect(opensByPath.get(rolloutPath) ?? 0).toBeGreaterThan(1);
+    }
+  });
+
   it("hides a forked Codex parent that recorded no activity after the fork", async () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "repo");

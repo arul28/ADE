@@ -634,7 +634,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         };
       })
       .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
-    return projectScoped ? summaries.slice(0, limit) : summaries;
+    // Every provider discovers up to `discoveryLimit` of its own, so an unscoped
+    // union would otherwise hand back `limit x providers` rows for a caller that
+    // asked for `limit`.
+    return summaries.slice(0, limit);
   };
 
   const findExternalSummary = async (
@@ -740,14 +743,27 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       // the user picked the row; both ids have to be marked, or the fork lists
       // back as a fresh session and the original loses its badge.
       const providerTargetId = result.providerTargetId?.trim() || null;
-      importedStore.record({
-        provider,
-        externalId: sessionId,
-        targetId: providerTargetId && providerTargetId !== sessionId ? providerTargetId : null,
-        kind: "chat",
-        adeSessionId: result.chatSessionId,
-        mode: importArgs.mode === "fork" ? "fork" : "continue",
-      });
+      const forkImport = importArgs.mode === "fork";
+      if (forkImport && (!providerTargetId || providerTargetId === sessionId)) {
+        // A fork always mints a new provider id; without it the copy cannot be
+        // marked ADE-created, and a source-only receipt would claim this import
+        // is accounted for while the copy lists back as a fresh session. Leave
+        // both rows unmarked and say why — the chat itself is already imported.
+        args.logger.warn("external_sessions.chat_fork_target_unknown", {
+          provider,
+          sessionId,
+          adeSessionId: result.chatSessionId,
+        });
+      } else {
+        importedStore.record({
+          provider,
+          externalId: sessionId,
+          targetId: providerTargetId && providerTargetId !== sessionId ? providerTargetId : null,
+          kind: "chat",
+          adeSessionId: result.chatSessionId,
+          mode: forkImport ? "fork" : "continue",
+        });
+      }
       return {
         kind: "chat",
         chatSessionId: result.chatSessionId,
@@ -815,8 +831,11 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
 
     // An explicit permission mode replaces the discovered codex permission
     // triple wholesale; keeping half of each would launch a mix the user never
-    // chose.
-    const preserveDiscoveredCodexPermissions = provider === "codex" && importArgs.permissionMode == null;
+    // chose. Normalized once so a blank string arriving over IPC counts as "no
+    // explicit mode" for both decisions rather than discarding the discovered
+    // triple and then falling back to defaults anyway.
+    const requestedPermissionMode = importArgs.permissionMode?.trim() || null;
+    const preserveDiscoveredCodexPermissions = provider === "codex" && requestedPermissionMode == null;
     const overrides: LaunchOverrides = {
       model: importArgs.model?.trim() || summary.launch?.model?.trim() || null,
       reasoningEffort: importArgs.reasoningEffort?.trim()
@@ -825,7 +844,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       fastMode: typeof importArgs.fastMode === "boolean"
         ? importArgs.fastMode
         : summary.launch?.fastMode ?? summary.launch?.codexFastMode ?? null,
-      permissionMode: (importArgs.permissionMode?.trim()
+      permissionMode: (requestedPermissionMode
         || summary.launch?.permissionMode?.trim()
         || null) as TerminalResumeMetadata["launch"]["permissionMode"],
       codexApprovalPolicy: preserveDiscoveredCodexPermissions
