@@ -13310,17 +13310,58 @@ function createSocketConnection(socketPath: string): net.Socket {
 async function assertBrainSocketUnowned(socketPath: string): Promise<void> {
   const liveness = await probeLocalSocketForLiveness(socketPath);
   if (liveness !== "live" && liveness !== "unknown") return;
-  throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-    socketPath,
-    cause: liveness === "live"
-      ? "Another ADE brain is accepting connections on this socket."
-      : "ADE could not prove the existing socket is stale.",
-    nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-  }), { code: "socket_owned_by_other" as const });
+  throw Object.assign(
+    new CliExecutionError("ADE brain socket is already in use.", {
+      socketPath,
+      cause: brainSocketOwnedCause(socketPath, liveness),
+      nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+    }),
+    { code: "socket_owned_by_other" as const },
+  );
 }
 
+/**
+ * Why the endpoint is unavailable, in the terms of the platform it runs on.
+ *
+ * On Windows an unavailable pipe name always has a live owner holding a
+ * handle, so there is no "maybe it is stale" branch to hedge about — telling a
+ * Windows user we "could not prove the socket is stale" describes a failure
+ * mode their OS does not have, and points them at a cleanup that cannot help.
+ */
+function brainSocketOwnedCause(
+  socketPath: string,
+  liveness: "live" | "unknown",
+): string {
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    return liveness === "live"
+      ? "Another ADE brain is accepting connections on this named pipe."
+      : "Another process holds this named pipe. Windows releases a pipe name as "
+        + "soon as its owner exits, so the name being taken means an ADE brain "
+        + "(or another build of ADE) is still running.";
+  }
+  return liveness === "live"
+    ? "Another ADE brain is accepting connections on this socket."
+    : "ADE could not prove the existing socket is stale.";
+}
+
+/**
+ * Windows named pipes are probeable, and more decisively than a unix socket.
+ *
+ * This used to bail out with `"unknown"` for any `\\.\pipe\...` address, which
+ * inherited a POSIX assumption that does not hold: a unix socket leaves a file
+ * behind after its owner dies, so "the path exists" says nothing about
+ * liveness and the probe is the only way to tell. A named pipe has no
+ * filesystem corpse at all — the name lives exactly as long as some process
+ * holds a handle to it, and the kernel releases it the moment the last handle
+ * closes (verified: SIGKILL the owner and the very next `listen()` succeeds).
+ *
+ * So dialing a pipe answers the question outright: `ENOENT` means nobody owns
+ * this name, and a completed connect means a live brain does. Refusing to dial
+ * threw that signal away and left every Windows caller with `"unknown"`, which
+ * is the *most* alarming verdict the callers act on.
+ */
 async function probeLocalSocketForLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
-  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
+  if (socketPath.startsWith("tcp://")) {
     return "unknown";
   }
   return await new Promise((resolve) => {
@@ -16254,7 +16295,11 @@ async function runServe(
   // the bind check below and simply lived on as a zombie — we found 18 of them
   // stacked up on one dev socket, all of them still dialing the relay. A brain
   // that cannot own its socket has no reason to exist, so fail fast.
-  if (!isAdeRuntimeNamedPipePath(socketPath) && fs.existsSync(socketPath)) {
+  //
+  // A named pipe never shows up as a file to `existsSync` once its owner is
+  // gone, and dialing it is itself the existence check (`ENOENT` when free), so
+  // Windows skips straight to the probe instead of gating on the filesystem.
+  if (isAdeRuntimeNamedPipePath(socketPath) || fs.existsSync(socketPath)) {
     try {
       await assertBrainSocketUnowned(socketPath);
     } catch (error) {
@@ -16281,7 +16326,7 @@ async function runServe(
         // provably live owner so a probe hiccup can't make a brain quit on
         // itself.
         abortIf: async () => {
-          if (isAdeRuntimeNamedPipePath(socketPath) || !fs.existsSync(socketPath)) return false;
+          if (!isAdeRuntimeNamedPipePath(socketPath) && !fs.existsSync(socketPath)) return false;
           return await probeLocalSocketForLiveness(socketPath) === "live";
         },
       });
@@ -16317,7 +16362,14 @@ async function runServe(
   }
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
-  if (!isAdeRuntimeNamedPipePath(socketPath)) {
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    // No directory to create and nothing to unlink: a pipe name is a kernel
+    // object, not a file. The ownership check still applies though — this used
+    // to be skipped wholesale on Windows, which sent the brain straight into a
+    // bare `listen()` and turned an "another brain owns this" conflict into an
+    // unclassified crash.
+    await assertBrainSocketUnowned(socketPath);
+  } else {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     if (fs.existsSync(socketPath)) {
       await assertBrainSocketUnowned(socketPath);
@@ -16329,7 +16381,29 @@ async function runServe(
 
   const socketState = createHeadlessRpcServer(createHandler);
   states.push(socketState);
-  await listen(socketState.server, socketPath);
+  try {
+    await listen(socketState.server, socketPath);
+  } catch (error) {
+    // The ownership check above is a check, not a lock: two brains that both
+    // probe a free endpoint race to bind it and the loser lands here. Without
+    // this, `EADDRINUSE` escaped as Node's raw text, which the recovery
+    // classifier below could not match, so the failure was filed as `unknown`
+    // with "ADE's background service could not start." and no next action —
+    // exactly the shape of the startup failure we found recorded on Windows.
+    // Give the loser the same coded error the pre-bind path already raises.
+    if ((error as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
+      await disposeServeResources();
+      throw Object.assign(
+        new CliExecutionError("ADE brain socket is already in use.", {
+          socketPath,
+          cause: brainSocketOwnedCause(socketPath, "live"),
+          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+        }),
+        { code: "socket_owned_by_other" as const },
+      );
+    }
+    throw error;
+  }
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.chmodSync(socketPath, 0o600);
