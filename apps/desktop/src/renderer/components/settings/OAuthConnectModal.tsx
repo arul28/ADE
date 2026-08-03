@@ -9,6 +9,7 @@ import type {
 } from "../../../shared/types/config";
 import { isAllowedOpenCodeOAuthUrl } from "../../../shared/opencodeOAuth";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 
@@ -77,7 +78,7 @@ export function OAuthConnectModal({
   const [phase, setPhase] = useState<Phase>("form");
   const [startResult, setStartResult] = useState<OpenCodeOAuthStartResult | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copy, copied } = useCopyToClipboard();
 
   const visiblePrompts = prompts.filter((prompt) => promptVisible(prompt, inputs));
   const deviceCode = extractDeviceCode(startResult?.instructions);
@@ -184,13 +185,7 @@ export function OAuthConnectModal({
   const copyCode = async () => {
     const text = deviceCode ?? startResult?.instructions ?? "";
     if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard may be unavailable; ignore.
-    }
+    await copy(text);
   };
 
   const labelStyle: React.CSSProperties = {

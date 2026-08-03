@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ArrowClockwise, CheckCircle, CopySimple, Play, Terminal, Warning } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 export type AgentCliAuthCardInfo = {
   agent: string;
@@ -59,22 +60,12 @@ const CLAUDE_ACCENT: AccentTokens = {
 };
 
 function CommandCopyButton({ command, label }: { command: string; label: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const handleCopy = useCallback(() => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-    void navigator.clipboard.writeText(command)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1_500);
-      })
-      .catch(() => setCopied(false));
-  }, [command]);
+  const { copy, copied } = useCopyToClipboard();
 
   return (
     <button
       type="button"
-      onClick={handleCopy}
+      onClick={() => void copy(command)}
       className="inline-flex items-center gap-1.5 rounded-md border border-white/[0.08] bg-white/[0.04] px-2 py-1 font-mono text-[length:calc(var(--chat-font-size)*9/14)] font-bold uppercase tracking-[0.14em] text-fg/58 transition-colors hover:border-amber-300/25 hover:bg-amber-300/[0.07] hover:text-amber-100"
       title={copied ? "Copied" : `Copy ${label}`}
     >

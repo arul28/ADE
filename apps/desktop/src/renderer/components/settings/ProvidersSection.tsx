@@ -45,6 +45,7 @@ import {
   primaryButton,
 } from "../lanes/laneDesignTokens";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
 import { showToast } from "../app/toast/toastStore";
@@ -316,20 +317,11 @@ function ConnectedTag() {
 }
 
 function CopyableCommand({ command }: { command: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(command);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard may be unavailable.
-    }
-  };
+  const { copy, copied } = useCopyToClipboard();
   return (
     <button
       type="button"
-      onClick={() => void copy()}
+      onClick={() => void copy(command)}
       title="Copy"
       style={{
         display: "flex",
