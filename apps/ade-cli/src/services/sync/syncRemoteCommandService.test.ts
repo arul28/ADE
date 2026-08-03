@@ -2999,3 +2999,63 @@ describe("lanes.create default base resolution", () => {
     expect(laneService.create.mock.calls[0]![0].baseBranch).toBeUndefined();
   });
 });
+
+describe("web-reachable settings and lane-risk commands", () => {
+  it("lets paired devices run the AI settings write and refreshes scheduled work", async () => {
+    // `viewerAllowed: false` is refused for EVERY paired device, not just
+    // viewers ("not available to paired controller devices" in syncHostService),
+    // so registering these that way left AI settings silently unsaveable from
+    // the web client — the bug this command exists to fix.
+    const save = vi.fn();
+    const refreshScheduledWork = vi.fn();
+    const { service } = createService({
+      projectConfigService: {
+        get: vi.fn().mockReturnValue({ shared: { ai: { defaultModel: "old-model" } }, local: {} }),
+        save,
+      },
+      agentChatService: { refreshScheduledWork },
+    });
+
+    expect(service.getPolicy("ai.updateConfig")?.viewerAllowed).toBe(true);
+    expect(service.getPolicy("ai.deleteApiKey")?.viewerAllowed).toBe(true);
+
+    await service.execute(makePayload("ai.updateConfig", { defaultModel: "new-model" }));
+
+    expect(save).toHaveBeenCalledTimes(1);
+    expect(save.mock.calls[0]![0].shared.ai).toEqual(
+      expect.objectContaining({ defaultModel: "new-model" }),
+    );
+    // The desktop IPC handler does this too; omitting it leaves scheduled runs
+    // on the previous AI configuration.
+    expect(refreshScheduledWork).toHaveBeenCalledTimes(1);
+  });
+
+  it("answers lane delete/reclaim risk from the brain instead of an all-clear default", async () => {
+    // With no handler the web client fell back to dirty:false /
+    // hasUnpushedCommits:false and under-reported what a delete would destroy.
+    const getDeleteRisk = vi.fn().mockResolvedValue({
+      laneId: "lane-1",
+      dirty: true,
+      hasUnpushedCommits: true,
+      unpushedCommitCount: 3,
+    });
+    const getReclaimRisk = vi.fn().mockResolvedValue({ laneId: "lane-1", dirty: true });
+    const { service } = createService({ laneService: { getDeleteRisk, getReclaimRisk } });
+
+    const risk = await service.execute(makePayload("lanes.getDeleteRisk", { laneId: "lane-1" }));
+
+    expect(getDeleteRisk).toHaveBeenCalledWith("lane-1");
+    expect(risk).toEqual(expect.objectContaining({ dirty: true, unpushedCommitCount: 3 }));
+    await expect(service.execute(makePayload("lanes.getReclaimRisk", { laneId: "lane-1" })))
+      .resolves.toEqual(expect.objectContaining({ dirty: true }));
+  });
+
+  it("rejects a CLI launch whose payload is missing the fields the launcher needs", async () => {
+    const { service } = createService({});
+
+    await expect(service.execute(makePayload("chat.launchCli", { provider: "claude" })))
+      .rejects.toThrow(/laneId/);
+    await expect(service.execute(makePayload("chat.launchCli", { laneId: "lane-1", provider: "claude" })))
+      .rejects.toThrow(/kickoffPrompt/);
+  });
+});

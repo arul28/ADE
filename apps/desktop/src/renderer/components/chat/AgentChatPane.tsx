@@ -8413,6 +8413,13 @@ export function AgentChatPane({
       const created = options.pin
         ? await window.ade.agentChat.create(createArgs, options.pin)
         : await window.ade.agentChat.create(createArgs);
+      // Name the failure here rather than letting it travel. A runtime that
+      // answers with a session carrying no id (a contract drift, an
+      // unreachable host resolving to a fallback) used to surface three calls
+      // later as the host rejecting `chat.send` for a missing sessionId.
+      if (!created?.id) {
+        throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
+      }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
       // Follow-up: allocate the orchestration bundle. We do this immediately
       // so the bundle path is persisted alongside the new chat (workers will
