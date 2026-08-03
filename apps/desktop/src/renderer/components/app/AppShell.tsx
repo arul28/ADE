@@ -1338,9 +1338,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <div className="flex-1 flex min-h-0">
         {hideSidebar ? null : (
           // Graph page uses `fixed` viewport layers up to z-[96]; keep the tab rail above them.
-          <aside className="ade-sidebar-clip shrink-0 z-[100] border-r" data-tour="app.sidebar">
-            <div className="ade-sidebar flex flex-col py-2 h-full">
-              <TabNav githubStatus={githubStatus} />
+          <aside className="ade-sidebar-clip shrink-0 z-[100]" data-tour="app.sidebar">
+            <div className="ade-sidebar-flyout">
+              <div className="ade-sidebar flex flex-col py-2 h-full">
+                <TabNav githubStatus={githubStatus} />
+              </div>
             </div>
           </aside>
         )}
