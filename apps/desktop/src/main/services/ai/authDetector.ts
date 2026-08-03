@@ -149,6 +149,21 @@ async function commandExists(command: string): Promise<boolean> {
   const explicitPath = findExplicitCommandPath(command);
   if (explicitPath) return true;
 
+  if (process.platform === "win32") {
+    // Windows cannot use the POSIX probe below. `spawnAsync` routes an
+    // extensionless command through `cmd.exe /d /s /c "<command> --version"`,
+    // and cmd.exe always launches successfully — it reports *its own* exit
+    // code, 1, for a command it could not find. `status !== null` is therefore
+    // true for every name on Windows, so the probe answered "installed" for
+    // CLIs that are not on the machine at all. It is also the slow answer: the
+    // wrapper costs ~21ms before cmd even looks for the target, and a hit pays
+    // a full Node CLI startup (measured 115ms for codex, 179ms for cursor).
+    // where.exe carries an extension, so it is spawned directly with no
+    // wrapper, and its exit code actually means what it says.
+    const found = await spawnAsync("where.exe", [command], { timeout: 5_000 });
+    return found.status === 0;
+  }
+
   // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
   // If the binary exists, --version will produce *some* exit code.
   // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
@@ -159,12 +174,9 @@ async function commandExists(command: string): Promise<boolean> {
     // fall through to shell-based check
   }
 
-  // Strategy 2: Shell-based lookup (fallback for edge cases)
+  // Strategy 2: Shell-based lookup (fallback for edge cases). POSIX only —
+  // Windows returned above.
   try {
-    if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      return result.status === 0;
-    }
     const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], { timeout: 5_000 });
     return result.status === 0;
   } catch {
