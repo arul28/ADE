@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Stacked PRs target their parent branch, not main, so the filter above
+  # never fires for them and they accumulate no ci-pass check run. That
+  # matters because release-core.yml's verify job requires ci-pass on the
+  # exact SHA it builds, which made a signed proof build of a stacked
+  # branch impossible. Dispatching by ref produces the same check runs on
+  # the same SHA, so the release gate stays honest rather than relaxed.
+  workflow_dispatch:
 
 permissions:
   contents: read
