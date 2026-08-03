@@ -12,6 +12,24 @@
  * once. `settingsManifest.test.ts` asserts the anchors and aliases stay live.
  */
 
+import { isWebClientMode } from "../../lib/webClientMode";
+
+/**
+ * Where a setting lands when the renderer is the hosted web client.
+ *
+ * A browser has no Electron shell and reaches its machine only through the
+ * actions the sync host registers, so a setting either travels to that machine,
+ * syncs through the ADE account, never leaves the browser tab — or has nowhere
+ * to go at all. `hidden` is that last case, and it is why Secrets, providers,
+ * GitHub credentials, dictation, the CLI installer, auto-updates, storage,
+ * session lifecycle, and lane templates stay off the web nav: their reads land
+ * but their writes would resolve against a missing descriptor and vanish.
+ *
+ * `SettingScope` answers "who does this affect"; this answers "does it work at
+ * all from a browser, and what do we tell the user about where it went".
+ */
+export type SettingWebScope = "machine" | "account" | "browser" | "hidden";
+
 /** Where a setting is persisted, and therefore who it affects. */
 export type SettingScope =
   /** `.ade/ade.yaml` — committed, travels with the repo, affects the team. */
@@ -72,6 +90,8 @@ export type SettingEntry = {
   /** DOM id of the card, so `?tab=<tab>#<anchor>` lands on it. */
   anchor: string;
   scope: SettingScope;
+  /** How the setting behaves in the hosted web client. */
+  web: SettingWebScope;
   /**
    * Force the scope chip on. Scope is only worth the visual weight when it
    * would surprise — team-committed YAML, or anything that writes to a
@@ -95,6 +115,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "project",
     scope: "team",
+    web: "hidden",
     showScopeChip: true,
     group: "Project",
   },
@@ -105,6 +126,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "chat-launch-clipboard",
     scope: "app",
+    web: "browser",
     group: "Starting work",
   },
   {
@@ -114,6 +136,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "auto-updates",
     scope: "machine",
+    web: "hidden",
     group: "Updates",
   },
   {
@@ -123,6 +146,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "product-analytics",
     scope: "machine",
+    web: "browser",
     group: "Privacy",
   },
   {
@@ -132,6 +156,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "general",
     anchor: "about",
     scope: "machine",
+    web: "hidden",
     group: "About",
   },
 
@@ -143,6 +168,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "theme",
     scope: "app",
+    web: "browser",
     group: "Theme",
   },
   {
@@ -152,6 +178,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "chat-font-size",
     scope: "app",
+    web: "browser",
     group: "Chat typography",
   },
   {
@@ -161,6 +188,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "transcript-density",
     scope: "app",
+    web: "browser",
     group: "Chat typography",
   },
   {
@@ -170,6 +198,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "chat-tint",
     scope: "app",
+    web: "browser",
     group: "Chat surface",
   },
   {
@@ -179,6 +208,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "chat-corners",
     scope: "app",
+    web: "browser",
     group: "Chat surface",
   },
   {
@@ -188,6 +218,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "code-block-copy-position",
     scope: "app",
+    web: "browser",
     group: "Chat details",
   },
   {
@@ -197,6 +228,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "user-message-minimap",
     scope: "app",
+    web: "browser",
     group: "Chat details",
   },
   {
@@ -206,6 +238,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "prompt-stash-button",
     scope: "app",
+    web: "browser",
     group: "Chat details",
   },
   {
@@ -215,6 +248,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "appearance-preview",
     scope: "app",
+    web: "browser",
     group: "Chat details",
   },
   {
@@ -224,6 +258,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "appearance",
     anchor: "terminal-text",
     scope: "app",
+    web: "browser",
     group: "Terminal",
   },
 
@@ -235,6 +270,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "ai-providers",
     scope: "machine",
+    web: "hidden",
     showScopeChip: true,
     group: "Connections",
   },
@@ -245,6 +281,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "background-jobs",
     scope: "team",
+    web: "hidden",
     showScopeChip: true,
     group: "Background work",
   },
@@ -255,6 +292,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "scheduled-work",
     scope: "machine",
+    web: "hidden",
     group: "Background work",
   },
   {
@@ -264,6 +302,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "budget-cap",
     scope: "team",
+    web: "hidden",
     showScopeChip: true,
     group: "Budget",
   },
@@ -274,6 +313,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "agents",
     anchor: "voice-input",
     scope: "machine",
+    web: "hidden",
     group: "Input",
   },
 
@@ -285,6 +325,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "new-lane-base",
     scope: "machine",
+    web: "machine",
     group: "Starting lanes",
   },
   {
@@ -294,6 +335,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "auto-rebase",
     scope: "machine",
+    web: "machine",
     group: "Rebase & stacking",
   },
   {
@@ -303,6 +345,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "rebase-suggestions",
     scope: "machine",
+    web: "machine",
     group: "Rebase & stacking",
   },
   {
@@ -312,6 +355,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "rebase-min-behind",
     scope: "machine",
+    web: "machine",
     group: "Rebase & stacking",
   },
   {
@@ -321,6 +365,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "lane-templates",
     scope: "team",
+    web: "hidden",
     showScopeChip: true,
     group: "Templates",
   },
@@ -331,6 +376,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "lanes-git",
     anchor: "pr-chat-transcripts",
     scope: "team",
+    web: "machine",
     showScopeChip: true,
     group: "Pull requests",
   },
@@ -343,6 +389,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "integrations",
     anchor: "github-connection",
     scope: "machine",
+    web: "hidden",
     showScopeChip: true,
     group: "GitHub",
   },
@@ -353,6 +400,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "integrations",
     anchor: "linear-connection",
     scope: "machine",
+    web: "hidden",
     showScopeChip: true,
     group: "Linear",
   },
@@ -363,6 +411,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "integrations",
     anchor: "ade-cli",
     scope: "machine",
+    web: "hidden",
     group: "Command line",
   },
 
@@ -377,6 +426,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "notification-events",
     scope: "machine",
+    web: "account",
     group: "What interrupts you",
   },
   {
@@ -386,6 +436,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "focus-suppression",
     scope: "app",
+    web: "account",
     group: "What interrupts you",
   },
   {
@@ -395,6 +446,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "quiet-hours",
     scope: "machine",
+    web: "account",
     group: "What interrupts you",
   },
   {
@@ -404,6 +456,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "phone-notifications",
     scope: "machine",
+    web: "account",
     group: "Delivery",
   },
   {
@@ -413,6 +466,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "live-activities",
     scope: "machine",
+    web: "account",
     group: "Delivery",
   },
   {
@@ -422,6 +476,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "phone-escalation",
     scope: "machine",
+    web: "account",
     group: "Delivery",
   },
   {
@@ -431,6 +486,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "agent-completion-sound",
     scope: "app",
+    web: "browser",
     group: "Sound",
   },
   {
@@ -440,6 +496,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "notifications",
     anchor: "lane-banner-budget",
     scope: "machine",
+    web: "machine",
     group: "On-screen banners",
   },
 
@@ -451,6 +508,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-notch",
     scope: "machine",
+    web: "hidden",
     showScopeChip: true,
     group: "Notch & menu bar",
   },
@@ -461,6 +519,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-notch-reveal",
     scope: "machine",
+    web: "hidden",
     group: "Notch & menu bar",
   },
   {
@@ -470,6 +529,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-notch-expanded",
     scope: "machine",
+    web: "hidden",
     group: "Notch & menu bar",
   },
   {
@@ -479,6 +539,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-auto-reveal",
     scope: "machine",
+    web: "hidden",
     group: "Notch & menu bar",
   },
   {
@@ -488,6 +549,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-ticker",
     scope: "machine",
+    web: "hidden",
     group: "Notch & menu bar",
   },
   {
@@ -497,6 +559,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-celebrations",
     scope: "machine",
+    web: "hidden",
     group: "Notch & menu bar",
   },
   {
@@ -506,6 +569,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-sounds",
     scope: "machine",
+    web: "account",
     group: "Sound",
   },
   {
@@ -515,6 +579,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-hide-details",
     scope: "machine",
+    web: "account",
     group: "Privacy",
   },
   {
@@ -524,6 +589,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-dock-badge",
     scope: "machine",
+    web: "hidden",
     group: "Account",
   },
   {
@@ -533,6 +599,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "activity",
     anchor: "activity-machines",
     scope: "machine",
+    web: "account",
     showScopeChip: true,
     group: "Machines",
   },
@@ -545,6 +612,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "secrets",
     anchor: "secrets",
     scope: "machine",
+    web: "hidden",
     showScopeChip: true,
     group: "Secrets",
   },
@@ -557,6 +625,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "storage",
     anchor: "storage",
     scope: "machine",
+    web: "hidden",
     group: "Disk",
   },
   {
@@ -566,6 +635,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "storage",
     anchor: "lane-storage-rules",
     scope: "team",
+    web: "hidden",
     showScopeChip: true,
     group: "Disk",
   },
@@ -576,6 +646,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "storage",
     anchor: "session-lifecycle",
     scope: "machine",
+    web: "hidden",
     group: "Sessions",
   },
   {
@@ -585,6 +656,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "storage",
     anchor: "diagnostics",
     scope: "machine",
+    web: "hidden",
     group: "Diagnostics",
   },
 
@@ -596,6 +668,7 @@ export const SETTINGS_ENTRIES: readonly SettingEntry[] = [
     tab: "stats",
     anchor: "ade-usage",
     scope: "machine",
+    web: "machine",
     group: "Usage",
   },
 ] as const;
@@ -672,8 +745,105 @@ export function settingsEntryById(id: string): SettingEntry | null {
   return ENTRIES_BY_ID.get(id) ?? null;
 }
 
+/**
+ * Whether a setting is reachable from the renderer we are running in. Every
+ * setting is reachable on the desktop; the web client drops the ones whose
+ * writes have nowhere to land. Nav, search, and the palette all read this, so
+ * a hidden setting is hidden everywhere at once rather than only in the nav.
+ *
+ * `resolveSettingsTab` and `resolveSettingsHash` deliberately do not: a URL
+ * that names a hidden setting still resolves, and the settings shell decides
+ * where to land it.
+ */
+export function isSettingAvailable(entry: SettingEntry): boolean {
+  if (!isWebClientMode()) return true;
+  if (entry.web === "hidden") return false;
+  // A machine-scoped setting writes to the machine the active project tab is
+  // bound to. With no tab open there is no such machine, so the control would
+  // be a write with nowhere to land — the same reason `hidden` exists.
+  return entry.web !== "machine" || hasWebMachineBinding();
+}
+
+/**
+ * The scope of a section, read off the settings it contains. A section is
+ * `hidden` on web only when every setting in it is — this module is the one
+ * place that decides, so nav, search, and the scope banner cannot disagree.
+ *
+ * Unreachable is broader than `hidden`: a machine-scoped setting is also
+ * unreachable while no project tab is bound, because there is no machine for
+ * its write to land on. `isSettingAvailable` owns that judgement.
+ *
+ * `entryIds` are manifest ids; an id that resolves to nothing contributes
+ * nothing, and `null` means "nothing here to describe".
+ */
+export function sectionWebScope(entryIds: readonly string[]): SettingWebScope | null {
+  const scopes = entryIds
+    .map((id) => settingsEntryById(id))
+    .filter((entry): entry is SettingEntry => entry != null)
+    .map((entry): SettingWebScope => (isSettingAvailable(entry) ? entry.web : "hidden"));
+  if (scopes.length === 0) return null;
+
+  // Notifications is the mixed case: account-synced delivery rules alongside
+  // one machine-bound banner budget and one browser-local sound. The banner
+  // describes where most of the section goes, not the loudest exception —
+  // ties break toward the narrowest claim, which is why the ranking is ordered.
+  const tally = new Map<SettingWebScope, number>();
+  for (const scope of scopes) tally.set(scope, (tally.get(scope) ?? 0) + 1);
+  if (tally.get("hidden") === scopes.length) return "hidden";
+
+  // `machine` doubles as the initial value, so the ranking needs no non-null
+  // assertion to read its own first element.
+  let best: Exclude<SettingWebScope, "hidden"> = "machine";
+  const NARROWEST_FIRST: Exclude<SettingWebScope, "hidden">[] = ["account", "browser"];
+  for (const scope of NARROWEST_FIRST) {
+    if ((tally.get(scope) ?? 0) > (tally.get(best) ?? 0)) best = scope;
+  }
+  return best;
+}
+
+/**
+ * Whether the hosted client currently has a machine to write machine-scoped
+ * settings to — i.e. whether a project tab is bound.
+ *
+ * A resolver rather than a flag: nav, search and the palette all ask
+ * `isSettingAvailable` mid-render, so the answer has to be read at call time
+ * from live app state instead of pushed here on a lifecycle event that may not
+ * have run yet. The desktop never installs one, and never asks.
+ */
+let webMachineBindingResolver: (() => boolean) | null = null;
+
+export function setWebMachineBindingResolver(resolve: (() => boolean) | null): void {
+  webMachineBindingResolver = resolve;
+}
+
+/**
+ * Uninstall a resolver, but only if it is still the installed one.
+ *
+ * Two surfaces install a resolver (the settings page and the palette) and they
+ * unmount in no fixed order, so an unconditional clear on unmount would tear
+ * down a resolver the OTHER surface had since installed, leaving the manifest
+ * answering `false` for a machine that is in fact bound.
+ */
+export function clearWebMachineBindingResolver(resolve: () => boolean): void {
+  if (webMachineBindingResolver === resolve) webMachineBindingResolver = null;
+}
+
+export function hasWebMachineBinding(): boolean {
+  return webMachineBindingResolver?.() ?? false;
+}
+
+/** Every setting reachable in this renderer, in manifest order. */
+export function availableSettingsEntries(): SettingEntry[] {
+  return SETTINGS_ENTRIES.filter(isSettingAvailable);
+}
+
+/** Tabs with at least one reachable setting, in manifest order. */
+export function availableSettingsTabs(): SettingsTab[] {
+  return SETTINGS_TABS.filter((tab) => settingsEntriesForTab(tab.id).length > 0);
+}
+
 export function settingsEntriesForTab(tab: SettingsTabId): SettingEntry[] {
-  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab);
+  return SETTINGS_ENTRIES.filter((entry) => entry.tab === tab && isSettingAvailable(entry));
 }
 
 /** Group names for a tab, in first-appearance order. */
@@ -733,11 +903,11 @@ export function scoreSettingsEntry(entry: SettingEntry, query: string): number |
   return null;
 }
 
-/** Matching entries across every tab, best match first. */
+/** Matching reachable entries across every tab, best match first. */
 export function searchSettingsEntries(query: string): SettingEntry[] {
   const q = query.trim();
   if (!q) return [];
-  return SETTINGS_ENTRIES
+  return availableSettingsEntries()
     .map((entry) => ({ entry, score: scoreSettingsEntry(entry, q) }))
     .filter((row): row is { entry: SettingEntry; score: number } => row.score !== null)
     .sort((left, right) => left.score - right.score)

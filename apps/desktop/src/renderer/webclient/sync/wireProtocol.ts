@@ -73,7 +73,20 @@ function normalizeOptionalString(value: string | null | undefined): string | nul
   return trimmed ? trimmed : null;
 }
 
+type Base64Capable = typeof Uint8Array & { fromBase64?: (value: string) => Uint8Array };
+
 function base64ToBytes(value: string): Uint8Array {
+  // Browsers that ship the Uint8Array base64 methods decode natively instead of
+  // walking the binary string one charCode at a time — file bytes and images
+  // arrive through here, so the per-character loop is the hot path.
+  const nativeFromBase64 = (Uint8Array as Base64Capable).fromBase64;
+  if (typeof nativeFromBase64 === "function") {
+    try {
+      return nativeFromBase64.call(Uint8Array, value);
+    } catch {
+      // Malformed padding/whitespace that the legacy decoders tolerate.
+    }
+  }
   if (typeof atob === "function") {
     const binary = atob(value);
     const bytes = new Uint8Array(binary.length);

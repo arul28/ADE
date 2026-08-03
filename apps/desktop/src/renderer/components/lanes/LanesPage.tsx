@@ -2,7 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { useClickOutside } from "../../hooks/useClickOutside";
 import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { Group, Panel } from "react-resizable-panels";
-import { Check, CaretDown, FileCode, Stack, Link, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowSquareOut, Info, ArrowCounterClockwise, UsersThree, CircleNotch, Question } from "@phosphor-icons/react";
+import { Check, CaretDown, FileCode, Stack, ArrowsOutSimple, ArrowsInSimple, PushPin, Plus, MagnifyingGlass, Terminal, X, ArrowCounterClockwise, UsersThree, CircleNotch, Question } from "@phosphor-icons/react";
 import { BranchIcon, LaneIcon } from "../ui/vcsIcons";
 import {
   selectActiveProjectRoot,
@@ -33,10 +33,7 @@ import {
 import { LaneGitActionsPane } from "./LaneGitActionsPane";
 import { LaneWorkPane } from "./LaneWorkPane";
 import { CreateLaneDialogHost, type CreateLanePrefill } from "./CreateLaneDialogHost";
-import { AttachLaneDialog } from "./AttachLaneDialog";
-import { MultiAttachWorktreeDialog } from "./MultiAttachWorktreeDialog";
 import { ManageLaneDialog, EMPTY_LANE_DELETE_SELECTION, type LaneDeleteSelection } from "./ManageLaneDialog";
-import { AdoptAttachedLaneConfirmDialog } from "./AdoptAttachedLaneConfirmDialog";
 import { LaneContextMenu } from "./LaneContextMenu";
 import { getLaneAccent } from "./laneColorPalette";
 import { LaneRebaseBanner } from "./LaneRebaseBanner";
@@ -138,7 +135,6 @@ type RebasePushReviewState = {
   resolve: (laneIds: string[] | null) => void;
 };
 
-const ADOPT_HINT_DISMISSED_KEY = "ade.lanes.adoptHintDismissed.v1";
 const LANE_DELETE_REFRESH_DEBOUNCE_MS = 160;
 const LANE_VISIBLE_PR_REFRESH_DEBOUNCE_MS = 260;
 const LANE_RUNTIME_LIFECYCLE_REFRESH_DEBOUNCE_MS = 300;
@@ -469,31 +465,13 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const [createOpen, setCreateOpen] = useState(false);
   const [createPrefill, setCreatePrefill] = useState<CreateLanePrefill | null>(null);
   const createBusyRef = useRef(false);
-  const [multiAttachOpen, setMultiAttachOpen] = useState(false);
-  const [attachOpen, setAttachOpen] = useState(false);
-  const [attachName, setAttachName] = useState("");
-  const [attachPath, setAttachPath] = useState("");
-  const [attachDescription, setAttachDescription] = useState("");
-  const [attachBusy, setAttachBusy] = useState(false);
-  const [attachError, setAttachError] = useState<string | null>(null);
   const canCreateLane = Boolean(activeProjectRoot);
-  const [adoptBusy, setAdoptBusy] = useState(false);
-  const [adoptError, setAdoptError] = useState<string | null>(null);
-  const [adoptConfirmOpen, setAdoptConfirmOpen] = useState(false);
-  const [adoptTargetLaneId, setAdoptTargetLaneId] = useState<string | null>(null);
-  const [adoptHintDismissed, setAdoptHintDismissed] = useState<boolean>(() => {
-    try {
-      return window.localStorage.getItem(ADOPT_HINT_DISMISSED_KEY) === "1";
-    } catch {
-      return false;
-    }
-  });
   const [deleteSelection, setDeleteSelection] = useState<LaneDeleteSelection>(EMPTY_LANE_DELETE_SELECTION);
   const [deleteForce, setDeleteForce] = useState(true);
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
-  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
   const deleteProgressByLaneId = useAppStore((s) => s.laneDeleteProgressByLaneId);
   const setDeleteProgressByLaneId = useAppStore((s) => s.setLaneDeleteProgressByLaneId);
   const laneDeleteWarningMessagesRef = useRef<Map<string, string>>(new Map());
@@ -546,8 +524,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const managedLaneIdsRef = useRef<string[]>([]);
   const manageOpenRef = useRef<boolean>(false);
 
-  const [addLaneDropdownOpen, setAddLaneDropdownOpen] = useState(false);
-  const addLaneDropdownRef = useRef<HTMLDivElement>(null);
   const [stackGraphHeaderOpen, setStackGraphHeaderOpen] = useState(false);
   const stackGraphHeaderRef = useRef<HTMLDivElement>(null);
 
@@ -810,21 +786,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     [managedLaneIds, lanesById],
   );
   const isBatchManage = managedLanes.length > 1;
-  const selectedAttachedLane = managedLane?.laneType === "attached" ? managedLane : null;
-  const shouldShowAdoptHint = Boolean(selectedAttachedLane && !adoptHintDismissed);
-  const adoptTargetLane = adoptTargetLaneId ? lanesById.get(adoptTargetLaneId) ?? null : null;
 
   const primaryLane = useMemo(() => lanes.find((l) => l.laneType === "primary") ?? null, [lanes]);
   const branchLane = useMemo(() => {
     const candidate = selectedLaneId ? lanesById.get(selectedLaneId) ?? primaryLane : primaryLane;
     return candidate ?? null;
   }, [selectedLaneId, lanesById, primaryLane]);
-  const branchLaneSwitchDisabledReason = useMemo<string | null>(() => {
-    if (!branchLane) return null;
-    if (branchLane.laneType === "attached") return "Branch switching is disabled for attached lanes — manage this worktree with your own tools.";
-    return null;
-  }, [branchLane]);
-  const canSwitchBranchLane = branchLane !== null && branchLaneSwitchDisabledReason === null;
 
   /* ---- Lane branch management ---- */
 
@@ -862,7 +829,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     }
   }, [branchDropdownOpen, branchLane?.id]);
   useClickOutside(branchDropdownRef, () => setBranchDropdownOpen(false), branchDropdownOpen);
-  useClickOutside(addLaneDropdownRef, () => setAddLaneDropdownOpen(false), addLaneDropdownOpen);
   useClickOutside(stackGraphHeaderRef, () => setStackGraphHeaderOpen(false), stackGraphHeaderOpen);
 
   const refreshAutoRebaseEnabled = useCallback(async () => {
@@ -1295,14 +1261,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   });
 
   useEffect(() => {
-    if (!adoptTargetLaneId) return;
-    if (lanesById.has(adoptTargetLaneId)) return;
-    setAdoptConfirmOpen(false);
-    setAdoptTargetLaneId(null);
-    setAdoptError(null);
-  }, [adoptTargetLaneId, lanesById]);
-
-  useEffect(() => {
     setPinnedLaneIds((prev) => {
       const next = new Set<string>();
       for (const laneId of prev) {
@@ -1493,7 +1451,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
   const runLaneAction = async (
     fn: () => Promise<void>,
     status: string,
-    kind: "delete" | "archive" | "adopt" = "delete",
+    kind: "delete" | "archive" = "delete",
     options: { refreshAfter?: boolean } = {},
   ) => {
     setLaneActionBusy(true);
@@ -1514,48 +1472,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
       setLaneActionKind(null);
     }
   };
-
-  const dismissAdoptHint = useCallback(() => {
-    setAdoptHintDismissed(true);
-    try {
-      window.localStorage.setItem(ADOPT_HINT_DISMISSED_KEY, "1");
-    } catch {
-      // ignore persistence failures
-    }
-  }, []);
-
-  const reopenAdoptHint = useCallback(() => {
-    setAdoptHintDismissed(false);
-    try {
-      window.localStorage.removeItem(ADOPT_HINT_DISMISSED_KEY);
-    } catch {
-      // ignore persistence failures
-    }
-  }, []);
-
-  const requestAdoptAttachedLane = useCallback((laneId: string) => {
-    setAdoptError(null);
-    setAdoptTargetLaneId(laneId);
-    setAdoptConfirmOpen(true);
-  }, []);
-
-  const confirmAdoptAttachedLane = useCallback(async () => {
-    const laneId = adoptTargetLaneId;
-    if (!laneId) return;
-    setAdoptBusy(true);
-    setAdoptError(null);
-    try {
-      const lane = await window.ade.lanes.adoptAttached({ laneId });
-      await refreshLanes();
-      selectLane(lane.id);
-      setAdoptConfirmOpen(false);
-      setAdoptTargetLaneId(null);
-    } catch (err) {
-      setAdoptError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAdoptBusy(false);
-    }
-  }, [adoptTargetLaneId, refreshLanes, selectLane]);
 
   const checkoutLaneBranch = useCallback(async (request: {
     branchName: string;
@@ -2136,7 +2052,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     setLanePaneDetails((prev) => ({ ...prev, [laneId]: EMPTY_LANE_PANE_DETAIL }));
   }, []);
 
-  /* ---- Create/Attach lane submit handlers ---- */
+  /* ---- Create lane submit handlers ---- */
 
   // Open the create-lane host with an optional prefill. The host seeds itself
   // (branch loading, templates, defaults) when `open` flips true, so LanesPage
@@ -2198,15 +2114,7 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     if (!action) return;
     const laneId = urlLaneDeeplinks.laneId;
     let handled = false;
-    if (action === "adopt" && laneId) {
-      const lane = lanesById.get(laneId);
-      if (lane && lane.laneType === "attached" && !deletingLaneIds.has(laneId)) {
-        selectLane(laneId);
-        reopenAdoptHint();
-        requestAdoptAttachedLane(laneId);
-        handled = true;
-      }
-    } else if (action === "split-open" && laneId) {
+    if (action === "split-open" && laneId) {
       if (!deletingLaneIds.has(laneId) && lanesById.has(laneId)) {
         const pinned = Array.from(pinnedLaneIds).filter((id) => lanesById.has(id));
         setActiveLaneIds((prev) => mergeUnique(prev, [laneId], pinned));
@@ -2480,42 +2388,17 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
     navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
   }, [navigate]);
 
-  const handleAttachSubmit = useCallback(async () => {
-    const name = attachName.trim();
-    const attachedPath = attachPath.trim();
-    if (!name || !attachedPath || attachBusy) return;
-    setAttachBusy(true);
-    setAttachError(null);
-    try {
-      const description = attachDescription.trim() || undefined;
-      const lane = await window.ade.lanes.attach({ name, attachedPath, description });
-      await refreshLanes();
-      setAttachOpen(false);
-      setAttachName("");
-      setAttachPath("");
-      setAttachDescription("");
-      setAttachError(null);
-      navigate(`/lanes?laneId=${encodeURIComponent(lane.id)}&focus=single`);
-    } catch (err) {
-      setAttachError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setAttachBusy(false);
-    }
-  }, [attachName, attachPath, attachDescription, attachBusy, refreshLanes, navigate]);
-
   const openManageDialog = useCallback((laneId: string) => {
     if (deletingLaneIds.has(laneId)) return;
     selectLane(laneId);
     setManagedLaneIds([laneId]);
     setLaneActionError(null);
-    setAdoptError(null);
     setDeleteForce(true);
     setDeleteSelection(EMPTY_LANE_DELETE_SELECTION);
     setManageOpen(true);
   }, [deletingLaneIds, selectLane]);
 
   const handleCreateDialogBusOpen = useCallback((props?: Record<string, unknown>) => {
-    setAddLaneDropdownOpen(false);
     setStackGraphHeaderOpen(false);
     const name = typeof props?.name === "string" ? props.name.trim() : "";
     openCreateDialog(name ? { name } : null);
@@ -2683,8 +2566,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           <div className="relative shrink-0 flex items-center" ref={branchDropdownRef}>
             <SmartTooltip
               content={{
-                label: canSwitchBranchLane ? `Branch — ${branchLane.name}` : `Branch — ${branchLane.name} (read-only)`,
-                description: branchLaneSwitchDisabledReason ?? `Switch ${branchLane.name} to a local or remote branch.`,
+                label: `Branch — ${branchLane.name}`,
+                description: `Switch ${branchLane.name} to a local or remote branch.`,
                 docUrl: docs.lanesOverview,
               }}
               side="bottom"
@@ -2695,27 +2578,23 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 style={{
                   display: "inline-flex", alignItems: "center", gap: 8,
                   padding: "0 12px", height: 32, fontSize: 12, fontFamily: MONO_FONT, fontWeight: 600,
-                  color: canSwitchBranchLane ? COLORS.success : COLORS.textMuted,
+                  color: COLORS.success,
                   background: "rgba(255,255,255,0.03)",
                   border: `1px solid ${COLORS.outlineBorder}`, borderRadius: 8,
-                  cursor: canSwitchBranchLane ? "pointer" : "not-allowed",
-                  opacity: canSwitchBranchLane ? 1 : 0.65,
+                  cursor: "pointer",
                 }}
                 onClick={() => {
-                  if (!canSwitchBranchLane) return;
                   setStackGraphHeaderOpen(false);
                   setBranchDropdownOpen((prev) => !prev);
                 }}
-                disabled={branchCheckoutBusy || !canSwitchBranchLane}
-                aria-disabled={!canSwitchBranchLane}
-                title={branchLaneSwitchDisabledReason ?? undefined}
+                disabled={branchCheckoutBusy}
               >
                 <BranchIcon size={14} />
                 <span>{branchLane.branchRef}</span>
-                <CaretDown size={12} style={{ opacity: canSwitchBranchLane ? 0.6 : 0.3 }} />
+                <CaretDown size={12} style={{ opacity: 0.6 }} />
               </button>
             </SmartTooltip>
-            {branchDropdownOpen && canSwitchBranchLane ? (
+            {branchDropdownOpen ? (
               <div className="ade-liquid-glass-menu absolute left-0 top-full z-[200] mt-1 max-h-[480px] overflow-hidden flex flex-col" style={{ width: 360, maxWidth: 360, minWidth: 0, padding: "4px 0", border: `1px solid ${COLORS.outlineBorder}`, background: COLORS.cardBgSolid, backdropFilter: "blur(24px) saturate(150%)", WebkitBackdropFilter: "blur(24px) saturate(150%)", boxShadow: "0 24px 56px -20px rgba(0, 0, 0, 0.7)", boxSizing: "border-box" }}>
                 <div className="relative shrink-0" style={{ padding: "4px 8px" }}>
                   <MagnifyingGlass size={13} className="pointer-events-none absolute" style={{ left: 16, top: "50%", transform: "translateY(-50%)", color: COLORS.textDim }} />
@@ -3034,8 +2913,8 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           </div>
         ) : null}
 
-        {/* NEW LANE button + dropdown */}
-        <div className="relative shrink-0" ref={addLaneDropdownRef}>
+        {/* NEW LANE button */}
+        <div className="relative shrink-0">
           <SmartTooltip content={{ label: "New Lane", description: "Create a new lane from the primary branch, an existing branch, or as a child of another lane.", docUrl: docs.lanesCreating }}>
             <button
               type="button"
@@ -3044,50 +2923,12 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
               disabled={!canCreateLane}
               onClick={() => {
                 setStackGraphHeaderOpen(false);
-                setAddLaneDropdownOpen((prev) => !prev);
+                openCreateDialog();
               }}
             >
               <Plus size={12} /> NEW LANE
             </button>
           </SmartTooltip>
-          {addLaneDropdownOpen ? (
-            <div className="absolute left-0 top-full z-[200] mt-2 w-60 rounded-xl p-1 shadow-float" style={{ background: COLORS.cardBgSolid, border: `1px solid ${COLORS.outlineBorder}` }}>
-              <button
-                type="button"
-                data-tour="lanes.createNewLane"
-                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
-                onClick={() => {
-                  setAddLaneDropdownOpen(false);
-                  openCreateDialog();
-                }}
-              >
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-accent">
-                  <Plus size={14} />
-                </span>
-                <span>
-                  <span className="block font-medium">Create new lane</span>
-                  <span className="block text-xs text-muted-fg/70">Start from primary or stack from another lane.</span>
-                </span>
-              </button>
-              <button
-                type="button"
-                data-tour="lanes.addWorktrees"
-                className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm text-muted-fg transition-colors hover:bg-white/[0.04] hover:text-fg"
-                onClick={() => {
-                  setAddLaneDropdownOpen(false);
-                  setMultiAttachOpen(true);
-                }}
-              >
-                <span className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-info">
-                  <Link size={14} />
-                </span>
-                <span>
-                  <span className="block font-medium">Add existing worktrees as lanes</span>
-                  <span className="block text-xs text-muted-fg/70">Select from worktrees that already exist on disk.</span>
-                </span>
-              </button>
-            </div>
-          ) : null}
         </div>
 
         {filteredLanes.length > 0 ? (
@@ -3118,7 +2959,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                   cursor: "pointer",
                 }}
                 onClick={() => {
-                  setAddLaneDropdownOpen(false);
                   setBranchDropdownOpen(false);
                   setStackGraphHeaderOpen((prev) => !prev);
                 }}
@@ -3162,57 +3002,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
                 />
               </div>
             ) : null}
-          </div>
-        ) : null}
-
-        {shouldShowAdoptHint && selectedAttachedLane ? (
-          <div
-            className="shrink-0 flex items-center gap-2 rounded-lg border px-2 py-1"
-            style={{ borderColor: "color-mix(in srgb, var(--color-info) 55%, transparent)", background: "color-mix(in srgb, var(--color-info) 15%, transparent)" }}
-          >
-            <SmartTooltip content={{ label: "Move to .ade", description: "Move this attached worktree into .ade/worktrees for full ADE management. Uses git worktree move — branch and history stay the same.", docUrl: docs.lanesCreating }}>
-              <button
-                type="button"
-                data-tour="lanes.moveToAde"
-                className="inline-flex items-center gap-1"
-                style={{
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  letterSpacing: "0.8px",
-                  color: COLORS.info,
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer"
-                }}
-                title={`Move '${selectedAttachedLane.name}' to .ade/worktrees`}
-                onClick={() => requestAdoptAttachedLane(selectedAttachedLane.id)}
-              >
-                <ArrowSquareOut size={12} />
-                MOVE TO .ADE
-              </button>
-            </SmartTooltip>
-            <div className="relative group">
-              <Info size={12} style={{ color: COLORS.info }} />
-              <div
-                className="pointer-events-none absolute left-1/2 top-full z-50 mt-2 -translate-x-1/2 whitespace-nowrap rounded-lg border px-2 py-1 text-[10px] opacity-0 transition-opacity group-hover:opacity-100"
-                style={{
-                  borderColor: `${COLORS.border}`,
-                  background: COLORS.cardBg,
-                  color: COLORS.textSecondary
-                }}
-              >
-                Uses git worktree move. Branch/history stay the same.
-              </div>
-            </div>
-            <button
-              type="button"
-              className="inline-flex items-center justify-center"
-              style={{ width: 16, height: 16, border: "none", background: "transparent", color: COLORS.textMuted, cursor: "pointer" }}
-              onClick={dismissAdoptHint}
-              title="Dismiss this hint"
-            >
-              <X size={10} />
-            </button>
           </div>
         ) : null}
 
@@ -3817,10 +3606,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
           lanesById={lanesById}
           visibleLaneIds={visibleLaneIds}
           onClose={() => setLaneContextMenu(null)}
-          onAdoptAttached={(laneId) => {
-            reopenAdoptHint();
-            requestAdoptAttachedLane(laneId);
-          }}
           onManage={openManageDialog}
           selectLane={selectLane}
           onRemoveFromSplit={removeSplitLane}
@@ -3855,11 +3640,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         laneActionStatus={laneActionStatus}
         laneActionError={laneActionError}
         laneActionKind={laneActionKind}
-        onAdoptAttached={() => {
-          if (!managedLane || managedLane.laneType !== "attached") return;
-          reopenAdoptHint();
-          requestAdoptAttachedLane(managedLane.id);
-        }}
         onArchive={() => { archiveManagedLanes().catch(() => {}); }}
         onDelete={() => { deleteManagedLanes().catch(() => {}); }}
         onAppearanceChanged={() => refreshLanes({ includeStatus: false }).catch(() => {})}
@@ -3878,57 +3658,6 @@ export function LanesPage({ active = true }: { active?: boolean } = {}) {
         onBusyChange={(busy) => { createBusyRef.current = busy; }}
         onOpenLinearSettings={() => navigate("/settings?tab=general#linear-connection")}
         onNavigateToTemplates={() => navigate("/settings?tab=lane-templates")}
-      />
-
-      {/* Attach Lane dialog */}
-      <AttachLaneDialog
-        open={attachOpen}
-        onOpenChange={(open) => {
-          setAttachOpen(open);
-          if (!open) {
-            setAttachBusy(false);
-            setAttachError(null);
-          }
-        }}
-        attachName={attachName}
-        setAttachName={setAttachName}
-        attachPath={attachPath}
-        setAttachPath={setAttachPath}
-        attachDescription={attachDescription}
-        setAttachDescription={setAttachDescription}
-        busy={attachBusy}
-        error={attachError}
-        onSubmit={handleAttachSubmit}
-      />
-
-      <MultiAttachWorktreeDialog
-        open={multiAttachOpen}
-        onOpenChange={setMultiAttachOpen}
-        onFallbackToManual={() => {
-          setMultiAttachOpen(false);
-          setAttachName("");
-          setAttachPath("");
-          setAttachDescription("");
-          setAttachBusy(false);
-          setAttachError(null);
-          setAttachOpen(true);
-        }}
-        onComplete={() => {
-          void refreshLanes().catch(() => {});
-        }}
-      />
-
-      <AdoptAttachedLaneConfirmDialog
-        open={adoptConfirmOpen}
-        lane={adoptTargetLane}
-        busy={adoptBusy}
-        error={adoptError}
-        onCancel={() => {
-          setAdoptConfirmOpen(false);
-          setAdoptTargetLaneId(null);
-          setAdoptError(null);
-        }}
-        onConfirm={() => { void confirmAdoptAttachedLane(); }}
       />
 
       {rebaseScopePrompt ? (

@@ -56,6 +56,7 @@ import type {
 } from "../../../shared/types";
 import { getModelById, resolveModelDescriptor, type ModelDescriptor } from "../../../shared/modelRegistry";
 import { cn } from "../ui/cn";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { formatTime } from "../../lib/format";
 import { navigateToAppTarget, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isPathEqualOrDescendant, isWindowsAbsolutePath, normalizePath } from "../../lib/pathUtils";
@@ -972,44 +973,7 @@ function MessageCopyButton({
   label?: string;
   title?: string;
 }) {
-  const [copied, setCopied] = useState(false);
-  const mountedRef = useRef(true);
-  const resetTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (resetTimerRef.current !== null) {
-        clearTimeout(resetTimerRef.current);
-      }
-    };
-  }, []);
-
-  const handleCopy = useCallback(() => {
-    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) return;
-    void navigator.clipboard.writeText(value)
-      .then(() => {
-        if (!mountedRef.current) return;
-        if (resetTimerRef.current !== null) {
-          clearTimeout(resetTimerRef.current);
-        }
-        setCopied(true);
-        resetTimerRef.current = window.setTimeout(() => {
-          resetTimerRef.current = null;
-          if (!mountedRef.current) return;
-          setCopied(false);
-        }, 1_500);
-      })
-      .catch(() => {
-        if (!mountedRef.current) return;
-        if (resetTimerRef.current !== null) {
-          clearTimeout(resetTimerRef.current);
-          resetTimerRef.current = null;
-        }
-        setCopied(false);
-      });
-  }, [value]);
+  const { copy, copied } = useCopyToClipboard();
 
   return (
     <button
@@ -1018,7 +982,7 @@ function MessageCopyButton({
         "inline-flex items-center gap-1 rounded-md border border-white/[0.06] bg-white/[0.03] px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*9/14)] text-fg/40 transition-all hover:border-violet-400/20 hover:bg-violet-500/[0.06] hover:text-fg/70",
         className,
       )}
-      onClick={handleCopy}
+      onClick={() => void copy(value)}
       title={copied ? "Copied" : title}
       aria-label={copied ? "Copied" : title}
     >

@@ -52,7 +52,7 @@ Attached clients and native surfaces:
 
 - `apps/ade-cli/src/services/sync/productAnalyticsRemoteCommand.ts` binds paired-client consent, surface, and project identity at the host boundary. `syncHostService.ts` keeps consent peer-scoped, and `syncRemoteCommandService.ts` exposes only the runtime-scoped analytics commands.
 - `apps/ade-cli/src/tuiClient/productAnalytics.ts` and `app.tsx` emit normalized `ade code` lifecycle and screen events through the runtime; the TUI has no independent PostHog transport.
-- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's affirmative choice in browser storage and reasserts it on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
+- `apps/desktop/src/renderer/webclient/adapter/analytics.ts` keeps the hosted client's browser-local opt-out. Hosted web is default-on; an explicit "false" preference in browser storage disables capture and is reasserted on every connection. It retries transient consent-sync failures, then disconnects fail-closed only when an opt-out acknowledgement still cannot be confirmed.
 - `apps/ios/ADE/Services/ProductAnalytics.swift` owns the native iOS policy, identity, budget, default-on behavior, and direct transport. There is no native analytics preference or consent prompt. `PrivacyInfo.xcprivacy` files for ADE, the App Clip, and widgets declare the shipped privacy surface.
 - `apps/web/src/lib/marketingAnalytics.ts`, `marketingAnalyticsBrowser.ts`, and `components/MarketingAnalyticsBridge.tsx` own the public site's separate consent, taxonomy, budget, and direct browser transport.
 
@@ -156,7 +156,7 @@ Host-recorded mobile mutations may still appear in the canonical `ade_*` namespa
 
 ### Public marketing site
 
-The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It requires an affirmative browser-local choice and uses a separate `ade_marketing_*` namespace.
+The public-site implementation is `apps/web/src/lib/marketingAnalytics.ts` and `marketingAnalyticsBrowser.ts`, mounted by `MarketingAnalyticsBridge.tsx`. It is default-on with a browser-local opt-out (an explicit "false" preference, settable on /privacy) and uses a separate `ade_marketing_*` namespace.
 
 Its durable browser-local ceiling is 40 events per UTC day: 1 app open, 12 screen views, 12 conversion CTA clicks, 16 other feature clicks, 3 coarse browser error categories, and 1 budget summary. A CTA click emits only `ade_marketing_cta_clicked`, never a duplicate feature event. Per-screen/per-key caps and deduplication windows are tighter still. If durable storage is unavailable, analytics fails closed so reloads cannot bypass the budget.
 
@@ -174,7 +174,7 @@ The browser sends events directly to `https://us.i.posthog.com/i/v0/e/`. It does
 ## Consent and kill switches
 
 - Desktop/runtime builds are default-on when correctly configured and expose a durable opt-out in Settings. The machine-wide disable marker immediately stops all local clients and cancels queued delivery.
-- Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site still require an affirmative first-run choice before capture.
+- Native iOS is default-on and has no in-app opt-out. Hosted web and the public marketing site are default-on with a durable browser-local opt-out (explicit "false" preference); there is no first-run consent prompt.
 - `ADE_DISABLE_PRODUCT_ANALYTICS=1` disables the desktop/runtime service.
 - Development builds are analytics-inert unless a developer explicitly sets `ADE_ENABLE_PRODUCT_ANALYTICS_IN_DEVELOPMENT=1`.
 - Tests disable analytics automatically.

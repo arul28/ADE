@@ -2752,9 +2752,7 @@ app.whenReady().then(async () => {
       logger,
       projectRoot,
       projectId,
-      baseRef,
       freshProject: !hadAdeDir,
-      laneService,
       projectConfigService,
     });
 

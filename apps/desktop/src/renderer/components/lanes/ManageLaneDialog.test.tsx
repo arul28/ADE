@@ -81,7 +81,6 @@ function makeProps(overrides: Partial<DialogProps> = {}): DialogProps {
     laneActionStatus: null,
     laneActionError: null,
     laneActionKind: null,
-    onAdoptAttached: vi.fn(),
     onArchive: vi.fn(),
     onDelete: vi.fn(),
     onAppearanceChanged: vi.fn(),
@@ -233,6 +232,26 @@ describe("ManageLaneDialog tabs", () => {
         forceDirty: true,
       });
     });
+  });
+
+  // Delete is real for every lane type now — an attached lane is deleted, not
+  // "unlinked" — so the checklist must not promise the folder survives.
+  it("describes deleting an attached lane's worktree the same as any other", async () => {
+    const attached = makeLane({ laneType: "attached", attachedRootPath: "/elsewhere/checkout" });
+    render(
+      <ManageLaneDialog
+        {...makeProps({
+          managedLane: attached,
+          allLanes: [attached],
+          deleteSelection: { worktree: true, localBranch: false, remoteBranch: false },
+        })}
+      />,
+    );
+
+    await screen.findByRole("button", { name: /delete lane/i });
+    expect(screen.getByText("Removes the working folder and ADE registration.")).toBeTruthy();
+    expect(screen.queryByText(/unlink from ade/i)).toBeNull();
+    expect(screen.queryByText(/keeps the folder/i)).toBeNull();
   });
 
   it("disables the delete button when nothing is selected", async () => {

@@ -345,9 +345,11 @@ Runtime support files outside `services/sync/`:
   a user-visible failure can be joined to the Worker's structured lifecycle
   record without logging an account token or response body.
 - `apps/desktop/src/renderer/webclient/workspace/WebMachineSessionManager.ts`
-  and `WebWorkspaceHub.tsx` — hosted-browser directory/session projection. The
-  Hub merges account rows with browser-saved environments, while the manager
-  serializes admission into a four-client pool, reports
+  and `workspace/webWorkspaceModel.ts` — hosted-browser directory/session
+  projection. `mergeWebMachines` merges account rows with browser-saved
+  environments and cached catalogs into one row per physical machine, rendered
+  by `WebConnectionsChip.tsx` (the top-bar popover that replaced the Hub page),
+  while the manager serializes admission into a four-client pool, reports
   Live/Reconnecting/Parked/Offline, retains parked catalogs, and reconnects a
   parked machine when its project or Chats surface is selected.
 - `apps/desktop/src/renderer/webclient/adapter/federated.ts` — maps the shared
@@ -701,7 +703,24 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   the peer declared `chunkedEnvelopes`, and protocol-range rejection through a
   typed uncompressed `hello_error` before close code `4406`,
   changeset fan-out + ack tracking (bounded, windowed exports and smaller-batch
-  recovery from the last acknowledged cursor — see `crdt-model.md`), per-peer
+  recovery from the last acknowledged cursor — see `crdt-model.md`),
+  bounded parallel reads on the per-peer envelope queue (up to
+  `MAX_CONCURRENT_PEER_READS = 4` reads overlap, while every other envelope
+  stays a barrier: a write waits for all preceding work and every later read
+  waits for that write, so a read still observes every mutation the peer sent
+  before it, and the only new interleaving is read-with-read — which these
+  services already face from the desktop renderer's parallel IPC calls. It
+  replaced one fully serialized chain, where a cold search-index build or a git
+  blame head-of-line-blocked every other read from the same client.
+  `isConcurrentReadEnvelope` classifies conservatively: file reads by action
+  name, remote commands only when the method segment is a plain `get*` / `list*`
+  / `read*` / `search*` accessor, and everything else — including verbs that
+  only look harmless, like `git.fetch` — is a write. A read waits for the
+  preceding write barrier *before* taking a slot, so it cannot starve an
+  earlier read the write is itself waiting on, and a released slot is handed
+  straight to the longest-waiting read to preserve FIFO order. The handler
+  timeout starts when the handler starts, never while the envelope waits its
+  turn), per-peer
   foreground-first scheduling (each peer has its own serialized
   chat/changeset-poll chain, so a slow transcript read cannot hold other peers;
   queued foreground envelopes or active-chat socket pressure defer background
@@ -1221,6 +1240,13 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
   WebSocket because `ws` emits that termination error asynchronously. The
   failure is therefore contained in the probe result and cannot escape as an
   uncaught exception that terminates the machine runtime.
+- `headlessProjectLaneCount.ts` — `headlessProjectLaneCount(rootPath)`, the one
+  lane count both the project-open path and the machine's project catalog use.
+  `laneService.list` counts rows without checking the worktree still exists, so
+  a project with one deleted lane reported N on open and N−1 in the catalog —
+  a visible flicker on the phone and in the browser's recents. The catalog path
+  fills counts in only for projects whose root is actually present on this
+  machine, skipping disk work for roots that are not.
 - `relayAuthorization.ts` — lease renewal for already-authenticated Relay
   peers. A capable controller refreshes before expiry with a DPoP signature
   bound to the exact token bytes, device id, host challenge, timestamp, and
@@ -1413,7 +1439,7 @@ iOS service files (`apps/ios/ADE/Services/`):
   timeout and legacy command fallback, lane
   reparent payload building with the optional stack base-branch
   override, project hub/catalog state, active-project scoping,
-  unregistered-worktree discovery, and local project-list hiding for
+  and local project-list hiding for
   "Remove from list" so cached DB rows and runtime catalog rows for
   the same root disappear together.
 - `SyncConnectionRace.swift` — the single happy-eyeballs race that dials
@@ -2012,6 +2038,25 @@ Every command action has a `SyncRemoteCommandPolicy`:
   queueable?: boolean;
 }
 ```
+
+`viewerAllowed: false` is the gate for anything that hands a paired viewer a
+credential or lets it mint one. `sync.getWebPairingInfo` and
+`sync.getDesktopPairingInfo` return the raw pairing PIN and a ready-to-use
+pairing URL, so a viewer could onboard further devices without the owner;
+`cto.setLinearToken` / `cto.clearLinearToken` are direct credential-store
+writes that accept an arbitrary secret — or wipe the owner's — from whatever
+device is on the socket. Paired viewers get the interactive
+`*LinearMobileOAuth` pair instead, whose token Linear mints against a
+host-issued session. The registry is the gate here, not the absence of client
+wiring.
+
+`projectConfig.get` and `projectConfig.save` stay viewer-allowed but redact:
+`ai.apiKeys` holds live provider API keys and the top-level `providers` bag is
+an unvalidated passthrough that historically carried the same, so reads drop
+both and writes keep whatever is already on disk. The write side matters as
+much as the read side, because every Settings section saves a get → edit → save
+round trip of the whole file — a redacted read fed back verbatim would
+otherwise erase the host's keys.
 
 Plus a scope (`runtime` or `project`) on the descriptor. The
 runtime-declared policy and scope are the authority: the iOS app reads

@@ -54,7 +54,12 @@ targets for the legacy IPC path.
   polling.
 - `apps/desktop/src/main/services/files/fileService.ts` — directory
   listing, paginated child loading, Git status decorations, range reads,
-  blame, atomic writes, quick open, cross-file search, path safety.
+  blame, atomic writes, quick open, cross-file search, path safety. Its
+  decoration response is capped (see [Git status overlay](#git-status-overlay)),
+  and its read path collapses what used to be up to three opens into one: above
+  the 1 MiB text cap it reads a single 256 KB prefix, in the 256 KB–1 MiB band
+  it sniffs an 8 KB prefix first so a 900 KB video is not read whole and thrown
+  away, and at or below 256 KB it reads the file once and sniffs its own head.
 - `apps/desktop/src/main/services/files/externalFilesWorkspaceRegistry.ts`
   — local-only registry for files or folders opened from outside the active
   project through Finder / OS open-file events or renderer drag-and-drop.
@@ -311,6 +316,24 @@ not silently clobber work. Dirty Monaco buffers are also published into
 the renderer dirty-buffer map for the active workspace so agent file
 reads can see unsaved editor-only text.
 
+A change event carries an optional `origin`. The web adapter stamps
+`origin: "self"` on the events it synthesizes for its own writes, and the
+workbench treats a self-originated `modified` as neither a cache invalidation
+nor a tab reload — the editor already holds those bytes and primed the cache,
+and on a slow relay the echo of your own save could otherwise clobber the
+buffer.
+
+Two shapes of event get special handling. An event with neither `path` nor
+`oldPath` is a path-less "something moved" hint — the web adapter's CRR
+invalidation fans one out per workspace — so it queues a full refresh throttled
+to one every `FULL_REFRESH_MIN_INTERVAL_MS = 5_000`, rather than paying a
+workspace list plus root listing plus git sweep per hint. And an event whose
+path is the empty string means the workspace root, which is distinct from the
+field being absent; conflating the two meant root-level changes never
+refreshed. A plain `modified` event no longer re-lists the tree at all, since a
+content-only change cannot alter the listing; it only queues a decoration
+refresh.
+
 ## Quick open and cross-file search
 
 `FileSearchIndexService` maintains a flat list of file paths per
@@ -341,6 +364,50 @@ rollups without refetching the tree. Remote runtimes that do not expose the
 optional `file.refreshGitDecorations` action are treated as decoration-missing,
 not tree-load failures; the remote connection pool returns an empty decoration
 set with an optional-action hint.
+
+The decoration response is bounded, because an unbounded dirty tree (an
+`rm -rf`, a committed build output) produces one oversized RPC payload, and one
+oversized payload kills the whole desktop↔brain socket. `fileService` caps at
+`MAX_GIT_DECORATION_ENTRIES = 20_000` entries and
+`MAX_GIT_DECORATION_BYTES = 2 MiB` of estimated serialized size — far under the
+socket's own ceiling, so the rest of the response keeps headroom. Files and
+directories share that single budget: files are capped first, directories
+against what is left, since both ride the same response and independent caps
+would let the pair overrun together. When either budget binds, entries are
+sorted shallowest-first so the visible near-root decorations survive and the
+deep tail is what is dropped, and an entry that would overrun is skipped rather
+than ending the loop, so one pathological path does not forfeit the room every
+shorter path after it would still fit in.
+
+Truncation is never silent: the response sets `truncated`, and the workbench
+renders a muted **"Some git decorations hidden (large change set)"** strip
+under the explorer. An undecorated file would otherwise be indistinguishable
+from a clean one, which reads as a false "everything is committed".
+
+On mount, `refreshRoot` issues the tree listing and the decoration fetch in one
+`Promise.all` and applies both in the same `setTree` — one round trip instead of
+two, which is the dominant mount cost over a relay. That path passes
+`forceFresh: false` so the host's short status cache can serve it; only the
+explicit refresh action forces a fresh scan.
+
+## Cache-first open, then revalidate
+
+`useFileContent.ts` keeps a bounded LRU of initial `readFile` payloads keyed by
+workspace and path (`MAX_CACHE = 48`). Opening a file paints from that cache
+when it hits, so reopening a file you just closed or previewed costs zero round
+trips — on the hosted web client, zero relay hops.
+
+Nothing invalidates that LRU on its own from the other side: the web client has
+no host-side watcher across the relay, and the desktop watcher only runs while
+the Files tab is active. So a cache-painted open is followed by a background
+`revalidateOpenedFile`, which re-reads and swaps the viewer only if the bytes
+genuinely differ (`sameFileContent` compares content, size, total size,
+encoding, and the binary/partial flags — `FileContent` carries no timestamp, so
+this is exact rather than heuristic). Three rules keep it safe: a dirty tab is
+checked *before* the read and skipped entirely, so unsaved edits are never
+discarded and a dirty tab costs nothing; dirtiness is re-checked after the
+await; and a read that throws returns without priming, because a failed read
+must not poison the cache — the next explicit read surfaces the error.
 
 ## Large-file and range reads
 

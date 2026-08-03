@@ -130,6 +130,4 @@ export type ProductAnalyticsStatus = {
   acceptedToday: number;
   droppedToday: number;
   day: string;
-  /** Browser-local first-run choice is still required before collection. */
-  consentRequired?: boolean;
 };

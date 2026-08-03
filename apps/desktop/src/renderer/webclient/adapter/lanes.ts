@@ -1,12 +1,13 @@
-import type {
-  ArchiveAndReclaimLaneResult,
-  LaneLifecycleEvent,
-  LaneListSnapshot,
-  ResolveLaneBranchDriftResult,
-  RestoreLaneResult,
+import {
+  LANES_INVALIDATED_LANE_ID,
+  type ArchiveAndReclaimLaneResult,
+  type LaneLifecycleEvent,
+  type LaneListSnapshot,
+  type ResolveLaneBranchDriftResult,
+  type RestoreLaneResult,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
+import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
 
 export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes"> {
   const { commands, events } = infra;
@@ -22,10 +23,13 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
   infra.addDispose(
     events.on("lanesInvalidated", (event) => {
       commands.invalidateCache(["lanes.list", "lanes.refreshSnapshots"]);
+      // A table invalidation says the lane set changed, not what happened to
+      // which lane. Borrowing a real transition type here made every refresh
+      // nudge read as a user-visible archive.
       events.emit("lanesLifecycle", {
-        type: "lane-archived",
-        laneId: "__ade_web_invalidation__",
-        laneName: "Lanes changed",
+        type: "lanes-invalidated",
+        laneId: LANES_INVALIDATED_LANE_ID,
+        laneName: "",
       });
       events.emit("rebaseInvalidated", event);
     })
@@ -33,7 +37,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
 
   const lanes: Record<string, unknown> = {
     list: (args?: unknown, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("lanes.list", pin);
+      assertWebRuntimePinRoutable("lanes.list", pin, infra);
       return commands.call("lanes.list", asRecord(args), {
         fallback: [],
         idempotent: true,
@@ -77,9 +81,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
         idempotent: false,
       }),
-    attach: (args: unknown) => call("lanes.attach", args, null, false),
-    listUnregisteredWorktrees: () => call("lanes.listUnregisteredWorktrees", {}, []),
-    adoptAttached: (args: unknown) => call("lanes.adoptAttached", args, null, false),
     rename: async (args: unknown) => {
       await call("lanes.rename", args, undefined, false);
     },

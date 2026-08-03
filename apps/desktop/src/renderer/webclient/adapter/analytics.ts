@@ -33,25 +33,16 @@ function fallbackStatus(enabled: boolean): ProductAnalyticsStatus {
     acceptedToday: 0,
     droppedToday: 0,
     day: new Date().toISOString().slice(0, 10),
-    consentRequired: hasEnabledPreference() === false,
   };
 }
 
-function hasEnabledPreference(): boolean {
-  if (typeof window === "undefined") return true;
-  try {
-    return window.localStorage.getItem(WEB_ANALYTICS_ENABLED_KEY) !== null;
-  } catch {
-    return false;
-  }
-}
-
+// Analytics are on unless the browser has explicitly opted out in Settings.
 function readEnabledPreference(): boolean {
   try {
     return typeof window === "undefined"
-      || window.localStorage.getItem(WEB_ANALYTICS_ENABLED_KEY) === "true";
+      || window.localStorage.getItem(WEB_ANALYTICS_ENABLED_KEY) !== "false";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -74,7 +65,6 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
     ...remote,
     enabled,
     effective: enabled && remote.effective,
-    consentRequired: hasEnabledPreference() === false,
   });
 
   const getStatus = async (): Promise<ProductAnalyticsStatus> => {
@@ -126,7 +116,7 @@ export function createAnalyticsNamespace(infra: AdapterInfra): WebAnalyticsNames
   if (typeof window !== "undefined" && typeof window.addEventListener === "function") {
     const onStorage = (event: StorageEvent): void => {
       if (event.key !== WEB_ANALYTICS_ENABLED_KEY) return;
-      const nextEnabled = event.newValue === "true";
+      const nextEnabled = event.newValue !== "false";
       if (nextEnabled === enabled) return;
       enabled = nextEnabled;
       void syncClientConsent().catch(() => undefined);

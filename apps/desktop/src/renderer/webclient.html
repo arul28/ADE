@@ -7,15 +7,42 @@
     <link rel="preconnect" href="https://ade-account-directory-production.arulsharma1028.workers.dev" crossorigin />
     <title>ADE</title>
     <style>
+      /* The app shell sizes itself with `h-full`, a percentage that resolves to
+         nothing unless every ancestor has a definite height. `min-height` alone
+         left #root auto-height, collapsing the whole app to content height. */
       html,
       body,
       #root {
+        height: 100%;
         min-height: 100%;
+      }
+
+      /* The app never scrolls the document: every surface owns its own scroll
+         container, exactly as it does inside the Electron window (which has no
+         document scrollbar to hand overflow to). Giving these elements a
+         definite height creates that scrollbar in the browser, so anything that
+         overflows the shell — a banner stacked beside the `h-full` AppShell, a
+         terminal viewport that declines a wheel event — would scroll the WHOLE
+         page instead of the pane under the pointer. Contain it here. */
+      html,
+      body {
+        overflow: hidden;
+        overscroll-behavior: none;
       }
 
       body {
         margin: 0;
         background: #0b0b0f;
+      }
+
+      /* xterm draws its own scrollbar as plain divs inside
+         `.xterm-scrollable-element` (see @xterm/xterm/css/xterm.css). It is
+         display-only chrome: scrolling is driven by the wheel handler and
+         `scrollLines`, so hiding the bar costs no functionality. Web only —
+         desktop loads index.html and is untouched by this file. */
+      .xterm .xterm-scrollable-element > .scrollbar,
+      .xterm .scrollbar {
+        display: none !important;
       }
 
       .ade-splash {

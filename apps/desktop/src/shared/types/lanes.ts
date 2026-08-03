@@ -226,6 +226,20 @@ export type LaneListSnapshot = {
   autoRebaseStatus: AutoRebaseLaneStatus | null;
   conflictStatus: ConflictStatus | null;
   stateSnapshot: LaneStateSnapshotSummary | null;
+  /**
+   * @deprecated Wire compatibility only — always `false`, read by nothing.
+   * There is no adopt operation left: every worktree is an ordinary lane. But
+   * shipped iOS builds decode `LaneListSnapshot` with this as a NON-optional
+   * `Bool`, and the host updates before the phone does, so an emitter that
+   * drops the key blanks the lane list on every not-yet-updated device.
+   * Required, despite being dead weight for every reader: this field has been
+   * dropped twice, and as an optional it typechecks clean when an emitter
+   * forgets it, then vanishes silently from the JSON. Required makes the
+   * compiler the guard rather than a test someone has to remember to write.
+   * Fixtures pay one line for that. Removable once the minimum supported iOS
+   * build decodes it as optional — check the OLDEST build still in the field,
+   * not `main`.
+   */
   adoptableAttached: boolean;
 };
 
@@ -327,21 +341,6 @@ export type LaneBranchSwitchResult = {
   lane: LaneSummary;
   previousBranchRef: string;
   activeWork: LaneBranchActiveWorkItem[];
-};
-
-export type AttachLaneArgs = {
-  name: string;
-  attachedPath: string;
-  description?: string;
-};
-
-export type UnregisteredLaneCandidate = {
-  path: string;
-  branch: string;
-};
-
-export type AdoptAttachedLaneArgs = {
-  laneId: string;
 };
 
 export type RenameLaneArgs = {
@@ -486,6 +485,12 @@ export type LaneDeleteEvent = {
 };
 
 /**
+ * Placeholder lane id on a `lanes-invalidated` event. There is no lane behind
+ * it, so any surface that names a lane must skip events carrying it.
+ */
+export const LANES_INVALIDATED_LANE_ID = "__ade_web_invalidation__";
+
+/**
  * Fired once when a lane reaches a lifecycle transition, or when its persisted
  * branch identity changes and every renderer surface must refresh. Distinct from
  * {@link LaneDeleteEvent}, which streams per-step delete progress; this fires a
@@ -503,7 +508,15 @@ export type LaneLifecycleEvent = {
     | "lane-unarchived"
     | "lane-reclaimed"
     | "lane-restored"
-    | "lane-deleted";
+    | "lane-deleted"
+    /**
+     * "Something about the lane set changed; re-read it." Carries no claim
+     * about which lane or what happened, so nothing user-visible may be worded
+     * from it. Transports without a per-lane change feed (the web client's
+     * coarse table invalidations) emit this instead of borrowing a real
+     * transition type.
+     */
+    | "lanes-invalidated";
   laneId: string;
   laneName: string;
   previousLaneName?: string | null;

@@ -67,8 +67,7 @@ struct LaneDetailScreen: View {
         rebaseSuggestion: detail.rebaseSuggestion,
         autoRebaseStatus: detail.autoRebaseStatus,
         conflictStatus: detail.conflictStatus,
-        stateSnapshot: detail.stateSnapshot,
-        adoptableAttached: detail.lane.laneType == "attached" && detail.lane.archivedAt == nil
+        stateSnapshot: detail.stateSnapshot
       )
     }
     return allLaneSnapshots.first(where: { $0.lane.id == laneId }) ?? initialSnapshot

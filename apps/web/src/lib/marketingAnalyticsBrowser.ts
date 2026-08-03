@@ -33,11 +33,12 @@ declare global {
   }
 }
 
+// Analytics are on unless the visitor has explicitly opted out on /privacy.
 function safePreferenceRead(): boolean {
   try {
-    return window.localStorage.getItem(PREFERENCE_STORAGE_KEY) === "true";
+    return window.localStorage.getItem(PREFERENCE_STORAGE_KEY) !== "false";
   } catch {
-    return preferenceOverride ?? false;
+    return preferenceOverride ?? true;
   }
 }
 
@@ -100,15 +101,6 @@ export function isMarketingAnalyticsEnabled(): boolean {
 
 export function isMarketingAnalyticsConfigured(): boolean {
   return analytics !== null;
-}
-
-export function hasMarketingAnalyticsPreference(): boolean {
-  if (typeof window === "undefined") return false;
-  try {
-    return window.localStorage.getItem(PREFERENCE_STORAGE_KEY) !== null;
-  } catch {
-    return preferenceOverride !== undefined;
-  }
 }
 
 export function setMarketingAnalyticsEnabled(enabled: boolean): void {

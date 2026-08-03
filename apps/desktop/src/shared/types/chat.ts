@@ -1995,6 +1995,16 @@ export type AgentChatImportExternalSessionArgs = {
 export type AgentChatImportExternalSessionResult = {
   chatSessionId: string;
   chatSummary: AgentChatSessionSummary;
+  /**
+   * The provider-native id the imported chat is actually bound to. It differs
+   * from the requested external id whenever the import copied the session — a
+   * Codex fork thread, or a transplanted Claude transcript — and the caller
+   * needs it to record that copy as ADE-created rather than a new session to
+   * import. A continue-in-place import binds to the source thread and returns
+   * the requested external id, so every import can name its target: required,
+   * because an unnamed fork target is a copy nothing marks as ADE-created.
+   */
+  providerTargetId: string;
 };
 
 /**
@@ -2302,6 +2312,13 @@ export type AgentChatSuggestLaneNameArgs = {
   prompt: string;
   /** Registry model ID used to run the naming call (e.g. first selected model). */
   modelId: string;
+  /**
+   * Registry model ID the chat itself was launched with. Distinct from `modelId`,
+   * which is the configured naming model when one is set — the naming fallback
+   * chain needs the launched model even then, so it can escape a naming provider
+   * that is broken at the provider level.
+   */
+  chatModelId?: string;
   /** Optional fallback used when model-backed naming is disabled or unavailable. */
   fallbackName?: string;
   /** Exact temporary branch created for this automatic lane. */

@@ -326,10 +326,8 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "putMachinePreferences",
   ],
   lane: [
-    "adoptAttached",
     "archive",
     "archiveAndReclaim",
-    "attach",
     "attachLinearIssueToSession",
     "cancelDelete",
     "create",
@@ -365,7 +363,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "listSnapshots",
     "listRebaseSuggestions",
     "listTemplates",
-    "listUnregisteredWorktrees",
     "listLinearIssuesForLaneSessions",
     "listLinearIssuesForSession",
     "linkLinearIssues",
@@ -688,7 +685,6 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
   onboarding: [
     "complete",
     "detectDefaults",
-    "detectExistingLanes",
     "getStatus",
     "markGlossaryTermSeen",
     "setDismissed",

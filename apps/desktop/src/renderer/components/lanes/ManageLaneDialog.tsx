@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from "react";
 import {
-  ArrowSquareOut,
   WarningCircle,
   Archive,
   Trash,
@@ -384,7 +383,6 @@ export function ManageLaneDialog({
   laneActionStatus,
   laneActionError,
   laneActionKind,
-  onAdoptAttached,
   onArchive,
   onDelete,
   onAppearanceChanged,
@@ -404,8 +402,7 @@ export function ManageLaneDialog({
   laneActionBusy: boolean;
   laneActionStatus: string | null;
   laneActionError: string | null;
-  laneActionKind?: "delete" | "archive" | "adopt" | null;
-  onAdoptAttached: () => void;
+  laneActionKind?: "delete" | "archive" | null;
   onArchive: () => void;
   onDelete: () => void;
   onAppearanceChanged?: () => void | Promise<void>;
@@ -415,18 +412,11 @@ export function ManageLaneDialog({
   const lanes = managedLanes?.length ? managedLanes : managedLane ? [managedLane] : [];
   const isBatch = lanes.length > 1;
   const allPrimary = lanes.length > 0 && lanes.every((l) => l.laneType === "primary");
-  const hasAttached = lanes.some((l) => l.laneType === "attached");
   const hasAnyDirty = lanes.some((l) => l.status.dirty);
   const singleLane = !isBatch ? lanes[0] ?? null : null;
 
-  const isAttached = !isBatch && lanes[0]?.laneType === "attached";
   const singleLaneId = singleLane?.id ?? null;
   const singleLaneType = singleLane?.laneType ?? null;
-  const worktreeRowTitle = hasAttached ? "Unlink from ADE" : "Worktree";
-  const worktreeRowHint = hasAttached
-    ? "Stops ADE managing this lane. Keeps the folder + branch."
-    : "Removes the working folder and ADE registration.";
-
   const [deleteRisk, setDeleteRisk] = useState<LaneDeleteRisk | null>(null);
   const [reclaimRisk, setReclaimRisk] = useState<LaneReclaimRisk | null>(null);
   const [reclaimConfirm, setReclaimConfirm] = useState("");
@@ -618,26 +608,6 @@ export function ManageLaneDialog({
         </div>
       ) : (
         <div className="space-y-4" data-tour="lanes.manageDialog">
-          {!isBatch && isAttached ? (
-            <section className="rounded-xl border border-sky-400/20 bg-gradient-to-br from-sky-500/[0.1] via-sky-500/[0.03] to-white/[0.02] p-4 shadow-card">
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                <div className="min-w-0">
-                  <div className="flex items-center gap-2 text-sm font-semibold text-sky-200">
-                    <ArrowSquareOut size={15} className="shrink-0" />
-                    Move to ADE-managed worktree
-                  </div>
-                  <div className="mt-1.5 text-xs leading-relaxed text-sky-100/75">
-                    Copies registration into <span className="font-mono text-sky-100/90">.ade/worktrees</span> so ADE can manage lifecycle
-                    (open, env, delete) the same way as other lanes. Does not rewrite git history.
-                  </div>
-                </div>
-                <Button size="sm" variant="outline" className="shrink-0 border-sky-400/25 text-sky-100" data-tour="lanes.manageDialog.adopt" disabled={laneActionBusy} onClick={onAdoptAttached}>
-                  Move
-                </Button>
-              </div>
-            </section>
-          ) : null}
-
           <ManageLaneTabBar tabs={tabDefs} active={activeTab} onChange={setActiveTab} />
 
           {activeTab === "appearance" && singleLane ? (
@@ -783,8 +753,6 @@ export function ManageLaneDialog({
                 disabled={laneActionBusy}
                 onToggle={toggleDeleteTarget}
                 onToggleAll={toggleSelectAll}
-                worktreeTitle={worktreeRowTitle}
-                worktreeHint={worktreeRowHint}
                 risk={deleteRisk}
                 lane={singleLane}
               />
@@ -871,8 +839,6 @@ function DeleteTargetChecklist({
   disabled,
   onToggle,
   onToggleAll,
-  worktreeTitle,
-  worktreeHint,
   risk,
   lane,
 }: {
@@ -881,8 +847,6 @@ function DeleteTargetChecklist({
   disabled: boolean;
   onToggle: (key: keyof LaneDeleteSelection, next: boolean) => void;
   onToggleAll: () => void;
-  worktreeTitle: string;
-  worktreeHint: string;
   risk: LaneDeleteRisk | null;
   lane: LaneSummary | null;
 }) {
@@ -894,8 +858,8 @@ function DeleteTargetChecklist({
     {
       key: "worktree",
       icon: <Cube size={15} weight="duotone" />,
-      title: worktreeTitle,
-      hint: worktreeHint,
+      title: "Worktree",
+      hint: "Removes the working folder and ADE registration.",
     },
     {
       key: "localBranch",
@@ -986,33 +950,26 @@ function buildDeleteRemovalPreview(
   const laneColorStyle = laneColor ? { color: laneColor } : undefined;
 
   if (selection.worktree) {
-    if (lane.laneType === "attached") {
-      items.push({
-        icon: <ArrowSquareOut size={12} className="text-red-300/80" />,
-        label: "Unlink from ADE (keep branch)",
-      });
-    } else {
-      items.push({
-        icon: (
-          <LaneIcon
-            size={13}
-            weight="duotone"
-            className={laneColor ? "shrink-0" : "shrink-0 text-red-300/80"}
-            style={laneColorStyle}
-          />
-        ),
-        label: (
-          <span className="flex min-w-0 flex-col">
-            <span className="font-semibold" style={laneColorStyle}>
-              {lane.name}
-            </span>
-            {lane.worktreePath ? (
-              <span className="break-all text-[11px] text-muted-fg/55">{lane.worktreePath}</span>
-            ) : null}
+    items.push({
+      icon: (
+        <LaneIcon
+          size={13}
+          weight="duotone"
+          className={laneColor ? "shrink-0" : "shrink-0 text-red-300/80"}
+          style={laneColorStyle}
+        />
+      ),
+      label: (
+        <span className="flex min-w-0 flex-col">
+          <span className="font-semibold" style={laneColorStyle}>
+            {lane.name}
           </span>
-        ),
-      });
-    }
+          {lane.worktreePath ? (
+            <span className="break-all text-[11px] text-muted-fg/55">{lane.worktreePath}</span>
+          ) : null}
+        </span>
+      ),
+    });
   }
 
   if (selection.localBranch && branchLabel) {

@@ -1296,6 +1296,43 @@ describe("SessionListPane", () => {
       );
     });
 
+    /**
+     * One session, one row — and the survivor is the LOCAL record. Only the DOM
+     * can prove the second half: the local path calls `onSelectSession` with
+     * three arguments, the foreign chat path adds a fourth binding, so the
+     * arity pins which copy survived. Builder-level coverage lives in
+     * `crossMachineLanes.test.ts`.
+     */
+    it("renders one row when a session id is in both the local roster and the union", () => {
+      seedForeignMachine();
+      const shared = makeSession({
+        id: "session-elsewhere",
+        laneId: "lane-elsewhere",
+        laneName: "Elsewhere Lane",
+        title: "Chat on the other machine",
+      });
+      const onSelectSession = vi.fn();
+      renderPane({
+        onSelectSession,
+        lanes: [makeLane({ id: "lane-elsewhere", name: "Elsewhere Lane" })],
+        runningFiltered: [shared],
+        allSessionsUnfiltered: [shared],
+        sessionsGroupedByLane: new Map([["lane-elsewhere", [shared]]]),
+      });
+
+      expect(document.querySelectorAll('[data-session-id="session-elsewhere"]')).toHaveLength(1);
+      expect(screen.getAllByText("Chat on the other machine")).toHaveLength(1);
+
+      // The surviving row is the LOCAL one: clicking it opens on the tab's own
+      // binding, with no foreign runtime pin trailing the call.
+      fireEvent.click(screen.getByRole("button", { name: /Chat on the other machine/ }));
+      expect(onSelectSession).toHaveBeenCalledWith(
+        "session-elsewhere",
+        expect.anything(),
+        ["session-elsewhere"],
+      );
+    });
+
     it("applies tool chips to foreign sessions", () => {
       seedForeignMachine();
 

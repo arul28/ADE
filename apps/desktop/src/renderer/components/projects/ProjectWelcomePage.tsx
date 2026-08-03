@@ -1,15 +1,6 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import {
-  ArrowsClockwise,
-  ChatCircleDots,
-  DesktopTower,
-  Folder,
-  GitMerge,
-  Plus,
-  PushPin,
-  X,
-} from "@phosphor-icons/react";
+import { ChatCircleDots, Plus } from "@phosphor-icons/react";
 import { useAppStore } from "../../state/appStore";
 import {
   COLORS,
@@ -23,538 +14,34 @@ import {
   groupRecentProjects,
   recentProjectLocationKey,
   type RecentProjectGroup,
-  type RecentProjectLocation,
 } from "../app/projectTabGrouping";
+import { isWebClientMode } from "../../lib/webClientMode";
+import { useOptionalWebWorkspace, useWebMachines } from "../../webclient/workspace/WebWorkspaceContext";
+import { webRecentProjects } from "../../webclient/workspace/webWorkspaceModel";
+import { RecentProjectRow, type WebRowChrome } from "./ProjectWelcomeWebRows";
+import {
+  WebAddProjectNotice,
+  WebZeroMachines,
+  webZeroMachinesNotice,
+} from "./ProjectWelcomeWebNotices";
 import { MergeWorktreeProjectDialog } from "./MergeWorktreeProjectDialog";
-import { WorktreeBadge } from "./WorktreeBadge";
-import { deriveIconAccentColor } from "../../lib/iconAccent";
-import { abbreviateHome } from "../../lib/pathUtils";
-import { toRelativeTime } from "../graph/graphHelpers";
 import type {
-  ProjectIcon,
   RecentProjectSummary,
   RemoteRuntimeConnectionSnapshot,
   RemoteRuntimeConnectionState,
 } from "../../../shared/types";
 
-function ProjectIconArtwork({
-  dataUrl,
-  fallback,
-  onAccentColor,
-}: {
-  dataUrl: string | null | undefined;
-  fallback: ReactNode;
-  // Reports the icon's sampled accent color (or null) so the row can tint its
-  // tile to match the logo. Fires null until an icon resolves.
-  onAccentColor?: (color: string | null) => void;
-}) {
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [dataUrl]);
-
-  useEffect(() => {
-    let cancelled = false;
-    if (!dataUrl || failed) {
-      onAccentColor?.(null);
-      return () => {
-        cancelled = true;
-      };
-    }
-    deriveIconAccentColor(dataUrl)
-      .then((color) => {
-        if (!cancelled) onAccentColor?.(color);
-      })
-      .catch(() => {
-        if (!cancelled) onAccentColor?.(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [dataUrl, failed, onAccentColor]);
-
-  if (dataUrl && !failed) {
-    return (
-      <img
-        src={dataUrl}
-        alt=""
-        draggable={false}
-        onError={() => setFailed(true)}
-        style={{
-          width: 22,
-          height: 22,
-          borderRadius: 6,
-          objectFit: "contain",
-        }}
-      />
-    );
-  }
-
-  return <>{fallback}</>;
-}
-
-function RecentProjectIcon({
-  rootPath,
-  onAccentColor,
-}: {
-  rootPath: string;
-  onAccentColor?: (color: string | null) => void;
-}) {
-  const [icon, setIcon] = useState<ProjectIcon | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setIcon(null);
-    window.ade.project
-      .resolveIcon(rootPath)
-      .then((nextIcon) => {
-        if (!cancelled) setIcon(nextIcon);
-      })
-      .catch(() => {
-        if (!cancelled) setIcon(null);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [rootPath]);
-
-  return (
-    <ProjectIconArtwork
-      dataUrl={icon?.dataUrl}
-      fallback={<Folder size={16} weight="regular" />}
-      onAccentColor={onAccentColor}
-    />
-  );
-}
-const REMOTE_ACCENT = "#F59E0B";
-
 function recentKey(rp: RecentProjectSummary): string {
   return recentProjectLocationKey(rp);
 }
-
-// A single recents row. Local rows resolve a project icon (and tint their tile
-// with the sampled accent); remote rows use a host-resolved icon when present,
-// plus the amber machine badge and connection dot. Offline remote rows are
-// dimmed with a Reconnect affordance.
-function RecentProjectRow({
-  rp,
-  connectionState,
-  isOpen,
-  isForgetting,
-  onOpen,
-  onTogglePin,
-  onForget,
-  onMerge,
-  alsoOn = [],
-}: {
-  rp: RecentProjectSummary;
-  connectionState: RemoteRuntimeConnectionState | null;
-  isOpen: boolean;
-  isForgetting: boolean;
-  onOpen: () => void;
-  onTogglePin: () => void;
-  onForget: () => void;
-  onMerge?: () => void;
-  alsoOn?: RecentProjectLocation[];
-}) {
-  const [accentColor, setAccentColor] = useState<string | null>(null);
-  const isRemote = rp.kind === "remote" && Boolean(rp.remote);
-  const connected = connectionState === "connected";
-  const connecting = connectionState === "connecting";
-  const parked = connectionState === "parked";
-  // Remote rows are "offline" until their target reports a live connection.
-  const offline = isRemote && !connected;
-  const remoteIconDataUrl = isRemote ? rp.remote?.iconDataUrl : null;
-  const hasRemoteIcon = Boolean(remoteIconDataUrl);
-  let tileAccent = accentColor;
-  if (isRemote) {
-    tileAccent = hasRemoteIcon ? (accentColor ?? REMOTE_ACCENT) : REMOTE_ACCENT;
-  }
-  const tileBg = tileAccent
-    ? `color-mix(in srgb, ${tileAccent} 18%, transparent)`
-    : "color-mix(in srgb, var(--color-accent) 15%, transparent)";
-  const tileColor = tileAccent ?? COLORS.accent;
-  const edgeColor = isRemote ? REMOTE_ACCENT : (tileAccent ?? COLORS.accent);
-  const showRowActions = !connecting;
-  const showMergeAction = Boolean(onMerge && rp.worktreeOf && showRowActions);
-
-  const dotColor = connected
-    ? "#34D399"
-    : connecting
-      ? REMOTE_ACCENT
-      : "rgba(148,163,184,0.7)";
-
-  return (
-    <div className="group" style={{ position: "relative" }}>
-      <button
-        type="button"
-        data-tour="project.recentProject"
-        onClick={onOpen}
-        style={{
-          display: "flex",
-          alignItems: "center",
-          gap: 12,
-          padding: "12px 16px",
-          paddingRight: showMergeAction ? 90 : showRowActions ? 64 : 16,
-          width: "100%",
-          background: "rgba(255,255,255,0.02)",
-          border: `1px solid ${COLORS.border}`,
-          borderLeft: `3px solid color-mix(in srgb, ${edgeColor} 60%, transparent)`,
-          borderRadius: 12,
-          color: COLORS.textPrimary,
-          fontFamily: MONO_FONT,
-          fontSize: 12,
-          cursor: "pointer",
-          textAlign: "left",
-          transition: "all 0.2s ease",
-          backdropFilter: "blur(10px)",
-          opacity: offline ? 0.6 : 1,
-        }}
-      >
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            width: 32,
-            height: 32,
-            borderRadius: 8,
-            background: tileBg,
-            color: tileColor,
-            flexShrink: 0,
-            position: "relative",
-          }}
-        >
-          {isRemote ? (
-            <>
-              <ProjectIconArtwork
-                dataUrl={remoteIconDataUrl}
-                fallback={<DesktopTower size={18} weight="duotone" />}
-                onAccentColor={setAccentColor}
-              />
-              {hasRemoteIcon ? (
-                <span
-                  aria-hidden
-                  style={{
-                    position: "absolute",
-                    right: -3,
-                    bottom: -3,
-                    width: 14,
-                    height: 14,
-                    borderRadius: 5,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    background: "rgba(18,13,6,0.94)",
-                    border: "1px solid color-mix(in srgb, #F59E0B 62%, transparent)",
-                    color: "#FBBF24",
-                    boxShadow: "0 2px 6px rgba(0,0,0,0.35)",
-                  }}
-                >
-                  <DesktopTower size={9} weight="duotone" />
-                </span>
-              ) : null}
-            </>
-          ) : (
-            <RecentProjectIcon
-              rootPath={rp.rootPath}
-              onAccentColor={setAccentColor}
-            />
-          )}
-        </div>
-        <div style={{ overflow: "hidden", flex: 1 }}>
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 2,
-            }}
-          >
-            <span
-              style={{
-                fontWeight: 600,
-                fontSize: 13,
-                overflow: "hidden",
-                textOverflow: "ellipsis",
-                whiteSpace: "nowrap",
-              }}
-            >
-              {rp.displayName}
-            </span>
-            {isRemote && rp.remote ? (
-              <span
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  gap: 5,
-                  fontSize: 9,
-                  fontWeight: 700,
-                  letterSpacing: "0.04em",
-                  textTransform: "uppercase",
-                  padding: "2px 7px",
-                  borderRadius: 8,
-                  background: "color-mix(in srgb, #F59E0B 16%, transparent)",
-                  color: "#FBBF24",
-                  border: "1px solid color-mix(in srgb, #F59E0B 30%, transparent)",
-                  flexShrink: 0,
-                }}
-              >
-                <span
-                  aria-hidden
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: "50%",
-                    background: dotColor,
-                    animation: connecting
-                      ? "ade-recent-dot-pulse 1.1s ease-in-out infinite"
-                      : undefined,
-                  }}
-                />
-                {rp.remote.runtimeName}
-              </span>
-            ) : null}
-            {!isRemote && rp.worktreeOf ? (
-              <WorktreeBadge worktreeOf={rp.worktreeOf} />
-            ) : null}
-          </div>
-          <div
-            style={{
-              fontSize: 10,
-              color: COLORS.textDim,
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-            }}
-          >
-            {isRemote ? rp.rootPath : abbreviateHome(rp.rootPath)}
-          </div>
-          {alsoOn.length > 0 ? (
-            <div
-              style={{
-                marginTop: 3,
-                display: "flex",
-                alignItems: "center",
-                gap: 5,
-                minWidth: 0,
-                fontSize: 9,
-                color: COLORS.textMuted,
-              }}
-            >
-              <DesktopTower size={10} weight="duotone" color={REMOTE_ACCENT} />
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                Also on {alsoOn.map((location) => location.machineName).join(", ")}
-              </span>
-            </div>
-          ) : null}
-        </div>
-        <div
-          style={{
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "flex-end",
-            gap: 4,
-            flexShrink: 0,
-            minWidth: connecting ? 96 : 68,
-            maxWidth: connecting ? 116 : 96,
-          }}
-        >
-          {offline ? (
-            <span
-              style={{
-                display: "inline-flex",
-                alignItems: "center",
-                gap: 4,
-                fontSize: 9,
-                fontWeight: 700,
-                letterSpacing: "0.04em",
-                textTransform: "uppercase",
-                color: connecting ? "#FBBF24" : COLORS.textMuted,
-              }}
-            >
-              <ArrowsClockwise
-                size={11}
-                weight="bold"
-                style={
-                  connecting
-                    ? { animation: "ade-recent-spin 0.9s linear infinite" }
-                    : undefined
-                }
-              />
-              {connecting ? "Reconnecting" : parked ? "Resume" : "Reconnect"}
-            </span>
-          ) : rp.laneCount !== undefined ? (
-            <span
-              style={{
-                fontSize: 10,
-                background:
-                  "color-mix(in srgb, var(--color-accent) 20%, transparent)",
-                color: COLORS.accent,
-                padding: "2px 6px",
-                borderRadius: 10,
-                fontWeight: 600,
-              }}
-            >
-              {rp.laneCount} lane{rp.laneCount !== 1 ? "s" : ""}
-            </span>
-          ) : null}
-          {rp.lastOpenedAt && !connecting ? (
-            <span style={{ fontSize: 9, color: COLORS.textDim }}>
-              {toRelativeTime(rp.lastOpenedAt)}
-            </span>
-          ) : null}
-        </div>
-      </button>
-      {showRowActions ? (
-        <div
-          className={
-            rp.pinned ? undefined : "opacity-0 group-hover:opacity-100"
-          }
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 6,
-            display: "flex",
-            gap: 4,
-            transition: "opacity 0.15s ease",
-            zIndex: 2,
-          }}
-        >
-          {onMerge && rp.worktreeOf ? (
-            <button
-              type="button"
-              aria-label={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
-              title={`Merge into ${rp.worktreeOf.displayName} as a lane…`}
-              onClick={(e) => {
-                e.stopPropagation();
-                onMerge();
-              }}
-              style={{
-                width: 22,
-                height: 22,
-                borderRadius: 6,
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                background: "rgba(255,255,255,0.06)",
-                border: "1px solid rgba(255,255,255,0.08)",
-                color: COLORS.textDim,
-                cursor: "pointer",
-                transition: "background 0.15s ease, color 0.15s ease",
-                padding: 0,
-              }}
-              onMouseEnter={(e) => {
-                e.currentTarget.style.background =
-                  "color-mix(in srgb, var(--color-accent) 22%, transparent)";
-                e.currentTarget.style.color = COLORS.accent;
-              }}
-              onMouseLeave={(e) => {
-                e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-                e.currentTarget.style.color = COLORS.textDim;
-              }}
-            >
-              <GitMerge size={12} weight="bold" />
-            </button>
-          ) : null}
-          <button
-            type="button"
-            aria-label={
-              rp.pinned
-                ? `Unpin ${rp.displayName}`
-                : `Pin ${rp.displayName} to top`
-            }
-            aria-pressed={rp.pinned ? true : false}
-            onClick={(e) => {
-              e.stopPropagation();
-              onTogglePin();
-            }}
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: rp.pinned
-                ? "color-mix(in srgb, var(--color-accent) 26%, transparent)"
-                : "rgba(255,255,255,0.06)",
-              border: rp.pinned
-                ? "1px solid color-mix(in srgb, var(--color-accent) 45%, transparent)"
-                : "1px solid rgba(255,255,255,0.08)",
-              color: rp.pinned ? COLORS.accent : COLORS.textDim,
-              cursor: "pointer",
-              transition: "background 0.15s ease, color 0.15s ease",
-              padding: 0,
-            }}
-            title={rp.pinned ? "Unpin" : "Pin to top"}
-          >
-            <PushPin size={12} weight={rp.pinned ? "fill" : "regular"} />
-          </button>
-          <button
-            type="button"
-            aria-label={`Remove ${rp.displayName} from recents`}
-            onClick={(e) => {
-              e.stopPropagation();
-              onForget();
-            }}
-            disabled={isForgetting}
-            style={{
-              width: 22,
-              height: 22,
-              borderRadius: 6,
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "rgba(255,255,255,0.06)",
-              border: "1px solid rgba(255,255,255,0.08)",
-              color: COLORS.textDim,
-              cursor: "pointer",
-              transition: "background 0.15s ease, color 0.15s ease",
-              padding: 0,
-            }}
-            onMouseEnter={(e) => {
-              e.currentTarget.style.background = "rgba(239,68,68,0.18)";
-              e.currentTarget.style.color = "#EF4444";
-            }}
-            onMouseLeave={(e) => {
-              e.currentTarget.style.background = "rgba(255,255,255,0.06)";
-              e.currentTarget.style.color = COLORS.textDim;
-            }}
-            title="Remove from recents"
-          >
-            <X size={12} weight="bold" />
-          </button>
-        </div>
-      ) : null}
-      {isOpen ? (
-        <span
-          aria-hidden
-          style={{
-            position: "absolute",
-            top: 6,
-            left: 10,
-            fontSize: 8,
-            fontWeight: 700,
-            letterSpacing: "0.06em",
-            textTransform: "uppercase",
-            color: COLORS.accent,
-            pointerEvents: "none",
-          }}
-        >
-          Open
-        </span>
-      ) : null}
-    </div>
-  );
-}
-
 // How long the "Removed — Undo" toast stays before the forget is committed.
 const FORGET_UNDO_WINDOW_MS = 5_000;
 
+
 export function ProjectWelcomePage() {
   const navigate = useNavigate();
+  const workspace = useOptionalWebWorkspace();
+  const webMode = isWebClientMode() && workspace != null;
   const switchProjectToPath = useAppStore((s) => s.switchProjectToPath);
   const switchRemoteProject = useAppStore((s) => s.switchRemoteProject);
   const project = useAppStore((s) => s.project);
@@ -564,6 +51,7 @@ export function ProjectWelcomePage() {
     [],
   );
   const [projectBrowserOpen, setProjectBrowserOpen] = useState(false);
+  const [webAddProjectNoticeOpen, setWebAddProjectNoticeOpen] = useState(false);
   const [remoteSnapshot, setRemoteSnapshot] =
     useState<RemoteRuntimeConnectionSnapshot | null>(null);
   const applyRemoteSnapshot = useCallback(
@@ -587,7 +75,21 @@ export function ProjectWelcomePage() {
   const [connectingKeys, setConnectingKeys] = useState<Set<string>>(
     () => new Set(),
   );
+  /**
+   * The one recents row being opened on the hosted client, by row key.
+   *
+   * Not a machine key: every row on a Mac shares that Mac's connection state,
+   * so keying the "Reconnecting…" chrome off the machine lit up every card that
+   * happened to live on it. Which repo you clicked is the thing the spinner is
+   * reporting, and only the row knows that.
+   */
+  const [openingRowKey, setOpeningRowKey] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
+  // Kept apart from rowError: the recents-list error banner only renders when
+  // there are rows, and a directory retry fails precisely when there are none.
+  const [directoryRetryError, setDirectoryRetryError] = useState<string | null>(
+    null,
+  );
   const [mergeTarget, setMergeTarget] = useState<RecentProjectSummary | null>(
     null,
   );
@@ -596,13 +98,15 @@ export function ProjectWelcomePage() {
   const dragDepthRef = useRef(0);
 
   useEffect(() => {
+    if (webMode) return;
     window.ade.project
       .listRecent()
       .then(setRecentProjects)
       .catch(() => {});
-  }, []);
+  }, [webMode]);
 
   useEffect(() => {
+    if (webMode) return;
     const remoteRuntime = window.ade.remoteRuntime;
     if (!remoteRuntime?.getConnectionSnapshot) return;
     let cancelled = false;
@@ -620,7 +124,7 @@ export function ProjectWelcomePage() {
       cancelled = true;
       unsubscribe();
     };
-  }, [applyRemoteSnapshot]);
+  }, [applyRemoteSnapshot, webMode]);
 
   useEffect(
     () => () => {
@@ -641,22 +145,117 @@ export function ProjectWelcomePage() {
     return map;
   }, [remoteSnapshot]);
 
+  // ---------------------------------------------------------------------
+  // Hosted client: recents are the union of every machine's project catalog,
+  // live where a session exists and cached everywhere else, so the list paints
+  // before the first relay dial and fills in as machines come up.
+  // ---------------------------------------------------------------------
+  const webMachines = useWebMachines();
+  const webMachineByKey = useMemo(
+    () => new Map(webMachines.map((machine) => [machine.key, machine])),
+    [webMachines],
+  );
+  const webRecents = useMemo(() => webRecentProjects(webMachines), [webMachines]);
+  const activeWebMachine = useMemo(() => (
+    webMachines.find((machine) => machine.status === "live")
+    ?? webMachines.find((machine) => machine.key === workspace?.snapshot.lastActiveMachineKey)
+    ?? webMachines.find((machine) => machine.status === "available")
+    ?? webMachines[0]
+    ?? null
+  ), [webMachines, workspace?.snapshot.lastActiveMachineKey]);
+
+  useEffect(() => {
+    if (!webMode || !workspace) return;
+    // Point the federated adapter back at its machine-less fallback while the
+    // welcome surface is up, unless a project tab is still bound behind it.
+    if (!workspace.adapter.getActiveBinding()) workspace.adapter.activateHub();
+  }, [webMode, workspace]);
+
   const visibleProjectGroups = useMemo(() => {
-    const kept = recentProjects.filter((rp) => {
+    const kept = (webMode ? webRecents : recentProjects).filter((rp) => {
       if (rp.kind === "remote") return true;
       return rp.exists && !rp.rootPath.includes("ade-project");
     });
     return groupRecentProjects({
       recentProjects: kept,
-      remoteSnapshot,
+      remoteSnapshot: webMode ? null : remoteSnapshot,
     }).filter((group) => !pendingForgetKeys.has(group.id));
-  }, [pendingForgetKeys, recentProjects, remoteSnapshot]);
+  }, [pendingForgetKeys, recentProjects, remoteSnapshot, webMode, webRecents]);
 
   const connectedRemoteCount = remoteSnapshot?.connectedCount ?? 0;
+
+  // Selecting anything on the hosted client connects its machine first — a
+  // machine the account can reach is never a dead end (bug-ledger C2d).
+  const openWebProject = useCallback(
+    (machineKey: string, projectId: string, rowKey: string) => {
+      if (!workspace) return;
+      const machine = webMachineByKey.get(machineKey);
+      if (!machine) return;
+      setRowError(null);
+      setOpeningRowKey(rowKey);
+      void (async () => {
+        try {
+          const targetId = await workspace.connectMachineEntry(machine);
+          await workspace.adapter.openProject(targetId, projectId);
+          navigate(workspace.consumePendingProjectPath() ?? "/work");
+        } catch (error) {
+          setRowError(error instanceof Error ? error.message : String(error));
+        } finally {
+          setOpeningRowKey((current) => (current === rowKey ? null : current));
+        }
+      })();
+    },
+    [navigate, webMachineByKey, workspace],
+  );
+
+  // Why the hosted client is showing no machines, in the account's own words.
+  // Only computed when there is nothing to list — a populated list speaks for
+  // itself even when the last directory read failed.
+  const webZeroMachines = useMemo(() => (
+    webMode && workspace && webMachines.length === 0
+      ? webZeroMachinesNotice({
+          account: workspace.account,
+          directoryLoading: workspace.directoryLoading,
+          retryError: directoryRetryError,
+          onRetry: () => {
+            setDirectoryRetryError(null);
+            void workspace.retryDirectory().catch((error) => {
+              setDirectoryRetryError(
+                error instanceof Error ? error.message : String(error),
+              );
+            });
+          },
+          onSignIn: () => {
+            setDirectoryRetryError(null);
+            workspace.signIn();
+          },
+        })
+      : null
+  ), [directoryRetryError, webMachines.length, webMode, workspace]);
+
+  const openWebChats = useCallback(() => {
+    if (!workspace || !activeWebMachine) return;
+    setRowError(null);
+    // No row chrome to drive: this button is not a recents row, and marking its
+    // machine busy is what used to spin every card that machine happened to own.
+    void (async () => {
+      try {
+        const targetId = await workspace.connectMachineEntry(activeWebMachine);
+        await workspace.adapter.activateChats(targetId);
+        navigate("/chats");
+      } catch (error) {
+        setRowError(error instanceof Error ? error.message : String(error));
+      }
+    })();
+  }, [activeWebMachine, navigate, workspace]);
 
   const handleOpen = useCallback(
     (rp: RecentProjectSummary) => {
       setRowError(null);
+      if (webMode && rp.kind === "remote" && rp.remote) {
+        openWebProject(rp.remote.targetId, rp.remote.projectId, recentKey(rp));
+        return;
+      }
       if (rp.kind === "remote" && rp.remote) {
         const key = recentKey(rp);
         const targetId = rp.remote.targetId;
@@ -699,9 +298,11 @@ export function ProjectWelcomePage() {
     [
       cancelNewTab,
       connectionByTarget,
+      openWebProject,
       project?.rootPath,
       switchProjectToPath,
       switchRemoteProject,
+      webMode,
     ],
   );
 
@@ -818,6 +419,7 @@ export function ProjectWelcomePage() {
         if (dragDepthRef.current === 0) setIsDragOver(false);
       }}
       onDrop={handleDropFolder}
+      data-ade-web-welcome={webMode ? "true" : undefined}
       style={{
         position: "relative",
         display: "flex",
@@ -840,6 +442,38 @@ export function ProjectWelcomePage() {
           }
           @keyframes ade-recent-spin {
             to { transform: rotate(360deg); }
+          }
+          @keyframes ade-welcome-mark {
+            from { opacity: 0; transform: translateY(8px) scale(0.985); }
+            to { opacity: 1; transform: none; }
+          }
+          @keyframes ade-recent-shimmer {
+            from { transform: translateX(-60%); }
+            to { transform: translateX(160%); }
+          }
+          /* A cached row says so by shimmering until live data replaces it. */
+          [data-ade-stale="true"] { overflow: hidden; border-radius: 12px; }
+          [data-ade-stale="true"]::after {
+            content: "";
+            position: absolute;
+            inset: 0;
+            width: 45%;
+            pointer-events: none;
+            background: linear-gradient(
+              90deg,
+              transparent,
+              color-mix(in srgb, var(--color-accent) 9%, transparent),
+              transparent
+            );
+            animation: ade-recent-shimmer 2.4s ease-in-out infinite;
+          }
+          @media (prefers-reduced-motion: reduce) {
+            [data-ade-stale="true"]::after { animation: none; opacity: 0.35; }
+            [data-ade-welcome-motion] { animation: none !important; }
+          }
+          @media (pointer: coarse) {
+            [data-ade-web-welcome] [role="menuitem"],
+            [data-ade-web-welcome] [role="button"] { min-height: 44px; }
           }`}
       </style>
       {isDragOver ? (
@@ -868,18 +502,33 @@ export function ProjectWelcomePage() {
         </div>
       ) : null}
       {/* Top spacer: pushes the logo title down to ~1/3 of the screen height.
-          Paired with the 2x bottom region below so free space splits 1:2. */}
-      <div aria-hidden style={{ flex: "1 1 0%", minHeight: 32 }} />
+          Paired with the 2x bottom region below so free space splits 1:2.
+          The hosted client skips it: with no window chrome and no onboarding
+          tour anchored to the mark, that third of the screen is better spent on
+          the machines' project list, which is the only way in on web. */}
+      <div
+        aria-hidden
+        style={webMode ? { flex: "0 0 auto", height: 16 } : { flex: "1 1 0%", minHeight: 32 }}
+      />
 
       {/* Pinned header: logo + add button */}
-      <div style={{ flexShrink: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 32, paddingBottom: 16 }}>
+      <div
+        style={{
+          flexShrink: 0,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          gap: webMode ? 16 : 32,
+          paddingBottom: webMode ? 8 : 16,
+        }}
+      >
         <div style={{ textAlign: "center", maxWidth: 520 }}>
           <div
             style={{
               display: "inline-flex",
               alignItems: "center",
               justifyContent: "center",
-              marginBottom: 16,
+              marginBottom: webMode ? 4 : 16,
               filter:
                 "drop-shadow(0 0 22px color-mix(in srgb, var(--color-accent) 45%, transparent))",
             }}
@@ -887,23 +536,40 @@ export function ProjectWelcomePage() {
             <img
               src="./logo.png"
               alt="ADE Logo"
+              data-ade-welcome-motion={webMode ? "true" : undefined}
               style={{
-                width: 420,
-                height: 240,
+                width: webMode ? 300 : 420,
+                height: webMode ? 150 : 240,
                 objectFit: "contain",
                 maxWidth: "72vw",
+                ...(webMode
+                  ? { animation: "ade-welcome-mark 620ms cubic-bezier(0.16, 1, 0.3, 1) both" }
+                  : {}),
               }}
             />
           </div>
         </div>
 
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: -16 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, flexWrap: "wrap", marginTop: webMode ? -6 : -16 }}>
         <button
           type="button"
           data-tour="project.welcomeAddButton"
-          onClick={() => setProjectBrowserOpen(true)}
+          disabled={webMode && !activeWebMachine}
+          title={
+            webMode && !activeWebMachine
+              ? "Connect a Mac first — projects are added on the machine that hosts them."
+              : undefined
+          }
+          onClick={() => {
+            if (!webMode) {
+              setProjectBrowserOpen(true);
+              return;
+            }
+            setWebAddProjectNoticeOpen(true);
+          }}
           style={{
             ...primaryButton({ height: 48, padding: "0 32px", fontSize: 14 }),
+            opacity: webMode && !activeWebMachine ? 0.5 : 1,
             gap: 12,
             border:
               connectedRemoteCount > 0
@@ -935,9 +601,11 @@ export function ProjectWelcomePage() {
         </button>
         <button
           type="button"
-          onClick={() => navigate("/chats")}
+          disabled={webMode && !activeWebMachine}
+          onClick={() => (webMode ? openWebChats() : navigate("/chats"))}
           style={{
             ...outlineButton({ height: 48, padding: "0 22px", fontSize: 12 }),
+            opacity: webMode && !activeWebMachine ? 0.5 : 1,
             display: "inline-flex",
             alignItems: "center",
             gap: 9,
@@ -958,8 +626,44 @@ export function ProjectWelcomePage() {
         >
           <ChatCircleDots size={18} weight="duotone" />
           CHAT WITHOUT A PROJECT
+          {webMode && activeWebMachine ? (
+            <span style={{ color: COLORS.textMuted, fontWeight: 500 }}>
+              · {activeWebMachine.name}
+            </span>
+          ) : null}
         </button>
         </div>
+        {webMode && webAddProjectNoticeOpen && activeWebMachine ? (
+          <WebAddProjectNotice
+            machineName={activeWebMachine.name}
+            onDismiss={() => setWebAddProjectNoticeOpen(false)}
+          />
+        ) : null}
+        {/* Above the recents list, not inside it: "Chat without a project"
+            reports its failures here too, and that button works with zero
+            recents — where a banner scoped to the list rendered nothing. */}
+        {rowError ? (
+          <div
+            role="alert"
+            style={{
+              maxWidth: 440,
+              width: "100%",
+              padding: "8px 10px",
+              borderRadius: 8,
+              border:
+                "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
+              background:
+                "color-mix(in srgb, var(--color-error) 12%, transparent)",
+              color: COLORS.textPrimary,
+              fontFamily: MONO_FONT,
+              fontSize: 10,
+              whiteSpace: "pre-wrap",
+            }}
+          >
+            {rowError}
+          </div>
+        ) : null}
+        {webZeroMachines ? <WebZeroMachines notice={webZeroMachines} /> : null}
         {connectedRemoteCount > 0 ? (
           <div
             style={{
@@ -992,26 +696,6 @@ export function ProjectWelcomePage() {
             >
               RECENT PROJECTS
             </div>
-            {rowError ? (
-              <div
-                role="alert"
-                style={{
-                  marginBottom: 10,
-                  padding: "8px 10px",
-                  borderRadius: 8,
-                  border:
-                    "1px solid color-mix(in srgb, var(--color-error) 40%, transparent)",
-                  background:
-                    "color-mix(in srgb, var(--color-error) 12%, transparent)",
-                  color: COLORS.textPrimary,
-                  fontFamily: MONO_FONT,
-                  fontSize: 10,
-                  whiteSpace: "pre-wrap",
-                }}
-              >
-                {rowError}
-              </div>
-            ) : null}
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {visibleProjectGroups.map((group) => {
                 const primary = group.primary;
@@ -1035,6 +719,38 @@ export function ProjectWelcomePage() {
                   && projectBinding.targetId === rp.remote?.targetId
                   && projectBinding.projectId === rp.remote?.projectId;
                 const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
+                const machine = webMode && targetId ? webMachineByKey.get(targetId) ?? null : null;
+                // The connect/open stages belong to the row that was clicked.
+                // Every other row on the same Mac sees the same machine-level
+                // "connecting", so it has to be suppressed there explicitly —
+                // otherwise one click spins the whole list.
+                const isOpeningRow = openingRowKey === key;
+                const web: WebRowChrome | null = machine
+                  ? {
+                      machineName: machine.name,
+                      status: isOpeningRow
+                        ? "connecting"
+                        : machine.status === "connecting"
+                          ? "available"
+                          : machine.status,
+                      reachability: machine.reachability,
+                      connectStage: isOpeningRow
+                        ? machine.connectStage ?? "Dialing relay…"
+                        : null,
+                      stale: machine.stale,
+                      alsoOn: group.locations
+                        .filter((location) => location !== primary)
+                        .flatMap((location) => {
+                          const other = location.summary.remote;
+                          if (!other) return [];
+                          return [{
+                            key: `${other.targetId}:${other.projectId}`,
+                            machineName: location.machineName,
+                            onSelect: () => openWebProject(other.targetId, other.projectId, key),
+                          }];
+                        }),
+                    }
+                  : null;
                 return (
                   <RecentProjectRow
                     key={group.id}
@@ -1042,6 +758,7 @@ export function ProjectWelcomePage() {
                     connectionState={connectionState}
                     isOpen={isOpenLocal || isOpenRemote}
                     isForgetting={pendingForgetKeys.has(group.id)}
+                    busy={openingRowKey != null && !isOpeningRow}
                     onOpen={() => handleOpen(rp)}
                     onTogglePin={() => void handleTogglePin(group)}
                     onForget={() => handleForget(group)}
@@ -1049,6 +766,7 @@ export function ProjectWelcomePage() {
                     alsoOn={group.locations.filter(
                       (location) => location !== primary,
                     )}
+                    web={web}
                   />
                 );
               })}

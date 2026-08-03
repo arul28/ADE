@@ -497,6 +497,65 @@ function buildGitStatusSnapshot(fileStatus: Map<string, FileTreeChangeStatus>): 
   return { fileStatus, changedDirectories };
 }
 
+/**
+ * Ceiling on how many decoration entries one `refreshGitDecorations` response
+ * may carry. A dirty tree is unbounded in principle (a stray `rm -rf` or a
+ * generated-output commit can make every file changed), and the sync transport
+ * drops the whole peer socket once a single response overruns its byte budget.
+ * Capping degrades the deep tail of the tree to undecorated instead.
+ */
+const MAX_GIT_DECORATION_ENTRIES = 20_000;
+/**
+ * The entry count alone does not bound the response: 20,000 deeply nested paths
+ * serialize to megabytes, and it is bytes — not entries — that the transport
+ * budget is denominated in. Cap the estimated serialized size too, well under
+ * the socket's 16 MiB ceiling so the rest of the response has room.
+ */
+const MAX_GIT_DECORATION_BYTES = 2 * 1024 * 1024;
+/** `{"path":"…","changeStatus":"untracked"},` minus the path itself. */
+const GIT_DECORATION_ENTRY_OVERHEAD_BYTES = 48;
+
+function capGitDecorationEntries(
+  entries: FileTreeStatusEntry[],
+  byteBudget: number,
+): { entries: FileTreeStatusEntry[]; bytesUsed: number } {
+  // Shallowest paths first: what the user can actually see near the tree root
+  // keeps its decoration, and the deep tail is what gets dropped.
+  const depthOf = (entry: FileTreeStatusEntry) => {
+    let depth = 0;
+    for (let i = 0; i < entry.path.length; i++) {
+      if (entry.path.charCodeAt(i) === 47) depth += 1;
+    }
+    return depth;
+  };
+  const sizeOf = (entry: FileTreeStatusEntry) =>
+    Buffer.byteLength(entry.path, "utf8") + GIT_DECORATION_ENTRY_OVERHEAD_BYTES;
+  // Either cap can be the one that bites — at realistic path lengths the byte
+  // budget runs out before 20,000 entries do — and truncating an unsorted list
+  // drops whatever git happened to report last, not the deep tail. So order by
+  // depth whenever either budget is in play, not just the entry one.
+  let totalBytes = 0;
+  for (const entry of entries) totalBytes += sizeOf(entry);
+  const ordered = entries.length <= MAX_GIT_DECORATION_ENTRIES && totalBytes <= byteBudget
+    ? entries
+    : entries
+      .slice()
+      .sort((left, right) => depthOf(left) - depthOf(right) || left.path.localeCompare(right.path));
+  const limit = Math.min(ordered.length, MAX_GIT_DECORATION_ENTRIES);
+  const out: FileTreeStatusEntry[] = [];
+  let bytesUsed = 0;
+  for (let i = 0; i < limit; i++) {
+    const entry = ordered[i];
+    const entryBytes = sizeOf(entry);
+    // Skip rather than stop: one very long path near the budget edge must not
+    // forfeit the room that every shorter path after it would still fit in.
+    if (bytesUsed + entryBytes > byteBudget) continue;
+    bytesUsed += entryBytes;
+    out.push(entry);
+  }
+  return { entries: out, bytesUsed };
+}
+
 function inferDirectoryStatus(statusSnapshot: GitStatusSnapshot, relPath: string): FileTreeChangeStatus {
   return statusSnapshot.changedDirectories.has(normalizeRelative(relPath)) ? "modified" : null;
 }
@@ -973,15 +1032,30 @@ export function createFileService({
       const snapshot = await getGitStatusSnapshot(workspace.rootPath, {
         forceFresh: args.forceFresh === true,
       });
-      const files: FileTreeStatusEntry[] = [];
+      const allFiles: FileTreeStatusEntry[] = [];
       for (const [filePath, changeStatus] of snapshot.fileStatus) {
-        files.push({ path: filePath, changeStatus });
+        allFiles.push({ path: filePath, changeStatus });
       }
-      const directories: FileTreeStatusEntry[] = [];
+      const allDirectories: FileTreeStatusEntry[] = [];
       for (const dirPath of snapshot.changedDirectories) {
-        directories.push({ path: dirPath, changeStatus: "modified" });
+        allDirectories.push({ path: dirPath, changeStatus: "modified" });
       }
-      return { workspaceId: args.workspaceId, files, directories };
+      // One shared byte budget: files and directories ride the same response, so
+      // capping them independently would let the pair overrun it together.
+      const cappedFiles = capGitDecorationEntries(allFiles, MAX_GIT_DECORATION_BYTES);
+      const cappedDirectories = capGitDecorationEntries(
+        allDirectories,
+        MAX_GIT_DECORATION_BYTES - cappedFiles.bytesUsed,
+      );
+      const files = cappedFiles.entries;
+      const directories = cappedDirectories.entries;
+      const truncated = files.length < allFiles.length || directories.length < allDirectories.length;
+      return {
+        workspaceId: args.workspaceId,
+        files,
+        directories,
+        ...(truncated ? { truncated: true } : {}),
+      };
     },
 
     /**
@@ -1042,8 +1116,22 @@ export function createFileService({
           mimeType: imageMimeType,
         };
       }
-      const sample = await readFilePrefix(absPath, Math.min(stat.size, 8192));
-      const isBinary = looksLikeBinary(sample, normalizedRel);
+      // One open instead of three: anything within the text cap is read whole
+      // and sniffed from its own first 8 KB, and anything larger reads the
+      // streaming first chunk once and sniffs that. `looksLikeBinary` only ever
+      // saw an 8 KB prefix, so keep feeding it exactly that much.
+      // Above the inline-binary cap a binary can only ever come back omitted, so
+      // sniff those from an 8 KB prefix first rather than reading (say) 900 KB of
+      // a video whole and throwing it away. Text in that range pays one extra
+      // 8 KB open before its real read, which is noise next to the file itself.
+      const withinTextCap = stat.size <= MAX_EDITOR_TEXT_READ_BYTES;
+      const sniffBeforeFullRead = withinTextCap && stat.size > MAX_INLINE_BINARY_BYTES;
+      const head = !withinTextCap
+        ? await readFilePrefix(absPath, STREAM_FIRST_CHUNK_BYTES)
+        : sniffBeforeFullRead
+          ? await readFilePrefix(absPath, 8192)
+          : await fsp.readFile(absPath);
+      const isBinary = looksLikeBinary(head.subarray(0, 8192), normalizedRel);
       if (isBinary) {
         const mimeType = inferBinaryMimeType(normalizedRel);
         if (stat.size > MAX_INLINE_BINARY_BYTES) {
@@ -1055,9 +1143,9 @@ export function createFileService({
             reason: "unsupported_binary",
           });
         }
-        const buf = await fsp.readFile(absPath);
+        // The inline-binary cap is below the text cap, so `head` is the whole file.
         return {
-          content: buf.toString("base64"),
+          content: head.toString("base64"),
           encoding: "base64",
           size: stat.size,
           languageId: languageIdFromPath(normalizedRel),
@@ -1066,15 +1154,14 @@ export function createFileService({
           mimeType,
         };
       }
-      if (stat.size > MAX_EDITOR_TEXT_READ_BYTES) {
+      if (!withinTextCap) {
         // Oversized text: return the first chunk and mark it partial. The
         // renderer streams the remainder via readFileRange into a read-only
         // virtualized view, rather than showing a blank "preview unavailable".
-        const firstChunk = await readFilePrefix(absPath, STREAM_FIRST_CHUNK_BYTES);
-        const keep = completeUtf8ByteLength(firstChunk);
+        const keep = completeUtf8ByteLength(head);
         const rangeEnd = keep;
         return {
-          content: firstChunk.subarray(0, keep).toString("utf8"),
+          content: head.subarray(0, keep).toString("utf8"),
           encoding: "utf-8",
           size: stat.size,
           languageId: languageIdFromPath(normalizedRel),
@@ -1088,9 +1175,9 @@ export function createFileService({
           nextOffset: rangeEnd < stat.size ? rangeEnd : null,
         };
       }
-      const buf = await fsp.readFile(absPath);
+      const body = sniffBeforeFullRead ? await fsp.readFile(absPath) : head;
       return {
-        content: buf.toString("utf8"),
+        content: body.toString("utf8"),
         encoding: "utf-8",
         size: stat.size,
         languageId: languageIdFromPath(normalizedRel),

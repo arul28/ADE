@@ -18,7 +18,6 @@ The canonical backend is
 | AI runtimes | `AiRuntimesBand.tsx` | Detects Claude, Codex, Cursor, Factory Droid, and OpenCode readiness; surfaces install/sign-in helpers and model picker entry points. |
 | GitHub | `GitHubCard.tsx` | Guides repository auth and PR capability setup. |
 | Linear | `LinearCard.tsx` | Guides Linear OAuth / API-key auth and optional workflow sync. |
-| Existing worktrees | `WorktreesCard.tsx` | Imports existing local branches/worktrees as ADE lanes. |
 
 The dashboard can be finished even when optional integrations are incomplete.
 Users can return to the same setup surface later, and long-lived preferences
@@ -33,7 +32,6 @@ getStatus(): OnboardingStatus
 complete(): OnboardingStatus
 setDismissed(dismissed: boolean): OnboardingStatus
 detectDefaults(): Promise<OnboardingDetectionResult>
-detectExistingLanes(): Promise<OnboardingExistingLaneCandidate[]>
 applySuggestedConfig(suggestedConfig: ProjectConfigFile): Promise<void>
 getHelpState(): OnboardingHelpState
 markGlossaryTermSeen(termId: string): OnboardingHelpState
@@ -84,25 +82,13 @@ It also seeds:
 `applySuggestedConfig(suggestedConfig)` merges this partial config into the
 shared YAML via `projectConfigService.save`.
 
-### Existing lane import
-
-`detectExistingLanes()` scans all local branches, capped at 200, excludes
-branches already mapped to ADE lanes, and returns each with:
-
-- `branchRef` (short ref)
-- `isCurrent` (matches `git rev-parse --abbrev-ref HEAD`)
-- `hasRemote` (exists as `origin/<branch>`)
-- `ahead`, `behind` counts relative to the project's base ref
-
-`WorktreesCard` uses this list to import recent branches as lanes in one click.
-
 ## ProjectSetupPage wiring
 
 The page is stateful and reacts to:
 
 - `window.ade.onboarding.getStatus()` on mount
 - provider/tool readiness reads for the AI runtimes and developer-tool rows
-- `detectDefaults()` and `detectExistingLanes()` when the user scans/imports
+- `detectDefaults()` when the user scans
 
 Clicking Finish calls `window.ade.onboarding.complete()` and publishes an
 `onboardingStatusUpdated` renderer event via `publishOnboardingStatusUpdated` so

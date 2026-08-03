@@ -26,6 +26,8 @@ import {
   type TestSuiteDefinition
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
+import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
+import { getModelById } from "../../../shared/modelRegistry";
 import type { Logger } from "../logging/logger";
 import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { resolveCodexExecutable } from "../ai/codexExecutable";
@@ -379,6 +381,23 @@ function buildPlannerPrompt(args: {
   ].join("\n");
 }
 
+/**
+ * Same gate as `resolveCodexTaskReasoningEffort` in providerTaskRunner: Codex
+ * rejects an effort tier the model does not advertise, so a stale saved config
+ * would fail the whole planner run. Drop an unknown tier and let the CLI pick
+ * its own default instead.
+ */
+function resolvePlannerCodexReasoningEffort(
+  modelId: string | null | undefined,
+  reasoningEffort: string | null | undefined,
+): string | null {
+  const effort = String(reasoningEffort ?? "").trim();
+  if (!effort) return null;
+  const tiers = getModelById(String(modelId ?? "").trim())?.reasoningTiers;
+  if (tiers?.length && !tiers.includes(effort)) return null;
+  return effort;
+}
+
 async function runCodexExec(args: {
   cwd: string;
   prompt: string;
@@ -388,6 +407,8 @@ async function runCodexExec(args: {
   askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
   webSearch: boolean;
   additionalWritableDirs: string[];
+  model?: string | null;
+  reasoningEffort?: string | null;
 }): Promise<{ jsonText: string; commandPreview: string }> {
   const tmpRoot = resolveAdeLayout(path.resolve(args.cwd)).tmpDir;
   fs.mkdirSync(tmpRoot, { recursive: true });
@@ -412,6 +433,16 @@ async function runCodexExec(args: {
     args.cwd,
     "--skip-git-repo-check"
   ];
+
+  // Same omission as the naming/task path: without these the planner runs on the
+  // CLI's own config defaults instead of the model the caller asked for.
+  const plannerModel = resolveCodexCliModelForLaunch(args.model);
+  if (plannerModel) {
+    cliArgs.push("--model", plannerModel);
+  }
+  cliArgs.push(
+    ...codexReasoningEffortFlags(resolvePlannerCodexReasoningEffort(args.model, args.reasoningEffort)),
+  );
 
   if (args.webSearch) cliArgs.push("--search");
   for (const dir of args.additionalWritableDirs) {
@@ -1160,7 +1191,9 @@ export function createAutomationPlannerService({
             sandbox: cfg.sandbox,
             askForApproval: cfg.askForApproval,
             webSearch: cfg.webSearch,
-            additionalWritableDirs: cfg.additionalWritableDirs
+            additionalWritableDirs: cfg.additionalWritableDirs,
+            model: cfg.model ?? null,
+            reasoningEffort: cfg.reasoningEffort ?? null
           });
           jsonText = res.jsonText;
           plannerCommandPreview = res.commandPreview;

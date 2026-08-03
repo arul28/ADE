@@ -13,6 +13,7 @@ import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { openExternalUrl } from "../../lib/openExternal";
 import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
@@ -432,16 +433,11 @@ function DocsLink({ url, label }: { url: string; label: string }) {
 }
 
 function CommandLine({ text }: { text: string }) {
-  const [copied, setCopied] = useState(false);
-  const copy = () => {
-    try { void navigator.clipboard?.writeText(text); } catch { /* clipboard unavailable */ }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1200);
-  };
+  const { copy, copied } = useCopyToClipboard({ timeout: 1200 });
   return (
     <div style={cmdRowStyle}>
       <code style={cmdTextStyle}>{text}</code>
-      <button type="button" onClick={copy} aria-label="Copy command" title="Copy" style={cmdCopyStyle}>
+      <button type="button" onClick={() => void copy(text)} aria-label="Copy command" title="Copy" style={cmdCopyStyle}>
         {copied ? <Check size={11} weight="bold" /> : <Copy size={11} weight="bold" />}
       </button>
     </div>

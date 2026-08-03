@@ -27,3 +27,6 @@
 # imported as proof artifacts. No credential value is present; keep the
 # exception scoped to the original PR commit and exact test finding.
 631f4066397cd4f98b095d3f7d3a43d0cf758805:apps/desktop/src/main/services/computerUse/computerUseArtifactBrokerService.test.ts:generic-api-key:423
+
+# Public Clerk OAuth client id (PKCE public client) documented in the dev recipe.
+baa7a0bb4b5f4c3112680c37ab7572663bb87551:apps/desktop/vite.webclient.config.ts:generic-api-key:77
