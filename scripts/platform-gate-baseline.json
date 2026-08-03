@@ -26,13 +26,6 @@
       "form": "it.runIf",
       "requires": "darwin",
       "count": 3
-    },
-    {
-      "file": "apps/desktop/src/main/services/state/kvDb.rebuildRecovery.test.ts",
-      "kind": "uncovered-gate",
-      "form": "it.skipIf",
-      "requires": "darwin|win32",
-      "count": 1
     }
   ]
 }
