@@ -72,7 +72,15 @@ jobs:
             fi
           fi
 
+      # Skipped only for windows_proof, which exists to collect clean-host
+      # evidence for a commit that has NOT merged yet -- proving the packaging
+      # and signing of a change is the whole point, and requiring main first
+      # would make that impossible. That mode is reachable only from
+      # prepare-release.yml, which holds contents: read and cannot publish, so
+      # nothing can ship from a commit this step did not vet. Every publishing
+      # path leaves windows_proof false and is still gated here.
       - name: Ensure release commit points to main
+        if: ${{ !inputs.windows_proof }}
         run: |
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
