@@ -31,10 +31,14 @@ Collisions are resolved by suffixing `-2`, `-3`, … until unique. The
 final directory is stored as an absolute path in
 `lanes.worktree_path`.
 
-Attached lanes use the user-supplied external path (validated with
-`isWithinDir` and resolved to an absolute path). `lane_type =
-'attached'` and `attached_root_path` records the external root so ADE
-never moves or cleans it on delete.
+A worktree the user created themselves keeps whatever path they put it at.
+Nothing relocates it, and nothing needs to: adoption records the path as-is and
+every lane rail works from `lanes.worktree_path`. Rows left over from the
+removed attach flow (`lane_type = 'attached'`, with the external root in
+`attached_root_path`) are ordinary lanes now — including on delete, which
+removes their worktree like any other. What ADE may remove is decided by the
+path, never by the lane type; see
+[Deleting a worktree](#deleting-a-worktree).
 
 Primary lanes reuse the repo root itself (no worktree creation); their
 `worktree_path` equals the repo root.
@@ -65,18 +69,29 @@ Failure modes handled inline:
 - SQLite insert fails after worktree creation → worktree is torn down
   (`git worktree remove --force`) to avoid orphaned directories.
 
-## Attaching an existing worktree
+## Worktrees you created yourself
 
-`laneService.attach()` validates that the supplied path is a git
-worktree of the same repository (looks for `.git` file pointing into
-the repo's `.git/worktrees/<id>/gitdir`) and stores the row without
-mutating the directory. Deleting an attached lane only removes the
-row; the user retains the directory.
+There is no attach step. Every git worktree of the repository is a lane:
+`lanes.list()` reconciles against `git worktree list` on each call, adopting
+any registered worktree that no lane row claims yet
+(`recoverManagedWorktreeRows`) and dropping any lane row whose worktree is
+gone from both git and disk (`removeVanishedWorktreeLanes`). A worktree you
+made with `git worktree add` anywhere on disk shows up as a `worktree` lane
+with no user action, and one you remove outside ADE stops being a lane.
 
-`adoptAttached()` (via `ade.lanes.adoptAttached`) promotes an attached
-lane to managed status by moving the directory under
-`.ade/worktrees/`, useful when the user wants ADE to eventually
-auto-clean it.
+The `attach()` and `adoptAttached()` APIs are gone, along with the
+`attached` lane type as something anything creates. Rows that already carry
+`lane_type = 'attached'` are left alone and behave exactly like `worktree`
+lanes — including delete, which removes the worktree for them too. See
+[Lane types](./README.md#lane-types).
+
+Adoption is scoped to the project that owns the worktree. When the project
+root is itself a linked worktree (opened with "Open as a separate project
+instead", or grandfathered in), `git worktree list` reports the whole
+repository — the main checkout and every sibling project's worktree. In that
+case ADE adopts only worktrees under this project's own `.ade/worktrees`, and
+the vanished-row reap likewise ignores rows whose path lies outside it, so one
+project can never adopt, delete, or reap another's lanes.
 
 ## Deleting a worktree
 
@@ -91,19 +106,21 @@ the directory first:
 3. Cancel auto-rebase and dismiss rebase suggestions for the lane.
 4. Stop PTYs and file watchers for the lane,
    then run any lane-environment cleanup supplied by the runtime.
-5. If managed worktree: enter the shared worktree-mutation guard and
-   run `git worktree remove --force <path>`. If Git reports success
-   but residual files remain, ADE removes the directory with
-   `fs.promises.rm` and runs `git worktree prune` before continuing.
-   If Git already considers the path unregistered, ADE still prunes the
-   worktree registry and attempts manual residual cleanup. If the path
-   is no longer registered and manual cleanup or prune fails, the lane
-   delete can complete with warnings so the stale row and lane-owned
-   metadata are still removed; the warning tells the user what residual
-   directory or registry cleanup could not be completed immediately.
+5. Enter the shared worktree-mutation guard and run
+   `git worktree remove --force <path>`. This runs for **every** lane that has
+   a worktree, wherever it lives — there is no lane type that opts out. What
+   differs is the fallback. Inside `.ade/worktrees`, the storage ADE owns: if
+   Git reports success but residual files remain, ADE removes the directory
+   with `fs.promises.rm` and runs `git worktree prune` before continuing; if
+   Git already considers the path unregistered, ADE still prunes the registry
+   and attempts manual residual cleanup; and if manual cleanup or prune fails,
+   the delete completes with warnings so the stale row and lane-owned metadata
+   are still removed, with the warning naming what could not be cleaned up.
    Failed residual-directory cleanup is recorded in the machine-local
-   `local_worktree_residual_cleanups` table so later `lanes.list` calls
-   can retry it. If attached: skip.
+   `local_worktree_residual_cleanups` table so later `lanes.list` calls can
+   retry it. Outside `.ade/worktrees` there is no filesystem fallback and
+   nothing is queued: if git refuses, the git error is the delete failure, and
+   ADE's own `rm` never touches files it did not create.
 6. If caller requested `deleteBranch`: `git branch -D <branch>`.
    Optional remote branch cleanup uses `git push <remote> --delete
    <branch>` and is non-fatal.
@@ -123,8 +140,11 @@ the same time. The shared guard is scoped to the actual
 Git worktree metadata edits without making lane creation wait for
 unrelated process, PTY, watcher, or environment cleanup.
 
-A worktree that has been manually removed from disk but still has a
-row is repaired by `laneService.removeStaleWorktrees()` at startup.
+A worktree that has been manually removed from disk does not leave a row
+behind: the `lanes.list` reconcile reaps it (`removeVanishedWorktreeLanes`,
+described under [Worktrees you created yourself](#worktrees-you-created-yourself))
+once both git and the filesystem agree it is gone. There is no separate
+startup repair for it, and no user action.
 Status/read paths also verify the saved `worktree_path` with
 `git rev-parse --path-format=absolute --show-toplevel` before running
 lane-local Git reads. When the top-level is missing or differs from
@@ -236,10 +256,21 @@ worktree, but a full parallel development environment.
   port alive briefly. The delete pipeline recovers residual files after
   a successful `git worktree remove` and runtime diagnostics may lag
   until the external process exits.
-- **Attached lane path resolution**: attached paths are stored as
-  given after `path.resolve`. If the user renames the containing
-  directory outside ADE, `ade.lanes.list` will still return the row
-  but any git command will fail. There is no auto-detection.
+- **Renaming a worktree directory outside ADE strands the lane**: lane rows
+  store the absolute path the worktree was created or adopted at, and the
+  reconcile does not repair a moved one. Git keeps listing the old path (as
+  prunable), which is enough to stop the reap — it removes a row only when the
+  path is absent from `git worktree list` *and* gone from disk — while the new
+  path is not registered with git at all, so nothing adopts it either. The lane
+  survives pointing at a directory that no longer exists and every git command
+  for it fails. Recovery is `git worktree repair` or removing and re-adding the
+  worktree, not anything in ADE.
+- **Git reports realpaths, ADE stores the user's spelling**: every path
+  comparison in the reconcile, the residual sweep, and the delete rails is done
+  in realpath space, because `/tmp` versus `/private/tmp` is enough to make one
+  directory look like two. A new code path that compares a lane path against
+  git output must canonicalize both sides or it will silently double-adopt and
+  falsely reap.
 - **Primary worktree == repo root**. Operations that would destroy
   the repo root (delete) are blocked by the edit-protected flag.
   Operations that would clobber the primary's uncommitted changes

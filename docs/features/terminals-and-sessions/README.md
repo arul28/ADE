@@ -178,11 +178,18 @@ and in tests.
   already-imported detection, active-session hints, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
   commands. The per-provider discovery modules scan Claude JSONL transcripts
-  under `~/.claude/projects`, Codex sessions under `~/.codex/sessions`,
-  Cursor transcripts under `~/.cursor/projects`, Droid sessions under
-  `~/.factory/sessions`, and OpenCode through `opencode session list`.
+  under `~/.claude/projects`, Codex threads from the `~/.codex/state_5.sqlite`
+  thread store (falling back to the `sessions/` rollout tree only when that
+  database is unusable), Cursor artifacts under `~/.cursor/chats` and
+  `~/.cursor/projects`, Droid sessions under `~/.factory/sessions`, and
+  OpenCode through `opencode session list`.
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
+  `claudeLiveSessions.ts` reads Claude's own `sessions/<pid>.json` registry to
+  tell a session that is open right now from one that merely has a recent file
+  mtime; `importedSessionStore.ts` is the durable machine-local log of every
+  import, which is what keeps the "already imported" badge alive after the ADE
+  session is deleted and what records the new provider id a fork created;
   `discoveryUtils.ts` owns safe filesystem reads, cwd slug resolution, cheap
   previews, limits, and sorting. Deep detail:
   [external-session-import.md](external-session-import.md).

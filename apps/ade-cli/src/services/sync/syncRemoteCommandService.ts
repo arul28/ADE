@@ -67,7 +67,6 @@ import type {
   AiReviewSummaryArgs,
   ApplyLaneTemplateArgs,
   ArchiveLaneArgs,
-  AttachLaneArgs,
   ChatTerminalActiveForChatArgs,
   ChatTerminalListArgs,
   ClosePrArgs,
@@ -1346,14 +1345,6 @@ function parseImportBranchArgs(value: Record<string, unknown>): ImportBranchLane
     ...(asTrimmedString(value.name) ? { name: asTrimmedString(value.name)! } : {}),
     ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
     ...(asTrimmedString(value.baseBranch) ? { baseBranch: asTrimmedString(value.baseBranch)! } : {}),
-  };
-}
-
-function parseAttachLaneArgs(value: Record<string, unknown>): AttachLaneArgs {
-  return {
-    name: requireString(value.name, "lanes.attach requires name."),
-    attachedPath: requireString(value.attachedPath, "lanes.attach requires attachedPath."),
-    ...(asTrimmedString(value.description) ? { description: asTrimmedString(value.description)! } : {}),
   };
 }
 
@@ -3585,7 +3576,10 @@ async function buildLaneListSnapshots(
     autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
     conflictStatus: conflictByLaneId.get(lane.id) ?? null,
     stateSnapshot: stateByLaneId.get(lane.id) ?? null,
-    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+    // Deprecated, always false. Shipped iOS builds decode this as a
+    // non-optional Bool; dropping the key blanks their lane list. See the
+    // field's doc comment in shared/types/lanes.ts.
+    adoptableAttached: false,
   }));
 }
 
@@ -3806,10 +3800,21 @@ function registerLaneRemoteCommands({ args, register }: RemoteCommandRegistratio
     args.laneService.importBranch(parseImportBranchArgs(payload)));
   register("lanes.previewBranchSwitch", { viewerAllowed: true }, async (payload) =>
     args.laneService.previewBranchSwitch(parseGitCheckoutBranchArgs(payload)));
-  register("lanes.attach", { viewerAllowed: true, queueable: true }, async (payload) => args.laneService.attach(parseAttachLaneArgs(payload)));
-  register("lanes.listUnregisteredWorktrees", { viewerAllowed: true }, async () => args.laneService.listUnregisteredWorktrees());
-  register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.laneService.adoptAttached({ laneId: requireString(payload.laneId, "lanes.adoptAttached requires laneId.") }));
+  // Every git worktree is now a lane the moment it exists, so there is nothing
+  // left to select, attach, or adopt. These three stay REGISTERED (and so keep
+  // appearing in hello_ok.features.commandRouting.actions) because they are in
+  // MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS: dropping them would flip an
+  // otherwise healthy host into "limited" mode for every phone, new or old.
+  // Instead the list returns empty — an older phone's attach sheet renders its
+  // own "nothing to add" state — and the two mutations fail with a message the
+  // phone surfaces verbatim.
+  register("lanes.listUnregisteredWorktrees", { viewerAllowed: true }, async () => []);
+  register("lanes.attach", { viewerAllowed: true, queueable: true }, async () => {
+    throw new Error("Attaching worktrees is no longer supported — every git worktree in the project already appears as a lane.");
+  });
+  register("lanes.adoptAttached", { viewerAllowed: true, queueable: true }, async () => {
+    throw new Error("Adopting attached lanes is no longer supported — every git worktree in the project is managed as a lane.");
+  });
   register("lanes.rename", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.laneService.rename(parseRenameLaneArgs(payload));
     return { ok: true };

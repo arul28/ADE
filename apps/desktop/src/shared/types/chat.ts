@@ -1995,6 +1995,16 @@ export type AgentChatImportExternalSessionArgs = {
 export type AgentChatImportExternalSessionResult = {
   chatSessionId: string;
   chatSummary: AgentChatSessionSummary;
+  /**
+   * The provider-native id the imported chat is actually bound to. It differs
+   * from the requested external id whenever the import copied the session — a
+   * Codex fork thread, or a transplanted Claude transcript — and the caller
+   * needs it to record that copy as ADE-created rather than a new session to
+   * import. A continue-in-place import binds to the source thread and returns
+   * the requested external id, so every import can name its target: required,
+   * because an unnamed fork target is a copy nothing marks as ADE-created.
+   */
+  providerTargetId: string;
 };
 
 /**

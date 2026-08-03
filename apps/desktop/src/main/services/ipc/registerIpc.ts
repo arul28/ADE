@@ -37,10 +37,7 @@ import { resolveClaudeCodeExecutable } from "../ai/claudeCodeExecutable";
 import { buildProviderConnections } from "../ai/providerConnectionStatus";
 import { browseProjectDirectories } from "../projects/projectBrowserService";
 import { getProjectDetail } from "../projects/projectDetailService";
-import {
-  inspectProjectPathCached,
-  invalidateProjectPathInspectionCache,
-} from "../projects/projectPathInspector";
+import { inspectProjectPathCached } from "../projects/projectPathInspector";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../sessions/deleteTerminalSession";
 import {
   parseSettleOverrideArg,
@@ -112,9 +109,6 @@ import { AttentionAccountCoordinator } from "../attention/attentionAccountCoordi
 import type {
   ApplyConflictProposalArgs,
   BatchAssessmentResult,
-  AttachLaneArgs,
-  AdoptAttachedLaneArgs,
-  UnregisteredLaneCandidate,
   AppInfo,
   AppWelcomeVideoState,
   AppResourceUsageSnapshot,
@@ -431,7 +425,6 @@ import type {
   KeybindingsSnapshot,
   ImportBranchLaneArgs,
   OnboardingDetectionResult,
-  OnboardingExistingLaneCandidate,
   OnboardingHelpState,
   OnboardingStatus,
   LaneLinearIssue,
@@ -5271,12 +5264,6 @@ export function registerIpc({
     return await ctx.onboardingService.detectDefaults();
   });
 
-  ipcMain.handle(IPC.onboardingDetectExistingLanes, async (): Promise<OnboardingExistingLaneCandidate[]> => {
-    const ctx = getCtx();
-    if (!ctx.onboardingService) return [];
-    return await ctx.onboardingService.detectExistingLanes();
-  });
-
   ipcMain.handle(IPC.onboardingSetDismissed, async (_event, arg: { dismissed: boolean }): Promise<OnboardingStatus> => {
     const ctx = getCtx();
     if (!ctx.onboardingService) {
@@ -5794,28 +5781,6 @@ export function registerIpc({
   ipcMain.handle(IPC.lanesResolveBranchDrift, async (_event, arg: ResolveLaneBranchDriftArgs): Promise<ResolveLaneBranchDriftResult> => {
     const ctx = ensureLaneContext();
     return await ctx.laneService.resolveBranchDrift(arg);
-  });
-
-  ipcMain.handle(IPC.lanesAttach, async (_event, arg: AttachLaneArgs): Promise<LaneSummary> => {
-    const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.attach(arg);
-    invalidateProjectPathInspectionCache();
-    await ensureActiveLanePortLease(ctx, lane.id);
-    notifyLaneCreated(ctx, lane);
-    return lane;
-  });
-
-  ipcMain.handle(IPC.lanesListUnregisteredWorktrees, async (): Promise<UnregisteredLaneCandidate[]> => {
-    const ctx = ensureLaneContext();
-    return ctx.laneService.listUnregisteredWorktrees();
-  });
-
-  ipcMain.handle(IPC.lanesAdoptAttached, async (_event, arg: AdoptAttachedLaneArgs): Promise<LaneSummary> => {
-    const ctx = ensureLaneContext();
-    const lane = await ctx.laneService.adoptAttached(arg);
-    await ensureActiveLanePortLease(ctx, lane.id);
-    notifyLaneCreated(ctx, lane);
-    return lane;
   });
 
   ipcMain.handle(IPC.lanesRename, async (_event, arg: RenameLaneArgs): Promise<void> => {

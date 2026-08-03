@@ -21,9 +21,6 @@ import type {
   ProjectSecretValueResult,
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
-  AttachLaneArgs,
-  AdoptAttachedLaneArgs,
-  UnregisteredLaneCandidate,
   AppInfo,
   LocalRuntimeStatus,
   AppWelcomeVideoState,
@@ -293,7 +290,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingExistingLaneCandidate,
   OnboardingHelpState,
   OnboardingStatus,
   GitActionResult,
@@ -1105,7 +1101,6 @@ declare global {
       onboarding: {
         getStatus: () => Promise<OnboardingStatus>;
         detectDefaults: () => Promise<OnboardingDetectionResult>;
-        detectExistingLanes: () => Promise<OnboardingExistingLaneCandidate[]>;
         setDismissed: (dismissed: boolean) => Promise<OnboardingStatus>;
         complete: () => Promise<OnboardingStatus>;
         markGlossaryTermSeen: (
@@ -1384,12 +1379,6 @@ declare global {
         resolveBranchDrift: (
           args: ResolveLaneBranchDriftArgs,
         ) => Promise<ResolveLaneBranchDriftResult>;
-        attach: (args: AttachLaneArgs) => Promise<LaneSummary>;
-        listUnregisteredWorktrees: () => Promise<UnregisteredLaneCandidate[]>;
-        adoptAttached: (
-          args: AdoptAttachedLaneArgs,
-          pin?: OpenProjectBinding | null,
-        ) => Promise<LaneSummary>;
         rename: (args: RenameLaneArgs, pin?: OpenProjectBinding | null) => Promise<void>;
         reparent: (
           args: ReparentLaneArgs,

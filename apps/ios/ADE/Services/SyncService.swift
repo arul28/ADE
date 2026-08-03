@@ -10884,22 +10884,6 @@ final class SyncService: ObservableObject {
     return try await sendDecodableCommand(action: "lanes.createChild", args: args, as: LaneSummary.self)
   }
 
-  func attachLane(name: String, attachedPath: String, description: String = "") async throws -> LaneSummary {
-    try await sendDecodableCommand(action: "lanes.attach", args: [
-      "name": name,
-      "attachedPath": attachedPath,
-      "description": description,
-    ], as: LaneSummary.self)
-  }
-
-  func adoptAttachedLane(_ laneId: String) async throws -> LaneSummary {
-    try await sendDecodableCommand(action: "lanes.adoptAttached", args: ["laneId": laneId], as: LaneSummary.self)
-  }
-
-  func listUnregisteredWorktrees() async throws -> [UnregisteredLaneCandidate] {
-    try await sendDecodableCommand(action: "lanes.listUnregisteredWorktrees", as: [UnregisteredLaneCandidate].self)
-  }
-
   func renameLane(
     _ laneId: String,
     name: String,

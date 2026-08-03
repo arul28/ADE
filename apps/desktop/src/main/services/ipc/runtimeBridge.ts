@@ -60,7 +60,6 @@ import { RemoteTargetRegistry } from "../remoteRuntime/remoteTargetRegistry";
 import { DesktopPairedMachineStore } from "../remoteRuntime/syncPairedMachineStore";
 import { parseRemoteRuntimePairingInput } from "../remoteRuntime/pairingInput";
 import { hasKnownSshHostKeyForTarget } from "../remoteRuntime/sshTransport";
-import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { shouldSendPtyDataToWebContents } from "../pty/ptyDataSubscriptions";
 import { getSharedAccountAuthService } from "../../../../../ade-cli/src/services/account/sharedAccountAuthService";
 import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
@@ -69,16 +68,6 @@ import {
   createRuntimeEventSubscriptionRegistry,
   type RuntimeEventWindowSubscription,
 } from "./runtimeEventSubscriptionRegistry";
-
-// Lane attach/adopt performed through the runtime action path never touches the
-// in-process IPC.lanesAttach handler, so the project-path inspection cache must
-// be invalidated here too or it can serve a pre-attach result for up to its TTL.
-const LANE_INSPECTION_INVALIDATING_ACTIONS = new Set(["attach", "adoptAttached"]);
-function invalidateInspectionCacheForLaneAction(domain: string, action: string): void {
-  if (domain === "lane" && LANE_INSPECTION_INVALIDATING_ACTIONS.has(action)) {
-    invalidateProjectPathInspectionCache();
-  }
-}
 
 type RuntimeBridgeArgs = {
   appVersion: string;
@@ -1068,7 +1057,6 @@ export function registerRuntimeBridge({
         projectId,
         actionRequest,
       );
-      invalidateInspectionCacheForLaneAction(domain, action);
       return result;
     },
   );
@@ -1205,7 +1193,6 @@ export function registerRuntimeBridge({
         rootPath,
         actionRequest,
       );
-      invalidateInspectionCacheForLaneAction(domain, action);
       return result;
     },
   );

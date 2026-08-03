@@ -8,6 +8,7 @@ import { detachPullRequestRowsByIds, detachPullRequestRowsForLane } from "../prs
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
 import { detectConflictKind } from "../git/gitConflictState";
+import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
 import { PRIMARY_LANE_COLOR, allocateLaneColor } from "../../../shared/laneColorPalette";
 import { linearIssueBranchName, sanitizeLinearIssueBranchName } from "../../../shared/linearIssueBranch";
@@ -22,10 +23,8 @@ import type { Logger } from "../logging/logger";
 import { createWorktreeResidualCleanup } from "./worktreeResidualCleanup";
 import { createLaneWorktreeLockService } from "./laneWorktreeLockService";
 import type {
-  AdoptAttachedLaneArgs,
   ArchiveAndReclaimLaneArgs,
   ArchiveAndReclaimLaneResult,
-  AttachLaneArgs,
   CreateChildLaneArgs,
   CreateLaneArgs,
   CreateLaneFromUnstagedArgs,
@@ -70,11 +69,9 @@ import type {
   PushMode,
   SessionLinearIssueLink,
   StackChainItem,
-  UnregisteredLaneCandidate,
   UpdateLaneAppearanceArgs
 } from "../../../shared/types";
 import { resolveAdeLayout } from "../../../shared/adeLayout";
-import { codedError, encodeCodedErrorMessage } from "../../../shared/codedError";
 import {
   detectLaneBranchDrift,
   laneNameAdvertisesBranch,
@@ -410,14 +407,33 @@ async function readWorktreeDirty(worktreePath: string, timeoutMs = 8_000): Promi
   return result.stdout.trim().length > 0;
 }
 
+async function isSymbolicLinkPath(targetPath: string): Promise<boolean> {
+  try {
+    return (await fs.promises.lstat(targetPath)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 async function assertExpectedGitWorktreeRoot(worktreePath: string): Promise<void> {
   if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
     throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
   }
 }
 
-type GitWorktreeInfo = UnregisteredLaneCandidate & {
+/** One entry of `git worktree list --porcelain`. Service-internal: no caller outside laneService sees a worktree that is not already a lane. */
+type GitWorktreeInfo = {
+  path: string;
+  /** Branch the worktree has checked out, "" for a detached HEAD. */
+  branch: string;
   isBare: boolean;
+  /**
+   * Git reported this worktree as removable (`prunable <reason>`) — its
+   * directory or gitdir pointer is already gone. Adoption must skip these or
+   * every `lanes.list` would resurrect a lane row for a worktree that the next
+   * `git worktree prune` deletes.
+   */
+  isPrunable: boolean;
 };
 
 function worktreeStdout(value: unknown): string {
@@ -442,13 +458,16 @@ function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
     let wtPath = "";
     let branch = "";
     let isBare = false;
+    let isPrunable = false;
     for (const line of lines) {
       if (line.startsWith("worktree ")) wtPath = line.slice("worktree ".length).trim();
       if (line.startsWith("branch ")) branch = line.slice("branch ".length).trim().replace(/^refs\/heads\//, "");
       if (line === "bare") isBare = true;
+      // Git emits a bare `prunable` or `prunable <reason>` attribute.
+      if (line === "prunable" || line.startsWith("prunable ")) isPrunable = true;
     }
     if (!wtPath) continue;
-    worktrees.push({ path: normAbs(wtPath), branch, isBare });
+    worktrees.push({ path: normAbs(wtPath), branch, isBare, isPrunable });
   }
 
   return worktrees;
@@ -466,7 +485,7 @@ function worktreeDirSuffix(worktreePath: string): string {
   return basename.includes("-") ? basename.split("-").pop() ?? "" : "";
 }
 
-function inferLaneNameFromManagedWorktree(candidate: UnregisteredLaneCandidate): string {
+function inferLaneNameFromWorktree(candidate: { path: string; branch: string }): string {
   const basename = path.basename(candidate.path).trim();
   const branchSlug = candidate.branch.trim().replace(/^ade\//, "");
   const slug = (branchSlug || basename).replace(/-[0-9a-f]{8}$/i, "");
@@ -1547,6 +1566,23 @@ export function createLaneService({
     laneListCache.clear();
   };
 
+  /**
+   * For the lane lifecycle mutations — create, import, adopt, reap, delete,
+   * archive, reclaim, restore. `project.inspectPath` caches a git + filesystem
+   * probe of a path (repo root? linked worktree? ADE-managed?) for 10s — down
+   * to the lane row that claims it — and these are the operations that add,
+   * remove, or recreate the worktree that probe describes, or change which lane
+   * row owns a path, so both caches drop together or the worktree-open gate
+   * answers from a pre-mutation picture. Ordinary edits (rename, appearance,
+   * branch profiles) call `invalidateLaneListCache` alone — except that the
+   * inspector's lane row carries appearance fields too (`color`), so an edit
+   * that rewrites those in the database drops both caches as well.
+   */
+  const invalidateLanePathCaches = (): void => {
+    invalidateLaneListCache();
+    invalidateProjectPathInspectionCache();
+  };
+
   const normalizeBranchKey = (ref: string): string =>
     normalizeBranchName(ref).trim();
 
@@ -1931,6 +1967,37 @@ export function createLaneService({
 
   const normalizedProjectRoot = normAbs(projectRoot);
   const normalizedWorktreesDir = normAbs(worktreesDir);
+  const normalizedPrimaryWorktreePath = normAbs(primaryWorktreePath);
+
+  /**
+   * git answers every path question with symlinks already resolved — `git
+   * worktree list --porcelain`, `rev-parse --show-toplevel` and
+   * `--git-common-dir` all do. ADE's own paths come from whatever the user
+   * picked, which is routinely a symlink (`~/Projects` pointing at an external
+   * volume). Comparing the two spellings directly makes every git-reported path
+   * look foreign, so the whole worktree reconcile is done in realpath space.
+   */
+  const canonicalPath = (value: string): string => stablePathThroughExistingAncestor(value);
+
+  // Resolved once: a service instance's roots cannot change identity, and the
+  // reconcile compares against them on the `lanes.list` hot path.
+  const canonicalProjectRoot = canonicalPath(normalizedProjectRoot);
+  const canonicalWorktreesDir = canonicalPath(normalizedWorktreesDir);
+  const canonicalPrimaryWorktreePath = canonicalPath(normalizedPrimaryWorktreePath);
+
+  /**
+   * Both spellings of the three folders that are never a removable or adoptable
+   * lane worktree. Guards match against the set rather than a single spelling so
+   * resolving paths can only ever widen what ADE refuses to touch.
+   */
+  const protectedRootPaths = new Set([
+    normalizedProjectRoot,
+    normalizedWorktreesDir,
+    normalizedPrimaryWorktreePath,
+    canonicalProjectRoot,
+    canonicalWorktreesDir,
+    canonicalPrimaryWorktreePath,
+  ]);
 
   // Worktree paths / branch refs with an in-flight `git worktree add`. A new
   // worktree is visible to `git worktree list` before its lane row is
@@ -1939,30 +2006,24 @@ export function createLaneService({
   const pendingWorktreeCreationPaths = new Set<string>();
   const pendingWorktreeCreationBranches = new Set<string>();
 
+  // Callers reach this set from both path spaces — ADE's own spelling on the
+  // create path, git's resolved one on the reconcile path — so both are stored.
+  // Missing a pending create here reaps or re-adopts a half-built worktree.
   const trackPendingWorktreeCreation = (worktreePath: string, branchRef: string): (() => void) => {
-    const pathKey = normAbs(worktreePath);
+    const pathKeys = [normAbs(worktreePath), canonicalPath(worktreePath)];
     const branchKey = normalizeBranchKey(branchRef);
-    pendingWorktreeCreationPaths.add(pathKey);
+    for (const key of pathKeys) pendingWorktreeCreationPaths.add(key);
     if (branchKey) pendingWorktreeCreationBranches.add(branchKey);
     return () => {
-      pendingWorktreeCreationPaths.delete(pathKey);
+      for (const key of pathKeys) pendingWorktreeCreationPaths.delete(key);
       if (branchKey) pendingWorktreeCreationBranches.delete(branchKey);
     };
   };
 
   const isPendingWorktreeCreation = (worktreePath: string, branchRef: string): boolean =>
     pendingWorktreeCreationPaths.has(normAbs(worktreePath)) ||
+    pendingWorktreeCreationPaths.has(canonicalPath(worktreePath)) ||
     (normalizeBranchKey(branchRef).length > 0 && pendingWorktreeCreationBranches.has(normalizeBranchKey(branchRef)));
-
-  const getGitTopLevel = async (cwd: string): Promise<string> => {
-    const top = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--show-toplevel"], { cwd, timeoutMs: 10_000 });
-    return normAbs(top.trim());
-  };
-
-  const getGitCommonDir = async (cwd: string): Promise<string> => {
-    const commonDir = await runGitOrThrow(["rev-parse", "--path-format=absolute", "--git-common-dir"], { cwd, timeoutMs: 10_000 });
-    return normAbs(commonDir.trim());
-  };
 
   const listGitWorktrees = async (): Promise<GitWorktreeInfo[]> => {
     const result = await runGitOrThrow(
@@ -1992,6 +2053,7 @@ export function createLaneService({
     projectId,
     projectRoot,
     worktreesDir,
+    canonicalWorktreesDir,
     logger,
     listGitWorktrees,
     isPendingWorktreeCreation: (worktreePath) => pendingWorktreeCreationPaths.has(normAbs(worktreePath)),
@@ -2005,33 +2067,155 @@ export function createLaneService({
     return worktrees.find((wt) => !wt.isBare && normalizeBranchKey(wt.branch) === normalizedBranch) ?? null;
   };
 
-  const listUnregisteredWorktreeCandidates = async (): Promise<UnregisteredLaneCandidate[]> => {
-    const worktrees = await listGitWorktrees();
+  /**
+   * Which of the repository's worktrees this project may claim as its lanes.
+   *
+   * `git worktree list` is repository-wide, and a project root can itself be a
+   * linked worktree — WorktreeOpenDialog's "Open as a separate project instead"
+   * opens one that way (`skipWorktreeGate`), and older projects were
+   * grandfathered in. Run from such a root, the listing reports the repo's MAIN
+   * checkout and every sibling project's worktree. Adopting those would hand
+   * project B a lane row for project A's worktree, and a lane row is precisely
+   * what every delete rail checks before removing a folder — so B could really
+   * delete A's worktree, and reap A's chats along with it.
+   *
+   * A root checkout owns the whole repository. A project rooted at a linked
+   * worktree owns only what lives under its own `.ade/worktrees`.
+   */
+  type WorktreeOwnershipScope = "repository" | "managed-only";
+
+  const probeWorktreeOwnershipScope = async (): Promise<WorktreeOwnershipScope | null> => {
+    // A root checkout's common dir is its own `.git`. A linked worktree's points
+    // back into whichever checkout owns the repository. Asking git for the
+    // top-level alongside it keeps the comparison entirely inside git's own
+    // (symlink-resolved) path space, so a symlinked project root cannot
+    // misclassify as `managed-only` and silently disable adoption and reaping.
+    try {
+      const combined = await runGit(
+        ["rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir"],
+        { cwd: projectRoot, timeoutMs: 10_000 },
+      );
+      if (combined.exitCode === 0) {
+        const [topLevel, commonDir] = combined.stdout
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .filter((line) => line.length);
+        if (topLevel && commonDir) {
+          return isWithinDir(normAbs(topLevel), normAbs(commonDir)) ? "repository" : "managed-only";
+        }
+      }
+    } catch {
+      // Fall through: a bare repo has no top-level, so the combined probe fails
+      // outright. The single-flag probe still answers, against ADE's own root.
+    }
+
+    try {
+      const result = await runGit(
+        ["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        { cwd: projectRoot, timeoutMs: 10_000 },
+      );
+      if (result.exitCode !== 0) return null;
+      const rawCommonDir = result.stdout.split(/\r?\n/)[0]?.trim() ?? "";
+      if (!rawCommonDir.length) return null;
+      // No git-side top-level to compare against, so fall back to ADE's own
+      // root — resolved, so the two sides still share a path space.
+      return isWithinDir(canonicalProjectRoot, canonicalPath(rawCommonDir)) ? "repository" : "managed-only";
+    } catch {
+      return null;
+    }
+  };
+
+  let cachedWorktreeOwnershipScope: WorktreeOwnershipScope | null = null;
+  let inFlightWorktreeOwnershipProbe: Promise<WorktreeOwnershipScope | null> | null = null;
+
+  /**
+   * Memoized because it sits on the `lanes.list` hot path and a project root
+   * cannot change identity for the life of the service — one `git rev-parse`
+   * per service instance at most. An indeterminate probe (git missing, timeout)
+   * is deliberately NOT cached and scopes down: skipping adoption for one call
+   * is self-healing, adopting another project's worktree is not.
+   */
+  const resolveWorktreeOwnershipScope = async (): Promise<WorktreeOwnershipScope> => {
+    if (cachedWorktreeOwnershipScope) return cachedWorktreeOwnershipScope;
+    const probe = inFlightWorktreeOwnershipProbe ?? probeWorktreeOwnershipScope();
+    inFlightWorktreeOwnershipProbe = probe;
+    let resolved: WorktreeOwnershipScope | null = null;
+    try {
+      resolved = await probe;
+    } finally {
+      if (inFlightWorktreeOwnershipProbe === probe) inFlightWorktreeOwnershipProbe = null;
+    }
+    if (resolved) cachedWorktreeOwnershipScope = resolved;
+    return resolved ?? "managed-only";
+  };
+
+  /**
+   * A worktree this project owns outright: its own `.ade/worktrees/<dir>`.
+   * Both sides are resolved so a symlinked project root does not make every
+   * managed worktree look like it belongs to someone else.
+   */
+  const isPathUnderManagedWorktreesDir = (worktreePath: string): boolean => {
+    const candidate = canonicalPath(worktreePath);
+    return candidate !== canonicalWorktreesDir && isWithinDir(canonicalWorktreesDir, candidate);
+  };
+
+  /**
+   * Every git worktree of this repository that no lane row claims yet. Bare
+   * repos, the project root / primary checkout, and worktrees git has already
+   * marked prunable are never candidates; neither is a worktree whose
+   * `git worktree add` is still in flight (see `trackPendingWorktreeCreation`),
+   * nor — when this project root is a linked worktree — anything outside this
+   * project's own `.ade/worktrees` (see `resolveWorktreeOwnershipScope`).
+   * Callers that already hold a `git worktree list` snapshot pass it in so the
+   * lane-list repair block shells out to git exactly once.
+   */
+  const listUnregisteredWorktreeCandidates = async (
+    prefetchedWorktrees?: GitWorktreeInfo[],
+  ): Promise<GitWorktreeInfo[]> => {
+    const worktrees = prefetchedWorktrees ?? await listGitWorktrees();
+    const ownershipScope = await resolveWorktreeOwnershipScope();
+    // Lane rows store whatever spelling ADE wrote at create time; git reports
+    // the resolved one. Both spellings are indexed, because a claimed worktree
+    // that reads as unregistered here is adopted a second time.
     const registeredPaths = new Set(
       db.all<{ worktree_path: string }>(
         "select worktree_path from lanes where project_id = ?",
         [projectId]
-      ).map((row) => normAbs(row.worktree_path))
+      ).flatMap((row) => [normAbs(row.worktree_path), canonicalPath(row.worktree_path)])
     );
 
-    return worktrees.filter(
-      (wt) =>
-        !wt.isBare &&
-        wt.path !== normalizedProjectRoot &&
-        !registeredPaths.has(wt.path) &&
-        !isPendingWorktreeCreation(wt.path, wt.branch)
-    );
+    return worktrees
+      .map((wt) => {
+        const resolved = canonicalPath(wt.path);
+        return resolved === wt.path ? wt : { ...wt, path: resolved };
+      })
+      .filter(
+        (wt) =>
+          !wt.isBare &&
+          !wt.isPrunable &&
+          !protectedRootPaths.has(wt.path) &&
+          (ownershipScope === "repository" || isPathUnderManagedWorktreesDir(wt.path)) &&
+          !registeredPaths.has(wt.path) &&
+          !isPendingWorktreeCreation(wt.path, wt.branch)
+      );
   };
 
-  const recoverManagedWorktreeRows = async (): Promise<number> => {
-    const candidates = await listUnregisteredWorktreeCandidates();
+  /**
+   * Adopt every unregistered git worktree as a lane. ADE-created worktrees under
+   * `.ade/worktrees` and worktrees the user created anywhere else are treated
+   * identically: one worktree, one lane, one lane type.
+   */
+  const recoverManagedWorktreeRows = async (
+    prefetchedWorktrees?: GitWorktreeInfo[],
+  ): Promise<number> => {
+    const candidates = await listUnregisteredWorktreeCandidates(prefetchedWorktrees);
     let recoveredCount = 0;
 
     for (const candidate of candidates) {
       const worktreePath = normAbs(candidate.path);
       const branchRef = candidate.branch.trim();
+      // A detached-HEAD worktree has no branch to bind a lane to.
       if (!branchRef) continue;
-      if (path.dirname(worktreePath) !== normalizedWorktreesDir) continue;
       // A create may have started after the candidate snapshot was taken.
       if (isPendingWorktreeCreation(worktreePath, branchRef)) continue;
 
@@ -2049,7 +2233,7 @@ export function createLaneService({
 
       const laneId = randomUUID();
       const now = new Date().toISOString();
-      const displayName = inferLaneNameFromManagedWorktree(candidate);
+      const displayName = inferLaneNameFromWorktree(candidate);
       const laneColor = allocateLaneColorForProject();
       db.run(
         `
@@ -2074,13 +2258,120 @@ export function createLaneService({
     }
 
     if (recoveredCount > 0) {
-      invalidateLaneListCache();
+      invalidateLanePathCaches();
       logger.info("laneService.recovered_managed_worktrees", {
         projectRoot,
         count: recoveredCount,
       });
     }
     return recoveredCount;
+  };
+
+  /**
+   * Drop lane rows whose worktree no longer exists. This is the mirror image of
+   * adoption: a worktree removed outside ADE (`git worktree remove`, or a lane
+   * deleted from another machine) stops being a lane here too.
+   *
+   * Deliberately conservative — it touches nothing on disk and never runs git:
+   *
+   * - the caller must hand in a `git worktree list` snapshot that actually
+   *   succeeded, so a failing git binary can never mass-delete lanes;
+   * - both signals must agree (git no longer registers the path AND the
+   *   directory is gone) — a worktree git still lists, even as prunable, is
+   *   left alone;
+   * - archived lanes are never reaped: `archiveAndReclaim` removes the folder
+   *   on purpose and keeps the row, branch, and chats;
+   * - lanes with an in-flight create / delete / reclaim are skipped, because
+   *   their path is legitimately absent mid-operation;
+   * - only rows this project owns are eligible. The rows themselves are already
+   *   project-scoped (they come from `lanes where project_id = ?`), but under
+   *   `managed-only` ownership the `git worktree list` those rows are checked
+   *   against spans sibling projects, so a row pointing outside this project's
+   *   `.ade/worktrees` is left alone rather than judged by a listing that does
+   *   not speak for it.
+   */
+  const removeVanishedWorktreeLanes = (
+    worktrees: GitWorktreeInfo[],
+    ownershipScope: WorktreeOwnershipScope,
+  ): number => {
+    // A git worktree list that does not even contain the repository itself is
+    // not a trustworthy picture of the world (unreachable repo root, mocked or
+    // truncated output). Deleting rows from it would be data loss.
+    const registeredPaths = new Set(worktrees.filter((wt) => !wt.isBare).map((wt) => canonicalPath(wt.path)));
+    const repoRootRegistered =
+      registeredPaths.has(canonicalProjectRoot) || registeredPaths.has(canonicalPrimaryWorktreePath);
+    if (!repoRootRegistered) return 0;
+    if (!fs.existsSync(normalizedProjectRoot)) return 0;
+
+    const rows = db.all<{ id: string; name: string; color: string | null; worktree_path: string; branch_ref: string }>(
+      `
+        select id, name, color, worktree_path, branch_ref
+        from lanes
+        where project_id = ?
+          and lane_type != 'primary'
+          and status != 'archived'
+      `,
+      [projectId],
+    );
+
+    const removed: Array<{ id: string; name: string; color: string | null }> = [];
+    try {
+      for (const row of rows) {
+        // `normAbs("")` is the process cwd, so the emptiness check has to happen
+        // on the stored value rather than the normalised one.
+        const storedPath = (row.worktree_path ?? "").trim();
+        if (!storedPath.length) continue;
+        const worktreePath = canonicalPath(storedPath);
+        if (protectedRootPaths.has(worktreePath) || protectedRootPaths.has(normAbs(storedPath))) continue;
+        if (ownershipScope === "managed-only" && !isPathUnderManagedWorktreesDir(worktreePath)) continue;
+        if (registeredPaths.has(worktreePath)) continue;
+        if (isPendingWorktreeCreation(worktreePath, row.branch_ref)) continue;
+        if (laneReclaimInFlight.has(row.id)) continue;
+        if (deleteProgressByLaneId.get(row.id)?.overallStatus === "running") continue;
+        // Either spelling still being on disk means the worktree is not gone.
+        if (fs.existsSync(worktreePath) || fs.existsSync(normAbs(storedPath))) continue;
+
+        // Same ordering as the user-initiated delete: read the proof file paths
+        // before the rows go, unlink only after the transaction commits, so a
+        // rollback cannot leave files deleted out from under surviving rows.
+        // Without this the reap orphans every proof artifact the lane wrote.
+        const laneArtifactFiles = collectLaneArtifactFilePaths(row.id);
+        db.run("begin immediate");
+        try {
+          cleanupLaneDatabaseRows(row.id);
+          db.run("commit");
+        } catch (error) {
+          try {
+            db.run("rollback");
+          } catch {
+            // surface the original error below
+          }
+          throw error;
+        }
+        removed.push({ id: row.id, name: row.name, color: row.color });
+        removeLaneArtifactFiles(row.id, laneArtifactFiles);
+      }
+    } finally {
+      // Row deletions commit one at a time, so a mid-loop failure leaves earlier
+      // rows already gone. Announcing in `finally` keeps the caches and the
+      // lane-deleted events consistent with what the database actually says.
+      if (removed.length > 0) {
+        invalidateLanePathCaches();
+        logger.info("laneService.removed_vanished_worktree_lanes", {
+          projectRoot,
+          count: removed.length,
+        });
+        for (const lane of removed) {
+          broadcastLifecycleEvent({
+            type: "lane-deleted",
+            laneId: lane.id,
+            laneName: lane.name,
+            color: lane.color,
+          });
+        }
+      }
+    }
+    return removed.length;
   };
 
   /**
@@ -2181,7 +2472,7 @@ export function createLaneService({
       `
         select id, worktree_path, created_at
         from lanes
-        where project_id = ? and lane_type = 'worktree' and status != 'archived'
+        where project_id = ? and lane_type != 'primary' and status != 'archived'
       `,
       [projectId]
     );
@@ -2227,33 +2518,11 @@ export function createLaneService({
     }
 
     if (removedCount > 0) {
-      invalidateLaneListCache();
+      invalidateLanePathCaches();
       logger.info("laneService.repaired_duplicate_worktree_lanes", {
         projectRoot,
         count: removedCount,
       });
-    }
-  };
-
-  const ensureAttachableWorktreeRoot = async (candidatePath: string): Promise<void> => {
-    const resolvedPath = normAbs(candidatePath);
-    let worktreeRoot = "";
-    let candidateCommonDir = "";
-    try {
-      worktreeRoot = await getGitTopLevel(resolvedPath);
-      candidateCommonDir = await getGitCommonDir(resolvedPath);
-    } catch {
-      throw new Error("Attached lane path must be a valid git worktree root");
-    }
-    if (worktreeRoot !== resolvedPath) {
-      throw new Error("Attached lane path must point to the root of a worktree (not a subdirectory)");
-    }
-    if (resolvedPath === normalizedProjectRoot) {
-      throw new Error("Primary repository root is already tracked as the Primary lane");
-    }
-    const projectCommonDir = await getGitCommonDir(normalizedProjectRoot);
-    if (candidateCommonDir !== projectCommonDir) {
-      throw new Error("Attached lane path must belong to the current project repository");
     }
   };
 
@@ -2280,7 +2549,7 @@ export function createLaneService({
       // overwhelmingly common already-correct path.
       if (!existing.color) {
         db.run("update lanes set color = ? where id = ?", [PRIMARY_LANE_COLOR, existing.id]);
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
       }
       return;
     }
@@ -2301,7 +2570,7 @@ export function createLaneService({
       // one lane colour worth memorising (see `PRIMARY_LANE_COLOR`).
       [laneId, projectId, "Primary", "Main repository workspace", defaultBaseRef, branchRef, primaryWorktreePath, PRIMARY_LANE_COLOR, now]
     );
-    invalidateLaneListCache();
+    invalidateLanePathCaches();
   };
 
   const syncPrimaryLaneBranchRef = async (): Promise<void> => {
@@ -2520,9 +2789,15 @@ export function createLaneService({
       logger.warn("laneService.residualWorktreeCleanup_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
-      await recoverManagedWorktreeRows();
+      // One `git worktree list` feeds both directions of the reconcile: adopt
+      // worktrees that have no lane, drop lanes whose worktree is gone. If git
+      // fails, neither runs — reaping on a failed listing would delete every
+      // lane in the project.
+      const gitWorktrees = await listGitWorktrees();
+      await recoverManagedWorktreeRows(gitWorktrees);
+      removeVanishedWorktreeLanes(gitWorktrees, await resolveWorktreeOwnershipScope());
     } catch (err) {
-      logger.warn("laneService.recoverManagedWorktreeRows_failed", { error: err instanceof Error ? err.message : String(err) });
+      logger.warn("laneService.reconcileWorktreeLanes_failed", { error: err instanceof Error ? err.message : String(err) });
     }
     try {
       repairDuplicateManagedWorktreeLanes();
@@ -2791,7 +3066,7 @@ export function createLaneService({
         linearIssue = args.linearIssue
           ? upsertLaneLinearIssue(laneId, args.linearIssue, branchRef)
           : null;
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
 
       } catch (error) {
         await cleanupCreatedWorktreeLaneAfterCreateFailure({
@@ -2956,7 +3231,7 @@ export function createLaneService({
     const operationToken = randomUUID();
     const acquired = laneStorageWorktreeLocks.acquire({
       ...args,
-      worktreePath: stablePathThroughExistingAncestor(args.worktreePath),
+      worktreePath: canonicalPath(args.worktreePath),
       ownerKind: "storage_lifecycle",
       ownerSessionId: operationToken,
       token: operationToken,
@@ -3433,10 +3708,6 @@ export function createLaneService({
         linearIssue: getLaneLinearIssue(row.id),
         linearIssueLinks: getLaneLinearIssueLinks(row.id),
       });
-    },
-
-    async listUnregisteredWorktrees(): Promise<UnregisteredLaneCandidate[]> {
-      return listUnregisteredWorktreeCandidates();
     },
 
     getStateSnapshot(laneId: string): LaneStateSnapshotSummary | null {
@@ -4092,9 +4363,9 @@ export function createLaneService({
 
       try {
         const checkedOutWorktree = await findGitWorktreeForBranch(branchRef);
-        if (checkedOutWorktree && checkedOutWorktree.path !== normalizedProjectRoot) {
+        if (checkedOutWorktree && canonicalPath(checkedOutWorktree.path) !== canonicalProjectRoot) {
           throw new Error(
-            `Branch '${branchRef}' is already checked out at '${checkedOutWorktree.path}'. Use Add existing worktrees to attach it as a lane, or remove/prune that worktree before importing again.`
+            `Branch '${branchRef}' is already checked out at '${checkedOutWorktree.path}'. That worktree becomes a lane on its own; remove or prune it before importing this branch again.`
           );
         }
       } catch (err) {
@@ -4179,7 +4450,7 @@ export function createLaneService({
           }
           throw txError;
         }
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
 
         // Best-effort push to establish upstream if not already tracking a remote
         try {
@@ -5718,7 +5989,10 @@ export function createLaneService({
       const deleteRisk = await laneServiceApi.getDeleteRisk(laneId);
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
-      const managedPath = row.lane_type === "worktree" && path.dirname(normalizedWorktree) === normalizedRoot;
+      // Reclaim only ever removes folders ADE created. That is a property of the
+      // path, not of the lane type — a lane pointing anywhere else is blocked
+      // below with `worktree_outside_managed_root`.
+      const managedPath = row.lane_type !== "primary" && path.dirname(normalizedWorktree) === normalizedRoot;
       const worktreeExists = managedPath && fs.existsSync(normalizedWorktree);
       const symlinkPath = managedPath
         ? await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)
@@ -5756,14 +6030,7 @@ export function createLaneService({
           disposition: "blocked",
         });
       }
-      if (row.lane_type === "attached") {
-        blockedReasons.push({
-          code: "attached_lane",
-          message: "This folder is attached from outside ADE, so ADE will not remove it.",
-          disposition: "blocked",
-        });
-      }
-      if (row.lane_type === "worktree" && !managedPath) {
+      if (row.lane_type !== "primary" && !managedPath) {
         blockedReasons.push({
           code: "worktree_outside_managed_root",
           message: "The saved folder is outside ADE's managed worktree folder.",
@@ -5844,9 +6111,6 @@ export function createLaneService({
         throw new Error("This lane is already being deleted.");
       }
       if (row.lane_type === "primary") throw new Error("The primary lane cannot be reclaimed.");
-      if (row.lane_type === "attached") {
-        throw new Error("Attached folders are not ADE-managed and cannot be reclaimed.");
-      }
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
       if (path.dirname(normalizedWorktree) !== normalizedRoot) {
@@ -5989,7 +6253,7 @@ export function createLaneService({
             where project_id = ? and lane_id = ?`,
           [now, now, projectId, args.laneId],
         );
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
         broadcastLifecycleEvent({
           type: "lane-reclaimed",
           laneId: args.laneId,
@@ -6053,7 +6317,7 @@ export function createLaneService({
 
       const now = new Date().toISOString();
       db.run("update lanes set status = 'archived', archived_at = ? where id = ? and project_id = ?", [now, laneId, projectId]);
-      invalidateLaneListCache();
+      invalidateLanePathCaches();
       broadcastLifecycleEvent({
         type: "lane-archived",
         laneId,
@@ -6073,9 +6337,9 @@ export function createLaneService({
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
         return { lane, worktreeRecreated: false };
       }
-      if (row.lane_type !== "worktree") {
+      if (row.lane_type === "primary") {
         commitLaneRestoreState(laneId);
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
         broadcastLifecycleEvent({
@@ -6089,22 +6353,31 @@ export function createLaneService({
 
       const normalizedRoot = normAbs(worktreesDir);
       const savedPath = normAbs(row.worktree_path);
-      const canonicalPath = path.join(normalizedRoot, `${slugify(row.name)}-${laneId.slice(0, 8)}`);
-      const savedPathIsManaged = path.dirname(savedPath) === normalizedRoot;
-      const targetPath = savedPathIsManaged ? savedPath : canonicalPath;
+      const fallbackWorktreePath = path.join(normalizedRoot, `${slugify(row.name)}-${laneId.slice(0, 8)}`);
+      // Either spelling of the worktrees folder counts as managed: a row adopted
+      // from git holds the resolved one, and reading that as unmanaged would
+      // relocate ADE's own worktree to a freshly named path on restore.
+      const savedPathParent = path.dirname(savedPath);
+      const savedPathIsManaged = savedPathParent === normalizedRoot || savedPathParent === canonicalWorktreesDir;
+      const savedPathExists = fs.existsSync(savedPath);
+      // Recreation only ever happens inside `.ade/worktrees`. A lane whose
+      // folder still exists elsewhere on disk (a worktree the user made) is
+      // restored in place; one whose non-managed path is gone (a stale path
+      // from another machine) gets a fresh canonical worktree instead.
+      const targetPath = savedPathIsManaged || savedPathExists ? savedPath : fallbackWorktreePath;
       const storageLock = acquireStorageLifecycleLock({
         laneId,
         worktreePath: targetPath,
         ownerLabel: `Restore lane: ${row.name}`,
       });
       try {
-        if (savedPathIsManaged && fs.existsSync(savedPath)) {
+        if (savedPathExists) {
           const registered = await registeredWorktreeForLane(savedPath, row.branch_ref).catch(() => null);
           if (!registered) {
             throw new Error("The saved lane folder is occupied by a different or unregistered Git worktree.");
           }
           commitLaneRestoreState(laneId);
-          invalidateLaneListCache();
+          invalidateLanePathCaches();
           const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
           if (!lane) throw new Error(`Lane not found: ${laneId}`);
           broadcastLifecycleEvent({
@@ -6115,7 +6388,10 @@ export function createLaneService({
           });
           return { lane, worktreeRecreated: false };
         }
-        if (await hasSymlinkInManagedPath(normalizedRoot, targetPath)) {
+        // Same spelling on both sides: `targetPath` is either the fresh path
+        // under the configured folder or a managed saved path under whichever
+        // spelling the row holds, and only the folder's own children matter.
+        if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
           throw new Error("ADE will not restore a lane through a symbolic link.");
         }
         if (fs.existsSync(targetPath)) {
@@ -6143,7 +6419,7 @@ export function createLaneService({
           });
           throw error;
         }
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
         const lane = await laneServiceApi.getSummary(laneId, { includeStatus: true });
         if (!lane) throw new Error(`Lane not found: ${laneId}`);
         broadcastLifecycleEvent({
@@ -6237,8 +6513,11 @@ export function createLaneService({
         ? path.join(projectRoot, ".git", "worktrees", path.basename(row.worktree_path))
         : "";
       const worktreeRegistered = Boolean(worktreeMetadataPath) && fs.existsSync(worktreeMetadataPath);
+      // Every lane owns a real worktree now, wherever it lives — deleting one
+      // removes the checkout. Legacy `attached` rows are no exception; the
+      // safety rails below are what keep an arbitrary path safe to remove, not
+      // the lane type.
       const hasWorktree =
-        row.lane_type === "worktree" &&
         Boolean(row.worktree_path) &&
         (fs.existsSync(row.worktree_path) || worktreeRegistered);
       const stepNames: LaneDeleteStepName[] = [];
@@ -6399,6 +6678,33 @@ export function createLaneService({
 
         if (hasWorktree) {
           await runStep("git_worktree_remove", async () => {
+            const targetPath = normAbs(row.worktree_path);
+            // Rails that must hold for ANY worktree path, not just the ones ADE
+            // created: never the repository itself, never the worktrees folder,
+            // never through a symlink, and never a directory that is not the
+            // root of a Git worktree.
+            if (protectedRootPaths.has(targetPath) || protectedRootPaths.has(canonicalPath(targetPath))) {
+              throw new Error("ADE will not remove the project's own folder.");
+            }
+            const managedWorktreePath = residualWorktreeCleanup.isDirectManagedWorktreePath(targetPath);
+            if (managedWorktreePath) {
+              // A managed path is a direct child of the worktrees folder under
+              // one of its two spellings. Walking from that same spelling is
+              // what keeps a symlinked project root from reading as a redirect
+              // planted inside the folder.
+              if (await hasSymlinkInManagedPath(path.dirname(targetPath), targetPath)) {
+                throw new Error("ADE will not remove a lane folder through a symbolic link.");
+              }
+            } else {
+              if (await isSymbolicLinkPath(targetPath)) {
+                throw new Error("ADE will not remove a lane folder through a symbolic link.");
+              }
+              // Outside `.ade/worktrees` ADE never falls back to deleting files,
+              // so a directory that git does not recognise is left untouched.
+              if (fs.existsSync(targetPath) && !(await isExpectedGitWorktreeRoot(targetPath))) {
+                throw new Error(STALE_WORKTREE_ROOT_MESSAGE);
+              }
+            }
             return runGitWorktreeMutation(async () => {
               const removeArgs = ["worktree", "remove"];
               if (force) removeArgs.push("--force");
@@ -6457,17 +6763,29 @@ export function createLaneService({
               // state that blocks future deletes.
               const removeRes = await runGit(removeArgs, { cwd: projectRoot, timeoutMs: 60_000 });
               if (removeRes.exitCode === 0) {
-                if (fs.existsSync(row.worktree_path)) {
-                  return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
+                if (!fs.existsSync(row.worktree_path)) {
+                  residualWorktreeCleanup.deleteRow(row.worktree_path);
+                  return { detail: row.worktree_path };
                 }
-                residualWorktreeCleanup.deleteRow(row.worktree_path);
-                return { detail: row.worktree_path };
+                if (!managedWorktreePath) {
+                  // Git unregistered it but left files behind. They are the
+                  // user's, outside ADE's storage — say so instead of deleting.
+                  const message = `git removed the worktree but files remain at ${row.worktree_path}`;
+                  recordNonFatalFailure("git_worktree_remove", message);
+                  return { detail: `${row.worktree_path}; warning: ${message}` };
+                }
+                return removeResidualDirectory(`${row.worktree_path} (removed residual files)`);
+              }
+              const original = (removeRes.stderr || removeRes.stdout || "").trim();
+              if (!managedWorktreePath) {
+                // No filesystem escalation for a folder ADE does not own: the
+                // git failure is the answer the user gets.
+                throw new Error(original || `git worktree remove exited ${removeRes.exitCode}`);
               }
               // Recovery path: a previous failed delete (or this one's first attempt)
               // can leave the worktree dir present without its `.git` pointer file, or
               // the dir gone with stale metadata still registered. Either way: rm the
               // dir if any, then prune git's metadata.
-              const original = (removeRes.stderr || removeRes.stdout || "").trim();
               return removeResidualDirectory(
                 `${row.worktree_path} (recovered from stale state)`,
                 `git worktree remove failed (${original})`
@@ -6555,7 +6873,7 @@ export function createLaneService({
             : { detail: `${removedProofFiles} of ${laneArtifactFiles.length} proof file(s) removed; see logs` };
         });
 
-        invalidateLaneListCache();
+        invalidateLanePathCaches();
         finalize(nonFatalFailures.length > 0 ? "completed_with_warnings" : "completed");
         broadcastLifecycleEvent({
           type: "lane-deleted",
@@ -6750,196 +7068,6 @@ export function createLaneService({
         // Edit-protection no longer gates file editing; workspaces are always editable.
         isReadOnlyByDefault: false
       };
-    },
-
-    async attach(args: AttachLaneArgs): Promise<LaneSummary> {
-      const laneName = (args.name ?? "").trim();
-      if (!laneName) throw new Error("Lane name is required");
-
-      const attachedPath = normAbs(args.attachedPath);
-      if (!fs.existsSync(attachedPath) || !fs.statSync(attachedPath).isDirectory()) {
-        throw new Error("Attached lane path must be an existing directory");
-      }
-      await ensureAttachableWorktreeRoot(attachedPath);
-
-      const branchRef = await detectBranchRef(attachedPath, defaultBaseRef);
-      const existingPath = db.get<{ id: string; name: string; status: string }>(
-        "select id, name, status from lanes where project_id = ? and worktree_path = ? limit 1",
-        [projectId, attachedPath]
-      );
-      if (existingPath?.id) {
-        if (existingPath.status === "archived") {
-          throw codedError(
-            encodeCodedErrorMessage(
-              "lane_already_linked",
-              `This worktree is already linked as archived lane '${existingPath.name}'. Unarchive it instead.`,
-            ),
-            "lane_already_linked",
-          );
-        }
-        throw codedError(
-          encodeCodedErrorMessage(
-            "lane_already_linked",
-            `This worktree is already linked as lane '${existingPath.name}'.`,
-          ),
-          "lane_already_linked",
-        );
-      }
-
-      const existingBranch = db.get<{ id: string; name: string; status: string; worktree_path: string }>(
-        "select id, name, status, worktree_path from lanes where project_id = ? and branch_ref = ? limit 1",
-        [projectId, branchRef]
-      );
-      if (existingBranch?.id && normAbs(existingBranch.worktree_path) !== attachedPath) {
-        if (existingBranch.status === "archived") {
-          throw codedError(
-            encodeCodedErrorMessage(
-              "lane_already_linked",
-              `Branch '${branchRef}' is already linked to archived lane '${existingBranch.name}'. Unarchive it instead.`,
-            ),
-            "lane_already_linked",
-          );
-        }
-        throw codedError(
-          encodeCodedErrorMessage(
-            "lane_already_linked",
-            `Branch '${branchRef}' is already linked to lane '${existingBranch.name}'.`,
-          ),
-          "lane_already_linked",
-        );
-      }
-
-      const laneId = randomUUID();
-      const now = new Date().toISOString();
-
-      const parentLaneId = null;
-      const baseRef = defaultBaseRef;
-      const laneColor = allocateLaneColorForProject();
-
-      db.run(
-        `
-        insert into lanes(
-          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
-          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
-        )
-        values(?, ?, ?, ?, 'attached', ?, ?, ?, ?, 0, ?, ?, null, null, 'active', ?, null)
-      `,
-        [laneId, projectId, laneName, args.description ?? null, baseRef, branchRef, attachedPath, attachedPath, parentLaneId, laneColor, now]
-      );
-      invalidateLaneListCache();
-
-      // Best-effort push to establish upstream if not already tracking a remote
-      try {
-        const upstreamCheck = await runGit(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{upstream}"], { cwd: attachedPath, timeoutMs: 5_000 });
-        if (upstreamCheck.exitCode !== 0) {
-          await runGit(["push", "-u", "origin", branchRef], { cwd: attachedPath, timeoutMs: 60_000 });
-        }
-      } catch {
-        // Non-fatal: lane works locally even without remote tracking
-      }
-
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Failed to attach lane: ${laneId}`);
-      const rowsById = getRowsById(true);
-      const status = await computeLaneStatus(attachedPath, baseRef, branchRef);
-      const parentRow = parentLaneId ? getLaneRow(parentLaneId) : null;
-      const parentStatus = parentRow
-        ? await computeLaneStatus(parentRow.worktree_path, parentRow.base_ref, parentRow.branch_ref)
-        : null;
-      const summary = toLaneSummary({
-        row,
-        status,
-        parentStatus,
-        childCount: 0,
-        stackDepth: computeStackDepth({ laneId, rowsById, memo: new Map() })
-      });
-      broadcastLifecycleEvent({
-        type: "lane-created",
-        laneId: summary.id,
-        laneName: summary.name,
-        color: summary.color,
-        lane: summary,
-      });
-      return summary;
-    },
-
-    async adoptAttached(args: AdoptAttachedLaneArgs): Promise<LaneSummary> {
-      const laneId = (args.laneId ?? "").trim();
-      if (!laneId) throw new Error("laneId is required");
-
-      const row = getLaneRow(laneId);
-      if (!row) throw new Error(`Lane not found: ${laneId}`);
-      if (row.lane_type !== "attached") {
-        throw new Error("Only attached lanes can be moved into .ade/worktrees");
-      }
-      if (row.status === "archived") {
-        throw new Error("Archived lanes cannot be moved. Unarchive first.");
-      }
-
-      const currentPath = normAbs(row.worktree_path);
-      if (!fs.existsSync(currentPath) || !fs.statSync(currentPath).isDirectory()) {
-        throw new Error("Attached worktree path no longer exists on disk");
-      }
-      await ensureAttachableWorktreeRoot(currentPath);
-
-      const slug = slugify(row.name);
-      const defaultTarget = path.join(worktreesDir, `${slug}-${laneId.slice(0, 8)}`);
-      const normalizedWorktreesDir = normAbs(worktreesDir);
-      let targetPath = normAbs(defaultTarget);
-
-      if (!isWithinDir(normalizedWorktreesDir, targetPath)) {
-        throw new Error("Failed to resolve destination under .ade/worktrees");
-      }
-
-      if (currentPath !== targetPath) {
-        if (fs.existsSync(targetPath)) {
-          targetPath = normAbs(path.join(worktreesDir, `${slug}-${randomUUID().slice(0, 8)}`));
-        }
-        const existingTarget = db.get<{ id: string; name: string }>(
-          "select id, name from lanes where project_id = ? and worktree_path = ? and id != ? limit 1",
-          [projectId, targetPath, laneId]
-        );
-        if (existingTarget?.id) {
-          throw new Error(`Destination path is already in use by lane '${existingTarget.name}'.`);
-        }
-
-        await runGitWorktreeMutation(() =>
-          runGitOrThrow(["worktree", "move", currentPath, targetPath], {
-            cwd: projectRoot,
-            timeoutMs: 120_000
-          })
-        );
-      }
-
-      db.run(
-        `
-          update lanes
-          set lane_type = 'worktree',
-              worktree_path = ?,
-              attached_root_path = null
-          where id = ? and project_id = ?
-        `,
-        [targetPath, laneId, projectId]
-      );
-      invalidateLaneListCache();
-
-      const updated = getLaneRow(laneId);
-      if (!updated) throw new Error(`Failed to update lane: ${laneId}`);
-
-      const rowsById = getRowsById(true);
-      const parent = updated.parent_lane_id ? rowsById.get(updated.parent_lane_id) ?? null : null;
-      const status = await computeLaneStatus(updated.worktree_path, updated.base_ref, updated.branch_ref);
-      const parentStatus = parent
-        ? await computeLaneStatus(parent.worktree_path, parent.base_ref, parent.branch_ref)
-        : null;
-
-      return toLaneSummary({
-        row: updated,
-        status,
-        parentStatus,
-        childCount: getChildrenRows(updated.id, false).length,
-        stackDepth: computeStackDepth({ laneId: updated.id, rowsById, memo: new Map() })
-      });
     },
 
   };

@@ -169,7 +169,6 @@ function createRuntime() {
     laneService: {
       list: vi.fn(async () => laneRows),
       ensurePrimaryLane: vi.fn(async () => laneRows[0]),
-      listUnregisteredWorktrees: vi.fn(async () => [{ path: "/tmp/untracked-worktree", branch: "feature/untracked" }]),
       getLaneWorktreePath: vi.fn((laneId: string) => {
         const lane = laneRows.find((row) => row.id === laneId) ?? laneRows[0]!;
         return lane.worktreePath;
@@ -3165,15 +3164,10 @@ describe("adeRpcServer", () => {
     expect(response.structuredContent.message).toBe("generated commit message");
   });
 
-  it("lists and imports unregistered lane worktrees", async () => {
+  it("imports an existing branch as a lane", async () => {
     const fixture = createRuntime();
     const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
     await initialize(handler, { callerId: "agent-1", role: "agent" });
-
-    const listResponse = await callTool(handler, "list_unregistered_lanes", {});
-    expect(listResponse?.isError).toBeUndefined();
-    expect(fixture.runtime.laneService.listUnregisteredWorktrees).toHaveBeenCalledTimes(1);
-    expect(listResponse.structuredContent.worktrees[0].branch).toBe("feature/untracked");
 
     const importResponse = await callTool(handler, "import_lane", {
       branchRef: "feature/untracked",
@@ -4849,6 +4843,32 @@ describe("adeRpcServer", () => {
       target: "chat",
       mode: "resume",
     });
+  });
+
+  // Discovery for a provider whose CLI is missing now throws instead of
+  // returning [], and `ade actions run external-sessions.list` is the only way
+  // an agent reaches it. The message has to survive to the CLI's stderr as a
+  // normal action failure, because the alternative an agent sees is a stack
+  // trace it cannot act on.
+  it("reports a failed external-session discovery as a readable action error", async () => {
+    const fixture = createRuntime();
+    const list = vi.fn(async () => {
+      throw new Error("OpenCode CLI not found: install `opencode` to import its sessions.");
+    });
+    (fixture.runtime as any).externalSessionsService = { list, importExternalSession: vi.fn() };
+    const handler = createAdeRpcRequestHandler({ runtime: fixture.runtime, serverVersion: "test" });
+    await initialize(handler, { callerId: "cto-1", role: "cto" });
+
+    const listed = await callTool(handler, "run_ade_action", {
+      domain: "external-sessions",
+      action: "list",
+      args: { providers: ["opencode"], scope: "all" },
+    });
+
+    expect(listed.isError).toBe(true);
+    expect(listed.error.message).toBe(
+      "OpenCode CLI not found: install `opencode` to import its sessions.",
+    );
   });
 
   it("allows the unbound ade CLI to use explicit-lane external-session actions", async () => {

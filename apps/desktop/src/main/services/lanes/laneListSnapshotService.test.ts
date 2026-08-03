@@ -48,6 +48,37 @@ describe("laneListSnapshotService", () => {
     });
   });
 
+  // Shipped iOS builds decode LaneListSnapshot with `adoptableAttached` as a
+  // non-optional Bool, and the host updates before the phone does. The field is
+  // deprecated and always false, but an emitter that stops sending the KEY
+  // blanks the lane list on every not-yet-updated device. It stays REQUIRED on
+  // the TypeScript type for exactly that reason; since no TypeScript surface
+  // reads it, a cleanup pass could still drop type and emitters together in one
+  // green step, so assert on the serialized payload by literal key name.
+  it("still emits the deprecated adoptableAttached key for older clients", async () => {
+    const services = makeHarness({
+      laneId: "lane-1",
+      status: "running",
+      runtimeState: "idle",
+      toolType: "codex",
+      lastOutputPreview: "Turn completed",
+    });
+
+    const [snapshot] = await buildLaneListSnapshots(
+      services as any,
+      [{ id: "lane-1", name: "Lane 1", laneType: "worktree", archivedAt: null }] as any,
+      {
+        includeConflictStatus: false,
+        includeRebaseSuggestions: false,
+        includeAutoRebaseStatus: false,
+      },
+    );
+
+    const wire = JSON.parse(JSON.stringify(snapshot));
+    expect(Object.keys(wire)).toContain("adoptableAttached");
+    expect(wire.adoptableAttached).toBe(false);
+  });
+
   it("counts chat pending input separately from CLI attention heuristics", async () => {
     const services = {
       ...makeHarness({

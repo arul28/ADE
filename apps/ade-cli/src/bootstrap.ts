@@ -835,9 +835,7 @@ export async function createAdeRuntime(args: {
       logger,
       projectRoot,
       projectId,
-      baseRef,
       freshProject: !hadAdeDb,
-      laneService,
       projectConfigService,
     });
 

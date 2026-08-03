@@ -1138,10 +1138,12 @@ Lane types (per `lanes.lane_type`):
 | Type | Worktree location | Notes |
 |------|-------------------|-------|
 | `primary` | Project root | The main repo checkout (e.g., `main`). |
-| `worktree` | `.ade/worktrees/<slug>-<uuid8>` | Standard ADE lane. |
-| `attached` | User-specified path | Pre-existing worktree linked to ADE (`attached_root_path` column). |
+| `worktree` | `.ade/worktrees/<slug>-<uuid8>` for lanes ADE created, or wherever the user made theirs | Every non-primary lane. Worktrees are adopted automatically — there is no attach step. |
+| `attached` | User-specified path (`attached_root_path` column) | **Legacy only.** Nothing writes this value anymore; existing rows behave exactly like `worktree` lanes. |
 
 Worktree lifecycle: create (60s timeout), archive (DB status only, worktree remains on disk), delete (`git worktree remove` + optional `git branch -D`), cascade-delete dependent rows (deltas, sessions, operations, pack index).
+
+Lane rows are not the authority on which worktrees exist — git is. Every `lanes.list` reconciles the two from a single `git worktree list`, inserting a lane for any worktree of this repository that no row claims and deleting the row for any non-primary, non-archived lane whose worktree is gone from both git and disk. There is no register or attach step. The reconcile is scoped by ownership (`git rev-parse --git-common-dir`): a project root that is itself a linked worktree sees the whole repository in that listing and therefore adopts and reaps only under its own `.ade/worktrees`. All of it runs in realpath space, because git resolves symlinks and ADE's stored paths do not. See [Lanes › Every git worktree is a lane](./features/lanes/README.md#every-git-worktree-is-a-lane).
 
 ### 9.3 Stack graph
 

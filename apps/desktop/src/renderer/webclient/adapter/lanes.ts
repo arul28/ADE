@@ -77,9 +77,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         },
         idempotent: false,
       }),
-    attach: (args: unknown) => call("lanes.attach", args, null, false),
-    listUnregisteredWorktrees: () => call("lanes.listUnregisteredWorktrees", {}, []),
-    adoptAttached: (args: unknown) => call("lanes.adoptAttached", args, null, false),
     rename: async (args: unknown) => {
       await call("lanes.rename", args, undefined, false);
     },

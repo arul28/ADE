@@ -8,7 +8,6 @@ import { DevToolsRow } from "./DevToolsRow";
 import { AiRuntimesBand } from "./AiRuntimesBand";
 import { GitHubCard } from "./GitHubCard";
 import { LinearCard } from "./LinearCard";
-import { WorktreesCard } from "./WorktreesCard";
 
 export function ProjectSetupPage() {
   const navigate = useNavigate();
@@ -98,7 +97,6 @@ export function ProjectSetupPage() {
               <div style={connectionColStyle}><GitHubCard /></div>
               <div style={connectionColStyle}><LinearCard /></div>
             </div>
-            <WorktreesCard />
           </div>
         </div>
       </div>
