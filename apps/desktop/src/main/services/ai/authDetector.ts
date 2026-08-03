@@ -83,7 +83,11 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["status", "--json"],
     ["status"],
   ],
-  droid: [["--version"], ["-V"], ["version"]],
+  // Documented flags only. `droid --help` on v0.186.0 lists exec/daemon/search/
+  // update/mcp/plugin/computer/help and nothing else, so anything that is not a
+  // real subcommand — `version`, `whoami`, `account status` — is taken as a
+  // *prompt* and boots the full interactive TUI, burning the spawn timeout.
+  droid: [["--version"], ["-v"]],
 };
 
 function cliSpawnCommands(cli: CliName): readonly string[] {
@@ -108,6 +112,10 @@ const AUTH_INDICATORS = [
 const STRONG_UNAUTH_INDICATORS = [
   /not logged in/i,
   /not authenticated/i,
+  // Droid's real refusal, verbatim from v0.186.0: "Error during droid
+  // execution: Authentication failed. Please log in using /login or set a valid
+  // FACTORY_API_KEY environment variable." None of the other patterns match it.
+  /authentication failed/i,
   /login required/i,
   /sign in required/i,
   /unauthorized/i,
@@ -398,6 +406,22 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   return { authenticated: false, verified: false, paidPlan: false };
 }
 
+/**
+ * Best-effort check for a Factory credential ADE can see without launching droid.
+ *
+ * KNOWN GAP, do not rediscover from scratch: on v0.186.0 `~/.factory/settings.json`
+ * holds UI preferences only — the real file on a signed-out machine is
+ * `{"logoAnimation":"off"}` — and no credential-shaped file exists anywhere under
+ * `~/.factory` (verified: cache/, certs/, droids/, logs/, sessions/, snapshots/,
+ * telemetry/, temp/ and four small JSON state files, none of them auth). A stack
+ * trace in `~/.factory/logs` names a dedicated
+ * `packages/runtime/auth/src/credentials/CredentialsStorage.ts`, so tokens almost
+ * certainly live somewhere else in a format we have not seen. Confirming that
+ * needs a signed-in Factory account, which this machine does not have, so the
+ * settings.json read stays (harmless, and correct if Factory ever writes there)
+ * and `false` continues to mean "no credential ADE can see" — never "signed out".
+ * Callers must not turn a false here into `verified: true`.
+ */
 async function hasDroidConfiguredCredentials(): Promise<boolean> {
   if (process.env.FACTORY_API_KEY?.trim()) {
     return true;
@@ -450,42 +474,25 @@ async function inspectDroidCliPresence(command: string, options?: { deep?: boole
     return { installed: true, authenticated: true, verified: true };
   }
 
-  try {
-    const result = await spawnAsync(command, ["exec", "--list-tools"], { timeout: 12_000 });
-    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-    const normalized = combined.toLowerCase();
-    if (hasPattern(normalized, STRONG_UNAUTH_INDICATORS)) {
-      return { installed: true, authenticated: false, verified: true };
-    }
-    if (result.status === 0) {
-      return { installed: true, authenticated: true, verified: true };
-    }
-    if (hasPattern(normalized, AUTH_INDICATORS)) {
-      return { installed: true, authenticated: true, verified: true };
-    }
-  } catch {
-    // Current Droid releases may not support this probe or it may time out; fall back.
-  }
-
-  const authProbes: string[][] = [
-    ["account", "status"],
-    ["whoami"],
-  ];
-  for (const args of authProbes) {
-    try {
-      const result = await spawnAsync(command, args, { timeout: 12_000 });
-      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) {
-        return { installed: true, authenticated: false, verified: true };
-      }
-      if (hasPattern(combined, AUTH_INDICATORS)) {
-        return { installed: true, authenticated: true, verified: true };
-      }
-    } catch {
-      // try next probe
-    }
-  }
-
+  // Nothing further to ask. Droid v0.186.0 exposes no cheap auth probe, and the
+  // three this used to run were all wrong:
+  //
+  //   `droid exec --list-tools` exits 0 with no account at all — it prints the
+  //   local tool policy and never contacts Factory — so it reported a signed-out
+  //   machine as authenticated *and verified*. Measured: exit 0 and a full tool
+  //   listing here, while `droid exec "say hi"` returns "Authentication failed."
+  //
+  //   `whoami` and `account status` are not subcommands (see CLI_AUTH_PROBES),
+  //   so each booted the interactive TUI and ran until the spawn timeout — a
+  //   forced refresh spawned a 150MB agent twice to learn nothing.
+  //
+  // The only authoritative signal is a real `droid exec` round trip, which costs
+  // a model call on a signed-in machine and cannot be a detection probe. So stop
+  // at "installed, auth unknown": `verified: false` keeps this out of the
+  // explicitly-signed-out state, and buildProviderConnections renders it as
+  // "installed but no credentials were detected", which is exactly true. This
+  // now agrees with the shallow path — before, forcing a refresh made the answer
+  // worse, which is the opposite of what a refresh button should do.
   return { installed: true, authenticated: false, verified: false };
 }
 
