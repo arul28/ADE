@@ -66,7 +66,14 @@ function copyDirectoryIfPresent(sourcePath, targetPath) {
 
 function openCodeNativePackagesForPlatform(platform) {
   if (platform === "darwin") return ["opencode-darwin-arm64", "opencode-darwin-x64"];
-  if (platform === "win32") return ["opencode-windows-x64", "opencode-windows-arm64"];
+  // Windows x64 materializes the `-baseline` build, never `opencode-windows-x64`.
+  // The default x64 build requires AVX2 and aborts with an illegal instruction on
+  // x64 CPUs without it; `-baseline` targets the lower instruction set, is the same
+  // size, and runs everywhere. This list must stay in sync with
+  // OPENCODE_PLATFORM_PACKAGES in src/main/services/opencode/openCodeBinaryManager.ts,
+  // because the resolver only ever looks for the package named there - anything else
+  // materialized here is dead weight the installer still pays for.
+  if (platform === "win32") return ["opencode-windows-x64-baseline", "opencode-windows-arm64"];
   if (platform === "linux") {
     return [
       "opencode-linux-arm64",

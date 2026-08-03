@@ -185,7 +185,8 @@
       "dist/**/*",
       "electron.cjs",
       "package.json",
-      "vendor/**/*"
+      "vendor/**/*",
+      "!node_modules/opencode-windows-x64/**"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",

@@ -204,6 +204,49 @@ async function assertPathMissing(targetPath, description) {
   fail(`Unexpected ${description}: ${targetPath}`);
 }
 
+function collectAsarEmbeddedFiles(node, prefix, out) {
+  for (const [name, entry] of Object.entries(node?.files ?? {})) {
+    const entryPath = `${prefix}/${name}`;
+    if (entry?.files) {
+      collectAsarEmbeddedFiles(entry, entryPath, out);
+    } else if (!entry?.unpacked) {
+      // `unpacked: true` entries are index stubs; their bytes live in
+      // app.asar.unpacked, not inside the archive.
+      out.push({ path: entryPath, size: Number(entry?.size) || 0 });
+    }
+  }
+}
+
+/**
+ * OpenCode's platform packages are single ~141.5 MB native executables. They are
+ * only usable from app.asar.unpacked - an exe embedded in app.asar cannot be
+ * spawned - so any embedded copy is dead weight that still ships in the
+ * installer. Dropping a package from `asarUnpack` without also excluding it in
+ * `build.files` moves it *into* app.asar rather than removing it, which is
+ * invisible in the unpacked-tree checks above; this catches that regression.
+ */
+async function assertAsarEmbedsNoOpenCodeNativePayload(appAsarPath) {
+  let header;
+  try {
+    header = asar.getRawHeader(appAsarPath).header;
+  } catch (error) {
+    fail(`Unable to read app.asar header for OpenCode payload hygiene: ${error?.message ?? error}`);
+    return;
+  }
+  const embedded = [];
+  collectAsarEmbeddedFiles(header, "", embedded);
+  // `node_modules/opencode-*` covers the native packages only; the JS SDK is the
+  // scoped `node_modules/@opencode-ai/sdk` and legitimately lives in the archive.
+  const offenders = embedded.filter((entry) => entry.path.startsWith("/node_modules/opencode-"));
+  if (offenders.length === 0) return;
+  const bytes = offenders.reduce((total, entry) => total + entry.size, 0);
+  fail(
+    `app.asar embeds ${offenders.length} OpenCode native payload file(s) totalling ${bytes} bytes; `
+    + "they must be excluded via build.files or unpacked via asarUnpack, never packed into the archive: "
+    + `${offenders.slice(0, 5).map((entry) => entry.path).join(", ")}`,
+  );
+}
+
 async function assertExecutable(targetPath, description) {
   if (process.platform === "win32") {
     return;
@@ -289,6 +332,15 @@ function validatePreflight() {
   }
   if (Array.isArray(pkg.build?.asarUnpack) && pkg.build.asarUnpack.includes("node_modules/opencode-windows-x64/**")) {
     fail("package.json build.asarUnpack must not unpack node_modules/opencode-windows-x64/**; it is the AVX2-only build that crashes on older x64 CPUs");
+  }
+  // Dropping the AVX2 package from asarUnpack is not enough to stop shipping it:
+  // electron-builder always copies production dependencies, so a package that is
+  // not unpacked is embedded *inside* app.asar instead - 141.5 MB of binary that
+  // can never be executed from there and that nothing resolves. Only a `!` pattern
+  // in build.files keeps it out of the package entirely (getNodeModuleFileMatcher
+  // collects exactly the negated patterns and applies them to the node_modules walk).
+  if (!Array.isArray(pkg.build?.files) || !pkg.build.files.includes("!node_modules/opencode-windows-x64/**")) {
+    fail("package.json build.files must exclude !node_modules/opencode-windows-x64/**; otherwise the unused AVX2 OpenCode build is embedded in app.asar");
   }
   if (pkg.build?.win?.icon !== "build/icon.ico") {
     fail("package.json build.win.icon must point to build/icon.ico");
@@ -595,10 +647,17 @@ async function validatePackageHygiene(resourcesPath) {
   // The afterPack step (ensureOpenCodeRuntimePackages) now deliberately bundles
   // the on-target OpenCode native package into app.asar.unpacked. Require it
   // present; the duplicate opencode-ai install shim and all off-target variants
-  // must be absent.
-  await assertPathExists(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "bundled OpenCode Windows x64 payload in Windows package");
+  // must be absent. Windows x64's on-target package is `-baseline`: it is what
+  // OPENCODE_PLATFORM_PACKAGES resolves, and the AVX2 `opencode-windows-x64`
+  // build must not ship at all - it crashes on non-AVX2 CPUs and, since nothing
+  // resolves it, any copy of it is 141.5 MB of pure installer weight.
+  await assertPathExists(
+    path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline", "bin", "opencode.exe"),
+    "bundled baseline OpenCode Windows x64 executable in Windows package",
+  );
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-ai", "bin", "opencode.exe"), "duplicate OpenCode Windows executable");
-  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64-baseline"), "baseline OpenCode Windows x64 payload in Windows package");
+  await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-x64"), "AVX2-only OpenCode Windows x64 payload in Windows package");
+  await assertAsarEmbedsNoOpenCodeNativePayload(appAsarPath);
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-windows-arm64"), "OpenCode Windows arm64 payload in Windows x64 package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-arm64"), "OpenCode macOS arm64 payload in Windows package");
   await assertPathMissing(path.join(unpackedPath, "node_modules", "opencode-darwin-x64"), "OpenCode macOS x64 payload in Windows package");
