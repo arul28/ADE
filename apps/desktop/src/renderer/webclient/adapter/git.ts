@@ -85,23 +85,13 @@ export function createGitNamespaces(infra: AdapterInfra): GitNamespaces {
   const conflicts: Record<string, unknown> = {
     getLaneStatus: (args: unknown) => call("conflicts.getLaneStatus", args, null),
     listOverlaps: (args: unknown) => call("conflicts.listOverlaps", args, []),
-    getRiskMatrix: () => call("conflicts.getRiskMatrix", {}, []),
     simulateMerge: (args: unknown) => call("conflicts.simulateMerge", args, null),
-    runPrediction: (args?: unknown) => call("conflicts.runPrediction", args, null, false),
     getBatchAssessment: () => call("conflicts.getBatchAssessment", {}, null),
     listProposals: (laneId: string) => call("conflicts.listProposals", { laneId }, []),
     prepareProposal: (args: unknown) => call("conflicts.prepareProposal", args, null),
     requestProposal: (args: unknown) => call("conflicts.requestProposal", args, null, false),
     applyProposal: (args: unknown) => call("conflicts.applyProposal", args, null, false),
     undoProposal: (args: unknown) => call("conflicts.undoProposal", args, null, false),
-    runExternalResolver: (args: unknown) => call("conflicts.runExternalResolver", args, null, false),
-    listExternalResolverRuns: (args?: unknown) => call("conflicts.listExternalResolverRuns", args, []),
-    commitExternalResolverRun: (args: unknown) => call("conflicts.commitExternalResolverRun", args, null, false),
-    prepareResolverSession: (args: unknown) => call("conflicts.prepareResolverSession", args, null, false),
-    attachResolverSession: (args: unknown) => call("conflicts.attachResolverSession", args, null, false),
-    finalizeResolverSession: (args: unknown) => call("conflicts.finalizeResolverSession", args, null, false),
-    cancelResolverSession: (args: unknown) => call("conflicts.cancelResolverSession", args, null, false),
-    suggestResolverTarget: (args: unknown) => call("conflicts.suggestResolverTarget", args, null),
     onEvent: () => () => {},
   };
 
