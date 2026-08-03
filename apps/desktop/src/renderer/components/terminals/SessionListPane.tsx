@@ -995,7 +995,16 @@ export const SessionListPane = React.memo(function SessionListPane({
   // The Work sidebar is a union across every connected machine, always —
   // independent of which machine this tab is bound to. That is the whole point:
   // you see work in flight anywhere without switching tabs.
-  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(crossMachineSyncActive);
+  //
+  // The roster goes in so the union can suppress sessions this tab already
+  // renders itself; one session must never appear as two rows. The UNFILTERED
+  // roster on purpose: ownership is a shape question, not a visibility one, and
+  // passing the visible rows would make a chip-filtered session reappear as a
+  // foreign row.
+  const { foreignRows, markersByLaneId } = useCrossMachineLaneUnion(
+    crossMachineSyncActive,
+    allSessionsUnfiltered,
+  );
   const [createLaneOpen, setCreateLaneOpen] = useState(false);
   const [settleUndo, setSettleUndo] = useState<{ ids: string[]; count: number } | null>(null);
   const {
@@ -1307,7 +1316,7 @@ export const SessionListPane = React.memo(function SessionListPane({
     const rows: CrossMachineLaneRow[] = [];
     for (const row of foreignRows) {
       if (laneFilterActive && row.lane.id !== normalizedFilterLaneId) continue;
-      const sessions = query || chipFiltersActive
+      const matched = query || chipFiltersActive
         ? row.sessions.filter((session) => {
             if (query && !`${primarySessionLabel(session)} ${row.lane.name}`.toLowerCase().includes(query)) {
               return false;
@@ -1321,6 +1330,9 @@ export const SessionListPane = React.memo(function SessionListPane({
             });
           })
         : row.sessions;
+      // A filter that removed nothing keeps the original array, so the row below
+      // stays referentially identical instead of being rebuilt every keystroke.
+      const sessions = matched.length === row.sessions.length ? row.sessions : matched;
       if (sessions.length === 0) continue;
       // Another machine's Primary is still a Primary: it takes the same reserved
       // purple as this machine's, which is what makes "purple = Primary" hold

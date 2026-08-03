@@ -434,6 +434,13 @@ Run all follow it. Two things are deliberately wider than that:
   elsewhere). Foreign lanes appear only when they have sessions — the union is
   about work in flight, not an inventory. A machine that goes offline keeps its rows,
   dimmed, folded shut, and inert, and sinks below the reachable machines.
+  One session renders as exactly one row. The union is built against the ids the
+  active binding's own roster already holds and carries a single claim set across
+  machine slices, so neither a locally seeded optimistic launch nor two slices
+  reporting the same session can produce a second row with its own elapsed clock.
+  Local wins the tie, matching where a click resolves. A slice only claims
+  sessions on lanes that same machine reports, so a session naming a lane a
+  machine does not have cannot suppress the machine that does have it.
 - **A session runs on its own lane's machine.** Opening a chat, CLI, or shell
   session from the union streams it from the machine that owns its lane, with its
   calls pinned to that machine's runtime; the tab stays bound where it was. A row

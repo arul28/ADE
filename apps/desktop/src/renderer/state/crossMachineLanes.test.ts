@@ -1,5 +1,6 @@
 /* @vitest-environment jsdom */
 
+import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AgentChatSession, LaneSummary, TerminalSessionSummary } from "../../shared/types";
 import { detectPushDivergence } from "../../shared/laneDivergence";
@@ -19,6 +20,7 @@ import {
   seedCrossMachineOptimisticChatSession,
   selectOtherMachineBranchStates,
   startCrossMachineLaneSync,
+  useCrossMachineLaneUnion,
 } from "./crossMachineLanes";
 
 const originalAde = globalThis.window.ade;
@@ -297,6 +299,187 @@ describe("This Mac counterpart resolution", () => {
       rootPath: "/repo-a",
       displayName: "Repo A",
     });
+  });
+});
+
+describe("local session dedupe", () => {
+  const foreignLane = () => makeLane({ id: "lane-foreign", branchRef: "feature/foreign" });
+  const foreignMachine = (sessions: ReturnType<typeof makeSession>[]) => ({
+    "target-studio": {
+      machineId: "target-studio",
+      machineName: "Mac Studio (12)",
+      targetId: "target-studio",
+      projectId: "project-a",
+      online: true,
+      lanes: [foreignLane()],
+      sessions,
+      prs: [],
+      lastSyncedAtMs: Date.now(),
+      error: null,
+    },
+  });
+
+  /**
+   * The reported bug: one newly-started chat rendered as two rows — once bare
+   * from the active binding's roster, once under its lane group with a machine
+   * badge — each with its own elapsed clock, until the optimistic entry
+   * reconciled away. Machine-level exclusion cannot catch it, because the
+   * duplicate arrives from a machine that is genuinely not the bound one.
+   */
+  it("drops a foreign session the local roster already owns", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: foreignMachine([
+        makeSession({ id: "session-shared", laneId: "lane-foreign" }),
+        makeSession({ id: "session-foreign-only", laneId: "lane-foreign" }),
+      ]),
+      localSessionIds: new Set(["session-shared"]),
+    });
+    const foreign = rows.find((row) => row.machineId === "target-studio");
+    // Per session, not per lane: work the local roster does not own survives.
+    expect(foreign?.sessions.map((session) => session.id)).toEqual(["session-foreign-only"]);
+  });
+
+  it("keeps every foreign session when the local roster owns none of them", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: foreignMachine([makeSession({ id: "session-foreign-only", laneId: "lane-foreign" })]),
+      localSessionIds: new Set(["session-unrelated"]),
+    });
+    expect(rows.find((row) => row.machineId === "target-studio")?.sessions).toHaveLength(1);
+  });
+
+  it("leaves the union untouched when no local ids are supplied", () => {
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: foreignMachine([makeSession({ id: "session-shared", laneId: "lane-foreign" })]),
+    });
+    expect(rows.find((row) => row.machineId === "target-studio")?.sessions).toHaveLength(1);
+  });
+
+  /**
+   * Claiming is scoped to lanes the machine actually reports. A slice that
+   * lists a session for a lane it does not have renders nothing for it, so
+   * claiming it there would block the machine that DOES have that lane — and
+   * the session would disappear from the sidebar altogether, which is worse
+   * than the duplicate this dedupe exists to remove.
+   */
+  it("does not let a machine claim a session whose lane it never reported", () => {
+    const shared = makeSession({ id: "session-shared", laneId: "lane-foreign" });
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        // Reports the session but not its lane: contributes no row for it.
+        "target-laptop": {
+          machineId: "target-laptop",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-laptop",
+          projectId: "project-a",
+          online: true,
+          lanes: [],
+          sessions: [shared],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+        ...foreignMachine([shared]),
+      },
+    });
+    expect(rows.find((row) => row.machineId === "target-studio")?.sessions).toHaveLength(1);
+  });
+
+  /**
+   * The same rule across machines, not just against the local roster: two
+   * slices reporting one session must not both render it. The palette's
+   * `buildThreadIndex` already worked this way; the union now matches.
+   */
+  it("gives a session claimed by two machines to the first one only", () => {
+    const shared = makeSession({ id: "session-shared", laneId: "lane-foreign" });
+    const rows = buildCrossMachineLaneRows({
+      localLanes: [],
+      machines: {
+        ...foreignMachine([shared]),
+        "target-laptop": {
+          machineId: "target-laptop",
+          machineName: "MacBook Pro (97)",
+          targetId: "target-laptop",
+          projectId: "project-a",
+          online: true,
+          lanes: [foreignLane()],
+          sessions: [shared],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+    expect(rows.find((row) => row.machineId === "target-studio")?.sessions).toHaveLength(1);
+    expect(rows.find((row) => row.machineId === "target-laptop")?.sessions).toHaveLength(0);
+  });
+});
+
+describe("union memo stability", () => {
+  afterEach(() => {
+    useAppStore.setState({ crossMachineLanesByMachineId: {}, lanes: [], projectBinding: null });
+    resetCrossMachineLaneSyncForTest();
+  });
+
+  function seedOneForeignMachine() {
+    useAppStore.setState({
+      lanes: [],
+      projectBinding: null,
+      crossMachineLanesByMachineId: {
+        "target-studio": {
+          machineId: "target-studio",
+          machineName: "Mac Studio (12)",
+          targetId: "target-studio",
+          projectId: "project-a",
+          online: true,
+          lanes: [makeLane({ id: "lane-foreign", branchRef: "feature/foreign" })],
+          sessions: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })],
+          prs: [],
+          lastSyncedAtMs: Date.now(),
+          error: null,
+        },
+      },
+    });
+  }
+
+  /**
+   * The roster array is replaced wholesale by every session poll (~5s while
+   * anything is running). Deriving the suppression set from its identity would
+   * rebuild every foreign row, its marker map, and its ordering on a timer — a
+   * background CPU cost with nothing on screen changing. This pins the content
+   * comparison that prevents it; without it the union churns silently and no
+   * other test notices.
+   */
+  it("returns identical references when a new roster array carries the same ids", () => {
+    seedOneForeignMachine();
+    const { result, rerender } = renderHook(
+      ({ roster }) => useCrossMachineLaneUnion(false, roster),
+      { initialProps: { roster: [makeSession({ id: "session-local", laneId: "lane-local" })] } },
+    );
+    const before = result.current;
+
+    // A poll: brand-new array, brand-new session objects, same ids.
+    rerender({ roster: [makeSession({ id: "session-local", laneId: "lane-local" })] });
+
+    expect(result.current).toBe(before);
+    expect(result.current.foreignRows).toBe(before.foreignRows);
+  });
+
+  it("rebuilds when the roster's ids actually change", () => {
+    seedOneForeignMachine();
+    const { result, rerender } = renderHook(
+      ({ roster }) => useCrossMachineLaneUnion(false, roster),
+      { initialProps: { roster: [] as TerminalSessionSummary[] } },
+    );
+    expect(result.current.foreignRows[0]?.sessions).toHaveLength(1);
+
+    // The local roster adopts that session — it must leave the union.
+    rerender({ roster: [makeSession({ id: "session-foreign", laneId: "lane-foreign" })] });
+
+    expect(result.current.foreignRows[0]?.sessions ?? []).toHaveLength(0);
   });
 });
 
