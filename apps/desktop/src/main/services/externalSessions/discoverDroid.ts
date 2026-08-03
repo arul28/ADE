@@ -31,8 +31,8 @@ import {
  *   posix  /Users/dev/ADE   -> "-Users-dev-ADE"
  *   win32  C:\Users\dev\ADE -> "-C-Users-dev-ADE"   (drive colon dropped)
  *
- * The generic `slashEscapedCwd` helper happens to match the posix form, which
- * is why macOS worked, but on Windows it yields "C:-Users-dev-ADE" — a name
+ * A generic separator swap happens to match the posix form, which is why
+ * macOS worked, but on Windows it yields "C:-Users-dev-ADE" — a name
  * that can never exist on NTFS (`:` is reserved) — so every Droid project
  * directory failed the scope filter and no CLI sessions were imported.
  */

@@ -11,7 +11,6 @@ import {
   firstUserTextFromRecords,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
-  slashEscapedCwd,
 } from "./discoveryUtils";
 
 describe("firstUserTextFromRecords", () => {
@@ -88,7 +87,6 @@ describe("external session user text", () => {
     )).toBe("Create <Button variant=\"primary\" /> and explain the literal label User request: in the docs.");
     expect(cleanSessionTitle("\u001b[31mFix import\u001b[0m")).toBe("Fix import");
     expect(cleanSessionTitle("New Agent")).toBeNull();
-    expect(slashEscapedCwd("C:\\Users\\dev\\ADE")).toBe("C:-Users-dev-ADE");
   });
 
   it("strips known transport wrappers, including truncated ones", () => {

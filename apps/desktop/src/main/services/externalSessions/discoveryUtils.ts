@@ -7,6 +7,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import {
   commandArrayToLine as sharedCommandArrayToLine,
   resolveCanonicalCommandLineLaunch,
@@ -619,10 +620,6 @@ export function claudeProjectSlugForCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/gu, "-");
 }
 
-export function slashEscapedCwd(cwd: string): string {
-  return cwd.replace(/[\\/]/gu, "-");
-}
-
 export function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
 }
@@ -717,21 +714,6 @@ export function resolveExistingPath(candidate: string): string | null {
   } catch {
     return null;
   }
-}
-
-/**
- * Cursor's project-directory slug, from the vendor's own shipped code
- * (`@cursor/sdk` 1.0.23, `../utils/dist/index.js`): every non-alphanumeric
- * character becomes `-`, runs of `-` collapse, leading/trailing `-` are
- * trimmed. No case folding, no length cap, no platform branch.
- *
- * TODO: replace with an import of `shared/cursorProjectSlug` (Cursor lane,
- * d6328117) once that module lands on a shared base — this copy exists only
- * because the inverse below has to run before the branches merge, and it must
- * not be allowed to drift from it.
- */
-function slugLikeCursor(value: string): string {
-  return value.replace(/[^a-zA-Z0-9]/gu, "-").replace(/-+/gu, "-").replace(/^-+|-+$/gu, "");
 }
 
 function uniqueNames(names: string[]): string[] {
@@ -872,7 +854,7 @@ export function cursorSlugCwdCandidates(slug: string): string[] {
   // survives as its own segment and Cursor's rule has no platform branch. Slug
   // the real home directory and strip that prefix instead of hardcoding
   // `/Users`, so `C:\Users\me`, `/home/me` and a relocated profile all work.
-  const homeSlug = slugLikeCursor(resolveHomeDir());
+  const homeSlug = cursorProjectSlug(resolveHomeDir());
   if (homeSlug && (slug === homeSlug || slug.startsWith(`${homeSlug}-`))) {
     const rest = slug.slice(homeSlug.length).replace(/^-+/u, "");
     if (rest) {

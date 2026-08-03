@@ -100,6 +100,7 @@ import {
   resolveCanonicalCommandLineLaunch,
 } from "../../../shared/shell";
 import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
+import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -2955,26 +2956,11 @@ export function createPtyService({
   };
 
   /**
-   * Droid's directory name for a project, per `sanitizePathToDirectoryName` in
-   * `@factory/droid-sdk`. Unlike Claude's rule this replaces *only* path
-   * separators — dots, underscores and spaces survive — collapses runs of them,
-   * strips the drive colon as a deliberate special case, and always prefixes a
-   * dash. Replacing only `/` here matched nothing on Windows, where separators
-   * are backslashes and the drive colon cannot appear in a name at all; the
-   * lookup silently fell through to scanning every project directory instead.
-   *
-   * TODO: unify with `droidProjectSlugForCwd()` in `externalSessions/
-   * discoverDroid.ts` once that branch and this one share a base — three
-   * providers with three incompatible rules should each have exactly one home.
+   * Windows paths are case-insensitive; the vendor's escaping is not.
+   * `droidProjectSlugForCwd()` (externalSessions/discoverDroid.ts) already
+   * lower-cases its win32 output, so this is idempotent there and only does
+   * real work when folding an on-disk directory name for comparison.
    */
-  function droidProjectSlugForCwd(cwd: string): string {
-    if (process.platform === "win32") {
-      return `-${cwd.replace(/^([A-Z]):/iu, "$1").replace(/[\\/]+/gu, "-")}`;
-    }
-    return `-${cwd.replace(/^\/+/u, "").replace(/\/+/gu, "-")}`;
-  }
-
-  /** Windows paths are case-insensitive; the vendor's escaping is not. */
   function foldDroidProjectSlug(slug: string): string {
     return process.platform === "win32" ? slug.toLowerCase() : slug;
   }
