@@ -5475,7 +5475,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(screen.queryByText(/selected machine is not currently available/i)).toBeNull();
   });
 
-  it("auto-creates on This Mac from a remote-bound tab without rebinding the project", async () => {
+  it("auto-creates on this computer from a remote-bound tab without rebinding the project", async () => {
     seedRuntimeModelCatalog();
     const { create } = installAdeMocks({ sessions: [] });
     const onSessionCreated = vi.fn();
@@ -5501,7 +5501,7 @@ describe("AgentChatPane submit recovery", () => {
     const onDraftMachineChange = vi.fn();
     const remoteLanes = [{
       // Primary lane ids are intentionally duplicated across machines. The
-      // machine-qualified picker value must still route creation to This Mac.
+      // machine-qualified picker value must still route creation to this computer.
       id: "primary",
       name: "Primary",
       laneType: "primary",
@@ -5526,7 +5526,7 @@ describe("AgentChatPane submit recovery", () => {
       crossMachineLanesByMachineId: {
         "this-mac": {
           machineId: "this-mac",
-          machineName: "This Mac",
+          machineName: "This computer",
           targetId: null,
           projectId: null,
           binding: localBinding,
@@ -5591,7 +5591,7 @@ describe("AgentChatPane submit recovery", () => {
     fireEvent.click(await screen.findByRole("tab", { name: /^OpenAI$/i }));
     await clickEnabledModelOption(new RegExp(escapeRegExp(codexLabel), "i"));
     // Machine and lane are separate shelf controls now, so routing an
-    // auto-create launch onto This Mac is two choices rather than one
+    // auto-create launch onto this computer is two choices rather than one
     // machine-qualified row inside the lane list.
     const unavailableTrigger = await screen.findByRole("button", {
       name: /current machine unavailable; fallback Mac Studio/i,
@@ -5606,7 +5606,7 @@ describe("AgentChatPane submit recovery", () => {
     const selectedTrigger = await screen.findByRole("button", { name: /currently Mac Studio/i });
     fireEvent.click(selectedTrigger);
     const selectedStudioOption = await screen.findByRole("menuitemradio", { name: /Mac Studio/ });
-    const thisMacOption = await screen.findByRole("menuitemradio", { name: /This Mac/ });
+    const thisMacOption = await screen.findByRole("menuitemradio", { name: /This computer/ });
     await waitFor(() => expect(document.activeElement).toBe(selectedStudioOption));
     fireEvent.keyDown(selectedStudioOption, { key: "ArrowDown" });
     expect(document.activeElement).toBe(thisMacOption);
@@ -5618,7 +5618,7 @@ describe("AgentChatPane submit recovery", () => {
     expect(switchRemoteProject).not.toHaveBeenCalled();
     expect(useAppStore.getState().projectBinding).toEqual(remoteBinding);
     expect(await screen.findByRole("button", {
-      name: "Choose machine, currently This Mac",
+      name: "Choose machine, currently This computer",
     })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Send" }));
     await waitFor(() => {
@@ -5640,7 +5640,7 @@ describe("AgentChatPane submit recovery", () => {
         },
       );
     });
-    expect(screen.queryByText(/Open this repository on This Mac first/i)).toBeNull();
+    expect(screen.queryByText(/Open this repository on this computer first/i)).toBeNull();
   });
 
   it("keeps orchestrator lead mode on the first Claude draft send", async () => {

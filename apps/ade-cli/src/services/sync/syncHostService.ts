@@ -4025,7 +4025,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       `--tcp=${port}`,
       target,
     ];
-    void execFileAsync(cli, cliArgs, { timeout: 10_000 })
+    void execFileAsync(cli, cliArgs, { timeout: 10_000, windowsHide: true })
       .then(({ stdout, stderr }) => {
         if (tailnetServeActivePublishToken !== publishToken) return;
         tailnetServeLastFailureSignature = null;
@@ -4120,7 +4120,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
     const cli = resolveTailscaleCliPath();
     let stale: number[];
     try {
-      const { stdout } = await execFileAsync(cli, ["serve", "status", "--json"], { timeout: 10_000 });
+      const { stdout } = await execFileAsync(
+        cli,
+        ["serve", "status", "--json"],
+        { timeout: 10_000, windowsHide: true },
+      );
       stale = staleAdeTailnetServePorts(stdout, currentPort);
     } catch {
       // No Tailscale, no permission, unparseable output: publishing the current
@@ -4147,7 +4151,11 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       // between the snapshot and this `off` is closed too.
       if (await isLocalPortServing(port)) continue;
       try {
-        await execFileAsync(cli, ["serve", `--tcp=${port}`, "off"], { timeout: 10_000 });
+        await execFileAsync(
+          cli,
+          ["serve", `--tcp=${port}`, "off"],
+          { timeout: 10_000, windowsHide: true },
+        );
         reclaimed += 1;
       } catch {
         // A single stubborn entry must not stop the rest.
@@ -4187,7 +4195,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       await execFileAsync(
         cli,
         ["serve", `--tcp=${servePort}`, "off"],
-        { timeout: 10_000 },
+        { timeout: 10_000, windowsHide: true },
       );
       updateTailnetDiscoveryStatus({
         state: "disabled",
@@ -7355,13 +7363,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 deviceId: accountAuth.deviceId,
               });
               return authFail(
-                "This machine is not signed in to an ADE account. Sign in on the Mac, then try again.",
+                "This machine is not signed in to an ADE account. Sign in on this computer, then try again.",
               );
             }
             const config = args.getAccountAttestationConfig?.();
             if (!config) {
               return authFail(
-                "This machine cannot verify ADE accounts. Update ADE on the Mac, then try again.",
+                "This machine cannot verify ADE accounts. Update ADE on this computer, then try again.",
               );
             }
             const attestation = await verifyAccountAttestation({
@@ -7411,7 +7419,7 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
                 });
                 return authFail(
                   "This device's saved pairing predates device-key security."
-                    + " Remove it on the Mac and pair it again.",
+                    + " Remove it on this computer and pair it again.",
                 );
               }
               const dpopFailure = evaluatePairedHelloDpop({

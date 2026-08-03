@@ -1,19 +1,49 @@
 import fs from "node:fs";
 import { createHash } from "node:crypto";
+import { spawnSync as spawnChildSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
+  buildWindowsParentPidQueryArgs,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
+  PARENT_PID_UNKNOWN,
+  readParentPid,
   renderCommand,
-  renderWindowsCommand,
   resolveAdeServeCommand,
+  serviceManagerOwnsRuntimeRecovery,
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
 } from "./common";
+
+describe("serviceManagerOwnsRuntimeRecovery", () => {
+  const base = {
+    serviceName: "com.ade.runtime",
+    action: "install" as const,
+    path: "runtime",
+    message: "test",
+  };
+
+  it("keeps manual fallback blocked while a registered replacement owns readiness retries", () => {
+    expect(serviceManagerOwnsRuntimeRecovery({
+      ...base,
+      ok: false,
+      failureStep: "replacement_responsive",
+    })).toBe(true);
+  });
+
+  it("allows fallback before the replacement reaches supervisor-owned recovery", () => {
+    expect(serviceManagerOwnsRuntimeRecovery({
+      ...base,
+      ok: false,
+      failureStep: "replacement_pid",
+    })).toBe(false);
+    expect(serviceManagerOwnsRuntimeRecovery({ ...base, ok: true })).toBe(false);
+  });
+});
 import {
   installLaunchdService,
   isLaunchdPrintRunning,
@@ -23,18 +53,7 @@ import {
   uninstallLaunchdService,
 } from "./installLaunchd";
 import { installSystemdService, renderSystemdEnvironment, renderSystemdUnit, servicePath as systemdServicePath } from "./installSystemd";
-import {
-  buildWindowsCreateTaskArgs,
-  buildWindowsDeleteTaskArgs,
-  buildWindowsQueryTaskArgs,
-  buildWindowsRunTaskArgs,
-  installWindowsService,
-  isSchtasksOutputRunning,
-  parseSchtasksListStatus,
-  resolveWindowsTaskUser,
-  TASK_NAME,
-  uninstallWindowsService,
-} from "./installWindows";
+import { isWindowsTaskStateRunning } from "./installWindows";
 
 const originalArgv = [...process.argv];
 const originalNodePath = process.env.NODE_PATH;
@@ -270,6 +289,130 @@ describe("isCurrentProcessDescendantOfPid", () => {
   });
 });
 
+// These exercise the DEFAULT parent-pid backend. The suite above injects a fake
+// `parentPid` every time, which is exactly how a Windows host could ship a
+// `readParentPid` that always returned null — and therefore a self-shutdown
+// guard that never fired — with a green Windows CI job.
+describe("readParentPid on win32", () => {
+  // A trusted powershell path, never a bare `powershell` resolved off PATH.
+  const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
+
+  const recordingRun = (
+    reply: (pid: number) => ServiceManagerProcessResult,
+  ): { run: ServiceManagerSpawnSync; calls: Array<{ command: string; args: string[] }> } => {
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const run: ServiceManagerSpawnSync = (command, args) => {
+      calls.push({ command, args });
+      if (!TRUSTED_POWERSHELL.test(command)) {
+        // Mirror the real host: Git Bash's `ps` is found and rejects the POSIX
+        // flags with status 1; a clean Windows box reports ENOENT. Both land on
+        // a non-zero status with no usable stdout.
+        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
+      }
+      const filter = /ProcessId = (\d+)/.exec(args.join(" "));
+      return reply(Number(filter?.[1] ?? 0));
+    };
+    return { run, calls };
+  };
+
+  it("queries Win32_Process through the trusted PowerShell for the parent pid", () => {
+    const { run, calls } = recordingRun(() => ({ status: 0, stdout: "4321\r\n" }));
+
+    expect(readParentPid(run, 1234, "win32")).toBe(4321);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.command).toMatch(TRUSTED_POWERSHELL);
+    expect(calls[0]!.command).not.toBe("ps");
+    expect(calls[0]!.args).toEqual(buildWindowsParentPidQueryArgs(1234));
+    const script = calls[0]!.args.join(" ");
+    expect(script).toContain("Get-CimInstance Win32_Process");
+    expect(script).toContain("ParentProcessId");
+    // wmic is deprecated and is being removed from Windows.
+    expect(script).not.toMatch(/wmic/i);
+  });
+
+  it("treats a missing process as the definitive end of the chain", () => {
+    const { run } = recordingRun(() => ({ status: 3, stdout: "" }));
+    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  });
+
+  it("treats ParentProcessId 0 as the top of the tree", () => {
+    const { run } = recordingRun(() => ({ status: 0, stdout: "0" }));
+    expect(readParentPid(run, 1234, "win32")).toBeNull();
+  });
+
+  it("reports an undetermined ancestry when the query itself fails", () => {
+    const failures: ServiceManagerProcessResult[] = [
+      { status: 1, stdout: "", stderr: "Get-CimInstance is not recognized" },
+      { status: null, stdout: null, stderr: null },
+      { status: 0, stdout: "not-a-pid" },
+      { status: 0, stdout: "" },
+    ];
+    for (const failure of failures) {
+      const { run } = recordingRun(() => failure);
+      expect(readParentPid(run, 1234, "win32")).toBe(PARENT_PID_UNKNOWN);
+    }
+  });
+});
+
+describe("isCurrentProcessDescendantOfPid on win32", () => {
+  const win32Tree = (tree: Record<number, number>): ServiceManagerSpawnSync =>
+    (command, args) => {
+      if (!/powershell\.exe$/i.test(command)) {
+        // Anything that is not the Windows query is the old POSIX `ps` path,
+        // which cannot answer on this platform.
+        return { status: 1, stdout: "", stderr: "ps: unknown option -- o\n" };
+      }
+      const pid = Number(/ProcessId = (\d+)/.exec(args.join(" "))?.[1] ?? 0);
+      const parent = tree[pid];
+      return parent == null
+        ? { status: 3, stdout: "" }
+        : { status: 0, stdout: String(parent) };
+    };
+
+  it("blocks a self-shutdown issued from inside the runtime's process tree", () => {
+    // No `parentPid` injection: this drives the real default backend, so a
+    // Windows build without a win32 branch answers false and fails here.
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: win32Tree({ 400: 300, 300: 100, 100: 0 }),
+    })).toBe(true);
+  });
+
+  it("allows a shutdown issued from an unrelated process tree", () => {
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: win32Tree({ 400: 300, 300: 1, 1: 0 }),
+    })).toBe(false);
+  });
+
+  it("fails closed when the ancestry query is unavailable", () => {
+    // Destroying a live runtime is unrecoverable; a refusal that names the
+    // ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION override is not.
+    expect(isCurrentProcessDescendantOfPid({
+      targetPid: 100,
+      currentPid: 400,
+      platform: "win32",
+      run: () => ({ status: 1, stdout: "", stderr: "powershell unavailable" }),
+    })).toBe(true);
+  });
+});
+
+describe.runIf(process.platform === "win32")("readParentPid against the real Windows host", () => {
+  it("resolves this process's actual parent pid", () => {
+    // process.ppid is an independent oracle for the same fact. Before the win32
+    // branch existed this returned null on every Windows host.
+    expect(readParentPid(spawnChildSync, process.pid)).toBe(process.ppid);
+  }, 30_000);
+
+  it("reports the real parent as an ancestor of this process", () => {
+    expect(isCurrentProcessDescendantOfPid({ targetPid: process.ppid })).toBe(true);
+  }, 30_000);
+});
+
 describe("isStaleChannelServeCommandLine", () => {
   const cliScriptPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
   const primarySocketPath = "/Users/example/.ade-beta/sock/ade.sock";
@@ -326,14 +469,10 @@ describe("service manager status parsers", () => {
     expect(parseLaunchdPrintPid("state = waiting\n")).toBeNull();
   });
 
-  it("detects running Windows scheduled tasks from schtasks output", () => {
-    expect(isSchtasksOutputRunning("TaskName: ADE Runtime\r\nStatus: Running\r\n")).toBe(true);
-    expect(isSchtasksOutputRunning("TaskName: ADE Runtime\r\nStatus: Ready\r\n")).toBe(false);
-  });
-
-  it("parses Windows scheduled task status from schtasks LIST output", () => {
-    expect(parseSchtasksListStatus("TaskName: ADE Runtime\r\nStatus: Ready\r\n")).toBe("Ready");
-    expect(parseSchtasksListStatus("TaskName: ADE Runtime\r\n")).toBeNull();
+  it("detects invariant Task Scheduler state values without parsing localized field labels", () => {
+    expect(isWindowsTaskStateRunning("Running\r\n")).toBe(true);
+    expect(isWindowsTaskStateRunning("Ready\r\n")).toBe(false);
+    expect(isWindowsTaskStateRunning("Status: Running\r\n")).toBe(false);
   });
 });
 
@@ -363,8 +502,12 @@ describe("launchd service rendering", () => {
     expect(plist).toContain("<string>/opt/ADE &amp; deps</string>");
     expect(plist).toContain("<key>ADE_HOME</key>");
     expect(plist).toContain("<string>/Users/example/&apos;ade&apos;</string>");
-    expect(plist).toContain("<string>/Users/example/&apos;ade&apos;/runtime/launchd.out.log</string>");
-    expect(plist).toContain("<string>/Users/example/&apos;ade&apos;/runtime/launchd.err.log</string>");
+    expect(plist).toContain(
+      `<string>${path.join("/Users/example/'ade'", "runtime", "launchd.out.log").replace(/'/g, "&apos;")}</string>`,
+    );
+    expect(plist).toContain(
+      `<string>${path.join("/Users/example/'ade'", "runtime", "launchd.err.log").replace(/'/g, "&apos;")}</string>`,
+    );
   });
 });
 
@@ -598,7 +741,11 @@ describe("launchd service install", () => {
       path: servicePath,
     });
     expect(result.message).toContain("Another ADE brain is already hosting mobile sync on port 8801.");
-    expect(result.message).toContain("brain stop --text");
+    expect(result.message).toContain(
+      process.platform === "win32"
+        ? `Stop-Process -Id ${existingPid}`
+        : "brain stop --text",
+    );
     expect(killed).toEqual([]);
     expect(calls).toEqual([
       { command: "launchctl", args: ["print", currentLaunchdDomain()] },
@@ -980,142 +1127,6 @@ describe("systemd service install", () => {
   });
 });
 
-describe("Windows scheduled task helpers", () => {
-  const serviceCommand: AdeServiceCommand = {
-    command: "C:\\Program Files\\ADE\\ade.exe",
-    args: ["serve"],
-  };
-  const taskUser = "ADEBOX\\arul";
-
-  it("builds schtasks create, run, query, and delete arguments without invoking schtasks", () => {
-    const renderedCommand = renderWindowsCommand(serviceCommand);
-
-    expect(buildWindowsCreateTaskArgs(renderedCommand, taskUser)).toEqual([
-      "/Create",
-      "/SC",
-      "ONLOGON",
-      "/TN",
-      TASK_NAME,
-      "/TR",
-      renderedCommand,
-      "/RU",
-      taskUser,
-      "/IT",
-      "/F",
-    ]);
-    expect(buildWindowsRunTaskArgs()).toEqual(["/Run", "/TN", TASK_NAME]);
-    expect(buildWindowsQueryTaskArgs()).toEqual(["/Query", "/TN", TASK_NAME, "/FO", "LIST", "/V"]);
-    expect(buildWindowsDeleteTaskArgs()).toEqual(["/Delete", "/TN", TASK_NAME, "/F"]);
-  });
-
-  it("resolves the Windows scheduled task user from domain and username environment values", () => {
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "arul" })).toBe("ADEBOX\\arul");
-    expect(resolveWindowsTaskUser({ USERNAME: "LOCALUSER" })).toBe("LOCALUSER");
-    expect(resolveWindowsTaskUser({ USERDOMAIN: "ADEBOX", USERNAME: "ADEBOX\\arul" })).toBe("ADEBOX\\arul");
-  });
-
-  it("renders Windows scheduled task commands with double-quoted argv tokens", () => {
-    expect(renderWindowsCommand({
-      command: "C:\\Program Files\\ADE\\ade.exe",
-      args: ["serve", "--root", "C:\\path with space\\"],
-    })).toBe("\"C:\\Program Files\\ADE\\ade.exe\" \"serve\" \"--root\" \"C:\\path with space\\\\\"");
-    expect(renderCommand(serviceCommand)).toBe("'C:\\Program Files\\ADE\\ade.exe' 'serve'");
-  });
-
-  it("rejects embedded double quotes in Windows scheduled task command tokens", () => {
-    expect(() => renderWindowsCommand({
-      command: "C:\\Program Files\\ADE\\ade.exe",
-      args: ["serve", "--name", "quoted \"value\""],
-    })).toThrow("Windows service command arguments cannot contain double quotes.");
-  });
-
-  it("starts the scheduled task immediately after a successful create", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      { status: 0, stdout: "SUCCESS: attempted to run", stderr: "" },
-    ]);
-
-    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
-
-    expect(result).toMatchObject({
-      ok: true,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "install",
-      path: TASK_NAME,
-      message: "ADE service scheduled task installed and started.",
-    });
-    expect(calls).toEqual([
-      { command: "schtasks.exe", args: buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand), taskUser) },
-      { command: "schtasks.exe", args: buildWindowsRunTaskArgs() },
-    ]);
-  });
-
-  it("surfaces a clear install failure when create succeeds but immediate start fails", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      { status: 1, stdout: "", stderr: "ERROR: access is denied" },
-    ]);
-
-    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("ADE service scheduled task installed, but failed to start: ERROR: access is denied");
-    expect(calls.map((call) => call.args)).toEqual([
-      buildWindowsCreateTaskArgs(renderWindowsCommand(serviceCommand), taskUser),
-      buildWindowsRunTaskArgs(),
-    ]);
-  });
-
-  it("does not try to run the task when create fails", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 1, stdout: "", stderr: "ERROR: create failed" },
-    ]);
-
-    const result = installWindowsService({ command: serviceCommand, spawnSync, userName: taskUser });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("ERROR: create failed");
-    expect(calls).toHaveLength(1);
-  });
-
-  it("reports successful scheduled task removal", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
-    ]);
-
-    const result = uninstallWindowsService({ spawnSync });
-
-    expect(result).toMatchObject({
-      ok: true,
-      serviceName: ADE_RUNTIME_SERVICE_NAME,
-      action: "uninstall",
-      path: TASK_NAME,
-      message: "ADE service scheduled task removed.",
-    });
-    expect(calls).toEqual([
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs() },
-    ]);
-  });
-
-  it("surfaces scheduled task removal failures", () => {
-    const calls: Array<{ command: string; args: string[] }> = [];
-    const spawnSync = spawnSequence(calls, [
-      { status: 1, stdout: "", stderr: "ERROR: The system cannot find the file specified." },
-    ]);
-
-    const result = uninstallWindowsService({ spawnSync });
-
-    expect(result.ok).toBe(false);
-    expect(result.message).toBe("ERROR: The system cannot find the file specified.");
-    expect(calls).toEqual([
-      { command: "schtasks.exe", args: buildWindowsDeleteTaskArgs() },
-    ]);
-  });
-});
 
 function spawnSequence(
   calls: Array<{ command: string; args: string[] }>,

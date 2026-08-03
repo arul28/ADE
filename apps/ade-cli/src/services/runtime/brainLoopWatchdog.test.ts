@@ -12,6 +12,7 @@ import {
   evaluateBrainLoopWatchdog,
   readBrainLoopWatchdogLastWedge,
   recoverBrainLoopWatchdogBreadcrumb,
+  resolveBrainLoopWatchdogThresholdMs,
   startBrainLoopWatchdog,
 } from "./brainLoopWatchdog";
 
@@ -73,6 +74,12 @@ describe("brainLoopWatchdog", () => {
       blockedMs: 1_000,
       slept: false,
     });
+  });
+
+  it("allows Windows background work more time before declaring the brain wedged", () => {
+    expect(resolveBrainLoopWatchdogThresholdMs(undefined, "win32")).toBe(60_000);
+    expect(resolveBrainLoopWatchdogThresholdMs(undefined, "darwin")).toBe(30_000);
+    expect(resolveBrainLoopWatchdogThresholdMs("45000", "win32")).toBe(45_000);
   });
 
   it("renames a crash breadcrumb to last-wedge and emits the recovery warning", () => {

@@ -4,6 +4,14 @@ import React from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
+vi.mock("../../lib/platform", async () => {
+  const actual = await vi.importActual<typeof import("../../lib/platform")>("../../lib/platform");
+  return {
+    ...actual,
+    supportsNativeNotch: true,
+  };
+});
+
 import {
   ATTENTION_CONTRACT_VERSION,
   DEFAULT_ATTENTION_PREFERENCES,

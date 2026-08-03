@@ -3,7 +3,10 @@ import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import WebSocket from "ws";
 import {
+  buildWindowsPortHolderQueryArgs,
   createSharedSyncListener,
+  inspectSyncListenerPort,
+  parseWindowsPortHolders,
   SYNC_RELAY_BRIDGE_PROOF_HEADER,
 } from "./sharedSyncListener";
 
@@ -142,4 +145,130 @@ describe("shared sync listener upgrade policy", () => {
       await listener.close();
     }
   });
+});
+
+// `inspectSyncListenerPort` used to shell out to lsof/ps unconditionally. On
+// Windows both are absent (or, under Git Bash, present and hostile to the POSIX
+// flags), execFileText swallows the failure, and every diagnosis came back with
+// an empty `holders`. That silently disabled the stale-port reclaim above and
+// left `ade doctor` unable to name the process holding the sync port.
+describe("inspectSyncListenerPort on win32", () => {
+  const TRUSTED_POWERSHELL = /[\\/]system32[\\/]windowspowershell[\\/]v1\.0[\\/]powershell\.exe$/i;
+
+  it("builds a Get-NetTCPConnection query joined to Win32_Process", () => {
+    const args = buildWindowsPortHolderQueryArgs(8787);
+    const script = args.join(" ");
+    expect(args.slice(0, 3)).toEqual(["-NoProfile", "-NonInteractive", "-Command"]);
+    expect(script).toContain("Get-NetTCPConnection -LocalPort 8787 -State Listen");
+    expect(script).toContain("OwningProcess");
+    expect(script).toContain("Get-CimInstance Win32_Process");
+    expect(script).toContain("CommandLine");
+    expect(script).toContain("CreationDate");
+    // wmic is deprecated and is being removed from Windows.
+    expect(script).not.toMatch(/wmic/i);
+  });
+
+  it("refuses to interpolate anything that is not a real port", () => {
+    for (const port of [0, -1, 1.5, 70_000, Number.NaN]) {
+      expect(() => buildWindowsPortHolderQueryArgs(port)).toThrow(/Invalid port/);
+    }
+  });
+
+  it("queries the trusted PowerShell instead of lsof, with a workable timeout", async () => {
+    const calls: Array<{ command: string; args: string[]; timeoutMs?: number }> = [];
+    const diagnosis = await inspectSyncListenerPort(8788, {
+      platform: "win32",
+      exec: async (command, args, timeoutMs) => {
+        calls.push({ command, args, timeoutMs });
+        return JSON.stringify([
+          { pid: 4242, command: "C:\\ADE\\ade.exe serve", startTime: "2026-08-01T04:00:00.0000000Z" },
+        ]);
+      },
+    });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.command).toMatch(TRUSTED_POWERSHELL);
+    expect(calls[0]!.command).not.toBe("lsof");
+    // The POSIX budget is 200ms; PowerShell needs seconds to start and load CIM,
+    // so reusing it would kill every Windows query before it answered.
+    expect(calls[0]!.timeoutMs).toBeGreaterThan(1_000);
+    expect(diagnosis).toEqual({
+      port: 8788,
+      holders: [{
+        pid: 4242,
+        command: "C:\\ADE\\ade.exe serve",
+        startTime: "2026-08-01T04:00:00.0000000Z",
+      }],
+    });
+  });
+
+  it("still uses lsof and ps off win32", async () => {
+    const commands: string[] = [];
+    await inspectSyncListenerPort(8789, {
+      platform: "darwin",
+      exec: async (command) => {
+        commands.push(command);
+        return command === "lsof" ? "p4242\n" : "ade serve\n";
+      },
+    });
+    expect(commands[0]).toBe("lsof");
+    expect(commands).toContain("ps");
+    expect(commands.some((command) => /powershell/i.test(command))).toBe(false);
+  });
+
+  it("reports no holders when the query fails rather than inventing one", async () => {
+    expect(await inspectSyncListenerPort(8790, {
+      platform: "win32",
+      exec: async () => null,
+    })).toEqual({ port: 8790, holders: [] });
+  });
+
+  it("parses PowerShell holder payloads defensively", () => {
+    expect(parseWindowsPortHolders(JSON.stringify([
+      { pid: 10, command: "a.exe", startTime: "2026-08-01T04:00:00Z" },
+      { pid: 11, command: "b.exe", startTime: "2026-08-01T05:00:00Z" },
+    ]))).toEqual([
+      { pid: 10, command: "a.exe", startTime: "2026-08-01T04:00:00Z" },
+      { pid: 11, command: "b.exe", startTime: "2026-08-01T05:00:00Z" },
+    ]);
+    // PowerShell 5.1 unwraps a single-element array into a bare object.
+    expect(parseWindowsPortHolders(
+      JSON.stringify({ pid: 12, command: "c.exe", startTime: "2026-08-01T04:00:00Z" }),
+    )).toEqual([{ pid: 12, command: "c.exe", startTime: "2026-08-01T04:00:00Z" }]);
+    // Another user's process yields no CommandLine without elevation. Keep the
+    // pid: it still proves the port is occupied.
+    expect(parseWindowsPortHolders(JSON.stringify([{ pid: 13, command: "", startTime: "" }])))
+      .toEqual([{ pid: 13, command: null, startTime: null }]);
+    expect(parseWindowsPortHolders(JSON.stringify([{ pid: 14 }, { pid: 14 }]))).toHaveLength(1);
+    expect(parseWindowsPortHolders(JSON.stringify([{ pid: 0 }, { pid: -3 }, null, "x"]))).toEqual([]);
+    // An empty PowerShell collection prints nothing at all.
+    expect(parseWindowsPortHolders("")).toEqual([]);
+    expect(parseWindowsPortHolders(null)).toEqual([]);
+    expect(parseWindowsPortHolders("not json")).toEqual([]);
+  });
+});
+
+describe.runIf(process.platform === "win32")("inspectSyncListenerPort against the real Windows host", () => {
+  it("names this process as the holder of a port it is listening on", async () => {
+    // No mocks: this is the case that shipped broken. Before the win32 branch
+    // existed every real Windows diagnosis came back with zero holders.
+    const holder = http.createServer();
+    holder.listen(0, "127.0.0.1");
+    await once(holder, "listening");
+    const address = holder.address();
+    if (!address || typeof address === "string") throw new Error("Expected a TCP holder.");
+    try {
+      const diagnosis = await inspectSyncListenerPort(address.port);
+      expect(diagnosis.port).toBe(address.port);
+      const self = diagnosis.holders.find((entry) => entry.pid === process.pid);
+      expect(self).toBeDefined();
+      // The reclaim path matches on the command line and guards PID reuse with
+      // the start time, so neither may be null for a process we own.
+      expect(self?.command).toBeTruthy();
+      expect(self?.startTime).toBeTruthy();
+      expect(Number.isFinite(Date.parse(self!.startTime!))).toBe(true);
+    } finally {
+      await new Promise<void>((resolve) => holder.close(() => resolve()));
+    }
+  }, 30_000);
 });

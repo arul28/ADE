@@ -42,7 +42,7 @@ coalesces repository bursts to at most one delivery frame per second.
 ## Local development
 
 ```sh
-npm --prefix apps/webhook-relay install
+(cd apps/webhook-relay && npm install)
 npm --prefix apps/webhook-relay run typecheck
 npm --prefix apps/webhook-relay run test
 npm --prefix apps/webhook-relay run build

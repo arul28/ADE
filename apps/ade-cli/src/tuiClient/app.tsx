@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   getModelById,
@@ -1733,10 +1734,10 @@ function readClipboardText(): string | null {
   const candidates = process.platform === "darwin"
     ? [["pbpaste"]]
     : process.platform === "win32"
-      ? [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+      ? [[resolveTrustedWindowsTool("powershell"), "-NoProfile", "-Command", "Get-Clipboard"]]
       : [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]];
   for (const [command, ...args] of candidates) {
-    if (!commandAvailable(command)) continue;
+    if (process.platform !== "win32" && !commandAvailable(command)) continue;
     const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
     if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
   }

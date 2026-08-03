@@ -16,6 +16,7 @@ import {
   ADE_BUNDLED_AGENT_SKILLS_DIR_ENV,
   splitAdeAgentSkillRoots,
 } from "../../desktop/src/shared/agentSkillRoots";
+import { createTestDirectoryLink, removeTestTree } from "./test/filesystem";
 
 const tempRoots: string[] = [];
 
@@ -37,10 +38,10 @@ function writeSkillsManifest(skillsRoot: string): void {
   );
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
-    fs.rmSync(root, { recursive: true, force: true });
+    await removeTestTree(root);
   }
 });
 
@@ -112,7 +113,7 @@ describe("headless ADE CLI agent skill roots", () => {
     const externalSkills = path.join(packagedRoot, "external-skills");
     fs.mkdirSync(resourcesPath, { recursive: true });
     writeSkillsManifest(externalSkills);
-    fs.symlinkSync(externalSkills, path.join(resourcesPath, "agent-skills"), "dir");
+    createTestDirectoryLink(externalSkills, path.join(resourcesPath, "agent-skills"));
 
     const sourceRoot = makeTempRoot();
     const sourceExternalRoot = makeTempRoot();
@@ -122,7 +123,7 @@ describe("headless ADE CLI agent skill roots", () => {
     writeFile(sourceCli, "module.exports = {};\n");
     writeSkillsManifest(sourceExternalSkills);
     fs.mkdirSync(path.dirname(sourceSkills), { recursive: true });
-    fs.symlinkSync(sourceExternalSkills, sourceSkills, "dir");
+    createTestDirectoryLink(sourceExternalSkills, sourceSkills);
 
     expect(inferAgentSkillsRootForCliEntry(null, {
       cwd: path.join(packagedRoot, "elsewhere"),

@@ -1,7 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import { defineConfig } from "tsup";
 import { assertPublicPostHogToken } from "../../scripts/posthog/publicPostHogToken";
 
 const posthogProjectToken = process.env.ADE_POSTHOG_PROJECT_TOKEN?.trim() ?? "";
+const devMainReadyMarker = process.env.ADE_DEV_MAIN_READY_MARKER?.trim() ?? "";
 assertPublicPostHogToken(posthogProjectToken, "ADE_POSTHOG_PROJECT_TOKEN");
 
 export default defineConfig({
@@ -28,6 +31,20 @@ export default defineConfig({
   sourcemap: process.env.ADE_BUILD_SOURCEMAPS === "1",
   // Preserve Vite's dist/renderer output during main/preload watch rebuilds in dev.
   clean: ["dist/main", "dist/preload"],
+  // The dev launcher must not infer build completion from main.cjs appearing:
+  // tsup creates that file before every entry has finished. Signal only after
+  // the complete build succeeds so Electron never starts against a partial
+  // bundle, and use the same signal for safe watch-mode restarts.
+  onSuccess: devMainReadyMarker
+    ? async () => {
+        await fs.mkdir(path.dirname(devMainReadyMarker), { recursive: true });
+        await fs.writeFile(
+          devMainReadyMarker,
+          `${process.pid}:${Date.now()}:${Math.random()}\n`,
+          "utf8",
+        );
+      }
+    : undefined,
   // Inline build-time env variables so they're available in the packaged app.
   define: {
     "process.env.ADE_LINEAR_CLIENT_ID": JSON.stringify(process.env.ADE_LINEAR_CLIENT_ID ?? ""),

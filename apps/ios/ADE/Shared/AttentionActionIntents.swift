@@ -4,7 +4,7 @@ import Foundation
 /// App-intent actions used by the in-app Activity drawer.
 ///
 /// The drawer can approve or deny pending input, restart a failed session, and
-/// rerun failing PR checks without pushing users back to the Mac. The intents
+/// rerun failing PR checks without pushing users back to the computer. The intents
 /// route through `ADEIntentCommandBridge` so this file can stay shared without
 /// importing `SyncService`.
 

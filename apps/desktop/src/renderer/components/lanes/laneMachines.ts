@@ -11,7 +11,7 @@
  * a machine doesn't report free-disk headroom we render the row without a size
  * rather than fetching one.
  *
- * Naming rule: machines are named absolutely ("This Mac", "MacBook Pro (97)").
+ * Naming rule: machines are named absolutely ("This computer", "MacBook Pro (97)").
  * The word "remote" is never user-visible here — inside the create-lane dialog
  * it already means the git base-branch source ("Use fetched upstream").
  */
@@ -54,7 +54,7 @@ export type LaneMachineProjectRef = {
 export type LaneMachineOption = {
   /** `THIS_MACHINE_ID`, or the remote-runtime target id. */
   id: string;
-  /** Absolute machine name, e.g. "This Mac" or "MacBook Pro (97)". */
+  /** Absolute machine name, e.g. "This computer" or "MacBook Pro (97)". */
   name: string;
   /** Remote-runtime target id; null for the machine ADE runs on. */
   targetId: string | null;

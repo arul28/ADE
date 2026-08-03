@@ -83,6 +83,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -10897,7 +10898,7 @@ export function AgentChatPane({
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
     name: selectedDraftMachine?.name ?? (
-      selectedDraftMachineId === boundLaneMachineId ? "This Mac" : selectedDraftMachineId
+      selectedDraftMachineId === boundLaneMachineId ? THIS_MACHINE_NAME : selectedDraftMachineId
     ),
     binding: draftExecutionBinding,
   }), [
@@ -10959,7 +10960,7 @@ export function AgentChatPane({
       ? `Switch this project tab to ${
           activeComposerRuntimeBinding.kind === "remote"
             ? activeComposerRuntimeBinding.runtimeName
-            : "This Mac"
+            : THIS_MACHINE_NAME
         } before using this tool. Chat and attachments remain pinned to that machine.`
       : null;
 

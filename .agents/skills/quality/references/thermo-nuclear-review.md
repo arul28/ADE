@@ -4,8 +4,9 @@ Seven structural standards. The primary question for every finding: does a
 "code judo" move exist — a smaller change that makes the code fundamentally
 simpler, not just cleaner?
 
-Tone: direct and demanding, not rude. Scope to the diff against `main` — do not
-restructure untouched code.
+Tone: direct and demanding, not rude. Scope to the diff against the resolved
+`QUALITY_REVIEW_BASE` (`main` ordinarily; the direct parent for a stacked PR) —
+do not restructure untouched code.
 
 ---
 

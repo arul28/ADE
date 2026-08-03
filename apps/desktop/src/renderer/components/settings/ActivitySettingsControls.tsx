@@ -30,6 +30,7 @@ import {
   type ActivityNotchPresentation,
 } from "../activity/activityNotchLocalSettings";
 import { useAccountStatus } from "../../lib/account";
+import { supportsNativeNotch } from "../../lib/platform";
 import { useActivityStore } from "../../state/activityStore";
 import { SettingsCard, SettingsGroup, SettingsSelect, SettingsToggle } from "./primitives";
 import { COLORS, SANS_FONT } from "../lanes/laneDesignTokens";
@@ -67,7 +68,7 @@ const DOCK_BADGE_SCOPE_OPTIONS: {
   value: AttentionPreferences["account"]["dockBadgeScope"];
   label: string;
 }[] = [
-  { value: "local", label: "This Mac" },
+  { value: "local", label: "This computer" },
   { value: "account", label: "All machines" },
 ];
 
@@ -177,12 +178,14 @@ export function useActivitySettings() {
       // localStorage stays the offline cache of record for notch presentation:
       // a signed-out or offline launch still opens the notch the way this Mac
       // last had it rather than snapping back to the shipped default.
-      const presentation = resolveActivityNotchPresentation(next);
-      writeActivityNotchEnabled(nextNotchEnabled);
-      writeActivityNotchPresentation(presentation);
-      await window.ade?.attentionNotch?.updateSettings(
-        activityNotchSettingsFromPreferences(next, nextNotchEnabled, presentation),
-      );
+      if (supportsNativeNotch && activityNotchSupported()) {
+        const presentation = resolveActivityNotchPresentation(next);
+        writeActivityNotchEnabled(nextNotchEnabled);
+        writeActivityNotchPresentation(presentation);
+        await window.ade?.attentionNotch?.updateSettings(
+          activityNotchSettingsFromPreferences(next, nextNotchEnabled, presentation),
+        );
+      }
       if (!mounted.current) return;
       setError(null);
       flashSaved();
@@ -284,7 +287,7 @@ export function useActivitySettings() {
     machines,
     notchEnabled,
     notchPresentation,
-    notchSupported: activityNotchSupported(),
+    notchSupported: supportsNativeNotch && activityNotchSupported(),
     updateAccount,
     toggleNotchEnabled,
     setNotchPresentation,
@@ -470,7 +473,7 @@ export function ActivitySettingsControls({
           <PopoverRow
             icon={DesktopTower}
             label="Dock badge counts"
-            description="Choose whether the dock badge counts this Mac or your whole account."
+            description="Choose whether the dock badge counts this computer or your whole account."
             disabled={busy}
             control={
               <select
@@ -727,7 +730,7 @@ export function ActivitySettingsControls({
         <SettingsCard
           anchor="activity-dock-badge"
           title="Dock badge counts"
-          description="Count work waiting on this Mac, or across every machine on your account."
+          description="Count work waiting on this computer, or across every machine on your account."
           control={
             <SettingsSelect
               ariaLabel="Dock badge counts"

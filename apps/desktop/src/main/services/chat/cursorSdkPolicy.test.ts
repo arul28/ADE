@@ -201,8 +201,7 @@ describe("Cursor SDK policy", () => {
     expect(evaluateCursorSdkHook({ request: writeTranscript, policy, laneRoot, userHomeDir })).toBe("deny");
   });
 
-  it("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-support-"));
     const home = path.join(root, "home");
     const laneRoot = path.join(root, "repo", ".ade", "worktrees", "lane");
@@ -232,8 +231,7 @@ describe("Cursor SDK policy", () => {
     }
   });
 
-  it("denies symlink escapes through paths that appear to be inside the lane", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("denies symlink escapes through paths that appear to be inside the lane", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-policy-"));
     const laneRoot = path.join(root, "lane");
     const outside = path.join(root, "outside");

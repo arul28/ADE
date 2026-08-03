@@ -405,10 +405,10 @@ describe("HeaderActivityControl", () => {
       snapshotScope: "machine",
       availability: {
         state: "signed_out",
-        title: "Showing this Mac",
+        title: "Showing this computer",
         message: "Sign in to combine Activity across every ADE machine.",
         recovery: "sign_in",
-        hostName: "This Mac",
+        hostName: "This computer",
       },
     });
     renderControl();

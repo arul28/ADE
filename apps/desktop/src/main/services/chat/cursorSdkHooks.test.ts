@@ -93,8 +93,7 @@ describe("Cursor SDK hook installation", () => {
     }
   });
 
-  it("uses a shell wrapper that allows non-ADE Cursor when Node is unavailable", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("uses a shell wrapper that allows non-ADE Cursor when Node is unavailable", () => {
     const home = tempHome();
     try {
       ensureCursorSdkUserHook({ userHomeDir: home });
@@ -112,8 +111,7 @@ describe("Cursor SDK hook installation", () => {
     }
   });
 
-  it("fails closed for ADE Cursor hook invocations when no Node runner is available", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("fails closed for ADE Cursor hook invocations when no Node runner is available", () => {
     const home = tempHome();
     try {
       ensureCursorSdkUserHook({ userHomeDir: home });
@@ -201,8 +199,7 @@ describe("Cursor SDK hook installation", () => {
     }
   });
 
-  it("fails closed when ADE accepts the hook connection but does not answer", async () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("fails closed when ADE accepts the hook connection but does not answer", async () => {
     const home = tempHome();
     const socketPath = path.join(home, "silent.sock");
     const server = net.createServer((socket) => {
@@ -284,8 +281,7 @@ describe("Cursor SDK hook installation", () => {
     }
   });
 
-  it("writes the POSIX shell wrapper with escaped paths", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("writes the POSIX shell wrapper with escaped paths", () => {
     const home = tempHome();
     try {
       const commandPath = cursorSdkHookShellCommandPath(home);

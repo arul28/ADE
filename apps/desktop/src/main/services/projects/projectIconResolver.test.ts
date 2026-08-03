@@ -22,10 +22,26 @@ const PNG_DATA = Buffer.from(
 );
 
 function makeProjectRoot(): string {
-  // Resolve through realpath so the assertions still hold on platforms
-  // (macOS) where the system tmpdir is itself a symlink (e.g. `/var` ->
-  // `/private/var`). The resolver returns canonical realpaths for callers.
-  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-icon-")));
+  // Resolve through the *same* realpath the resolver uses
+  // (`fs.realpathSync.native`). Both spellings collapse the macOS tmpdir
+  // symlink (`/var` -> `/private/var`), but only the native one expands
+  // Windows 8.3 short names, which `os.tmpdir()` reports whenever the account
+  // name exceeds eight characters (`C:\Users\RUNNER~1\...`). The resolver
+  // returns canonical realpaths for callers.
+  return fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), "ade-project-icon-")));
+}
+
+/**
+ * Creates a directory link without requiring Windows Developer Mode or an
+ * elevated test process. Junctions preserve the realpath/containment contract
+ * exercised by these tests while remaining available to ordinary users.
+ */
+function linkProjectRoot(target: string, linkPath: string): void {
+  fs.symlinkSync(
+    process.platform === "win32" ? path.resolve(target) : target,
+    linkPath,
+    process.platform === "win32" ? "junction" : "dir",
+  );
 }
 
 function writeFile(root: string, relativePath: string, contents: string | Buffer): string {
@@ -126,6 +142,25 @@ describe("projectIconResolver", () => {
 
     expect(icon.sourcePath).toBe(iconPath);
     expect(fs.readFileSync(path.join(root, ".ade", "ade.yaml"), "utf8")).toContain("iconPath: assets/icon.svg");
+  });
+
+  it("persists a project-relative icon path when the root is spelled non-canonically", () => {
+    const realRoot = makeProjectRoot();
+    const iconPath = writeFile(realRoot, "assets/icon.svg", "<svg>brand</svg>");
+    // A directory link reproduces, on every platform, the divergence a Windows
+    // 8.3 short root creates: two spellings of one directory. Resolved icons
+    // always come back in the canonical spelling, so a root left in the
+    // caller's spelling makes `path.relative` emit a `..` traversal — and that
+    // traversal used to be written into the shared, committed `.ade/ade.yaml`.
+    const linkRoot = path.join(path.dirname(realRoot), `link-${path.basename(realRoot)}`);
+    linkProjectRoot(realRoot, linkRoot);
+    expect(fs.realpathSync.native(linkRoot)).toBe(realRoot);
+
+    const icon = setProjectIconOverride(linkRoot, path.join(linkRoot, "assets", "icon.svg"));
+
+    expect(icon.sourcePath).toBe(iconPath);
+    expect(fs.readFileSync(path.join(realRoot, ".ade", "ade.yaml"), "utf8"))
+      .toContain("iconPath: assets/icon.svg");
   });
 
   it("imports selected icons from outside the project root", () => {

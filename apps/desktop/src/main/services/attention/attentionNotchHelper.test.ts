@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import path from "node:path";
 import { PassThrough } from "node:stream";
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -54,12 +55,21 @@ describe("AttentionNotchHelper", () => {
       isPackaged: true,
       resourcesPath: "/Applications/ADE.app/Contents/Resources",
       appPath: "/repo/apps/desktop",
-    })).toBe("/Applications/ADE.app/Contents/Resources/native/ade-attention-notch");
+    })).toBe(path.join(
+      "/Applications/ADE.app/Contents/Resources",
+      "native",
+      "ade-attention-notch",
+    ));
     expect(resolveAttentionNotchExecutablePath({
       isPackaged: false,
       resourcesPath: "/unused",
       appPath: "/repo/apps/desktop",
-    })).toBe("/repo/apps/desktop/resources/native/ade-attention-notch");
+    })).toBe(path.join(
+      "/repo/apps/desktop",
+      "resources",
+      "native",
+      "ade-attention-notch",
+    ));
   });
 
   it("publishes exact helper actions and rejects malformed output", () => {

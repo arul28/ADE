@@ -134,7 +134,7 @@ export class AttentionAccountCoordinator {
           machine.machineKey === resolvedHostMachineKey
             ? { ...machine, online: true, lastSeenAt: generatedAt }
             : machine;
-        const machineName = hostMachine?.name?.trim() || "this Mac";
+        const machineName = hostMachine?.name?.trim() || "this computer";
         const accountAvailability = accountFailure
           ? this.describeAccountFailure(accountFailure)
           : null;
@@ -176,7 +176,7 @@ export class AttentionAccountCoordinator {
           throw new Error(
             accountFailure
               ? (
-                  "Account Activity could not connect, and this Mac cannot provide a fallback. "
+                  "Account Activity could not connect, and this computer cannot provide a fallback. "
                   + compatibilityMessage
                 )
               : compatibilityMessage,
@@ -190,11 +190,11 @@ export class AttentionAccountCoordinator {
       const presentation = this.describeAccountFailure(accountFailure);
       throw new Error(
         `${presentation.title}. ${presentation.message} `
-        + "No safe machine-scoped fallback is available on this Mac.",
+        + "No safe machine-scoped fallback is available on this computer.",
       );
     }
     throw new Error(
-      "Activity cannot reach this Mac's ADE brain. Restart ADE on this Mac, then try again.",
+      "Activity cannot reach this computer's ADE brain. Restart ADE on this computer, then try again.",
     );
   }
 
@@ -251,7 +251,7 @@ export class AttentionAccountCoordinator {
         );
       }
       if (!this.options.localRuntimeConnectionPool) {
-        throw new Error("Machine Activity is unavailable until this Mac's ADE brain is ready.");
+        throw new Error("Machine Activity is unavailable until this computer's ADE brain is ready.");
       }
       await this.options.localRuntimeConnectionPool.callAttention<void>(
         "acknowledge",
@@ -354,7 +354,7 @@ export class AttentionAccountCoordinator {
       return;
     }
     if (!this.options.localRuntimeConnectionPool) {
-      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
+      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
     }
     await this.options.localRuntimeConnectionPool.callAttention<void>(
       "putPreferences",
@@ -384,7 +384,7 @@ export class AttentionAccountCoordinator {
       !this.options.accountAttentionClient
       || !this.options.accountAttentionClient.putActivityMachinePreferences
     ) {
-      throw new Error("Account Activity is unavailable until this Mac's ADE brain is ready.");
+      throw new Error("Account Activity is unavailable until this computer's ADE brain is ready.");
     }
     await this.options.accountAttentionClient.putActivityMachinePreferences(
       accountOwnerId,

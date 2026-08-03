@@ -137,7 +137,11 @@ export function ActivitySettingsPopover() {
                 </span>
                 <span>
                   <strong>Activity settings</strong>
-                  <small>Account delivery and this Mac’s notch</small>
+                  <small>
+                    {model.notchSupported
+                      ? "Account delivery and this computer’s notch"
+                      : "Account delivery preferences"}
+                  </small>
                 </span>
               </div>
               <span className="activity-settings-account-badge">Account</span>

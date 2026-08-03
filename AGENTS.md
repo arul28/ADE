@@ -26,6 +26,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
 ## Playbooks
 
 - `docs/playbooks/ship-lane.md` — autonomous PR-to-merge driver (poll → fix → rebase → merge). Baseline `/quality` and `/test` run before it; mutation-specific commit-bound quality revalidation runs inside it. Any agent CLI can follow it directly; Claude Code invokes it via the `/ship` skill.
+- `docs/playbooks/windows-signed-release.md` — maintainer handoff for taking the gated Windows x64 build through signing, clean-host and installed-update proof, draft verification, publication, and website enablement without changing the macOS or iOS release paths.
 
 ## Working norms
 
@@ -49,6 +50,7 @@ Utilities (run when relevant, not part of the core loop): **/audit** (targeted b
   - `npm --prefix apps/ade-cli run build`
 - Run the smallest relevant subset first when iterating, then finish with the broader checks that cover the touched surfaces.
 - Run full desktop tests with the root `npm run test:desktop:sharded` command; use single-file or single-shard Vitest commands for iteration.
+- Installing deps: use `npm run install:apps` from the repo root, or `cd apps/<app> && npm install`. Never `npm --prefix apps/<app> install`. `--prefix` only redirects where npm writes `node_modules`; the package npm treats as "the one being installed" is still the one in the *current working directory*. From the repo root that is the root package `ade`, so npm installs the repo into the sub-app: it writes `"ade": "file:../.."` into the app's `package.json` and `package-lock.json` and leaves an `apps/<app>/node_modules/ade` symlink back to the root. Revert that churn if you hit it. `npm --prefix apps/<app> run <script>` and `npm --prefix apps/<app> exec` do not install anything and are unaffected -- but note `exec` runs Vitest with the *current* working directory, so run whole suites as `cd apps/<app> && npx vitest run` or the app's own `npm run test`.
 
 ## Terminology
 

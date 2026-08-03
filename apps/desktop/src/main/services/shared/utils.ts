@@ -113,7 +113,10 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
         taskkillArgs.push("/F");
       }
       try {
-        const result = spawnSync("taskkill", taskkillArgs, { stdio: "ignore" });
+        const result = spawnSync("taskkill", taskkillArgs, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
         if (result.status === 0) return true;
       } catch {
         // fall through to direct child signaling
@@ -180,6 +183,7 @@ export function spawnAsync(
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";

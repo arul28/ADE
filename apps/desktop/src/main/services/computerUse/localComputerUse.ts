@@ -28,7 +28,8 @@ export type LocalComputerUseCapabilities = {
   >;
 };
 
-const DARWIN_BLOCKED_DETAIL = "Local computer-use runtime is currently implemented for macOS only.";
+const NATIVE_COMPUTER_USE_BLOCKED_DETAIL =
+  "Native screenshot, video, and OS GUI control are currently implemented for macOS only. App Control and proof-file ingestion remain available on supported desktop platforms.";
 
 function present(command: string, detail: string): LocalComputerUseCapability {
   return { state: "present", available: true, command, detail };
@@ -42,11 +43,14 @@ function blocked(detail: string): LocalComputerUseCapability {
   return { state: "blocked_by_capability", available: false, command: null, detail };
 }
 
-export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities {
-  if (process.platform !== "darwin") {
-    const blockedCapability = blocked(DARWIN_BLOCKED_DETAIL);
+export function getLocalComputerUseCapabilities(
+  platform: NodeJS.Platform = process.platform,
+  commandAvailable: (command: string) => boolean = commandExists,
+): LocalComputerUseCapabilities {
+  if (platform !== "darwin") {
+    const blockedCapability = blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL);
     return {
-      platform: process.platform,
+      platform,
       overallState: "blocked_by_capability",
       screenshot: blockedCapability,
       videoRecording: blockedCapability,
@@ -63,21 +67,21 @@ export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities 
     };
   }
 
-  const screenshot = commandExists("screencapture")
+  const screenshot = commandAvailable("screencapture")
     ? present("screencapture", "macOS screencapture is available for screenshots.")
     : missing("screencapture", "macOS screencapture is required for screenshots.");
-  const videoRecording = commandExists("screencapture")
+  const videoRecording = commandAvailable("screencapture")
     ? present("screencapture", "macOS screencapture can record screen video with the -v flag.")
     : missing("screencapture", "macOS screencapture is required for local video capture.");
-  const appLaunch = commandExists("open")
+  const appLaunch = commandAvailable("open")
     ? present("open", "macOS open is available for launching and focusing apps.")
     : missing("open", "macOS open is required for launching apps.");
-  const guiInteraction = commandExists("swift")
+  const guiInteraction = commandAvailable("swift")
     ? present("swift", "Swift CLI is available for native click automation; osascript can handle key input.")
-    : commandExists("osascript")
+    : commandAvailable("osascript")
       ? present("osascript", "AppleScript is available for text entry and keypress automation.")
       : missing("swift", "Either Swift CLI or osascript is required for GUI interaction.");
-  const environmentInfo = commandExists("osascript")
+  const environmentInfo = commandAvailable("osascript")
     ? present("osascript", "AppleScript is available for frontmost-app environment inspection.")
     : missing("osascript", "AppleScript is required for local environment inspection.");
 
@@ -89,7 +93,7 @@ export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities 
       : "missing";
 
   return {
-    platform: process.platform,
+    platform,
     overallState,
     screenshot,
     videoRecording,
@@ -101,12 +105,12 @@ export function getLocalComputerUseCapabilities(): LocalComputerUseCapabilities 
       browser_verification: screenshot.available && guiInteraction.available
         ? present(screenshot.command ?? guiInteraction.command ?? "screencapture", "Browser verification can use screenshots plus local GUI interaction.")
         : guiInteraction.state === "blocked_by_capability" || screenshot.state === "blocked_by_capability"
-          ? blocked(DARWIN_BLOCKED_DETAIL)
+          ? blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL)
           : missing(guiInteraction.command ?? screenshot.command ?? "screencapture", "Browser verification needs screenshot capture and local GUI interaction."),
       browser_trace: screenshot.available
         ? present(screenshot.command ?? "screencapture", "Browser trace collection can attach local screenshot-backed evidence or trace files.")
         : screenshot.state === "blocked_by_capability"
-          ? blocked(DARWIN_BLOCKED_DETAIL)
+          ? blocked(NATIVE_COMPUTER_USE_BLOCKED_DETAIL)
           : missing(screenshot.command ?? "screencapture", "Browser trace evidence requires local capture support."),
       video_recording: videoRecording,
       console_logs: environmentInfo,

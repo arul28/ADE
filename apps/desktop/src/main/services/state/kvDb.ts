@@ -211,6 +211,28 @@ function openRawDatabase(dbPath: string): DatabaseSyncType {
   return db;
 }
 
+/**
+ * Close a connection that may have the cr-sqlite extension loaded.
+ *
+ * cr-sqlite requires `SELECT crsql_finalize()` before the connection is closed
+ * so the extension can tear down its virtual tables and per-connection state.
+ * Skipping it leaves extension-owned resources attached to the connection: on
+ * POSIX that is an invisible no-op, but on Windows the OS keeps the underlying
+ * `ade.db` file handle open, so the file can no longer be unlinked, renamed or
+ * moved even though every caller believes the database is closed.
+ *
+ * Always route connection teardown through here instead of calling
+ * `db.close()` directly.
+ */
+function closeDatabase(db: DatabaseSyncType): void {
+  try {
+    db.exec("select crsql_finalize()");
+  } catch {
+    // Extension not loaded (or already finalized) — nothing to tear down.
+  }
+  db.close();
+}
+
 export function openReadonlyDatabase(dbPath: string): DatabaseSyncType {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   db.exec("PRAGMA busy_timeout = 5000");
@@ -3825,7 +3847,7 @@ export async function openKvDb(
       if (!isReadonlyDatabaseError(error)) throw error;
     }
     if (retrofittedLegacyPrimaryKeySchema) {
-      db.close();
+      closeDatabase(db);
       db = openRawDatabase(dbPath);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
@@ -3843,7 +3865,7 @@ export async function openKvDb(
       if (!isReadonlyDatabaseError(error)) throw error;
     }
     if (retrofittedForeignKeySchema) {
-      db.close();
+      closeDatabase(db);
       db = openRawDatabase(dbPath);
       crsqliteLoaded = false;
       loadCrsqliteIfAvailable();
@@ -3862,7 +3884,7 @@ export async function openKvDb(
       forceSiteId(db, desiredSiteId);
 
       if (readCurrentSiteId(db) !== desiredSiteId) {
-        db.close();
+        closeDatabase(db);
         db = openRawDatabase(dbPath);
         crsqliteLoaded = false;
         loadCrsqliteIfAvailable();
@@ -3881,7 +3903,7 @@ export async function openKvDb(
     }
   } catch (err) {
     try {
-      db.close();
+      closeDatabase(db);
     } catch {
       // best effort cleanup
     }
@@ -4349,7 +4371,7 @@ export async function openKvDb(
       getRow(db, "pragma wal_checkpoint(TRUNCATE)");
     },
     close: () => {
-      db.close();
+      closeDatabase(db);
     },
   };
 }

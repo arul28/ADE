@@ -135,7 +135,7 @@ Product positioning and workflows live in [`docs/PRD.md`](../docs/PRD.md). This 
 | `credentials/` | Per-machine credential store. |
 | `agentRegistry.ts` | Per-machine agent registry. |
 
-**Service managers.** `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), `installWindows.ts` (Windows) register the brain as a login-time service. `index.ts` is the platform router; `common.ts` carries shared types (`ServiceManagerResult`, `ServiceManagerStatusResult`).
+**Service managers.** `apps/ade-cli/src/serviceManager/installLaunchd.ts` (macOS), `installSystemd.ts` (Linux), and `installWindows.ts` (Windows) register the brain as a login-time service. `index.ts` is the platform router; `common.ts` carries shared types (`ServiceManagerResult`, `ServiceManagerStatusResult`). Windows uses a per-user, per-channel entry under `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run`, so installation does not require administrator access. The entry starts a UTF-8-with-BOM PowerShell supervisor under the channel's ADE home. It restores the complete resolved brain environment (including `ELECTRON_RUN_AS_NODE`, `NODE_PATH`, ADE paths/channel, and role), starts the executable with CRT-compatible argv quoting, and records supervisor/runtime PIDs plus restart count, last exit, and next-restart diagnostics. Unexpected exits restart with capped exponential backoff; a healthy runtime interval resets the counter. Install and status require runtime RPC readiness on the expected per-user/channel pipe and verify the recorded process's executable, entrypoint, and `serve` arguments, so a stale/reused PID or live-but-unready supervisor is never reported as a healthy brain. Service identity is resolved after packaged channel defaults are applied, keeping Stable and Beta Run entries and homes distinct. Install and uninstall also remove exact Scheduled Task registrations left by earlier Windows preview builds.
 On macOS, an unchanged loaded launch agent is retained only after a bounded
 runtime initialize probe succeeds. A failed probe takes the full unload,
 predecessor termination, stale-process reap, and load path; the install result
@@ -1474,7 +1474,8 @@ Stages:
    - `test-webhook-relay`, `test-push-relay`, `test-tunnel-relay`, `test-account-directory` — the four Cloudflare Workers.
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
-3. **Gate** (`ci-pass`) — all required jobs must pass (`if: always()` with failure/cancelled detection).
+3. **Windows foundation proof** (`windows-foundation`) — a native `windows-latest` runner typechecks desktop and CLI code and exercises the per-user/channel service, filesystem layout, process/executable, named-pipe, PTY, packaged CR-SQLite, and platform-capability contracts.
+4. **Gate** (`ci-pass`) — all required jobs, including `windows-foundation`, must pass (`if: always()` with failure/cancelled detection).
 
 Sharding is required because the desktop suite is large enough to be slow in a single process.
 

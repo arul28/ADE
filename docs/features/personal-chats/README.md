@@ -125,13 +125,13 @@ surface while a project remains selected keeps the window's existing project
 binding, so a remote-bound window still addresses the remote machine's personal
 chats. Returning to a project route does not require reopening the project.
 
-The page's machine picker rebinds that window, so its **This Mac** option
+The page's machine picker rebinds that window, so its **This computer** option
 resolves through `renderer/components/chat/thisMachineProjectRoot.ts`: it finds
 *this repository's* local checkout by repo identity rather than taking whichever
-local tab happens to be first, and reports "Open this repository on This Mac
+local tab happens to be first, and reports "Open this repository on This computer
 first, then switch back here." when there is none instead of silently switching
-the window to an unrelated repo. Machine ids and the "This Mac" name come from
-`shared/machineIdentity.ts`.
+the window to an unrelated repo. Machine ids and the "This computer" name come
+from `shared/machineIdentity.ts`.
 
 The ADE CLI uses the same machine endpoint through explicit `--personal`
 commands, for example:

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { app } from "electron";
 import { isAdeRuntimeNamedPipePath } from "../../../shared/adeRuntimeIpc";
+import { signalChildProcessTree } from "../shared/utils";
 import {
   isRuntimeProtocolCompatible,
   parseRuntimeLastWedge,
@@ -56,6 +57,9 @@ import {
 
 const SLOW_ACTION_THRESHOLD_MS = 500;
 const RUNTIME_HEALTH_WINDOW_MS = 24 * 60 * 60_000;
+const LOCAL_RUNTIME_STARTUP_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+const LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS = 2_000;
+const LOCAL_RUNTIME_STARTUP_RETRY_MS = 250;
 // Ring-cap the in-memory slow-action window so a sustained slow-call storm can
 // never grow this array without bound (the very failure mode we are surfacing).
 const RUNTIME_HEALTH_MAX_SAMPLES = 5_000;
@@ -116,15 +120,59 @@ const COALESCED_LOCAL_RUNTIME_ACTIONS = new Set([
   "tiling_tree.get",
 ]);
 
-function normalizeComparableSocketPath(socketPath: string): string {
-  return socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)
-    ? socketPath
-    : path.resolve(socketPath);
+/**
+ * Collapse the equivalent spellings of one Windows named pipe onto a single
+ * comparison key.
+ *
+ * Win32 accepts `/` and `\` interchangeably in a pipe path and matches pipe
+ * names case-insensitively, so `\\.\pipe\ade-runtime-stable-abc`,
+ * `//./pipe/ade-runtime-stable-abc`, and `\\.\pipe\ADE-Runtime-Stable-ABC` all
+ * address the *same* pipe. `isAdeRuntimeNamedPipePath` already encodes that by
+ * accepting both separator forms after lowercasing.
+ *
+ * This value is a comparison key ONLY. It is deliberately not a valid
+ * substitute for the caller's address: callers keep using the original
+ * `socketPath` to connect, listen, probe, log, and report, so the lowercasing
+ * here can never reach a real endpoint.
+ */
+function namedPipeComparisonKey(socketPath: string): string {
+  return socketPath.trim().replace(/\//g, "\\").toLowerCase();
 }
 
+function normalizeComparableSocketPath(socketPath: string): string {
+  if (socketPath.startsWith("tcp://")) return socketPath;
+  if (isAdeRuntimeNamedPipePath(socketPath)) return namedPipeComparisonKey(socketPath);
+  // POSIX socket paths stay case-sensitive: `/tmp/ADE.sock` and `/tmp/ade.sock`
+  // are genuinely different files.
+  return path.resolve(socketPath);
+}
+
+/**
+ * The stable/alpha/beta runtime endpoints for this user, so the primary-socket
+ * guard also refuses to spawn an app-owned brain onto a *sibling* channel's
+ * endpoint.
+ *
+ * Derived through `resolveMachineAdeLayout` rather than hand-built, because the
+ * endpoint is a filesystem socket on macOS/Linux but a per-user named pipe on
+ * Windows. Hardcoding `~/.ade{,-alpha,-beta}/sock/ade.sock` made this set
+ * unmatchable on Windows, silently disabling the cross-channel half of the
+ * guard there.
+ */
 function defaultChannelRuntimeSocketPaths(): Set<string> {
+  // `windowsChannelIdentity` prefers ADE_RUNTIME_SERVICE_NAME / ADE_PACKAGE_CHANNEL
+  // over the channel inferred from the home directory name. Both must be dropped
+  // while enumerating, or this process's own channel would pin all three homes to
+  // a single pipe and the other two channels would drop out of the set.
+  const {
+    ADE_RUNTIME_SERVICE_NAME: _ignoredServiceName,
+    ADE_PACKAGE_CHANNEL: _ignoredPackageChannel,
+    ...channelEnv
+  } = process.env;
   return new Set([".ade", ".ade-alpha", ".ade-beta"].map((homeName) =>
-    path.join(os.homedir(), homeName, "sock", "ade.sock")
+    resolveMachineAdeLayout({
+      ...channelEnv,
+      ADE_HOME: path.join(os.homedir(), homeName),
+    }).socketPath
   ).map(normalizeComparableSocketPath));
 }
 
@@ -666,10 +714,26 @@ export function isRetryableReadAction(domain: string, action: string): boolean {
   );
 }
 
+/**
+ * Signal an owned `ade serve` daemon and everything it started.
+ *
+ * A runtime daemon is not a leaf: it spawns its own `node` children (agent
+ * runners, the brain, tool subprocesses). `child.kill()` signals exactly one
+ * pid. On POSIX that at least leaves the orphans reparented to init and
+ * reachable by group signal; on Windows there is no process group and no
+ * reaping parent, so every grandchild survives indefinitely and keeps holding
+ * the runtime named pipe -- which is how `ade serve` trees were observed still
+ * alive hours after the process that owned them exited.
+ *
+ * `signalChildProcessTree` is the repo's existing answer to this (process-group
+ * signal on POSIX, `taskkill /T` on Windows, same helper `ptyService` and
+ * `agentChatService` use), and it falls back to a direct `child.kill()` if the
+ * tree signal fails.
+ */
 function signalRuntimeChildProcess(child: ChildProcess | null, signal: NodeJS.Signals): void {
   if (!child?.pid) return;
   try {
-    child.kill(signal);
+    signalChildProcessTree(child, signal);
   } catch {}
 }
 
@@ -999,6 +1063,7 @@ export class LocalRuntimeConnectionPool {
         env: buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -1139,6 +1204,7 @@ export class LocalRuntimeConnectionPool {
         },
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -1924,8 +1990,7 @@ export class LocalRuntimeConnectionPool {
 
     const child = this.spawnRuntime(socketPath);
     try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath);
+      const client = await this.connectSpawnedRuntime(socketPath, child);
       return { client, child, socketPath };
     } catch (error) {
       disposeOwnedRuntimeChild(child, socketPath, { unlinkSocket: true });
@@ -2083,8 +2148,9 @@ export class LocalRuntimeConnectionPool {
     await unlinkSocketIfNotListening(socketPath);
     const child = this.spawnRuntime(socketPath, { ...this.options, disableSync: true });
     try {
-      await waitForSocket(socketPath);
-      const client = await this.connectClient(socketPath, { preserveVersionSkew: true });
+      const client = await this.connectSpawnedRuntime(socketPath, child, {
+        preserveVersionSkew: true,
+      });
       this.scheduleIsolatedRuntimeRecovery(primarySocketPath);
       return { client, child, socketPath };
     } catch (error) {
@@ -2208,20 +2274,33 @@ export class LocalRuntimeConnectionPool {
 
   private async connectClient(
     socketPath: string,
-    options: { preserveVersionSkew?: boolean } = {},
+    options: {
+      preserveVersionSkew?: boolean;
+      expectedPid?: number | null;
+      connectTimeoutMs?: number;
+      initializeTimeoutMs?: number;
+    } = {},
   ): Promise<RuntimeRpcClient> {
-    const transport = await openSocketTransport(socketPath);
+    const transport = await openSocketTransport(socketPath, options.connectTimeoutMs);
     const client = new RuntimeRpcClient(transport);
     let initializeResult: unknown;
     try {
       initializeResult = await client.initialize("ade-desktop-local", this.appVersion, {
         desktopBridgeAuthToken: this.options.desktopBridgeAuthToken,
+        timeoutMs: options.initializeTimeoutMs,
       });
     } catch (error) {
       closeRuntimeClient(client);
       throw error;
     }
     const runtimeInfo = readLocalRuntimeInfo(initializeResult);
+    if (options.expectedPid != null && runtimeInfo.pid !== options.expectedPid) {
+      closeRuntimeClient(client);
+      throw new Error(
+        `ADE service socket is still owned by runtime PID ${runtimeInfo.pid ?? "unknown"}; ` +
+        `waiting for spawned runtime PID ${options.expectedPid}.`,
+      );
+    }
     const compatibilityError = this.runtimeCompatibilityError(socketPath, runtimeInfo);
     if (compatibilityError) {
       closeRuntimeClient(client);
@@ -2255,6 +2334,46 @@ export class LocalRuntimeConnectionPool {
     return client;
   }
 
+  private async connectSpawnedRuntime(
+    socketPath: string,
+    child: ChildProcess,
+    options: { preserveVersionSkew?: boolean } = {},
+  ): Promise<RuntimeRpcClient> {
+    const deadline = Date.now() + LOCAL_RUNTIME_STARTUP_TIMEOUT_MS;
+    let lastError: Error | null = null;
+    while (Date.now() < deadline) {
+      if (child.exitCode != null || child.signalCode != null) {
+        throw new Error(
+          `Spawned ADE runtime PID ${child.pid ?? "unknown"} exited before becoming ready.` +
+          (lastError ? ` Last connection error: ${lastError.message}` : ""),
+        );
+      }
+      const remainingMs = Math.max(1, deadline - Date.now());
+      const probeTimeoutMs = Math.min(LOCAL_RUNTIME_STARTUP_PROBE_TIMEOUT_MS, remainingMs);
+      try {
+        return await this.connectClient(socketPath, {
+          ...options,
+          expectedPid: child.pid ?? null,
+          connectTimeoutMs: probeTimeoutMs,
+          initializeTimeoutMs: probeTimeoutMs,
+        });
+      } catch (error) {
+        lastError = error instanceof Error ? error : new Error(String(error));
+      }
+      const retryDelayMs = Math.min(
+        LOCAL_RUNTIME_STARTUP_RETRY_MS,
+        Math.max(0, deadline - Date.now()),
+      );
+      if (retryDelayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      }
+    }
+    throw new Error(
+      `Timed out waiting for spawned ADE runtime PID ${child.pid ?? "unknown"} at ${socketPath}.` +
+      (lastError ? ` Last connection error: ${lastError.message}` : ""),
+    );
+  }
+
   private spawnRuntime(
     socketPath: string,
     options: { disableSync?: boolean } = this.options,
@@ -2269,7 +2388,12 @@ export class LocalRuntimeConnectionPool {
     const child = spawn(process.execPath, args, {
       env,
       stdio: ["ignore", "pipe", "pipe"],
-      detached: false,
+      // Put the daemon in its own process group on POSIX so disposal can signal
+      // the whole tree with `process.kill(-pid)` instead of just the daemon --
+      // the same convention `spawnAsync` in shared/utils already uses. Windows
+      // has no process groups here; `signalChildProcessTree` uses `taskkill /T`.
+      detached: process.platform !== "win32",
+      windowsHide: true,
     });
     this.ownedRuntimeChild = child;
     const outputBase = {

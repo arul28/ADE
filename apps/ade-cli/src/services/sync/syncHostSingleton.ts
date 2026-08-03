@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
@@ -17,6 +18,8 @@ export type SyncHostSingletonOwner = {
   socketPath: string | null;
   projectRoot: string | null;
   commandLine: string | null;
+  /** Stable-enough birth identity used with pid/executable to reject PID reuse. */
+  processStartedAt?: string | null;
   quitCommand: string;
   createdAt: string;
   updatedAt: string;
@@ -41,7 +44,9 @@ export type SyncHostSingletonLease = {
 export type SyncHostSingletonDeps = {
   lockPath?: string;
   pidAlive?: (pid: number) => boolean;
+  processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null;
   scanListeners?: () => SyncHostSingletonOwner[];
+  platform?: NodeJS.Platform;
 };
 
 // Which leases THIS process currently holds. The lock file answers "who owns
@@ -95,9 +100,23 @@ function shellQuote(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
-function withPidKillFallback(command: string, pid: number): string {
+function windowsPidStopCommand(pid: number): string {
+  return `Stop-Process -Id ${Math.floor(pid)} -Force -ErrorAction SilentlyContinue`;
+}
+
+function withPidKillFallback(
+  command: string,
+  pid: number,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!Number.isFinite(pid) || pid <= 0) return command;
   const normalizedPid = Math.floor(pid);
+  if (platform === "win32") {
+    if (command.includes(`Stop-Process -Id ${normalizedPid}`)) return command;
+    // Windows releases before the native port could persist POSIX recovery
+    // commands. Replace those instead of copying another unusable command.
+    return windowsPidStopCommand(normalizedPid);
+  }
   if (command.includes(`/bin/kill ${normalizedPid}`)) return command;
   return `${command}; /bin/kill ${normalizedPid} 2>/dev/null || true`;
 }
@@ -130,7 +149,78 @@ function defaultPidAlive(pid: number): boolean {
   }
 }
 
-function safeReadLock(lockPath: string): SyncHostSingletonLockFile | null {
+function executableFromCommandLine(commandLine: string | null): string | null {
+  const match = commandLine?.trim().match(/^(?:"([^"]+)"|(.+?\.exe))(?=\s|$)/i);
+  const executable = match?.[1] ?? match?.[2] ?? null;
+  return executable ? path.win32.basename(executable).toLowerCase() : null;
+}
+
+function defaultProcessMatchesOwner(
+  owner: SyncHostSingletonOwner,
+  platform: NodeJS.Platform = process.platform,
+): boolean | null {
+  if (platform !== "win32") return null;
+  const script = [
+    `$target = Get-Process -Id ${Math.floor(owner.pid)} -ErrorAction SilentlyContinue`,
+    "if ($null -eq $target) { exit 3 }",
+    "$executablePath = $null",
+    "$startedAt = $null",
+    "try { $executablePath = $target.Path } catch {}",
+    "try { $startedAt = $target.StartTime.ToUniversalTime().ToString('o') } catch {}",
+    "[Console]::Out.Write((@{ executablePath = $executablePath; startedAt = $startedAt } | ConvertTo-Json -Compress))",
+  ].join("; ");
+  let raw = "";
+  try {
+    raw = execFileSync(
+      resolveTrustedWindowsTool("powershell"),
+      ["-NoProfile", "-NonInteractive", "-Command", script],
+      {
+        encoding: "utf8",
+        timeout: 2_000,
+        maxBuffer: 64 * 1024,
+        windowsHide: true,
+      },
+    );
+  } catch {
+    // If process inspection is unavailable, remain conservative and preserve
+    // the lock rather than risking two live sync hosts.
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(raw) as {
+      executablePath?: unknown;
+      startedAt?: unknown;
+    };
+    const expectedExecutable = executableFromCommandLine(owner.commandLine);
+    const actualExecutable = typeof parsed.executablePath === "string" && parsed.executablePath.trim()
+      ? path.win32.basename(parsed.executablePath.trim()).toLowerCase()
+      : null;
+    if (expectedExecutable && actualExecutable && expectedExecutable !== actualExecutable) {
+      return false;
+    }
+    const expectedStartedAtMs = owner.processStartedAt
+      ? Date.parse(owner.processStartedAt)
+      : Number.NaN;
+    const actualStartedAtMs = typeof parsed.startedAt === "string"
+      ? Date.parse(parsed.startedAt)
+      : Number.NaN;
+    if (
+      Number.isFinite(expectedStartedAtMs)
+      && Number.isFinite(actualStartedAtMs)
+      && Math.abs(expectedStartedAtMs - actualStartedAtMs) > 2_000
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return null;
+  }
+}
+
+function safeReadLock(
+  lockPath: string,
+  platform: NodeJS.Platform = process.platform,
+): SyncHostSingletonLockFile | null {
   try {
     const parsed = JSON.parse(fs.readFileSync(lockPath, "utf8")) as unknown;
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
@@ -158,7 +248,11 @@ function safeReadLock(lockPath: string): SyncHostSingletonLockFile | null {
         socketPath: typeof row.socketPath === "string" && row.socketPath.trim() ? row.socketPath : null,
         projectRoot: typeof row.projectRoot === "string" && row.projectRoot.trim() ? row.projectRoot : null,
         commandLine: typeof row.commandLine === "string" && row.commandLine.trim() ? row.commandLine : null,
-        quitCommand: withPidKillFallback(rawQuitCommand, pid),
+        processStartedAt:
+          typeof row.processStartedAt === "string" && Number.isFinite(Date.parse(row.processStartedAt))
+            ? row.processStartedAt
+            : null,
+        quitCommand: withPidKillFallback(rawQuitCommand, pid, platform),
         createdAt: typeof row.createdAt === "string" && row.createdAt.trim() ? row.createdAt : new Date().toISOString(),
         updatedAt: typeof row.updatedAt === "string" && row.updatedAt.trim() ? row.updatedAt : new Date().toISOString(),
       },
@@ -214,7 +308,13 @@ export function buildQuitCommand(args: {
   packageChannel: string | null;
   adeHome: string | null;
   serviceName?: string | null;
+  platform?: NodeJS.Platform;
 }): string {
+  if ((args.platform ?? process.platform) === "win32") {
+    return Number.isFinite(args.pid) && args.pid > 0
+      ? windowsPidStopCommand(args.pid)
+      : "";
+  }
   const commandLine = args.commandLine ?? "";
   const channel = normalizedChannel(args.packageChannel)
     ?? (/ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine) ? "beta" : null)
@@ -245,6 +345,9 @@ function currentOwner(args: {
   const appName = process.env.ADE_DESKTOP_APP_NAME?.trim() || defaultAppName(channel);
   const commandLine = commandLineText();
   const serviceName = process.env.ADE_RUNTIME_SERVICE_NAME?.trim() || null;
+  const processStartedAt = new Date(
+    Date.now() - Math.max(0, process.uptime() * 1_000),
+  ).toISOString();
   return {
     id: randomUUID(),
     pid: process.pid,
@@ -256,6 +359,7 @@ function currentOwner(args: {
     socketPath: process.env.ADE_RUNTIME_SOCKET_PATH?.trim() || process.env.ADE_RPC_SOCKET_PATH?.trim() || null,
     projectRoot: args.projectRoot ? path.resolve(args.projectRoot) : null,
     commandLine,
+    processStartedAt,
     quitCommand: buildQuitCommand({
       pid: process.pid,
       commandLine,
@@ -295,6 +399,7 @@ function psCommandLines(pids: number[]): Map<number, string> {
     const output = execFileSync("ps", ["-p", unique.join(","), "-o", "pid=,command="], {
       encoding: "utf8",
       timeout: 2_000,
+      windowsHide: true,
     });
     const commands = new Map<number, string>();
     for (const line of output.split(/\r?\n/)) {
@@ -347,6 +452,7 @@ function legacyOwner(pid: number, port: number, commandLine: string | null): Syn
     socketPath: null,
     projectRoot: null,
     commandLine,
+    processStartedAt: null,
     quitCommand: buildQuitCommand({ pid, commandLine, appName, packageChannel: channel, adeHome }),
     createdAt: now,
     updatedAt: now,
@@ -365,6 +471,7 @@ function scanNativeSyncHostListeners(): SyncHostSingletonOwner[] {
     ], {
       encoding: "utf8",
       timeout: 2_000,
+      windowsHide: true,
     });
   } catch (error) {
     output = typeof (error as { stdout?: unknown }).stdout === "string"
@@ -389,11 +496,19 @@ function scanNativeSyncHostListeners(): SyncHostSingletonOwner[] {
 function activeLockConflict(
   lockPath: string,
   pidAlive: (pid: number) => boolean,
+  processMatchesOwner: (owner: SyncHostSingletonOwner) => boolean | null,
+  platform: NodeJS.Platform = process.platform,
 ): SyncHostSingletonConflict | null {
-  const lock = safeReadLock(lockPath);
+  const lock = safeReadLock(lockPath, platform);
   if (!lock) return null;
   if (lock.owner.pid === process.pid) return null;
   if (!pidAlive(lock.owner.pid)) {
+    unlinkLock(lockPath);
+    return null;
+  }
+  if (processMatchesOwner(lock.owner) === false) {
+    // Windows can reuse a dead brain's PID after a reboot or crash. A live PID
+    // is not proof that it is still the process recorded in this lock.
     unlinkLock(lockPath);
     return null;
   }
@@ -403,7 +518,13 @@ function activeLockConflict(
 export function detectSyncHostSingletonConflict(
   deps: SyncHostSingletonDeps = {},
 ): SyncHostSingletonConflict | null {
-  const hasExplicitDeps = Boolean(deps.lockPath || deps.pidAlive || deps.scanListeners);
+  const hasExplicitDeps = Boolean(
+    deps.lockPath
+    || deps.pidAlive
+    || deps.processMatchesOwner
+    || deps.scanListeners
+    || deps.platform,
+  );
   if (
     isTestProcess() &&
     process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE !== "1" &&
@@ -413,7 +534,14 @@ export function detectSyncHostSingletonConflict(
   }
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
-  const lockConflict = activeLockConflict(lockPath, pidAlive);
+  const processMatchesOwner = deps.processMatchesOwner
+    ?? ((owner) => defaultProcessMatchesOwner(owner, deps.platform));
+  const lockConflict = activeLockConflict(
+    lockPath,
+    pidAlive,
+    processMatchesOwner,
+    deps.platform,
+  );
   if (lockConflict) return lockConflict;
   const listener = (deps.scanListeners ?? scanNativeSyncHostListeners)()
     .find((owner) => owner.pid !== process.pid && pidAlive(owner.pid));
@@ -459,13 +587,20 @@ export function acquireSyncHostSingleton(
   assertNoSyncHostSingletonConflict(deps);
   const lockPath = deps.lockPath ?? syncHostSingletonLockPath();
   const owner = currentOwner(args);
+  const processMatchesOwner = deps.processMatchesOwner
+    ?? ((candidate) => defaultProcessMatchesOwner(candidate, deps.platform));
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       writeLock(lockPath, owner, "wx");
       break;
     } catch (error) {
       if ((error as NodeJS.ErrnoException | null | undefined)?.code !== "EEXIST") throw error;
-      const conflict = activeLockConflict(lockPath, deps.pidAlive ?? defaultPidAlive);
+      const conflict = activeLockConflict(
+        lockPath,
+        deps.pidAlive ?? defaultPidAlive,
+        processMatchesOwner,
+        deps.platform,
+      );
       if (conflict) throw new SyncHostSingletonConflictError(conflict);
       unlinkLock(lockPath);
       if (attempt === 1) writeLock(lockPath, owner, "wx");
@@ -483,13 +618,13 @@ export function acquireSyncHostSingleton(
         updatedAt: new Date().toISOString(),
       };
       Object.assign(owner, next);
-      const lock = safeReadLock(lockPath);
+      const lock = safeReadLock(lockPath, deps.platform);
       if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
         writeLock(lockPath, owner, "w");
       }
     },
     dispose() {
-      const lock = safeReadLock(lockPath);
+      const lock = safeReadLock(lockPath, deps.platform);
       if (lock?.owner.id === owner.id && lock.owner.pid === process.pid) {
         unlinkLock(lockPath);
       }

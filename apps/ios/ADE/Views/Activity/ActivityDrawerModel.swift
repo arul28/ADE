@@ -136,7 +136,7 @@ public final class ActivityDrawerModel: ObservableObject {
     public func rebuild(from snapshot: WorkspaceSnapshot) {
         let machine = AccountAttentionMachine(
             machineKey: Self.nonEmpty(snapshot.machineId) ?? "current-machine",
-            name: Self.nonEmpty(snapshot.machineName) ?? "Connected Mac",
+            name: Self.nonEmpty(snapshot.machineName) ?? "Connected computer",
             online: snapshot.connection.lowercased() != "disconnected",
             lastSeenAt: snapshot.generatedAt
         )
@@ -355,7 +355,7 @@ public final class ActivityDrawerModel: ObservableObject {
         for item in items where !item.machine.online {
             let scope = ActivityOfflineScope(
                 machineKey: item.machine.machineKey,
-                machineName: nonEmpty(item.machine.name) ?? "Mac",
+                machineName: nonEmpty(item.machine.name) ?? "Computer",
                 lastSeenAt: item.machine.lastSeenAt,
                 projectId: item.project.projectId,
                 laneId: nonEmpty(item.laneId)
