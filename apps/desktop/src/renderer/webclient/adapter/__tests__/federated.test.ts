@@ -21,6 +21,17 @@ vi.mock("../index", () => ({
 function fakeAdapter(label: string) {
   const createPromptStash = vi.fn(async () => ({ id: label }));
   const onAgentChatEvent = vi.fn(() => () => {});
+  // A realistic subscription: it delivers to live listeners and stops when the
+  // unsubscribe it handed back is called.
+  const laneListeners = new Set<(event: unknown) => void>();
+  const laneDetach = vi.fn();
+  const onLanesChanged = vi.fn((listener: (event: unknown) => void) => {
+    laneListeners.add(listener);
+    return () => {
+      laneDetach();
+      laneListeners.delete(listener);
+    };
+  });
   const navigationListeners = new Set<(request: unknown) => void>();
   const onNavigate = vi.fn((listener: (request: unknown) => void) => {
     navigationListeners.add(listener);
@@ -31,6 +42,7 @@ function fakeAdapter(label: string) {
       app: { onNavigate },
       project: {},
       remoteRuntime: {},
+      lanes: { onChanged: onLanesChanged },
       agentChat: {
         onEvent: onAgentChatEvent,
         promptStashes: {
@@ -49,6 +61,12 @@ function fakeAdapter(label: string) {
     createPromptStash,
     onAgentChatEvent,
     onNavigate,
+    onLanesChanged,
+    laneDetach,
+    laneListenerCount: () => laneListeners.size,
+    emitLaneChange(event: unknown) {
+      for (const listener of laneListeners) listener(event);
+    },
     emitNavigate(request: unknown) {
       for (const listener of navigationListeners) listener(request);
     },
@@ -131,6 +149,10 @@ function managerFixture() {
       const session = sessions.find((entry) => entry.targetId === targetId)!;
       const project = session.projects.find((entry) => entry.id === projectId);
       if (!project) throw new Error("Project not found");
+      // The host opens the project, so its session reports it as active and
+      // broadcasts a snapshot — exactly what the real manager does.
+      session.activeProjectId = projectId;
+      for (const listener of listeners) listener({ sessions });
       return { session, project };
     }),
     park: vi.fn(async () => undefined),
@@ -154,6 +176,25 @@ function managerFixture() {
     targetB,
     sessions,
     emitSnapshot() {
+      for (const listener of listeners) listener({ sessions });
+    },
+    /**
+     * What a reconnect looks like from the federated adapter's side: the
+     * manager hands out a brand-new client object for the same machine, so
+     * every adapter built on the old one is stale. Returns the fresh machine's
+     * fake adapter so a test can assert what re-attached to it.
+     */
+    reconnect(targetId: string) {
+      const client = {} as AdeSyncClient;
+      const replacement = fakeAdapter(`${targetId}-reconnected`);
+      adapters.set(client, replacement.adapter);
+      clients.set(targetId, client);
+      for (const listener of listeners) listener({ sessions });
+      return replacement;
+    },
+    /** Drops a machine's client entirely, as an offline machine would. */
+    disconnect(targetId: string) {
+      clients.delete(targetId);
       for (const listener of listeners) listener({ sessions });
     },
     async emitInvalidation(targetId: string) {
@@ -268,8 +309,13 @@ describe("createFederatedWebAdapter", () => {
 
     return federated.openProject("machine-a", "project-machine-a").then(() => {
       const result = federated.ade.usage.onUpdate(vi.fn());
-      expect(result).toBe(unsubscribe);
       expect(onUpdate).toHaveBeenCalledOnce();
+      // Unpinned subscriptions come back wrapped so they can follow the
+      // displayed adapter, so this is the adapter's own unsubscribe reached
+      // through that wrapper rather than the identical function object.
+      expect(typeof result).toBe("function");
+      (result as unknown as () => void)();
+      expect(unsubscribe).toHaveBeenCalledOnce();
     });
   });
 
@@ -505,6 +551,264 @@ describe("createFederatedWebAdapter", () => {
     expect(federated.getOpenBindings()).toEqual([]);
     expect(federated.getActiveBinding()).toBeNull();
     expect(fixture.targetA.adapter.dispose).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the other tab's machine binding untouched when a tab is activated", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "cross-tab-binding",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    const bindingB = await federated.openProject("machine-b", "project-machine-b");
+    fixture.emitSnapshot();
+    await federated.openProject("machine-a", "project-machine-a");
+    fixture.emitSnapshot();
+
+    expect(federated.getOpenBindings()).toEqual([bindingA, bindingB]);
+    expect(federated.getActiveBinding()).toEqual(bindingA);
+    expect(
+      JSON.parse(localStorage.getItem("ade-web:workspace:v1:cross-tab-binding") ?? "null"),
+    ).toMatchObject({
+      openBindings: [
+        { key: bindingA.key, targetId: "machine-a", projectId: "project-machine-a" },
+        { key: bindingB.key, targetId: "machine-b", projectId: "project-machine-b" },
+      ],
+      activeBindingKey: bindingA.key,
+    });
+  });
+
+  it("resolves a shared checkout path to the machine its open tab is bound to", async () => {
+    const fixture = managerFixture();
+    // The same path exists on both machines, and machine-b is the most recently
+    // used one, so a path-only lookup would hand tab A to machine-b.
+    fixture.sessions[1].projects.push({
+      ...fixture.sessions[1].projects[0],
+      id: "project-machine-b-clone",
+      displayName: "Clone",
+      rootPath: "/repos/machine-a",
+    });
+    fixture.sessions.reverse();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "path-machine-pinning",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    await federated.openProject("machine-b", "project-machine-b");
+
+    await federated.ade.project.switchToPath("/repos/machine-a");
+
+    expect(fixture.manager.openProject).toHaveBeenLastCalledWith(
+      "machine-a",
+      "project-machine-a",
+    );
+    expect(federated.getActiveBinding()).toEqual(bindingA);
+  });
+
+  it("ignores a host project report that lands while another tab is activating", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "activation-race",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    // Machine A's host moves on to another project just as the user activates
+    // the tab living on machine B.
+    fixture.sessions[0].projects.push({
+      ...fixture.sessions[0].projects[0],
+      id: "project-machine-a-next",
+      displayName: "Next project",
+      rootPath: "/repos/machine-a-next",
+    });
+    (fixture.manager.openProject as unknown as {
+      mockImplementationOnce: (impl: (targetId: string, projectId: string) => Promise<unknown>) => void;
+    }).mockImplementationOnce(async (targetId: string, projectId: string) => {
+      fixture.sessions[0].activeProjectId = "project-machine-a-next";
+      fixture.emitSnapshot();
+      const session = fixture.sessions.find((entry) => entry.targetId === targetId)!;
+      session.activeProjectId = projectId;
+      return { session, project: session.projects.find((entry) => entry.id === projectId) };
+    });
+
+    const bindingB = await federated.openProject("machine-b", "project-machine-b");
+
+    expect(federated.getActiveBinding()).toEqual(bindingB);
+    expect(federated.getOpenBindings().map((entry) => entry.key)).toEqual([
+      "remote:machine-a:project-machine-a",
+      bindingB.key,
+    ]);
+  });
+
+  it("routes non-overridden project members to the displayed machine, not the fallback", async () => {
+    const fixture = managerFixture();
+    const fallbackOpenRepo = vi.fn(async () => null);
+    const openRepoA = vi.fn(async () => null);
+    const openRepoB = vi.fn(async () => null);
+    (fixture.fallback.adapter.ade.project as Record<string, unknown>).openRepo = fallbackOpenRepo;
+    (fixture.targetA.adapter.ade.project as Record<string, unknown>).openRepo = openRepoA;
+    (fixture.targetB.adapter.ade.project as Record<string, unknown>).openRepo = openRepoB;
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "namespace-routing",
+      fallbackClient: fixture.fallbackClient,
+    });
+
+    await federated.openProject("machine-a", "project-machine-a");
+    await federated.openProject("machine-b", "project-machine-b");
+    await (federated.ade.project as unknown as {
+      openRepo: (args: { rootPath: string }) => Promise<unknown>;
+    }).openRepo({ rootPath: "/repos/machine-b" });
+
+    // The fallback adapter shares `fallbackClient` with the first machine that
+    // connects, so a fallback-routed project switch lands on that machine.
+    expect(fallbackOpenRepo).not.toHaveBeenCalled();
+    expect(openRepoA).not.toHaveBeenCalled();
+    expect(openRepoB).toHaveBeenCalledOnce();
+  });
+
+  it("sends no command to the machine being left when another tab is activated", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "no-departing-command",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    (fixture.manager.openProject as unknown as { mockClear: () => void }).mockClear();
+
+    await federated.openProject("machine-b", "project-machine-b");
+    fixture.emitSnapshot();
+
+    expect(fixture.manager.openProject).toHaveBeenCalledOnce();
+    expect(fixture.manager.openProject).toHaveBeenCalledWith(
+      "machine-b",
+      "project-machine-b",
+    );
+    expect(fixture.sessions[0].activeProjectId).toBe("project-machine-a");
+    expect(
+      federated.getOpenBindings().find((entry) => entry.targetId === "machine-a"),
+    ).toEqual(bindingA);
+  });
+
+  it("moves an unpinned subscription to the newly displayed adapter on a tab switch", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "durable-subscriptions",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    const events: string[] = [];
+    const unsubscribe = (federated.ade as unknown as {
+      lanes: { onChanged: (listener: (event: string) => void) => () => void };
+    }).lanes.onChanged((event) => events.push(event));
+
+    fixture.targetA.emitLaneChange("from-a");
+    await federated.openProject("machine-b", "project-machine-b");
+    // A is left behind: detached there, attached on B, and the caller's own
+    // unsubscribe still works against whichever adapter currently holds it.
+    fixture.targetA.emitLaneChange("stale-a");
+    fixture.targetB.emitLaneChange("from-b");
+
+    expect(events).toEqual(["from-a", "from-b"]);
+    expect(fixture.targetA.laneListenerCount()).toBe(0);
+    expect(fixture.targetB.laneListenerCount()).toBe(1);
+
+    unsubscribe();
+    fixture.targetB.emitLaneChange("after-unsubscribe");
+    expect(events).toEqual(["from-a", "from-b"]);
+    expect(fixture.targetB.laneListenerCount()).toBe(0);
+  });
+
+  it("re-attaches the displayed project to its own machine after that machine reconnects", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "reconnect-restore",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    const events: string[] = [];
+    (federated.ade as unknown as {
+      lanes: { onChanged: (listener: (event: string) => void) => () => void };
+    }).lanes.onChanged((event) => events.push(event));
+
+    const reconnected = fixture.reconnect("machine-a");
+
+    // The tab still belongs to machine-a, so it must follow that machine's new
+    // client — not strand itself on the fallback (the first-connected machine).
+    expect(federated.getDisplayedTargetId()).toBe("machine-a");
+    expect(reconnected.laneListenerCount()).toBe(1);
+    expect(fixture.fallback.laneListenerCount()).toBe(0);
+    reconnected.emitLaneChange("after-reconnect");
+    expect(events).toEqual(["after-reconnect"]);
+  });
+
+  it("restores the displayed project on the later snapshot that brings its machine back", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "offline-restore",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+
+    fixture.disconnect("machine-a");
+    expect(federated.getDisplayedTargetId()).toBe(null);
+
+    const reconnected = fixture.reconnect("machine-a");
+    expect(federated.getDisplayedTargetId()).toBe("machine-a");
+    expect(reconnected.adapter.bindProject).toHaveBeenCalled();
+  });
+
+  it("never moves a subscription pinned to a binding", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "pinned-subscriptions-stay",
+      fallbackClient: fixture.fallbackClient,
+    });
+    const bindingA = await federated.openProject("machine-a", "project-machine-a");
+    const listener = vi.fn();
+    (federated.ade.agentChat.onEvent as unknown as (
+      listener: () => void,
+      binding: typeof bindingA,
+    ) => () => void)(listener, bindingA);
+
+    await federated.openProject("machine-b", "project-machine-b");
+
+    expect(fixture.targetA.onAgentChatEvent).toHaveBeenCalledOnce();
+    expect(fixture.targetB.onAgentChatEvent).not.toHaveBeenCalled();
+  });
+
+  it("releases every durable subscription when the workspace is disposed", async () => {
+    const fixture = managerFixture();
+    const federated = createFederatedWebAdapter({
+      manager: fixture.manager,
+      accountClient,
+      accountKey: "durable-disposal",
+      fallbackClient: fixture.fallbackClient,
+    });
+    await federated.openProject("machine-a", "project-machine-a");
+    (federated.ade as unknown as {
+      lanes: { onChanged: (listener: () => void) => () => void };
+    }).lanes.onChanged(vi.fn());
+
+    federated.dispose();
+
+    expect(fixture.targetA.laneListenerCount()).toBe(0);
   });
 
   it("protects the federated project target from automatic session parking", async () => {

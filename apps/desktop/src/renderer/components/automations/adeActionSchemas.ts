@@ -105,24 +105,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
   },
   {
     domain: "lane",
-    action: "attach",
-    label: "Attach external worktree",
-    description: "Register an existing checkout outside ADE as a managed lane.",
-    params: [
-      { name: "name", type: "string", required: true },
-      { name: "attachedPath", type: "string", required: true, description: "Absolute path to the existing worktree." },
-      { name: "description", type: "string" },
-    ],
-  },
-  {
-    domain: "lane",
-    action: "adoptAttached",
-    label: "Adopt attached lane",
-    description: "Promote an attached worktree into a fully-managed ADE lane.",
-    params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "lane",
     action: "delete",
     label: "Delete lane",
     description: "Remove a lane, its worktree, and optionally the underlying local/remote branch.",
@@ -181,13 +163,6 @@ export const ADE_ACTION_SCHEMAS: readonly AdeActionSchema[] = [
     label: "Get stack chain",
     description: "Return the ancestor chain of the lane from root down to the lane itself.",
     params: [LANE_ID_PARAM],
-  },
-  {
-    domain: "lane",
-    action: "listUnregisteredWorktrees",
-    label: "List unregistered worktrees",
-    description: "Find worktrees on disk that ADE does not yet track as lanes.",
-    params: [],
   },
   {
     domain: "lane",

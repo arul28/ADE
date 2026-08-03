@@ -15,6 +15,7 @@ import {
   type ProjectRepairReport,
   type RepairStepResult,
 } from "../../../shared/types/recovery";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { useAppStore } from "../../state/appStore";
 
 /**
@@ -149,7 +150,7 @@ export function ProjectRecoveryScreen() {
   const [report, setReport] = useState<ProjectRepairReport | null>(null);
   const [revealed, setRevealed] = useState(0);
   const [repairError, setRepairError] = useState<string | null>(null);
-  const [copied, setCopied] = useState(false);
+  const { copy, copied } = useCopyToClipboard();
   const reopenStartedRef = useRef(false);
 
   // Diagnose on mount / when the failed root changes. On failure fall back to
@@ -248,16 +249,6 @@ export function ProjectRecoveryScreen() {
   ]
     .filter((line): line is string => Boolean(line && line.trim()))
     .join("\n");
-
-  const copyTechnical = () => {
-    void navigator.clipboard?.writeText(technicalText).then(
-      () => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1500);
-      },
-      () => {},
-    );
-  };
 
   const visibleSteps = report ? report.steps.slice(0, phase === "repairing" ? revealed : undefined) : [];
 
@@ -372,7 +363,7 @@ export function ProjectRecoveryScreen() {
                   type="button"
                   onClick={(e) => {
                     e.preventDefault();
-                    copyTechnical();
+                    void copy(technicalText);
                   }}
                   className="inline-flex items-center gap-1 text-[11px] text-fg/45 transition-colors hover:text-fg/75"
                 >

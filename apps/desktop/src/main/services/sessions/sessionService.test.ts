@@ -1186,6 +1186,31 @@ describe("sessionService resume metadata", () => {
     activeDisposers.push(async () => db.close());
   });
 
+  it("returns every Claude session pointer a caller asks for past the old 500 clamp", async () => {
+    const projectRoot = makeProjectRoot("ade-session-service-");
+    const dbPath = path.join(projectRoot, ".ade", "ade.db");
+    const db = await openKvDb(dbPath, createLogger() as any);
+    insertProjectGraph(db);
+    const service = createSessionService({ db });
+
+    // External-session import marks already-imported Claude transcripts from
+    // this list; a silent clamp made older imports look un-imported.
+    for (let index = 0; index < 620; index += 1) {
+      service.upsertClaudeSessionPointer({
+        sessionId: `sdk-${String(index).padStart(4, "0")}`,
+        laneId: "lane-1",
+        chatSessionId: null,
+        updatedAt: `2026-03-17T00:00:00.${String(index).padStart(3, "0")}Z`,
+      });
+    }
+
+    expect(service.listClaudeSessionPointers({ limit: 5000 })).toHaveLength(620);
+    expect(service.listClaudeSessionPointers({ limit: 10 })).toHaveLength(10);
+    expect(service.listClaudeSessionPointers()).toHaveLength(200);
+
+    activeDisposers.push(async () => db.close());
+  });
+
   it("keeps a chat bound to only one Claude SDK session pointer", async () => {
     const projectRoot = makeProjectRoot("ade-session-service-");
     const dbPath = path.join(projectRoot, ".ade", "ade.db");

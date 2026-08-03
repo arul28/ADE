@@ -131,7 +131,6 @@ export function LaneContextMenu({
   lanesById,
   visibleLaneIds,
   onClose,
-  onAdoptAttached,
   onManage,
   selectLane,
   onRemoveFromSplit,
@@ -147,7 +146,6 @@ export function LaneContextMenu({
   lanesById: Map<string, LaneSummary>;
   visibleLaneIds: string[];
   onClose: () => void;
-  onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
   onRemoveFromSplit: (laneId: string) => void;
@@ -190,7 +188,6 @@ export function LaneContextMenu({
     visibleLaneIds,
     isRemoteProject,
     onClose,
-    onAdoptAttached,
     onManage,
     selectLane,
     onRemoveFromSplit,

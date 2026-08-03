@@ -80,7 +80,59 @@ and in tests.
   `canAcceptScheduledTurn(sessionId)` is the scheduler's non-mutating delivery
   boundary: ended tracked CLIs are resumable, while live CLIs require a
   provider-specific visible composer marker plus the short quiet window before
-  a durable prompt may be submitted. ~4,450 lines.
+  a durable prompt may be submitted. It also owns the richer CLI state
+  projection: each `PtyEntry` carries an optional `TuiMarkerState` (created at
+  spawn only for tracked agent CLI tool types, so shells and unknown tools
+  allocate nothing) that is folded on the same chunk the OSC 133 scan already
+  reads, plus a `previewCursor` threaded through `derivePreviewFromChunk`. The
+  runtime-state entry gains `runningSince`, stamped only on a
+  non-running → running *transition* and cleared on every non-running state —
+  not `lastActivityAt`, which is re-stamped on every output tick and would
+  render as "time since last write". `anchorTurnStart` / `isTurnSubmitWrite`
+  re-anchor that turn when a user write ends in a newline (a literal Enter;
+  bracketed-paste payloads contain newlines but never end in one), and the same
+  write path calls `clearTuiWaitingInput`. The shared session-row projection —
+  the one chokepoint desktop, lane snapshots, web, and iOS all read — then
+  emits `currentTurnStartedAt` for non-chat rows, the `tuiRowOverlay` spread,
+  and `runtimeState: "waiting-input"` when a marker latch is live.
+  ~4,450 lines.
+- `apps/desktop/src/main/utils/terminalTuiMarkers.ts` — the TUI marker packs
+  that give PTY-backed CLIs the same vocabulary chat sessions already have
+  (planning / waiting-on-you), mapped onto the existing `chatActivityMode` and
+  `runtimeState` fields so no surface needs new rendering. `PACKS` is keyed by
+  `TerminalResumeProvider` and covers claude, codex, cursor, opencode, and
+  droid; anything without a pack resolves to null and does zero scanning.
+  `scanTuiMarkers` does one bounded pass per chunk (`MAX_CHUNK_SCAN_CHARS =
+  8_000` head plus the same tail, joined, with a `CARRY_CHARS = 512` carry
+  across chunk boundaries) and `tuiActivityFromState` resolves it. The two
+  marker shapes are deliberately asymmetric: **planning is a footer state**, so
+  it is sticky with a `PLANNING_TTL_MS = 60_000` decay and needs no
+  "left plan mode" event (none is reliably printed); **waiting-input is an
+  event**, so it is an edge-triggered latch armed only when currently null and
+  cleared only by evidence — a `working` marker painting after the prompt, or
+  `clearTuiWaitingInput` when the user types. `WAITING_TTL_MS` (30 minutes)
+  exists to bound a false positive, not to time out a human. Where a window
+  contains both a prompt and the spinner that replaced it, the later match
+  wins, and waiting-input outranks planning because it is the actionable one.
+  Failure needs no markers: a nonzero exit already lands as `status: "failed"`.
+- `apps/desktop/src/main/utils/terminalPreview.ts` — the one-line session
+  preview builder. It is a real column-cursor model (`PreviewCursorState`,
+  `createPreviewCursorState`, `derivePreviewFromChunk`) over a mutable cell
+  array rather than an ANSI stripper, because stripping every CSI deletes the
+  *gaps* that positioning sequences represent and renders a TUI's status line
+  as run-together fragments. It scans escapes with a real state machine over
+  ECMA-48 byte ranges and honours CUP/HVP, VPA, CUU/CUD, CNL/CPL, CHA/HPA,
+  CUF/CUB, EL, ED, and ECH; vertical moves keep the column, because a real
+  terminal does. `\r` returns the cursor but keeps the cells, since a
+  self-rewriting progress line overwrites what it needs and clears the rest.
+  Caps: `MAX_LINE_CELLS = 500`, `MAX_COL = 2_000` (tracked past the buffer,
+  never allocated), `MAX_PENDING_CHARS = 2_048`, preview `maxChars` 220. A
+  trailing partial escape is carried across chunks — PTY chunks split mid-CSI
+  often enough that per-chunk stripping leaked `[53;37H` into previews as
+  literal text — and on overflow the carried tail is re-anchored on its last
+  `ESC` so a blind slice cannot write escape garbage into the preview.
+- `apps/desktop/src/main/utils/terminalTuiMarkers.test.ts` — pack matching,
+  latch arming/clearing, and ordering coverage.
 - `apps/desktop/src/main/services/pty/supervisedPtyHost.ts` and
   `ptyHostWorker.ts` — isolated node-pty worker host. Local runtimes fork the
   worker from the built desktop files; remote runtimes can receive
@@ -178,11 +230,18 @@ and in tests.
   already-imported detection, active-session hints, CLI import into tracked
   PTYs, chat import delegation, cwd checks, and provider-specific resume/fork
   commands. The per-provider discovery modules scan Claude JSONL transcripts
-  under `~/.claude/projects`, Codex sessions under `~/.codex/sessions`,
-  Cursor transcripts under `~/.cursor/projects`, Droid sessions under
-  `~/.factory/sessions`, and OpenCode through `opencode session list`.
+  under `~/.claude/projects`, Codex threads from the `~/.codex/state_5.sqlite`
+  thread store (falling back to the `sessions/` rollout tree only when that
+  database is unusable), Cursor artifacts under `~/.cursor/chats` and
+  `~/.cursor/projects`, Droid sessions under `~/.factory/sessions`, and
+  OpenCode through `opencode session list`.
   `claudeSessionTransplant.ts` performs the non-destructive Claude JSONL copy
   used when forking or importing a Claude session into a different lane cwd;
+  `claudeLiveSessions.ts` reads Claude's own `sessions/<pid>.json` registry to
+  tell a session that is open right now from one that merely has a recent file
+  mtime; `importedSessionStore.ts` is the durable machine-local log of every
+  import, which is what keeps the "already imported" badge alive after the ADE
+  session is deleted and what records the new provider id a fork created;
   `discoveryUtils.ts` owns safe filesystem reads, cwd slug resolution, cheap
   previews, limits, and sorting. Deep detail:
   [external-session-import.md](external-session-import.md).
@@ -305,10 +364,12 @@ Shared types and IPC:
   another machine. Anything both surfaces must agree on belongs here.
 - `apps/desktop/src/renderer/components/terminals/SessionStatusSlot.tsx` —
   the row's single status surface and no-layout-shift hover/focus action swap.
-  It renders `SessionStatusLabel` and adds the mutations: it ticks active
-  chat Working/Planning elapsed time from immutable `currentTurnStartedAt`,
-  falling back to last activity for legacy rows, keeps CLI/Stale elapsed time
-  on last activity, ticks idle scheduled-work countdowns, and
+  It renders `SessionStatusLabel` and adds the mutations: it ticks running
+  elapsed time from immutable `currentTurnStartedAt` for **every** session
+  type, not just chat, falling back to last activity for legacy rows — a CLI
+  repainting its TUI would otherwise reset the timer every few seconds, because
+  last activity is time-since-last-output. It keeps Stale elapsed time on last
+  activity, ticks idle scheduled-work countdowns, and
   replaces the status label with snooze plus binding-aware settle/un-settle
   controls while the row is hovered or keyboard-focused.
 - `apps/desktop/src/renderer/components/terminals/SessionHoverCard.tsx` —
@@ -579,7 +640,11 @@ Renderer surfaces:
   leaving the session list. The list is a **cross-machine union**
   (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
   in flight on every connected machine appear regardless of which machine the
-  project tab is bound to. A lane not on the **physical Mac** running ADE carries
+  project tab is bound to. The pane hands the union its **unfiltered** local
+  roster so a session it already renders is never also rendered as a foreign row;
+  passing the visible rows instead would make a chip-filtered session reappear
+  from the other side, because ownership is a question of shape, not
+  visibility. A lane not on the **physical Mac** running ADE carries
   one amber `DesktopTower` marker — always a glyph in the sidebar, with the
   machine name on hover. The tab's binding only decides where a row renders; it
   never changes whether the work is marked as elsewhere. This makes an unmarked
@@ -655,6 +720,13 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
+  `buildCrossMachineLaneRows` accepts the local roster's session ids and keeps a
+  single claim set spanning every machine slice, so one session is contributed by
+  exactly one list — local first, then the first machine that reports the lane
+  the session names. The hook stabilizes that id set by content rather than by
+  the roster array's identity, because the roster is replaced wholesale by every
+  session poll and keying on it would rebuild every foreign row, marker, and
+  ordering on a timer.
   Its marker resolver separately distinguishes `isActiveBinding` (where a lane
   renders) from `isThisMachine` (whether it is marked): a remote-bound tab still
   marks all lanes that are elsewhere, even when it has no foreign union rows.
@@ -816,7 +888,67 @@ Renderer surfaces:
   older async preview cannot repaint stale bytes after a gap repair.
   Accepts an optional `runtimePin`: the cached runtime records it, it is part of
   the runtime cache key, and every PTY/preview/transcript call the runtime makes
-  carries it. A pin change relocates a mounted session to a new key, so
+  carries it. Width correctness is a first-class concern here, because the same
+  session can be mirrored by a desktop window and a hosted browser tab at once:
+  a width-sensitive write only happens once `terminalWidthTrustworthy` holds
+  (fitted at least once **and** `document.fonts.ready` settled), a terminal
+  opened before its webfont arrived is forced to re-measure its cell
+  (`remeasureTerminalFont`, since xterm only re-measures on a *changed*
+  font family/size), a `replace: true` payload waits for a trustworthy fit on a
+  20 × 60 ms budget before it is written (and is written anyway on exhaustion —
+  blank is worse than rewrapped), and a later width change re-hydrates on a
+  250 ms trailing debounce. Wheel routing follows iTerm2/kitty/VS Code: with
+  mouse tracking on the wheel goes to the app unless Shift is held; with
+  tracking off it scrolls locally only when scrollback actually exists. Zoom
+  compensation sets the host's `zoom` to the reciprocal of the web client's
+  zoom factor and scales `fontSize` instead, because xterm's hit-test divides a
+  zoomed-space pixel offset by an unzoomed cell height and selects the wrong
+  line further down the pane. Diagnostics print one `[ade-term]` line per event
+  (`pty-resize-send`, `pty-resize-acked`, `snapshot-hydrate`,
+  `rehydrate-after-fit`, `hydrate-normalize-declined`, `hydrate-complete`, …);
+  a dims mismatch warns on **columns only**, since row disagreement is normal
+  and columns are what decide wrapping.
+- `apps/desktop/src/renderer/components/terminals/terminalTranscriptNormalize.ts`
+  — the runtime-free transcript hydration helpers, split out of `TerminalView`
+  so they are testable without a mounted terminal. `inferTranscriptColumns`
+  reads the highest column any CUP/HVP/CHA sequence ever addressed, which is a
+  lower bound on the width the transcript was recorded at;
+  `normalizeTranscriptToGrid` replays the transcript through an offscreen
+  headless xterm at that width and returns the resulting grid as plain
+  `\r\n`-joined rows, which soft-wrap in any viewer. Without it, replaying
+  host-width-keyed absolute cursor moves into a differently sized web viewer
+  produces the diagonal "staircase". Caps: `MIN_VALID_COLS = 20` (below it a
+  fit is a pane caught mid-layout, not a viewport, and normalization declines),
+  400 columns, 96 rows; the result is clamped to the viewer's last N rows and
+  trailing blanks are popped, because rows past the viewport land in scrollback
+  and a nonzero `baseY` both paints a scrollbar and hijacks the wheel.
+  `inferTerminalModesFromTranscript` recovers still-set DEC private modes
+  (mouse tracking and encodings, cursor keys, origin, wraparound, focus
+  reporting, bracketed paste, cursor visibility) so a hydrated web viewer keeps
+  mouse tracking the desktop gets free from its serialized snapshot;
+  alt-screen modes 1049/47 are deliberately excluded, since the normalized grid
+  is written into the main buffer and switching buffers would hide it. These
+  TUIs re-assert their modes continuously, which is what makes a tail-window
+  scan viable — the known residual limit is a TUI emitting more than the 2 MB
+  hydration window of quiet output after setting them, whose real fix is a
+  host-reported modes field on the wire.
+- `apps/desktop/src/renderer/components/terminals/ptySizeOwnership.ts` — size
+  arbitration for the case where a desktop window and a hosted browser tab
+  mirror the same session, both fit to their own element, and both push dims;
+  the host applies last-writer-wins, so the CLI wraps at one viewer's width
+  while the other renders at another. `installPtySizeOwnershipTracking` (called
+  on mount, not at import, so tests inherit no document listeners) stamps the
+  last local interaction from capture-phase `pointerdown`/`keydown`/`focus`,
+  and `windowOwnsPtySize` answers: a hidden document never owns the size
+  whatever else holds, a focused one always does, and otherwise ownership
+  survives `OWNERSHIP_IDLE_MS = 60_000` of idleness. The timestamp is seeded at
+  module load so a freshly opened viewer owns the size immediately rather than
+  queueing behind a long-running background mirror. A non-owning fit
+  deliberately does **not** advance `lastDims` — recording unsent dims would
+  make the next fit a no-op and strand the PTY at the other viewer's width —
+  and `force` on a resize means only "send even though dims look unchanged",
+  never an ownership override. Two simultaneously foregrounded viewers still
+  need host-side arbitration; that is out of scope here. A pin change relocates a mounted session to a new key, so
   `ensureRuntime` sweeps the runtime stranded at the old key
   (`teardownRelocatedRuntimes`) before reusing or creating one — otherwise the
   orphan would hold its PTY subscriptions open forever and a second xterm would
@@ -1600,6 +1732,17 @@ runtime and agent chat runtime both layer the same identity envs
   is not running it. Similarly, only `markLastTurnFailed` applies the
   strictly-newer-than-`snoozed_at` comparison — drop it and the error the user
   snoozed on top of instantly re-wakes the row, making snooze a no-op.
+- **TUI-marker needs-you rides on `attentionSource: "provider_structured"`, and
+  that label is a known mislabel.** The value is supposed to mean the provider
+  told us it is blocked; for a marker latch the evidence is regex heuristics
+  over painted output. It is load-bearing anyway, because
+  `canonicalSessionState` derives `needs_you` from `pendingInputItemId`,
+  `attentionRequestedAt`, or `provider_structured` and ignores
+  `runtimeState: "waiting-input"` entirely — dropping the label would remove
+  the badge *and* leave the row unsettleable. `SessionStatusSlot` therefore
+  always allows dismissing a `provider_structured` needs-you. The real fix is a
+  heuristic-waiting tier in the canonical layer, which is a shared-contract
+  change across all five surfaces.
 - **Process exit is not settlement.** A clean exit-0 row remains ended until an
   agent/user declaration or the enabled PR-merge policy settles it. New
   lifecycle surfaces must not infer task completion from process mechanics.

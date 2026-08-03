@@ -8730,6 +8730,8 @@ export function AgentChatPane({
     laneId: string;
     prompt: string;
     modelId: string;
+    /** Model the chat itself launched with; the backend's cross-provider naming fallback needs it even when a naming model is configured. */
+    chatModelId?: string;
     fallbackName: string;
     temporaryBranch?: string;
     attachments?: AgentChatFileRef[];
@@ -8745,6 +8747,7 @@ export function AgentChatPane({
         prompt: args.prompt,
         modelId: args.modelId,
         fallbackName: args.fallbackName,
+        ...(args.chatModelId ? { chatModelId: args.chatModelId } : {}),
         ...(args.temporaryBranch ? { temporaryBranch: args.temporaryBranch } : {}),
         ...(args.attachments?.length ? { attachments: args.attachments.slice(0, 8) } : {}),
       };
@@ -8798,6 +8801,7 @@ export function AgentChatPane({
     laneId: string;
     prompt: string;
     modelId: string;
+    chatModelId?: string;
     fallbackName: string;
     temporaryBranch?: string;
     attachments?: AgentChatFileRef[];
@@ -8817,6 +8821,7 @@ export function AgentChatPane({
     laneId: string;
     prompt: string;
     modelId: string;
+    chatModelId?: string;
     fallbackBase: string;
     children: Array<{ laneId: string; suffix: string }>;
     pin?: OpenProjectBinding | null;
@@ -8825,6 +8830,7 @@ export function AgentChatPane({
       laneId: args.laneId,
       prompt: args.prompt,
       modelId: args.modelId,
+      ...(args.chatModelId ? { chatModelId: args.chatModelId } : {}),
       fallbackName: args.fallbackBase,
       flagLaneIds: args.children.map((child) => child.laneId),
       pin: args.pin,
@@ -8915,6 +8921,7 @@ export function AgentChatPane({
           laneId: createdLane.id,
           prompt: namingSeed,
           modelId: namingModelId,
+          chatModelId: snapshot.modelId,
           fallbackName: laneName,
           temporaryBranch: createdLane.branchRef,
           attachments: snapshot.attachments,
@@ -9820,6 +9827,7 @@ export function AgentChatPane({
             laneId,
             prompt: namingSeed,
             modelId: namingModelId,
+            chatModelId: parallelModelSlots[0]!.modelId,
             fallbackBase: baseName,
             children: childLaneNamings,
             pin: launchBinding,

@@ -3544,7 +3544,6 @@ struct LaneListSnapshot: Codable, Identifiable, Equatable {
   var autoRebaseStatus: AutoRebaseLaneStatus?
   var conflictStatus: ConflictStatus?
   var stateSnapshot: LaneStateSnapshotSummary?
-  var adoptableAttached: Bool
 }
 
 struct LaneDetailPayload: Codable, Equatable {
@@ -3607,12 +3606,6 @@ struct LaneTemplate: Codable, Equatable, Identifiable {
   var id: String
   var name: String
   var description: String?
-}
-
-struct UnregisteredLaneCandidate: Codable, Equatable, Identifiable {
-  let path: String
-  let branch: String
-  var id: String { path }
 }
 
 struct SyncRemoteCommandPolicy: Codable, Equatable {

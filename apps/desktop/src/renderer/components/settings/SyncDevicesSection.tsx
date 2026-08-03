@@ -24,6 +24,7 @@ import {
   isProjectRegistrationRequiredError,
 } from "../../../shared/runtimeErrors";
 import { openExternalUrl } from "../../lib/openExternal";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   COLORS,
   LABEL_STYLE,
@@ -816,41 +817,6 @@ function CopiedGlyphLabel({ copied, idle }: { copied: boolean; idle: string }) {
   );
 }
 
-function useCopyFeedback() {
-  const [copied, setCopied] = useState(false);
-  const [flash, setFlash] = useState(false);
-  const copiedTimerRef = useRef<number | null>(null);
-  const flashTimerRef = useRef<number | null>(null);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
-      if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
-    };
-  }, []);
-
-  const showFeedback = useCallback(() => {
-    if (!mountedRef.current) return;
-    if (copiedTimerRef.current != null) window.clearTimeout(copiedTimerRef.current);
-    if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
-    setCopied(true);
-    setFlash(true);
-    copiedTimerRef.current = window.setTimeout(() => {
-      copiedTimerRef.current = null;
-      setCopied(false);
-    }, 1500);
-    flashTimerRef.current = window.setTimeout(() => {
-      flashTimerRef.current = null;
-      setFlash(false);
-    }, 600);
-  }, []);
-
-  return { copied, flash, showFeedback };
-}
-
 // ---------------------------------------------------------------------------
 // PIN blocks
 // ---------------------------------------------------------------------------
@@ -868,19 +834,36 @@ function PinDisplay({
   onGenerate: () => void;
   onRemove: () => void;
 }) {
-  const { copied, flash, showFeedback } = useCopyFeedback();
-  const digits = pin.padEnd(6, " ").slice(0, 6).split("");
+  // Two envelopes over one event: the shared hook owns the 1.5s "Copied" label,
+  // and a 600ms highlight flashes the digits. The hook only calls `onCopy`
+  // while mounted and its cleanup cancels the timer below, so no extra mounted
+  // guard is needed here.
+  const [flash, setFlash] = useState(false);
+  const flashTimerRef = useRef<number | null>(null);
+  useEffect(() => () => {
+    if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+  }, []);
 
-  const handleCopy = useCallback(async () => {
-    try {
+  const { copy, copied } = useCopyToClipboard({
+    write: async (value) => {
+      // Writes through the main process; `navigator.clipboard` is not
+      // guaranteed here. On failure the code stays visible to copy manually.
       const writeClipboardText = window.ade?.app?.writeClipboardText;
-      if (!writeClipboardText) return;
-      await writeClipboardText(pin);
-      showFeedback();
-    } catch {
-      // Clipboard may be unavailable; the code stays visible to copy manually.
-    }
-  }, [pin, showFeedback]);
+      if (!writeClipboardText) return false;
+      await writeClipboardText(value);
+      return true;
+    },
+    onCopy: () => {
+      if (flashTimerRef.current != null) window.clearTimeout(flashTimerRef.current);
+      setFlash(true);
+      flashTimerRef.current = window.setTimeout(() => {
+        flashTimerRef.current = null;
+        setFlash(false);
+      }, 600);
+    },
+  });
+  const showFeedback = useCallback(() => { void copy(pin); }, [copy, pin]);
+  const digits = pin.padEnd(6, " ").slice(0, 6).split("");
 
   return (
     <div style={{ display: "grid", gap: 12 }}>
@@ -908,7 +891,7 @@ function PinDisplay({
         ))}
       </div>
       <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-        <button type="button" style={outlineButton()} disabled={busy} onClick={() => void handleCopy()}>
+        <button type="button" style={outlineButton()} disabled={busy} onClick={showFeedback}>
           <CopiedGlyphLabel copied={copied} idle="Copy" />
         </button>
         <button type="button" style={outlineButton()} disabled={busy} onClick={onChange}>

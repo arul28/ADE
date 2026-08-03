@@ -335,6 +335,10 @@ export function GitHubTab({
   React.useEffect(() => {
     const unsubscribe = window.ade.prs.onEvent((event: PrEventPayload) => {
       if (event.type !== "prs-updated" && event.type !== "pr-auto-linked") return;
+      // Same freshness guard as the PR-fingerprint effect below: `prs-updated`
+      // fires for any PR-domain write, and a snapshot loaded moments ago has
+      // nothing new to show — reloading it costs a full GitHub snapshot fetch.
+      if (Date.now() - lastSnapshotLoadedAtRef.current < GITHUB_TAB_SNAPSHOT_FRESH_MS) return;
       const includeExternalClosed =
         externalHistoryLoadedRef.current || filterRef.current !== "open";
       void loadSnapshot({

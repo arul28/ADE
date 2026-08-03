@@ -27,6 +27,7 @@ vi.mock("../detail/PrDetailPane", async () => {
 });
 
 import { GitHubTab } from "./GitHubTab";
+import { GITHUB_TAB_SNAPSHOT_FRESH_MS } from "./githubTabModel";
 import {
   cleanupGitHubTabTest,
   mockUsePrs,
@@ -224,6 +225,9 @@ describe("GitHubTab snapshot lifecycle", () => {
       { id: "pr-open", state: "merged", repoOwner: "ade-dev", repoName: "ade", githubPrNumber: 101 },
     ]));
     getSnap.mockResolvedValue({ ...openOnly, repoPullRequests: [] });
+    // PR events only reload a snapshot that is no longer fresh, so age the one
+    // this tab just loaded past the freshness window.
+    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(Date.now() + GITHUB_TAB_SNAPSHOT_FRESH_MS + 1_000);
     await act(async () => {
       prsEventCb?.({ type: "prs-updated" });
       await Promise.resolve();
@@ -237,6 +241,7 @@ describe("GitHubTab snapshot lifecycle", () => {
     });
     // Merged count reflects the overlay row (1), not doubled.
     expect(screen.getByRole("button", { name: /^merged/i }).textContent).toContain("1");
+    nowSpy.mockRestore();
   });
 
   it("restores each filter tab's selected PR when switching back", async () => {
@@ -625,12 +630,22 @@ describe("GitHubTab snapshot lifecycle", () => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     });
     (window.ade.prs.getGitHubSnapshot as ReturnType<typeof vi.fn>).mockClear();
+    vi.useFakeTimers();
 
+    // `prs-updated` fires for any PR-domain write, including ones that change
+    // nothing this tab renders. A snapshot loaded moments ago is not reloaded.
     act(() => {
       prEventCallback?.({ type: "prs-updated", polledAt: "2026-03-13T12:00:30.000Z", prs: [] });
     });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(window.ade.prs.getGitHubSnapshot).not.toHaveBeenCalled();
 
-    await waitFor(() => {
+    await vi.advanceTimersByTimeAsync(31_000);
+    act(() => {
+      prEventCallback?.({ type: "prs-updated", polledAt: "2026-03-13T12:01:01.000Z", prs: [] });
+    });
+
+    await vi.waitFor(() => {
       expect(window.ade.prs.getGitHubSnapshot).toHaveBeenCalledWith({ force: false });
     });
   });

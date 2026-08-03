@@ -6,6 +6,7 @@ import { Button } from "../../ui/Button";
 import { cn } from "../../ui/cn";
 import { formatDate } from "../../../lib/format";
 import { linearIngressApi } from "../linearIngressApi";
+import { useAsyncAction } from "../../../hooks/useAsyncAction";
 
 function Dot({ tone }: { tone: "ok" | "warn" | "off" }) {
   return (
@@ -32,7 +33,6 @@ function githubSummary(status: AutomationIngressStatus | null): { tone: "ok" | "
 export function IngressStatusStrip({ ingressStatus }: { ingressStatus: AutomationIngressStatus | null }) {
   const [dismissed, setDismissed] = useState(false);
   const [linear, setLinear] = useState<AutomationLinearIngressStatus | null>(null);
-  const [busy, setBusy] = useState(false);
   const api = linearIngressApi();
 
   const refreshLinear = useCallback(async () => {
@@ -48,23 +48,22 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
     void refreshLinear();
   }, [refreshLinear]);
 
+  const { run: setupLinear, pending: busy } = useAsyncAction({
+    action: async () => {
+      if (!api?.setup) return;
+      try {
+        await api.setup();
+      } finally {
+        // The service records lastError; the refresh surfaces it either way.
+        await refreshLinear().catch(() => {});
+      }
+    },
+  });
+
   if (dismissed) return null;
 
   const gh = githubSummary(ingressStatus);
   const linearAvailable = Boolean(api?.getStatus) && linear != null && linear.state !== "disabled";
-
-  const setupLinear = async () => {
-    if (!api?.setup) return;
-    setBusy(true);
-    try {
-      await api.setup();
-    } catch {
-      // The service records lastError; the refresh below surfaces it.
-    } finally {
-      await refreshLinear().catch(() => {});
-      setBusy(false);
-    }
-  };
 
   return (
     <div className="flex items-center gap-3 border-b border-white/[0.06] bg-white/[0.02] px-4 py-2 text-[11px]">
@@ -99,7 +98,7 @@ export function IngressStatusStrip({ ingressStatus }: { ingressStatus: Automatio
             // a linear.* rule is enabled — no manual connect step.
             <span className="text-muted-fg/70">Via ADE app</span>
           ) : (
-            <Button size="sm" variant="outline" disabled={busy} onClick={() => void setupLinear()}>
+            <Button size="sm" variant="outline" disabled={busy} onClick={setupLinear}>
               Connect
             </Button>
           )}

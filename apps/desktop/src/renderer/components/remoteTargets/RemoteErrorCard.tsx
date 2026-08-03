@@ -1,6 +1,7 @@
 import { useState, type CSSProperties } from "react";
 import { ArrowClockwise, CaretDown, CaretRight, Warning } from "@phosphor-icons/react";
 import { COLORS, MONO_FONT, SANS_FONT, outlineButton } from "../lanes/laneDesignTokens";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { MachineErrorCard } from "./remoteMachineModel";
 
 const detailBoxStyle: CSSProperties = {
@@ -32,18 +33,17 @@ type RemoteErrorCardProps = {
  */
 export function RemoteErrorCard({ card, onRetry, retrying }: RemoteErrorCardProps) {
   const [detailOpen, setDetailOpen] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const copyDetail = async () => {
-    if (!card.detail) return;
-    try {
-      await window.ade?.app?.writeClipboardText?.(card.detail);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard may be unavailable; the detail stays visible to copy manually.
-    }
-  };
+  // Writes through the main process rather than `navigator.clipboard`, which
+  // the remote pane cannot rely on. Clipboard may be unavailable; on failure
+  // the detail stays visible to copy manually.
+  const { copy, copied } = useCopyToClipboard({
+    write: async (text) => {
+      const writeText = window.ade?.app?.writeClipboardText;
+      if (!writeText) return false;
+      await writeText(text);
+      return true;
+    },
+  });
 
   return (
     <div
@@ -104,7 +104,7 @@ export function RemoteErrorCard({ card, onRetry, retrying }: RemoteErrorCardProp
               <div style={detailBoxStyle}>{card.detail}</div>
               <button
                 type="button"
-                onClick={() => void copyDetail()}
+                onClick={() => void copy(card.detail ?? "")}
                 style={outlineButton({ height: 28, padding: "0 10px", fontSize: 11, justifySelf: "start" })}
               >
                 {copied ? "Copied" : "Copy details"}

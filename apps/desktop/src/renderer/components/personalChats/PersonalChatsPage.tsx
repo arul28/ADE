@@ -49,6 +49,7 @@ import { switchToThisMachineProject } from "../chat/thisMachineProjectRoot";
 import { effectiveChatAccent } from "../chat/chatSurfaceTheme";
 import { descriptorsFromAgentChatModelCatalog } from "../shared/ModelPicker/modelCatalog";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { useWebChatsMachines } from "../../webclient/workspace/useWebChatsMachines";
 import {
   ADE_OPEN_BUILT_IN_BROWSER_EVENT,
   navigateUrlInAdeBrowser,
@@ -657,9 +658,17 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   const isRemote = projectBinding?.kind === "remote";
   // Machines are named absolutely — the Chats tab runs on whichever machine this
   // window is bound to, so the name is the fact and the picker is the control.
-  const machineLabel = isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
-  const machineId = isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
-  const machineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
+  // In the browser the same picker rebinds the same page, but there is no
+  // "This Mac" to offer: every option is one of the account's Macs, and picking
+  // one points the federated adapter's chats surface at it.
+  const webMachines = useWebChatsMachines();
+  const machineLabel = webMachines
+    ? webMachines.machineLabel ?? "No Mac connected"
+    : isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
+  const machineId = webMachines
+    ? webMachines.machineId ?? ""
+    : isRemote ? projectBinding.targetId : LOCAL_MACHINE_ID;
+  const desktopMachineOptions = useMemo<PersonalChatsMachineOption[]>(() => {
     const options: PersonalChatsMachineOption[] = [
       { id: LOCAL_MACHINE_ID, name: LOCAL_MACHINE_NAME },
     ];
@@ -669,10 +678,15 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
     }
     return options;
   }, [openRemoteProjectTabs]);
+  const machineOptions = webMachines ? webMachines.options : desktopMachineOptions;
   const selectMachine = useCallback(
     (nextMachineId: string) => {
       if (nextMachineId === machineId) return;
       setError(null);
+      if (webMachines) {
+        void webMachines.select(nextMachineId).then(setError);
+        return;
+      }
       if (nextMachineId === LOCAL_MACHINE_ID) {
         // The machine is a dimension of THIS repo's tab, so "This Mac" must
         // resolve to this repo's local checkout — never to whichever local tab
@@ -699,6 +713,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
       projectBinding,
       switchProjectToPath,
       switchRemoteProject,
+      webMachines,
     ],
   );
   // Only declare the provider unavailable once the catalog has actually

@@ -602,6 +602,27 @@ describe("createSyncRemoteCommandService", () => {
       expect(result.snapshots.map((entry) => entry.lane)).toEqual([lane]);
     });
 
+    // This is the emitter phones actually read. Shipped iOS builds decode
+    // LaneListSnapshot with `adoptableAttached` as a non-optional Bool, and the
+    // host always updates before the phone does, so an emitter that stops
+    // sending the KEY blanks the lane list on every not-yet-updated device.
+    // The field is REQUIRED on `LaneListSnapshot` on purpose, so a dropped
+    // assignment fails typecheck — but nothing in TypeScript reads it, so a
+    // cleanup pass could delete it from the type and every emitter in one green
+    // step. Asserting on the serialized payload, by literal key name, is what
+    // makes that show up as a failing test instead of a silent wire break.
+    it("lanes.refreshSnapshots still emits the deprecated adoptableAttached key", async () => {
+      laneService.refreshSnapshots.mockResolvedValue({ lanes: [{ id: "lane-1", name: "Lane one" }] });
+
+      const result = await service.execute(makePayload("lanes.refreshSnapshots", {})) as {
+        snapshots: unknown[];
+      };
+
+      const wire = JSON.parse(JSON.stringify(result.snapshots[0]));
+      expect(Object.keys(wire)).toContain("adoptableAttached");
+      expect(wire.adoptableAttached).toBe(false);
+    });
+
     it("lanes.getDetail loads only the requested lane summary", async () => {
       const lane = { id: "lane-1", name: "Lane one" };
       laneService.getSummary.mockResolvedValue(lane);
@@ -713,12 +734,25 @@ describe("createSyncRemoteCommandService", () => {
         .rejects.toThrow(/branchName/);
     });
 
-    it("lanes.listUnregisteredWorktrees routes to laneService", async () => {
+    // Every git worktree is a lane on sight, so there is nothing left to select
+    // or attach — but these three must stay registered (they are in
+    // MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS, and dropping them would flip
+    // a healthy host into "limited" mode for every connected phone).
+    it("lanes.listUnregisteredWorktrees answers empty without touching laneService", async () => {
       const result = await service.execute(makePayload("lanes.listUnregisteredWorktrees"));
-      expect(laneService.listUnregisteredWorktrees).toHaveBeenCalledTimes(1);
-      expect(result).toEqual([
-        { path: "/repo/.ade/unregistered-lanes/feature-one", branch: "feature/one" },
-      ]);
+      expect(result).toEqual([]);
+      expect(laneService.listUnregisteredWorktrees).not.toHaveBeenCalled();
+    });
+
+    it("lanes.attach and lanes.adoptAttached fail as unsupported", async () => {
+      await expect(service.execute(makePayload("lanes.attach", {
+        name: "wt",
+        attachedPath: "/repo/wt",
+      }))).rejects.toThrow(/no longer supported/i);
+      await expect(service.execute(makePayload("lanes.adoptAttached", { laneId: "lane-1" })))
+        .rejects.toThrow(/no longer supported/i);
+      expect(laneService.attach).not.toHaveBeenCalled();
+      expect(laneService.adoptAttached).not.toHaveBeenCalled();
     });
 
     it("lanes.rename parses laneId and name", async () => {

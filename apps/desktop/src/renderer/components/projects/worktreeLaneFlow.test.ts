@@ -20,14 +20,15 @@ function inspection(overrides: Partial<ProjectPathInspection> = {}): ProjectPath
   };
 }
 
-const attach = vi.fn();
 const inspectPath = vi.fn();
+const listLanes = vi.fn();
 
 beforeEach(() => {
-  attach.mockReset();
   inspectPath.mockReset();
+  listLanes.mockReset();
+  listLanes.mockResolvedValue([]);
   (globalThis as unknown as { window: unknown }).window = {
-    ade: { lanes: { attach }, project: { inspectPath } },
+    ade: { project: { inspectPath }, lanes: { list: listLanes } },
   };
 });
 
@@ -43,19 +44,40 @@ describe("deriveLaneName", () => {
 });
 
 describe("openWorktreeAsLane", () => {
-  it("attaches a branch-backed worktree and navigates to the new lane", async () => {
-    attach.mockResolvedValueOnce({ id: "lane-1" });
+  it("opens the owning project and navigates to the lane it auto-registered", async () => {
+    inspectPath.mockResolvedValueOnce(
+      inspection({
+        parent: {
+          rootPath: "/repo",
+          displayName: "repo",
+          isKnownAdeProject: true,
+          existingLane: { id: "lane-1", name: "feat-a", branchRef: "feat-a", color: null, laneType: "worktree" },
+        },
+      }),
+    );
     const switchProjectToPath = vi.fn().mockResolvedValue(undefined);
     const navigate = vi.fn();
 
     await openWorktreeAsLane(inspection(), { switchProjectToPath, navigate });
 
     expect(switchProjectToPath).toHaveBeenCalledWith("/repo", { skipWorktreeGate: true });
-    expect(attach).toHaveBeenCalledWith({ name: "feat-a", attachedPath: "/repo/wt" });
+    // Adoption only happens inside the lanes.list reconcile, so the row does not
+    // exist until this runs — and it must run against the newly bound runtime.
+    expect(listLanes).toHaveBeenCalledWith({ includeStatus: false });
+    expect(switchProjectToPath.mock.invocationCallOrder[0]!).toBeLessThan(
+      listLanes.mock.invocationCallOrder[0]!,
+    );
+    // The pre-switch inspection is cached against the old project, so the lane
+    // lookup has to bypass the cache, and it has to come after adoption.
+    expect(inspectPath).toHaveBeenCalledWith("/repo/wt", { fresh: true });
+    expect(listLanes.mock.invocationCallOrder[0]!).toBeLessThan(
+      inspectPath.mock.invocationCallOrder[0]!,
+    );
     expect(navigate).toHaveBeenCalledWith("/lanes?laneId=lane-1&focus=single");
   });
 
-  it("refuses a detached-HEAD worktree without switching projects or attaching", async () => {
+  it("names detached HEAD as the reason when no lane was registered", async () => {
+    inspectPath.mockResolvedValueOnce(inspection({ branchRef: null }));
     const switchProjectToPath = vi.fn().mockResolvedValue(undefined);
     const navigate = vi.fn();
 
@@ -63,12 +85,10 @@ describe("openWorktreeAsLane", () => {
       openWorktreeAsLane(inspection({ branchRef: null }), { switchProjectToPath, navigate }),
     ).rejects.toThrow(/detached HEAD/i);
 
-    expect(switchProjectToPath).not.toHaveBeenCalled();
-    expect(attach).not.toHaveBeenCalled();
     expect(navigate).not.toHaveBeenCalled();
   });
 
-  it("jumps straight to an existing lane without attaching", async () => {
+  it("jumps straight to an already-known lane without re-inspecting", async () => {
     const switchProjectToPath = vi.fn().mockResolvedValue(undefined);
     const navigate = vi.fn();
     const withLane = inspection({
@@ -77,13 +97,14 @@ describe("openWorktreeAsLane", () => {
         rootPath: "/repo",
         displayName: "repo",
         isKnownAdeProject: true,
-        existingLane: { id: "lane-9", name: "wt", branchRef: "feat-a", color: null, laneType: "attached" },
+        existingLane: { id: "lane-9", name: "wt", branchRef: "feat-a", color: null, laneType: "worktree" },
       },
     });
 
     await openWorktreeAsLane(withLane, { switchProjectToPath, navigate });
 
-    expect(attach).not.toHaveBeenCalled();
+    expect(inspectPath).not.toHaveBeenCalled();
+    expect(listLanes).not.toHaveBeenCalled();
     expect(navigate).toHaveBeenCalledWith("/lanes?laneId=lane-9&focus=single");
   });
 });

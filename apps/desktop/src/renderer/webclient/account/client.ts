@@ -23,12 +23,33 @@ import {
   type PersistedBrowserAccountSession,
 } from "./sessionStore";
 
-const OAUTH_STATE_KEY = "ade-web:account-oauth-state";
-const OAUTH_VERIFIER_KEY = "ade-web:account-oauth-verifier";
-const OAUTH_RETURN_PATH_KEY = "ade-web:account-oauth-return-path";
+// The pending-authorization stash lives in localStorage, not sessionStorage.
+// Embedded browsers (ADE's own built-in browser included) do not guarantee that
+// the OAuth round trip ends in the same session-storage namespace it started
+// in, which silently strips the PKCE verifier and makes every callback fail.
+//
+// One stash per `state`, not one globally: two tabs signing in at once each
+// need their own PKCE verifier, and a single slot let the second tab's stash
+// overwrite the first tab's, failing that tab's callback with a bogus
+// verification error.
+const OAUTH_PENDING_KEY = "ade-web:account-oauth-pending";
+const OAUTH_PENDING_TTL_MS = 10 * 60_000;
 const REFRESH_SKEW_MS = 2 * 60_000;
 const USERINFO_REQUEST_TIMEOUT_MS = 3_000;
 const DIRECTORY_MUTATION_TIMEOUT_MS = 8_000;
+
+/**
+ * `key`/`length` are optional: they are only needed to sweep abandoned stashes,
+ * and a caller supplying a minimal storage stub simply keeps them until their
+ * TTL makes them unreadable.
+ */
+type PendingOAuthStorage =
+  Pick<Storage, "getItem" | "setItem" | "removeItem">
+  & Partial<Pick<Storage, "key" | "length">>;
+
+function pendingOAuthKeyFor(state: string): string {
+  return `${OAUTH_PENDING_KEY}:${state}`;
+}
 
 type BrowserAccountConfig = {
   issuer: string;
@@ -42,7 +63,7 @@ type BrowserAccountClientOptions = {
   fetchImpl?: typeof fetch;
   location?: BrowserLocation;
   history?: Pick<History, "replaceState">;
-  storage?: Pick<Storage, "getItem" | "setItem" | "removeItem">;
+  storage?: PendingOAuthStorage;
   sessionStore?: BrowserAccountSessionPersistence;
   now?: () => number;
   userinfoRequestTimeoutMs?: number;
@@ -217,6 +238,53 @@ export function readBrowserAccountConfig(env: Record<string, unknown>): BrowserA
   };
 }
 
+type PendingOAuth = {
+  state: string;
+  verifier: string;
+  returnPath: string;
+  createdAtMs: number;
+};
+
+/**
+ * `expectedState` is the state the stash was filed under. A record whose own
+ * `state` disagrees with its key has been tampered with or written by a build
+ * with a different key scheme; either way its verifier is not the one this
+ * callback is completing, so it is rejected rather than trusted.
+ */
+function parsePendingOAuth(
+  raw: string | null,
+  nowMs: number,
+  expectedState?: string,
+): PendingOAuth | null {
+  if (!raw) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+  const state = stringValue(parsed.state);
+  const verifier = stringValue(parsed.verifier);
+  const returnPath = stringValue(parsed.returnPath);
+  const createdAtMs = typeof parsed.createdAtMs === "number" && Number.isFinite(parsed.createdAtMs)
+    ? parsed.createdAtMs
+    : null;
+  if (!state || !verifier || createdAtMs === null) return null;
+  if (expectedState !== undefined && state !== expectedState) return null;
+  // A verifier is single-use and short-lived. Anything older than the TTL is a
+  // stale stash from an abandoned attempt, not the round trip we are completing.
+  if (nowMs - createdAtMs > OAUTH_PENDING_TTL_MS || createdAtMs - nowMs > OAUTH_PENDING_TTL_MS) {
+    return null;
+  }
+  return {
+    state,
+    verifier,
+    returnPath: returnPath?.startsWith("/") ? returnPath : "/",
+    createdAtMs,
+  };
+}
+
 function parseTokenPayload(value: unknown, priorRefreshToken: string | null): TokenPayload | null {
   if (!isRecord(value)) return null;
   const accessToken = stringValue(value.access_token);
@@ -264,8 +332,15 @@ export class BrowserAccountClient {
     return this.options.location ?? window.location;
   }
 
-  private get storage(): Pick<Storage, "getItem" | "setItem" | "removeItem"> {
-    return this.options.storage ?? window.sessionStorage;
+  private get storage(): PendingOAuthStorage {
+    if (this.options.storage) return this.options.storage;
+    try {
+      return window.localStorage;
+    } catch {
+      // Some embedded/private contexts throw on localStorage access. A pending
+      // sign-in that only survives in sessionStorage is still better than none.
+      return window.sessionStorage;
+    }
   }
 
   getSnapshot(): BrowserAccountSnapshot {
@@ -304,20 +379,31 @@ export class BrowserAccountClient {
       return await this.restorePersistedSession(config);
     }
 
-    const expectedState = this.storage.getItem(OAUTH_STATE_KEY);
-    const verifier = this.storage.getItem(OAUTH_VERIFIER_KEY);
     const actualState = params.get("state");
+    // Looking the stash up BY the returned state is the CSRF check: a state we
+    // never issued has no stash, so there is no verifier to exchange with.
+    const pending = this.readPendingOAuth(actualState);
+    const otherAttemptsPending = pending == null && this.pendingOAuthKeys().length > 0;
     const code = params.get("code");
     const oauthError = params.get("error");
-    const returnPath = this.storage.getItem(OAUTH_RETURN_PATH_KEY) || "/";
-    this.clearPendingOAuth();
-    (this.options.history ?? window.history).replaceState(null, "", returnPath.startsWith("/") ? returnPath : "/");
+    const returnPath = pending?.returnPath ?? "/";
+    // Only this attempt is consumed; a sign-in running in another tab keeps its
+    // own stash.
+    this.clearPendingOAuthAttempt(actualState);
+    (this.options.history ?? window.history).replaceState(null, "", returnPath);
 
-    if (oauthError || !code || !expectedState || actualState !== expectedState || !verifier) {
+    if (oauthError || !code) {
+      await this.expireSession("ADE account sign-in was not completed.");
+      return this.getSnapshot();
+    }
+    if (!pending) {
+      // Other attempts still stashed means this callback carried a state we
+      // never issued (or already consumed) — a verification failure, not a
+      // browser that discarded our storage.
       await this.expireSession(
-        oauthError
-          ? "ADE account sign-in was not completed."
-          : "ADE account sign-in could not be verified. Try again.",
+        otherAttemptsPending
+          ? "ADE account sign-in could not be verified. Try again."
+          : "Sign-in couldn't complete in this browser: it discarded the pending sign-in before the redirect returned. Try signing in again, or use your system browser.",
       );
       return this.getSnapshot();
     }
@@ -327,7 +413,7 @@ export class BrowserAccountClient {
         grant_type: "authorization_code",
         client_id: config.clientId,
         code,
-        code_verifier: verifier,
+        code_verifier: pending.verifier,
         redirect_uri: `${this.location.origin}/account/callback`,
       }, null);
       await this.setSession(token, config);
@@ -344,12 +430,15 @@ export class BrowserAccountClient {
     const verifier = randomBase64Url(48);
     const state = randomBase64Url(24);
     const challenge = await pkceChallenge(verifier);
-    this.storage.setItem(OAUTH_STATE_KEY, state);
-    this.storage.setItem(OAUTH_VERIFIER_KEY, verifier);
     const returnPath = this.location.pathname === "/account/callback"
       ? "/"
       : `${this.location.pathname}${this.location.search}`;
-    this.storage.setItem(OAUTH_RETURN_PATH_KEY, returnPath);
+    this.writePendingOAuth({
+      state,
+      verifier,
+      returnPath,
+      createdAtMs: this.options.now?.() ?? Date.now(),
+    });
     const authorizeUrl = new URL(`${config.issuer}/oauth/authorize`);
     authorizeUrl.searchParams.set("response_type", "code");
     authorizeUrl.searchParams.set("client_id", config.clientId);
@@ -367,7 +456,7 @@ export class BrowserAccountClient {
     this.session = null;
     this.sessionGeneration += 1;
     this.refreshPromise = null;
-    this.clearPendingOAuth();
+    this.clearAllPendingOAuth();
     this.snapshot = {
       state: this.config ? "signed_out" : "unconfigured",
       userId: null,
@@ -799,9 +888,53 @@ export class BrowserAccountClient {
     }
   }
 
-  private clearPendingOAuth(): void {
-    this.storage.removeItem(OAUTH_STATE_KEY);
-    this.storage.removeItem(OAUTH_VERIFIER_KEY);
-    this.storage.removeItem(OAUTH_RETURN_PATH_KEY);
+  /** Every pending-stash key currently in storage, newest-first order unspecified. */
+  private pendingOAuthKeys(): string[] {
+    const store = this.storage;
+    if (typeof store.key !== "function" || typeof store.length !== "number") return [];
+    const prefix = `${OAUTH_PENDING_KEY}:`;
+    const keys: string[] = [];
+    for (let index = 0; index < store.length; index += 1) {
+      const key = store.key(index);
+      if (key?.startsWith(prefix)) keys.push(key);
+    }
+    return keys;
+  }
+
+  private readPendingOAuth(state: string | null): PendingOAuth | null {
+    if (!state) return null;
+    return parsePendingOAuth(
+      this.storage.getItem(pendingOAuthKeyFor(state)),
+      this.options.now?.() ?? Date.now(),
+      state,
+    );
+  }
+
+  private writePendingOAuth(pending: PendingOAuth): void {
+    // Sweep stashes whose TTL has run out so an abandoned sign-in does not
+    // accumulate in localStorage for the life of the origin.
+    const nowMs = this.options.now?.() ?? Date.now();
+    for (const key of this.pendingOAuthKeys()) {
+      if (!parsePendingOAuth(this.storage.getItem(key), nowMs)) this.storage.removeItem(key);
+    }
+    this.storage.setItem(pendingOAuthKeyFor(pending.state), JSON.stringify(pending));
+  }
+
+  /**
+   * Consume exactly one attempt's stash.
+   *
+   * A no-op when the state is null — an IdP that redirects back with an error
+   * and no `state` echo names no attempt, and treating that as "clear
+   * everything" wiped the stash of every OTHER tab mid-sign-in, which is the
+   * failure the per-state stash exists to prevent.
+   */
+  private clearPendingOAuthAttempt(state: string | null): void {
+    if (!state) return;
+    this.storage.removeItem(pendingOAuthKeyFor(state));
+  }
+
+  /** Drop every attempt. Sign-out only — never a callback path. */
+  private clearAllPendingOAuth(): void {
+    for (const key of this.pendingOAuthKeys()) this.storage.removeItem(key);
   }
 }

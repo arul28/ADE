@@ -27,6 +27,14 @@ type WorktreeResidualCleanupDeps = {
   projectId: string;
   projectRoot: string;
   worktreesDir: string;
+  /**
+   * `worktreesDir` with symlinks resolved. git reports paths in realpath space
+   * and ADE's configured paths routinely are not, so a re-adopted lane row holds
+   * the canonical spelling of a folder this service owns. Both spellings name
+   * the same directory, so accepting either only ever re-admits ADE's own
+   * worktrees — never a folder outside them.
+   */
+  canonicalWorktreesDir: string;
   logger: Logger;
   listGitWorktrees: () => Promise<ResidualCleanupGitWorktreeInfo[]>;
   isPendingWorktreeCreation: (worktreePath: string) => boolean;
@@ -47,6 +55,7 @@ export function createWorktreeResidualCleanup({
   projectId,
   projectRoot,
   worktreesDir,
+  canonicalWorktreesDir,
   logger,
   listGitWorktrees,
   isPendingWorktreeCreation,
@@ -54,17 +63,36 @@ export function createWorktreeResidualCleanup({
 }: WorktreeResidualCleanupDeps) {
   const normalizedProjectRoot = normAbs(projectRoot);
   const normalizedWorktreesDir = normAbs(worktreesDir);
+  const managedWorktreesDirs = Array.from(
+    new Set([normalizedWorktreesDir, normAbs(canonicalWorktreesDir)]),
+  );
+  // Never a removable path, under either spelling of the folder itself.
+  const protectedDirs = new Set([normalizedProjectRoot, ...managedWorktreesDirs]);
   let lastSweepAt = 0;
   let activeSweep: Promise<void> | null = null;
 
   const isDirectManagedWorktreePath = (worktreePath: string): boolean => {
     const normalized = normAbs(worktreePath);
-    return (
-      normalized !== normalizedProjectRoot &&
-      normalized !== normalizedWorktreesDir &&
-      path.dirname(normalized) === normalizedWorktreesDir &&
-      path.basename(normalized).trim().length > 0
-    );
+    if (protectedDirs.has(normalized)) return false;
+    if (!path.basename(normalized).trim().length) return false;
+    // Direct child only, and only of this project's own worktrees folder. The
+    // candidate is compared as written rather than resolved: a symlink pointing
+    // into the folder is not a worktree ADE created, and the delete rails refuse
+    // those separately.
+    return managedWorktreesDirs.includes(path.dirname(normalized));
+  };
+
+  /**
+   * Every spelling under which a path can name the same managed worktree. Used
+   * to build the sets that say "this folder is alive, leave it alone", so a
+   * spelling mismatch can only ever spare a directory, never condemn one. A path
+   * outside the managed folder has one spelling here and is returned as given.
+   */
+  const managedPathSpellings = (worktreePath: string): string[] => {
+    const normalized = normAbs(worktreePath);
+    if (!managedWorktreesDirs.includes(path.dirname(normalized))) return [normalized];
+    const name = path.basename(normalized);
+    return managedWorktreesDirs.map((dir) => path.join(dir, name));
   };
 
   const normalizeCleanupError = (error: unknown): string => {
@@ -206,12 +234,17 @@ export function createWorktreeResidualCleanup({
         return;
       }
 
-      const gitWorktreePaths = new Set(gitWorktrees.filter((wt) => !wt.isBare).map((wt) => normAbs(wt.path)));
+      // Both spellings on the skip side: the sweep walks the configured folder
+      // while git reports the resolved one, so a set built from one spelling
+      // alone would fail to recognise a live worktree named in the other.
+      const gitWorktreePaths = new Set(
+        gitWorktrees.filter((wt) => !wt.isBare).flatMap((wt) => managedPathSpellings(wt.path)),
+      );
       const laneWorktreePaths = new Set(
         db.all<{ worktree_path: string }>(
           "select worktree_path from lanes where project_id = ?",
           [projectId],
-        ).map((row) => normAbs(row.worktree_path)),
+        ).flatMap((row) => managedPathSpellings(row.worktree_path)),
       );
 
       const rowsByPath = new Map<string, LocalWorktreeResidualCleanupRow>();
@@ -301,6 +334,15 @@ export function createWorktreeResidualCleanup({
   };
 
   return {
+    /**
+     * True only for a direct child of the managed worktrees directory, in either
+     * of its spellings — a lane row re-adopted from git holds the resolved one.
+     * Residual filesystem cleanup — here and in the lane delete pipeline — is
+     * restricted to those paths: a worktree the user created elsewhere is their
+     * folder, so ADE asks git to remove it and never falls back to a recursive
+     * delete.
+     */
+    isDirectManagedWorktreePath,
     deleteRow,
     recordFailure,
     retry,

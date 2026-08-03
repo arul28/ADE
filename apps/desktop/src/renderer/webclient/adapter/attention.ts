@@ -335,6 +335,75 @@ function relayError(action: string, result: RelayResult): Error {
   return new Error(`Activity ${action} failed. ${reason}`);
 }
 
+/**
+ * Backoff state for the push relay, shared by every Activity call.
+ *
+ * The relay is reached straight from the browser and is origin-gated, so a
+ * rejected origin fails at CORS PREFLIGHT — `fetch` throws before any response
+ * exists, and no amount of response handling downstream can see it. The Activity
+ * pollers run on fixed 15s/30s timers with `.catch(() => {})`, so a permanently
+ * rejected origin produced an unbounded stream of identical console errors for
+ * as long as the tab stayed open.
+ *
+ * A failure that repeats is not worth re-asking at full rate: back off
+ * exponentially and, crucially, refuse BEFORE issuing the fetch, so the
+ * suppressed attempts cost no request and print nothing. Any success clears it.
+ *
+ * Module scope is load-bearing: the federated web client builds one adapter per
+ * machine binding plus a fallback, so per-instance state would let each of them
+ * hammer the same dead relay on its own schedule. Only the pollers are gated —
+ * a user action is always allowed through, and its success clears the backoff
+ * for everyone.
+ *
+ * The backoff is also scoped to the account session that earned it. Most of the
+ * failures worth backing off from (a 403 for a machine on another account) are
+ * properties of WHO is signed in, so carrying them across a sign-in would leave
+ * a correct account throttled for up to five minutes because the previous one
+ * was wrong.
+ */
+const RELAY_BACKOFF_BASE_MS = 5_000;
+const RELAY_BACKOFF_MAX_MS = 5 * 60_000;
+let relayConsecutiveFailures = 0;
+let relayNextAttemptAtMs = 0;
+/** `${userId}:${generation}` of the session the current backoff was earned under. */
+let relayBackoffSessionKey: string | null = null;
+
+/** Clear the push-relay backoff outright. Exported for the account-change path and tests. */
+export function resetRelayPushBackoff(): void {
+  relayConsecutiveFailures = 0;
+  relayNextAttemptAtMs = 0;
+  relayBackoffSessionKey = null;
+}
+
+function noteRelaySuccess(): void {
+  resetRelayPushBackoff();
+}
+
+function noteRelayFailure(): void {
+  relayConsecutiveFailures += 1;
+  const backoff = Math.min(
+    RELAY_BACKOFF_MAX_MS,
+    RELAY_BACKOFF_BASE_MS * 2 ** (relayConsecutiveFailures - 1),
+  );
+  // Jitter so several surfaces polling the same dead relay do not resynchronize
+  // into one thundering retry.
+  relayNextAttemptAtMs = Date.now() + backoff * (0.75 + Math.random() * 0.5);
+}
+
+function relayBackoffActive(): boolean {
+  return relayConsecutiveFailures > 0 && Date.now() < relayNextAttemptAtMs;
+}
+
+/**
+ * Drop a backoff earned under a different account session, so a fresh or
+ * corrected sign-in starts clean instead of serving out the old one's penalty.
+ */
+function syncRelayBackoffToSession(sessionKey: string | null): void {
+  if (relayBackoffSessionKey === sessionKey) return;
+  resetRelayPushBackoff();
+  relayBackoffSessionKey = sessionKey;
+}
+
 export function createAttentionNamespace(
   infra: AdapterInfra,
   accountClient: BrowserAccountClient,
@@ -372,13 +441,22 @@ export function createAttentionNamespace(
     };
   };
 
+
   const request = async (
     action: string,
     method: "GET" | "POST" | "PUT" | "PATCH",
     path: string,
     body?: unknown,
+    options: { userInitiated?: boolean } = {},
   ): Promise<unknown> => {
     const lease = accountClient.captureSessionLease();
+    syncRelayBackoffToSession(lease ? `${lease.userId}:${lease.generation}` : null);
+    // The backoff exists to silence the fixed-interval pollers. A user who just
+    // clicked something gets their attempt, and if it succeeds the pollers
+    // resume immediately.
+    if (!options.userInitiated && relayBackoffActive()) {
+      throw new Error("ADE Activity is temporarily unavailable; retrying shortly.");
+    }
     if (!lease) throw new Error("Sign in to use account-wide Activity.");
     const requestOnce = async (forceRefresh: boolean): Promise<RelayResult> => {
       const accessToken = await accountClient.getAccessToken({ forceRefresh });
@@ -400,9 +478,25 @@ export function createAttentionNamespace(
       const parsed = await response.json().catch(() => null);
       return { response, body: parsed };
     };
-    let result = await requestOnce(false);
-    if (result.response.status === 401) result = await requestOnce(true);
-    if (!result.response.ok) throw relayError(action, result);
+    let result: RelayResult;
+    try {
+      result = await requestOnce(false);
+      if (result.response.status === 401) result = await requestOnce(true);
+    } catch (error) {
+      // Network-level failure: a rejected CORS preflight, DNS, or the socket.
+      // There is no response to inspect, which is exactly why this needed to be
+      // caught here rather than left to the status checks below.
+      noteRelayFailure();
+      throw error;
+    }
+    if (!result.response.ok) {
+      // 5xx and 429 are transient; other 4xx mean this client is not going to
+      // be served until something changes. Both back off — the difference is
+      // only how fast they reach the cap, and that is not worth a second knob.
+      noteRelayFailure();
+      throw relayError(action, result);
+    }
+    noteRelaySuccess();
     return result.body ?? {};
   };
 
@@ -510,7 +604,7 @@ export function createAttentionNamespace(
       if (lastSnapshotScope !== "account" || !currentAccountOwnerId) {
         throw new Error("Refresh account Activity before acknowledging this item.");
       }
-      await request("acknowledgment", "POST", "/attention/account/ack", args);
+      await request("acknowledgment", "POST", "/attention/account/ack", args, { userInitiated: true });
     },
 
     async reportPresence(presence: AttentionPresence) {
@@ -527,6 +621,8 @@ export function createAttentionNamespace(
         "preferences",
         "GET",
         "/attention/account/preferences",
+        undefined,
+        { userInitiated: true },
       ));
       return result?.preferences === undefined
         ? DEFAULT_ATTENTION_PREFERENCES
@@ -551,6 +647,7 @@ export function createAttentionNamespace(
         "PUT",
         "/attention/account/preferences",
         accountPreferences,
+        { userInitiated: true },
       );
     },
 
@@ -576,6 +673,7 @@ export function createAttentionNamespace(
         "PATCH",
         `/attention/account/preferences/machines/${encodeURIComponent(key)}`,
         preferences,
+        { userInitiated: true },
       );
     },
 

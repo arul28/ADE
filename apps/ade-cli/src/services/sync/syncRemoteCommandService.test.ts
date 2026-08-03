@@ -628,18 +628,29 @@ describe("createSyncRemoteCommandService", () => {
       linearOAuthService: { startExternalSession, completeExternalSession },
       getLinearIssueTracker: () => ({ getConnectionStatus }),
     });
-    const mutationActions = [
+    // The interactive OAuth pair stays open to paired viewers; the two direct
+    // credential-store writers are host-local only (C12-sec).
+    const viewerMutationActions = [
       "cto.startLinearMobileOAuth",
       "cto.completeLinearMobileOAuth",
+    ] as const;
+    const credentialWriteActions = [
       "cto.setLinearToken",
       "cto.clearLinearToken",
     ] as const;
 
-    for (const action of mutationActions) {
+    for (const action of viewerMutationActions) {
       expect(service.getDescriptor(action)).toEqual({
         action,
         scope: "project",
         policy: { viewerAllowed: true },
+      });
+    }
+    for (const action of credentialWriteActions) {
+      expect(service.getDescriptor(action)).toEqual({
+        action,
+        scope: "project",
+        policy: { viewerAllowed: false },
       });
     }
 
@@ -863,10 +874,11 @@ describe("createSyncRemoteCommandService", () => {
     });
 
     expect(service.getSupportedActions()).toContain("sync.getWebPairingInfo");
+    // Host-local only: the payload carries the raw pairing PIN.
     expect(service.getDescriptor("sync.getWebPairingInfo")).toEqual({
       action: "sync.getWebPairingInfo",
       scope: "runtime",
-      policy: { viewerAllowed: true },
+      policy: { viewerAllowed: false },
     });
 
     const result = await service.execute(makePayload("sync.getWebPairingInfo")) as SyncWebPairingInfo;
@@ -1897,6 +1909,41 @@ describe("createSyncRemoteCommandService", () => {
     expect(save).not.toHaveBeenCalled();
   });
 
+  it("keeps provider credentials out of remote projectConfig reads and writes", async () => {
+    const onDisk = () => ({
+      shared: { version: 1, providers: { legacy: { apiKey: "shared-secret" } } },
+      local: { version: 1, ai: { defaultProvider: "openai", apiKeys: { openai: "sk-real" } } },
+      effective: { version: 1, ai: { apiKeys: { openai: "sk-real" } }, providers: { legacy: {} } },
+      trust: {},
+      validation: {},
+      paths: { sharedPath: "/p/.ade/config.yaml", localPath: "/p/.ade/config.local.yaml" },
+    });
+    const get = vi.fn(onDisk);
+    const save = vi.fn(onDisk);
+    const { service } = createService({ projectConfigService: { get, save } });
+
+    const read = await service.execute(makePayload("projectConfig.get")) as Record<string, any>;
+    expect(read.local.ai).toEqual({ defaultProvider: "openai" });
+    expect(read.effective.ai).toEqual({});
+    expect(read.shared.providers).toBeUndefined();
+    expect(read.effective.providers).toBeUndefined();
+    expect(read.paths).toEqual(onDisk().paths);
+
+    // A viewer round-tripping that redacted read must neither erase the host's
+    // keys nor smuggle its own in.
+    await service.execute(makePayload("projectConfig.save", {
+      candidate: {
+        shared: { version: 1, providers: { legacy: { apiKey: "injected" } } },
+        local: { version: 1, ai: { defaultProvider: "anthropic", apiKeys: { openai: "sk-attacker" } } },
+      },
+    }));
+
+    expect(save).toHaveBeenCalledWith({
+      shared: { version: 1, providers: { legacy: { apiKey: "shared-secret" } } },
+      local: { version: 1, ai: { defaultProvider: "anthropic", apiKeys: { openai: "sk-real" } } },
+    });
+  });
+
   it("saves browser-provided temporary image attachments inside the project .ade directory", async () => {
     const projectRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), "ade-sync-remote-"));
     const png = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
@@ -2599,6 +2646,28 @@ describe("lanes.suggestName", () => {
       laneId: "lane-1",
       modelId: "anthropic/claude-haiku-4-5",
       name: "refactor-auth-flow",
+    });
+  });
+
+  it("forwards the launched chat model alongside the naming model", async () => {
+    const suggestLaneNameFromPrompt = vi.fn().mockResolvedValue("refactor-auth-flow");
+    const { service } = createService({ agentChatService: { suggestLaneNameFromPrompt } });
+
+    await service.execute(makePayload("lanes.suggestName", {
+      laneId: "lane-1",
+      prompt: "please refactor the auth flow",
+      modelId: "anthropic/claude-haiku-4-5",
+      chatModelId: "openai/gpt-5.6-sol",
+    }));
+
+    // The host naming fallback chain needs the launched model to escape a
+    // naming provider that is broken at the provider level; dropping it here
+    // would strand every remote client on the naming model alone.
+    expect(suggestLaneNameFromPrompt).toHaveBeenCalledWith({
+      laneId: "lane-1",
+      prompt: "please refactor the auth flow",
+      modelId: "anthropic/claude-haiku-4-5",
+      chatModelId: "openai/gpt-5.6-sol",
     });
   });
 

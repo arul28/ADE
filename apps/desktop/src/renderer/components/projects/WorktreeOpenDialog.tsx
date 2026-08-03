@@ -256,8 +256,8 @@ export function WorktreeOpenDialog() {
                       }
                       subtitle={
                         parent.isKnownAdeProject
-                          ? `Attaches this worktree as lane "${derivedLaneName}" and jumps to it`
-                          : `Opens ${parent.displayName} in ADE and attaches this worktree as a lane`
+                          ? `Jumps to this worktree's lane, "${derivedLaneName}"`
+                          : `Opens ${parent.displayName} in ADE, where this worktree is a lane`
                       }
                       busy={laneBusy}
                       disabled={Boolean(busy)}

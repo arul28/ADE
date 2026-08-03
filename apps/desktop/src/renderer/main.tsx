@@ -1,6 +1,7 @@
 import "./browserMock"; // Must be first — stubs window.ade when outside Electron
 import React from "react";
 import { createRoot } from "react-dom/client";
+import { MotionConfig } from "motion/react";
 import "./index.css";
 import jetbrainsMonoUrl from "../../node_modules/@fontsource-variable/jetbrains-mono/files/jetbrains-mono-latin-wght-normal.woff2?url";
 import geistVariableUrl from "../../node_modules/geist/dist/fonts/geist-sans/Geist-Variable.woff2?url";
@@ -176,12 +177,19 @@ try {
   // non-fatal — fall back to the persisted/default font size
 }
 
+// `reducedMotion="user"` makes every `motion` element in the tree honour the
+// OS setting without each site opting in: transform and layout animations are
+// skipped, opacity still animates, so the information arrives and only the trip
+// is dropped. Individual components can still read `usePrefersReducedMotion`
+// when they need to change what renders, not just how it moves.
 createRoot(document.getElementById("root")!).render(
-  <RootWrapper>
-    <RendererErrorBoundary>
-      <App />
-    </RendererErrorBoundary>
-  </RootWrapper>
+  <MotionConfig reducedMotion="user">
+    <RootWrapper>
+      <RendererErrorBoundary>
+        <App />
+      </RendererErrorBoundary>
+    </RootWrapper>
+  </MotionConfig>
 );
 
 void initPerfRuntime();

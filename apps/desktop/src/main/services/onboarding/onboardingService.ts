@@ -2,17 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AdeDb } from "../state/kvDb";
 import type { Logger } from "../logging/logger";
-import type { createLaneService } from "../lanes/laneService";
 import type { createProjectConfigService } from "../config/projectConfigService";
 import type {
   OnboardingDetectionIndicator,
   OnboardingDetectionResult,
-  OnboardingExistingLaneCandidate,
   OnboardingHelpState,
   OnboardingStatus,
   ProjectConfigFile
 } from "../../../shared/types";
-import { runGit, runGitOrThrow } from "../git/git";
 import { dirExists, fileExists, nowIso } from "../shared/utils";
 import { buildSuggestedConfig, parseGithubWorkflowRuns } from "./onboardingSuggestedConfig";
 
@@ -50,12 +47,10 @@ export function createOnboardingService(args: {
   logger: Logger;
   projectRoot: string;
   projectId: string;
-  baseRef: string;
   freshProject: boolean;
-  laneService: ReturnType<typeof createLaneService>;
   projectConfigService: ReturnType<typeof createProjectConfigService>;
 }) {
-  const { db, logger, projectRoot, baseRef, freshProject, laneService, projectConfigService } = args;
+  const { db, logger, projectRoot, freshProject, projectConfigService } = args;
 
   const getStatus = (): OnboardingStatus => {
     const stored = db.getJson<OnboardingStatus>(STATUS_KEY);
@@ -150,68 +145,11 @@ export function createOnboardingService(args: {
     };
   };
 
-  const detectExistingLanes = async (): Promise<OnboardingExistingLaneCandidate[]> => {
-    const existing = await laneService.list({ includeArchived: true });
-    const laneBranchRefs = new Set(existing.map((lane) => lane.branchRef));
-
-    const currentBranch = (await runGitOrThrow(["rev-parse", "--abbrev-ref", "HEAD"], { cwd: projectRoot, timeoutMs: 8_000 })).trim();
-
-    const refs = await runGitOrThrow(["for-each-ref", "refs/heads", "--format=%(refname:short)"], { cwd: projectRoot, timeoutMs: 10_000 });
-    const branchRefs = refs
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .filter((ref) => !laneBranchRefs.has(ref));
-
-    const remoteRefs = await runGit(["for-each-ref", "refs/remotes/origin", "--format=%(refname:short)"], { cwd: projectRoot, timeoutMs: 10_000 });
-    const remoteSet = new Set(
-      remoteRefs.exitCode === 0
-        ? remoteRefs.stdout
-            .split(/\r?\n/)
-            .map((line) => line.trim())
-            .filter(Boolean)
-            .map((ref) => ref.replace(/^origin\//, ""))
-        : []
-    );
-
-    const candidates: OnboardingExistingLaneCandidate[] = [];
-    for (const branchRef of branchRefs.slice(0, 200)) {
-      const counts = await runGit(["rev-list", "--left-right", "--count", `${baseRef}...${branchRef}`], {
-        cwd: projectRoot,
-        timeoutMs: 8_000
-      });
-      let behind = 0;
-      let ahead = 0;
-      if (counts.exitCode === 0) {
-        const parts = counts.stdout.trim().split(/\s+/).filter(Boolean);
-        behind = Number(parts[0] ?? 0) || 0;
-        ahead = Number(parts[1] ?? 0) || 0;
-      }
-      candidates.push({
-        branchRef,
-        isCurrent: branchRef === currentBranch,
-        hasRemote: remoteSet.has(branchRef),
-        ahead,
-        behind
-      });
-    }
-
-    candidates.sort((a, b) => {
-      if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-      const delta = b.ahead - a.ahead;
-      if (delta !== 0) return delta;
-      return a.branchRef.localeCompare(b.branchRef);
-    });
-
-    return candidates;
-  };
-
   return {
     getStatus,
     complete,
     setDismissed,
     detectDefaults,
-    detectExistingLanes,
     getHelpState,
     markGlossaryTermSeen,
 
