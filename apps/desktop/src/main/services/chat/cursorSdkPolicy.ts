@@ -231,6 +231,27 @@ function trimShellToken(token: string): string {
   return token.trim().replace(/^[=:,]+|[,:]+$/g, "");
 }
 
+/**
+ * Windows shells use `\` as the path separator and `%VAR%` / `$env:VAR` for
+ * expansion, so the POSIX-only token shapes below never match a Windows command
+ * line. Backslash handling stays win32-gated because `\` is a legal filename
+ * character (and a shell escape) on POSIX.
+ */
+const WINDOWS_HOME_PREFIX = /^(?:%(?:USERPROFILE|HOME)%|\$env:(?:USERPROFILE|HOME)|\$\{?env:(?:USERPROFILE|HOME)\}?)[\\/]/iu;
+
+function isWindowsPathLikeToken(cleaned: string): boolean {
+  if (WINDOWS_HOME_PREFIX.test(cleaned)) return true;
+  if (
+    cleaned.startsWith("..\\")
+    || cleaned.startsWith(".\\")
+    || cleaned.startsWith("\\")
+  ) return true;
+  if (!cleaned.includes("\\")) return false;
+  // `FOO=bar\baz` is an assignment, not a path argument.
+  if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cleaned)) return false;
+  return true;
+}
+
 function looksLikePathToken(token: string): boolean {
   const cleaned = trimShellToken(token);
   if (!cleaned || cleaned.startsWith("-") || cleaned.includes("://")) return false;
@@ -245,6 +266,7 @@ function looksLikePathToken(token: string): boolean {
     || cleaned.startsWith("$HOME/")
     || cleaned.startsWith("${HOME}/")
   ) return true;
+  if (process.platform === "win32" && isWindowsPathLikeToken(cleaned)) return true;
   if (!cleaned.includes("/")) return false;
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(cleaned)) return false;
   if (/^[A-Za-z_][A-Za-z0-9_]*=/.test(cleaned)) return false;
@@ -327,6 +349,14 @@ function isWithinPath(root: string, candidate: string): boolean {
 }
 
 function resolveCandidatePath(candidate: string, cwd: string, userHomeDir?: string | null): string {
+  // Windows equivalents of `$HOME/…`. Without this the guard resolves
+  // `%USERPROFILE%\.ssh\id_rsa` literally under the lane root and lets it pass.
+  if (process.platform === "win32" && userHomeDir?.trim()) {
+    const windowsHome = WINDOWS_HOME_PREFIX.exec(candidate);
+    if (windowsHome) {
+      return path.resolve(userHomeDir, candidate.slice(windowsHome[0].length));
+    }
+  }
   if (candidate === "~" && userHomeDir?.trim()) return path.resolve(userHomeDir);
   if (candidate.startsWith("~/") && userHomeDir?.trim()) {
     return path.resolve(userHomeDir, candidate.slice(2));

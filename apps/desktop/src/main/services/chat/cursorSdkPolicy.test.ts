@@ -158,6 +158,34 @@ describe("Cursor SDK policy", () => {
     expect(request.reason).toContain("/etc");
   });
 
+  it.runIf(process.platform === "win32")("denies Windows-shell lane escapes written with backslashes or %VAR% expansion", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+    const laneRoot = path.join(path.parse(path.resolve("/")).root, "Users", "admin", "lane");
+    const userHomeDir = path.join(path.parse(path.resolve("/")).root, "Users", "admin");
+    const cases: Array<[string, string]> = [
+      ["type ..\\..\\..\\.ssh\\id_rsa", "outside the active lane"],
+      ["type .\\..\\..\\secret.txt", "outside the active lane"],
+      ["type %USERPROFILE%\\.ssh\\id_rsa", "outside the active lane"],
+      ["Get-Content $env:USERPROFILE\\.aws\\credentials", "outside the active lane"],
+      ["type .ade\\secrets\\token", "protected by ADE"],
+    ];
+    for (const [command, reason] of cases) {
+      const request = summarizeCursorHook({ toolName: "shell", toolInput: { command } }, laneRoot);
+      expect(evaluateCursorSdkHook({ request, policy, laneRoot, userHomeDir })).toBe("deny");
+      expect(request.reason).toContain(reason);
+    }
+  });
+
+  it("keeps POSIX-style backslash filenames out of the Windows path heuristics", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+    const laneRoot = path.join(path.parse(path.resolve("/")).root, "tmp", "ade-lane");
+    const request = summarizeCursorHook({
+      toolName: "shell",
+      toolInput: { command: "echo hello" },
+    }, laneRoot);
+    expect(evaluateCursorSdkHook({ request, policy, laneRoot })).toBe("allow");
+  });
+
   it("denies shell cwd escapes even when the command text is otherwise safe", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     const laneRoot = "/tmp/ade-lane";
@@ -170,10 +198,18 @@ describe("Cursor SDK policy", () => {
 
   it("allows Cursor SDK transcript and terminal reads for the active lane only", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/Users/admin/Projects/Versic/.ade/worktrees/private-sharing-5d14c47a";
-    const userHomeDir = "/Users/admin";
+    // Build the lane root from the platform's own filesystem root: on Windows
+    // `path.resolve` prefixes the current drive, so a hard-coded POSIX path
+    // yields a different (drive-prefixed) slug there.
+    const fsRoot = path.parse(path.resolve("/")).root;
+    const userHomeDir = path.join(fsRoot, "Users", "admin");
+    const laneRoot = path.join(userHomeDir, "Projects", "Versic", ".ade", "worktrees", "private-sharing-5d14c47a");
     const slug = cursorProjectSlugForPath(laneRoot);
-    expect(slug).toBe("Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a");
+    const expectedSlug = [
+      ...fsRoot.split(/[\\/]+/u).filter(Boolean).map((part) => part.replace(/[^A-Za-z0-9_-]+/gu, "")),
+      "Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a",
+    ].filter(Boolean).join("-");
+    expect(slug).toBe(expectedSlug);
 
     const transcript = summarizeCursorHook({
       toolName: "read",
