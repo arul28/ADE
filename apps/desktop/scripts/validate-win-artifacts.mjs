@@ -300,6 +300,18 @@ function validatePreflight() {
   ) {
     fail("package.json build.nsis must pin the Windows installer to a non-elevating per-user lifecycle");
   }
+  // electron-builder defaults uninstallDisplayName to "${productName} ${version}",
+  // which writes an Add/Remove Programs DisplayName that changes on every
+  // release and reads as a different product each time. Windows expects
+  // DisplayName to carry the product and DisplayVersion to carry the version,
+  // and Stable/Beta side-by-side installs are only distinguishable when each
+  // channel owns one stable DisplayName.
+  // eslint-disable-next-line no-template-curly-in-string
+  if (pkg.build?.nsis?.uninstallDisplayName !== "${productName}") {
+    fail(
+      "package.json build.nsis.uninstallDisplayName must be ${productName} so each channel keeps one version-independent Add/Remove Programs entry",
+    );
+  }
 
   const winTargets = parseWinTargets();
   if (winTargets.length === 0) {

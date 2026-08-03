@@ -361,6 +361,7 @@
     },
     "nsis": {
       "include": "build/installer.nsh",
+      "uninstallDisplayName": "${productName}",
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
