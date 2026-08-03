@@ -9,9 +9,9 @@ import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
+import { discoverDroidSessions, droidProjectSlugForCwd } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { claudeProjectSlugForCwd, slashEscapedCwd } from "./discoveryUtils";
+import { claudeProjectSlugForCwd } from "./discoveryUtils";
 import { createExternalSessionsService } from "./externalSessionsService";
 
 type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
@@ -787,7 +787,7 @@ describe("external session provider discovery", () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "droid-repo");
     const id = "44444444-4444-4444-8444-444444444444";
-    writeJsonl(path.join(homeDir, ".factory", "sessions", slashEscapedCwd(cwd), `${id}.jsonl`), [
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${id}.jsonl`), [
       { type: "session_start", id, title: "New Session", cwd },
       { type: "message", message: { role: "assistant", content: "untimestamped setup" } },
       { type: "message", timestamp: "2026-07-06T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Factory task title" }] } },
@@ -805,6 +805,25 @@ describe("external session provider discovery", () => {
       createdAt: Date.parse("2026-07-06T10:00:00.000Z"),
       messageCount: 1,
     });
+  });
+
+  it("keeps Droid sessions in scope when the project directory uses the CLI's own slug", async () => {
+    // droid names the per-project directory with sanitizePathToDirectoryName(),
+    // which drops the drive colon on Windows ("-C-Users-dev-ADE"). A plain
+    // separator swap produced "C:-Users-dev-ADE" and filtered every directory
+    // out before any session was read.
+    const homeDir = path.join(root, "home-scoped");
+    const cwd = path.join(root, "droid-scoped-repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    const id = "55555555-5555-4555-8555-555555555555";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${id}.jsonl`), [
+      { type: "session_start", id, cwd, timestamp: "2026-07-06T10:00:00.000Z" },
+      { type: "message", timestamp: "2026-07-06T10:00:01.000Z", message: { role: "user", content: "scoped droid task" } },
+    ]);
+
+    const sessions = await discoverDroidSessions({ homeDir, scopeRoots: [cwd], limit: 10 });
+
+    expect(sessions.map((session) => session.id)).toEqual([id]);
   });
 
   it("uses the OpenCode CLI list command and skips cleanly when unavailable", async () => {
