@@ -62,6 +62,10 @@ type AccountBridge = {
   listMachines: () => Promise<AdeAccountMachinesResult>;
   getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
   removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
+  renameMachine: (
+    machineKey: string,
+    customName: string | null,
+  ) => Promise<AdeAccountMachine>;
   signOut: () => Promise<AdeAccountStatus>;
 };
 
@@ -399,6 +403,10 @@ function YourMacsCard() {
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const api = accountBridge();
@@ -487,6 +495,45 @@ function YourMacsCard() {
     if (openMenuKey) menuItemRef.current?.focus();
   }, [openMenuKey]);
 
+  const startRename = useCallback((machine: AdeAccountMachine) => {
+    setRenameError(null);
+    setRenameValue(accountMachineDisplayName(machine) ?? "");
+    setRenamingKey(machine.machineKey);
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenamingKey(null);
+    setRenameError(null);
+  }, []);
+
+  /**
+   * `customName === null` clears the override and falls back to the hostname —
+   * the same contract the Connections panel's rename uses, so a machine renamed
+   * here and a machine renamed there cannot end up in different states.
+   */
+  const saveRename = useCallback(
+    async (machine: AdeAccountMachine, customName?: string | null) => {
+      const api = accountBridge();
+      if (!api?.renameMachine) return;
+      const nextName = customName === undefined ? renameValue.trim() : customName;
+      if (nextName !== null && !nextName) return;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        await api.renameMachine(machine.machineKey, nextName);
+        setRenamingKey(null);
+        await load();
+      } catch (err) {
+        setRenameError(
+          err instanceof Error ? err.message : "Couldn't rename this computer.",
+        );
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [renameValue, load],
+  );
+
   let summary: string;
   if (loading && !result) summary = "Checking your computers…";
   else if (result?.state === "ok") {
@@ -565,6 +612,7 @@ function YourMacsCard() {
           {machines.map((machine) => {
             const thisMac = isThisMac(machine);
             const menuOpen = openMenuKey === machine.machineKey;
+            const renaming = renamingKey === machine.machineKey;
             const rightText = thisMac
               ? null
               : machine.online
@@ -595,24 +643,89 @@ function YourMacsCard() {
                   }}
                 />
                 <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-                <span
-                  style={{
-                    fontFamily: SANS_FONT,
-                    fontSize: 13,
-                    color: COLORS.textPrimary,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {accountMachineDisplayName(machine) ?? "Unnamed computer"}
-                </span>
-                {thisMac ? (
-                  <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                    {THIS_MACHINE_NAME}
-                  </span>
-                ) : null}
+                {renaming ? (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveRename(machine);
+                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}
+                  >
+                    <input
+                      aria-label={`Name for ${accountMachineDisplayName(machine) ?? "this computer"}`}
+                      autoFocus
+                      maxLength={80}
+                      value={renameValue}
+                      disabled={renameBusy}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRename();
+                        }
+                      }}
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        height: 28,
+                        borderRadius: RADII.sm,
+                        border: `1px solid ${COLORS.borderMuted}`,
+                        background: COLORS.recessedBg,
+                        color: COLORS.textPrimary,
+                        fontFamily: SANS_FONT,
+                        fontSize: 12.5,
+                        padding: "0 9px",
+                        outline: "none",
+                      }}
+                    />
+                    <button
+                      type="submit"
+                      disabled={renameBusy || !renameValue.trim()}
+                      style={primaryButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                    >
+                      {renameBusy ? "Saving…" : "Save"}
+                    </button>
+                    {machine.customName ? (
+                      <button
+                        type="button"
+                        disabled={renameBusy}
+                        onClick={() => void saveRename(machine, null)}
+                        style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                      >
+                        Use hostname
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={renameBusy}
+                      onClick={cancelRename}
+                      style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <span
+                      style={{
+                        fontFamily: SANS_FONT,
+                        fontSize: 13,
+                        color: COLORS.textPrimary,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {accountMachineDisplayName(machine) ?? "Unnamed computer"}
+                    </span>
+                    {thisMac ? (
+                      <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                        {THIS_MACHINE_NAME}
+                      </span>
+                    ) : null}
+                  </>
+                )}
                 <span style={{ flex: 1 }} />
                 {rightText ? (
                   <span
@@ -627,13 +740,14 @@ function YourMacsCard() {
                     {rightText}
                   </span>
                 ) : null}
-                {thisMac ? (
+                {renaming ? (
                   <span style={{ width: 26, flexShrink: 0 }} />
                 ) : (
                   <button
                     type="button"
-                    // Only non-local rows get this button, so the fallback must
-                    // match the row label — never the local machine's name.
+                    // Every row gets this button now, including the local one:
+                    // this list is the only place the local machine is shown,
+                    // so it is the only place its name can be changed.
                     aria-label={`Options for ${accountMachineDisplayName(machine) ?? "Unnamed computer"}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
@@ -654,6 +768,22 @@ function YourMacsCard() {
               </div>
             );
           })}
+        </div>
+      ) : null}
+
+      {renameError ? (
+        <div
+          role="alert"
+          style={{
+            borderTop: `1px solid ${COLORS.borderMuted}`,
+            padding: "10px 18px",
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            color: COLORS.danger,
+            lineHeight: 1.5,
+          }}
+        >
+          {renameError}
         </div>
       ) : null}
 
@@ -739,8 +869,7 @@ function YourMacsCard() {
                   onClick={() => {
                     const machine = openMenuMachine;
                     closeMenu();
-                    setRemoveError(null);
-                    setPendingRemoval(machine);
+                    startRename(machine);
                   }}
                   style={{
                     display: "flex",
@@ -750,15 +879,50 @@ function YourMacsCard() {
                     borderRadius: RADII.sm,
                     border: "none",
                     background: "transparent",
-                    color: COLORS.danger,
+                    color: COLORS.textPrimary,
                     fontFamily: SANS_FONT,
                     fontSize: 12.5,
                     textAlign: "left",
                     cursor: "pointer",
                   }}
                 >
-                  Remove from account…
+                  Rename…
                 </button>
+                {/*
+                  Removal stays withheld for the local machine. Signing this
+                  computer out of the account from this computer is what the
+                  sign-out card is for; "remove" here means "evict some other
+                  machine", and pointing it at yourself would be a different
+                  and far more destructive action wearing the same label.
+                */}
+                {!isThisMac(openMenuMachine) ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const machine = openMenuMachine;
+                      closeMenu();
+                      setRemoveError(null);
+                      setPendingRemoval(machine);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: RADII.sm,
+                      border: "none",
+                      background: "transparent",
+                      color: COLORS.danger,
+                      fontFamily: SANS_FONT,
+                      fontSize: 12.5,
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Remove from account…
+                  </button>
+                ) : null}
               </div>
             </>,
             document.body,
