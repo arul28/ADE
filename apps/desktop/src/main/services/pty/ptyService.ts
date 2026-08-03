@@ -94,6 +94,11 @@ import {
   resolveWindowsShellLaunchFields,
   resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
+import {
+  commandArrayToWindowsShellLine,
+  quoteShellArg,
+  resolveCanonicalCommandLineLaunch,
+} from "../../../shared/shell";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -1013,15 +1018,51 @@ function quotePosixShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Quote for a line that Windows has to be able to read back.
+ *
+ * A POSIX line only survives on Windows if the launch boundary can recover argv
+ * from it, and that recovery is gated on re-rendering the line byte for byte
+ * with `shared/shell`'s quoter. This one therefore has to be that quoter — the
+ * single-quote shape above, valid POSIX though it is, would fail the check and
+ * silently drop the launch back to typing POSIX at PowerShell. Only Windows
+ * needs this; leave the established rendering alone everywhere else.
+ */
+function quoteCanonicalShellArg(value: string): string {
+  return process.platform === "win32"
+    ? quoteShellArg(value, { platform: "linux" })
+    : quotePosixShellArg(value);
+}
+
+/**
+ * A direct spawn can still fail (a missing shim, an unreadable exe), in which
+ * case the launch falls back to typing a line at the interactive shell. Produce
+ * that line in ADE's canonical POSIX form on every platform; the write site
+ * renders it for whichever Windows shell actually won.
+ */
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
-  if (process.platform === "win32") return null;
+  if (process.platform === "win32") {
+    // No `exec`: the line has to stay recoverable as plain argv.
+    return [command, ...args].map(quoteCanonicalShellArg).join(" ");
+  }
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
 }
 
-function directShellLaunchForCommandLine(commandLine: string): Pick<PtyCreateArgs, "command" | "args"> {
-  if (process.platform === "win32") return {};
+/** See the twin in externalSessions/discoveryUtils.ts for why Windows differs. */
+function directShellLaunchForCommandLine(
+  commandLine: string,
+): Pick<PtyCreateArgs, "command" | "args" | "env"> {
   const trimmed = commandLine.trim();
   if (!trimmed) return {};
+  if (process.platform === "win32") {
+    const launch = resolveCanonicalCommandLineLaunch(trimmed);
+    if (!launch) return {};
+    return {
+      command: launch.command,
+      args: launch.args,
+      ...(launch.env ? { env: launch.env } : {}),
+    };
+  }
   return {
     command: "/bin/bash",
     args: ["--noprofile", "--norc", "-lc", trimmed],
@@ -1062,11 +1103,19 @@ function resolveDirectProviderCommand(command: string, toolType: TerminalToolTyp
   return command;
 }
 
+/**
+ * Substitute the bundled binary for the bare `opencode` word. The result stays
+ * in ADE's canonical POSIX form on every platform — a Windows install path is
+ * quoted here because it contains spaces, not because a POSIX shell will run it.
+ * The launch boundary recovers argv from that line and spawns it directly, or
+ * re-renders it for the shell that receives it; neither needs, or wants, the
+ * PowerShell call operator baked in at this layer.
+ */
 function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
   if (!isOpenCodeToolType(toolType)) return commandLine;
   const bundled = resolveOpenCodeBinaryPath();
   if (!bundled) return commandLine;
-  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quotePosixShellArg(bundled)}`);
+  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quoteCanonicalShellArg(bundled)}`);
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -5218,8 +5267,25 @@ export function createPtyService({
       const selectedWindowsShellKind = process.platform === "win32" && selectedShell
         ? resolveWindowsShellKind(selectedShell.file)
         : null;
+      // `startupCommand` is ADE's canonical POSIX rendering. On macOS the shell
+      // receiving it speaks POSIX, so it can be typed verbatim; the native
+      // Windows shells do not, and each mangles it differently. Re-render it for
+      // whichever shell actually won the spawn race, and only when it is plain
+      // argv — a caller-supplied per-shell line always wins, and a line that is
+      // not losslessly recoverable is left exactly as it is today.
+      const renderedWindowsStartupCommand = (() => {
+        if (!selectedWindowsShellKind || !selectedShell || !startupCommand) return null;
+        const launch = resolveCanonicalCommandLineLaunch(startupCommand);
+        if (!launch || launch.env) return null;
+        return commandArrayToWindowsShellLine([launch.command, ...launch.args], {
+          kind: selectedWindowsShellKind,
+          shellPath: selectedShell.file,
+        });
+      })();
       const selectedStartupCommand = selectedWindowsShellKind
-        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind] ?? startupCommand
+        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind]
+          ?? renderedWindowsStartupCommand
+          ?? startupCommand
         : startupCommand;
       if (selectedStartupCommand && !launchedDirectCommand && selectedShell) {
         const writeStartupCommand = () => {
