@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   asEpochMs,
@@ -13,7 +14,6 @@ import {
   resolveHomeDir,
   safeReadDir,
   sessionFileCandidate,
-  slashEscapedCwd,
   slugMatchesScopeRoots,
   sortFileCandidatesByMtime,
   sortDiscoveryRecords,
@@ -21,6 +21,41 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+
+/**
+ * Name of the per-project directory Droid creates under `~/.factory/sessions`.
+ *
+ * This mirrors `sanitizePathToDirectoryName` in @factory/droid-sdk (and the
+ * `droid` CLI that writes the files), which is *not* a plain separator swap:
+ *
+ *   posix  /Users/dev/ADE   -> "-Users-dev-ADE"
+ *   win32  C:\Users\dev\ADE -> "-C-Users-dev-ADE"   (drive colon dropped)
+ *
+ * The generic `slashEscapedCwd` helper happens to match the posix form, which
+ * is why macOS worked, but on Windows it yields "C:-Users-dev-ADE" — a name
+ * that can never exist on NTFS (`:` is reserved) — so every Droid project
+ * directory failed the scope filter and no CLI sessions were imported.
+ */
+export function droidProjectSlugForCwd(cwd: string): string {
+  const absolutePath = path.resolve(cwd);
+  let canonicalPath = absolutePath;
+  try {
+    canonicalPath = fs.realpathSync(absolutePath);
+  } catch {
+    canonicalPath = absolutePath;
+  }
+  const normalized = canonicalPath.replace(/[\\/]+$/u, "");
+  const slug = process.platform === "win32"
+    ? `-${normalized.replace(/^([A-Za-z]):/u, "$1").replace(/[\\/]+/gu, "-")}`
+    : `-${normalized.replace(/^\/+/u, "").replace(/\/+/gu, "-")}`;
+  // Windows paths are case-insensitive; the on-disk directory can differ in
+  // case from the scope root ADE hands us (drive letter especially).
+  return process.platform === "win32" ? slug.toLowerCase() : slug;
+}
+
+function droidSlugForComparison(slug: string): string {
+  return process.platform === "win32" ? slug.toLowerCase() : slug;
+}
 
 export async function discoverDroidSessions(
   args: ExternalSessionDiscoveryArgs = {},
@@ -34,7 +69,11 @@ export async function discoverDroidSessions(
     if (!projectEntry.isDirectory()) continue;
     if (
       projectEntry.name.startsWith("-")
-      && !slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, slashEscapedCwd)
+      && !slugMatchesScopeRoots(
+        droidSlugForComparison(projectEntry.name),
+        args.scopeRoots,
+        droidProjectSlugForCwd,
+      )
     ) {
       continue;
     }
