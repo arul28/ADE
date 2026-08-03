@@ -19,6 +19,9 @@ afterEach(() => {
   vi.useRealTimers();
   cleanup();
   Reflect.deleteProperty(navigator, "clipboard");
+  // jsdom has no execCommand; one test stubs it to prove the fallback is not
+  // reached, so drop it rather than leaking a always-succeeds stub.
+  Reflect.deleteProperty(document, "execCommand");
 });
 
 describe("useCopyToClipboard", () => {
@@ -131,6 +134,47 @@ describe("useCopyToClipboard", () => {
 
     expect(write).toHaveBeenCalledWith("hello");
     expect(result.current.copied).toBe(false);
+  });
+
+  it("treats a throwing custom transport as a failure without using the fallback", async () => {
+    // The textarea fallback would silently route around a bespoke transport, so
+    // a throw from `write` must fail the copy outright rather than retrying.
+    const write = vi.fn<[string], Promise<boolean>>().mockRejectedValue(new Error("denied"));
+    const execCommand = vi.fn(() => true);
+    (document as unknown as { execCommand: () => boolean }).execCommand = execCommand;
+    const { result } = renderHook(() => useCopyToClipboard({ write }));
+
+    let ok!: boolean;
+    await act(async () => {
+      ok = await result.current.copy("hello");
+    });
+
+    expect(ok).toBe(false);
+    expect(result.current.copied).toBe(false);
+    expect(execCommand).not.toHaveBeenCalled();
+  });
+
+  it("ignores an in-flight copy that resolves after reset()", async () => {
+    let release!: () => void;
+    stubClipboard(() => new Promise<void>((resolve) => { release = resolve; }));
+    const { result } = renderHook(() => useCopyToClipboard());
+
+    let pending!: Promise<boolean>;
+    act(() => {
+      pending = result.current.copy("hello", "row-a");
+    });
+    act(() => {
+      result.current.reset();
+    });
+
+    await act(async () => {
+      release();
+      await pending;
+    });
+
+    // reset() bumped the run id, so the older copy may not claim the flash.
+    expect(result.current.copied).toBe(false);
+    expect(result.current.copiedKey).toBeNull();
   });
 
   it("reset clears a pending confirmation immediately", async () => {
