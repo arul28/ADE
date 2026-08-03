@@ -25,6 +25,7 @@ import type {
 } from "../../../shared/types/attention";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types/attention";
 import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
+import { buildMachineOnlySyncSnapshot } from "../sync/machineOnlySyncSnapshot";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
@@ -4976,16 +4977,32 @@ export function registerIpc({
     if (localRuntimeConnectionPool) {
       try {
         // Machine-level call: intentionally bypasses the window's local/remote
-        // project binding so Connections can always describe this physical Mac.
+        // project binding so Connections can always describe this computer.
         return await localRuntimeConnectionPool.callSync<SyncRoleSnapshot>(
           "sync.getStatus",
           params,
         );
       } catch (error) {
-        if (!isSyncServiceUnavailableError(error)) throw error;
+        if (!isSyncServiceUnavailableError(error)) {
+          // This is the ONLY source for the This-Machine card, and the card is
+          // mostly about identity — the machine's name, platform and whether it
+          // is reachable — which the desktop can answer without the background
+          // service. Rejecting here blanked the whole card behind "Couldn't
+          // load connection details" whenever the local runtime was down.
+          // Answer with a machine-only snapshot whose routes are honestly all
+          // down and whose blocking text carries the real reason instead.
+          getCtx().logger.warn("sync.local_status_degraded", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return buildMachineOnlySyncSnapshot(error);
+        }
       }
     }
-    return await (await requireSyncService()).getStatus(params);
+    try {
+      return await (await requireSyncService()).getStatus(params);
+    } catch (error) {
+      return buildMachineOnlySyncSnapshot(error);
+    }
   });
 
   ipcMain.handle(IPC.syncRefreshDiscovery, async (event): Promise<SyncRoleSnapshot> => {
