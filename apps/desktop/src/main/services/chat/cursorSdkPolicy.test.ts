@@ -159,6 +159,9 @@ describe("Cursor SDK policy", () => {
     expect(request.reason).toContain("/etc");
   });
 
+  // The guard deliberately leaves backslash tokens alone on POSIX, where `\` is
+  // a legal filename character, so these escape shapes have no POSIX analogue.
+  // WINDOWS-GATE: Windows-only shell path syntax; verified green on a native Windows host.
   it.runIf(process.platform === "win32")("denies Windows-shell lane escapes written with backslashes or %VAR% expansion", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     const laneRoot = path.join(path.parse(path.resolve("/")).root, "Users", "admin", "lane");
