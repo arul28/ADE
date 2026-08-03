@@ -39,7 +39,14 @@ const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
 const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
 
 function cursorProjectSlugForCwd(cwd: string): string {
-  return cwd.replace(/^[/\\]+/u, "").replace(/[\\/]/gu, "-");
+  return cwd
+    // A Windows drive prefix must be dropped, not hyphenated: `C:-Users-…`
+    // contains a colon, so it can never equal a real directory name, and
+    // `resolveCursorCwdFromSlug` (which walks down from the drive root) cannot
+    // invert it either. The drive-less slug round-trips correctly.
+    .replace(/^([A-Za-z]):[\\/]+/u, "")
+    .replace(/^[/\\]+/u, "")
+    .replace(/[\\/]/gu, "-");
 }
 
 type CursorStoreCandidate = ExternalSessionFileCandidate<{

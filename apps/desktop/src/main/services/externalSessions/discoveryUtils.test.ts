@@ -215,7 +215,10 @@ describe("resolveCursorCwdFromSlug", () => {
     const cwd = path.join(root, "Projects", "my-cool.app", ".ade", "worktrees", "lane-with-hyphen");
     fs.mkdirSync(cwd, { recursive: true });
     try {
-      const slug = cwd.replace(/^\/+/u, "").replace(/[/.]/gu, "-");
+      const slug = cwd
+        .replace(/^([A-Za-z]):[\\/]+/u, "")
+        .replace(/^[/\\]+/u, "")
+        .replace(/[\\/.]/gu, "-");
       expect(resolveCursorCwdFromSlug(slug)).toBe(fs.realpathSync(cwd));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
