@@ -76,13 +76,18 @@ jobs:
       # commit that touched the same line. Scanning main..HEAD gives a dispatched
       # run exactly the scope a PR run has, so the same code is judged the same
       # way however CI was started.
+      # gitleaks-action exposes no way to narrow its commit range, so a
+      # dispatched run invokes gitleaks directly with the same pinned version
+      # the action uses. --log-opts limits the walk to this branch's own
+      # commits, matching what a pull_request run would scan.
       - name: Scan this branch's own commits
         if: github.event_name == 'workflow_dispatch'
-        uses: gitleaks/gitleaks-action@v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_VERSION: 8.24.3
-          GITLEAKS_EXTRA_ARGS: --log-opts=origin/main..HEAD
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --redact -v --exit-code=2 --log-opts="origin/main..HEAD"
       - uses: gitleaks/gitleaks-action@v2
         if: github.event_name != 'workflow_dispatch'
         env:
