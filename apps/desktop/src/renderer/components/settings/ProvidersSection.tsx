@@ -44,6 +44,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { rendererPlatformAttribute } from "../../lib/platform";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
 import { shouldRefreshAiStatusForChatEvent } from "../../lib/aiProviderStatus";
@@ -79,6 +80,17 @@ const CUSTOM_PROVIDER_NPM_OPTIONS = [
   "@ai-sdk/anthropic",
 ];
 
+// Factory ships a native Windows build of `droid` with its own installer and
+// its own way of setting an environment variable — a POSIX `export` line and a
+// bare docs link leave a Windows user with nothing to run.
+// https://docs.factory.ai/cli/getting-started/quickstart
+const DROID_INSTALL_HINT = rendererPlatformAttribute() === "win32"
+  ? "irm https://app.factory.ai/cli/windows | iex — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH"
+  : "curl -fsSL https://app.factory.ai/cli | sh — ensure `droid` is on PATH";
+const DROID_LOGIN_CMD = rendererPlatformAttribute() === "win32"
+  ? "setx FACTORY_API_KEY … (or sign in via `droid` interactive login)"
+  : "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)";
+
 const CLI_TOOLS: Array<{
   cli: CliName;
   label: string;
@@ -111,8 +123,8 @@ const CLI_TOOLS: Array<{
     cli: "droid",
     label: "Droid",
     authStory: "Uses your Factory login or FACTORY_API_KEY.",
-    loginCmd: "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)",
-    installHint: "Install from https://docs.factory.ai/cli/getting-started/quickstart — ensure `droid` is on PATH",
+    loginCmd: DROID_LOGIN_CMD,
+    installHint: DROID_INSTALL_HINT,
   },
 ];
 

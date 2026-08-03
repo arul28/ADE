@@ -12,6 +12,7 @@ import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { openExternalUrl } from "../../lib/openExternal";
+import { rendererPlatformAttribute } from "../../lib/platform";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
@@ -34,11 +35,19 @@ type RuntimeMeta = {
   authCommand?: string;
 };
 
+// Factory publishes a PowerShell installer for its native Windows build; the
+// POSIX shell pipeline is not runnable there. The command shown here is the one
+// the user is expected to paste into their own shell.
+// https://docs.factory.ai/cli/getting-started/quickstart
+const DROID_INSTALL_COMMAND = rendererPlatformAttribute() === "win32"
+  ? "irm https://app.factory.ai/cli/windows | iex"
+  : "curl -fsSL https://app.factory.ai/cli | sh";
+
 const RUNTIMES: RuntimeMeta[] = [
   { id: "claude", label: "Claude Code", brand: BRAND.claude, Logo: ClaudeLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @anthropic-ai/claude-code", authCommand: "claude /login" },
   { id: "codex", label: "Codex", brand: BRAND.codex, Logo: CodexLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @openai/codex", authCommand: "codex login" },
   { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash' },
-  { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", authCommand: "droid login" },
+  { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", installCommand: DROID_INSTALL_COMMAND, authCommand: "droid login" },
   { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup },
 ];
 
