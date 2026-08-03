@@ -6968,6 +6968,71 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.supportsRemoteAction("cto.clearLinearToken"))
   }
 
+  /// Current brains mark the Linear credential writes host-local
+  /// (`viewerAllowed: false`), so the mobile Linear screen must hide the API-key
+  /// and disconnect affordances even though the actions are advertised. An
+  /// older brain that still advertises them as viewer-allowed must keep them
+  /// available, so connecting to an old host does not regress.
+  @MainActor
+  func testLinearCredentialWritesAreViewerGatedButLegacyHostsStayAllowed() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let deniedDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { deniedDatabase.close() }
+    let deniedService = SyncService(database: deniedDatabase)
+    try deniedService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-current",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            ["action": "cto.setLinearToken", "policy": ["viewerAllowed": false]],
+            ["action": "cto.clearLinearToken", "policy": ["viewerAllowed": false]],
+            ["action": "sync.getWebPairingInfo", "policy": ["viewerAllowed": false]],
+            ["action": "cto.startLinearMobileOAuth", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(deniedService.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("cto.clearLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("sync.getWebPairingInfo"))
+    // OAuth is the surviving mobile connect path and stays viewer-allowed.
+    XCTAssertTrue(deniedService.supportsViewerRemoteAction("cto.startLinearMobileOAuth"))
+
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    let legacyDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { legacyDatabase.close() }
+    let legacyService = SyncService(database: legacyDatabase)
+    try legacyService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-legacy",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            ["action": "cto.setLinearToken", "policy": ["viewerAllowed": true]],
+            ["action": "cto.clearLinearToken", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(legacyService.supportsViewerRemoteAction("cto.setLinearToken"))
+    XCTAssertTrue(legacyService.supportsViewerRemoteAction("cto.clearLinearToken"))
+  }
+
   @MainActor
   func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))

@@ -15,6 +15,7 @@ import { parseStructuredOutput } from "./utils";
 import { runOpenCodeTextPrompt } from "../opencode/openCodeRuntime";
 import { resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 import { loadCursorSdk } from "./cursorSdkLoader";
+import { codexReasoningEffortFlags, resolveCodexCliModelForLaunch } from "../../../shared/cliLaunch";
 
 export type ProviderTaskRunnerArgs = {
   cwd: string;
@@ -29,6 +30,7 @@ export type ProviderTaskRunnerArgs = {
   sessionId?: string;
   projectConfig: ProjectConfigFile | EffectiveProjectConfig;
   imagePaths?: string[];
+  reasoningEffort?: string | null;
 };
 
 export type ProviderTaskRunnerResult = {
@@ -134,6 +136,19 @@ function buildClaudePermissionMode(mode: AgentPermissionMode | undefined): strin
   if (mode === "full-auto") return "bypassPermissions";
   if (mode === "edit") return "acceptEdits";
   return "plan";
+}
+
+/**
+ * Codex rejects an effort a model does not advertise, so only forward a tier the
+ * descriptor actually lists. An unknown tier falls back to the CLI default rather
+ * than failing the whole task.
+ */
+function resolveCodexTaskReasoningEffort(args: ProviderTaskRunnerArgs): string | null {
+  const effort = String(args.reasoningEffort ?? "").trim();
+  if (!effort) return null;
+  const tiers = args.descriptor.reasoningTiers;
+  if (tiers?.length && !tiers.includes(effort)) return null;
+  return effort;
 }
 
 function buildCodexSandbox(mode: AgentPermissionMode | undefined): "read-only" | "workspace-write" | "danger-full-access" {
@@ -285,6 +300,14 @@ async function runCodexTask(args: ProviderTaskRunnerArgs): Promise<ProviderTaskR
     "--output-last-message",
     outPath,
   ];
+
+  // Without these the CLI silently runs whatever ~/.codex/config.toml defaults
+  // to, so every ADE model/effort selection on the Codex path was inert.
+  const codexModel = resolveCodexCliModelForLaunch(args.descriptor.providerModelId);
+  if (codexModel) {
+    cliArgs.push("--model", codexModel);
+  }
+  cliArgs.push(...codexReasoningEffortFlags(resolveCodexTaskReasoningEffort(args)));
 
   if (args.permissionMode === "full-auto") {
     cliArgs.push("--dangerously-bypass-approvals-and-sandbox");

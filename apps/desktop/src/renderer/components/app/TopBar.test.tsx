@@ -497,19 +497,17 @@ describe("TopBar", () => {
     expect(screen.queryByRole("dialog", { name: "Connections" })).toBeNull();
   });
 
-  it("keeps a permanent Hub tab and routes new-project actions there in hosted web mode", () => {
+  it("retires the Hub tab and opens a new project tab in hosted web mode", () => {
     globalThis.window.__adeWebClient = true;
     const onNavigate = vi.fn();
 
-    const { rerender } = render(<TopBar hubRouteActive={true} onNavigate={onNavigate} />);
+    render(<TopBar onNavigate={onNavigate} />);
 
-    fireEvent.click(screen.getByTitle("Open a project from the Hub"));
-    rerender(<TopBar hubRouteActive={false} onNavigate={onNavigate} />);
-    fireEvent.click(screen.getByRole("button", { name: "Hub" }));
+    expect(screen.queryByRole("button", { name: "Hub" })).toBeNull();
+    fireEvent.click(screen.getByTitle("Open another project"));
 
-    expect(onNavigate).toHaveBeenNthCalledWith(1, "/hub");
-    expect(onNavigate).toHaveBeenNthCalledWith(2, "/hub");
-    expect(screen.queryByTitle("Close hub")).toBeNull();
+    expect(onNavigate).not.toHaveBeenCalledWith("/hub");
+    expect(useAppStore.getState().openNewTab).toHaveBeenCalledOnce();
   });
 
   it("reselects the current remote adapter when leaving the Hub", async () => {
@@ -771,7 +769,7 @@ describe("TopBar", () => {
     expect(screen.getByTitle(rootPath)).toBeTruthy();
   });
 
-  it("merges a local and a remote checkout of one repo into a single tab", async () => {
+  it("keeps a local and a remote checkout of one repo as two open tabs", async () => {
     const binding = {
       kind: "remote" as const,
       key: "remote:studio:project-1",
@@ -818,20 +816,19 @@ describe("TopBar", () => {
 
     render(<TopBar />);
 
-    // One repo, one tab: the bound machine's. The local checkout is still open,
-    // it just no longer gets a tab of its own.
+    // Both checkouts are open, so both keep a tab. Collapsing them left one tab
+    // whose machine followed whichever was active, which read as the tab you
+    // just left jumping to the other machine.
     expect(
       await screen.findByTitle("MacBook Pro (97): /srv/ade/ADE (Connected)"),
     ).toBeTruthy();
     await waitFor(() => {
-      expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
+      expect(screen.queryByTitle("/Users/arul/ADE")).toBeTruthy();
     });
     expect(screen.getByText("MacBook Pro (97)")).toBeTruthy();
 
-    // …and the machine it displaced must stay reachable, or the tab bar has
-    // stranded a checkout the user cannot get back to.
-    fireEvent.click(screen.getByLabelText("Machines for ADE"));
-    fireEvent.click(screen.getByRole("menuitemradio", { name: /This Mac/ }));
+    // Each tab reaches its own checkout directly — no machine menu detour.
+    fireEvent.click(screen.getByTitle("/Users/arul/ADE"));
 
     expect(useAppStore.getState().switchProjectToPath).toHaveBeenCalledWith(
       "/Users/arul/ADE",
@@ -857,6 +854,29 @@ describe("TopBar", () => {
     fireEvent.mouseDown(caret);
     fireEvent.click(caret);
     expect(screen.queryByRole("menuitemradio", { name: /This Mac/ })).toBeNull();
+  });
+
+  it("routes \"Connect another machine\" to the hosted connections chip in web mode", async () => {
+    // The hosted client has no header Connections panel, so the menu item used
+    // to do nothing at all.
+    (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient = true;
+    const opened = vi.fn();
+    window.addEventListener("ade-web:open-connections", opened);
+    try {
+      render(<TopBar />);
+      await screen.findByTitle("/Users/arul/ADE");
+      const caret = screen.getByLabelText("Machines for ADE");
+      fireEvent.mouseDown(caret);
+      fireEvent.click(caret);
+      fireEvent.click(screen.getByRole("menuitem", { name: /Connect another machine/ }));
+
+      expect(opened).toHaveBeenCalledOnce();
+      expect((opened.mock.calls[0][0] as CustomEvent<{ tab: string }>).detail.tab)
+        .toBe("machines");
+    } finally {
+      window.removeEventListener("ade-web:open-connections", opened);
+      delete (globalThis.window as unknown as { __adeWebClient?: boolean }).__adeWebClient;
+    }
   });
 
   it("renders a remote project tab with the connections control without immediate polling", async () => {

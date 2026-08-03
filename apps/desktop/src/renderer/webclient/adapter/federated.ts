@@ -12,6 +12,20 @@ import { createAdeWebAdapter, type AdeWebAdapter } from "./index";
 
 type RemoteBinding = Extract<OpenProjectBinding, { kind: "remote" }>;
 
+/** Walk a dotted member path on an adapter's surface, keeping the receiver. */
+function readPath(
+  adapter: AdeWebAdapter,
+  path: PropertyKey[],
+): { parent: unknown; value: unknown } {
+  let parent: unknown = adapter.ade;
+  let value: unknown = adapter.ade;
+  for (const key of path) {
+    parent = value;
+    value = (value as Record<PropertyKey, unknown> | null | undefined)?.[key];
+  }
+  return { parent, value };
+}
+
 type WebWorkspaceState = {
   version: 1;
   openBindings: RemoteBinding[];
@@ -142,10 +156,6 @@ export function createFederatedWebAdapter({
   const bindingListeners = new Set<(binding: OpenProjectBinding | null) => void>();
   const connectionListeners = new Set<(snapshot: RemoteRuntimeConnectionSnapshot) => void>();
   const activeAdapterListeners = new Set<() => void>();
-  const navigationListeners = new Set<{
-    listener: (request: unknown) => void;
-    dispose: () => void;
-  }>();
 
   const persist = () => {
     try {
@@ -182,17 +192,79 @@ export function createFederatedWebAdapter({
 
   let managerDispose = () => {};
 
-  const subscribeToAdapterNavigation = (
+  /**
+   * An unpinned subscription means "events for whatever project is displayed".
+   * The surface is a proxy over a per-binding adapter, so a listener registered
+   * while tab A was in front would otherwise stay attached to A's adapter after
+   * the user switches to B — still live, still delivering A's events. The web
+   * shell used to paper over that by remounting the whole app on every swap.
+   *
+   * Instead every unpinned subscription handed out through the proxy is
+   * recorded here and re-attached on swap: detach from the outgoing adapter,
+   * attach to the incoming one, keeping the caller's own unsubscribe valid
+   * throughout. That is exactly the semantic the caller asked for, and it makes
+   * the remount unnecessary.
+   *
+   * INVARIANT: a subscription pinned to a binding (one carrying a binding in
+   * its arguments) is never recorded and never re-attached — it belongs to that
+   * binding's machine for its whole life. See the `pinned` branch in
+   * `dynamicMember`.
+   */
+  type DurableSubscription = {
+    path: PropertyKey[];
+    args: unknown[];
+    detach: (() => void) | null;
+  };
+  const durableSubscriptions = new Set<DurableSubscription>();
+
+  /** Attach one recorded subscription to `adapter`, or leave it detached. */
+  const attachDurableSubscription = (
     adapter: AdeWebAdapter,
-    listener: (request: unknown) => void,
-  ): (() => void) => adapter.ade.app.onNavigate?.(listener) ?? (() => {});
+    entry: DurableSubscription,
+  ): (() => void) | null => {
+    try {
+      const { parent, value } = readPath(adapter, entry.path);
+      if (typeof value !== "function") return null;
+      const result = Reflect.apply(value, parent, entry.args);
+      return typeof result === "function" ? (result as () => void) : null;
+    } catch {
+      // An adapter that cannot serve this subscription leaves it detached
+      // rather than failing the tab switch; the next swap retries.
+      return null;
+    }
+  };
+
+  const detachDurableSubscription = (entry: DurableSubscription): void => {
+    try {
+      entry.detach?.();
+    } catch {
+      // A disposed adapter can throw on detach; the attachment dies with it.
+    }
+    entry.detach = null;
+  };
+
+  /** Record a subscription and hand the caller an unsubscribe that outlives swaps. */
+  const registerDurableSubscription = (entry: DurableSubscription): (() => void) => {
+    durableSubscriptions.add(entry);
+    return () => {
+      if (!durableSubscriptions.delete(entry)) return;
+      detachDurableSubscription(entry);
+    };
+  };
+
+  const isSubscriptionMember = (path: PropertyKey[]): boolean => {
+    const member = String(path[path.length - 1] ?? "");
+    return /^on[A-Z]/.test(member) || /^subscribe/.test(member);
+  };
 
   const setCurrentAdapter = (adapter: AdeWebAdapter) => {
     if (currentAdapter === adapter) return;
     currentAdapter = adapter;
-    for (const subscription of navigationListeners) {
-      subscription.dispose();
-      subscription.dispose = subscribeToAdapterNavigation(adapter, subscription.listener);
+    for (const entry of durableSubscriptions) {
+      // Detach first: overlapping attachments would deliver both projects'
+      // events to the same listener for the width of this loop.
+      detachDurableSubscription(entry);
+      entry.detach = attachDurableSubscription(adapter, entry);
     }
     for (const listener of activeAdapterListeners) listener();
   };
@@ -264,27 +336,42 @@ export function createFederatedWebAdapter({
     persist();
   };
 
+  // A user-initiated activation is authoritative for the whole time it is in
+  // flight. Opening a project makes its host broadcast a catalog, and every
+  // machine keeps broadcasting its own while we wait, so without this the
+  // host-driven rebind below can fire against the binding the user is in the
+  // middle of leaving and write it back over the one they asked for.
+  let activationsInFlight = 0;
+
   const openProject = async (targetId: string, projectId: string): Promise<RemoteBinding> => {
-    const { project } = await manager.openProject(targetId, projectId);
-    const info = projectInfo(project);
-    const environment = manager.getSession(targetId)?.environment;
-    const binding: RemoteBinding = {
-      kind: "remote",
-      key: bindingKey(targetId, project.id),
-      targetId,
-      runtimeName: environment?.machineName ?? "Machine",
-      hostname: environment?.hostIdentity?.name,
-      projectId: project.id,
-      rootPath: info.rootPath,
-      displayName: info.displayName,
-      gitOriginUrl: gitOriginUrl(project),
-      iconDataUrl: project.iconDataUrl ?? null,
-    };
-    setCurrentAdapter(adapterForBinding(binding));
-    rememberBinding(binding);
-    for (const listener of bindingListeners) listener(binding);
-    for (const listener of projectListeners) listener(info);
-    return binding;
+    activationsInFlight += 1;
+    try {
+      const { project } = await manager.openProject(targetId, projectId);
+      const info = projectInfo(project);
+      const environment = manager.getSession(targetId)?.environment;
+      const binding: RemoteBinding = {
+        kind: "remote",
+        key: bindingKey(targetId, project.id),
+        targetId,
+        runtimeName: environment?.machineName ?? "Machine",
+        hostname: environment?.hostIdentity?.name,
+        projectId: project.id,
+        rootPath: info.rootPath,
+        displayName: info.displayName,
+        gitOriginUrl: gitOriginUrl(project),
+        iconDataUrl: project.iconDataUrl ?? null,
+      };
+      // The guard has to span the commit, not just the await: binding the new
+      // adapter can drive the client and the manager synchronously, and until
+      // `rememberBinding` runs `activeBinding` still names the tab being left.
+      setCurrentAdapter(adapterForBinding(binding));
+      rememberBinding(binding);
+      for (const listener of bindingListeners) listener(binding);
+      for (const listener of projectListeners) listener(info);
+      return binding;
+    } finally {
+      activationsInFlight -= 1;
+    }
   };
 
   const listRecent = async (): Promise<RecentProjectSummary[]> => {
@@ -332,8 +419,7 @@ export function createFederatedWebAdapter({
     return [...rows.values()];
   };
 
-  const specialApp = {
-    ...fallbackAdapter.ade.app,
+  const appOverrides = {
     async getProject() {
       return activeBinding
         ? {
@@ -385,40 +471,38 @@ export function createFederatedWebAdapter({
       bindingListeners.add(listener);
       return () => bindingListeners.delete(listener);
     },
-    onNavigate(listener: (request: unknown) => void) {
-      const subscription = {
-        listener,
-        dispose: subscribeToAdapterNavigation(currentAdapter, listener),
-      };
-      navigationListeners.add(subscription);
-      return () => {
-        if (!navigationListeners.delete(subscription)) return;
-        subscription.dispose();
-      };
-    },
   };
 
-  const specialProject = {
-    ...fallbackAdapter.ade.project,
+  const projectOverrides = {
     listRecent,
     async setRecentPinned() {
       return await listRecent();
     },
     async switchToPath(rootPath: string) {
+      // A path is not a machine. The same checkout path routinely exists on
+      // several machines, and sessions arrive most-recently-used first, so
+      // resolving by path alone would hand an already-open tab to whichever
+      // machine the user most recently touched — silently moving that tab off
+      // its machine. Bindings we already hold win, and they carry the machine.
+      const openBinding =
+        (activeBinding?.rootPath === rootPath ? activeBinding : null)
+        ?? workspace.openBindings.find((entry) => entry.rootPath === rootPath)
+        ?? null;
+      if (openBinding) {
+        await openProject(openBinding.targetId, openBinding.projectId);
+        return {
+          rootPath: openBinding.rootPath,
+          displayName: openBinding.displayName,
+          baseRef: "main",
+        };
+      }
       for (const session of manager.getSnapshot().sessions) {
         const project = session.projects.find((entry) => entry.rootPath === rootPath);
         if (!project) continue;
         await openProject(session.targetId, project.id);
         return projectInfo(project);
       }
-      const binding = workspace.openBindings.find((entry) => entry.rootPath === rootPath);
-      if (!binding) throw new Error("That project is no longer available.");
-      await openProject(binding.targetId, binding.projectId);
-      return {
-        rootPath: binding.rootPath,
-        displayName: binding.displayName,
-        baseRef: "main",
-      };
+      throw new Error("That project is no longer available.");
     },
   };
 
@@ -454,8 +538,7 @@ export function createFederatedWebAdapter({
     persist();
   };
 
-  const specialRemoteRuntime = {
-    ...fallbackAdapter.ade.remoteRuntime,
+  const remoteRuntimeOverrides = {
     async listTargets() {
       return getConnectionSnapshot().connections.map((entry) => entry.target);
     },
@@ -494,6 +577,23 @@ export function createFederatedWebAdapter({
     },
   };
 
+  /**
+   * Members the federation answers itself rather than forwarding to a machine's
+   * adapter, consulted by `dynamicMember` before it reads the adapter.
+   *
+   * Everything NOT listed here must still resolve against the adapter that is
+   * actually displayed. An earlier version spread the fallback adapter into
+   * these objects, which froze the rest onto `fallbackClient` — the manager's
+   * primaryClient, handed to the first machine that connects — so every
+   * non-overridden call (`project.openRepo`, which switches a project, among
+   * them) executed against that machine no matter which tab was in front.
+   */
+  const OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+    app: appOverrides,
+    project: projectOverrides,
+    remoteRuntime: remoteRuntimeOverrides,
+  };
+
   const bindingFromArgs = (args: unknown[]): RemoteBinding | null => {
     for (let index = args.length - 1; index >= 0; index -= 1) {
       const candidate = args[index];
@@ -511,39 +611,47 @@ export function createFederatedWebAdapter({
     return null;
   };
 
-  const adapterForCall = (args: unknown[]): AdeWebAdapter => {
-    const binding = bindingFromArgs(args);
-    if (!binding) return currentAdapter;
-    return adapterForBinding(binding);
-  };
-
-  const readPath = (
-    adapter: AdeWebAdapter,
-    path: PropertyKey[],
-  ): { parent: unknown; value: unknown } => {
-    let parent: unknown = adapter.ade;
-    let value: unknown = adapter.ade;
-    for (const key of path) {
-      parent = value;
-      value = (value as Record<PropertyKey, unknown> | null | undefined)?.[key];
-    }
-    return { parent, value };
-  };
-
   const namespaceProxyCache = new Map<string, unknown>();
   const dynamicMember = (path: PropertyKey[]): unknown => {
+    // Overrides win over the displayed adapter, and are never cached as proxies
+    // — they are already the final value.
+    if (path.length === 2) {
+      const overrides = OVERRIDES[String(path[0])];
+      if (overrides && Object.prototype.hasOwnProperty.call(overrides, path[1] as string)) {
+        return overrides[path[1] as string];
+      }
+    }
     const cacheKey = path.map(String).join(".");
     const cached = namespaceProxyCache.get(cacheKey);
     if (cached) return cached;
-    const current = readPath(currentAdapter, path).value;
+    // An override namespace must resolve to a namespace proxy even if the
+    // displayed adapter happens not to expose it — that is how its overridden
+    // members stay reachable.
+    const isOverrideNamespace = path.length === 1 && OVERRIDES[String(path[0])] != null;
+    const current = isOverrideNamespace ? {} : readPath(currentAdapter, path).value;
     if (typeof current === "function") {
       const callDynamic = (...args: unknown[]) => {
-        const { parent, value } = readPath(adapterForCall(args), path);
+        const pinned = bindingFromArgs(args);
+        const { parent, value } = readPath(
+          pinned ? adapterForBinding(pinned) : currentAdapter,
+          path,
+        );
         if (typeof value !== "function") return value;
         // Some adapter functions are themselves proxies so nested missing APIs
         // can keep resolving. Reflect.apply invokes the callable directly
         // without reading its potentially proxied `.apply` property.
-        return Reflect.apply(value, parent, args);
+        const result = Reflect.apply(value, parent, args);
+        // A pinned call belongs to its binding for life. An unpinned one that
+        // handed back an unsubscribe is a subscription on the *displayed*
+        // project, so it has to follow the display across tab switches.
+        if (pinned || !isSubscriptionMember(path) || typeof result !== "function") {
+          return result;
+        }
+        return registerDurableSubscription({
+          path,
+          args,
+          detach: result as () => void,
+        });
       };
       const dynamicFunction = new Proxy(callDynamic, {
         get(_target, property) {
@@ -566,13 +674,34 @@ export function createFederatedWebAdapter({
   };
 
   const surface = new Proxy({} as Window["ade"], {
-    get(_target, property) {
-      if (property === "app") return specialApp;
-      if (property === "project") return specialProject;
-      if (property === "remoteRuntime") return specialRemoteRuntime;
-      return dynamicMember([property]);
-    },
+    get: (_target, property) => dynamicMember([property]),
   });
+
+  /**
+   * Re-point `currentAdapter` at the surface the workspace says is displayed.
+   *
+   * A machine's client is replaced on every reconnect, which disposes its
+   * adapters and parks the display on `fallbackAdapter`. Nothing else moved it
+   * back: the host-driven rebind below only fires when the *project* changes,
+   * so a plain reconnect left the tab wired to `fallbackClient` — the first
+   * machine that ever connected — for the rest of the session, with every
+   * durable subscription re-attached to that machine's socket.
+   */
+  const restoreCurrentAdapterForDisplayedSurface = (): void => {
+    try {
+      if (workspace.activeSurface === "chats") {
+        const targetId = workspace.selectedChatsTargetId;
+        if (targetId && manager.getClient(targetId)) setCurrentAdapter(adapterForChats(targetId));
+        return;
+      }
+      if (workspace.activeSurface !== "project" || !activeBinding) return;
+      if (!manager.getClient(activeBinding.targetId)) return;
+      setCurrentAdapter(adapterForBinding(activeBinding));
+    } catch {
+      // The machine went away between the lookup and the bind; the next
+      // snapshot retries.
+    }
+  };
 
   manager.setProtectedTargetId(activeBinding?.targetId ?? null);
   const invalidationDispose = manager.subscribeEnvironmentInvalidation(
@@ -588,14 +717,25 @@ export function createFederatedWebAdapter({
       adaptersByBinding.delete(key);
       if (currentAdapter === entry.adapter) setCurrentAdapter(fallbackAdapter);
     }
+    // Covers both the reconnect that just replaced a client above and a later
+    // snapshot in which a machine we were parked off of comes back.
+    if (currentAdapter === fallbackAdapter) restoreCurrentAdapterForDisplayedSurface();
     const connectionSnapshot = getConnectionSnapshot();
     for (const listener of connectionListeners) listener(connectionSnapshot);
     if (workspace.activeSurface !== "project" || !activeBinding) return;
+    // Mid-activation the displayed binding is already stale: the user asked for
+    // another tab and `openProject` has not committed it yet. Rebinding here
+    // would write the outgoing tab back over the incoming one.
+    if (activationsInFlight > 0) return;
+    const displayedBinding = activeBinding;
+    // Look up only the displayed machine's own session. A host reports its own
+    // active project; following any other machine's report would move a tab off
+    // the machine it is bound to, which no host event is allowed to do.
     const session = snapshot.sessions.find(
-      (entry) => entry.targetId === activeBinding?.targetId,
+      (entry) => entry.targetId === displayedBinding.targetId,
     );
     const nextProjectId = session?.activeProjectId;
-    if (!session || !nextProjectId || nextProjectId === activeBinding.projectId) return;
+    if (!session || !nextProjectId || nextProjectId === displayedBinding.projectId) return;
     const project = session.projects.find((entry) => entry.id === nextProjectId);
     if (!project || !manager.getClient(session.targetId)) return;
     const info = projectInfo(project);
@@ -694,8 +834,8 @@ export function createFederatedWebAdapter({
       invalidationDispose();
       managerDispose();
       manager.setProtectedTargetId(null);
-      for (const subscription of navigationListeners) subscription.dispose();
-      navigationListeners.clear();
+      for (const entry of durableSubscriptions) detachDurableSubscription(entry);
+      durableSubscriptions.clear();
       for (const adapter of adapters) adapter.dispose();
       projectListeners.clear();
       bindingListeners.clear();

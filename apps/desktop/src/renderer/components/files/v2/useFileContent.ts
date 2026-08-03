@@ -13,6 +13,29 @@ export function invalidateFileContent(workspaceId: string, path: string): void {
   cache.delete(cacheKey(workspaceId, path));
 }
 
+/**
+ * The cached `readFile` payload, if this file is still in the LRU. Openers use
+ * it to skip a round trip for a file the user just closed or previewed — on the
+ * web client that read crosses the relay.
+ */
+export function getCachedFileContent(workspaceId: string, path: string): FileContent | null {
+  return cache.get(cacheKey(workspaceId, path)) ?? null;
+}
+
+/**
+ * Whether a re-read produced the same bytes as a payload already held.
+ * Compares the fields a viewer renders; `FileContent` carries no timestamp, so
+ * a field-wise check is exact rather than heuristic.
+ */
+export function sameFileContent(a: FileContent, b: FileContent): boolean {
+  return a.content === b.content
+    && a.size === b.size
+    && a.totalSize === b.totalSize
+    && a.encoding === b.encoding
+    && a.isBinary === b.isBinary
+    && a.isPartial === b.isPartial;
+}
+
 export function primeFileContent(workspaceId: string, path: string, content: FileContent): void {
   const key = cacheKey(workspaceId, path);
   cache.delete(key);

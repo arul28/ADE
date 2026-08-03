@@ -5119,7 +5119,7 @@ describe("CTO-gated Linear sync commands", () => {
     spawnMock.mockImplementation(() => ({ kill: vi.fn(), once: vi.fn(), unref: vi.fn() }));
   });
 
-  it("advertises them as optional, paired-controller-invocable capabilities (not forbidden at the gate)", async () => {
+  it("advertises them as optional capabilities and forbids the credential writers at the gate", async () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const base = createHostArgs(projectRoot, []);
     const host = createSyncHostService({
@@ -5165,14 +5165,24 @@ describe("CTO-gated Linear sync commands", () => {
       expect(MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS).not.toEqual(
         expect.arrayContaining([...MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS]),
       );
+      // The two direct credential-store writers stay advertised — a phone still
+      // feature-detects them — but are host-local, so the gate rejects them
+      // (C12-sec). Clients hide the affordance by reading the advertised
+      // policy, which is why the descriptor is asserted either way.
+      const viewerBlockedActions = new Set<string>([
+        "cto.setLinearToken",
+        "cto.clearLinearToken",
+      ]);
+
       for (const action of MOBILE_SYNC_OPTIONAL_REMOTE_COMMAND_ACTIONS) {
+        const viewerBlocked = viewerBlockedActions.has(action);
         // Policy shape varies (lifecycle mutations are additionally queueable);
         // what matters for feature detection is that the action is advertised
-        // and viewer-allowed.
+        // with an accurate viewerAllowed bit.
         expect(actions).toContainEqual(expect.objectContaining({
           action,
           scope: "project",
-          policy: expect.objectContaining({ viewerAllowed: true }),
+          policy: expect.objectContaining({ viewerAllowed: !viewerBlocked }),
         }));
 
         const requestId = `viewer-${action}`;
@@ -5193,15 +5203,18 @@ describe("CTO-gated Linear sync commands", () => {
         }));
 
         const result = await waitForEnvelope(peer.envelopes, "command_result", requestId);
-        // A paired controller (the phone) must pass the authorization gate for
-        // these credential mutations — same trust level as lanes.create/delete.
-        // The result is never a forbidden_command rejection (it may fail
-        // downstream on a service not wired into this host harness, which is
-        // fine here — the handler success paths live in syncRemoteCommandService
-        // tests).
-        expect((result.payload as { error?: { code?: string } }).error?.code).not.toBe(
-          "forbidden_command",
-        );
+        const errorCode = (result.payload as { error?: { code?: string } }).error?.code;
+        if (viewerBlocked) {
+          // The registry is the gate: a paired controller never reaches the
+          // credential store, even though the action is advertised.
+          expect(errorCode).toBe("forbidden_command");
+        } else {
+          // Everything else clears the authorization gate at the same trust
+          // level as lanes.create/delete. It may still fail downstream on a
+          // service not wired into this host harness, which is fine here — the
+          // handler success paths live in syncRemoteCommandService tests.
+          expect(errorCode).not.toBe("forbidden_command");
+        }
       }
     } finally {
       peer?.ws.close();

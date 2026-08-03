@@ -26,7 +26,7 @@ function legacyEnvironment(envId: string): WebClientEnvironmentRecord {
 }
 
 describe("web-client trust reset migration", () => {
-  it("bounds a v2 schema upgrade blocked by a tab holding the v1 database", async () => {
+  it("bounds a schema upgrade blocked by a tab holding the previous database", async () => {
     const request = {} as IDBOpenDBRequest;
     const open = vi.fn(() => request);
     const storage = new IndexedDbStorage({
@@ -35,7 +35,7 @@ describe("web-client trust reset migration", () => {
     });
 
     const pendingRead = storage.get("account", "oauthSession");
-    expect(open).toHaveBeenCalledWith("ade-web-client", 2);
+    expect(open).toHaveBeenCalledWith("ade-web-client", 3);
     expect(request.onblocked).toBeTypeOf("function");
     request.onblocked?.(new Event("blocked") as IDBVersionChangeEvent);
 
@@ -166,5 +166,72 @@ describe("web-client trust reset migration", () => {
       ]),
     });
     await expect(store.listEnvironments()).resolves.toHaveLength(2);
+  });
+});
+
+describe("machine project catalog cache", () => {
+  const project = (id: string, iconDataUrl: string | null = null) => ({
+    id,
+    displayName: `Project ${id}`,
+    rootPath: `/repos/${id}`,
+    defaultBaseRef: "main",
+    lastOpenedAt: null,
+    iconDataUrl,
+    laneCount: 3,
+    isAvailable: true,
+    isCached: false,
+    isOpen: false,
+  });
+
+  const catalog = (machineKey: string, overrides: Record<string, unknown> = {}) => ({
+    machineKey,
+    machineName: `Mac ${machineKey}`,
+    hostDeviceId: null,
+    envId: null,
+    ownerUserId: "user-1",
+    projects: [project(`${machineKey}-p1`)],
+    savedAt: 1_000,
+    ...overrides,
+  });
+
+  it("bounds a saved catalog: caps projects, drops oversized icons, evicts the oldest machine past the cap", async () => {
+    const store = new WebClientEnvStore(new MemoryStorage());
+    const oversizedIcon = `data:image/png;base64,${"A".repeat(30_000)}`;
+    await store.saveMachineCatalog(catalog("m-big", {
+      savedAt: 5_000,
+      projects: [
+        project("kept", oversizedIcon),
+        ...Array.from({ length: 40 }, (_, i) => project(`extra-${i}`)),
+      ],
+    }));
+    const [saved] = await store.listMachineCatalogs();
+    expect(saved.projects).toHaveLength(24);
+    expect(saved.projects[0]).toMatchObject({ id: "kept", iconDataUrl: null });
+
+    for (let i = 0; i < 8; i += 1) {
+      await store.saveMachineCatalog(catalog(`m-${i}`, { savedAt: 10_000 + i }));
+    }
+    const machines = await store.listMachineCatalogs();
+    expect(machines).toHaveLength(8);
+    // The newest save wins a slot; the oldest record (m-big at 5 000) is evicted.
+    expect(machines.map((record) => record.machineKey)).not.toContain("m-big");
+    expect(machines[0].machineKey).toBe("m-7");
+  });
+
+  it("prunes only other accounts' catalogs, keeping the current owner's and ownerless records", async () => {
+    const store = new WebClientEnvStore(new MemoryStorage());
+    await store.saveMachineCatalog(catalog("mine", { ownerUserId: "user-1" }));
+    await store.saveMachineCatalog(catalog("theirs", { ownerUserId: "user-2" }));
+    await store.saveMachineCatalog(catalog("ownerless", { ownerUserId: null }));
+
+    await expect(store.pruneMachineCatalogs("user-1")).resolves.toEqual(["theirs"]);
+    const afterSignIn = (await store.listMachineCatalogs()).map((record) => record.machineKey).sort();
+    expect(afterSignIn).toEqual(["mine", "ownerless"]);
+
+    // Sign-out (null owner) must not leave the signed-out account's project
+    // names on the welcome surface, but browser-local ownerless records stay.
+    await expect(store.pruneMachineCatalogs(null)).resolves.toEqual(["mine"]);
+    const afterSignOut = (await store.listMachineCatalogs()).map((record) => record.machineKey);
+    expect(afterSignOut).toEqual(["ownerless"]);
   });
 });

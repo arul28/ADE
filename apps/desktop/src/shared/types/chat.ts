@@ -2312,6 +2312,13 @@ export type AgentChatSuggestLaneNameArgs = {
   prompt: string;
   /** Registry model ID used to run the naming call (e.g. first selected model). */
   modelId: string;
+  /**
+   * Registry model ID the chat itself was launched with. Distinct from `modelId`,
+   * which is the configured naming model when one is set — the naming fallback
+   * chain needs the launched model even then, so it can escape a naming provider
+   * that is broken at the provider level.
+   */
+  chatModelId?: string;
   /** Optional fallback used when model-backed naming is disabled or unavailable. */
   fallbackName?: string;
   /** Exact temporary branch created for this automatic lane. */

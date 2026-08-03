@@ -26,6 +26,16 @@ class MemorySessionStorage {
   removeItem(key: string): void {
     this.values.delete(key);
   }
+
+  // Real web storage is enumerable, and the client relies on that to sweep and
+  // to tell an unknown `state` apart from storage it lost.
+  get length(): number {
+    return this.values.size;
+  }
+
+  key(index: number): string | null {
+    return [...this.values.keys()][index] ?? null;
+  }
 }
 
 function accessToken(
@@ -139,6 +149,153 @@ describe("BrowserAccountClient", () => {
     expect(requests.every((request) => !request.url.includes(token) && !request.url.includes("refresh-secret"))).toBe(true);
     expect(requests.every((request) => request.init?.redirect === "error")).toBe(true);
     expect(new Headers(requests[1]?.init?.headers).get("authorization")).toBe(`Bearer ${token}`);
+  });
+
+  it("survives a browser that drops sessionStorage, and explains a dropped stash", async () => {
+    const config = {
+      issuer: "https://clerk.example",
+      clientId: "client_ade",
+      directoryBaseUrl: "https://directory.example",
+      relayBaseUrls: ["wss://relay.example"],
+    };
+    const assigned: string[] = [];
+    const location = browserLocation(assigned);
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://clerk.example/oauth/token") {
+        return new Response(JSON.stringify({
+          access_token: accessToken("user_stash"),
+          refresh_token: "refresh-original",
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      if (url === "https://clerk.example/oauth/userinfo") {
+        return new Response(JSON.stringify({ sub: "user_stash" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ machines: [] }), { status: 200 });
+    }) as typeof fetch;
+
+    // The stash outlives the client instance that wrote it: the built-in
+    // browser can hand the callback to a fresh page context.
+    const storage = new MemorySessionStorage();
+    const starter = new BrowserAccountClient({
+      config,
+      fetchImpl,
+      location,
+      history: { replaceState: () => {} },
+      storage,
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+    await starter.startSignIn();
+    const authorize = new URL(assigned[0]!);
+    const callbackLocation = browserLocation([]);
+    callbackLocation.pathname = "/account/callback";
+    callbackLocation.search = `?code=oauth-code&state=${
+      encodeURIComponent(authorize.searchParams.get("state")!)
+    }`;
+    const finisher = new BrowserAccountClient({
+      config,
+      fetchImpl,
+      location: callbackLocation,
+      history: { replaceState: () => {} },
+      storage,
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+    await expect(finisher.bootstrap()).resolves.toMatchObject({
+      state: "signed_in",
+      userId: "user_stash",
+    });
+
+    const droppedStash = new BrowserAccountClient({
+      config,
+      fetchImpl,
+      location: callbackLocation,
+      history: { replaceState: () => {} },
+      storage: new MemorySessionStorage(),
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+    const dropped = await droppedStash.bootstrap();
+    expect(dropped.state).toBe("auth_expired");
+    expect(dropped.message).toContain("Sign-in couldn't complete in this browser");
+  });
+
+  it("completes each tab's sign-in when two tabs authorize at once", async () => {
+    const config = {
+      issuer: "https://clerk.example",
+      clientId: "client_ade",
+      directoryBaseUrl: "https://directory.example",
+      relayBaseUrls: ["wss://relay.example"],
+    };
+    const fetchImpl = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      if (url === "https://clerk.example/oauth/token") {
+        return new Response(JSON.stringify({
+          access_token: accessToken("user_tabs"),
+          refresh_token: "refresh-original",
+          expires_in: 3600,
+        }), { status: 200 });
+      }
+      if (url === "https://clerk.example/oauth/userinfo") {
+        return new Response(JSON.stringify({ sub: "user_tabs" }), { status: 200 });
+      }
+      return new Response(JSON.stringify({ machines: [] }), { status: 200 });
+    }) as typeof fetch;
+    // localStorage is shared across the origin, so both tabs stash here.
+    const storage = new MemorySessionStorage();
+    const newClient = (location: ReturnType<typeof browserLocation>) => new BrowserAccountClient({
+      config,
+      fetchImpl,
+      location,
+      history: { replaceState: () => {} },
+      storage,
+      sessionStore: new BrowserAccountSessionStore(new MemoryStorage()),
+    });
+
+    const firstAssigned: string[] = [];
+    const secondAssigned: string[] = [];
+    await newClient(browserLocation(firstAssigned)).startSignIn();
+    // The second tab starts before the first one's callback returns; it must
+    // not evict the first tab's PKCE verifier.
+    await newClient(browserLocation(secondAssigned)).startSignIn();
+    const firstState = new URL(firstAssigned[0]!).searchParams.get("state")!;
+    const secondState = new URL(secondAssigned[0]!).searchParams.get("state")!;
+    expect(firstState).not.toBe(secondState);
+
+    const callbackFor = (state: string) => {
+      const location = browserLocation([]);
+      location.pathname = "/account/callback";
+      location.search = `?code=oauth-code&state=${encodeURIComponent(state)}`;
+      return location;
+    };
+    await expect(newClient(callbackFor(firstState)).bootstrap()).resolves.toMatchObject({
+      state: "signed_in",
+      userId: "user_tabs",
+    });
+    await expect(newClient(callbackFor(secondState)).bootstrap()).resolves.toMatchObject({
+      state: "signed_in",
+      userId: "user_tabs",
+    });
+
+    // An IdP error redirect that echoes no `state` names no attempt, so it must
+    // not take the other tabs' stashes down with it.
+    const thirdAssigned: string[] = [];
+    await newClient(browserLocation(thirdAssigned)).startSignIn();
+    const thirdState = new URL(thirdAssigned[0]!).searchParams.get("state")!;
+    const errorCallback = browserLocation([]);
+    errorCallback.pathname = "/account/callback";
+    errorCallback.search = "?error=access_denied";
+    await newClient(errorCallback).bootstrap();
+    await expect(newClient(callbackFor(thirdState)).bootstrap()).resolves.toMatchObject({
+      state: "signed_in",
+      userId: "user_tabs",
+    });
+
+    // Both stashes are consumed, and a state we never issued is reported as a
+    // verification failure rather than as lost storage.
+    await newClient(browserLocation([])).startSignIn();
+    const forged = await newClient(callbackFor("state-we-never-issued")).bootstrap();
+    expect(forged.state).toBe("auth_expired");
+    expect(forged.message).toContain("could not be verified");
   });
 
   it("rejects non-HTTPS OAuth and directory configuration", () => {

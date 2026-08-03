@@ -1,10 +1,16 @@
 import type {
   PrMergeContext,
+  PrMobileGithubDetailSnapshot,
   PrMobileSnapshot,
   PrSummary,
+  PrWithConflicts,
 } from "../../../shared/types";
 import type { AdapterInfra, AdeNamespace } from "./types";
-import { assertWebRuntimePinUnsupported } from "./runtimePinGuard";
+import { createCoalescingReadCache } from "./infra/coalescingReadCache";
+import { unavailableOnHost } from "./misc";
+import { assertWebRuntimePinRoutable } from "./runtimePinGuard";
+
+const READ_CACHE_TTL_MS = 3_000;
 
 export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   const { commands, events } = infra;
@@ -19,25 +25,33 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     live: false,
   });
 
-  async function mobileSnapshot(options: { surfaceErrors?: boolean } = {}): Promise<PrMobileSnapshot> {
+  /**
+   * The PR list, from the cheapest command the host offers.
+   *
+   * `prs.list` is a bare DB read; the mobile aggregate it replaced rebuilds
+   * lanes, capabilities, stacks and — worst of all — runs a sequential per-lane
+   * `scanRebaseNeeds()` git sweep, which head-of-line-blocks every other call on
+   * the peer. Older hosts without `prs.list` still fall back to the aggregate.
+   */
+  async function listPrs(options: { surfaceErrors?: boolean } = {}): Promise<PrSummary[]> {
     const fallback = options.surfaceErrors
-      ? () => { throw new Error("The PR snapshot is temporarily unavailable."); }
-      : emptyMobileSnapshot;
-    if (commands.hasAction("prs.getMobileSnapshot")) {
-      return await commands.call("prs.getMobileSnapshot", {}, {
+      ? unavailableOnHost("The PR list is temporarily unavailable.")
+      : () => [] as PrSummary[];
+    if (commands.hasAction("prs.list")) {
+      return await commands.call<PrSummary[]>("prs.list", {}, {
         fallback,
         idempotent: true,
-        cacheTtlMs: 3_000,
+        cacheTtlMs: READ_CACHE_TTL_MS,
       });
     }
-    const prs = await commands.call<PrSummary[]>("prs.list", {}, {
+    const snapshot = await commands.call<PrMobileSnapshot>("prs.getMobileSnapshot", {}, {
       fallback: options.surfaceErrors
-        ? () => { throw new Error("The PR list is temporarily unavailable."); }
-        : [],
+        ? unavailableOnHost("The PR snapshot is temporarily unavailable.")
+        : emptyMobileSnapshot,
       idempotent: true,
-      cacheTtlMs: 3_000,
+      cacheTtlMs: READ_CACHE_TTL_MS,
     });
-    return { ...emptyMobileSnapshot(), prs };
+    return snapshot.prs;
   }
 
   function call<T>(action: string, args: unknown, fallback: T, idempotent = true): Promise<T> {
@@ -45,20 +59,117 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
   }
 
   function read<T>(action: string, args: unknown, fallback: T): Promise<T> {
-    return commands.call<T>(action, asRecord(args), { fallback, cacheTtlMs: 3_000 });
+    return commands.call<T>(action, asRecord(args), { fallback, cacheTtlMs: READ_CACHE_TTL_MS });
+  }
+
+  // ---- Batched GitHub detail ----
+  //
+  // Opening a PR detail fans out into ~10 sidecar reads (detail, status, checks,
+  // reviews, comments, files, commits, threads, runs, activity). Each one is a
+  // serialized relay round trip; `prs.getMobileGithubDetail` answers all of them
+  // from one host-side `Promise.all`. The individual getters read through this
+  // batch, so the fan-out collapses to a single call per PR.
+  //
+  // `getStatusByGithub` deliberately never *starts* a batch: the mergeability
+  // poll calls it alone, and turning a status poll into a ten-way GitHub fan-out
+  // would cost more than it saves. It still reads a batch another getter opened.
+  // The shared read cache, not a hand-rolled Map: it arms the TTL at
+  // RESOLUTION (an expiry armed at creation could retire a batch before its
+  // sidecars ever read it) and `cacheResult` keeps a failed batch out, so one
+  // bad fan-out is not replayed to every sidecar for the rest of the window.
+  const githubDetailBatches = createCoalescingReadCache(READ_CACHE_TTL_MS);
+
+  /**
+   * Drop every cached PR read, batches included.
+   *
+   * Batches are live GitHub state layered over the same rows the `prs.` reads
+   * serve; a caller that invalidates one and not the other leaves the detail
+   * pane showing pre-write data. Every invalidation goes through here so the
+   * two cannot drift apart.
+   */
+  function invalidatePrsReads(): void {
+    commands.invalidateCache(["prs."]);
+    githubDetailBatches.clear();
+  }
+
+  function coordsKey(coords: unknown): string | null {
+    const record = asRecord(coords);
+    const owner = typeof record.repoOwner === "string" ? record.repoOwner : "";
+    const name = typeof record.repoName === "string" ? record.repoName : "";
+    const number = Number(record.githubPrNumber);
+    if (!owner || !name || !Number.isFinite(number) || number <= 0) return null;
+    return `${owner}/${name}#${number}`;
+  }
+
+  type GithubDetailBatch = PrMobileGithubDetailSnapshot | null;
+
+  /** Read a batch another sidecar already opened, without opening one. */
+  function joinGithubDetailBatch(coords: unknown): Promise<GithubDetailBatch> {
+    const key = coordsKey(coords);
+    if (!key) return Promise.resolve(null);
+    return githubDetailBatches.get<GithubDetailBatch>(key) ?? Promise.resolve(null);
+  }
+
+  /** Join the open batch for these coordinates, or start one. */
+  function openGithubDetailBatch(coords: unknown): Promise<GithubDetailBatch> {
+    const key = coordsKey(coords);
+    if (!key) return Promise.resolve(null);
+    if (!commands.hasAction("prs.getMobileGithubDetail")) return joinGithubDetailBatch(coords);
+    return githubDetailBatches.coalesce<GithubDetailBatch>(
+      key,
+      () => commands
+        .call<GithubDetailBatch>("prs.getMobileGithubDetail", asRecord(coords), {
+          fallback: null,
+          idempotent: true,
+        })
+        // Resolving null keeps each sidecar on its own per-part fallback rather
+        // than failing them all together.
+        .catch(() => null),
+      // Detail data is live GitHub state, so hold a batch only long enough to
+      // serve the sidecars that open with it — and never hold a failed one.
+      { cacheResult: (snapshot) => snapshot != null },
+    );
+  }
+
+  /**
+   * Serve one sidecar from the batch, falling back to its own command when the
+   * host has no batched action, the batch failed, or the host flagged that part
+   * as unavailable — an empty array from a failed part must never be presented
+   * as a true zero.
+   */
+  function batchedGithubRead<T>(
+    part: string,
+    action: string,
+    pick: (snapshot: PrMobileGithubDetailSnapshot) => T | null,
+    fallback: T,
+    options: { joinOnly?: boolean } = {},
+  ) {
+    return async (coords: unknown): Promise<T> => {
+      const snapshot = options.joinOnly
+        ? await joinGithubDetailBatch(coords)
+        : await openGithubDetailBatch(coords);
+      if (snapshot && !snapshot.unavailableParts.includes(part)) {
+        const value = pick(snapshot);
+        // A null part falls through to the per-part command. Whether the host
+        // means "absent" or "genuinely null" here is unconfirmed, so this keeps
+        // the existing behaviour rather than guessing.
+        if (value != null) return value;
+      }
+      return await call<T>(action, coords, fallback);
+    };
   }
 
   infra.addDispose(
     events.on("prsInvalidated", (event) => {
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       // `prs-updated` is authoritative in PrsContext; never represent a stale
-      // cache marker as an empty PR list. Hydrate one coalesced aggregate read
-      // and emit only when the host actually returned a snapshot.
-      void mobileSnapshot({ surfaceErrors: true }).then((snapshot) => {
+      // cache marker as an empty PR list. Hydrate one coalesced list read and
+      // emit only when the host actually answered.
+      void listPrs({ surfaceErrors: true }).then((prs) => {
         events.emit("prsEvent", {
           type: "prs-updated",
           polledAt: event.at,
-          prs: snapshot.prs,
+          prs,
         });
       }).catch(() => {});
     })
@@ -70,8 +181,8 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     preflightCreateLaneFromPrBranch: (args: unknown) => call("prs.preflightCreateLaneFromPrBranch", args, null),
     createLaneFromPrBranch: (args: unknown) => call("prs.createLaneFromPrBranch", args, null, false),
     getForLane: async (laneId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.getForLane", pin);
-      return (await mobileSnapshot()).prs.find((pr) => pr.laneId === laneId) ?? null;
+      assertWebRuntimePinRoutable("prs.getForLane", pin, infra);
+      return (await listPrs()).find((pr) => pr.laneId === laneId) ?? null;
     },
     // Manual ⟳ PR-sync (ChatGitToolbar) — force a fresh reconcile for one lane.
     // Mirrors the preload runtime action `pr.syncLanePr` (single positional
@@ -79,42 +190,42 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     // `prs.getForLane` host handler that reads `{ laneId }`. It mutates, so the
     // read cache is dropped afterward like `refresh` does.
     syncLanePr: async (laneId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.syncLanePr", pin);
+      assertWebRuntimePinRoutable("prs.syncLanePr", pin, infra);
       const result = await call<PrSummary | null>("prs.syncLanePr", { laneId }, null, false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return result;
     },
     // Force a global PR reconcile. Routes to the same daemon action the preload
     // uses (`pr.reconcileOnFocus` with `{ force: true }`).
     reconcileNow: async () => {
       await call("prs.reconcileOnFocus", { force: true }, undefined, false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
     },
     listAll: async (pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.listAll", pin);
-      return (await mobileSnapshot()).prs;
+      assertWebRuntimePinRoutable("prs.listAll", pin, infra);
+      return await listPrs();
     },
     listOpenForRepo: () => read("prs.listOpenForRepo", {}, []),
     refresh: async (args?: unknown, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.refresh", pin);
+      assertWebRuntimePinRoutable("prs.refresh", pin, infra);
       const result = await call<unknown>("prs.refresh", args, [], false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return arrayField<PrSummary>(result, "prs");
     },
     getStatus: (prId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.getStatus", pin);
+      assertWebRuntimePinRoutable("prs.getStatus", pin, infra);
       return read("prs.getStatus", { prId }, null);
     },
     getChecks: (prId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.getChecks", pin);
+      assertWebRuntimePinRoutable("prs.getChecks", pin, infra);
       return read("prs.getChecks", { prId }, []);
     },
     getComments: (prId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.getComments", pin);
+      assertWebRuntimePinRoutable("prs.getComments", pin, infra);
       return read("prs.getComments", { prId }, []);
     },
     getReviews: (prId: string, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.getReviews", pin);
+      assertWebRuntimePinRoutable("prs.getReviews", pin, infra);
       return read("prs.getReviews", { prId }, []);
     },
     getReviewThreads: (prId: string) => read("prs.getReviewThreads", { prId }, []),
@@ -161,10 +272,13 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
       Object.fromEntries(prIds.map((prId) => [prId, emptyMergeContext(prId)])),
     ),
     listWithConflicts: async (args?: unknown) => {
-      if (asRecord(args).includeConflictAnalysis === true) {
-        return await read("prs.listWithConflicts", args, []);
+      // With analysis off this is a bare DB read host-side; only the analysed
+      // form pays for the per-lane merge-tree sweep.
+      if (commands.hasAction("prs.listWithConflicts") || asRecord(args).includeConflictAnalysis === true) {
+        return await read<PrWithConflicts[]>("prs.listWithConflicts", args, []);
       }
-      return (await mobileSnapshot()).prs.map((pr) => ({
+      // Older host: the unanalysed shape is the list with a null analysis.
+      return (await listPrs()).map((pr) => ({
         ...pr,
         conflictAnalysis: null,
       }));
@@ -174,27 +288,27 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     listGitHubStacks: (args?: unknown) => read("prs.listGithubStacks", args, []),
     syncGitHubStacks: async (args?: unknown) => {
       const result = await call("prs.syncGithubStacks", args, [], false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return result;
     },
     createGitHubStack: async (args: unknown) => {
       const result = await call("prs.createGithubStack", args, null, false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return result;
     },
     addGitHubStackPullRequests: async (args: unknown) => {
       const result = await call("prs.addGithubStackPullRequests", args, null, false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return result;
     },
     unstackGitHubStack: async (args: unknown) => {
       const result = await call("prs.unstackGithubStack", args, null, false);
-      commands.invalidateCache(["prs."]);
+      invalidatePrsReads();
       return result;
     },
     listIntegrationWorkflows: (args?: unknown) => call("prs.listIntegrationWorkflows", args, []),
     onEvent: (listener: (event: unknown) => void, pin?: unknown) => {
-      assertWebRuntimePinUnsupported("prs.onEvent", pin);
+      assertWebRuntimePinRoutable("prs.onEvent", pin, infra);
       return events.on("prsEvent", listener as never);
     },
     getDetail: (prId: string) => read("prs.getDetail", { prId }, null),
@@ -204,21 +318,50 @@ export function createPrsNamespace(infra: AdapterInfra): AdeNamespace<"prs"> {
     getActivity: (prId: string) => read("prs.getActivity", { prId }, []),
     getWorkflowGraph: (args: unknown) => read("prs.getWorkflowGraph", args, null),
     getCheckLog: (args: unknown) => read("prs.getCheckLog", args, null),
-    getDetailByGithub: (coords: unknown) => call("prs.getDetailByGithub", coords, null),
-    getFilesByGithub: (coords: unknown) => call("prs.getFilesByGithub", coords, []),
-    getCommitsByGithub: (coords: unknown) => call("prs.getCommitsByGithub", coords, []),
-    getActionRunsByGithub: (coords: unknown) => call("prs.getActionRunsByGithub", coords, []),
-    getActivityByGithub: (coords: unknown) => call("prs.getActivityByGithub", coords, []),
-    getStatusByGithub: (coords: unknown) => call("prs.getStatusByGithub", coords, null),
-    getChecksByGithub: (coords: unknown) => call("prs.getChecksByGithub", coords, []),
-    getReviewsByGithub: (coords: unknown) => call("prs.getReviewsByGithub", coords, []),
-    getCommentsByGithub: (coords: unknown) => call("prs.getCommentsByGithub", coords, []),
-    getReviewThreadsByGithub: (coords: unknown) => call("prs.getReviewThreadsByGithub", coords, []),
-    addComment: (args: unknown) => call("prs.addComment", args, null, false),
-    updateComment: (args: unknown) => call("prs.updateComment", args, null, false),
-    replyToReviewThread: (args: unknown) => call("prs.replyToReviewThread", args, null, false),
+    getDetailByGithub: batchedGithubRead("detail", "prs.getDetailByGithub", (s) => s.snapshot.detail, null),
+    getFilesByGithub: batchedGithubRead("files", "prs.getFilesByGithub", (s) => s.snapshot.files, []),
+    getCommitsByGithub: batchedGithubRead("commits", "prs.getCommitsByGithub", (s) => s.snapshot.commits, []),
+    getActionRunsByGithub: batchedGithubRead("action_runs", "prs.getActionRunsByGithub", (s) => s.actionRuns, []),
+    getActivityByGithub: batchedGithubRead("activity", "prs.getActivityByGithub", (s) => s.activity, []),
+    getStatusByGithub: batchedGithubRead(
+      "status",
+      "prs.getStatusByGithub",
+      (s) => s.snapshot.status,
+      null,
+      { joinOnly: true },
+    ),
+    getChecksByGithub: batchedGithubRead("checks", "prs.getChecksByGithub", (s) => s.snapshot.checks, []),
+    getReviewsByGithub: batchedGithubRead("reviews", "prs.getReviewsByGithub", (s) => s.snapshot.reviews, []),
+    getCommentsByGithub: batchedGithubRead("comments", "prs.getCommentsByGithub", (s) => s.snapshot.comments, []),
+    getReviewThreadsByGithub: batchedGithubRead(
+      "review_threads",
+      "prs.getReviewThreadsByGithub",
+      (s) => s.reviewThreads,
+      [],
+    ),
+    // Mutates the GitHub thread the detail batch caches, so drop it.
+    addComment: async (args: unknown) => {
+      const result = await call("prs.addComment", args, null, false);
+      invalidatePrsReads();
+      return result;
+    },
+    // Mutates the GitHub thread the detail batch caches, so drop it.
+    updateComment: async (args: unknown) => {
+      const result = await call("prs.updateComment", args, null, false);
+      invalidatePrsReads();
+      return result;
+    },
+    // Mutates the GitHub thread the detail batch caches, so drop it.
+    replyToReviewThread: async (args: unknown) => {
+      const result = await call("prs.replyToReviewThread", args, null, false);
+      invalidatePrsReads();
+      return result;
+    },
+    // Mutates the GitHub thread the detail batch caches, so drop it — same as
+    // the comment writes above.
     resolveReviewThread: async (args: unknown) => {
       await call("prs.resolveReviewThread", args, undefined, false);
+      invalidatePrsReads();
     },
     updateTitle: async (args: unknown) => {
       await call("prs.updateTitle", args, undefined, false);

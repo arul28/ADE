@@ -86,6 +86,7 @@ import {
 } from "./rpcAuth";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
@@ -15761,13 +15762,14 @@ async function runServe(
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
   ): Promise<SyncMobileProjectSummary> => {
-    const scope = await scopeRegistry.get(record.projectId);
-    const lanes = await scope.runtime.laneService
-      .list({ includeArchived: false, includeStatus: false })
-      .catch(() => []);
-    const laneCount = lanes.length;
+    // Hydrate the scope (callers depend on the project being open), but take the
+    // count from the same disk read the catalog uses. `laneService.list` counts
+    // rows without checking the worktree still exists, so a project with one
+    // deleted lane reported N here and N-1 in the catalog — a visible flicker
+    // the moment the phone opened it.
+    await scopeRegistry.get(record.projectId);
     return toMobileProjectSummary(record, {
-      laneCount,
+      laneCount: headlessProjectLaneCount(record.rootPath),
       isOpen: true,
       ...overrides,
     });
@@ -15879,10 +15881,17 @@ async function runServe(
           ? projectRegistry.get(catalogHostProjectId)
           : null,
       )
-        .map((record) =>
-          toMobileProjectSummary(record, {
-            isAvailable: fs.existsSync(record.rootPath),
-          }));
+        .map((record) => {
+          const isAvailable = fs.existsSync(record.rootPath);
+          return toMobileProjectSummary(record, {
+            isAvailable,
+            // Registry rows carry no lane data; read the count off disk so the
+            // catalog does not advertise "0 lanes" for every project. A root
+            // that isn't on this machine has nothing to read — skip the disk
+            // work and leave the summary's default count.
+            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+          });
+        });
       return {
         projects: markActiveHostProjectOpen(projects, activeHostProjectId),
       };
@@ -15922,13 +15931,11 @@ async function runServe(
             project,
           };
         }
-        const lanes = await scope.runtime.laneService
-          .list({ includeArchived: false, includeStatus: false })
-          .catch(() => []);
-        const laneCount = lanes.length;
+        // Same disk-backed count as the catalog and the open path, so the row
+        // the phone sees on connect matches the one it just tapped.
         const readyProject = toMobileProjectSummary(record, {
           isOpen: true,
-          laneCount,
+          laneCount: headlessProjectLaneCount(record.rootPath),
         });
         const activeScope = await scopeRegistry.resolveActiveSyncHost();
         const activeStatus = await activeScope?.runtime.syncService?.getStatus();

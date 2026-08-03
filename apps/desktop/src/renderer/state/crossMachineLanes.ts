@@ -83,6 +83,18 @@ const FOREIGN_MACHINE_REFRESH_MS = 10_000;
  * still forces an immediate lane read (`readMachine`).
  */
 const FOREIGN_LANE_REFRESH_MS = 30_000;
+/**
+ * How a refresh is allowed to read lanes.
+ *
+ * `status` resolves a git status and a worktree probe per lane and writes a
+ * `lane_state_snapshots` row per lane on the machine being read. Those writes
+ * replicate, and a replicated write is itself a change notification — so a
+ * change-driven refresh that reads with status feeds the next change, forever.
+ * Change feeds therefore ask for `identity`: the same lane rows, no git work,
+ * no snapshot writes. Full status is paid on a timer and when the surface is
+ * actually looked at, which is when a stale badge would be visible.
+ */
+type LaneReadDepth = "identity" | "status";
 const OFFLINE_DIVERGENCE_MAX_AGE_MS = 60_000;
 /**
  * Floor on how long a drop must persist before Work shows a machine as offline.
@@ -701,8 +713,20 @@ type SyncRuntime = {
   dropsByMachineId: Map<string, MachineDrop>;
   /** Re-evaluates reachability when the next drop deadline lapses. */
   graceTimer: ReturnType<typeof setTimeout> | null;
-  /** Last `lane.list` read per machine, keyed the same way the store is. */
+  /** Last `lane.list` read of any depth per machine, keyed as the store is. */
   laneReadAtMsByMachineId: Map<string, number>;
+  /**
+   * Last `lane.list` read that asked for status, tracked separately so a run of
+   * cheap identity reads cannot keep taking the cadence slot and leave every
+   * machine's status frozen at whatever the first read happened to see.
+   */
+  laneStatusReadAtMsByMachineId: Map<string, number>;
+  /**
+   * Depth the next refresh may read at. Raised to `status` by the triggers that
+   * mean "a person is looking at this now, or the timer came round"; left at
+   * `identity` by change feeds. Consumed and reset by each refresh.
+   */
+  pendingLaneReadDepth: LaneReadDepth;
   /** Lane ids a completed lane read did not explain, so we stop re-asking. */
   unresolvedLaneIdsByMachineId: Map<string, Set<string>>;
 };
@@ -746,6 +770,8 @@ const runtime: SyncRuntime = {
   dropsByMachineId: new Map(),
   graceTimer: null,
   laneReadAtMsByMachineId: new Map(),
+  laneStatusReadAtMsByMachineId: new Map(),
+  pendingLaneReadDepth: "identity",
   unresolvedLaneIdsByMachineId: new Map(),
 };
 
@@ -884,6 +910,37 @@ function shouldReadLanes(machineId: string): boolean {
 }
 
 /**
+ * Whether this tick may pay for a machine's lane status. Same cadence as the
+ * lane read itself, on its own clock: identity reads do not count as having
+ * refreshed status.
+ */
+function shouldReadLaneStatus(machineId: string, depth: LaneReadDepth): boolean {
+  if (depth !== "status") return false;
+  const readAtMs = runtime.laneStatusReadAtMsByMachineId.get(machineId);
+  return readAtMs == null || Date.now() - readAtMs >= FOREIGN_LANE_REFRESH_MS;
+}
+
+/**
+ * Carries each lane's last known status across an identity read.
+ *
+ * `lane.list` with `includeStatus: false` still returns a `status` — a default
+ * placeholder — so taking the payload at face value would blank every badge on
+ * the machine. Same contract the local lane store keeps for its own metadata-
+ * only refreshes.
+ */
+function withPreservedLaneStatus(machineId: string, lanes: LaneSummary[]): LaneSummary[] {
+  const previous = rootAppStoreApi.getState().crossMachineLanesByMachineId[machineId]?.lanes;
+  if (!previous?.length) return lanes;
+  const previousById = new Map(previous.map((lane) => [lane.id, lane] as const));
+  return lanes.map((lane) => {
+    const prior = previousById.get(lane.id);
+    return prior
+      ? { ...lane, status: prior.status, parentStatus: prior.parentStatus }
+      : lane;
+  });
+}
+
+/**
  * A chat on a lane we have no row for, that a lane read has not already failed
  * to explain.
  *
@@ -919,6 +976,7 @@ async function resolveLaneCadence(
   sessions: readonly TerminalSessionSummary[],
   generation: number,
   catchUp: () => Promise<LaneSummary[]>,
+  statusRead: boolean,
 ): Promise<LaneSummary[] | null> {
   const lanes = prefetched
     ?? (hasUnknownLaneReference(machineId, sessions) ? await catchUp() : null);
@@ -928,6 +986,9 @@ async function resolveLaneCadence(
   // suppress that scope's first lane read for a full cadence.
   if (generation !== runtime.generation) return null;
   runtime.laneReadAtMsByMachineId.set(machineId, Date.now());
+  // Only a read that actually resolved status may stamp the status clock. The
+  // catch-up read never does — it exists to name a lane, not to price it.
+  if (statusRead && prefetched) runtime.laneStatusReadAtMsByMachineId.set(machineId, Date.now());
   const known = new Set(lanes.map((lane) => lane.id));
   const unexplained = new Set<string>();
   for (const session of sessions) {
@@ -945,20 +1006,25 @@ async function readMachine(
   projectId: string,
   binding: Extract<OpenProjectBinding, { kind: "remote" }>,
   generation: number,
+  depth: LaneReadDepth,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
   const callAction = window.ade?.remoteRuntime?.callAction;
   if (!callAction) return;
-  const readLanes = () =>
+  const readLanes = (includeStatus: boolean) =>
     withTimeout(
       callAction(targetId, projectId, {
         domain: "lane",
         action: "list",
-        args: { includeArchived: false, includeStatus: true },
+        args: { includeArchived: false, includeStatus },
       }),
       MACHINE_READ_TIMEOUT_MS,
       `lane.list on ${machineName}`,
     );
+  const decodeLanes = (result: unknown, includeStatus: boolean): LaneSummary[] => {
+    const lanes = decodeForeignLanes(result);
+    return includeStatus ? lanes : withPreservedLaneStatus(machineId, lanes);
+  };
   // PRs ride the lane cadence, not the chat cadence. A PR is only ever rendered
   // by joining it to a lane, it changes on the same slow scale a lane does, and
   // the read is a foreign round trip — paying for it every ten seconds would
@@ -981,9 +1047,10 @@ async function readMachine(
     }
   };
   try {
-    const lanesDue = shouldReadLanes(machineId);
+    const statusDue = shouldReadLaneStatus(machineId, depth);
+    const lanesDue = statusDue || shouldReadLanes(machineId);
     const [laneResult, sessionResult, duePrs] = await Promise.all([
-      lanesDue ? readLanes() : null,
+      lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         callAction(targetId, projectId, {
           domain: "session",
@@ -1004,10 +1071,11 @@ async function readMachine(
     // came round. Seeing one is the signal to pay for the lane read now.
     const lanes = await resolveLaneCadence(
       machineId,
-      laneResult ? decodeForeignLanes(laneResult.result) : null,
+      laneResult ? decodeLanes(laneResult.result, statusDue) : null,
       sessions,
       generation,
-      async () => decodeForeignLanes((await readLanes()).result),
+      async () => decodeLanes((await readLanes(false)).result, false),
+      statusDue,
     );
     if (generation !== runtime.generation) return;
     // On a cadence tick the PR read already went out alongside the lane read, so
@@ -1055,17 +1123,20 @@ async function readMachine(
 async function readThisMachine(
   binding: Extract<OpenProjectBinding, { kind: "local" }>,
   generation: number,
+  depth: LaneReadDepth,
 ): Promise<void> {
   const store = rootAppStoreApi.getState();
-  const readLanes = () =>
-    withTimeout(
+  const readLanes = async (includeStatus: boolean) => {
+    const lanes = await withTimeout(
       window.ade.lanes.list(
-        { includeArchived: false, includeStatus: true },
+        { includeArchived: false, includeStatus },
         binding,
       ),
       MACHINE_READ_TIMEOUT_MS,
       "lane.list on This Mac",
     );
+    return includeStatus ? lanes : withPreservedLaneStatus(THIS_MACHINE_ID, lanes);
+  };
   // See `readMachine`: PRs ride the lane cadence for the same reasons, and the
   // read is best-effort — a machine that fails only this read must still
   // contribute its lanes and chats rather than falling into the error path and
@@ -1084,9 +1155,10 @@ async function readThisMachine(
     }
   };
   try {
-    const lanesDue = shouldReadLanes(THIS_MACHINE_ID);
+    const statusDue = shouldReadLaneStatus(THIS_MACHINE_ID, depth);
+    const lanesDue = statusDue || shouldReadLanes(THIS_MACHINE_ID);
     const [laneResult, sessions, duePrs] = await Promise.all([
-      lanesDue ? readLanes() : null,
+      lanesDue ? readLanes(statusDue) : null,
       withTimeout(
         window.ade.sessions.list(
           { limit: FOREIGN_SESSION_LIMIT },
@@ -1103,7 +1175,8 @@ async function readThisMachine(
       laneResult,
       sessions,
       generation,
-      readLanes,
+      () => readLanes(false),
+      statusDue,
     );
     if (generation !== runtime.generation) return;
     // See `readMachine`: parallel on a cadence tick, sequential only for the
@@ -1138,6 +1211,8 @@ async function readThisMachine(
 
 async function runRefresh(): Promise<void> {
   const generation = ++runtime.generation;
+  const depth = runtime.pendingLaneReadDepth;
+  runtime.pendingLaneReadDepth = "identity";
   const scope = runtime.scope;
   const store = rootAppStoreApi.getState();
   const targets = resolveEligibleMachines();
@@ -1175,18 +1250,26 @@ async function runRefresh(): Promise<void> {
             displayName: option.project?.displayName as string,
           },
           generation,
+          depth,
         );
       }
     });
   await Promise.all([
     ...workers,
     ...(scope.boundTargetId && scope.thisMachineBinding
-      ? [readThisMachine(scope.thisMachineBinding, generation)]
+      ? [readThisMachine(scope.thisMachineBinding, generation, depth)]
       : []),
   ]);
 }
 
-function scheduleRefresh(): void {
+/**
+ * @param depth `status` for the triggers that justify paying for git status —
+ * the surface being mounted, retargeted, or looked at again, a machine
+ * appearing, and the poll timer coming round. Change feeds leave it at
+ * `identity`; see {@link LaneReadDepth}.
+ */
+function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
+  if (depth === "status") runtime.pendingLaneReadDepth = "status";
   if (runtime.refreshTimer) {
     clearTimeout(runtime.refreshTimer);
     runtime.refreshTimer = null;
@@ -1223,7 +1306,10 @@ function scheduleRefresh(): void {
         if (!isDocumentVisible()) return;
         runtime.refreshTimer = setTimeout(() => {
           runtime.refreshTimer = null;
-          scheduleRefresh();
+          // The timer is the one caller that is allowed to price lanes without
+          // anyone asking. Its own period is the chat cadence; the lane status
+          // cadence gates it down to `FOREIGN_LANE_REFRESH_MS` per machine.
+          scheduleRefresh("status");
         }, FOREIGN_MACHINE_REFRESH_MS);
       });
   }, REFRESH_COALESCE_MS);
@@ -1452,6 +1538,7 @@ function applyReachability(): void {
     for (const machineId of forgotten) {
       runtime.dropsByMachineId.delete(machineId);
       runtime.laneReadAtMsByMachineId.delete(machineId);
+      runtime.laneStatusReadAtMsByMachineId.delete(machineId);
       runtime.unresolvedLaneIdsByMachineId.delete(machineId);
     }
     store.dropCrossMachineLanes(forgotten);
@@ -1481,13 +1568,16 @@ function resetMachineTracking(): void {
   }
   runtime.dropsByMachineId.clear();
   runtime.laneReadAtMsByMachineId.clear();
+  runtime.laneStatusReadAtMsByMachineId.clear();
   runtime.unresolvedLaneIdsByMachineId.clear();
 }
 
 function applySnapshot(snapshot: RemoteRuntimeConnectionSnapshot): void {
   runtime.connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
   applyReachability();
-  scheduleRefresh();
+  // A machine that just appeared has no rows at all, so its first read has to be
+  // the full one or it renders statusless until the cadence comes round.
+  scheduleRefresh("status");
 }
 
 function attach(): void {
@@ -1498,19 +1588,32 @@ function attach(): void {
   // These events cover the active binding. Other machines are covered by the
   // shared bounded refresh below because preload exposes no per-target push
   // subscription.
+  //
+  // Both are change feeds, so both refresh at `identity` depth. On the web
+  // transport a lifecycle event is synthesized from a coarse table invalidation,
+  // and reading status here would write the rows that produce the next
+  // invalidation — the loop this depth split exists to cut.
   const unsubscribeSessions = window.ade?.sessions?.onChanged?.(() => scheduleRefresh());
   if (unsubscribeSessions) runtime.disposers.push(unsubscribeSessions);
   const unsubscribeLanes = window.ade?.lanes?.onLifecycleEvent?.(() => scheduleRefresh());
   if (unsubscribeLanes) runtime.disposers.push(unsubscribeLanes);
   // The refresh loop stops itself while the window is hidden, so coming back is
-  // the only thing that can restart it.
+  // the only thing that can restart it. Returning to the surface is also when a
+  // stale status badge is about to be looked at, so this read pays for status.
   if (typeof document !== "undefined") {
     const onVisibilityChange = () => {
-      if (isDocumentVisible()) scheduleRefresh();
+      if (isDocumentVisible()) scheduleRefresh("status");
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
     runtime.disposers.push(() => {
       document.removeEventListener("visibilitychange", onVisibilityChange);
+    });
+  }
+  if (typeof window !== "undefined") {
+    const onFocus = () => scheduleRefresh("status");
+    window.addEventListener("focus", onFocus);
+    runtime.disposers.push(() => {
+      window.removeEventListener("focus", onFocus);
     });
   }
   // Lifecycle-guarded, deliberately NOT generation-guarded: if every consumer
@@ -1545,6 +1648,7 @@ function detach(): void {
   resetMachineTracking();
   runtime.refreshQueued = false;
   runtime.refreshInFlight = false;
+  runtime.pendingLaneReadDepth = "identity";
   for (const dispose of runtime.disposers.splice(0)) {
     try {
       dispose();
@@ -1584,7 +1688,7 @@ export function startCrossMachineLaneSync(scope: CrossMachineLaneScope): () => v
   runtime.scope = scope;
   runtime.refCount += 1;
   if (runtime.refCount === 1) attach();
-  if (scopeChanged || runtime.refCount === 1) scheduleRefresh();
+  if (scopeChanged || runtime.refCount === 1) scheduleRefresh("status");
   return () => {
     runtime.refCount = Math.max(0, runtime.refCount - 1);
     if (runtime.refCount === 0) detach();

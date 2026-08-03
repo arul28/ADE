@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ArrowSquareOut, Copy, FilePlus, FolderPlus, PencilSimple, Trash } from "@phosphor-icons/react";
-import type { FileTreeNode, FilesWorkspace } from "../../../../shared/types";
+import type { FileChangeEvent, FileContent, FileTreeNode, FilesWorkspace } from "../../../../shared/types";
 import { useAppStore } from "../../../state/appStore";
 import { createMonacoModelRegistry } from "../monacoModelRegistry";
 import { resolveLanguageId } from "../filePresentation";
@@ -56,7 +56,7 @@ import {
   writeCachedWorkspaces,
 } from "./filesTreeCache";
 import { resolveViewerKind } from "./viewerRegistry";
-import { invalidateFileContent, primeFileContent } from "./useFileContent";
+import { getCachedFileContent, invalidateFileContent, primeFileContent, sameFileContent } from "./useFileContent";
 import { forgetRecentFilesUnder, getRecentFiles, isNestedFilePath, pruneMissingRootRecentFiles, recordRecentFile } from "./recentFiles";
 import { EditorGroups } from "./EditorGroups";
 import { StatusBar } from "./StatusBar";
@@ -70,11 +70,20 @@ import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
 const TREE_PAGE_SIZE = 2_000;
+// The root listing is the first thing every visit needs. Fetching two levels
+// costs one host walk but saves a `listTreeChildren` round trip on the first
+// folder the user expands (the host clamps depth to 1..8).
+const ROOT_TREE_DEPTH = 2;
 // Path reveals (external opens) may need entries beyond the first page; they
 // page up to this bound instead of the single visible page expansion uses.
 const REVEAL_MAX_CHILDREN = 10_000;
 const MAX_QUEUED_TREE_PARENT_REFRESHES = 24;
 const WORKSPACE_LIST_RETRY_DELAYS_MS = [1_000, 2_000, 5_000, 10_000] as const;
+const FILES_REFRESH_DEBOUNCE_MS = 200;
+// Ceiling for unscoped ("something changed") refreshes: they cost a workspace
+// list + root listing + git status, and arrive as bursts.
+const FULL_REFRESH_MIN_INTERVAL_MS = 5_000;
+
 
 // Stable no-tabs fallback: a fresh object per render would give every derived
 // memo (open tabs, watched workspace ids) a new identity each render, forcing
@@ -158,6 +167,10 @@ export function FilesWorkbench({
   const [workspaces, setWorkspaces] = useState<FilesWorkspace[]>(cachedWorkspaces);
   const [workspacesLoaded, setWorkspacesLoaded] = useState<boolean>(cachedWorkspaces.length > 0);
   const [workspacesListedCacheKey, setWorkspacesListedCacheKey] = useState<string | null>(null);
+  // Bumped by unscoped host change hints to re-list workspaces; throttled to
+  // FULL_REFRESH_MIN_INTERVAL_MS by the watcher effect below.
+  const [workspacesRefreshToken, setWorkspacesRefreshToken] = useState(0);
+  const lastFullRefreshAtRef = useRef(0);
   const [workspaceId, setWorkspaceId] = useState<string>(initialWorkspaceId);
   const workspace = useMemo(() => workspaces.find((w) => w.id === workspaceId) ?? null, [workspaces, workspaceId]);
   const rootPath = workspace?.rootPath ?? projectRootPath;
@@ -190,6 +203,10 @@ export function FilesWorkbench({
 
   const [draggingTab, setDraggingTab] = useState(false);
   const [treeMenu, setTreeMenu] = useState<FilesExplorerContextMenuEvent | null>(null);
+  // The host caps the git-status entry lists on a very large dirty tree, so deep
+  // files come back undecorated. Without saying so, an undecorated file is
+  // indistinguishable from a clean one.
+  const [decorationsTruncated, setDecorationsTruncated] = useState(false);
   const [inlineRename, setInlineRename] = useState<{ path: string; nonce: number } | null>(null);
   const [pendingWorkspaceOpen, setPendingWorkspaceOpen] = useState<{
     workspaceId: string;
@@ -200,6 +217,13 @@ export function FilesWorkbench({
     column?: number;
   } | null>(null);
   const handledExternalOpenRef = useRef<string | null>(null);
+  // The consuming effect below clears `pendingWorkspaceOpen`, but that clear is
+  // a React state update while `openFile` can commit the editor-groups store
+  // synchronously (cache hit). The store re-render is a higher-priority
+  // (sync-lane) pass, so it can re-run this effect before the clear lands and
+  // hand it the same request again. Identity is the durable "already handled"
+  // record — every request is a fresh object.
+  const consumedWorkspaceOpenRef = useRef<unknown>(null);
   const lastGlobalLaneIdRef = useRef(globalLaneId);
   const workspacesProjectRootRef = useRef(projectRootPath);
   const workspacesCacheKeyRef = useRef(projectCacheKey);
@@ -492,7 +516,7 @@ export function FilesWorkbench({
       cancelled = true;
       if (retryTimer) clearTimeout(retryTimer);
     };
-  }, [active, projectCacheKey, projectRootPath]);
+  }, [active, projectCacheKey, projectRootPath, workspacesRefreshToken]);
 
   // Resolve the explorer workspace from the global lane on mount + lane changes.
   useEffect(() => {
@@ -508,15 +532,26 @@ export function FilesWorkbench({
   }, [workspaces, globalLaneId]);
 
   /* ---- Tree loading ---- */
+  const fetchGitDecorations = useCallback(async (reqId: string, forceFresh: boolean) => {
+    try {
+      const decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh });
+      // Both decoration paths come through here, so recording the cap in one
+      // place keeps the hint in step with whatever was last applied to the tree.
+      if (workspaceIdRef.current === reqId) {
+        setDecorationsTruncated(decorations?.truncated === true);
+      }
+      return decorations;
+    } catch (decorationError) {
+      if (!isUnavailableGitDecorationsError(decorationError)) throw decorationError;
+      if (workspaceIdRef.current === reqId) setDecorationsTruncated(false);
+      return null;
+    }
+  }, []);
+
   const refreshTreeGitDecorations = useCallback(
     async (reqId = workspaceId) => {
       if (!reqId) return;
-      let decorations = null;
-      try {
-        decorations = await window.ade.files.refreshGitDecorations({ workspaceId: reqId, forceFresh: true });
-      } catch (decorationError) {
-        if (!isUnavailableGitDecorationsError(decorationError)) throw decorationError;
-      }
+      const decorations = await fetchGitDecorations(reqId, true);
       if (!decorations) return;
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
@@ -525,7 +560,7 @@ export function FilesWorkbench({
         return decorated;
       });
     },
-    [projectCacheKey, workspaceId],
+    [fetchGitDecorations, projectCacheKey, workspaceId],
   );
 
   const refreshRoot = useCallback(async (options: { preserveLoadedChildren?: boolean } = {}) => {
@@ -533,19 +568,27 @@ export function FilesWorkbench({
     const reqId = workspaceId;
     const preserveLoadedChildren = options.preserveLoadedChildren !== false;
     try {
-      const nodes = await window.ade.files.listTree({ workspaceId: reqId, depth: 1, includeIgnored: true });
+      // Listing and decorations are independent host reads: issuing them
+      // together turns the tree refresh into one round trip instead of two,
+      // which is the whole mount cost on the relay transport. Decorations skip
+      // `forceFresh` so they can be served by the host's short git-status SWR
+      // cache — a structure refresh does not need a fresh `git status` sweep.
+      const [nodes, decorations] = await Promise.all([
+        window.ade.files.listTree({ workspaceId: reqId, depth: ROOT_TREE_DEPTH, includeIgnored: true }),
+        fetchGitDecorations(reqId, false),
+      ]);
       if (workspaceIdRef.current !== reqId) return;
       setTree((prev) => {
         const merged = preserveLoadedChildren ? mergeTreePreservingLoadedChildren(nodes, prev) : nodes;
-        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), merged);
-        return merged;
+        const decorated = decorations ? applyGitStatusToTree(merged, decorations) : merged;
+        writeCachedTree(filesTreeCacheKey(projectCacheKey, reqId), decorated);
+        return decorated;
       });
       setError(null);
-      await refreshTreeGitDecorations(reqId);
     } catch (err) {
       if (workspaceIdRef.current === reqId) setError(err instanceof Error ? err.message : String(err));
     }
-  }, [workspaceId, projectCacheKey, refreshTreeGitDecorations]);
+  }, [workspaceId, fetchGitDecorations, projectCacheKey]);
 
   // Pin the rendered tree while this workbench is mounted: the React state
   // below holds the same nodes, so evicting the cache copy would only create
@@ -563,6 +606,7 @@ export function FilesWorkbench({
     setTree(readCachedTree(filesTreeCacheKey(projectCacheKey, workspaceId)) ?? []);
     setExpanded(new Set());
     setLoadingDirs(new Set());
+    setDecorationsTruncated(false);
     setError(null);
     void refreshRoot();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -739,10 +783,43 @@ export function FilesWorkbench({
     let rootRefreshQueued = false;
     let fullRootRefreshQueued = false;
     let decorationsRefreshQueued = false;
+    let fullRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleFlush = (delayMs = FILES_REFRESH_DEBOUNCE_MS) => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => flushQueuedRefreshes(), delayMs);
+    };
+
+    /**
+     * Handle a path-less change hint: the host says something under this
+     * workspace moved but not what. Re-list the workspaces and the root level
+     * (which also re-reads decorations) at most once per
+     * FULL_REFRESH_MIN_INTERVAL_MS — the hints arrive in bursts, and without a
+     * floor each one would cost a full listing plus a git-status sweep.
+     */
+    const queueFullRefresh = () => {
+      if (fullRefreshTimer) return;
+      const sinceLastFullRefresh = Date.now() - lastFullRefreshAtRef.current;
+      const delayMs = Math.max(FILES_REFRESH_DEBOUNCE_MS, FULL_REFRESH_MIN_INTERVAL_MS - sinceLastFullRefresh);
+      fullRefreshTimer = setTimeout(() => {
+        fullRefreshTimer = null;
+        lastFullRefreshAtRef.current = Date.now();
+        if (!workspaceIdRef.current) return;
+        setWorkspacesRefreshToken((token) => token + 1);
+        void refreshRoot();
+      }, delayMs);
+    };
 
     const enqueuePathRefresh = (path: string | undefined) => {
-      if (!path) return;
+      // `undefined` means the event had no such path (no `oldPath` on a
+      // non-rename). An empty string is different: it names the workspace root,
+      // and dropping it silently left a root-level change unrefreshed.
+      if (path === undefined) return;
       decorationsRefreshQueued = true;
+      if (!path) {
+        rootRefreshQueued = true;
+        return;
+      }
       if (fullRootRefreshQueued) return;
       const parentPath = parentPathForFileChange(path);
       if (!parentPath) {
@@ -801,27 +878,42 @@ export function FilesWorkbench({
       }
     };
 
-    const unsub = window.ade.files.onChange((ev) => {
-      const isExplorerWorkspace = ev.workspaceId === workspaceIdRef.current;
-      const openTab = allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.path);
-      const openTabOld = ev.oldPath
-        ? allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.oldPath)
-        : undefined;
-      invalidateFileContent(ev.workspaceId, ev.path);
-      if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
-      if (openTab && !dirtyTabIdsRef.current.has(openTab.id)) {
-        setReloadTokensByTabId((prev) => ({ ...prev, [openTab.id]: (prev[openTab.id] ?? 0) + 1 }));
+    const unsub = window.ade.files.onChange((event) => {
+      const ev = event as FileChangeEvent;
+      // `*` is the web adapter's stand-in when it has not learned any workspace
+      // id yet; it still means "this project's files moved".
+      const isExplorerWorkspace = ev.workspaceId === workspaceIdRef.current || ev.workspaceId === "*";
+      if (!ev.path && !ev.oldPath) {
+        if (isExplorerWorkspace) queueFullRefresh();
+        return;
       }
-      if (openTabOld && !dirtyTabIdsRef.current.has(openTabOld.id)) {
-        setReloadTokensByTabId((prev) => ({ ...prev, [openTabOld.id]: (prev[openTabOld.id] ?? 0) + 1 }));
+      // Our own save echoes back as `modified`. The editor already holds those
+      // bytes (and primed the content cache with them), so reloading the tab
+      // would re-read what we just wrote.
+      const isSelfSave = ev.origin === "self" && ev.type === "modified";
+      if (!isSelfSave) {
+        const openTab = allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.path);
+        const openTabOld = ev.oldPath
+          ? allOpenTabsRef.current.find((tab) => tab.workspaceId === ev.workspaceId && tab.path === ev.oldPath)
+          : undefined;
+        invalidateFileContent(ev.workspaceId, ev.path);
+        if (ev.oldPath) invalidateFileContent(ev.workspaceId, ev.oldPath);
+        if (openTab && !dirtyTabIdsRef.current.has(openTab.id)) {
+          setReloadTokensByTabId((prev) => ({ ...prev, [openTab.id]: (prev[openTab.id] ?? 0) + 1 }));
+        }
+        if (openTabOld && !dirtyTabIdsRef.current.has(openTabOld.id)) {
+          setReloadTokensByTabId((prev) => ({ ...prev, [openTabOld.id]: (prev[openTabOld.id] ?? 0) + 1 }));
+        }
       }
       if (!isExplorerWorkspace) return;
-      enqueuePathRefresh(ev.path);
-      enqueuePathRefresh(ev.oldPath);
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        flushQueuedRefreshes();
-      }, 200);
+      if (ev.type === "modified") {
+        // Content-only: the listing is unchanged, only the git decorations are.
+        decorationsRefreshQueued = true;
+      } else {
+        enqueuePathRefresh(ev.path);
+        enqueuePathRefresh(ev.oldPath);
+      }
+      scheduleFlush();
     });
     const watchedIds = new Set([workspaceId, ...openWorkspaceIds]);
     for (const watchedId of watchedIds) {
@@ -829,6 +921,7 @@ export function FilesWorkbench({
     }
     return () => {
       if (timer) clearTimeout(timer);
+      if (fullRefreshTimer) clearTimeout(fullRefreshTimer);
       unsub();
       for (const watchedId of watchedIds) {
         void window.ade.files.stopWatching({ workspaceId: watchedId, includeIgnored: true }).catch(() => {});
@@ -837,6 +930,28 @@ export function FilesWorkbench({
   }, [active, openWorkspaceIds, refreshLoadedDirectory, refreshRoot, refreshTreeGitDecorations, workspaceId]);
 
   /* ---- Open file ---- */
+  const revalidateOpenedFile = useCallback(
+    async (revalidateWorkspaceId: string, path: string, painted: FileContent) => {
+      // Never discard unsaved edits, and never overwrite the cached payload
+      // behind them — this runs before the read so a dirty tab costs nothing.
+      const tabId = editorTabId(revalidateWorkspaceId, path);
+      if (dirtyTabIdsRef.current.has(tabId)) return;
+      let fresh: FileContent;
+      try {
+        fresh = await window.ade.files.readFile({ workspaceId: revalidateWorkspaceId, path });
+      } catch {
+        // No answer is not an answer: keep the cached bytes rather than priming
+        // the cache with a failure. The next explicit read surfaces the error.
+        return;
+      }
+      if (sameFileContent(painted, fresh)) return;
+      primeFileContent(revalidateWorkspaceId, path, fresh);
+      if (dirtyTabIdsRef.current.has(tabId)) return; // Dirtied while we waited.
+      setReloadTokensByTabId((prev) => ({ ...prev, [tabId]: (prev[tabId] ?? 0) + 1 }));
+    },
+    [],
+  );
+
   const openFile = useCallback(
     async (path: string, opts: { preview?: boolean; line?: number; column?: number } = {}) => {
       if (!workspaceId) return;
@@ -845,9 +960,18 @@ export function FilesWorkbench({
         setPendingReveal(path, { line: opts.line, column: opts.column });
       }
       try {
-        const content = await window.ade.files.readFile({ workspaceId, path });
+        // The viewer reads the same LRU through useFileContent, so a cached
+        // payload makes opening a recently visited file a zero round-trip
+        // action instead of re-reading bytes we already hold.
+        const cached = getCachedFileContent(workspaceId, path);
+        const content = cached ?? await window.ade.files.readFile({ workspaceId, path });
         if (workspaceIdRef.current !== workspaceId) return;
         primeFileContent(workspaceId, path, content);
+        // Painting from the LRU costs zero round trips, but nothing invalidates
+        // it on the web client (no host watcher over the relay) and the desktop
+        // watcher only runs while the tab is active. Re-read in the background
+        // and reload the tab if the bytes moved under us.
+        if (cached) void revalidateOpenedFile(workspaceId, path, cached);
         const viewerKind = resolveViewerKind({
           path,
           previewKind: content.previewKind,
@@ -872,7 +996,7 @@ export function FilesWorkbench({
         setError(err instanceof Error ? err.message : String(err));
       }
     },
-    [workspace, workspaceId, applyGroups, recentSessionKey],
+    [workspace, workspaceId, applyGroups, recentSessionKey, revalidateOpenedFile],
   );
 
   const handleActivateTab = useCallback(
@@ -967,6 +1091,8 @@ export function FilesWorkbench({
 
   useEffect(() => {
     if (!active || !pendingWorkspaceOpen || workspaceId !== pendingWorkspaceOpen.workspaceId) return;
+    if (consumedWorkspaceOpenRef.current === pendingWorkspaceOpen) return;
+    consumedWorkspaceOpenRef.current = pendingWorkspaceOpen;
     const pending = pendingWorkspaceOpen;
     setPendingWorkspaceOpen(null);
     if (pending.pathType === "file" && pending.path) {
@@ -1301,6 +1427,15 @@ export function FilesWorkbench({
               compact={embedded}
             />
           </div>
+          {decorationsTruncated ? (
+            <div
+              className="shrink-0 border-t px-3 py-1.5 text-[10px] leading-4"
+              style={{ borderColor: COLORS.border, color: COLORS.textMuted }}
+              title="This workspace has more changed files than the git-status response can carry, so the deepest ones are shown without a status colour."
+            >
+              Some git decorations hidden (large change set)
+            </div>
+          ) : null}
         </div>
         <div className="min-h-0 min-w-0">
           {openCount === 0 ? (

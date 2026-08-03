@@ -485,6 +485,12 @@ export type LaneDeleteEvent = {
 };
 
 /**
+ * Placeholder lane id on a `lanes-invalidated` event. There is no lane behind
+ * it, so any surface that names a lane must skip events carrying it.
+ */
+export const LANES_INVALIDATED_LANE_ID = "__ade_web_invalidation__";
+
+/**
  * Fired once when a lane reaches a lifecycle transition, or when its persisted
  * branch identity changes and every renderer surface must refresh. Distinct from
  * {@link LaneDeleteEvent}, which streams per-step delete progress; this fires a
@@ -502,7 +508,15 @@ export type LaneLifecycleEvent = {
     | "lane-unarchived"
     | "lane-reclaimed"
     | "lane-restored"
-    | "lane-deleted";
+    | "lane-deleted"
+    /**
+     * "Something about the lane set changed; re-read it." Carries no claim
+     * about which lane or what happened, so nothing user-visible may be worded
+     * from it. Transports without a per-lane change feed (the web client's
+     * coarse table invalidations) emit this instead of borrowing a real
+     * transition type.
+     */
+    | "lanes-invalidated";
   laneId: string;
   laneName: string;
   previousLaneName?: string | null;

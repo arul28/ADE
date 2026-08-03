@@ -8578,6 +8578,10 @@ final class SyncService: ObservableObject {
   /// and returns the recomputed, viewer-validated connection status.
   @MainActor
   func setLinearToken(_ token: String) async throws -> LinearConnectionStatus {
+    // Host-local only on current brains (viewerAllowed: false). Fail here rather
+    // than round-tripping a request the host will reject; older brains that
+    // advertise no policy still pass, keeping limited mode working.
+    try requireInvokableRemoteAction("cto.setLinearToken")
     let status = try await sendDecodableCommand(
       action: "cto.setLinearToken",
       args: ["token": token],
@@ -8591,6 +8595,8 @@ final class SyncService: ObservableObject {
   /// machine) and returns the resulting disconnected status.
   @MainActor
   func clearLinearToken() async throws -> LinearConnectionStatus {
+    // Same viewer-denied contract as `setLinearToken` above.
+    try requireInvokableRemoteAction("cto.clearLinearToken")
     let status = try await sendDecodableCommand(
       action: "cto.clearLinearToken",
       as: LinearConnectionStatus.self

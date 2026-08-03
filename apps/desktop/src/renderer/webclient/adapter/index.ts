@@ -129,6 +129,7 @@ export function createAdeWebAdapter(
     github: misc.github,
     rebase: misc.rebase,
     history: misc.history,
+    zoom: misc.zoom,
     layout: misc.layout,
     tilingTree: misc.tilingTree,
     graphState: misc.graphState,

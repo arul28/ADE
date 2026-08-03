@@ -118,6 +118,8 @@ import type {
   PublishProjectInput,
   PublishProjectResult,
   ProjectConfigCandidate,
+  ProjectConfigFile,
+  ProjectConfigSnapshot,
   LaneEnvInitConfig,
   LaneEnvInitProgress,
   LaneDetailPayload,
@@ -1177,6 +1179,49 @@ function parseProjectConfigSaveArgs(value: Record<string, unknown>): { candidate
   return { candidate: value.candidate as ProjectConfigCandidate };
 }
 
+// `ai.apiKeys` holds live provider API keys (spent by aiIntegrationService and
+// openCodeRuntime), and the top-level `providers` bag is an unvalidated
+// passthrough that historically carried the same. Neither is reachable from a
+// paired peer: reads drop them, and writes keep whatever is already on disk.
+// The write side matters as much as the read side — every Settings section
+// saves a get→edit→save round trip of the whole file, so a redacted read fed
+// back verbatim would otherwise erase the host's keys.
+function stripProjectConfigCredentials<T extends { ai?: unknown; providers?: unknown }>(file: T): T {
+  const { providers: _providers, ...rest } = file;
+  if (!isRecord(rest.ai) || !("apiKeys" in rest.ai)) return rest as T;
+  const { apiKeys: _apiKeys, ...ai } = rest.ai;
+  return { ...rest, ai } as T;
+}
+
+function redactProjectConfigSnapshotForRemote(snapshot: ProjectConfigSnapshot): ProjectConfigSnapshot {
+  return {
+    ...snapshot,
+    shared: stripProjectConfigCredentials(snapshot.shared),
+    local: stripProjectConfigCredentials(snapshot.local),
+    effective: stripProjectConfigCredentials(snapshot.effective),
+  };
+}
+
+function restoreProjectConfigCredentials(candidate: ProjectConfigFile, onDisk: ProjectConfigFile): ProjectConfigFile {
+  const stripped = stripProjectConfigCredentials(candidate);
+  const apiKeys = isRecord(onDisk.ai) && isRecord(onDisk.ai.apiKeys) ? onDisk.ai.apiKeys : null;
+  return {
+    ...stripped,
+    ...(apiKeys ? { ai: { ...(stripped.ai ?? {}), apiKeys } } : {}),
+    ...(onDisk.providers ? { providers: onDisk.providers } : {}),
+  };
+}
+
+function mergeProjectConfigCandidateForRemote(
+  candidate: ProjectConfigCandidate,
+  onDisk: ProjectConfigSnapshot,
+): ProjectConfigCandidate {
+  return {
+    shared: restoreProjectConfigCredentials(candidate.shared, onDisk.shared),
+    local: restoreProjectConfigCredentials(candidate.local, onDisk.local),
+  };
+}
+
 function parseOrchestrationRunCreateArgs(value: Record<string, unknown>): OrchestrationRunCreateRequest & { laneId: string } {
   return {
     ...(value as OrchestrationRunCreateRequest & { laneId: string }),
@@ -1314,6 +1359,11 @@ function parseSuggestLaneNameArgs(value: Record<string, unknown>): AgentChatSugg
     prompt: requireString(value.prompt, "lanes.suggestName requires prompt."),
     modelId: requireString(value.modelId, "lanes.suggestName requires modelId."),
     laneId: requireString(value.laneId, "lanes.suggestName requires laneId."),
+    // The model the chat itself was launched with. Distinct from `modelId` (the
+    // configured naming model): dropping it here would strand the host-side
+    // naming fallback chain on the naming provider even when that provider is
+    // broken, which is the exact case the field exists to escape.
+    ...(asTrimmedString(value.chatModelId) ? { chatModelId: asTrimmedString(value.chatModelId)! } : {}),
     ...(asTrimmedString(value.fallbackName) ? { fallbackName: asTrimmedString(value.fallbackName)! } : {}),
     ...(asTrimmedString(value.temporaryBranch) ? { temporaryBranch: asTrimmedString(value.temporaryBranch)! } : {}),
     ...(parseAgentChatFileRefs(value.attachments) ? { attachments: parseAgentChatFileRefs(value.attachments)! } : {}),
@@ -2682,6 +2732,21 @@ function parseGitGetCommitMessageArgs(value: Record<string, unknown>): GitGetCom
   return {
     laneId: requireString(value.laneId, "git.getCommitMessage requires laneId."),
     commitSha: requireString(value.commitSha, "git.getCommitMessage requires commitSha."),
+  };
+}
+
+function parseGitGetCommitArgs(value: Record<string, unknown>): { laneId: string; commitSha: string } {
+  return {
+    laneId: requireString(value.laneId, "git.getCommit requires laneId."),
+    commitSha: requireString(value.commitSha, "git.getCommit requires commitSha."),
+  };
+}
+
+function parseGitOpenPrForBranchArgs(value: Record<string, unknown>): { laneId: string; branch?: string } {
+  const branch = asTrimmedString(value.branch);
+  return {
+    laneId: requireString(value.laneId, "git.getOpenPrForBranch requires laneId."),
+    ...(branch ? { branch } : {}),
   };
 }
 
@@ -4657,7 +4722,10 @@ function registerPushRemoteCommands({ args, register }: RemoteCommandRegistratio
 function registerSyncRemoteCommands({ args, register }: RemoteCommandRegistrationDeps): void {
   register(
     "sync.getWebPairingInfo",
-    { viewerAllowed: true },
+    // Returns the raw pairing PIN and a ready-to-use pairing URL, so a paired
+    // viewer could onboard further devices without the owner. Host-local only,
+    // same as `sync.getDesktopPairingInfo` below.
+    { viewerAllowed: false },
     async (payload): Promise<SyncWebPairingInfo> => {
       parseGetWebPairingInfoArgs(payload);
       const syncPinStore = requireService(args.syncPinStore, "Sync PIN store is not available.");
@@ -4828,7 +4896,12 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
       ? buildLinearConnectionStatus(args)
       : buildLinearConnectionStatus(args, result.message);
   });
-  register("cto.setLinearToken", { viewerAllowed: true }, async (payload) => {
+  // Direct credential-store writes. Paired viewers (phones, browsers) get the
+  // interactive `*LinearMobileOAuth` pair instead: that token is minted by
+  // Linear against a host-issued session, whereas these two accept an arbitrary
+  // secret — or wipe the owner's — from whatever device is on the socket. The
+  // registry is the gate here, not the absence of client wiring.
+  register("cto.setLinearToken", { viewerAllowed: false }, async (payload) => {
     const linearCredentialService = requireService(
       args.linearCredentialService,
       "Linear credential service not available.",
@@ -4838,7 +4911,7 @@ function registerCtoRemoteCommands({ args, register }: RemoteCommandRegistration
     );
     return buildLinearConnectionStatus(args);
   });
-  register("cto.clearLinearToken", { viewerAllowed: true }, async () => {
+  register("cto.clearLinearToken", { viewerAllowed: false }, async () => {
     const linearCredentialService = requireService(
       args.linearCredentialService,
       "Linear credential service not available.",
@@ -4998,6 +5071,8 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").getFileHistory(parseGitGetFileHistoryArgs(payload)));
   register("git.getCommitMessage", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getCommitMessage(parseGitGetCommitMessageArgs(payload)));
+  register("git.getCommit", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getCommit(parseGitGetCommitArgs(payload)));
   register("git.isCommitInLaneHistory", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").isCommitInLaneHistory(parseGitCommitReachabilityArgs(payload)));
   register("git.revertCommit", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -5030,6 +5105,10 @@ function registerGitAndFileRemoteCommands({ args, register }: RemoteCommandRegis
     requireService(args.gitService, "Git service not available.").redoLastHeadChange(parseConflictLaneArgs(payload, "git.redoLastHeadChange")));
   register("git.getSyncStatus", { viewerAllowed: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").getSyncStatus(parseConflictLaneArgs(payload, "git.getSyncStatus")));
+  register("git.getOriginRemote", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getOriginRemote(parseConflictLaneArgs(payload, "git.getOriginRemote")));
+  register("git.getOpenPrForBranch", { viewerAllowed: true }, async (payload) =>
+    requireService(args.gitService, "Git service not available.").getOpenPrForBranch(parseGitOpenPrForBranchArgs(payload)));
   register("git.sync", { viewerAllowed: true, queueable: true }, async (payload) =>
     requireService(args.gitService, "Git service not available.").sync(parseGitSyncArgs(payload)));
   register("git.push", { viewerAllowed: true, queueable: true }, async (payload) =>
@@ -5091,11 +5170,17 @@ function registerMiscRemoteCommands({ args, register }: RemoteCommandRegistratio
     });
   }, "project");
   register("projectConfig.get", { viewerAllowed: true }, async () =>
-    requireService(args.projectConfigService, "Project config service not available.").get());
-  register("projectConfig.save", { viewerAllowed: true }, async (payload) =>
-    requireService(args.projectConfigService, "Project config service not available.").save(
-      parseProjectConfigSaveArgs(payload).candidate,
+    redactProjectConfigSnapshotForRemote(
+      requireService(args.projectConfigService, "Project config service not available.").get(),
     ));
+  register("projectConfig.save", { viewerAllowed: true }, async (payload) => {
+    const projectConfigService = requireService(args.projectConfigService, "Project config service not available.");
+    const candidate = mergeProjectConfigCandidateForRemote(
+      parseProjectConfigSaveArgs(payload).candidate,
+      projectConfigService.get(),
+    );
+    return redactProjectConfigSnapshotForRemote(projectConfigService.save(candidate));
+  });
   register("ai.getStatus", { viewerAllowed: true, observesAbort: true }, async (payload, context) => {
     try {
       return await runAiStatusWithTimeout(
