@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { ArrowSquareOut, MusicNotes, VideoCamera } from "@phosphor-icons/react";
 import { COLORS } from "../../../lanes/laneDesignTokens";
+import { revealLabel } from "../../../../lib/platform";
 import { streamFileBytes } from "../streamBytes";
 import type { ViewerProps } from "./types";
 
@@ -57,7 +58,7 @@ export function MediaViewer({ workspaceId, rootPath, tab, content, kind }: Viewe
         <Icon size={15} color={COLORS.accent} />
         <span className="truncate" style={{ color: COLORS.textMuted }}>{mimeType}</span>
         <span className="ml-auto" style={{ color: COLORS.textDim }}>{formatBytes(content.size)}</span>
-        <button type="button" onClick={openExternally} title="Reveal in Finder" className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
+        <button type="button" onClick={openExternally} title={revealLabel} className="rounded p-1 hover:bg-white/5" style={{ color: COLORS.textMuted }}>
           <ArrowSquareOut size={14} />
         </button>
       </div>

@@ -492,6 +492,7 @@ jobs:
       - name: Test Windows path, spawn, window, and update contracts
         run: >-
           cd apps/desktop && npx vitest run
+          src/main/services/appControl/appControlLaunchCommand.test.ts
           src/main/services/appControl/appControlService.test.ts
           src/main/services/shared/processExecution.test.ts
           src/main/services/updates/autoUpdateService.test.ts

@@ -61,6 +61,17 @@ function emit(status: AdeAccountStatus): void {
   }
 }
 
+/**
+ * A status that only says "signed out" because the stored session could not be
+ * READ. Signing out is an explicit user action and a durable state; a failed
+ * decrypt is neither. On Windows the OS-bound credential key is unwrapped by a
+ * PowerShell/DPAPI helper that can transiently time out under load, which is
+ * how a machine that never signed out ends up rendering as signed out.
+ */
+function isUnreadableSession(status: AdeAccountStatus): boolean {
+  return !status.signedIn && status.sessionReadState === "unreadable";
+}
+
 export async function fetchAccountStatus(options?: { force?: boolean }): Promise<AdeAccountStatus> {
   const api = accountApi();
   if (!api?.status) return SIGNED_OUT_ACCOUNT;
@@ -77,9 +88,16 @@ export async function fetchAccountStatus(options?: { force?: boolean }): Promise
     .status()
     .then((status) => {
       const normalized = status ?? SIGNED_OUT_ACCOUNT;
+      // Hold the last known identity across an unreadable read instead of
+      // flashing the whole app to signed-out. The next successful read wins,
+      // and a real sign-out reports "missing", which is never retained.
+      const previous = cachedStatus?.value;
+      if (isUnreadableSession(normalized) && previous?.signedIn) return previous;
       if (serial === fetchSerial) emit(normalized);
       return normalized;
     })
+    // A failed status call is an unknown state, not a signed-out one. Only
+    // fabricate SIGNED_OUT_ACCOUNT when nothing was ever known.
     .catch(() => cachedStatus?.value ?? SIGNED_OUT_ACCOUNT)
     .finally(() => {
       if (serial === fetchSerial) inFlight = null;

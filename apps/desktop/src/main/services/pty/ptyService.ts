@@ -92,7 +92,15 @@ import {
   withClaudePluginInCommandLine,
   withCodexNoAltScreen,
   resolveWindowsShellLaunchFields,
+  resolveWindowsShellKind,
 } from "../../../shared/cliLaunch";
+import {
+  commandArrayToWindowsShellLine,
+  quoteShellArg,
+  resolveCanonicalCommandLineLaunch,
+} from "../../../shared/shell";
+import { claudeProjectSlugForCwd } from "../externalSessions/discoveryUtils";
+import { droidProjectSlugForCwd } from "../externalSessions/discoverDroid";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
 import { summarizeTerminalSession } from "../../utils/sessionSummary";
@@ -1038,15 +1046,51 @@ function quotePosixShellArg(value: string): string {
   return `'${value.replace(/'/g, "'\\''")}'`;
 }
 
+/**
+ * Quote for a line that Windows has to be able to read back.
+ *
+ * A POSIX line only survives on Windows if the launch boundary can recover argv
+ * from it, and that recovery is gated on re-rendering the line byte for byte
+ * with `shared/shell`'s quoter. This one therefore has to be that quoter — the
+ * single-quote shape above, valid POSIX though it is, would fail the check and
+ * silently drop the launch back to typing POSIX at PowerShell. Only Windows
+ * needs this; leave the established rendering alone everywhere else.
+ */
+function quoteCanonicalShellArg(value: string): string {
+  return process.platform === "win32"
+    ? quoteShellArg(value, { platform: "linux" })
+    : quotePosixShellArg(value);
+}
+
+/**
+ * A direct spawn can still fail (a missing shim, an unreadable exe), in which
+ * case the launch falls back to typing a line at the interactive shell. Produce
+ * that line in ADE's canonical POSIX form on every platform; the write site
+ * renders it for whichever Windows shell actually won.
+ */
 function buildDirectCommandShellFallback(command: string, args: string[]): string | null {
-  if (process.platform === "win32") return null;
+  if (process.platform === "win32") {
+    // No `exec`: the line has to stay recoverable as plain argv.
+    return [command, ...args].map(quoteCanonicalShellArg).join(" ");
+  }
   return ["exec", command, ...args].map(quotePosixShellArg).join(" ");
 }
 
-function directShellLaunchForCommandLine(commandLine: string): Pick<PtyCreateArgs, "command" | "args"> {
-  if (process.platform === "win32") return {};
+/** See the twin in externalSessions/discoveryUtils.ts for why Windows differs. */
+function directShellLaunchForCommandLine(
+  commandLine: string,
+): Pick<PtyCreateArgs, "command" | "args" | "env"> {
   const trimmed = commandLine.trim();
   if (!trimmed) return {};
+  if (process.platform === "win32") {
+    const launch = resolveCanonicalCommandLineLaunch(trimmed);
+    if (!launch) return {};
+    return {
+      command: launch.command,
+      args: launch.args,
+      ...(launch.env ? { env: launch.env } : {}),
+    };
+  }
   return {
     command: "/bin/bash",
     args: ["--noprofile", "--norc", "-lc", trimmed],
@@ -1087,11 +1131,19 @@ function resolveDirectProviderCommand(command: string, toolType: TerminalToolTyp
   return command;
 }
 
+/**
+ * Substitute the bundled binary for the bare `opencode` word. The result stays
+ * in ADE's canonical POSIX form on every platform — a Windows install path is
+ * quoted here because it contains spaces, not because a POSIX shell will run it.
+ * The launch boundary recovers argv from that line and spawns it directly, or
+ * re-renders it for the shell that receives it; neither needs, or wants, the
+ * PowerShell call operator baked in at this layer.
+ */
 function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
   if (!isOpenCodeToolType(toolType)) return commandLine;
   const bundled = resolveOpenCodeBinaryPath();
   if (!bundled) return commandLine;
-  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quotePosixShellArg(bundled)}`);
+  return commandLine.replace(/(^|\s)opencode(?=\s|$)/, `$1${quoteCanonicalShellArg(bundled)}`);
 }
 
 function clampDims(cols: number, rows: number): { cols: number; rows: number } {
@@ -2518,7 +2570,15 @@ export function createPtyService({
   };
 
   function claudeProjectDirForCwd(cwd: string): string {
-    return path.join(os.homedir(), ".claude", "projects", cwd.replace(/\//g, "-"));
+    // Replacing only `/` leaves a Windows path untouched — its separators are
+    // backslashes — so this used to join a whole drive-qualified path onto the
+    // projects directory and look for `…\.claude\projects\C:\Users\me\repo`,
+    // which no NTFS volume can hold. Claude's own rule, read off this machine's
+    // `~/.claude/projects` (`C--Users-arul2-Documents-Programming-ADE`), turns
+    // every non-alphanumeric character into `-` without collapsing runs or
+    // trimming. Cursor and Droid each escape differently; reuse the one that
+    // already encodes Claude's rule rather than generalise across vendors.
+    return path.join(os.homedir(), ".claude", "projects", claudeProjectSlugForCwd(cwd));
   }
 
   function claudeSessionFilePathForCwd(cwd: string, claudeSessionId: string): string {
@@ -2930,21 +2990,33 @@ export function createPtyService({
     }
   };
 
+  /**
+   * Windows paths are case-insensitive; the vendor's escaping is not.
+   * `droidProjectSlugForCwd()` (externalSessions/discoverDroid.ts) already
+   * lower-cases its win32 output, so this is idempotent there and only does
+   * real work when folding an on-disk directory name for comparison.
+   */
+  function foldDroidProjectSlug(slug: string): string {
+    return process.platform === "win32" ? slug.toLowerCase() : slug;
+  }
+
   const resolveDroidSessionIdFromStorage = (args: {
     cwd: string;
     startedAt?: string | null;
     maxStartDeltaMs?: number;
   }): string | null => {
     try {
-      const escapedCwd = args.cwd.replace(/\//g, "-");
       const droidSessionsDir = path.join(os.homedir(), ".factory", "sessions");
-      const expectedProjectDir = path.join(droidSessionsDir, escapedCwd);
       if (!fs.existsSync(droidSessionsDir)) return null;
-      const projectDirs = fs.existsSync(expectedProjectDir)
-        ? [expectedProjectDir]
-        : fs.readdirSync(droidSessionsDir, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory())
-          .map((entry) => path.join(droidSessionsDir, entry.name));
+      const projectEntries = fs.readdirSync(droidSessionsDir, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory());
+      const expectedSlug = foldDroidProjectSlug(droidProjectSlugForCwd(args.cwd));
+      const expectedEntry = projectEntries.find(
+        (entry) => foldDroidProjectSlug(entry.name) === expectedSlug,
+      );
+      const projectDirs = expectedEntry
+        ? [path.join(droidSessionsDir, expectedEntry.name)]
+        : projectEntries.map((entry) => path.join(droidSessionsDir, entry.name));
       const requestedStartedAtMs = Date.parse(args.startedAt ?? "");
       const hasStartedAt = Number.isFinite(requestedStartedAtMs);
       let bestMatch: { id: string; score: number; mtimeMs: number } | null = null;
@@ -5318,12 +5390,35 @@ export function createPtyService({
       // interactive shell. Direct command launches already received argv; if a
       // direct launch fell back to shell, startupCommand keeps compatibility
       // with CLIs that are only available through shell startup files.
-      if (startupCommand && !launchedDirectCommand && selectedShell) {
+      const selectedWindowsShellKind = process.platform === "win32" && selectedShell
+        ? resolveWindowsShellKind(selectedShell.file)
+        : null;
+      // `startupCommand` is ADE's canonical POSIX rendering. On macOS the shell
+      // receiving it speaks POSIX, so it can be typed verbatim; the native
+      // Windows shells do not, and each mangles it differently. Re-render it for
+      // whichever shell actually won the spawn race, and only when it is plain
+      // argv — a caller-supplied per-shell line always wins, and a line that is
+      // not losslessly recoverable is left exactly as it is today.
+      const renderedWindowsStartupCommand = (() => {
+        if (!selectedWindowsShellKind || !selectedShell || !startupCommand) return null;
+        const launch = resolveCanonicalCommandLineLaunch(startupCommand);
+        if (!launch || launch.env) return null;
+        return commandArrayToWindowsShellLine([launch.command, ...launch.args], {
+          kind: selectedWindowsShellKind,
+          shellPath: selectedShell.file,
+        });
+      })();
+      const selectedStartupCommand = selectedWindowsShellKind
+        ? effectiveArgs.windowsStartupCommands?.[selectedWindowsShellKind]
+          ?? renderedWindowsStartupCommand
+          ?? startupCommand
+        : startupCommand;
+      if (selectedStartupCommand && !launchedDirectCommand && selectedShell) {
         const writeStartupCommand = () => {
           entry.startupTimer = null;
           if (entry.disposed) return;
           try {
-            pty.write(`${startupCommand}\r`);
+            pty.write(`${selectedStartupCommand}\r`);
             setRuntimeState(sessionId, "running");
             scheduleIdleTransition(sessionId);
           } catch (err) {
@@ -5338,7 +5433,7 @@ export function createPtyService({
             });
           }
         };
-      const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
+        const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
         if (startupDelayMs > 0) {
           entry.startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
           entry.startupTimer.unref?.();

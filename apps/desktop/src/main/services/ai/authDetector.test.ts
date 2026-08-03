@@ -338,7 +338,7 @@ describe("authDetector", () => {
     );
   });
 
-  it("treats droid exec list-tools as a valid authenticated probe", async () => {
+  it("does not treat droid exec list-tools as proof of authentication", async () => {
     tempHomeDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-droid-auth-"));
     process.env.HOME = tempHomeDir;
     // Create a fake droid binary in a known bin dir so resolveDroidExecutable
@@ -361,14 +361,11 @@ describe("authDetector", () => {
         if (args[0] === "droid") return fakeChild({ status: 0, stdout: `${fakeDroidPath}\n` });
         return fakeChild({ status: 1 });
       }
+      // Faithful to droid v0.186.0: `exec --list-tools` exits 0 and prints the
+      // local tool policy with no Factory account at all, so it says nothing
+      // about authentication.
       if (commandBasename(command) === "droid" && args[0] === "exec" && args[1] === "--list-tools") {
-        return fakeChild({ status: 0, stdout: "Available tools for Claude Opus 4.6\n" });
-      }
-      if (commandBasename(command) === "droid" && args[0] === "account") {
-        return fakeChild({ status: 1, stderr: "unknown command 'account'\n" });
-      }
-      if (commandBasename(command) === "droid" && args[0] === "whoami") {
-        return fakeChild({ status: 1, stderr: "unknown command 'whoami'\n" });
+        return fakeChild({ status: 0, stdout: "Available tools for Opus 5\nAutonomy: read-only\n" });
       }
       return fakeChild({ status: 1 });
     });
@@ -376,13 +373,25 @@ describe("authDetector", () => {
     const statuses = await detectCliAuthStatuses({ force: true });
     const droid = statuses.find((entry) => entry.cli === "droid");
 
+    // Installed, auth unknown — not "authenticated and verified". The real CLI
+    // in this state answers `droid exec "say hi"` with "Authentication failed."
     expect(droid).toEqual({
       cli: "droid",
       installed: true,
       path: fakeDroidPath,
-      authenticated: true,
-      verified: true,
+      authenticated: false,
+      verified: false,
     });
+
+    // `whoami` and `account status` are not subcommands on v0.186.0, so droid
+    // took each as a prompt and booted the interactive TUI until the spawn
+    // timeout. Nothing may spawn them again.
+    const droidArgs = spawnMock.mock.calls
+      .filter(([command]) => commandBasename(String(command)) === "droid")
+      .map(([, args]) => ((args ?? []) as string[]).join(" "));
+    expect(droidArgs).not.toContain("whoami");
+    expect(droidArgs).not.toContain("account status");
+    expect(droidArgs).not.toContain("exec --list-tools");
   });
 
   it("skips deep Droid auth probes during default detection without stored credentials", async () => {

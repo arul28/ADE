@@ -12,6 +12,10 @@ import type {
 } from "./droidSdkProtocol";
 import { loadDroidSdk } from "../ai/droidSdkLoader";
 import { summarizeDroidAskUser } from "./droidSdkAskUser";
+import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
+
+// Must run before the SDK spawns `droid`; see droidSdkWindowsHide.ts.
+ensureDroidSpawnsAreWindowless();
 
 type DroidSdkModule = typeof DroidSdkTypes;
 type DroidSession = Awaited<ReturnType<DroidSdkModule["createSession"]>>;

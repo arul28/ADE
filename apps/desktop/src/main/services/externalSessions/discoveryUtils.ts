@@ -9,6 +9,11 @@ import type {
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+import {
+  commandArrayToLine as sharedCommandArrayToLine,
+  resolveCanonicalCommandLineLaunch,
+} from "../../../shared/shell";
 
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
@@ -85,6 +90,17 @@ export function resolveHomeDir(args?: Pick<ExternalSessionDiscoveryArgs, "homeDi
   if (explicit) return explicit;
   const env = args?.env ?? process.env;
   const envHome = typeof env.HOME === "string" ? env.HOME.trim() : "";
+  if (process.platform === "win32") {
+    // `HOME` is not a Windows concept. When it is set at all it comes from a
+    // POSIX emulation layer — Git Bash exports `HOME=/c/Users/<name>`, which no
+    // `fs` call can resolve — so every session directory built from it silently
+    // came back empty. `%USERPROFILE%` is the real home, and it is what the
+    // provider CLIs themselves write under (`%USERPROFILE%\.claude`,
+    // `%USERPROFILE%\.codex`). Matches getHomeDir() in cliExecutableResolver.
+    const profile = typeof env.USERPROFILE === "string" ? env.USERPROFILE.trim() : "";
+    if (profile) return profile;
+    return path.win32.isAbsolute(envHome) ? envHome : os.homedir();
+  }
   return envHome || os.homedir();
 }
 
@@ -706,25 +722,45 @@ export function claudeProjectSlugForCwd(cwd: string): string {
   return cwd.replace(/[^A-Za-z0-9]/gu, "-");
 }
 
-export function slashEscapedCwd(cwd: string): string {
-  return cwd.replace(/[\\/]/gu, "-");
-}
-
 export function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
 }
 
+/**
+ * POSIX single-quoting produces a command line cmd.exe and PowerShell both
+ * misread, so defer to the shared platform-aware quoter rather than keeping a
+ * second, Unix-only copy here.
+ */
 export function commandArrayToLine(parts: string[]): string {
-  return parts.map((part) => {
-    if (!part.length) return "''";
-    if (/^[A-Za-z0-9_./:@%+=,-]+$/u.test(part)) return part;
-    return `'${part.replace(/'/gu, "'\\''")}'`;
-  }).join(" ");
+  return sharedCommandArrayToLine(parts);
 }
 
-export function directShellLaunchForCommandLine(commandLine: string): { command?: string; args?: string[] } {
+/**
+ * Turn a canonical POSIX startup command into a direct launch.
+ *
+ * On macOS the line is handed to `/bin/bash -lc`, whose quoting rules it was
+ * written in, so it survives verbatim. Windows has no such shell: the PTY lands
+ * in powershell.exe, pwsh.exe or cmd.exe, whose rules are mutually incompatible
+ * and none of which are POSIX. Returning nothing here used to leave the caller
+ * with a bare `startupCommand`, which ptyService then *typed* at PowerShell —
+ * turning `-c "model_reasoning_effort=\"high\""` into `model_reasoning_effort=\`
+ * plus a stray positional. Recover the argv instead and spawn it directly, so
+ * no shell gets a say in the quoting.
+ */
+export function directShellLaunchForCommandLine(
+  commandLine: string,
+): { command?: string; args?: string[]; env?: Record<string, string> } {
   const trimmed = commandLine.trim();
-  if (!trimmed || process.platform === "win32") return {};
+  if (!trimmed) return {};
+  if (process.platform === "win32") {
+    const launch = resolveCanonicalCommandLineLaunch(trimmed);
+    if (!launch) return {};
+    return {
+      command: launch.command,
+      args: launch.args,
+      ...(launch.env ? { env: launch.env } : {}),
+    };
+  }
   return { command: "/bin/bash", args: ["--noprofile", "--norc", "-lc", trimmed] };
 }
 
@@ -803,22 +839,76 @@ function cursorSlugMixedNames(parts: string[]): string[] {
 function cursorSlugSegmentNames(parts: string[]): string[] {
   const hyphen = parts.join("-");
   const dotted = parts.join(".");
+  const underscored = parts.join("_");
+  const spaced = parts.join(" ");
   const mixed = cursorSlugMixedNames(parts);
+  // Cursor slugs every non-alphanumeric character to `-`, so `_`, `.` and a
+  // space are all indistinguishable from a real hyphen by the time we read one
+  // back. Uniform joins for each cover the common cases; the `.`-prefixed forms
+  // recover a leading dot, which the vendor's trailing `^-+` trim erases
+  // entirely (`.ade` -> `ade`).
   return uniqueNames([
     hyphen,
     dotted,
+    underscored,
+    spaced,
     ...mixed,
     `.${hyphen}`,
     `.${dotted}`,
+    `.${underscored}`,
     ...mixed.map((name) => `.${name}`),
   ]);
 }
 
-function greedyCursorSlugCwdCandidate(slug: string): string | null {
-  const parts = slug.split("-").filter((part) => part.length > 0);
-  if (!parts.length) return null;
-  let current = path.parse(path.resolve("/")).root;
-  let index = 0;
+/**
+ * Windows drive roots that exist right now (`C:\`, `D:\`, …).
+ *
+ * A Cursor slug is anchored at a drive letter, and the process's own drive is
+ * not necessarily that drive, so the inversion cannot assume `path.resolve("/")`.
+ */
+function windowsDriveRoots(): string[] {
+  const roots: string[] = [];
+  for (let code = "A".charCodeAt(0); code <= "Z".charCodeAt(0); code += 1) {
+    const root = `${String.fromCharCode(code)}:${path.win32.sep}`;
+    if (safeStat(root)?.isDirectory()) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * Roots to start walking from, paired with the slug parts still to consume.
+ *
+ * On Windows the first part is the drive letter itself — Cursor's rule turns
+ * `C:\Users\me\repo` into `C-Users-me-repo`, so the leading `C` is a segment,
+ * not a directory named `C`. Anchoring at the process's current drive root and
+ * then looking for a child literally named `C` is why this never resolved.
+ */
+function cursorSlugAnchors(parts: string[]): Array<{ root: string; index: number }> {
+  if (!parts.length) return [];
+  if (process.platform !== "win32") {
+    return [{ root: path.parse(path.resolve("/")).root, index: 0 }];
+  }
+  const anchors: Array<{ root: string; index: number }> = [];
+  const first = parts[0] ?? "";
+  if (/^[A-Za-z]$/u.test(first)) {
+    const driveRoot = `${first.toUpperCase()}:${path.win32.sep}`;
+    if (safeStat(driveRoot)?.isDirectory()) anchors.push({ root: driveRoot, index: 1 });
+  }
+  // A slug produced on another OS (an imported transcript, a synced profile)
+  // has no drive segment, so fall back to trying every drive that exists.
+  for (const root of windowsDriveRoots()) {
+    anchors.push({ root, index: 0 });
+  }
+  return anchors;
+}
+
+function greedyCursorSlugCwdCandidateFrom(
+  parts: string[],
+  root: string,
+  startIndex: number,
+): string | null {
+  let current = root;
+  let index = startIndex;
 
   while (index < parts.length) {
     let matched: { dir: string; nextIndex: number } | null = null;
@@ -842,6 +932,16 @@ function greedyCursorSlugCwdCandidate(slug: string): string | null {
   return current;
 }
 
+function greedyCursorSlugCwdCandidate(slug: string): string | null {
+  const parts = slug.split("-").filter((part) => part.length > 0);
+  if (!parts.length) return null;
+  for (const anchor of cursorSlugAnchors(parts)) {
+    const resolved = greedyCursorSlugCwdCandidateFrom(parts, anchor.root, anchor.index);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 export function cursorSlugCwdCandidates(slug: string): string[] {
   const candidates: string[] = [];
   const add = (candidate: string) => {
@@ -851,25 +951,38 @@ export function cursorSlugCwdCandidates(slug: string): string[] {
   const greedy = greedyCursorSlugCwdCandidate(slug);
   if (greedy) add(greedy);
 
-  if (slug.startsWith("Users-")) {
-    const parts = slug.split("-");
-    if (parts.length >= 2) {
-      const username = parts[1];
-      const rest = parts.slice(2).join("-");
-      if (username && rest) {
-        const worktreeMarker = "-ade-worktrees-";
-        const markerIdx = rest.indexOf(worktreeMarker);
-        if (markerIdx >= 0) {
-          const projectPart = rest.slice(0, markerIdx);
-          const lanePart = rest.slice(markerIdx + worktreeMarker.length);
-          add(path.join("/Users", username, ...projectPart.split("-"), ".ade", "worktrees", lanePart));
-        }
-        add(path.join("/Users", username, ...rest.split("-")));
+  // Home-relative guess. On macOS a home-anchored slug starts `Users-<name>-`;
+  // on Windows the same path starts `C-Users-<name>-`, because the drive letter
+  // survives as its own segment and Cursor's rule has no platform branch. Slug
+  // the real home directory and strip that prefix instead of hardcoding
+  // `/Users`, so `C:\Users\me`, `/home/me` and a relocated profile all work.
+  const homeSlug = cursorProjectSlug(resolveHomeDir());
+  if (homeSlug && (slug === homeSlug || slug.startsWith(`${homeSlug}-`))) {
+    const rest = slug.slice(homeSlug.length).replace(/^-+/u, "");
+    if (rest) {
+      const worktreeMarker = "-ade-worktrees-";
+      const markerIdx = rest.indexOf(worktreeMarker);
+      if (markerIdx >= 0) {
+        const projectPart = rest.slice(0, markerIdx);
+        const lanePart = rest.slice(markerIdx + worktreeMarker.length);
+        add(path.join(resolveHomeDir(), ...projectPart.split("-"), ".ade", "worktrees", lanePart));
       }
+      add(path.join(resolveHomeDir(), ...rest.split("-")));
     }
   }
 
-  add(`/${slug.replace(/-/gu, "/")}`);
+  // Last resort: treat every `-` as a path separator. On Windows the leading
+  // segment is a drive letter, so this has to become `C:\a\b` — never `\C\a\b`.
+  const slugParts = slug.split("-").filter((part) => part.length > 0);
+  if (slugParts.length) {
+    if (process.platform === "win32") {
+      if (/^[A-Za-z]$/u.test(slugParts[0] ?? "")) {
+        add(path.join(`${(slugParts[0] ?? "").toUpperCase()}:${path.win32.sep}`, ...slugParts.slice(1)));
+      }
+    } else {
+      add(`/${slugParts.join("/")}`);
+    }
+  }
   return candidates;
 }
 
@@ -972,8 +1085,14 @@ export function slugMatchesScopeRoots(
 ): boolean {
   const roots = scopeRootPathVariants(scopeRoots);
   if (!roots.length) return true;
+  // Windows paths are case-insensitive, so a workspace the provider recorded as
+  // `c:\users\me\repo` slugs differently from ADE's `C:\Users\me\repo` scope
+  // root and an exact compare silently drops the session. The fold has to
+  // happen here: `slugForCwd` only ever sees one of the two sides.
+  const fold = (value: string): string => (process.platform === "win32" ? value.toLowerCase() : value);
+  const foldedSlug = fold(slug);
   return roots.some((root) => {
-    const rootSlug = slugForCwd(root);
-    return slug === rootSlug || slug.startsWith(`${rootSlug}-`);
+    const rootSlug = fold(slugForCwd(root));
+    return foldedSlug === rootSlug || foldedSlug.startsWith(`${rootSlug}-`);
   });
 }

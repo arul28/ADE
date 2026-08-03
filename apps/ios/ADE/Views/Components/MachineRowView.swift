@@ -193,7 +193,7 @@ func machineDeviceSymbol(deviceType: String?, platform: String?) -> String {
 }
 
 /// The unified status hint for a saved machine. Directory presence is only a
-/// routing hint; absence never claims the Mac is powered off. Callers with a
+/// routing hint; absence never claims the computer is powered off. Callers with a
 /// richer route label show that instead and fall back to this.
 func machineReachabilityText(
   isConnected: Bool,

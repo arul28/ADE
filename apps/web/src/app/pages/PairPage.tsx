@@ -46,7 +46,7 @@ export function PairPage() {
           </Reveal>
           <Reveal delay={0.1}>
             <p className="mt-5 text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-              Install ADE, then scan the pairing code on your Mac again to connect.
+              Install ADE, then scan the pairing code on your computer again to connect.
             </p>
           </Reveal>
 

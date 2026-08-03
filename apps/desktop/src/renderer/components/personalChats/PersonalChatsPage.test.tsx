@@ -771,7 +771,7 @@ describe("PersonalChatsPage", () => {
     expect(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ })).toBeTruthy();
   });
 
-  it("names the bound machine when the window runs on another Mac", async () => {
+  it("names the bound machine when the window runs on another computer", async () => {
     storeState.projectBinding = {
       kind: "remote",
       key: "remote:target-1:project-1",

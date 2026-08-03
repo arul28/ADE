@@ -44,6 +44,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { invalidateAiDiscoveryCache } from "../../lib/aiDiscoveryCache";
@@ -68,11 +69,28 @@ type ProvidersStatus = AiSettingsStatus & {
 
 const KIMI_PROVIDER_ID = "kimi-for-coding";
 
-const OPENCODE_INSTALL_COMMANDS = [
-  "brew install anomalyco/tap/opencode",
-  "npm i -g opencode-ai",
-  "curl -fsSL https://opencode.ai/install | bash",
-];
+/**
+ * OpenCode's own documented install methods, per platform. Windows has neither
+ * Homebrew nor a POSIX shell to pipe the install script into, so it gets the
+ * package managers OpenCode actually documents for Windows (npm, Scoop,
+ * Chocolatey) instead of commands that cannot run there.
+ */
+export function openCodeInstallCommands(
+  platform: ReturnType<typeof rendererPlatformAttribute> = rendererPlatformAttribute(),
+): string[] {
+  if (platform === "win32") {
+    return [
+      "npm i -g opencode-ai",
+      "scoop install opencode",
+      "choco install opencode",
+    ];
+  }
+  return [
+    "brew install anomalyco/tap/opencode",
+    "npm i -g opencode-ai",
+    "curl -fsSL https://opencode.ai/install | bash",
+  ];
+}
 
 const CUSTOM_PROVIDER_NPM_OPTIONS = [
   "@ai-sdk/openai-compatible",
@@ -80,12 +98,25 @@ const CUSTOM_PROVIDER_NPM_OPTIONS = [
   "@ai-sdk/anthropic",
 ];
 
+// Factory ships a native Windows build of `droid` with its own installer and
+// its own way of setting an environment variable — a POSIX `export` line and a
+// bare docs link leave a Windows user with nothing to run.
+// https://docs.factory.ai/cli/getting-started/quickstart
+const DROID_INSTALL_HINT = rendererPlatformAttribute() === "win32"
+  ? "irm https://app.factory.ai/cli/windows | iex — installs droid.exe into %USERPROFILE%\\bin and puts it on PATH"
+  : "curl -fsSL https://app.factory.ai/cli | sh — ensure `droid` is on PATH";
+const DROID_LOGIN_CMD = rendererPlatformAttribute() === "win32"
+  ? "setx FACTORY_API_KEY … (or sign in via `droid` interactive login)"
+  : "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)";
+
 const CLI_TOOLS: Array<{
   cli: CliName;
   label: string;
   authStory: string;
   loginCmd: string;
   installHint: string;
+  /** Used instead of installHint on Windows, where the vendor ships a different installer. */
+  windowsInstallHint?: string;
 }> = [
   {
     cli: "claude",
@@ -93,6 +124,9 @@ const CLI_TOOLS: Array<{
     authStory: "Uses your claude login — Claude Pro/Max subscription or ANTHROPIC_API_KEY.",
     loginCmd: "claude auth login or set ANTHROPIC_API_KEY",
     installHint: "npm install -g @anthropic-ai/claude-code",
+    // Anthropic's documented Windows installs: the PowerShell native installer
+    // (drops claude.exe in %USERPROFILE%\.localin) or WinGet.
+    windowsInstallHint: "irm https://claude.ai/install.ps1 | iex (PowerShell), or winget install Anthropic.ClaudeCode",
   },
   {
     cli: "codex",
@@ -112,8 +146,8 @@ const CLI_TOOLS: Array<{
     cli: "droid",
     label: "Droid",
     authStory: "Uses your Factory login or FACTORY_API_KEY.",
-    loginCmd: "export FACTORY_API_KEY=… (or sign in via `droid` interactive login)",
-    installHint: "Install from https://docs.factory.ai/cli/getting-started/quickstart — ensure `droid` is on PATH",
+    loginCmd: DROID_LOGIN_CMD,
+    installHint: DROID_INSTALL_HINT,
   },
 ];
 
@@ -379,6 +413,12 @@ function describeCredentialSource(connection: AiProviderConnectionStatus | null 
   return null;
 }
 
+const isWindowsRenderer = rendererPlatformAttribute() === "win32";
+
+function installHintFor(tool: (typeof CLI_TOOLS)[number]): string {
+  return (isWindowsRenderer && tool.windowsInstallHint) || tool.installHint;
+}
+
 function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProviderConnectionStatus | null | undefined): string {
   if (connection?.runtimeAvailable) {
     return "Connection verified.";
@@ -390,9 +430,12 @@ function buildCliMessage(tool: (typeof CLI_TOOLS)[number], connection: AiProvide
     return `CLI detected but not signed in. Run: ${tool.loginCmd}`;
   }
   if (connection?.authAvailable && !connection.runtimeDetected) {
-    return `Local credentials exist but CLI not found in PATH. Install: ${tool.installHint}`;
+    return `Local credentials exist but CLI not found in PATH. Install: ${installHintFor(tool)}`;
   }
-  return `CLI not found in PATH. Install: ${tool.installHint}. If already installed, ensure it is on your shell PATH and use Refresh.`;
+  const pathAdvice = isWindowsRenderer
+    ? "If already installed, add its folder to your Windows PATH (System Properties -> Environment Variables), reopen ADE, and use Refresh."
+    : "If already installed, ensure it is on your shell PATH and use Refresh.";
+  return `CLI not found in PATH. Install: ${installHintFor(tool)}. ${pathAdvice}`;
 }
 
 function formatLocalModelLabel(modelId: string): string {
@@ -1085,7 +1128,10 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
         })()}
 
         {/* ── Cursor ── */}
-        {(() => {
+        {/* Hidden entirely on Windows on ARM: @cursor/sdk has no win32-arm64
+            build, so the card could only ever offer a provider that cannot
+            start. See shared/providerPlatformSupport.ts. */}
+        {!cursorProviderAvailable() ? null : (() => {
           const tool = CLI_TOOLS.find((t) => t.cli === "cursor")!;
           const connection = providerConnections?.[tool.cli] ?? null;
           const credentialSourceDesc = describeCredentialSource(connection);
@@ -1267,7 +1313,7 @@ export function ProvidersSection({ forceRefreshOnMount = false }: { forceRefresh
               OpenCode powers every subscription, API key, and local model below. Install it, then re-check:
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-              {OPENCODE_INSTALL_COMMANDS.map((cmd) => (
+              {openCodeInstallCommands().map((cmd) => (
                 <CopyableCommand key={cmd} command={cmd} />
               ))}
             </div>

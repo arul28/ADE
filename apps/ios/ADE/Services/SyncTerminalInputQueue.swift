@@ -9,7 +9,7 @@ enum SyncTerminalInputQueueError: Error, Equatable, LocalizedError {
     case .chunkTooLarge(let maximumBytes):
       return "That terminal input is too large to send (maximum \(maximumBytes) bytes)."
     case .overflow(let maximumItems, let maximumBytes):
-      return "Terminal input is paused because \(maximumItems) queued chunks or \(maximumBytes) bytes are waiting for the Mac."
+      return "Terminal input is paused because \(maximumItems) queued chunks or \(maximumBytes) bytes are waiting for the computer."
     }
   }
 }

@@ -1,5 +1,6 @@
 import type { DetectedAuth } from "./authDetector";
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
@@ -37,18 +38,78 @@ function findCodexAuthPath(auth?: DetectedAuth[]): string | null {
   return null;
 }
 
-function pathExists(filePath: string): boolean {
+function pathExists(filePath: string, platform: NodeJS.Platform = process.platform): boolean {
   try {
     fs.accessSync(filePath, fs.constants.X_OK);
     return true;
   } catch {
     try {
       fs.accessSync(filePath, fs.constants.F_OK);
-      return process.platform === "win32";
+      // Windows has no execute bit; presence is the only signal available.
+      return platform === "win32";
     } catch {
       return false;
     }
   }
+}
+
+function homeDirFromEnv(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string | null {
+  const profile = env.USERPROFILE?.trim();
+  const home = env.HOME?.trim();
+  if (platform === "win32") return profile || home || os.homedir() || null;
+  return home || os.homedir() || null;
+}
+
+/**
+ * Directories used by Codex's own standalone installer
+ * (`https://chatgpt.com/codex/install.ps1` / `install.sh`).
+ *
+ * The installer drops the release under `$CODEX_HOME/packages/standalone/current`
+ * and exposes it through a "visible bin" directory that it prepends to the
+ * *persisted* user PATH:
+ *   - Windows: `%CODEX_INSTALL_DIR%` else `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin`
+ *   - macOS/Linux: `$CODEX_INSTALL_DIR` else `$HOME/.local/bin`
+ *
+ * A persisted PATH edit is not visible to an already-running login session, so
+ * ADE must be able to find a standalone install without it. macOS already gets
+ * this for free because `~/.local/bin` is in the shared known-bin-dir list; the
+ * Windows equivalent is not, which left standalone Windows installs
+ * indistinguishable from "Codex is not installed".
+ */
+function standaloneCodexInstallDirs(env: NodeJS.ProcessEnv, platform: NodeJS.Platform): string[] {
+  const dirs: string[] = [];
+  const installDir = env.CODEX_INSTALL_DIR?.trim();
+  if (installDir) dirs.push(installDir);
+
+  if (platform === "win32") {
+    const localAppData = env.LOCALAPPDATA?.trim();
+    if (localAppData) dirs.push(path.join(localAppData, "Programs", "OpenAI", "Codex", "bin"));
+  } else {
+    const home = homeDirFromEnv(env, platform);
+    if (home) dirs.push(path.join(home, ".local", "bin"));
+  }
+
+  const configuredHome = env.CODEX_HOME?.trim();
+  const home = homeDirFromEnv(env, platform);
+  const codexHome = configuredHome || (home ? path.join(home, ".codex") : "");
+  if (codexHome) {
+    const current = path.join(codexHome, "packages", "standalone", "current");
+    dirs.push(path.join(current, "bin"), current);
+  }
+
+  return [...new Set(dirs)];
+}
+
+function findStandaloneCodexExecutable(
+  env: NodeJS.ProcessEnv,
+  platform: NodeJS.Platform,
+): string | null {
+  const binaryName = platform === "win32" ? "codex.exe" : "codex";
+  for (const dir of standaloneCodexInstallDirs(env, platform)) {
+    const candidate = path.join(dir, binaryName);
+    if (pathExists(candidate, platform)) return candidate;
+  }
+  return null;
 }
 
 function listDirectories(rootPath: string): string[] {
@@ -68,7 +129,7 @@ function findVendorCodexBinary(packageRoot: string, platform: NodeJS.Platform): 
       path.join(vendorRoot, "bin", binaryName),
       path.join(vendorRoot, "codex", binaryName),
     ]) {
-      if (pathExists(candidate)) return candidate;
+      if (pathExists(candidate, platform)) return candidate;
     }
   }
   return null;
@@ -156,6 +217,11 @@ export function resolveCodexExecutable(args?: {
       path: resolved.path,
       source: resolved.source === "path" ? "path" : "common-dir",
     };
+  }
+
+  const standalone = findStandaloneCodexExecutable(env, args?.platform ?? process.platform);
+  if (standalone) {
+    return { path: standalone, source: "common-dir" };
   }
 
   return { path: "codex", source: "fallback-command" };

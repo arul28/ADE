@@ -631,7 +631,7 @@ export class AdeSyncClient {
       ...transportStatus,
       state,
       error: this.readiness === "failed"
-        ? this.readinessError?.message ?? "Can't reach this Mac."
+        ? this.readinessError?.message ?? "Can't reach this computer."
         : transportStatus.error,
       activeProjectId: this.activeProjectId,
       selectedEnvId: this.selectedEnvId,
@@ -785,7 +785,7 @@ export class AdeSyncClient {
       || this.terminalInputQueueBytes + byteLength > MAX_QUEUED_TERMINAL_INPUT_BYTES
     ) {
       throw new AdeSyncError(
-        "Terminal input is waiting for this Mac to catch up. Try again in a moment.",
+        "Terminal input is waiting for this computer to catch up. Try again in a moment.",
         "terminal_input_queue_full",
       );
     }
@@ -972,7 +972,7 @@ export class AdeSyncClient {
     this.latestHello = payload;
     if (!this.terminalInputAcksSupported() && this.terminalInputQueue.length > 0) {
       this.rejectTerminalInputQueue(new AdeSyncError(
-        "The reconnected Mac cannot safely confirm pending terminal input.",
+        "The reconnected computer cannot safely confirm pending terminal input.",
         "terminal_input_ack_unavailable",
       ));
     }
@@ -1039,7 +1039,7 @@ export class AdeSyncClient {
   private async awaitCurrentRestoration(): Promise<void> {
     const restoration = this.restorationPromise;
     if (!restoration) {
-      throw new AdeSyncError("The Mac connected without restoring the workspace.", "restoration_missing");
+      throw new AdeSyncError("The computer connected without restoring the workspace.", "restoration_missing");
     }
     await restoration;
   }
@@ -1248,7 +1248,7 @@ export class AdeSyncClient {
       const rawError = (payload as { error?: unknown }).error;
       if (!rawError || typeof rawError !== "object") {
         this.failTerminalInput(operation, new AdeSyncError(
-          "This Mac returned an invalid terminal input response.",
+          "This computer returned an invalid terminal input response.",
           "terminal_input_invalid_ack",
         ));
         return;
@@ -1277,7 +1277,7 @@ export class AdeSyncClient {
       this.failTerminalInput(operation, new AdeSyncError(
         typeof inputError.message === "string" && inputError.message.trim()
           ? inputError.message
-          : "This Mac rejected terminal input.",
+          : "This computer rejected terminal input.",
         `terminal_input_${code}`,
         { retryable },
       ));
@@ -1404,7 +1404,7 @@ export class AdeSyncClient {
     }
     if (operation.attempts >= this.terminalInputMaxAttempts) {
       this.failTerminalInput(operation, new AdeSyncError(
-        "This Mac did not confirm terminal input. Check the terminal before retrying.",
+        "This computer did not confirm terminal input. Check the terminal before retrying.",
         "terminal_input_ack_timeout",
         { attempts: operation.attempts },
       ));
@@ -1617,7 +1617,7 @@ export class AdeSyncClient {
 
   private requireReadyGeneration(): number {
     if (this.readiness !== "ready" || !this.connection.isConnected()) {
-      throw new AdeSyncError("Reconnecting to this Mac. Try again when connected.", "not_connected");
+      throw new AdeSyncError("Reconnecting to this computer. Try again when connected.", "not_connected");
     }
     return this.clientGeneration;
   }
@@ -1626,7 +1626,7 @@ export class AdeSyncClient {
     return error instanceof AdeSyncError
       ? error
       : new AdeSyncError(
-          error instanceof Error ? error.message : "Connection to this Mac was lost.",
+          error instanceof Error ? error.message : "Connection to this computer was lost.",
           "not_connected",
           error,
         );

@@ -18,6 +18,11 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  CURSOR_WINDOWS_ARM_BLOCKER,
+  isCursorProviderSupported,
+} from "../../desktop/src/shared/providerPlatformSupport";
+
 type CursorSdk = typeof import("@cursor/sdk");
 
 const requireFromRuntime = createRequire(
@@ -42,6 +47,12 @@ function isCursorSdkResolutionError(error: unknown): boolean {
 }
 
 async function getSdk(): Promise<CursorSdk> {
+  // @cursor/sdk publishes no win32-arm64 runtime, so this import can never
+  // succeed on Windows on ARM. Fail with the reason instead of a bare
+  // ERR_MODULE_NOT_FOUND. See desktop/src/shared/providerPlatformSupport.ts.
+  if (!isCursorProviderSupported(process.platform, process.arch)) {
+    throw new Error(CURSOR_WINDOWS_ARM_BLOCKER);
+  }
   if (!sdkModulePromise) {
     sdkModulePromise = import("@cursor/sdk")
       .catch((error) => {

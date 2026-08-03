@@ -1008,6 +1008,7 @@ async function uploadSshChunkViaOpenSsh(
       let settled = false;
       const child = spawn("ssh", openSshArgsForRoute(target, route, connectedConfig, remoteUploadAppendCommand(remoteFileExpr)), {
         stdio: [chunkHandle.fd, "ignore", "pipe"],
+        windowsHide: true,
       });
       let stderr = "";
       let timeout: NodeJS.Timeout | null = null;
@@ -1366,7 +1367,7 @@ async function signUploadedRuntimeBinaryIfNeeded(client: Client, layout: RemoteR
     throw new Error(
       signed.stderr.trim() ||
       signed.stdout.trim() ||
-      "Uploaded ADE service could not be signed on the remote Mac.",
+      "Uploaded ADE service could not be signed on the remote computer.",
     );
   }
 }

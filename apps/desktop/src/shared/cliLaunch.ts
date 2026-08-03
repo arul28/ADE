@@ -8,6 +8,7 @@ import type {
   TerminalResumeMetadata,
   TerminalSessionSummary,
   TerminalToolType,
+  WindowsShellKind,
 } from "./types";
 import {
   ADE_AGENT_SKILLS_DIRS_ENV,
@@ -53,10 +54,9 @@ function unquoteWindowsShellPath(value: string | null | undefined): string {
   return trimmed;
 }
 
-type WindowsShellKind = "powershell" | "cmd" | "git-bash";
 export type WindowsShellLaunchMode = "interactive" | "clean" | "login";
 
-function windowsShellKind(command: string): WindowsShellKind | null {
+export function resolveWindowsShellKind(command: string): WindowsShellKind | null {
   const normalized = command.replace(/\//g, "\\");
   if (/^\\\\(?:wsl\$|wsl\.localhost)\\/i.test(normalized)) return null;
   const basename = normalized.split("\\").pop()?.toLowerCase() ?? "";
@@ -85,7 +85,7 @@ export function resolveWindowsShellLaunchFields(
 ): CleanShellLaunchFields | null {
   const command = unquoteWindowsShellPath(value);
   if (!command) return null;
-  const kind = windowsShellKind(command);
+  const kind = resolveWindowsShellKind(command);
   const mode = options.mode ?? "interactive";
   if (kind === "powershell") {
     return {
@@ -357,7 +357,7 @@ export function resolveCleanShellLaunchFields(args: {
     // ComSpec is normally cmd.exe even when ADE was launched from PowerShell.
     // Preserve PowerShell as ADE's default, while still honoring an explicitly
     // configured PowerShell executable in ComSpec.
-    if (comSpec && windowsShellKind(comSpec.command) === "powershell") {
+    if (comSpec && resolveWindowsShellKind(comSpec.command) === "powershell") {
       return comSpec;
     }
     return { command: "powershell.exe", args: ["-NoLogo", "-NoProfile"] };
@@ -622,7 +622,18 @@ export function buildTrackedCliLaunchCommand(args: {
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
-    const usePromptArg = codexModel === "gpt-5.3-codex";
+    // The launcher is the bare command `codex`, which on Windows has no
+    // extension and therefore always has to be spawned through
+    // `cmd.exe /d /s /c "…"`. cmd rewrites the command line before Codex sees
+    // it: `%` is doubled, `%NAME%` is expanded, newlines collapse to spaces,
+    // and the whole line is capped at ~8191 characters. The work-tab prompt is
+    // a ~2.4KB multi-line ADE preamble with the user's text appended, so
+    // passing it as argv corrupts it on every Windows launch. Fall back to the
+    // post-launch input path that every other Codex model already uses.
+    const platform = typeof process !== "undefined" && typeof process.platform === "string"
+      ? process.platform
+      : "";
+    const usePromptArg = codexModel === "gpt-5.3-codex" && platform !== "win32";
     if (usePromptArg) commandArgs.push(initialInput);
     return {
       command: "codex",

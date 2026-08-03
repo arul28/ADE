@@ -33,7 +33,11 @@ describe("processExecution", () => {
   it("quotes cmd arguments consistently", () => {
     expect(quoteWindowsCmdArg("C:\\Program Files\\tool.cmd")).toBe('"C:\\Program Files\\tool.cmd"');
     expect(quoteWindowsCmdArg("C:\\Program Files\\")).toBe('"C:\\Program Files\\\\"');
-    expect(quoteWindowsCmdArg("100% done")).toBe('"100%% done"');
+    // `%` is left alone: `%%` is a batch-file escape that survives literally on
+    // a command line, so doubling corrupted the argument (`100% done` reached
+    // the callee as `100%% done`) without preventing expansion.
+    expect(quoteWindowsCmdArg("100% done")).toBe('"100% done"');
+    expect(quoteWindowsCmdArg("%USERPROFILE%")).toBe('"%USERPROFILE%"');
     expect(quoteWindowsCmdArg('say "hi"')).toBe('"say ""hi"""');
     expect(quoteWindowsCmdArg('C:\\path\\"quoted"')).toBe('"C:\\path\\\\\"\"quoted\"\"\"');
     expect(quoteWindowsCmdArg("line one\r\nline two")).toBe('"line one  line two"');

@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import {
   asEpochMs,
@@ -14,7 +15,6 @@ import {
   resolveHomeDir,
   safeReadDir,
   sessionFileCandidate,
-  slashEscapedCwd,
   slugMatchesScopeRoots,
   sortDiscoveryRecords,
   EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER,
@@ -22,6 +22,37 @@ import {
   type ExternalSessionFileCandidate,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+
+/**
+ * Name of the per-project directory Droid creates under `~/.factory/sessions`.
+ *
+ * This mirrors `sanitizePathToDirectoryName` in @factory/droid-sdk (and the
+ * `droid` CLI that writes the files), which is *not* a plain separator swap:
+ *
+ *   posix  /Users/dev/ADE   -> "-Users-dev-ADE"
+ *   win32  C:\Users\dev\ADE -> "-C-Users-dev-ADE"   (drive colon dropped)
+ *
+ * A generic separator swap happens to match the posix form, which is why
+ * macOS worked, but on Windows it yields "C:-Users-dev-ADE" — a name
+ * that can never exist on NTFS (`:` is reserved) — so every Droid project
+ * directory failed the scope filter and no CLI sessions were imported.
+ */
+export function droidProjectSlugForCwd(cwd: string): string {
+  const absolutePath = path.resolve(cwd);
+  let canonicalPath = absolutePath;
+  try {
+    canonicalPath = fs.realpathSync(absolutePath);
+  } catch {
+    canonicalPath = absolutePath;
+  }
+  const normalized = canonicalPath.replace(/[\\/]+$/u, "");
+  const slug = process.platform === "win32"
+    ? `-${normalized.replace(/^([A-Za-z]):/u, "$1").replace(/[\\/]+/gu, "-")}`
+    : `-${normalized.replace(/^\/+/u, "").replace(/\/+/gu, "-")}`;
+  // Windows paths are case-insensitive; the on-disk directory can differ in
+  // case from the scope root ADE hands us (drive letter especially).
+  return process.platform === "win32" ? slug.toLowerCase() : slug;
+}
 
 /**
  * A session directory is the slash-escaped cwd, which for an absolute path always
@@ -41,6 +72,10 @@ function moreCompleteDroidCandidate(current: DroidCandidate, next: DroidCandidat
   return moreCompleteFileCandidate(current, next);
 }
 
+function droidSlugForComparison(slug: string): string {
+  return process.platform === "win32" ? slug.toLowerCase() : slug;
+}
+
 export async function discoverDroidSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
@@ -55,7 +90,15 @@ export async function discoverDroidSessions(
   for (const projectEntry of safeReadDir(sessionsDir)) {
     if (!projectEntry.isDirectory()) continue;
     const namesAPath = droidDirectoryNamesAPath(projectEntry.name);
-    const inRequestedScope = slugMatchesScopeRoots(projectEntry.name, args.scopeRoots, slashEscapedCwd);
+    // Must use droidProjectSlugForCwd, not slashEscapedCwd: the latter yields
+    // "C:-Users-..." on Windows, a name NTFS can never hold, so every project
+    // directory failed this filter and no Droid session was ever importable.
+    // Verified byte-exact against droid v0.186.0's own on-disk directory names.
+    const inRequestedScope = slugMatchesScopeRoots(
+      droidSlugForComparison(projectEntry.name),
+      args.scopeRoots,
+      droidProjectSlugForCwd,
+    );
     // Out-of-project directories are ruled out here, before the mtime cut that
     // would otherwise let heavy usage elsewhere crowd in-project sessions out.
     if (namesAPath && !inRequestedScope) continue;

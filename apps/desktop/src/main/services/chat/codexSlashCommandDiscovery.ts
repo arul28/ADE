@@ -20,8 +20,26 @@ export type ResolvedCodexSlashCommandInvocation = {
   argumentsText: string;
 };
 
+function codexHomeDir(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = typeof env.CODEX_HOME === "string" ? env.CODEX_HOME.trim() : "";
+  return configured ? path.resolve(configured) : path.join(os.homedir(), ".codex");
+}
+
+function samePath(left: string, right: string): boolean {
+  // Windows paths are case-insensitive, and `path.resolve(cwd)` and
+  // `os.homedir()` routinely disagree on drive-letter case. A case-sensitive
+  // compare would miss the home-directory stop and keep walking to the depth
+  // cap, inventing `C:\Users\.codex` and `C:\.codex` prompt roots.
+  return process.platform === "win32"
+    ? left.toLowerCase() === right.toLowerCase()
+    : left === right;
+}
+
 function codexPromptRoots(cwd: string): string[] {
-  const roots: string[] = [path.join(os.homedir(), ".codex", "prompts")];
+  // Codex resolves its user-level prompt directory under CODEX_HOME, which its
+  // own installers set and which is commonly relocated off the roaming profile
+  // on Windows. Only the per-project `.codex/prompts` walk is cwd-relative.
+  const roots: string[] = [path.join(codexHomeDir(), "prompts")];
   const seen = new Set<string>(roots);
   const home = os.homedir();
   let current = path.resolve(cwd);
@@ -34,7 +52,7 @@ function codexPromptRoots(cwd: string): string[] {
     }
     const parent = path.dirname(current);
     if (parent === current) break;
-    if (current === home) break;
+    if (samePath(current, home)) break;
     current = parent;
     depth += 1;
   }

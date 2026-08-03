@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { THIS_MACHINE_NAME } from "../../../../shared/machineIdentity";
 import { COLORS, SANS_FONT } from "../../lanes/laneDesignTokens";
 import type { SettingScope } from "../settingsManifest";
 
@@ -25,7 +26,10 @@ const SCOPE_COPY: Record<SettingScope, ScopeCopy> = {
     affects: "Everyone who works in this repository, once you push.",
   },
   machine: {
-    label: "This Mac",
+    // Sourced, never spelled out. The chip's own `affects` line has always said
+    // "Only this computer"; a hardcoded "This Mac" here made one object claim
+    // two different machines, and lied outright on Windows.
+    label: THIS_MACHINE_NAME,
     color: COLORS.warning,
     storedIn: ".ade/local.yaml and ADE's local services — gitignored",
     affects: "Only this computer. Nothing here is shared or committed.",
@@ -44,7 +48,7 @@ export function ScopeChip({ scope, remoteMachineName }: { scope: SettingScope; r
   const copy = SCOPE_COPY[scope];
 
   // A machine-scoped setting viewed through the remote banner writes to *that*
-  // machine, not this one. Saying "This Mac" there would be a lie.
+  // machine, not this one. Naming the local machine there would be a lie.
   const isRemote = scope !== "team" && !!remoteMachineName?.trim();
   const label = isRemote ? remoteMachineName!.trim() : copy.label;
 

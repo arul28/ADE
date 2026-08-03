@@ -3134,6 +3134,35 @@ describe("ptyService", () => {
       );
     });
 
+    it.each([
+      ["powershell.exe", "powershell-command"],
+      ["cmd.exe", "cmd-command"],
+      [["C:", "Program Files", "Git", "bin", "bash.exe"].join(String.fromCharCode(92)), "git-bash-command"],
+    ])("types the startup command for the selected Windows shell: %s", async (shell, expectedCommand) => {
+      setPlatform("win32");
+      process.env.SHELL = shell;
+      const { service, mockPty, loadPty } = createHarness();
+
+      await service.create({
+        laneId: "lane-1",
+        title: "App Control",
+        cols: 80,
+        rows: 24,
+        toolType: "shell",
+        startupCommand: "display-command",
+        windowsStartupCommands: {
+          powershell: "powershell-command",
+          cmd: "cmd-command",
+          "git-bash": "git-bash-command",
+        },
+        startupDelayMs: 0,
+      });
+
+      const ptyLib = loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+      expect(ptyLib.spawn.mock.calls[0]?.[0]).toBe(shell);
+      expect(mockPty.write).toHaveBeenCalledWith(`${expectedCommand}\r`);
+    });
+
     it("launches Cursor through the legacy Windows agent.cmd alias when needed", async () => {
       setPlatform("win32");
       const previousAppData = process.env.APPDATA;

@@ -11,6 +11,7 @@ import {
   processOutputToString,
   quoteWindowsCmdArg,
   resolveWindowsCmdLineInvocation,
+  shouldUseWindowsCmdWrapper,
 } from "../shared/processExecution";
 import { probeOpenCodeBinaryQuarantine, resolveOpenCodeBinaryPath } from "./openCodeBinaryManager";
 
@@ -68,6 +69,7 @@ type OpenCodeServeLaunchSpec = {
   args: string[];
   env: NodeJS.ProcessEnv;
   useShell: boolean;
+  windowsVerbatimArguments: boolean;
   xdgPaths: OpenCodeIsolationPaths;
 };
 
@@ -799,11 +801,122 @@ function isManagedOpenCodeServeCommand(command: string, configMarkers: string[])
   return configMarkers.some((marker) => command.includes(marker));
 }
 
+/**
+ * On-disk record of a server process ADE launched. Windows process listings do
+ * not expose a child's environment, so the `ADE_OPENCODE_MANAGED` marker that
+ * identifies managed servers in `ps -wwE` output on macOS (and `/proc/<pid>/environ`
+ * on Linux) has no Windows equivalent. This registry is the platform-neutral
+ * identity: it survives an ADE crash, so the next launch can reap the servers the
+ * dead process left behind on every platform.
+ */
+type ManagedOpenCodeServerRecord = {
+  pid: number;
+  port: number;
+  ownerPid: number;
+  startedAt: number;
+};
+
+function managedServerRegistryDirs(): string[] {
+  return resolveKnownAdeManagedOpenCodeRoots().map((root) => (
+    path.join(root, `xdg-v${ADE_OPENCODE_XDG_LAYOUT_VERSION}`, "runtime", "servers")
+  ));
+}
+
+function managedServerRecordPath(pid: number): string {
+  return path.join(
+    resolveOpenCodeIsolationPaths().runtimeDir,
+    "servers",
+    `${pid}.json`,
+  );
+}
+
+function writeManagedServerRecord(record: ManagedOpenCodeServerRecord): void {
+  try {
+    const filePath = managedServerRecordPath(record.pid);
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, JSON.stringify(record), "utf8");
+  } catch {
+    // Recovery is best-effort; a registry write failure must not fail a launch.
+  }
+}
+
+function removeManagedServerRecord(pid: number): void {
+  for (const dir of managedServerRegistryDirs()) {
+    try {
+      fs.rmSync(path.join(dir, `${pid}.json`), { force: true });
+    } catch {
+      // ignore
+    }
+  }
+}
+
+function readManagedServerRecords(): Array<{ file: string; record: ManagedOpenCodeServerRecord }> {
+  const out: Array<{ file: string; record: ManagedOpenCodeServerRecord }> = [];
+  const seenPids = new Set<number>();
+  for (const dir of managedServerRegistryDirs()) {
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      continue;
+    }
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const file = path.join(dir, name);
+      try {
+        const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as Partial<ManagedOpenCodeServerRecord>;
+        const pid = Number(parsed.pid);
+        const ownerPid = Number(parsed.ownerPid);
+        if (!Number.isInteger(pid) || pid <= 0 || !Number.isInteger(ownerPid) || ownerPid <= 0) {
+          fs.rmSync(file, { force: true });
+          continue;
+        }
+        if (seenPids.has(pid)) continue;
+        seenPids.add(pid);
+        out.push({
+          file,
+          record: {
+            pid,
+            ownerPid,
+            port: Number.isInteger(Number(parsed.port)) ? Number(parsed.port) : 0,
+            startedAt: Number.isFinite(Number(parsed.startedAt)) ? Number(parsed.startedAt) : 0,
+          },
+        });
+      } catch {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch {
+          // ignore
+        }
+      }
+    }
+  }
+  return out;
+}
+
 function parseManagedOwnerPid(command: string): number | null {
   const match = command.match(new RegExp(`${ADE_OPENCODE_OWNER_PID_ENV}=(\\d+)`, "i"));
   if (!match) return null;
   const pid = Number(match[1]);
   return Number.isInteger(pid) && pid > 0 ? pid : null;
+}
+
+/**
+ * Terminate an orphaned managed server, escalating once if it survives the
+ * grace period. Windows has no POSIX signals, so it uses a `taskkill /T /F`
+ * tree kill on both passes; Unix escalates SIGTERM → SIGKILL.
+ */
+async function terminateOrphanProcess(pid: number): Promise<boolean> {
+  if (process.platform === "win32") {
+    openCodeProcessController.killProcessTree(pid);
+    if (await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS)) return true;
+    openCodeProcessController.killProcessTree(pid);
+    return await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
+  }
+  openCodeProcessController.killProcess(pid, "SIGTERM");
+  if (await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS)) return true;
+  openCodeProcessController.killProcess(pid, "SIGKILL");
+  return await waitForProcessExit(pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
 }
 
 async function waitForProcessExit(pid: number, timeoutMs: number): Promise<boolean> {
@@ -848,8 +961,11 @@ export async function recoverManagedOpenCodeOrphans(args: {
     const activePorts = activeManagedOpenCodePorts();
     const recoveredPids: number[] = [];
     const skippedPids: number[] = [];
+    const handledPids = new Set<number>();
+    const snapshot = openCodeProcessController.listProcesses();
+    const commandByPid = new Map(snapshot.map((proc) => [proc.pid, proc.command]));
 
-    for (const proc of openCodeProcessController.listProcesses()) {
+    for (const proc of snapshot) {
       if (proc.pid === process.pid) continue;
       if (!isManagedOpenCodeServeCommand(proc.command, configMarkers)) continue;
 
@@ -872,39 +988,16 @@ export async function recoverManagedOpenCodeOrphans(args: {
         continue;
       }
 
-      if (process.platform === "win32") {
-        openCodeProcessController.killProcessTree(proc.pid);
-        const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-        if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
-          openCodeProcessController.killProcessTree(proc.pid);
-          const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-          if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
-            skippedPids.push(proc.pid);
-            args.logger?.warn("opencode.server_orphan_recovery_failed", {
-              pid: proc.pid,
-              ownerPid,
-              ppid: proc.ppid,
-            });
-            continue;
-          }
-        }
-      } else {
-        openCodeProcessController.killProcess(proc.pid, "SIGTERM");
-        const exitedGracefully = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-        if (!exitedGracefully && openCodeProcessController.isProcessAlive(proc.pid)) {
-          openCodeProcessController.killProcess(proc.pid, "SIGKILL");
-          const exitedAfterKill = await waitForProcessExit(proc.pid, ORPHAN_RECOVERY_TERM_GRACE_MS);
-          if (!exitedAfterKill && openCodeProcessController.isProcessAlive(proc.pid)) {
-            skippedPids.push(proc.pid);
-            args.logger?.warn("opencode.server_orphan_recovery_failed", {
-              pid: proc.pid,
-              ownerPid,
-              ppid: proc.ppid,
-            });
-            continue;
-          }
-        }
+      if (!await terminateOrphanProcess(proc.pid)) {
+        skippedPids.push(proc.pid);
+        args.logger?.warn("opencode.server_orphan_recovery_failed", {
+          pid: proc.pid,
+          ownerPid,
+          ppid: proc.ppid,
+        });
+        continue;
       }
+      handledPids.add(proc.pid);
       recoveredPids.push(proc.pid);
       args.logger?.warn("opencode.server_orphan_recovered", {
         pid: proc.pid,
@@ -912,6 +1005,66 @@ export async function recoverManagedOpenCodeOrphans(args: {
         ppid: proc.ppid,
         port: parseManagedOpenCodePort(proc.command),
       });
+      removeManagedServerRecord(proc.pid);
+    }
+
+    // Second pass: the on-disk registry. This is the only identity that works on
+    // Windows, where a process listing cannot show a child's environment and the
+    // managed markers therefore never appear on the server's command line.
+    for (const { file, record } of readManagedServerRecords()) {
+      if (record.pid === process.pid) continue;
+      if (handledPids.has(record.pid)) continue;
+      if (!openCodeProcessController.isProcessAlive(record.pid)) {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      // Guard against PID reuse: the live process must still look like an
+      // OpenCode server before we are willing to kill it.
+      const command = commandByPid.get(record.pid);
+      if (command !== undefined && !commandLooksLikeOpenCodeServe(command)) {
+        try {
+          fs.rmSync(file, { force: true });
+        } catch {
+          // ignore
+        }
+        continue;
+      }
+      const ownerAlive = record.ownerPid !== process.pid
+        && openCodeProcessController.isProcessAlive(record.ownerPid);
+      if (ownerAlive) {
+        skippedPids.push(record.pid);
+        continue;
+      }
+      if (record.ownerPid === process.pid && record.port > 0 && activePorts.has(record.port)) {
+        skippedPids.push(record.pid);
+        continue;
+      }
+      if (!await terminateOrphanProcess(record.pid)) {
+        skippedPids.push(record.pid);
+        args.logger?.warn("opencode.server_orphan_recovery_failed", {
+          pid: record.pid,
+          ownerPid: record.ownerPid,
+          source: "registry",
+        });
+        continue;
+      }
+      handledPids.add(record.pid);
+      recoveredPids.push(record.pid);
+      args.logger?.warn("opencode.server_orphan_recovered", {
+        pid: record.pid,
+        ownerPid: record.ownerPid,
+        port: record.port,
+        source: "registry",
+      });
+      try {
+        fs.rmSync(file, { force: true });
+      } catch {
+        // ignore
+      }
     }
 
     lastOrphanRecoveryResult = { recoveredPids, skippedPids };
@@ -933,7 +1086,16 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
   const xdgPaths = resolveOpenCodeIsolationPaths();
   ensureOpenCodeIsolationDirs(xdgPaths);
   const env = buildIsolatedOpenCodeEnv(args.config, xdgPaths);
-  if (process.platform === "win32") {
+  // Only shim through cmd.exe when the resolved target actually needs it (a
+  // `.cmd`/`.bat` shim, or an extensionless file), matching
+  // {@link shouldUseWindowsCmdWrapper} — the policy every other ADE CLI launch
+  // path uses. The bundled runtime is a real `.exe`, so wrapping it added a
+  // cmd.exe parent that owned the server process. When that parent died without
+  // taking its tree down, the surviving `opencode.exe` was unreachable: Windows
+  // process listings do not expose a child's environment, so the managed markers
+  // that identify ADE's servers on macOS/Linux were absent from its command line
+  // and orphan recovery could never reap it.
+  if (process.platform === "win32" && shouldUseWindowsCmdWrapper(executable)) {
     const serveCmdLine = [
       executable,
       "serve",
@@ -951,6 +1113,7 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
       args: invocation.args,
       env,
       useShell: false,
+      windowsVerbatimArguments: true,
       xdgPaths,
     };
   }
@@ -964,6 +1127,7 @@ function buildOpenCodeServeLaunchSpec(args: OpenCodeServerLaunchArgs): OpenCodeS
     ],
     env,
     useShell: false,
+    windowsVerbatimArguments: false,
     xdgPaths,
   };
 }
@@ -976,9 +1140,17 @@ async function defaultOpenCodeServerLauncher(
     env: launchSpec.env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsHide: true,
-    windowsVerbatimArguments: process.platform === "win32",
+    windowsVerbatimArguments: launchSpec.windowsVerbatimArguments,
     shell: launchSpec.useShell,
   });
+  if (proc.pid) {
+    writeManagedServerRecord({
+      pid: proc.pid,
+      port: args.port,
+      ownerPid: process.pid,
+      startedAt: Date.now(),
+    });
+  }
 
   let output = "";
   let resolved = false;
@@ -995,6 +1167,7 @@ async function defaultOpenCodeServerLauncher(
     const fail = (error: Error): void => {
       cleanup();
       stopChildProcess(proc);
+      if (proc.pid) removeManagedServerRecord(proc.pid);
       reject(error);
     };
 
@@ -1017,6 +1190,7 @@ async function defaultOpenCodeServerLauncher(
           close() {
             cleanup();
             terminateOpenCodeServerProcesses(proc, listenerPid);
+            if (proc.pid) removeManagedServerRecord(proc.pid);
           },
         });
         return;
@@ -1028,6 +1202,7 @@ async function defaultOpenCodeServerLauncher(
     };
 
     const onExit = (code: number | null): void => {
+      if (proc.pid) removeManagedServerRecord(proc.pid);
       if (resolved) return;
       cleanup();
       let message = `Server exited with code ${code}`;

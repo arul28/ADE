@@ -32,6 +32,7 @@ import type {
   AdeAccountMachinesResult,
   AdeAccountPairMachineProgress,
   AdeAccountLoginPoll,
+  AdeAccountSessionReadState,
   AdeAccountStatus,
 } from "../../../shared/types";
 import {
@@ -115,6 +116,7 @@ function resolveDirectoryBaseUrl(projectRoot: string | null): string | null {
 function toAccountStatus(
   status: AccountAuthStatus,
   configured: boolean,
+  sessionReadState?: AdeAccountSessionReadState,
 ): AdeAccountStatus {
   return {
     signedIn: status.signedIn,
@@ -125,6 +127,7 @@ function toAccountStatus(
     provider: status.provider ?? null,
     imageUrl: status.imageUrl ?? null,
     configured,
+    ...(sessionReadState ? { sessionReadState } : {}),
   };
 }
 
@@ -229,7 +232,17 @@ export function createAccountBridge(options: AccountBridgeOptions): AccountBridg
   };
 
   return {
-    status: () => toAccountStatus(service().getStatus(), configured()),
+    status: () => {
+      const accountService = service();
+      // Read the state alongside the status: `signedIn: false` with an
+      // "unreadable" session is a failed decrypt, not a sign-out, and the
+      // renderer must be able to tell them apart.
+      const status = accountService.getStatus();
+      // Optional call: a runtime that predates the split simply reports no read
+      // state, and the renderer then falls back to its previous behaviour.
+      const readState = accountService.getSessionReadState?.();
+      return toAccountStatus(status, configured(), readState);
+    },
 
     startLogin: () => {
       // Prioritize the active project's CLERK_* secrets for config resolution.

@@ -239,7 +239,7 @@ export function SavedMachineRow({
               ) : null}
             </div>
             <div style={subTextStyle}>
-              {target.transport === "paired" ? "Paired with this Mac" : "Saved SSH connection"}
+              {target.transport === "paired" ? "Paired with this computer" : "Saved SSH connection"}
             </div>
             <div style={helperTextStyle}>
               {section === "unavailable" && row.unavailableReason ? (
@@ -441,7 +441,7 @@ export function SavedMachineRow({
             <span>
               Reconnect automatically
               <span style={{ display: "block", ...helperTextStyle, marginTop: 2 }}>
-                ADE will reconnect when the app opens. LAN and Tailscale work without signing in; ADE Relay needs the same account on both Macs.
+                ADE will reconnect when the app opens. LAN and Tailscale work without signing in; ADE Relay needs the same account on both computers.
               </span>
             </span>
           </label>

@@ -59,7 +59,7 @@ describe("StoragePressureIndicator", () => {
     const indicator = await screen.findByRole("status");
     expect(indicator.getAttribute("data-ade-storage-pressure-state")).toBe(state);
     expect(indicator.getAttribute("style")).toContain("color: rgb(248, 113, 113)");
-    expect(indicator.title).toBe("Your Mac is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.");
+    expect(indicator.title).toBe("Your computer is almost out of storage — ADE paused new agent work to protect your chats and projects. Click to review ADE storage.");
   });
 
   it("does not poll while disabled and refreshes on focus when enabled", async () => {

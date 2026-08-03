@@ -6730,12 +6730,14 @@ describe("AgentChatPane submit recovery", () => {
       expect((window.ade as any).app.writeClipboardText).toHaveBeenCalledWith("Run the unified CLI launch.");
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.command).toBe("codex");
-    expect(launchArgs.args).toEqual(expect.arrayContaining(["--no-alt-screen"]));
-    expect(launchArgs.startupCommand).not.toContain("ADE session guidance");
-    expect(launchArgs.startupCommand).not.toContain("Run the unified CLI launch.");
-    expect(launchArgs.initialInput).toContain("ADE session guidance");
-    expect(launchArgs.initialInput).toContain("Run the unified CLI launch.");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "codex",
+      permissionMode: "default",
+      initialPrompt: expect.stringContaining("Run the unified CLI launch."),
+    }));
+    expect(launchArgs).not.toHaveProperty("command");
+    expect(launchArgs).not.toHaveProperty("startupCommand");
+    expect(launchArgs).not.toHaveProperty("env");
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
@@ -6979,12 +6981,12 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "read-only", "--ask-for-approval", "on-request"]));
-    expect(launchArgs.args).toEqual(expect.arrayContaining(["-c", "service_tier=\"default\""]));
-    expect(launchArgs.args).not.toContain("workspace-write");
-    expect(launchArgs.startupCommand).toContain("codex --no-alt-screen");
-    expect(launchArgs.startupCommand).toContain("service_tier");
-    expect(launchArgs.startupCommand).toContain("--sandbox read-only --ask-for-approval on-request");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "codex",
+      permissionMode: "plan",
+      fastMode: false,
+      initialPrompt: expect.stringContaining("Launch Codex in plan mode."),
+    }));
   });
 
   it("uses the selected Codex edit preset when launching a Work draft CLI session", async () => {
@@ -7050,8 +7052,11 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.args).toEqual(expect.arrayContaining(["--sandbox", "workspace-write", "--ask-for-approval", "untrusted"]));
-    expect(launchArgs.startupCommand).toContain("--sandbox workspace-write --ask-for-approval untrusted");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "codex",
+      permissionMode: "edit",
+      initialPrompt: expect.stringContaining("Launch Codex in edit mode."),
+    }));
   });
 
   it("uses the Cursor fast model alias when launching a fast Work draft CLI session", async () => {
@@ -7114,11 +7119,11 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).toContain(`--model ${fastAlias}`);
-    expect(launchArgs.startupCommand).not.toContain("Run Cursor in fast mode.");
-    expect(launchArgs.args).not.toContain(expect.stringContaining("Run Cursor in fast mode."));
-    expect(launchArgs.initialInput).toContain("Run Cursor in fast mode.");
-    expect(launchArgs.initialInputDelayMs).toBe(750);
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "cursor",
+      model: fastAlias,
+      initialPrompt: expect.stringContaining("Run Cursor in fast mode."),
+    }));
   });
 
   it("uses the OpenCode fast variant when launching a fast Work draft CLI session", async () => {
@@ -7181,9 +7186,11 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).toContain("opencode run --interactive");
-    expect(launchArgs.startupCommand).toContain("--variant fast");
-    expect(launchArgs.args).toEqual(expect.arrayContaining([expect.stringContaining("Run OpenCode in fast mode.")]));
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "opencode",
+      fastMode: true,
+      initialPrompt: expect.stringContaining("Run OpenCode in fast mode."),
+    }));
   });
 
   it("does not forward stale fast mode when launching an unsupported Claude CLI model", async () => {
@@ -7246,12 +7253,11 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.args).toEqual(expect.arrayContaining([
-      "--settings",
-      JSON.stringify({ fastMode: false }),
-    ]));
-    expect(launchArgs.startupCommand).toContain("fastMode");
-    expect(launchArgs.startupCommand).not.toContain("\"fastMode\":true");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "claude",
+      fastMode: false,
+      initialPrompt: expect.stringContaining("Run Claude without stale fast mode."),
+    }));
   });
 
   it("uses the concrete Cursor CLI variant for Work draft reasoning and fast controls", async () => {
@@ -7312,11 +7318,12 @@ describe("AgentChatPane submit recovery", () => {
       }));
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).toContain(`--model ${concreteModel}`);
-    expect(launchArgs.startupCommand).not.toContain("Run Cursor with medium fast thinking.");
-    expect(launchArgs.args).not.toContain(expect.stringContaining("Run Cursor with medium fast thinking."));
-    expect(launchArgs.initialInput).toContain("Run Cursor with medium fast thinking.");
-    expect(launchArgs.initialInputDelayMs).toBe(750);
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "cursor",
+      model: concreteModel,
+      reasoningEffort: "medium",
+      initialPrompt: expect.stringContaining("Run Cursor with medium fast thinking."),
+    }));
   });
 
   it("auto-creates a lane for a foreground CLI session draft", async () => {
@@ -7370,8 +7377,10 @@ describe("AgentChatPane submit recovery", () => {
       expect(writeClipboardText).toHaveBeenCalledWith("Launch a CLI agent on a new lane.");
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).not.toContain("Launch a CLI agent on a new lane.");
-    expect(launchArgs.initialInput).toContain("Launch a CLI agent on a new lane.");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "codex",
+      initialPrompt: expect.stringContaining("Launch a CLI agent on a new lane."),
+    }));
     expect(create).not.toHaveBeenCalled();
     expect(send).not.toHaveBeenCalled();
   });
@@ -7417,8 +7426,10 @@ describe("AgentChatPane submit recovery", () => {
       expect(screen.getByRole("button", { name: "Dismiss launch status" })).toBeTruthy();
     });
     const launchArgs = onLaunchCliSession.mock.calls[0]?.[0];
-    expect(launchArgs.startupCommand).not.toContain("Launch this CLI session in the background.");
-    expect(launchArgs.initialInput).toContain("Launch this CLI session in the background.");
+    expect(launchArgs.runtimeCliLaunch).toEqual(expect.objectContaining({
+      provider: "codex",
+      initialPrompt: expect.stringContaining("Launch this CLI session in the background."),
+    }));
     expect(send).not.toHaveBeenCalled();
     expect(screen.getByTestId("location").textContent).toBe("/work");
 
@@ -9795,9 +9806,9 @@ describe("AgentChatPane per-chat runtime routing", () => {
     )).toBeTruthy();
   });
 
-  it("pins This Mac history and live events while the project tab stays remote-bound", async () => {
+  it("pins This computer history and live events while the project tab stays remote-bound", async () => {
     bindWindowToMachineB();
-    const session = buildSession("chat-on-a", { laneId: "lane-a", title: "This Mac chat" });
+    const session = buildSession("chat-on-a", { laneId: "lane-a", title: "This computer chat" });
     installAdeMocks({ sessions: [session], eventHistory: emptyHistory("chat-on-a") });
 
     renderPane(session);

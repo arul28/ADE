@@ -263,7 +263,7 @@ function machine(overrides: Partial<LaneMachineOption> & { id: string; name: str
   };
 }
 
-const thisMac = machine({ id: THIS_MACHINE_ID, name: "This Mac", isBound: true });
+const thisMac = machine({ id: THIS_MACHINE_ID, name: "This computer", isBound: true });
 const studio = machine({ id: "studio", name: "MacBook Pro (97)" });
 
 describe("CreateLaneDialog machine selection", () => {

@@ -33,7 +33,7 @@ export function accountDirectorySummary(
   }
   const reason = health.skipReason ?? health.state.replaceAll("_", " ");
   return {
-    label: `Signed in, but this Mac is not published · ${reason}`,
+    label: `Signed in, but this computer is not published · ${reason}`,
     healthy: false,
   };
 }

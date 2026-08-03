@@ -297,7 +297,9 @@ describe("DesktopPairedMachineStore", () => {
       ],
     });
     expect(store.path).toBe(path.join(adeHome, "secrets", "desktop-paired-machines.json"));
-    expect(fs.statSync(store.path).mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      expect(fs.statSync(store.path).mode & 0o777).toBe(0o600);
+    }
     expect(new DesktopPairedMachineStore().get("mac-studio-host")).toEqual(paired);
     expect(new DesktopPairedMachineStore().get("machine-123")).toEqual(paired);
     expect(new DesktopPairedMachineStore().getForReference({
@@ -923,7 +925,7 @@ describe("DesktopPairedMachineStore", () => {
       name: "requires an update when an old host omits AEAD negotiation",
       responseAead: undefined,
       expectedError:
-        "The other Mac is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
+        "The other computer is running an older ADE that can't negotiate a compatible cipher — update it to the latest version.",
     },
     {
       name: "rejects a host AEAD that the client did not offer",
