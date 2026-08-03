@@ -227,7 +227,10 @@ export function spawnAsync(
 export async function whichCommand(command: string): Promise<string | null> {
   try {
     if (process.platform === "win32") {
-      const res = await spawnAsync("where", [command]);
+      // ".exe" matters: spawnAsync wraps any extension-less command in
+      // `cmd.exe /d /s /c`, and that wrapper costs ~15ms of pure overhead per
+      // lookup on top of the ~58ms the lookup itself takes.
+      const res = await spawnAsync("where.exe", [command]);
       if (res.status !== 0) return null;
       const line = firstLine(res.stdout ?? "");
       return line.length ? line : null;
