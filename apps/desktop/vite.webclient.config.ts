@@ -74,7 +74,7 @@ function webClientDevEntry(): Plugin {
  *
  *   VITE_ADE_ACCOUNT_DIRECTORY_URL=http://localhost:5174 \
  *   VITE_ADE_CLERK_ISSUER=https://clerk.ade-app.dev \
- *   VITE_ADE_CLERK_OAUTH_CLIENT_ID=Az7TbviBocyXjZk1 \
+ *   VITE_ADE_CLERK_OAUTH_CLIENT_ID=Az7TbviBocyXjZk1 \ (public client id — gitleaks:allow)
  *   npm --prefix apps/desktop run dev:webclient
  *
  * `http://localhost:5174` is accepted as a directory base because
