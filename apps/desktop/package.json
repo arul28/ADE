@@ -380,7 +380,7 @@
       "notarize": true,
       "mergeASARs": false,
       "x64ArchFiles": "**/{*darwin-arm64*,*darwin-x64*,darwin-arm64,darwin-x64,whisper-cli}{,/**}",
-      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "artifactName": "ADE-${version}-${arch}.${ext}",
       "extraResources": [
         {
           "from": "resources/native/ade-attention-notch",
