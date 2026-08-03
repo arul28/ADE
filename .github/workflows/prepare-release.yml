@@ -1,5 +1,10 @@
 name: Prepare release
 
+# Platform-neutral, non-publishing validation run. It never creates or updates a
+# GitHub Release. Set windows_proof when the run is being used to collect the
+# signed Windows exact-SHA proof; the Windows-specific preconditions are then
+# asserted before anything is built.
+
 on:
   workflow_dispatch:
     inputs:
@@ -11,6 +16,15 @@ on:
         description: Exact 40-character commit SHA on main to validate.
         required: true
         type: string
+      windows_proof:
+        description: >-
+          Collect clean-host Windows proof evidence. Builds and signs Windows
+          even while ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is off, and emits the
+          exact-SHA proof bundle. Leave false for the ordinary dry run, which
+          still builds Windows whenever the publication gate is on.
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   actions: read
@@ -24,6 +38,33 @@ jobs:
       tag_name: ${{ steps.resolve.outputs.tag_name }}
       target_sha: ${{ steps.resolve.outputs.target_sha }}
     steps:
+      # Opt-in evidence collection. It never depends on a repository variable
+      # state, so proof can be collected before Windows is enabled and again as
+      # a regression check after it is. This workflow never publishes either way.
+      - name: Prepare signed Windows proof mode
+        if: ${{ inputs.windows_proof }}
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "::error::Signed Windows proof requires the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets."
+            exit 1
+          fi
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ]; then
+            echo "::error::Signed Windows proof requires the WINDOWS_SIGNING_EXPECTED_SUBJECT secret."
+            exit 1
+          fi
+          if [ -n "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline. Delete the secret and pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
+            exit 1
+          fi
+
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_sha }}
@@ -74,5 +115,5 @@ jobs:
     with:
       release_tag: ${{ needs.resolve.outputs.tag_name }}
       target_ref: ${{ needs.resolve.outputs.target_sha }}
-      publish: false
+      windows_proof: ${{ inputs.windows_proof }}
     secrets: inherit

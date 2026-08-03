@@ -1,0 +1,147 @@
+{
+  "schemaVersion": "ade.windows-source-provenance/v1",
+  "sourcePullRequest": {
+    "baseRepository": "arul28/ADE",
+    "headRepository": "nsxdavid/ADE",
+    "number": 999,
+    "url": "https://github.com/arul28/ADE/pull/999",
+    "authorName": "David Whatley",
+    "authorLogin": "nsxdavid",
+    "headSha": "24e47be41ad942f80f423eea9e67bab25218ac0d"
+  },
+  "commitMappings": [
+    {
+      "sourceSha": "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+      "rebasedSha": "a97f9fc6e9ed0bad68428e24e8ca5126e0d46bf1",
+      "subject": "feat(desktop): add Windows native build support"
+    },
+    {
+      "sourceSha": "236330ad9095d6e30f2068572faec5b53ae7c1b2",
+      "rebasedSha": "cf9e8af77919ee5b78d3b62ccd2aec15c01d2ac8",
+      "subject": "fix(pairing): use platform-neutral computer copy"
+    },
+    {
+      "sourceSha": "615eda5ec4a8b81c1e99f02030817dad5880878d",
+      "rebasedSha": "c3ab7394d275d8fcadbf2fd248cb6f39461fa553",
+      "subject": "fix(runtime): stabilize Windows dev recovery"
+    },
+    {
+      "sourceSha": "0eae1517c9b5caa67a6eb5a12ce9ddff5f50392a",
+      "rebasedSha": "d924e34e05f7acd1bbe210ada735dc2b4027755e",
+      "subject": "feat(release): add guarded Windows release flow"
+    },
+    {
+      "sourceSha": "0cfcc1c2c0f9d1c7023c2a64052463647899ca6f",
+      "rebasedSha": "0ac7ce522fab0cba6737e76f4091ce9f4a97d064",
+      "subject": "fix(windows): harden release and uninstall flow"
+    },
+    {
+      "sourceSha": "de52986c188be8b6bc8f3f6de5c486fd53ada436",
+      "rebasedSha": "7f3fe926bfaf1a786aaa8aa044b0e9b6585b33b4",
+      "subject": "fix(windows): address release review findings"
+    },
+    {
+      "sourceSha": "fb3bfe95a9b008006e54ae97b8878e9dbb1c25e5",
+      "rebasedSha": "2d6d161a7784954769c99b032cfe8a1bbabde9d0",
+      "subject": "fix(windows): harden packaged runtime lifecycle"
+    },
+    {
+      "sourceSha": "7cc22ca5273f60857e1c91a6bed885e3123087d4",
+      "rebasedSha": "06591c12355d5d76a548be3a3ff6178a654910a9",
+      "subject": "fix(windows): launch desktop test shards through npm CLI"
+    },
+    {
+      "sourceSha": "24e47be41ad942f80f423eea9e67bab25218ac0d",
+      "rebasedSha": "fc7764dd4ecf27f2c95218abf1ce0a78488812df",
+      "subject": "fix(windows): normalize uninstall paths and CI coverage"
+    }
+  ],
+  "stackLayers": [
+    {
+      "id": "windows-runtime-and-ipc",
+      "purpose": "Per-user brain supervision, named-pipe isolation, process lifecycle, and runtime recovery.",
+      "sourceCommits": [
+        "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+        "615eda5ec4a8b81c1e99f02030817dad5880878d",
+        "fb3bfe95a9b008006e54ae97b8878e9dbb1c25e5"
+      ]
+    },
+    {
+      "id": "windows-providers-and-clients",
+      "purpose": "Provider, PTY, App Control, sync, iOS, web, and platform-neutral client behavior.",
+      "sourceCommits": [
+        "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+        "236330ad9095d6e30f2068572faec5b53ae7c1b2",
+        "de52986c188be8b6bc8f3f6de5c486fd53ada436",
+        "24e47be41ad942f80f423eea9e67bab25218ac0d"
+      ]
+    },
+    {
+      "id": "windows-packaging-and-ci",
+      "purpose": "NSIS packaging, native resources, uninstall ownership, artifact smoke, and Windows CI.",
+      "sourceCommits": [
+        "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+        "0cfcc1c2c0f9d1c7023c2a64052463647899ca6f",
+        "de52986c188be8b6bc8f3f6de5c486fd53ada436",
+        "fb3bfe95a9b008006e54ae97b8878e9dbb1c25e5",
+        "7cc22ca5273f60857e1c91a6bed885e3123087d4",
+        "24e47be41ad942f80f423eea9e67bab25218ac0d"
+      ]
+    },
+    {
+      "id": "windows-release-and-update",
+      "purpose": "Fail-closed Authenticode, non-publishing preparation, updater authority, and guarded publication.",
+      "sourceCommits": [
+        "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+        "0eae1517c9b5caa67a6eb5a12ce9ddff5f50392a",
+        "0cfcc1c2c0f9d1c7023c2a64052463647899ca6f",
+        "de52986c188be8b6bc8f3f6de5c486fd53ada436"
+      ]
+    },
+    {
+      "id": "windows-proof-and-support",
+      "purpose": "Exact-SHA proof, full-system scenarios, troubleshooting, support boundaries, and source attribution.",
+      "sourceCommits": [
+        "9b1ffc367d71b387ba0d49850d37827a1703cfce",
+        "236330ad9095d6e30f2068572faec5b53ae7c1b2",
+        "615eda5ec4a8b81c1e99f02030817dad5880878d",
+        "0eae1517c9b5caa67a6eb5a12ce9ddff5f50392a",
+        "0cfcc1c2c0f9d1c7023c2a64052463647899ca6f",
+        "de52986c188be8b6bc8f3f6de5c486fd53ada436",
+        "fb3bfe95a9b008006e54ae97b8878e9dbb1c25e5",
+        "7cc22ca5273f60857e1c91a6bed885e3123087d4",
+        "24e47be41ad942f80f423eea9e67bab25218ac0d"
+      ]
+    }
+  ],
+  "sourceReviewDispositions": [
+    {
+      "id": "codex-p2-windows-desktop-app-channel",
+      "source": "original-999-codex-inline-p2",
+      "status": "resolved",
+      "finding": "The source fallback could reuse the current Stable ADE.exe when a different requested app or channel, such as ADE Beta, was missing.",
+      "disposition": "The Windows launcher reuses the current executable only when its basename exactly matches the requested channel-qualified executable. Otherwise it searches candidates for the requested app or channel and fails closed when none exists. This behavior is owned by the Windows providers and clients layer from PR2.",
+      "requestedAppName": "channel-qualified-executable",
+      "currentExecutableMatch": "exact-request-only",
+      "fallbackPolicy": "search-requested-channel",
+      "stackLayers": ["windows-providers-and-clients", "windows-proof-and-support"]
+    },
+    {
+      "id": "codex-p2-windows-supervisor-registration",
+      "source": "original-999-codex-inline-p2",
+      "status": "resolved",
+      "finding": "The source documentation described the current Windows brain as an ONLOGON Scheduled Task.",
+      "disposition": "Current behavior is documented as a per-user and per-channel HKCU Run value that starts a hidden PowerShell supervisor. The launcher writes an advisory supervisor/runtime PID record, and readiness is proven separately by an initialized runtime IPC response. Scheduled Tasks are legacy cleanup only.",
+      "currentRegistration": "hkcu-run",
+      "launcher": "hidden-powershell-supervisor",
+      "pidRecord": "supervisor-runtime-pids",
+      "readinessRecord": "initialized-runtime-ipc",
+      "scheduledTasks": "legacy-cleanup-only",
+      "stackLayers": ["windows-runtime-and-ipc", "windows-proof-and-support"]
+    }
+  ],
+  "requiredCommitTrailers": {
+    "coAuthor": "David Whatley <nsxdavid@gmail.com>",
+    "basedOn": "nsxdavid/ADE#999"
+  }
+}

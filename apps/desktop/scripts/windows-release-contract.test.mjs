@@ -18,6 +18,7 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const pkg = JSON.parse(fs.readFileSync(path.join(desktopRoot, "package.json"), "utf8"));
 const releaseWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release-core.yml"), "utf8").replace(/\r\n/g, "\n");
 const releaseTriggerWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release.yml"), "utf8").replace(/\r\n/g, "\n");
+const releasePublishWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "release-publish.yml"), "utf8").replace(/\r\n/g, "\n");
 const prepareWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "prepare-release.yml"), "utf8").replace(/\r\n/g, "\n");
 const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n/g, "\n");
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
@@ -135,14 +136,17 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
   assert.match(pkg.scripts["package:win:signed"], /--require-signing/);
 
   const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
-  assert.match(windowsRelease, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
+  assert.match(windowsRelease, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof/);
   assert.match(windowsRelease, /npm run dist:win:signed/);
   assert.match(windowsRelease, /ADE_RELEASE_REPOSITORY:\s*\$\{\{ github\.repository \}\}/);
-  assert.match(windowsRelease, /WINDOWS_CSC_LINK/);
-  assert.match(windowsRelease, /WINDOWS_CSC_KEY_PASSWORD/);
-  assert.doesNotMatch(windowsRelease, /WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD/);
+  // Azure Artifact Signing holds the private key and never releases the
+  // certificate, so the only signing material the job carries is a Microsoft
+  // Entra service principal. No PFX secret exists to reference any more.
+  assert.match(windowsRelease, /AZURE_TENANT_ID: \$\{\{ secrets\.AZURE_TENANT_ID \}\}/);
+  assert.match(windowsRelease, /AZURE_CLIENT_ID: \$\{\{ secrets\.AZURE_CLIENT_ID \}\}/);
+  assert.match(windowsRelease, /AZURE_CLIENT_SECRET: \$\{\{ secrets\.AZURE_CLIENT_SECRET \}\}/);
+  assert.doesNotMatch(releaseWorkflow, /WIN_CSC_LINK|WINDOWS_CSC_LINK|WINDOWS_CSC_KEY_PASSWORD/);
   assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsRelease, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
   assert.doesNotMatch(windowsRelease, /ADE_WINDOWS_EXPECTED_PUBLISHER_SUBJECT|ADE_WINDOWS_EXPECTED_CERTIFICATE_THUMBPRINT/);
   assert.match(windowsRelease, /ADE_POSTHOG_PROJECT_TOKEN:\s*\$\{\{ secrets\.ADE_POSTHOG_PROJECT_TOKEN \}\}/);
   assert.match(windowsRelease, /ADE_POSTHOG_HOST:\s*\$\{\{ secrets\.ADE_POSTHOG_HOST \}\}/);
@@ -155,26 +159,108 @@ test("public Windows packaging fails closed on Authenticode signing", () => {
 test("signed packaging stops before electron-builder when credentials are absent", () => {
   const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
   const env = { ...process.env };
-  delete env.WINDOWS_CSC_LINK;
-  delete env.WINDOWS_CSC_KEY_PASSWORD;
+  delete env.AZURE_TENANT_ID;
+  delete env.AZURE_CLIENT_ID;
+  delete env.AZURE_CLIENT_SECRET;
   const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
     cwd: desktopRoot,
     env,
     encoding: "utf8",
   });
   assert.notEqual(result.status, 0);
-  assert.match(`${result.stdout}\n${result.stderr}`, /Signed Windows packaging requires WINDOWS_CSC_LINK and WINDOWS_CSC_KEY_PASSWORD/);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Signed Windows packaging requires AZURE_TENANT_ID, AZURE_CLIENT_ID, AZURE_CLIENT_SECRET/,
+  );
 });
 
-test("Windows packaging accepts signing material only through canonical inputs", () => {
-  assert.match(electronBuilderWrapper, /canonicalWindowsCscLink = process\.env\.WINDOWS_CSC_LINK/);
-  assert.match(electronBuilderWrapper, /canonicalWindowsCscKeyPassword = process\.env\.WINDOWS_CSC_KEY_PASSWORD/);
+test("signed packaging stops before electron-builder when the publisher is unpinned", () => {
+  const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
+  const env = {
+    ...process.env,
+    AZURE_TENANT_ID: "tenant",
+    AZURE_CLIENT_ID: "client",
+    AZURE_CLIENT_SECRET: "secret",
+  };
+  delete env.WINDOWS_SIGNING_EXPECTED_SUBJECT;
+  const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
+    cwd: desktopRoot,
+    env,
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /Signed Windows packaging requires WINDOWS_SIGNING_EXPECTED_SUBJECT/,
+  );
+});
+
+// Azure Artifact Signing renews the certificate daily and expires it after 72
+// hours, so thumbprint pinning would fail every release within days. Every
+// layer that could accept the name must reject it instead of ignoring it.
+test("thumbprint pinning is rejected everywhere rather than silently ignored", () => {
+  const wrapper = path.join(desktopRoot, "scripts", "run-electron-builder.mjs");
+  const result = spawnSync(process.execPath, [wrapper, "--require-signing", "--win", "--x64"], {
+    cwd: desktopRoot,
+    env: {
+      ...process.env,
+      AZURE_TENANT_ID: "tenant",
+      AZURE_CLIENT_ID: "client",
+      AZURE_CLIENT_SECRET: "secret",
+      WINDOWS_SIGNING_EXPECTED_SUBJECT: "CN=Example",
+      WINDOWS_SIGNING_EXPECTED_THUMBPRINT: "0123456789ABCDEF",
+    },
+    encoding: "utf8",
+  });
+  assert.notEqual(result.status, 0);
+  assert.match(
+    `${result.stdout}\n${result.stderr}`,
+    /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/,
+  );
+  assert.match(winArtifactValidator, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(releaseWorkflow, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  assert.match(prepareWorkflow, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported/);
+  // The subject is now the only pin, so the validator must require it outright
+  // rather than accepting either name.
+  assert.doesNotMatch(
+    winArtifactValidator,
+    /WINDOWS_SIGNING_EXPECTED_SUBJECT\s*"?\s*\+?\s*"?\s*or WINDOWS_SIGNING_EXPECTED_THUMBPRINT/,
+  );
+  assert.doesNotMatch(winArtifactValidator, /expectedIdentity\.thumbprint &&/);
+});
+
+test("Windows packaging signs through Azure Artifact Signing and no local key material", () => {
+  // electron-builder 26 picks the Azure signing manager purely on the presence
+  // of win.azureSignOptions, above the single chokepoint that signs the
+  // packaged executable, its DLLs, the NSIS installer, and the uninstaller.
+  assert.match(electronBuilderWrapper, /--config\.win\.azureSignOptions\.publisherName=\$\{expectedSigningSubject\}/);
+  assert.match(electronBuilderWrapper, /--config\.win\.azureSignOptions\.endpoint=\$\{azureSigningEndpoint\}/);
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.codeSigningAccountName=\$\{azureSigningAccountName\}/,
+  );
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.certificateProfileName=\$\{azureCertificateProfileName\}/,
+  );
+  // The certificate lives for 72 hours, so an RFC3161 countersignature is what
+  // keeps a shipped installer verifiable afterwards.
+  assert.match(
+    electronBuilderWrapper,
+    /--config\.win\.azureSignOptions\.timestampRfc3161=http:\/\/timestamp\.acs\.microsoft\.com/,
+  );
+  assert.match(electronBuilderWrapper, /--config\.forceCodeSigning=true/);
+  // The macOS Developer ID secrets must never become a Windows signing
+  // identity, and an unsigned dist:win must never reach the signing service.
   assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_LINK/);
   assert.match(electronBuilderWrapper, /delete baseChildEnv\.CSC_KEY_PASSWORD/);
-  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_LINK/);
-  assert.match(electronBuilderWrapper, /delete baseChildEnv\.WINDOWS_CSC_KEY_PASSWORD/);
-  assert.match(electronBuilderWrapper, /CSC_LINK: canonicalWindowsCscLink/);
-  assert.match(electronBuilderWrapper, /CSC_KEY_PASSWORD: canonicalWindowsCscKeyPassword/);
+  assert.match(
+    electronBuilderWrapper,
+    /AZURE_SIGNING_CREDENTIAL_ENV = \["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"\]/,
+  );
+  assert.match(electronBuilderWrapper, /for \(const name of AZURE_SIGNING_CREDENTIAL_ENV\) \{\s*\n\s*delete baseChildEnv\[name\];/);
+  assert.doesNotMatch(electronBuilderWrapper, /CSC_LINK:|CSC_KEY_PASSWORD:|\.pfx|WINDOWS_CSC_/);
 });
 
 test("Windows packaging rejects unknown channels before electron-builder", () => {
@@ -211,7 +297,7 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
   const alpha = resolveWindowsPackageIdentity("alpha");
   // electron-builder writes the installer from ${productName} but rewrites
   // latest.yml's url/path to a space-free "safe" name for GitHub, and
-  // release-core.yml publishes the on-disk file through `gh release upload`,
+  // release-publish.yml publishes the on-disk file through `gh release upload`,
   // where GitHub normalizes disallowed characters again. Any space in the
   // artifact name therefore points the updater feed at a file nobody published.
   for (const identity of [stable, beta, alpha]) {
@@ -245,52 +331,66 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
 });
 
 test("standalone Windows runtime signing uses only canonical credentials and validates publisher identity", () => {
-  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "build-results");
   const windowsSignStep = runtimeBuild.slice(
     runtimeBuild.indexOf("- name: Sign and validate standalone Windows runtime"),
     runtimeBuild.indexOf("- name: Materialize runtime notarization API key"),
   );
   assert.match(runtimeBuild, /target: win32-x64[\s\S]*os: windows-latest[\s\S]*binary: ade-win32-x64\.exe/);
   assert.match(windowsSignStep, /matrix\.target == 'win32-x64'/);
-  assert.match(windowsSignStep, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
-  assert.match(windowsSignStep, /WINDOWS_CSC_LINK: \$\{\{ secrets\.WINDOWS_CSC_LINK \}\}/);
-  assert.match(windowsSignStep, /WINDOWS_CSC_KEY_PASSWORD: \$\{\{ secrets\.WINDOWS_CSC_KEY_PASSWORD \}\}/);
+  assert.match(windowsSignStep, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof/);
+  assert.match(windowsSignStep, /AZURE_TENANT_ID: \$\{\{ secrets\.AZURE_TENANT_ID \}\}/);
+  assert.match(windowsSignStep, /AZURE_CLIENT_ID: \$\{\{ secrets\.AZURE_CLIENT_ID \}\}/);
+  assert.match(windowsSignStep, /AZURE_CLIENT_SECRET: \$\{\{ secrets\.AZURE_CLIENT_SECRET \}\}/);
   assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsSignStep, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
-  assert.doesNotMatch(windowsSignStep, /(?:^|\s)(?:WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD):/m);
+  assert.doesNotMatch(windowsSignStep, /(?:^|\s)(?:WIN_CSC_LINK|WIN_CSC_KEY_PASSWORD|CSC_LINK|CSC_KEY_PASSWORD|WINDOWS_CSC_LINK|WINDOWS_CSC_KEY_PASSWORD):/m);
   assert.match(windowsSignStep, /sign-windows-runtime\.ps1/);
-  assert.match(windowsRuntimeSigner, /Set-AuthenticodeSignature/);
+  // The standalone runtime signs through the same Azure Artifact Signing
+  // mechanism electron-builder 26 uses, so there is one signing code path for
+  // every Windows artifact ADE publishes.
+  assert.match(windowsRuntimeSigner, /Invoke-TrustedSigning/);
+  assert.match(windowsRuntimeSigner, /-CodeSigningAccountName \$signingAccountName/);
+  assert.match(windowsRuntimeSigner, /-CertificateProfileName \$certificateProfileName/);
+  assert.match(windowsRuntimeSigner, /timestamp\.acs\.microsoft\.com/);
+  // Post-sign verification stays exactly as strict: valid status, a trusted
+  // RFC3161 timestamp, and the pinned publisher subject.
   assert.match(windowsRuntimeSigner, /Get-AuthenticodeSignature/);
+  assert.match(windowsRuntimeSigner, /SignatureStatus\]::Valid/);
   assert.match(windowsRuntimeSigner, /TimeStamperCertificate/);
   assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_SUBJECT/);
-  assert.match(windowsRuntimeSigner, /WINDOWS_SIGNING_EXPECTED_THUMBPRINT/);
-  assert.match(windowsRuntimeSigner, /X509KeyStorageFlags\]::EphemeralKeySet/);
-  assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:certificateSource|certificatePassword|expectedSubject|expectedThumbprint)/);
+  // The service never releases the certificate, so the signer must not contain
+  // any local key-material handling at all.
+  assert.doesNotMatch(windowsRuntimeSigner, /X509Certificate2|\.pfx|WINDOWS_CSC_|Set-AuthenticodeSignature/);
+  assert.doesNotMatch(windowsRuntimeSigner, /Write-Output.*(?:AZURE_CLIENT_SECRET|expectedSubject)/);
 });
 
-test("standalone Windows release assets remain behind every publication and proof gate", () => {
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
-  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "publish-release");
+test("standalone Windows release assets remain behind the publication gate", () => {
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
+  const runtimeBuild = jobBlock(releaseWorkflow, "build-runtime-binaries", "build-results");
   const installer = fs.readFileSync(
     path.join(repoRoot, "apps", "ade-cli", "scripts", "install-runtime.ps1"),
     "utf8",
   );
-  const releaseFiles = publish.slice(publish.indexOf("files=("), publish.indexOf("if [ \"$BUILD_WINDOWS\"", publish.indexOf("files=(")));
+  const releaseFiles = publish.slice(publish.indexOf("base_files=("), publish.indexOf("if [ \"$PUBLISH_WINDOWS\"", publish.indexOf("base_files=(")));
   assert.doesNotMatch(releaseFiles, /install\.ps1|ade-win32-x64/);
-  assert.match(publish, /runtime_assets\+=\(install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz\)/);
+  assert.match(publish, /installers=\(release-assets\/win\/ADE-\*-win-x64\.exe\)/);
   assert.match(publish, /test -s release-assets\/runtime\/install\.ps1/);
   assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.exe/);
   assert.match(publish, /test -s release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
-  assert.match(publish, /release-assets\/runtime\/install\.ps1[\s\S]*release-assets\/runtime\/ade-win32-x64\.exe[\s\S]*release-assets\/runtime\/ade-win32-x64\.native\.tar\.gz/);
-  assert.ok(
-    (publish.match(/\[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]/g) ?? []).length >= 3,
-    "copying, checksumming, and publishing standalone Windows assets must all require every gate",
-  );
-  assert.match(publish, /install\.ps1\|ade-win32-x64\.exe\|ade-win32-x64\.native\.tar\.gz/);
+  // The Windows standalone manifest is written by Git Bash on windows-latest,
+  // where sha256sum marks binary reads with a leading '*'. It is normalized
+  // before it is parsed or verified.
+  assert.match(publish, /sed 's\/\^\\\(\[0-9a-f\]\\\{64\\\}\\\) \[ \*\]\/\\1  \/'/);
+  assert.match(publish, /\(cd release-assets\/runtime && sha256sum -c "\$windows_sums"\)/);
+  // Windows standalone assets are named only inside the publication-gated
+  // branch, and every published asset is sourced from this run.
+  assert.match(publish, /if \[ "\$PUBLISH_WINDOWS" = "1" \]; then[\s\S]*release-assets\/runtime\/install\.ps1[\s\S]*release-assets\/runtime\/ade-win32-x64\.exe/);
+  assert.doesNotMatch(publish, /release-assets\/win\/ade-|release-assets\/win\/install\.|release-assets\/win\/SHA256SUMS/);
+  assert.match(publish, /for asset in "\$\{existing_assets\[@\]\}"; do[\s\S]*gh release delete-asset/);
   assert.match(publish, /gh release delete-asset "\$TAG_NAME" "\$asset" --repo "\$GH_REPO" --yes/);
-  assert.match(publish, /"\$BUILD_WINDOWS" != "1"[\s\S]*"\$PUBLISH_WINDOWS" != "1"[\s\S]*"\$WINDOWS_UPDATE_PROOF_APPROVED" != "1"/);
-  assert.match(runtimeBuild, /name: Assemble signed Windows standalone proof bundle/);
-  assert.match(runtimeBuild, /matrix\.target == 'win32-x64' && vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1'/);
+  assert.match(publish, /Draft release asset inventory differs from the exact validated set/);
+  assert.match(runtimeBuild, /name: Assemble signed Windows standalone runtime bundle/);
+  assert.match(runtimeBuild, /matrix\.target == 'win32-x64' && \(vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof\)/);
   assert.match(runtimeBuild, /sha256sum install\.ps1 ade-win32-x64\.exe ade-win32-x64\.native\.tar\.gz/);
   assert.match(runtimeBuild, /apps\/ade-cli\/dist-static\/install\.ps1/);
   assert.match(runtimeBuild, /apps\/ade-cli\/dist-static\/SHA256SUMS/);
@@ -307,26 +407,52 @@ test("standalone Windows release assets remain behind every publication and proo
 });
 
 test("Windows release assets are validated and published as one release set", () => {
-  const publish = jobBlock(releaseWorkflow, "publish-release", null);
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
   const verify = jobBlock(releaseWorkflow, "verify", "build-mac-release");
   const workflowHeader = releaseWorkflow.slice(0, releaseWorkflow.indexOf("\njobs:\n"));
   assert.match(workflowHeader, /contents: read/);
   assert.doesNotMatch(workflowHeader, /contents: write/);
   assert.match(releaseTriggerWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: write/);
-  assert.match(publish, /- build-win-release/);
+  // GitHub validates a called workflow's job permissions statically, before any
+  // job-level `if:` runs, so release-core.yml must not contain a write-capable
+  // job at all or the read-only prepare-release.yml caller fails to parse.
+  // Publishing therefore lives in its own reusable workflow.
+  assert.doesNotMatch(releaseWorkflow, /contents: write/);
+  assert.equal(releaseWorkflow.includes("\n  publish-release:\n"), false);
   assert.match(publish, /permissions:\s*\n\s+actions: read\s*\n\s+contents: write/);
   assert.match(publish, /name: ade-win-release-/);
-  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'[\s\S]*needs\.build-win-release\.result == 'success'/);
-  assert.match(verify, /ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 requires ADE_WINDOWS_SIGNED_BUILD_ENABLED=1/);
-  assert.match(verify, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED/);
-  assert.match(verify, /requires approved two-version installed-update proof/);
-  assert.match(publish, /ADE_WINDOWS_SIGNED_BUILD_ENABLED == '1' && vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
-  assert.match(publish, /ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED == '1'/);
-  assert.match(publish, /BUILD_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_SIGNED_BUILD_ENABLED \}\}/);
+  // Only the tag-triggered release workflow may call the publishing workflow.
+  assert.match(releaseTriggerWorkflow, /uses: \.\/\.github\/workflows\/release-publish\.yml/);
+  assert.doesNotMatch(prepareWorkflow, /release-publish\.yml/);
+  // Windows is a first-class platform: with its gate on, a failed or skipped
+  // Windows build blocks the draft exactly as a failed macOS build does, and
+  // always() still lets the gate evaluate when Windows is legitimately skipped.
+  assert.match(releaseTriggerWorkflow, /always\(\)\s*\n\s+&& needs\.run-release\.outputs\.runtime_result == 'success'/);
+  assert.match(releaseTriggerWorkflow, /needs\.run-release\.outputs\.mac_result == 'success'/);
+  assert.match(
+    releaseTriggerWorkflow,
+    /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'\s*\n\s+\|\| needs\.run-release\.outputs\.windows_result == 'success'/,
+  );
+  // The gate reads release-core.yml's outputs, so they must exist and be fed by
+  // an always() job that reports every build result.
+  for (const output of ["runtime_result", "mac_result", "windows_result"]) {
+    assert.match(releaseWorkflow, new RegExp(`value: \\$\\{\\{ jobs\\.build-results\\.outputs\\.${output} \\}\\}`));
+  }
+  const buildResults = jobBlock(releaseWorkflow, "build-results", null);
+  assert.match(buildResults, /if: always\(\)/);
+  assert.match(buildResults, /runtime_result: \$\{\{ needs\.build-runtime-binaries\.result \}\}/);
+  assert.match(buildResults, /mac_result: \$\{\{ needs\.build-mac-release\.result \}\}/);
+  assert.match(buildResults, /windows_result: \$\{\{ needs\.build-win-release\.result \}\}/);
+  // verify fails fast on missing signing material instead of on stale proof
+  // bindings, which no longer exist.
+  assert.match(verify, /Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
+  assert.match(verify, /Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher/);
+  assert.match(verify, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
+  assert.match(publish, /if: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \}\}/);
   assert.match(publish, /PUBLISH_WINDOWS: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED \}\}/);
-  assert.match(publish, /if \[ "\$BUILD_WINDOWS" = "1" \] && \[ "\$PUBLISH_WINDOWS" = "1" \] && \[ "\$WINDOWS_UPDATE_PROOF_APPROVED" = "1" \]; then/);
-  assert.match(publish, /release-assets\/win\/\*\.exe/);
-  assert.match(publish, /release-assets\/win\/\*\.exe\.blockmap/);
+  assert.match(publish, /if \[ "\$PUBLISH_WINDOWS" = "1" \]; then/);
+  assert.match(publish, /release-assets\/win\/ADE-\*-win-x64\.exe/);
+  assert.match(publish, /release-assets\/win\/ADE-\*-win-x64\.exe\.blockmap/);
   assert.match(publish, /release-assets\/win\/latest\.yml/);
   assert.match(publish, /--json isDraft/);
   assert.match(publish, /Refusing to overwrite published assets/);
@@ -383,11 +509,126 @@ test("Windows NSIS install and uninstall own only their per-user channel integra
 });
 
 test("release preflight validates the exact approved commit", () => {
+  const verify = jobBlock(releaseWorkflow, "verify", "build-mac-release");
   assert.match(prepareWorkflow, /target_sha:\s*\n\s+description: Exact 40-character commit SHA/);
   assert.match(prepareWorkflow, /ref: \$\{\{ inputs\.target_sha \}\}/);
   assert.match(prepareWorkflow, /target_sha must be the exact 40-character commit SHA approved for release/);
   assert.match(prepareWorkflow, /target_ref: \$\{\{ needs\.resolve\.outputs\.target_sha \}\}/);
   assert.doesNotMatch(prepareWorkflow, /ref: main/);
+  assert.match(verify, /name: Validate release tag and target binding/);
+  assert.match(verify, /\^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+/);
+  assert.match(verify, /git ls-remote --exit-code --tags origin "refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(verify, /git rev-list -n 1 "refs\/tags\/\$RELEASE_TAG"/);
+  assert.match(verify, /Release tag \$RELEASE_TAG resolves to \$tag_sha, not approved target \$target_sha/);
+});
+
+test("Windows proof collection is opt-in, non-publishing, and emits an exact-SHA manifest", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
+  assert.match(prepareWorkflow, /name: Prepare signed Windows proof/);
+  assert.match(prepareWorkflow, /Signed Windows proof requires the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets/);
+  assert.match(prepareWorkflow, /windows_proof: \$\{\{ inputs\.windows_proof \}\}/);
+  // There is no publish input any more. The dry run cannot publish because it
+  // holds a read-only token and never calls the publishing workflow, not
+  // because it passes a flag the shared workflow is trusted to honour.
+  assert.doesNotMatch(prepareWorkflow, /publish:/);
+  assert.match(prepareWorkflow, /permissions:\s*\n\s+actions: read\s*\n\s+checks: read\s*\n\s+contents: read/);
+  assert.doesNotMatch(prepareWorkflow, /contents: write/);
+  // Proof collection never depends on a repository variable state, so it can
+  // run before Windows is enabled and again as a regression check after.
+  assert.doesNotMatch(prepareWorkflow, /vars\.ADE_WINDOWS_/);
+  // The proof bundle is built only under the explicit input; ordinary releases
+  // build, sign and validate Windows without it.
+  for (const proofStep of [
+    "Stage standalone runtime proof assets",
+    "Generate exact-SHA Windows proof manifest",
+    "Validate exact-SHA Windows build proof",
+    "Upload validated Windows proof bundle",
+  ]) {
+    const stepIndex = windowsRelease.indexOf(`- name: ${proofStep}`);
+    assert.notEqual(stepIndex, -1, `expected proof step ${proofStep}`);
+    assert.match(
+      windowsRelease.slice(stepIndex, stepIndex + 400),
+      /if: \$\{\{ inputs\.windows_proof \}\}/,
+      `${proofStep} must be gated on the windows_proof input`,
+    );
+  }
+  assert.match(windowsRelease, /name: ade-win-proof-\$\{\{ inputs\.release_tag \}\}/);
+  assert.match(windowsRelease, /windows-proof-manifest\.mjs create/);
+  assert.match(windowsRelease, /--target-sha "\$\{\{ inputs\.target_ref \}\}"/);
+  assert.match(windowsRelease, /windows-proof-manifest\.mjs validate/);
+  assert.match(windowsRelease, /--phase build/);
+  assert.match(windowsRelease, /--expected-sha "\$\{\{ inputs\.target_ref \}\}"/);
+  assert.match(windowsRelease, /--expected-tag "\$\{\{ inputs\.release_tag \}\}"/);
+  assert.match(windowsRelease, /--expected-run-id "\$\{\{ github\.run_id \}\}"/);
+  assert.match(windowsRelease, /name: Stage standalone runtime proof assets/);
+  assert.match(windowsRelease, /ade-win32-x64\.exe/);
+  assert.match(windowsRelease, /ade-win32-x64\.native\.tar\.gz/);
+  assert.match(windowsRelease, /install-runtime\.ps1/);
+  assert.match(windowsRelease, /SHA256SUMS/);
+  assert.match(windowsRelease, /apps\/desktop\/release\/windows-proof-manifest\.json/);
+});
+
+test("Windows builds fresh on the release tag with no approved-proof promotion", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
+  // The desktop Windows build is no longer confined to non-publishing runs, so
+  // a v* tag builds, signs, validates and publishes Windows in-run.
+  assert.doesNotMatch(windowsRelease, /inputs\.publish == false/);
+  assert.match(windowsRelease, /runs-on: windows-latest/);
+  assert.match(windowsRelease, /- verify\s*\n\s+- build-runtime-binaries/);
+  assert.match(windowsRelease, /name: Upload validated Windows release artifacts/);
+  assert.match(windowsRelease, /name: ade-win-release-\$\{\{ inputs\.release_tag \}\}/);
+  // The published artifact carries the installer set only; standalone runtime
+  // files are published from build-runtime-binaries instead.
+  assert.doesNotMatch(
+    windowsRelease.slice(
+      windowsRelease.indexOf("- name: Upload validated Windows release artifacts"),
+      windowsRelease.indexOf("- name: Stage standalone runtime proof assets"),
+    ),
+    /ade-darwin-|ade-linux-|install\.sh/,
+  );
+  // Promotion of a previously approved proof run is gone, along with every
+  // repository variable that only existed to bind it.
+  assert.equal(releaseWorkflow.includes("promote-approved-win-proof"), false);
+  assert.doesNotMatch(
+    releaseWorkflow,
+    /ADE_WINDOWS_APPROVED_PROOF_SHA|ADE_WINDOWS_APPROVED_PROOF_RUN_ID|ADE_WINDOWS_APPROVED_BUILD_MANIFEST_SHA256|ADE_WINDOWS_INSTALLED_UPDATE_PROOF_APPROVED|ADE_WINDOWS_SIGNED_BUILD_ENABLED/,
+  );
+});
+
+test("Windows proof and draft assembly enforce exact runtime and remote asset inventories", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
+  assert.match(windowsRelease, /\$unexpectedRuntimeFiles = @\(\$actualRuntimeFiles \| Where-Object \{ \$_ -notin \$runtimeFiles \}\)/);
+  assert.match(windowsRelease, /Runtime artifact inventory mismatch/);
+  assert.doesNotMatch(windowsRelease, /Get-ChildItem[^\n]+-Filter "ade-\*"[^\n]+ForEach-Object \{/);
+  // The cross-platform runtime allowlist now guards the ungated publish path,
+  // so it holds in every flag state rather than only when Windows publishes.
+  assert.match(publish, /Runtime artifacts contain an unauthorized or missing entry/);
+  assert.match(publish, /Windows standalone checksum manifest does not name the exact authorized Windows runtime set/);
+  assert.match(publish, /latest\.yml does not reference the published installer/);
+  assert.match(publish, /gh api "repos\/\$GH_REPO\/commits\/\$TAG_NAME" --jq '\.sha'/);
+  assert.match(publish, /Existing draft tag \$TAG_NAME resolves to \$release_tag_target, not approved target \$approved_target/);
+  assert.match(publish, /Draft release tag \$TAG_NAME resolves to \$final_tag_target, not approved target \$approved_target/);
+  assert.match(publish, /for asset in "\$\{existing_assets\[@\]\}"; do[\s\S]*gh release delete-asset/);
+  assert.doesNotMatch(publish, /case "\$asset" in/);
+  assert.match(publish, /Draft release asset inventory differs from the exact validated set/);
+  assert.match(publish, /gh release view "\$TAG_NAME" --repo "\$GH_REPO" --json assets --jq '\.assets\[\]\.name'/);
+});
+
+test("one repository variable decides whether a release carries Windows", () => {
+  const windowsRelease = jobBlock(releaseWorkflow, "build-win-release", "build-runtime-binaries");
+  const publish = jobBlock(releasePublishWorkflow, "publish-release", null);
+  // Exactly one maintainer-facing switch, matching the macOS bar: secrets are
+  // provisioned once, the gate is flipped once, then tags just work.
+  assert.match(windowsRelease, /if: \$\{\{ vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' \|\| inputs\.windows_proof \}\}/);
+  assert.match(releaseTriggerWorkflow, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED != '1'/);
+  assert.match(publish, /vars\.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1'/);
+  const windowsVariables = new Set(
+    ([releaseWorkflow, releaseTriggerWorkflow, releasePublishWorkflow]
+      .join("\n")
+      .match(/vars\.ADE_WINDOWS_[A-Z0-9_]+/g) ?? []).map((entry) => entry.slice("vars.".length)),
+  );
+  assert.deepEqual([...windowsVariables], ["ADE_WINDOWS_PUBLIC_RELEASE_ENABLED"]);
 });
 
 test("pull requests build and smoke an unsigned Windows installer", () => {
@@ -427,6 +668,7 @@ test("Windows package smoke requires every bundled provider runtime", () => {
 
 test("download page gates the Windows release and enables dedicated analytics", () => {
   assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
+  assert.match(downloadPage, /=== "1"/);
   assert.match(downloadPage, /signed Windows release is approved/);
   assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
   assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);

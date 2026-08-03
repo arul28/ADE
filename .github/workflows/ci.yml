@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # Stacked PRs target their parent branch, not main, so the filter above
+  # never fires for them and they accumulate no ci-pass check run. That
+  # matters because release-core.yml's verify job requires ci-pass on the
+  # exact SHA it builds, which made a signed proof build of a stacked
+  # branch impossible. Dispatching by ref produces the same check runs on
+  # the same SHA, so the release gate stays honest rather than relaxed.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -62,7 +69,27 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
+      # On pull_request the action scans only the PR range. On workflow_dispatch
+      # it scans the entire history instead, which re-reports every already
+      # accepted false positive: gitleaks fingerprints are commit-scoped, so a
+      # finding waived in .gitleaksignore reappears under the SHA of every later
+      # commit that touched the same line. Scanning main..HEAD gives a dispatched
+      # run exactly the scope a PR run has, so the same code is judged the same
+      # way however CI was started.
+      # gitleaks-action exposes no way to narrow its commit range, so a
+      # dispatched run invokes gitleaks directly with the same pinned version
+      # the action uses. --log-opts limits the walk to this branch's own
+      # commits, matching what a pull_request run would scan.
+      - name: Scan this branch's own commits
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          set -euo pipefail
+          git fetch --no-tags origin main
+          curl -sSL "https://github.com/gitleaks/gitleaks/releases/download/v8.24.3/gitleaks_8.24.3_linux_x64.tar.gz" \
+            | tar -xz gitleaks
+          ./gitleaks detect --redact -v --exit-code=2 --log-opts="origin/main..HEAD"
       - uses: gitleaks/gitleaks-action@v2
+        if: github.event_name != 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

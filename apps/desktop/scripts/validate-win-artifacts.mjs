@@ -92,19 +92,29 @@ function normalizeCertificateThumbprint(value) {
   return value?.replace(/\s+/g, "").toUpperCase() ?? "";
 }
 
+// Azure Artifact Signing never releases the signing certificate: it mints a
+// short-lived leaf per profile, renews it daily, and expires it after 72 hours.
+// A pinned thumbprint would therefore reject every release within days, so the
+// publisher pin is the certificate Subject and only the Subject. The thumbprint
+// name is rejected outright rather than quietly ignored, so nobody sets it and
+// then discovers days later that it pinned nothing.
 function expectedWindowsSigningIdentity() {
   if (!shouldRequireSignedArtifacts()) return null;
   const subject = process.env.WINDOWS_SIGNING_EXPECTED_SUBJECT?.trim() ?? "";
-  const thumbprint = normalizeCertificateThumbprint(
-    process.env.WINDOWS_SIGNING_EXPECTED_THUMBPRINT,
-  );
-  if (!subject && !thumbprint) {
+  if (process.env.WINDOWS_SIGNING_EXPECTED_THUMBPRINT?.trim()) {
     fail(
-      "Signed Windows validation requires WINDOWS_SIGNING_EXPECTED_SUBJECT " +
-        "or WINDOWS_SIGNING_EXPECTED_THUMBPRINT so the release cannot be signed by an unexpected publisher.",
+      "WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline. " +
+        "The service renews its certificate daily and expires it after 72 hours, so a pinned thumbprint " +
+        "would fail every release within days. Unset it and pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead.",
     );
   }
-  return { subject, thumbprint };
+  if (!subject) {
+    fail(
+      "Signed Windows validation requires WINDOWS_SIGNING_EXPECTED_SUBJECT " +
+        "so the release cannot be signed by an unexpected publisher.",
+    );
+  }
+  return { subject };
 }
 
 function resolveAbsolute(input) {
@@ -929,19 +939,10 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
   if (!identity.subject || !identity.thumbprint) {
     fail(`${description} has no readable Authenticode signer identity`);
   }
-  if (
-    expectedIdentity.subject
-    && identity.subject.toLocaleLowerCase("en-US") !== expectedIdentity.subject.toLocaleLowerCase("en-US")
-  ) {
+  if (identity.subject.toLocaleLowerCase("en-US") !== expectedIdentity.subject.toLocaleLowerCase("en-US")) {
     fail(
       `${description} was signed by an unexpected publisher. ` +
         `Expected "${expectedIdentity.subject}", received "${identity.subject}".`,
-    );
-  }
-  if (expectedIdentity.thumbprint && identity.thumbprint !== expectedIdentity.thumbprint) {
-    fail(
-      `${description} was signed by an unexpected certificate thumbprint. ` +
-        `Expected ${expectedIdentity.thumbprint}, received ${identity.thumbprint}.`,
     );
   }
   return identity;
@@ -981,6 +982,12 @@ async function validateReleaseArtifacts() {
     "packaged Windows app executable",
     expectedIdentity,
   );
+  // Both artifacts are pinned to the same Subject above, but a Subject match
+  // alone would still accept two different certificates carrying that Subject.
+  // Requiring one thumbprint across the pair proves the installer and the
+  // executable it installs came from the same signing operation. Azure Artifact
+  // Signing rotates the leaf daily, so a build that straddles a rotation is the
+  // one legitimate way this can trip; rerun the build rather than relaxing it.
   if (
     installerIdentity
     && appIdentity

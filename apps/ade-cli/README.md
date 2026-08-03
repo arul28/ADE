@@ -103,7 +103,7 @@ The ADE brain runs as a per-user login service. The implementations live in `src
 | Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
 | Windows | HKCU `Run` entry + PowerShell supervisor | `HKCU\...\CurrentVersion\Run` value `ADE Runtime (<channel>-<hash>)` |
 
-The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright and is used for both launchd and systemd unit names. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
+The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright. On Windows the label and current-user identity produce a channel/user-qualified Run-value name, launcher, advisory supervisor/runtime PID record, and named pipe. The Run value starts a hidden PowerShell supervisor; a successful initialized IPC response is the separate readiness record. Scheduled Tasks are legacy state that install/uninstall clean up, never the current service registration. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
 
 ### Windows: how the always-on guarantee is actually obtained
 

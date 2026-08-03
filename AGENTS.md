@@ -89,7 +89,7 @@ iOS signing gotchas (don't repeat these):
 
 Desktop release:
 
-- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release with `.dmg`, `.zip`, blockmap, and `latest-mac.yml` assets. The workflow requires the tagged commit to be an ancestor of `origin/main`.
+- Tag a commit on `main` with `vX.Y.Z` and push the tag. `.github/workflows/release.yml` triggers, runs the `release-core.yml` job, and publishes a draft GitHub Release. The workflow requires the tagged commit to be an ancestor of `origin/main`. Assets are the macOS `.dmg` and `.zip` plus `latest-mac.yml`, and the standalone runtime set (`install.sh`, `SHA256SUMS`, and the `ade-darwin-*`/`ade-linux-*` binaries with their `.native.tar.gz` archives). When the repository variable `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`, Windows builds fresh on the same tag and adds `ADE-<VERSION>-win-x64.exe`, its `.blockmap`, `latest.yml`, `install.ps1`, and `ade-win32-x64.exe` with its `.native.tar.gz`. That variable is the only Windows switch; with it off the Windows jobs skip cleanly and do not block the macOS release.
 - Draft releases stay unpublished until you flip them (`gh release edit vX.Y.Z --draft=false` or the UI). Don't publish silently.
 - Main is protected by a ruleset: admin bypass is required for direct pushes, and the "strict required status checks" rule makes GitHub's "Merge pull request" button reject merges that use a non-linear history (even when the branch already contains `main`). `gh pr merge --admin` hits the same block; merging locally and pushing (admin bypass) is the fallback.
 

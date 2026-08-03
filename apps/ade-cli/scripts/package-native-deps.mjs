@@ -208,12 +208,19 @@ async function writeManifest(bundleRoot, target, packages) {
   await fs.writeFile(path.join(bundleRoot, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
 }
 
-// Targets shipped as the production brain, where cr-sqlite is mandatory. A
-// missing extension for one of these would silently re-ship the exact
-// crsql_internal_sync_bit crash this packaging step exists to prevent, so it's
-// a hard build failure rather than a warning. Other targets (not yet vendored)
-// warn-and-skip until their extension is added.
+// Sync-peer targets, where cr-sqlite is mandatory. A missing extension for one
+// of these would silently re-ship the exact crsql_internal_sync_bit crash this
+// packaging step exists to prevent, so it's a hard build failure rather than a
+// warning.
+//
+// Linux is deliberately absent and is not a pending TODO. A Linux host is a
+// remote runtime target that a macOS or Windows desktop drives over SSH; it is
+// not a sync peer, holds no CRR state, and ships without the extension by
+// design. Its brain logs `db.crsqlite_unavailable` and disables CRR triggers at
+// startup. Adding linux-x64 here without also vendoring crsqlite.so would break
+// every Linux runtime build.
 const CRSQLITE_REQUIRED_TARGETS = new Set(["darwin-arm64", "darwin-x64", "win32-x64"]);
+const CRSQLITE_EXCLUDED_TARGETS = new Set(["linux-x64", "linux-arm64"]);
 
 function crsqliteExtensionFileName(target) {
   const { platform } = targetParts(target);
@@ -240,6 +247,15 @@ async function copyCrsqliteExtension(bundleRoot, target) {
           `the installed brain would crash on every CRR write. Add crsqlite for this target under ` +
           `apps/desktop/vendor/crsqlite/${target}/.`,
       );
+    }
+    if (CRSQLITE_EXCLUDED_TARGETS.has(target)) {
+      // Expected and intentional: this target is a remote runtime host, not a
+      // sync peer. Stated as a scope note so it does not read as a build defect.
+      process.stdout.write(
+        `[package-native-deps] ${target} ships without cr-sqlite by design: it is a remote ` +
+          `runtime target, not a sync peer, and holds no CRR state.\n`,
+      );
+      return false;
     }
     process.stderr.write(
       `[package-native-deps] WARNING: no cr-sqlite extension vendored for ${target} ` +
