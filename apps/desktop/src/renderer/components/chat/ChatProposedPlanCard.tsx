@@ -1,6 +1,7 @@
-import React, { useCallback, useState } from "react";
+import React from "react";
 import { CopySimple } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { ChatMarkdown } from "./chatMarkdown";
 import { ProviderLogo } from "../shared/ProviderLogos";
 import { pendingInputHeaderLabel } from "../../../shared/pendingInputLabels";
@@ -26,19 +27,11 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
   onApprove,
   onReject,
 }: ChatProposedPlanCardProps) {
-  const [copied, setCopied] = useState(false);
+  const { copy, copied } = useCopyToClipboard();
   const bodyText = description?.trim() || question?.trim() || "The agent has prepared a plan.";
   // Provider-identified header — "{Provider} · Plan ready" — matching the
   // question card. The card chrome inherits the per-provider `--chat-accent`.
   const headerLabel = pendingInputHeaderLabel(source, "plan_approval");
-
-  const handleCopy = useCallback(() => {
-    if (!navigator.clipboard) return;
-    void navigator.clipboard.writeText(bodyText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    }).catch(() => {});
-  }, [bodyText]);
 
   return (
     <div className="relative overflow-hidden rounded-xl border border-[color:color-mix(in_srgb,var(--chat-accent)_22%,transparent)] bg-[#12101A] p-4">
@@ -83,7 +76,7 @@ const ChatProposedPlanCard = React.memo(function ChatProposedPlanCard({
         <button
           type="button"
           className="ml-auto flex items-center gap-1 rounded-[var(--chat-radius-pill)] border border-white/[0.06] px-2 py-1 font-mono text-[9px] uppercase tracking-[0.12em] text-fg/35 transition-colors hover:bg-white/[0.04] hover:text-fg/55"
-          onClick={handleCopy}
+          onClick={() => void copy(bodyText)}
         >
           <CopySimple size={10} weight="bold" />
           {copied ? "Copied" : "Copy plan"}

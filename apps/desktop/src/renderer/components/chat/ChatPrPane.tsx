@@ -18,6 +18,7 @@ import {
   XCircle,
 } from "@phosphor-icons/react";
 import { cn } from "../ui/cn";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import type { OpenProjectBinding, PrCheck, PrReview, PrState, PrStatus, PrSummary } from "../../../shared/types";
 import { formatPrBadgeLabel } from "../prs/shared/prFormatters";
 import { PrUserAvatar } from "../prs/shared/PrUserAvatar";
@@ -449,7 +450,7 @@ export const ChatPrPane = React.memo(function ChatPrPane({
   }, [machinesById, runtimePinKey]);
   const [pr, setPr] = useState<PrSummary | null>(null);
   const [loading, setLoading] = useState(true);
-  const [copied, setCopied] = useState(false);
+  const { copy, copied } = useCopyToClipboard();
   const [checks, setChecks] = useState<PrCheck[] | null>(null);
   const [reviews, setReviews] = useState<PrReview[] | null>(null);
   const [status, setStatus] = useState<PrStatus | null>(null);
@@ -649,12 +650,6 @@ export const ChatPrPane = React.memo(function ChatPrPane({
     return () => window.clearTimeout(id);
   }, [delta?.nonce, delta]);
 
-  useEffect(() => {
-    if (!copied) return;
-    const id = window.setTimeout(() => setCopied(false), 1500);
-    return () => window.clearTimeout(id);
-  }, [copied]);
-
   // Same rule the sidebar badge follows: a PR id only resolves on the machine
   // that owns it, so a pinned pane's "Open in ADE" would land on an empty PRs
   // tab. `openLanePr` sends a foreign PR to GitHub instead.
@@ -674,13 +669,8 @@ export const ChatPrPane = React.memo(function ChatPrPane({
 
   const copyLink = useCallback(async () => {
     if (!pr) return;
-    try {
-      await navigator.clipboard.writeText(pr.githubUrl);
-      setCopied(true);
-    } catch {
-      /* clipboard denied */
-    }
-  }, [pr]);
+    await copy(pr.githubUrl);
+  }, [copy, pr]);
 
   // Ambient status accent on the pane's inner edge: red while checks fail,
   // green while it's merge-ready. Kept as an inset shadow so it never shifts
