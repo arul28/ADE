@@ -76,8 +76,22 @@ export interface TokenEntry {
   timestamp: number;
 }
 
+/**
+ * Claude Code names its per-project directory under `~/.claude/projects/` by
+ * replacing every non-alphanumeric character in the absolute cwd with `-`.
+ * Runs are *not* collapsed and leading dashes are *not* trimmed, which is why
+ * real directories look like `-Users-me-repo` on macOS and
+ * `C--Users-me-repo` on Windows (the drive colon and the separator each become
+ * their own dash).
+ *
+ * This must match Claude byte for byte: the result is compared against the
+ * directory basename Claude itself wrote (`TokenEntry.projectKey`). Replacing
+ * only `/`, `\` and `.` left the Windows drive colon in the name, so the key
+ * never matched, and callers that built a path from it hit `mkdir` EINVAL/ENOENT
+ * because NTFS cannot hold a colon inside a name.
+ */
 export function sanitizeClaudeProjectPath(value: string): string {
-  return value.replaceAll("/", "-").replaceAll("\\", "-").replaceAll(".", "-");
+  return value.replace(/[^a-zA-Z0-9]/gu, "-");
 }
 
 function isAdeWorktreePath(value: string): boolean {
