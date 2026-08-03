@@ -7,6 +7,7 @@ import type {
   ExternalSessionSummary,
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
+import { commandArrayToLine as sharedCommandArrayToLine } from "../../../shared/shell";
 
 export type ExternalSessionDiscoveryRecord = Omit<
   ExternalSessionSummary,
@@ -70,6 +71,17 @@ export function resolveHomeDir(args?: Pick<ExternalSessionDiscoveryArgs, "homeDi
   if (explicit) return explicit;
   const env = args?.env ?? process.env;
   const envHome = typeof env.HOME === "string" ? env.HOME.trim() : "";
+  if (process.platform === "win32") {
+    // `HOME` is not a Windows concept. When it is set at all it comes from a
+    // POSIX emulation layer — Git Bash exports `HOME=/c/Users/<name>`, which no
+    // `fs` call can resolve — so every session directory built from it silently
+    // came back empty. `%USERPROFILE%` is the real home, and it is what the
+    // provider CLIs themselves write under (`%USERPROFILE%\.claude`,
+    // `%USERPROFILE%\.codex`). Matches getHomeDir() in cliExecutableResolver.
+    const profile = typeof env.USERPROFILE === "string" ? env.USERPROFILE.trim() : "";
+    if (profile) return profile;
+    return path.win32.isAbsolute(envHome) ? envHome : os.homedir();
+  }
   return envHome || os.homedir();
 }
 
@@ -612,12 +624,13 @@ export function isUuidLike(value: string): boolean {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/iu.test(value);
 }
 
+/**
+ * POSIX single-quoting produces a command line cmd.exe and PowerShell both
+ * misread, so defer to the shared platform-aware quoter rather than keeping a
+ * second, Unix-only copy here.
+ */
 export function commandArrayToLine(parts: string[]): string {
-  return parts.map((part) => {
-    if (!part.length) return "''";
-    if (/^[A-Za-z0-9_./:@%+=,-]+$/u.test(part)) return part;
-    return `'${part.replace(/'/gu, "'\\''")}'`;
-  }).join(" ");
+  return sharedCommandArrayToLine(parts);
 }
 
 export function directShellLaunchForCommandLine(commandLine: string): { command?: string; args?: string[] } {

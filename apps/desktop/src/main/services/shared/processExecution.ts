@@ -79,12 +79,32 @@ export function resolveWindowsCmdLineInvocation(
   };
 }
 
+export function isWindowsPowerShellScript(command: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && path.win32.extname(command).toLowerCase() === ".ps1";
+}
+
+/**
+ * `.ps1` shims (npm writes one next to every `.cmd`) cannot be launched by
+ * cmd.exe or by `spawn` directly — PowerShell has to interpret them. `-File`
+ * keeps the remaining arguments literal rather than re-parsing them as script.
+ */
+export function resolveWindowsPowerShellInvocation(command: string, args: string[]): SpawnInvocation {
+  return {
+    command: "powershell.exe",
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", command, ...args],
+    windowsVerbatimArguments: false,
+  };
+}
+
 export function resolveCliSpawnInvocation(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): SpawnInvocation {
+  if (isWindowsPowerShellScript(command, platform)) {
+    return resolveWindowsPowerShellInvocation(command, args);
+  }
   if (shouldUseWindowsCmdWrapper(command, platform)) {
     return resolveWindowsCmdInvocation(command, args, env);
   }

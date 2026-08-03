@@ -155,7 +155,25 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
   const asdfDataDir = env.ASDF_DATA_DIR?.trim();
 
   return uniqueNonEmpty([
+    // `npm i -g` writes `<cmd>.cmd` / `<cmd>.ps1` shims straight into %APPDATA%\npm.
     appData ? path.join(appData, "npm") : "",
+    // Standalone/native installers put per-tool binaries under %LOCALAPPDATA%\Programs
+    // or %ProgramFiles%, either directly in the tool directory or in its `bin`.
+    // Claude Code's Windows installer instead uses %USERPROFILE%\.local\bin
+    // (`claude.exe`), and WinGet publishes shims into the WinGet\Links dir — both
+    // are listed below.
+    ...(localAppData
+      ? [
+          path.join(localAppData, "Programs", command),
+          path.join(localAppData, "Programs", command, "bin"),
+        ]
+      : []),
+    ...(programFiles
+      ? [
+          path.join(programFiles, command),
+          path.join(programFiles, command, "bin"),
+        ]
+      : []),
     localAppData ? path.join(localAppData, "Programs", "cursor", "resources", "app", "bin") : "",
     localAppData ? path.join(localAppData, "Programs", "Microsoft VS Code", "bin") : "",
     localAppData ? path.join(localAppData, "Microsoft", "WinGet", "Links") : "",
@@ -247,27 +265,69 @@ function isExecutableFile(candidatePath: string): boolean {
   }
 }
 
+/** Windows launcher extensions, in the order Windows itself would try them. */
+export function windowsExecutableExtensions(env: NodeJS.ProcessEnv = process.env): string[] {
+  // PATHEXT is conventionally uppercase while the files on disk are lowercase
+  // (`claude.exe`, `codex.cmd`). Normalize so resolved paths match the real
+  // filename; NTFS lookups are case-insensitive either way.
+  const pathext = uniqueNonEmpty((env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";"))
+    .map((ext) => (ext.startsWith(".") ? ext : `.${ext}`).toLowerCase());
+  // PATHEXT never lists .PS1 (PowerShell resolves scripts itself), but a
+  // PowerShell-only shim is still a real, launchable install. Try it last so a
+  // .exe/.cmd sibling always wins — those run under cmd.exe, .ps1 does not.
+  if (!pathext.some((ext) => ext.toLowerCase() === ".ps1")) pathext.push(".ps1");
+  return pathext;
+}
+
+/**
+ * NTFS lookups ignore case, so a probe for `codex.cmd` succeeds against a file
+ * actually named `codex.CMD` and vice versa. The resolved path is surfaced in
+ * Settings and handed to other tools, so report the name as it is spelled on
+ * disk instead of however PATHEXT happened to be cased.
+ */
+function withOnDiskCasing(candidatePath: string): string {
+  if (process.platform !== "win32") return candidatePath;
+  const dir = path.dirname(candidatePath);
+  const base = path.basename(candidatePath);
+  try {
+    const actual = fs.readdirSync(dir).find((entry) => entry.toLowerCase() === base.toLowerCase());
+    return actual ? path.join(dir, actual) : candidatePath;
+  } catch {
+    return candidatePath;
+  }
+}
+
 function resolveFromDirs(
   command: string,
   dirs: Iterable<string>,
   env: NodeJS.ProcessEnv = process.env,
 ): string | null {
-  const pathext = process.platform === "win32"
-    ? uniqueNonEmpty((env.PATHEXT ?? ".EXE;.CMD;.BAT").split(";"))
-      .flatMap((ext) => [ext, ext.toLowerCase(), ext.toUpperCase()])
-    : [];
   const commandHasExtension = path.extname(command).length > 0;
+  const extensions = process.platform === "win32" && !commandHasExtension
+    ? windowsExecutableExtensions(env)
+    : [];
 
   for (const dir of dirs) {
-    const candidatePaths = [path.join(dir, command)];
-    if (process.platform === "win32" && !commandHasExtension) {
-      for (const ext of pathext) {
-        candidatePaths.push(path.join(dir, `${command}${ext}`));
-      }
-    }
+    // Windows cannot execute an extension-less file. `npm i -g` drops three
+    // shims side by side — `codex` (a `#!/bin/sh` script for Git Bash),
+    // `codex.cmd` and `codex.ps1` — and only the latter two are launchable
+    // here. Trying `path.join(dir, command)` first therefore handed callers the
+    // sh script: ADE's own spawns survived it because `resolveCliSpawnInvocation`
+    // wraps extension-less commands in `cmd.exe`, which re-applies PATHEXT, but
+    // every consumer that spawns the resolved path directly (the Claude Agent
+    // SDK via `pathToClaudeCodeExecutable`, node-pty, provider SDKs) gets ENOENT.
+    // Resolve the way Windows does: PATHEXT only. On other platforms the bare
+    // name is the executable.
+    const candidatePaths = extensions.length > 0
+      // Uppercase second, for the rare case-sensitive Windows directory.
+      ? extensions.flatMap((ext) => [
+          path.join(dir, `${command}${ext}`),
+          path.join(dir, `${command}${ext.toUpperCase()}`),
+        ])
+      : [path.join(dir, command)];
 
     for (const candidatePath of candidatePaths) {
-      if (isExecutableFile(candidatePath)) return candidatePath;
+      if (isExecutableFile(candidatePath)) return withOnDiskCasing(candidatePath);
     }
   }
   return null;
@@ -288,10 +348,8 @@ export function augmentPathWithKnownCliDirs(
 ): string {
   return mergePathEntries(
     pathValue,
-    getKnownBinDirs("claude", env).join(pathListDelimiter()),
-    getKnownBinDirs("codex", env).join(pathListDelimiter()),
-    getKnownBinDirs("agent", env).join(pathListDelimiter()),
-    getKnownBinDirs("opencode", env).join(pathListDelimiter()),
+    ...["claude", "codex", "agent", "cursor-agent", "droid", "opencode"].map((command) =>
+      getKnownBinDirs(command, env).join(pathListDelimiter())),
   );
 }
 
