@@ -186,9 +186,13 @@ function quotePowerShellLiteral(value: string): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
+// `%` is deliberately left alone. Doubling it is only correct inside a batch
+// file; this builds a line for a live cmd prompt, where `%%` survives
+// literally and turns `100%` into `100%%`. Nothing can escape `%` on a live
+// command line -- the caller below relies on that, leaving the trailing
+// `%PATH%` outside this function precisely so it still expands.
 function quoteCmdSetValue(value: string): string {
   return value
-    .replace(/%/g, "%%")
     .replace(/"/g, "\"\"")
     .replace(/[\r\n]/g, " ");
 }
