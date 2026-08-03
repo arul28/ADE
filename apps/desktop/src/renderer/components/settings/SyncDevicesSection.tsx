@@ -99,7 +99,10 @@ function formatLatency(value: number | null | undefined): string {
 
 function connectionLoadGuidance(error: string): string {
   if (isLocalReleaseBuildOutputError(error)) {
-    return "Install this ADE build in Applications, reopen it, then try again.";
+    // Was macOS-only copy ("in Applications"), which names a folder Windows
+    // does not have. The instruction is the same on every platform: run an
+    // installed build, not the build output directory.
+    return "Install this ADE build, reopen it from the installed copy, then try again.";
   }
   if (isProjectRegistrationRequiredError(error)) {
     return "Open a project in ADE, then try again.";
@@ -380,7 +383,13 @@ function acceptsConnectionsState(
     return { ready: false, label: "Phone sync is unavailable" };
   }
   if (!status.pairingConnectInfo) {
-    return { ready: false, label: "Starting up — connection details will appear shortly" };
+    // "Starting up" is only true while the listener is on its way up. When the
+    // snapshot already knows why the listener is down (the background service
+    // is not reachable, a port could not be bound), say that instead — the
+    // reason is the whole point of this line and it never resolves on its own.
+    const listener = status.routeHealth?.listener;
+    const reason = listener?.listenerBound === false ? listener.reason?.trim() : null;
+    return { ready: false, label: reason || "Starting up — connection details will appear shortly" };
   }
   if (!status.pairingPinConfigured) {
     return { ready: false, label: "Set a pairing code below so new devices can connect" };
