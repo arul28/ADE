@@ -59,6 +59,7 @@ describe("Windows runtime supervisor", () => {
       lastExitAt: null,
       nextRestartAt: null,
       lastLaunchError: null,
+      sessionBound: null,
     });
 
     fs.writeFileSync(pidPath, JSON.stringify({

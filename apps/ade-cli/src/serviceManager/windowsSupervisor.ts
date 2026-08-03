@@ -19,6 +19,21 @@ export type WindowsServicePidRecord = {
   lastExitAt: string | null;
   nextRestartAt: string | null;
   lastLaunchError: string | null;
+  /**
+   * Ground truth, measured by the supervisor about itself: `true` when it is
+   * running inside a job object that carries
+   * `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`, meaning Windows will terminate it the
+   * moment the session that started it goes away.
+   *
+   * This is recorded by the supervisor rather than inferred from which launch
+   * route the installer used, because the two can disagree: a supervisor that
+   * had to fall back to an in-session launch today is started job-free by
+   * `explorer.exe` at the next sign-in, and a record of the installer's intent
+   * would keep warning about a brain that is no longer session-bound. `null`
+   * means the probe could not run, and is never reported as a guarantee either
+   * way.
+   */
+  sessionBound: boolean | null;
 };
 
 export type WindowsRuntimeReadiness = {
@@ -114,6 +129,42 @@ export function renderWindowsServiceLauncher(
     "$lastExitAt = $null",
     "$nextRestartAt = $null",
     "$lastLaunchError = $null",
+    // Whether this supervisor dies with the session that started it is not
+    // something the installer can know -- the same launcher is also run by
+    // `explorer.exe` at sign-in, where it is job-free. So the supervisor
+    // measures it about itself and publishes the answer, and `brain status`
+    // reports what is actually true right now rather than what the installer
+    // hoped for. `QueryInformationJobObject(NULL, ...)` is documented to use
+    // "the job associated with the calling process", so no handle is needed.
+    "$sessionBound = $null",
+    "try {",
+    "  Add-Type -Namespace AdeSupervisor -Name JobApi -MemberDefinition @'",
+    "[DllImport(\"kernel32.dll\", SetLastError=true)]",
+    "public static extern bool IsProcessInJob(IntPtr process, IntPtr job, out bool result);",
+    "[DllImport(\"kernel32.dll\", SetLastError=true)]",
+    "public static extern bool QueryInformationJobObject(IntPtr job, int infoClass, IntPtr info, uint length, IntPtr returned);",
+    "[DllImport(\"kernel32.dll\")]",
+    "public static extern IntPtr GetCurrentProcess();",
+    "'@",
+    "  $inJob = $false",
+    "  [void][AdeSupervisor.JobApi]::IsProcessInJob([AdeSupervisor.JobApi]::GetCurrentProcess(), [IntPtr]::Zero, [ref]$inJob)",
+    "  if (-not $inJob) {",
+    // No job at all: the Win32_Process.Create handover, which Windows
+    // documents as producing a child that is not associated with the job.
+    "    $sessionBound = $false",
+    "  } else {",
+    // sizeof(JOBOBJECT_EXTENDED_LIMIT_INFORMATION); LimitFlags sits at offset
+    // 16 in both bitnesses because the two preceding fields are LARGE_INTEGERs.
+    "    $jobInfoSize = if ([IntPtr]::Size -eq 8) { 144 } else { 112 }",
+    "    $jobInfo = [Runtime.InteropServices.Marshal]::AllocHGlobal($jobInfoSize)",
+    "    try {",
+    // JobObjectExtendedLimitInformation = 9, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000.
+    "      if ([AdeSupervisor.JobApi]::QueryInformationJobObject([IntPtr]::Zero, 9, $jobInfo, $jobInfoSize, [IntPtr]::Zero)) {",
+    "        $sessionBound = [bool]([Runtime.InteropServices.Marshal]::ReadInt32($jobInfo, 16) -band 0x2000)",
+    "      }",
+    "    } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($jobInfo) }",
+    "  }",
+    "} catch { $sessionBound = $null }",
     "function Write-PidRecord([Nullable[int]]$runtimePid, [Nullable[long]]$runtimeStartedAtMs) {",
     "  $record = [ordered]@{",
     "    supervisorPid = $PID",
@@ -124,10 +175,12 @@ export function renderWindowsServiceLauncher(
     "    lastExitAt = $lastExitAt",
     "    nextRestartAt = $nextRestartAt",
     "    lastLaunchError = $lastLaunchError",
+    "    sessionBound = $sessionBound",
     "  }",
     "  [IO.File]::WriteAllText($pidPath, ($record | ConvertTo-Json -Compress), [Text.Encoding]::ASCII)",
     "}",
-    "Write-SupervisorLog 'supervisor started'",
+    "Write-SupervisorLog \"supervisor started sessionBound=$sessionBound\"",
+    "if ($sessionBound -eq $true) { Write-SupervisorLog 'WARNING: this supervisor is inside a kill-on-job-close job object; Windows will terminate it with the session that started it.' }",
     "try {",
     "  while ($true) {",
     "    $runtimeStartedAt = [DateTimeOffset]::UtcNow",
@@ -213,6 +266,9 @@ export function readWindowsServicePidRecord(pidPath: string): WindowsServicePidR
       lastExitAt: boundedText(parsed.lastExitAt),
       nextRestartAt: boundedText(parsed.nextRestartAt),
       lastLaunchError: boundedText(parsed.lastLaunchError),
+      // Absent in records written by an older supervisor, and absent when the
+      // probe itself failed. Both mean "unknown", never "safe".
+      sessionBound: typeof parsed.sessionBound === "boolean" ? parsed.sessionBound : null,
     };
   } catch {
     return null;

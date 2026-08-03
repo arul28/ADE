@@ -23,6 +23,7 @@ import {
   buildWindowsRunTaskArgs,
   buildWindowsStartLauncherArgs,
   buildWindowsStartTaskArgs,
+  buildWindowsWmiStartArgs,
   getWindowsServiceStatus,
   installWindowsService,
   isWindowsLegacyTaskOwnedByCommand,
@@ -87,6 +88,7 @@ describe("Windows background service helpers", () => {
     lastExitAt: null,
     nextRestartAt: null,
     lastLaunchError: null,
+    sessionBound: false,
   };
   const immediateReadiness = {
     readPidRecord: () => readyPidRecord,
@@ -638,9 +640,10 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
-      // The job-escaping start task is unavailable, so the launch falls back to
-      // the in-session PowerShell start, which also fails.
+      // Both job-escaping handovers are unavailable, so the launch falls all the
+      // way back to the in-session PowerShell start, which also fails.
       { status: 1, stdout: "", stderr: "ERROR: task scheduler unavailable" },
+      { status: 5, stdout: "", stderr: "Win32_Process.Create failed with return value 2." },
       { status: 1, stdout: "", stderr: "ERROR: access is denied" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
     ]);
@@ -675,6 +678,7 @@ describe("Windows background service helpers", () => {
       buildWindowsRunKeyQueryArgs(taskName),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+      buildWindowsWmiStartArgs(launcherPath),
       buildWindowsStartLauncherArgs(launcherPath),
       buildWindowsRunKeyDeleteArgs(taskName),
     ]);

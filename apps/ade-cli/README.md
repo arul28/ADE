@@ -93,9 +93,54 @@ The ADE brain runs as a per-user login service. The implementations live in `src
 | --- | --- | --- |
 | macOS | launchd `LaunchAgent` | `~/Library/LaunchAgents/com.ade.runtime.plist` |
 | Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
-| Windows | `schtasks.exe ONLOGON` | scheduled task `ADE Runtime` |
+| Windows | HKCU `Run` entry + PowerShell supervisor | `HKCU\...\CurrentVersion\Run` value `ADE Runtime (<channel>-<hash>)` |
 
 The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright and is used for both launchd and systemd unit names. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
+
+### Windows: how the always-on guarantee is actually obtained
+
+launchd and systemd own the process they start, so on macOS and Linux "installed" and
+"survives this session" are the same fact. Windows has no unelevated equivalent, and the two
+halves have to be built separately.
+
+**Login persistence** is the HKCU `Run` key. An ONLOGON scheduled task would be the closer
+analogue but requires elevation — both `schtasks /Create /SC ONLOGON` and
+`Register-ScheduledTask -AtLogOn` fail with *Access is denied* for a standard user.
+
+**Session survival** is the harder half. [Job
+objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects): "by default
+any child processes it creates using `CreateProcess` are also associated with the job", job
+membership cannot be broken once assigned, and `CREATE_BREAKAWAY_FROM_JOB` fails with
+`ERROR_ACCESS_DENIED` unless the job opted in with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — which the
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` jobs used by terminals, editors, CI agents and Electron do
+not. So a supervisor started as an ordinary child of `ade brain start` is terminated with the
+session that started it. The fix is to have something else create the process:
+
+1. **A transient one-shot scheduled task.** The Task Scheduler service spawns the action itself,
+   so the supervisor is parented to `svchost.exe` and belongs to none of our jobs. Registering a
+   one-shot task does not require elevation. The task is unregistered as soon as it has started.
+2. **`Win32_Process.Create` over WMI**, if task registration is unavailable or denied by policy.
+   The same Microsoft page states it explicitly: "Child processes created using
+   `Win32_Process.Create` are not associated with the job." The process is created by the WMI
+   provider host `WmiPrvSE.exe` and ends up in no job at all. This is second rather than first
+   because WMI process creation is the more commonly blocked of the two — it is a known
+   lateral-movement technique and endpoint-protection rules disable it. The two failure modes are
+   largely independent, which is why both are worth having.
+3. **An in-session launch**, if a machine refuses both. The brain still comes up, but it is bound
+   to the lifetime of the session that started it.
+
+At sign-in none of this is needed: `explorer.exe` runs the `Run` entry and is itself job-free.
+
+**The limitation, stated plainly.** On a machine that denies both handovers, ADE's always-on
+guarantee does not hold — the brain dies when your terminal, editor or agent exits, and returns
+only at your next sign-in. ADE does not hide this. The supervisor probes its own job on startup
+(`QueryInformationJobObject(NULL, JobObjectExtendedLimitInformation)`, checking for
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and publishes the answer as `sessionBound` in its PID
+record; `ade brain start` and `ade brain status` both say so in full. That is measured about the
+running supervisor rather than inferred from which launch route the installer used, so a brain
+that was session-bound today stops being reported that way once `explorer.exe` starts it
+job-free at the next sign-in. `null` means the probe could not run and is never reported as a
+guarantee either way.
 
 Manage the service from the CLI:
 

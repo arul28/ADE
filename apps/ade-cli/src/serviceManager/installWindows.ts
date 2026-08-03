@@ -282,6 +282,24 @@ export function buildWindowsRunKeyDeleteArgs(valueName: string): string[] {
   return ["DELETE", WINDOWS_RUN_KEY, "/V", valueName, "/F"];
 }
 
+/**
+ * What a user is told when the always-on guarantee does not hold.
+ *
+ * macOS never needs this: `launchctl` owns the process, so "installed" and
+ * "survives this session" are the same fact. On Windows they are two different
+ * facts, and reporting only the first is how a session-bound brain came to look
+ * like a healthy one.
+ */
+export const WINDOWS_SESSION_BOUND_WARNING =
+  "The always-on guarantee does NOT hold: this machine refused both handovers "
+  + "(Task Scheduler registration and WMI Win32_Process.Create), so the brain is "
+  + "running inside the job object of the session that started it and Windows "
+  + "will terminate it -- with no exit code and no restart -- as soon as that "
+  + "terminal, editor or agent exits. It will come back at your next sign-in via "
+  + "the startup entry. To make it always-on now, allow scheduled-task "
+  + "registration or WMI process creation for your user, or run `ade brain "
+  + "start` from a session that is not job-confined.";
+
 /** Transient one-shot task used only to escape the caller's job object. */
 export function resolveWindowsStartTaskName(taskName = resolveWindowsTaskName()): string {
   return `${taskName} (start)`;
@@ -332,6 +350,42 @@ export function buildWindowsStartTaskArgs(
 }
 
 /**
+ * Second escape route, used when Task Scheduler is unavailable or denied by
+ * policy: create the supervisor through WMI's `Win32_Process.Create`.
+ *
+ * This is not a heuristic. Windows documents the behaviour directly in *Job
+ * Objects*: "by default any child processes it creates using CreateProcess are
+ * also associated with the job. (Child processes created using
+ * Win32_Process.Create are not associated with the job.)" The process is
+ * spawned by the WMI provider host `WmiPrvSE.exe`, which lives under the DCOM
+ * service host, so it is not a descendant of the caller at all -- and unlike
+ * the Task Scheduler route it ends up in no job whatsoever.
+ *
+ * It is the fallback rather than the primary because it is the more commonly
+ * blocked of the two: WMI process creation is a well-known lateral-movement
+ * technique and is what endpoint-protection rules disable first. The two
+ * failure modes are largely independent, which is exactly what makes chaining
+ * them worth doing.
+ *
+ * `Win32_ProcessStartup.ShowWindow` is set to SW_HIDE because a process created
+ * this way gets default startup information rather than the caller's, so
+ * without it an always-on brain would flash a console window.
+ */
+export function buildWindowsWmiStartArgs(launcherPath: string): string[] {
+  const commandLine = windowsLauncherCommand(launcherPath);
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "$startup = New-CimInstance -ClassName Win32_ProcessStartup -ClientOnly -Property @{ ShowWindow = [uint16]0 }",
+    `$arguments = @{ CommandLine = ${powerShellSingleQuotedLiteral(commandLine)}; CurrentDirectory = ${powerShellSingleQuotedLiteral(path.win32.dirname(launcherPath))}; ProcessStartupInformation = [CimInstance]$startup }`,
+    "$result = Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments $arguments",
+    "if ($null -eq $result) { [Console]::Error.Write('Win32_Process.Create returned no result.'); exit 5 }",
+    "if ($result.ReturnValue -ne 0) { [Console]::Error.Write(\"Win32_Process.Create failed with return value $($result.ReturnValue).\"); exit 5 }",
+    "[Console]::Out.Write($result.ProcessId)",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", script];
+}
+
+/**
  * Starts the supervisor **outside the caller's job object**.
  *
  * A process started with `Process.Start`/`ShellExecuteEx` is an ordinary
@@ -364,9 +418,18 @@ function startWindowsSupervisorDetached(
     { encoding: "utf8", windowsHide: true },
   );
   if (viaTask.status === 0) return null;
-  // Task Scheduler is unavailable or denied by policy. Fall back to the
-  // in-session launch: the brain still comes up, it is just bound to the
-  // lifetime of the session that started it, which status will report.
+  // Task Scheduler is unavailable or denied by policy. WMI is a second,
+  // independently documented escape: `Win32_Process.Create` children are not
+  // associated with the caller's job.
+  const viaWmi = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsWmiStartArgs(launcherPath), {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+  if (viaWmi.status === 0) return null;
+  // Both handovers refused. The in-session launch still brings the brain up,
+  // but it is bound to the lifetime of the session that started it. The
+  // supervisor detects that about itself and records it, so `brain status`
+  // says so out loud instead of reporting a healthy always-on brain.
   const start = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsStartLauncherArgs(launcherPath), {
     encoding: "utf8",
     windowsHide: true,
@@ -664,14 +727,15 @@ export async function installWindowsService(
       message: `ADE per-user startup entry was installed, but the background service failed to start: ${startFailure}`,
     };
   }
+  const readPidRecord = deps.readPidRecord
+    ?? ((target: string) => readWindowsServicePidRecord({ pidPath: target }));
   const readiness = await waitForWindowsRuntimeReadiness({
     command: serviceCommand,
     launcherPath,
     pidPath,
     socketPath,
     spawnSync: run,
-    readPidRecord: deps.readPidRecord
-      ?? ((target) => readWindowsServicePidRecord({ pidPath: target })),
+    readPidRecord,
     readinessProbe: deps.readinessProbe ?? defaultWindowsRuntimeReadiness,
     timeoutMs: deps.handoverTimeoutMs ?? 15_000,
     pollMs: deps.handoverPollMs ?? 100,
@@ -689,12 +753,18 @@ export async function installWindowsService(
         + readiness.diagnostic,
     };
   }
+  // Ask the supervisor what it actually is, rather than trusting which launch
+  // route reported success: a "successful" in-session launch is precisely the
+  // case that used to be reported as a healthy always-on brain.
+  const sessionBound = readPidRecord(pidPath)?.sessionBound === true;
   return {
     ok: true,
     serviceName,
     action: "install",
     path: taskName,
-    message: "ADE per-user startup entry installed and channel brain is ready.",
+    message: sessionBound
+      ? `ADE per-user startup entry installed and the channel brain is ready, but it is bound to this session. ${WINDOWS_SESSION_BOUND_WARNING}`
+      : "ADE per-user startup entry installed and channel brain is ready.",
   };
 }
 
@@ -901,6 +971,9 @@ export function getWindowsServiceStatus(
       socketPath,
       spawnSync: run,
     });
+    const base = readiness.ready
+      ? `ADE per-user channel brain is ready on ${socketPath}.`
+      : readiness.diagnostic;
     return {
       ok: true,
       serviceName,
@@ -908,9 +981,12 @@ export function getWindowsServiceStatus(
       installed: true,
       running: readiness.ready,
       path: taskName,
-      message: readiness.ready
-        ? `ADE per-user channel brain is ready on ${socketPath}.`
-        : readiness.diagnostic,
+      // "Running" and "always-on" are the same thing on macOS and two different
+      // things here, so a session-bound brain must not be reported as healthy
+      // without saying which of the two it is.
+      message: supervisor.record.sessionBound === true
+        ? `${base} ${WINDOWS_SESSION_BOUND_WARNING}`
+        : base,
     };
   }
   if (taskResult.status !== TASK_NOT_FOUND_EXIT_CODE) {
