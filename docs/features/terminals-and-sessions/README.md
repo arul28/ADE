@@ -579,7 +579,11 @@ Renderer surfaces:
   leaving the session list. The list is a **cross-machine union**
   (`useCrossMachineLaneUnion` from `renderer/state/crossMachineLanes.ts`): chats
   in flight on every connected machine appear regardless of which machine the
-  project tab is bound to. A lane not on the **physical Mac** running ADE carries
+  project tab is bound to. The pane hands the union its **unfiltered** local
+  roster so a session it already renders is never also rendered as a foreign row;
+  passing the visible rows instead would make a chip-filtered session reappear
+  from the other side, because ownership is a question of shape, not
+  visibility. A lane not on the **physical Mac** running ADE carries
   one amber `DesktopTower` marker — always a glyph in the sidebar, with the
   machine name on hover. The tab's binding only decides where a row renders; it
   never changes whether the work is marked as elsewhere. This makes an unmarked
@@ -655,6 +659,13 @@ Renderer surfaces:
   the same id, the launch is deleted, or the two-minute optimistic window
   expires. This reconciliation prevents both a blank launch interval and a
   duplicate raw-id lane under the active machine.
+  `buildCrossMachineLaneRows` accepts the local roster's session ids and keeps a
+  single claim set spanning every machine slice, so one session is contributed by
+  exactly one list — local first, then the first machine that reports the lane
+  the session names. The hook stabilizes that id set by content rather than by
+  the roster array's identity, because the roster is replaced wholesale by every
+  session poll and keying on it would rebuild every foreign row, marker, and
+  ordering on a timer.
   Its marker resolver separately distinguishes `isActiveBinding` (where a lane
   renders) from `isThisMachine` (whether it is marked): a remote-bound tab still
   marks all lanes that are elsewhere, even when it has no foreign union rows.

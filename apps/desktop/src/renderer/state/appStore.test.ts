@@ -30,7 +30,7 @@ const mockLocalStorage = {
       openRepo: vi.fn(async () => null),
       // openRepo picks a folder, then runs the worktree gate. inspectPath is
       // deliberately left unmocked here so the gate falls through (its catch)
-      // to a normal open — the gate itself is covered in appStore.worktreeGate.test.ts.
+      // to a normal open — the gate itself is covered in appStoreWorktreeGate.test.ts.
       chooseDirectory: vi.fn(async () => "/p/picked"),
       listRecent: vi.fn(async () => []),
       switchToPath: vi.fn(async () => null),

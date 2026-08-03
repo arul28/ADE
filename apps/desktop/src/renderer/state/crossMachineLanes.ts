@@ -25,7 +25,7 @@
  * generation-cancellable, and never gate the local list.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { remoteProjectBindingKey } from "../../shared/projectIdentity";
 import type {
   AgentChatSession,
@@ -222,6 +222,7 @@ export type CrossMachineLaneMarker = {
 };
 
 const EMPTY_ROWS: CrossMachineLaneRow[] = [];
+const EMPTY_SESSION_IDS: ReadonlySet<string> = new Set<string>();
 const EMPTY_MARKERS = new Map<string, CrossMachineLaneMarker>();
 export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
   foreignRows: EMPTY_ROWS,
@@ -337,15 +338,29 @@ function laneActivityRank(row: CrossMachineLaneRow): number {
 
 /**
  * Builds the union rows: this machine's lanes plus every machine slice held in
- * the store, offline ones included. The builder stays policy-free on purpose —
- * reachability is decided in exactly one place (`useCrossMachineLaneUnion`), and
- * keeping the raw shape here lets tests assert store retention separately from
- * what renders.
+ * the store, offline ones included. The builder stays policy-free about
+ * reachability on purpose — that is decided in exactly one place
+ * (`useCrossMachineLaneUnion`), and keeping the raw shape here lets tests assert
+ * store retention separately from what renders. The one policy it does own is
+ * `localSessionIds` below, because "one session renders once" has to hold before
+ * anything downstream reads a row's sessions.
  */
 export function buildCrossMachineLaneRows(input: {
   localLanes: readonly LaneSummary[];
   machines: Readonly<Record<string, CrossMachineMachineLanes>>;
   activeBinding?: OpenProjectBinding | null;
+  /**
+   * Session ids the active binding's own roster already renders. Machine-level
+   * exclusion below cannot catch these: it drops the bound machine's slice, but
+   * a single session can still reach both lists — an optimistic launch injected
+   * locally while its owning machine also reports it. The sidebar then showed
+   * one new chat as two rows, each with its own elapsed clock.
+   *
+   * Local wins, the same precedence `sessionsById` and `buildThreadIndex` use:
+   * a click resolves against the local record, so surviving as the union's copy
+   * would render one row and open another. Omit it to get the raw shape.
+   */
+  localSessionIds?: ReadonlySet<string>;
 }): CrossMachineLaneRow[] {
   const rows: CrossMachineLaneRow[] = [];
   const activeBinding = input.activeBinding ?? null;
@@ -377,15 +392,32 @@ export function buildCrossMachineLaneRows(input: {
       binding: activeRemoteBinding,
     });
   }
+  // One session renders once. Seeded with the ids the active binding's roster
+  // already owns, then carried ACROSS machines so two slices reporting the same
+  // session cannot both claim it either — the same shape `buildThreadIndex`
+  // uses for the command palette. Deduping here rather than at render time is
+  // what makes every consumer agree on what a machine contributes: the render
+  // list, the headerless/shape rules, and the quiet-expansion check. A lane
+  // left with no sessions is dropped downstream by the rule that already drops
+  // a filtered-out one.
+  const claimed = new Set(input.localSessionIds ?? []);
   for (const entry of Object.values(input.machines)) {
     // The active binding is already represented by `localLanes`. The sync
     // cache may also contain that remote machine, so drop its stale/duplicate
     // slice instead of rendering the same lane twice.
     if (entry.machineId === activeMachineId) continue;
+    // Only lanes this machine actually reports become rows below, so a session
+    // naming a lane it does not have renders nothing here. Claiming it anyway
+    // would block the machine that DOES have that lane from rendering it, and
+    // the session would vanish from the sidebar entirely — worse than the
+    // duplicate this dedupe exists to remove.
+    const entryLaneIds = new Set(entry.lanes.map((lane) => lane.id));
     const sessionsByLaneId = new Map<string, TerminalSessionSummary[]>();
     for (const session of entry.sessions) {
       const laneId = session.laneId;
-      if (!laneId) continue;
+      if (!laneId || !entryLaneIds.has(laneId)) continue;
+      if (claimed.has(session.id)) continue;
+      claimed.add(session.id);
       const list = sessionsByLaneId.get(laneId);
       if (list) list.push(session);
       else sessionsByLaneId.set(laneId, [session]);
@@ -1585,7 +1617,34 @@ export function resetCrossMachineLaneSyncForTest(): void {
  * The returned object is memoized on the store slices it derives from, so a tick
  * that changes nothing hands back identical references and re-renders nothing.
  */
-export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
+export function useCrossMachineLaneUnion(
+  active = true,
+  localSessions?: readonly TerminalSessionSummary[],
+): CrossMachineUnion {
+  // Stabilized by CONTENT, not by the array's identity. The caller's roster is
+  // replaced wholesale by every session poll (~5s while anything is running),
+  // so deriving a fresh Set per tick would hand `buildCrossMachineLaneRows` a
+  // changed input and rebuild every foreign row, its marker map, and its
+  // ordering on a timer — the memo below exists precisely to make an unchanged
+  // tick free. Compared rather than serialized into a key because a session id
+  // is not guaranteed UUID-shaped (imported and handoff sessions carry ids ADE
+  // did not mint), so any separator a join picked would be an assumption about
+  // their contents.
+  const localSessionIdsRef = useRef<ReadonlySet<string>>(EMPTY_SESSION_IDS);
+  const localSessionIds = useMemo(() => {
+    if (!localSessions) return undefined;
+    const previous = localSessionIdsRef.current;
+    // Compared set-to-set rather than array-to-set: a roster that ever repeated
+    // an id would never match its own cached set, and the only symptom would be
+    // this cache silently never hitting again — the exact churn it exists to
+    // prevent, invisible.
+    const next: ReadonlySet<string> = new Set(localSessions.map((session) => session.id));
+    if (next.size === previous.size && [...next].every((id) => previous.has(id))) {
+      return previous;
+    }
+    localSessionIdsRef.current = next;
+    return next;
+  }, [localSessions]);
   const localLanes = useAppStore((state) => state.lanes);
   const projectBinding = useAppStore((state) => state.projectBinding);
   const scopeKey = useAppStore((state) => selectActiveProjectStateKey(state));
@@ -1687,8 +1746,9 @@ export function useCrossMachineLaneUnion(active = true): CrossMachineUnion {
       localLanes,
       machines,
       activeBinding: projectBinding,
+      localSessionIds,
     }),
-    [localLanes, machines, projectBinding],
+    [localLanes, localSessionIds, machines, projectBinding],
   );
   return useMemo(() => {
     // Two different questions, and conflating them is what hid every badge when
