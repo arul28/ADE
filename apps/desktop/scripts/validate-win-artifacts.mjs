@@ -265,6 +265,7 @@ function validatePreflight() {
   requireFile("scripts/ade-cli-install-path.cmd", "Windows ADE CLI PATH installer");
   requireFile("scripts/windows-install-setup.ps1", "Windows install setup script");
   requireFile("scripts/windows-uninstall-cleanup.ps1", "Windows uninstall cleanup script");
+  requireFile("scripts/windows-firewall-rules.ps1", "Windows firewall rule script");
   requireFile("build/installer.nsh", "Windows NSIS customization");
   requireFile("vendor/crsqlite/win32-x64/crsqlite.dll", "Windows cr-sqlite extension");
 

@@ -30,6 +30,21 @@
     ${EndIf}
     Abort
   ${EndIf}
+
+  ; Pre-authorize the LAN sync listener so first run does not raise the Windows
+  ; Firewall prompt. Windows only accepts firewall rules from an elevated
+  ; process and this installer is per-user (perMachine/allowElevation are both
+  ; false), so the script usually reports that it skipped the change instead of
+  ; making one. Never fatal: a missing firewall rule costs one Windows prompt,
+  ; it does not break the install.
+  DetailPrint "Pre-authorizing ADE local network sync in Windows Firewall..."
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-firewall-rules.ps1" -Action install -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
+  Pop $0
+  Pop $1
+  DetailPrint "$1"
+  ${If} $0 != 0
+    DetailPrint "ADE could not pre-authorize local network sync. Windows will ask once when you first use sync on this network."
+  ${EndIf}
 !macroend
 
 !macro customUnInstall
@@ -40,6 +55,16 @@
   ${ElseIf} "${PRODUCT_NAME}" == "ADE Beta"
     StrCpy $2 "beta"
   ${EndIf}
+
+  ; Take the inbound allowance back out before the product goes away, so an
+  ; uninstall never leaves a rule pointing at a deleted executable. Same
+  ; elevation caveat as install, and same non-fatal handling.
+  DetailPrint "Removing the ADE local network sync firewall rules..."
+  nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-firewall-rules.ps1" -Action uninstall -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
+  Pop $0
+  Pop $1
+  DetailPrint "$1"
+
   nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$INSTDIR\resources\ade-cli\windows-uninstall-cleanup.ps1" -InstallDir "$INSTDIR" -AppExecutableName "${APP_EXECUTABLE_FILENAME}" -PackageChannel "$2"'
   Pop $0
   Pop $1

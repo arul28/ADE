@@ -348,6 +348,10 @@
           "to": "ade-cli/windows-uninstall-cleanup.ps1"
         },
         {
+          "from": "scripts/windows-firewall-rules.ps1",
+          "to": "ade-cli/windows-firewall-rules.ps1"
+        },
+        {
           "from": "resources/runtime",
           "to": "runtime",
           "filter": [

@@ -425,6 +425,7 @@ module.exports = async function afterPack(context) {
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
     requireFile(path.join(resourcesRoot, "ade-cli", "windows-uninstall-cleanup.ps1"), "bundled Windows uninstall cleanup script");
     requireFile(path.join(resourcesRoot, "ade-cli", "windows-install-setup.ps1"), "bundled Windows install setup script");
+    requireFile(path.join(resourcesRoot, "ade-cli", "windows-firewall-rules.ps1"), "bundled Windows firewall rule script");
     const channelWrapperPath = materializeChannelCliWrapper(resourcesRoot, packageChannel, platform);
     if (channelWrapperPath) {
       console.log(`[afterPack] Added channel CLI wrapper: ${path.basename(channelWrapperPath)}`);
