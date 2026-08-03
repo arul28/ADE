@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.51] - 2026-08-03
+
+### Web client
+
+- Overhaul the pre-project experience, terminal fidelity, sync-host hardening, and CLI connection states in the hosted web client.
+
+### Lanes
+
+- Every git worktree of a project now auto-appears as a lane and reaps automatically when the worktree is gone from git and disk; ownership is scoped per project.
+- Overhaul external-session import across Claude, Codex, Cursor, Droid, and OpenCode; add a durable imported-refs store; remove the legacy attach/multi-attach/adopt UI in favor of the unified lane model.
+
+### Fixes
+
+- Fix `useCopyToClipboard` flashing "Copied" even when the clipboard write failed, most consequential in the secrets panel.
+- Fix the Work sidebar occasionally double-listing a session across machines; make session claiming content-scoped instead of machine-scoped.
+- Respect the system reduce-motion setting renderer-wide via a global `MotionConfig`.
+
 ## [1.2.50] - 2026-08-02
 
 ### CI status accuracy
@@ -1335,6 +1352,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.51]: https://github.com/arul28/ADE/compare/v1.2.50...v1.2.51
 [1.2.50]: https://github.com/arul28/ADE/compare/v1.2.49...v1.2.50
 [1.2.49]: https://github.com/arul28/ADE/compare/v1.2.48...v1.2.49
 [1.2.48]: https://github.com/arul28/ADE/compare/v1.2.47...v1.2.48

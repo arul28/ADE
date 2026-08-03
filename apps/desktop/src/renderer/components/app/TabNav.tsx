@@ -18,7 +18,7 @@ import { cn } from "../ui/cn";
 import { useClampedFixedPosition } from "../../hooks/useClampedFixedPosition";
 import { useAppStore } from "../../state/appStore";
 import { revealLabel } from "../../lib/platform";
-import { isWebClientMode } from "../../lib/webClientMode";
+import { isWebClientMode, WEB_CLIENT_TAB_PATHS } from "../../lib/webClientMode";
 import {
   accountAvatarImage,
   accountInitials,
@@ -280,10 +280,15 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
     );
   };
 
-  // The hosted web client only surfaces the four cross-the-wire tabs; the tool
-  // tabs (Run/Review/CTO/Graph/History/Automations) and desktop Settings have no
-  // sync-protocol backing, so hide them instead of showing dead nav entries.
+  // The hosted web client surfaces the tabs listed in `WEB_CLIENT_TAB_PATHS` —
+  // one authoritative list rather than an index into `mainItems`. Review and
+  // Automations stay hidden there: neither has host-side actions, so both would
+  // be dead nav entries.
   const webMode = isWebClientMode();
+  const toolItems = webMode
+    ? mainItems.slice(4).filter((it) => WEB_CLIENT_TAB_PATHS.has(it.to))
+    : mainItems.slice(4);
+  const showSettings = !webMode || WEB_CLIENT_TAB_PATHS.has(settingsItem.to);
 
   return (
     <>
@@ -296,14 +301,14 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           {mainItems.slice(0, 4).map((it) => renderItem(it))}
         </div>
 
-        {!webMode ? (
+        {toolItems.length > 0 ? (
           <>
             {/* Group separator */}
             <div className="ade-shell-sidebar-separator mx-3 my-1 border-t" />
 
             {/* Tool navigation items */}
             <div className="flex flex-col gap-px">
-              {mainItems.slice(4).map((it) => renderItem(it))}
+              {toolItems.map((it) => renderItem(it))}
             </div>
           </>
         ) : null}
@@ -393,7 +398,7 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
           <span className="ade-tab-label whitespace-nowrap">{accountLabel}</span>
         </NavLink>
 
-        {!webMode ? (
+        {showSettings ? (
           <>
             {/* Divider line before settings */}
             <div className="ade-shell-sidebar-separator mx-2 mb-1 border-t" />
@@ -405,7 +410,9 @@ export function TabNav({ githubStatus }: { githubStatus?: GitHubStatus | null })
       </nav>
 
       {/* Context menu */}
-      {contextMenu && activeProjectRoot ? (
+      {/* Revealing a path is a native-shell action: the web adapter's
+          `app.revealPath` resolves to nothing, so the browser gets no menu. */}
+      {contextMenu && activeProjectRoot && !webMode ? (
         <div
           ref={sidebarMenuRef}
           className="ade-shell-sidebar-menu fixed z-40 min-w-[170px] p-1 shadow-float"

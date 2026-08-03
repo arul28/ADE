@@ -171,7 +171,6 @@ function createRuntime(projectRoot: string) {
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     laneService: {
       list: vi.fn(async () => [{ id: "lane-main", name: "Main", archivedAt: null }]),
-      listUnregisteredWorktrees: vi.fn(async () => []),
     },
     sessionService: {
       get: vi.fn(),

@@ -644,14 +644,6 @@ export type OnboardingDetectionResult = {
   suggestedWorkflows: Array<{ path: string; kind: "github-actions" | "gitlab-ci" | "other" }>;
 };
 
-export type OnboardingExistingLaneCandidate = {
-  branchRef: string;
-  isCurrent: boolean;
-  hasRemote: boolean;
-  ahead: number;
-  behind: number;
-};
-
 export type OnboardingHelpState = {
   glossaryTermsSeen: string[];
 };

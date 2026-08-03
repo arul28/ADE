@@ -13,7 +13,6 @@ import {
   ManageLaneDialog,
   type LaneDeleteSelection,
 } from "../lanes/ManageLaneDialog";
-import { AdoptAttachedLaneConfirmDialog } from "../lanes/AdoptAttachedLaneConfirmDialog";
 
 export type WorkManageLaneDialogHostProps = {
   laneId: string | null;
@@ -31,7 +30,6 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const lanes = useAppStore((state) => state.lanes);
   const laneSnapshots = useAppStore((state) => state.laneSnapshots);
   const refreshLanes = useAppStore((state) => state.refreshLanes);
-  const selectLane = useAppStore((state) => state.selectLane);
   const setDeleteProgressByLaneId = useAppStore((state) => state.setLaneDeleteProgressByLaneId);
   const [pinnedLanes, setPinnedLanes] = useState<LaneSummary[]>(() => pinnedLane ? [pinnedLane] : []);
   const [pinnedLanesLoaded, setPinnedLanesLoaded] = useState(false);
@@ -47,8 +45,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   const [laneActionBusy, setLaneActionBusy] = useState(false);
   const [laneActionStatus, setLaneActionStatus] = useState<string | null>(null);
   const [laneActionError, setLaneActionError] = useState<string | null>(null);
-  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | "adopt" | null>(null);
-  const [adoptConfirmOpen, setAdoptConfirmOpen] = useState(false);
+  const [laneActionKind, setLaneActionKind] = useState<"delete" | "archive" | null>(null);
 
   const refreshManagedLanes = useCallback(async (options?: { includeStatus?: boolean }) => {
     if (!runtimePin) {
@@ -88,17 +85,15 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       setLaneActionStatus(null);
       setLaneActionError(null);
       setLaneActionKind(null);
-      setAdoptConfirmOpen(false);
     }
   }, [laneId]);
 
   const runLaneAction = useCallback(async (
     fn: () => Promise<void>,
     status: string,
-    kind: "archive" | "adopt",
   ) => {
     setLaneActionBusy(true);
-    setLaneActionKind(kind);
+    setLaneActionKind("archive");
     setLaneActionStatus(status);
     setLaneActionError(null);
     try {
@@ -114,22 +109,6 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
     }
   }, [onClose, refreshManagedLanes]);
 
-  const handleAdopt = useCallback(() => {
-    if (!lane || lane.laneType !== "attached") return;
-    setLaneActionError(null);
-    setAdoptConfirmOpen(true);
-  }, [lane]);
-
-  const confirmAdopt = useCallback(() => {
-    if (!lane || lane.laneType !== "attached") return;
-    void runLaneAction(async () => {
-      const adopted = runtimePin
-        ? await window.ade.lanes.adoptAttached({ laneId: lane.id }, runtimePin)
-        : await window.ade.lanes.adoptAttached({ laneId: lane.id });
-      if (!runtimePin) selectLane(adopted.id);
-    }, "Moving lane…", "adopt");
-  }, [lane, runLaneAction, runtimePin, selectLane]);
-
   const handleArchive = useCallback(() => {
     if (!lane || lane.laneType === "primary") return;
     void runLaneAction(async () => {
@@ -138,7 +117,7 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
       } else {
         await window.ade.lanes.archive({ laneId: lane.id });
       }
-    }, "Archiving lane…", "archive");
+    }, "Archiving lane…");
   }, [lane, runLaneAction, runtimePin]);
 
   const handleDelete = useCallback(() => {
@@ -191,39 +170,25 @@ export const WorkManageLaneDialogHost = memo(function WorkManageLaneDialogHost({
   if (!laneId || !lane) return null;
 
   return (
-    <>
-      <ManageLaneDialog
-        open
-        onOpenChange={(open) => { if (!open && !adoptConfirmOpen) onClose(); }}
-        managedLane={lane}
-        allLanes={allLanes}
-        runtimePin={runtimePin}
-        deleteSelection={deleteSelection}
-        setDeleteSelection={setDeleteSelection}
-        deleteForce={deleteForce}
-        setDeleteForce={setDeleteForce}
-        chatSessionCount={chatSessionCount}
-        laneActionBusy={laneActionBusy}
-        laneActionStatus={laneActionStatus}
-        laneActionError={laneActionError}
-        laneActionKind={laneActionKind}
-        onAdoptAttached={handleAdopt}
-        onArchive={handleArchive}
-        onDelete={handleDelete}
-        onAppearanceChanged={() => refreshManagedLanes({ includeStatus: false })}
-        onStackReorganized={() => refreshManagedLanes()}
-      />
-      <AdoptAttachedLaneConfirmDialog
-        open={adoptConfirmOpen}
-        lane={lane}
-        busy={laneActionBusy}
-        error={laneActionError}
-        onCancel={() => {
-          setAdoptConfirmOpen(false);
-          setLaneActionError(null);
-        }}
-        onConfirm={confirmAdopt}
-      />
-    </>
+    <ManageLaneDialog
+      open
+      onOpenChange={(open) => { if (!open) onClose(); }}
+      managedLane={lane}
+      allLanes={allLanes}
+      runtimePin={runtimePin}
+      deleteSelection={deleteSelection}
+      setDeleteSelection={setDeleteSelection}
+      deleteForce={deleteForce}
+      setDeleteForce={setDeleteForce}
+      chatSessionCount={chatSessionCount}
+      laneActionBusy={laneActionBusy}
+      laneActionStatus={laneActionStatus}
+      laneActionError={laneActionError}
+      laneActionKind={laneActionKind}
+      onArchive={handleArchive}
+      onDelete={handleDelete}
+      onAppearanceChanged={() => refreshManagedLanes({ includeStatus: false })}
+      onStackReorganized={() => refreshManagedLanes()}
+    />
   );
 });

@@ -414,8 +414,6 @@ struct LaneListRow: View, Equatable {
   private var laneTypeBadge: some View {
     if snapshot.lane.laneType == "primary" {
       LaneTypeBadge(text: "Primary", tint: ADEColor.accent)
-    } else if snapshot.lane.laneType == "attached" {
-      LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
     } else if snapshot.lane.archivedAt != nil {
       LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
     } else {
@@ -635,9 +633,7 @@ struct LaneStackCard: View, Equatable {
 
   @ViewBuilder
   private var laneTypeBadge: some View {
-    if snapshot.lane.laneType == "attached" {
-      LaneTypeBadge(text: "Attached", tint: ADEColor.textMuted)
-    } else if snapshot.lane.archivedAt != nil {
+    if snapshot.lane.archivedAt != nil {
       LaneTypeBadge(text: "Archived", tint: ADEColor.textMuted)
     } else {
       EmptyView()

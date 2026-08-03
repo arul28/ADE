@@ -41,7 +41,7 @@ struct LinearConnectionScreen: View {
   }
 
   private var supportsDisconnect: Bool {
-    syncService.supportsRemoteAction("cto.clearLinearToken")
+    syncService.supportsViewerRemoteAction("cto.clearLinearToken")
   }
 
   var body: some View {
@@ -275,7 +275,7 @@ struct LinearConnectActions: View {
   }
 
   private var supportsApiKey: Bool {
-    syncService.supportsRemoteAction("cto.setLinearToken")
+    syncService.supportsViewerRemoteAction("cto.setLinearToken")
   }
 
   var body: some View {

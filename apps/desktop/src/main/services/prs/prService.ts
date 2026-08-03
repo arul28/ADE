@@ -2138,6 +2138,10 @@ export function createPrService({
     githubSnapshotCacheEpoch += 1;
     githubPrStateCountsByRepo.clear();
     githubPrStateCountsInFlight.clear();
+    // The per-PR read memos are part of the same snapshot: leaving them behind
+    // lets an invalidated list be rebuilt from pulls read before the mutation.
+    rawPullMemo.clear();
+    activityInputMemo.clear();
   };
 
   const pruneExpiredHotRefreshes = (nowMs = Date.now()): void => {
@@ -3524,12 +3528,36 @@ export function createPrService({
     };
   };
 
+  /**
+   * Head branches of same-repo PRs this project already has projection rows for.
+   * Those rows are merged into the snapshot on their own, so a targeted branch
+   * lookup for them would fetch something the caller is about to get anyway.
+   */
+  const sameRepoProjectionHeadBranches = (
+    repo: GitHubRepoRef,
+    options: { includeExternalClosed?: boolean; historyPageLimit?: number },
+  ): Set<string> => {
+    const branches = new Set<string>();
+    for (const row of listGithubPrProjectionRows(repo, options)) {
+      const headOwner = (row.head_repo_owner ?? "").toLowerCase();
+      const headName = (row.head_repo_name ?? "").toLowerCase();
+      if (headOwner && headOwner !== repo.owner.toLowerCase()) continue;
+      if (headName && headName !== repo.name.toLowerCase()) continue;
+      const branch = normalizeBranchName(row.head_branch ?? "");
+      if (branch) branches.add(branch);
+    }
+    return branches;
+  };
+
   const fetchMissingSameRepoLanePulls = async (
     rawPulls: any[],
     repo: GitHubRepoRef,
     lanes: LaneSummary[],
     pullRequestRows: PullRequestRow[],
-    options: { skipBranchesWithLocalRows?: boolean } = {},
+    options: {
+      skipBranchesWithLocalRows?: boolean;
+      branchesCoveredByProjections?: Set<string> | null;
+    } = {},
   ): Promise<any[]> => {
     const branchHasSameRepoPr = new Set<string>();
     const seenRepoPrNumbers = new Set<number>();
@@ -3551,12 +3579,17 @@ export function createPrService({
             .map((row) => normalizeBranchName(row.head_branch))
             .filter(Boolean),
         );
+    const branchCoveredByProjection = options.branchesCoveredByProjections ?? new Set<string>();
     const candidateBranches: string[] = [];
     const seenBranches = new Set<string>();
     for (const lane of lanes) {
       if (lane.archivedAt || lane.laneType === "primary") continue;
       const branch = normalizeBranchName(branchNameFromRef(lane.branchRef));
-      if (!branch || seenBranches.has(branch) || branchHasSameRepoPr.has(branch) || branchHasLocalRow.has(branch)) continue;
+      if (!branch
+        || seenBranches.has(branch)
+        || branchHasSameRepoPr.has(branch)
+        || branchHasLocalRow.has(branch)
+        || branchCoveredByProjection.has(branch)) continue;
       seenBranches.add(branch);
       candidateBranches.push(branch);
     }
@@ -3792,16 +3825,147 @@ export function createPrService({
     throw new Error(`Push failed for "${headBranch}".${detail ? ` ${detail}` : ""}`);
   };
 
+  /**
+   * Opening one PR fans out into detail, status, checks, reviews and activity,
+   * and each of those independently re-fetched `GET /pulls/{n}` — five or more
+   * identical requests per open, serialized end to end when the client is
+   * remote. Memoize the raw payload for a few seconds so one open costs one
+   * fetch. Deliberately short-lived, and every mutation path ends in
+   * `refreshOne`, which bypasses the memo and republishes what it read, so a
+   * post-merge / post-edit read never sees the pre-mutation pull.
+   */
+  const RAW_PULL_MEMO_TTL_MS = 5_000;
+  const RAW_PULL_MEMO_MAX_ENTRIES = 64;
+  const rawPullMemo = new Map<string, { fetchedAt: number; pull: Promise<any> }>();
+
+  const rawPullMemoKey = (repo: GitHubRepoRef, prNumber: number): string =>
+    `${repo.owner.toLowerCase()}/${repo.name.toLowerCase()}#${prNumber}`;
+
+  const pruneRawPullMemo = (): void => {
+    if (rawPullMemo.size <= RAW_PULL_MEMO_MAX_ENTRIES) return;
+    const now = Date.now();
+    for (const [key, entry] of rawPullMemo) {
+      if (now - entry.fetchedAt >= RAW_PULL_MEMO_TTL_MS) rawPullMemo.delete(key);
+    }
+    // Map iteration is insertion-ordered, so this drops the oldest first.
+    for (const key of rawPullMemo.keys()) {
+      if (rawPullMemo.size <= RAW_PULL_MEMO_MAX_ENTRIES) break;
+      rawPullMemo.delete(key);
+    }
+  };
+
+  const rememberRawPull = (repo: GitHubRepoRef, prNumber: number, pull: any): void => {
+    rawPullMemo.set(rawPullMemoKey(repo, prNumber), {
+      fetchedAt: Date.now(),
+      pull: Promise.resolve(pull),
+    });
+    pruneRawPullMemo();
+  };
+
+  const fetchRawPullMemoized = (repo: GitHubRepoRef, prNumber: number): Promise<any> => {
+    const key = rawPullMemoKey(repo, prNumber);
+    const cached = rawPullMemo.get(key);
+    if (cached && Date.now() - cached.fetchedAt < RAW_PULL_MEMO_TTL_MS) return cached.pull;
+    const pull = githubService
+      .apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+      })
+      .then(({ data }) => data);
+    // A failed read must never be replayed to the next caller.
+    void pull.catch(() => {
+      if (rawPullMemo.get(key)?.pull === pull) rawPullMemo.delete(key);
+    });
+    rawPullMemo.set(key, { fetchedAt: Date.now(), pull });
+    pruneRawPullMemo();
+    return pull;
+  };
+
+  /**
+   * `getActivity` rebuilds its feed from comments, reviews and checks that the
+   * same detail open already requested through their own RPCs — three duplicate
+   * fetch groups per open. Those readers publish what they fetched here and only
+   * the activity builders read it back, so the primary lists stay live and at
+   * worst the derived feed lags by the TTL. Mutations that add or edit a comment
+   * or review drop the entry outright.
+   */
+  const ACTIVITY_INPUT_MEMO_TTL_MS = 5_000;
+  const ACTIVITY_INPUT_MEMO_MAX_ENTRIES = 96;
+  type ActivityInputKind = "comments" | "reviews" | "checks";
+  const activityInputMemo = new Map<string, { fetchedAt: number; value: unknown }>();
+
+  const activityInputMemoKey = (kind: ActivityInputKind, repo: GitHubRepoRef, prNumber: number): string =>
+    `${kind}:${rawPullMemoKey(repo, prNumber)}`;
+
+  const rememberActivityInput = <T>(
+    kind: ActivityInputKind,
+    repo: GitHubRepoRef,
+    prNumber: number,
+    value: T,
+  ): T => {
+    activityInputMemo.set(activityInputMemoKey(kind, repo, prNumber), { fetchedAt: Date.now(), value });
+    if (activityInputMemo.size > ACTIVITY_INPUT_MEMO_MAX_ENTRIES) {
+      const now = Date.now();
+      for (const [key, entry] of activityInputMemo) {
+        if (now - entry.fetchedAt >= ACTIVITY_INPUT_MEMO_TTL_MS) activityInputMemo.delete(key);
+      }
+      for (const key of activityInputMemo.keys()) {
+        if (activityInputMemo.size <= ACTIVITY_INPUT_MEMO_MAX_ENTRIES) break;
+        activityInputMemo.delete(key);
+      }
+    }
+    return value;
+  };
+
+  const recallActivityInput = <T>(
+    kind: ActivityInputKind,
+    repo: GitHubRepoRef,
+    prNumber: number,
+  ): T | null => {
+    const entry = activityInputMemo.get(activityInputMemoKey(kind, repo, prNumber));
+    if (!entry || Date.now() - entry.fetchedAt >= ACTIVITY_INPUT_MEMO_TTL_MS) return null;
+    return entry.value as T;
+  };
+
+  const forgetActivityInputs = (repo: GitHubRepoRef, prNumber: number): void => {
+    for (const kind of ["comments", "reviews", "checks"] as const) {
+      activityInputMemo.delete(activityInputMemoKey(kind, repo, prNumber));
+    }
+  };
+
+  const forgetActivityInputsForPr = (prId: string): void => {
+    const row = getRow(prId);
+    if (!row) return;
+    forgetActivityInputs(
+      { owner: row.repo_owner, name: row.repo_name },
+      Number(row.github_pr_number),
+    );
+  };
+
   const fetchPr = async (
     repo: GitHubRepoRef,
     prNumber: number,
-    options: { waitForKnownMergeability?: boolean } = {},
+    options: { waitForKnownMergeability?: boolean; fresh?: boolean } = {},
   ): Promise<any> => {
+    if (!options.waitForKnownMergeability) {
+      if (!options.fresh) return await fetchRawPullMemoized(repo, prNumber);
+      // Callers that gate a destructive or state-changing step read through the
+      // memo and republish what they saw, so a 5s-old pull can never decide it.
+      const { data } = await githubService.apiRequest<any>({
+        method: "GET",
+        path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`,
+      });
+      rememberRawPull(repo, prNumber, data);
+      return data;
+    }
+    // The mergeability poll is the one caller that must observe change, so it
+    // always reads through — and publishes what it learns for everyone else.
     const { data } = await githubService.apiRequest<any>({
       method: "GET",
       path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
     });
-    if (!options.waitForKnownMergeability || isTerminalGithubPull(data) || !isMergeabilityPending(data)) {
+    rememberRawPull(repo, prNumber, data);
+    if (isTerminalGithubPull(data) || !isMergeabilityPending(data)) {
       return data;
     }
     let latest = data;
@@ -3812,6 +3976,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/pulls/${prNumber}`
       });
       latest = next.data;
+      rememberRawPull(repo, prNumber, latest);
       if (!isMergeabilityPending(latest)) break;
     }
     if (isMergeabilityPending(latest)) {
@@ -4831,6 +4996,9 @@ export function createPrService({
     if (!row) throw new Error(`PR not found: ${prId}`);
     const repo = { owner: row.repo_owner, name: row.repo_name };
 
+    // Every mutation path lands here. Drop the short-lived read memos so nothing
+    // downstream can answer from data captured before the mutation.
+    forgetActivityInputs(repo, Number(row.github_pr_number));
     const pr = await fetchPr(repo, Number(row.github_pr_number), { waitForKnownMergeability: true });
     const headSha = asString(pr?.head?.sha);
     const baseSha = asString(pr?.base?.sha);
@@ -5293,9 +5461,10 @@ export function createPrService({
 
   const getChecksByCoords = async (coords: PrGithubCoords): Promise<PrCheck[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
-    const pr = await fetchPr(repo, Number(coords.githubPrNumber));
+    const prNumber = Number(coords.githubPrNumber);
+    const pr = await fetchPr(repo, prNumber);
     const headSha = asString(pr?.head?.sha);
-    if (!headSha) return [];
+    if (!headSha) return rememberActivityInput("checks", repo, prNumber, [] as PrCheck[]);
     const [combinedStatus, checkRuns] = await Promise.all([
       bestEffort("getChecks.fetchCombinedStatus", fetchCombinedStatus(repo, headSha), { state: "", statuses: [] }),
       bestEffort("getChecks.fetchCheckRuns", fetchCheckRuns(repo, headSha), [] as any[]),
@@ -5343,7 +5512,7 @@ export function createPrService({
       });
     }
 
-    return out;
+    return rememberActivityInput("checks", repo, prNumber, out);
   };
 
   /** Resolve a row into the GitHub coordinates the byCoords helpers consume. */
@@ -5361,7 +5530,8 @@ export function createPrService({
 
   const getReviewsByCoords = async (coords: PrGithubCoords): Promise<PrReview[]> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
-    return await fetchReviews(repo, Number(coords.githubPrNumber));
+    const prNumber = Number(coords.githubPrNumber);
+    return rememberActivityInput("reviews", repo, prNumber, await fetchReviews(repo, prNumber));
   };
 
   const getReviews = async (prId: string): Promise<PrReview[]> => {
@@ -5380,12 +5550,13 @@ export function createPrService({
         : [fetchIssueComments(repo, prNumber).catch(() => []), fetchReviewComments(repo, prNumber).catch(() => [])]
     );
 
-    return [...issueComments, ...reviewComments].sort((a, b) => {
+    const merged = [...issueComments, ...reviewComments].sort((a, b) => {
       const aTs = a.createdAt ? Date.parse(a.createdAt) : Number.NaN;
       const bTs = b.createdAt ? Date.parse(b.createdAt) : Number.NaN;
       if (!Number.isNaN(aTs) && !Number.isNaN(bTs) && aTs !== bTs) return bTs - aTs;
       return a.id.localeCompare(b.id);
     });
+    return rememberActivityInput("comments", repo, prNumber, merged);
   };
 
   const getComments = async (prId: string): Promise<PrComment[]> => {
@@ -5417,10 +5588,7 @@ export function createPrService({
     prId: string,
   ): Promise<{ detail: PrDetail; rawPull: any }> => {
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
-    const { data } = await githubService.apiRequest<any>({
-      method: "GET",
-      path: `/repos/${repo.owner}/${repo.name}/pulls/${Number(coords.githubPrNumber)}`
-    });
+    const data = await fetchRawPullMemoized(repo, Number(coords.githubPrNumber));
     return { detail: prDetailFromGithubPull(data, prId), rawPull: data };
   };
 
@@ -6108,10 +6276,15 @@ export function createPrService({
     const repo: GitHubRepoRef = { owner: coords.repoOwner, name: coords.repoName };
     const prNumber = Number(coords.githubPrNumber);
 
+    // The detail open requests comments/reviews/checks in their own right a beat
+    // before asking for activity; reuse those rather than fetching them twice.
     const [comments, reviews, checks, timelineEvents] = await Promise.all([
-      getCommentsByCoords(coords).catch(() => [] as PrComment[]),
-      getReviewsByCoords(coords).catch(() => [] as PrReview[]),
-      getChecksByCoords(coords).catch(() => [] as PrCheck[]),
+      recallActivityInput<PrComment[]>("comments", repo, prNumber)
+        ?? getCommentsByCoords(coords).catch(() => [] as PrComment[]),
+      recallActivityInput<PrReview[]>("reviews", repo, prNumber)
+        ?? getReviewsByCoords(coords).catch(() => [] as PrReview[]),
+      recallActivityInput<PrCheck[]>("checks", repo, prNumber)
+        ?? getChecksByCoords(coords).catch(() => [] as PrCheck[]),
       fetchAllPages<any>({
         path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`
       }).catch(() => [] as any[])
@@ -7264,7 +7437,7 @@ export function createPrService({
         });
         // 202 Accepted: GitHub queues the update asynchronously. Re-fetch to
         // surface the new head once it lands; fall back to the prior head sha.
-        const refreshed = await fetchPr(repo, prNumber).catch(() => null);
+        const refreshed = await fetchPr(repo, prNumber, { fresh: true }).catch(() => null);
         const headSha = asString(refreshed?.head?.sha).trim() || null;
         invalidateGithubSnapshotCache();
         await refreshOne(args.prId).catch(() => null);
@@ -7295,7 +7468,7 @@ export function createPrService({
     // the PR's CURRENT base (handles a GitHub retarget) rather than the cached row.
     let livePr: Awaited<ReturnType<typeof fetchPr>>;
     try {
-      livePr = await fetchPr(repo, prNumber);
+      livePr = await fetchPr(repo, prNumber, { fresh: true });
     } catch (error) {
       return baseResult(false, {
         error: `Couldn't verify the PR before updating the branch: ${getErrorMessage(error)}`,
@@ -8639,6 +8812,8 @@ export function createPrService({
   };
 
   const GITHUB_SNAPSHOT_TTL_MS = 120_000;
+  /** Freshness window for a snapshot that carries closed/merged history. */
+  const GITHUB_CLOSED_SNAPSHOT_TTL_MS = 600_000;
   const GITHUB_OPEN_SNAPSHOT_MAX_PAGES = 10;
   const GITHUB_HISTORY_INITIAL_PAGE_LIMIT = 2;
   const GITHUB_HISTORY_MAX_PAGE_LIMIT = 10;
@@ -9091,7 +9266,18 @@ export function createPrService({
       repo,
       metadata.lanes,
       metadata.pullRequestRows,
-      { skipBranchesWithLocalRows: options.includeExternalClosed !== true },
+      {
+        skipBranchesWithLocalRows: options.includeExternalClosed !== true,
+        // The full-history snapshot keeps looking up lane branches with local
+        // rows, because an old merged PR can sit past the fetched page window
+        // and only that targeted request recovers it. A branch already carried
+        // by a same-repo projection row is not in that situation — the
+        // projection merge below puts it in the snapshot regardless — so once
+        // projections are warm those lookups are pure round-trip tax.
+        branchesCoveredByProjections: options.includeExternalClosed === true
+          ? sameRepoProjectionHeadBranches(repo, options)
+          : null,
+      },
     );
     const observedStackNumbers = new Set<number>();
     for (const rawPull of repoPullRequestsRaw) {
@@ -9225,7 +9411,18 @@ export function createPrService({
     if (!force && cachedSnapshotSatisfiesRequest) {
       const cachedSnapshot = cachedGithubSnapshot!;
       const ageMs = Date.now() - cachedGithubSnapshotAt;
-      if (ageMs < GITHUB_SNAPSHOT_TTL_MS) {
+      // A closed-inclusive snapshot can only be revalidated by re-fetching the
+      // whole merged history (see `revalidationOptions` below), so a history view
+      // was paying for pages of merged PRs every two minutes just by being
+      // watched. Merged history barely moves — give that variant its own,
+      // longer freshness window. This keys off what the REQUEST asked for, not
+      // what the cached snapshot happens to carry: an Open-list request served
+      // from a closed-inclusive snapshot must still go stale on the short TTL,
+      // or opening History once freezes the Open list for ten minutes.
+      const effectiveTtlMs = needsClosedHistory
+        ? GITHUB_CLOSED_SNAPSHOT_TTL_MS
+        : GITHUB_SNAPSHOT_TTL_MS;
+      if (ageMs < effectiveTtlMs) {
         return cachedSnapshot;
       }
       const revalidationOptions =
@@ -10947,10 +11144,15 @@ export function createPrService({
       const repo = repoFromRow(row);
       const prNumber = Number(row.github_pr_number);
 
+      // Same reuse as the coords path: the comments/reviews/checks RPCs this
+      // detail open already issued publish their results for the feed to read.
       const [comments, reviews, checks, timelineEvents] = await Promise.all([
-        getComments(prId).catch(() => [] as PrComment[]),
-        getReviews(prId).catch(() => [] as PrReview[]),
-        getChecks(prId).catch(() => [] as PrCheck[]),
+        recallActivityInput<PrComment[]>("comments", repo, prNumber)
+          ?? getComments(prId).catch(() => [] as PrComment[]),
+        recallActivityInput<PrReview[]>("reviews", repo, prNumber)
+          ?? getReviews(prId).catch(() => [] as PrReview[]),
+        recallActivityInput<PrCheck[]>("checks", repo, prNumber)
+          ?? getChecks(prId).catch(() => [] as PrCheck[]),
         fetchAllPages<any>({
           path: `/repos/${repo.owner}/${repo.name}/issues/${prNumber}/timeline`
         }).catch(() => [] as any[])
@@ -11006,6 +11208,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/issues/${Number(row.github_pr_number)}/comments`,
         body: { body: args.body }
       });
+      forgetActivityInputs(repo, Number(row.github_pr_number));
       const comment: PrComment = {
         id: String(data?.id ?? ""),
         author: asString(data?.user?.login) || "",
@@ -11061,6 +11264,7 @@ export function createPrService({
         path: `/repos/${repo.owner}/${repo.name}/issues/comments/${commentId}`,
         body: { body: args.body }
       });
+      forgetActivityInputs(repo, Number(row.github_pr_number));
       const comment: PrComment = {
         id: String(data?.id ?? args.commentId),
         author: asString(data?.user?.login) || "",
@@ -11121,6 +11325,7 @@ export function createPrService({
       if (!comment) {
         throw new Error("GitHub did not return the review-thread reply.");
       }
+      forgetActivityInputsForPr(args.prId);
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",
@@ -11185,6 +11390,7 @@ export function createPrService({
       if (!comment) {
         throw new Error("GitHub did not return the review-thread reply.");
       }
+      forgetActivityInputsForPr(args.prId);
       return {
         id: asString(comment.id) || String(randomUUID()),
         author: asString(comment.author?.login) || "unknown",

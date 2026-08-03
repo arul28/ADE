@@ -1,10 +1,26 @@
 import { useEffect } from "react";
 import type { NavigateFunction } from "react-router-dom";
-import type {
-  LaneLifecycleEvent,
-  RebaseRunEventPayload,
+import {
+  LANES_INVALIDATED_LANE_ID,
+  type LaneLifecycleEvent,
+  type RebaseRunEventPayload,
 } from "../../../../shared/types";
 import { showToast } from "./toastStore";
+
+/**
+ * A toast names a lane and claims something happened to it, so an event that
+ * cannot identify one lane has nothing truthful to say. Backstop for transports
+ * that synthesize coarse refresh nudges: `lanes-invalidated` is already ignored
+ * by type, and anything else arriving without real lane identity is a bug we
+ * would otherwise render as "Lane archived".
+ */
+function namesARealLane(event: LaneLifecycleEvent): boolean {
+  return (
+    event.laneId.trim().length > 0
+    && event.laneId !== LANES_INVALIDATED_LANE_ID
+    && event.laneName.trim().length > 0
+  );
+}
 
 export function useLaneEventToasts(navigate: NavigateFunction): void {
   // Lane lifecycle events arrive through both in-process Electron IPC and the
@@ -12,6 +28,8 @@ export function useLaneEventToasts(navigate: NavigateFunction): void {
   useEffect(() => {
     const dispose = window.ade.lanes.onLifecycleEvent(
       (event: LaneLifecycleEvent) => {
+        if (event.type === "lanes-invalidated") return;
+        if (!namesARealLane(event)) return;
         const dot = event.color ?? undefined;
         if (event.type === "lane-created") {
           showToast({

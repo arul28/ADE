@@ -2772,6 +2772,21 @@ const DEFAULT_CURSOR_MODEL = DEFAULT_CURSOR_DESCRIPTOR?.providerModelId ?? "auto
 const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude-sonnet-4-5-20250929";
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
+
+/**
+ * Failures that condemn every model behind a provider — a missing or unusable
+ * CLI, an account that cannot run the model, auth, or quota. Retrying a sibling
+ * model on the same provider just burns another spawn, so naming skips ahead to
+ * a different provider instead.
+ */
+const PROVIDER_LEVEL_NAMING_FAILURE_PATTERN =
+  /enoent|eacces|spawn\b|not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|api[_ -]?key|credential|not supported with|unsupported model|model[_ -]?not[_ -]?found|does not exist|insufficient|quota|rate limit/i;
+
+function isProviderLevelNamingFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error ?? "");
+  return PROVIDER_LEVEL_NAMING_FAILURE_PATTERN.test(message);
+}
+
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES = 200 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
@@ -11123,6 +11138,7 @@ export function createAgentChatService(args: {
   ): Promise<AutoLaneIdentitySuggestion> => {
     const prompt = String(args.prompt ?? "").trim();
     const requestedModelId = String(args.modelId ?? "").trim();
+    const chatModelId = String(args.chatModelId ?? "").trim();
     const sourceLaneId = String(args.laneId ?? "").trim();
     const fallback = deriveDeterministicAutoLaneIdentity(prompt);
     const expectedLaneName = String(args.fallbackName ?? fallback.laneTitle).trim() || fallback.laneTitle;
@@ -11164,16 +11180,37 @@ export function createAgentChatService(args: {
           const auth = await detectAuth();
           const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
           const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
-          const primaryModelId = [
+          const pickAvailable = (...candidates: Array<string | null | undefined>): string =>
+            candidates.find((candidate): candidate is string =>
+              typeof candidate === "string" && availableIds.has(candidate.trim()))?.trim() ?? "";
+
+          // Chain: configured naming model -> the model this chat was launched
+          // with -> a different provider -> deterministic. The launched model is
+          // always present (not only when no naming model is configured) and a
+          // cross-provider candidate is always reachable, so an outage confined
+          // to one provider (auth, missing binary, account-rejected model) can no
+          // longer end naming outright.
+          const launchedModelId = pickAvailable(chatModelId, requestedModelId);
+          const primaryModelId = pickAvailable(
             config.titleModelId,
-            requestedModelId,
+            launchedModelId,
             DEFAULT_AUTO_TITLE_MODEL_ID,
             availableModels[0]?.id,
-          ].find((candidate) => typeof candidate === "string" && availableIds.has(candidate.trim()))?.trim() ?? "";
+          );
           const primaryDescriptor = getModelById(primaryModelId);
           const primaryProvider = primaryDescriptor
             ? resolveProviderGroupForModel(primaryDescriptor)
             : null;
+          const launchedDescriptor = launchedModelId ? getModelById(launchedModelId) : null;
+          const launchedProvider = launchedDescriptor
+            ? resolveProviderGroupForModel(launchedDescriptor)
+            : null;
+          const leadingProviders = new Set(
+            [primaryProvider, launchedProvider].filter((group): group is ModelProviderGroup => group !== null),
+          );
+          const crossProviderFallback = availableModels.find(
+            (descriptor) => !leadingProviders.has(resolveProviderGroupForModel(descriptor)),
+          )?.id;
           const sameProviderFallback = availableModels.find(
             (descriptor) => descriptor.id !== primaryModelId
               && primaryProvider !== null
@@ -11181,18 +11218,28 @@ export function createAgentChatService(args: {
           )?.id;
           const candidateModelIds = [
             primaryModelId,
+            launchedModelId,
+            crossProviderFallback,
             sameProviderFallback,
-            requestedModelId !== primaryModelId ? requestedModelId : "",
             availableModels.find((descriptor) => descriptor.id !== primaryModelId)?.id,
           ].reduce<string[]>((acc, candidate) => {
             const modelId = typeof candidate === "string" ? candidate.trim() : "";
             if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
             return [...acc, modelId];
-          }, []).slice(0, 2);
+          }, []);
 
+          // Naming runs in the background, but it still must not walk the whole
+          // registry when everything is down.
+          const maxNamingAttempts = 3;
+          const exhaustedProviders = new Set<ModelProviderGroup>();
           for (const candidateModelId of candidateModelIds) {
+            if (attemptCount >= maxNamingAttempts) break;
             const descriptor = getModelById(candidateModelId);
             if (!descriptor) continue;
+            const candidateProvider = resolveProviderGroupForModel(descriptor);
+            // A provider-level failure condemns every model behind it, so skip to
+            // the next candidate from a provider that has not failed that way.
+            if (exhaustedProviders.has(candidateProvider)) continue;
             attemptCount += 1;
             selectedModelId = descriptor.id;
             try {
@@ -11216,11 +11263,18 @@ export function createAgentChatService(args: {
               source = "ai";
               break;
             } catch (error) {
+              const providerLevel = isProviderLevelNamingFailure(error);
+              if (providerLevel) {
+                exhaustedProviders.add(candidateProvider);
+              }
               logger.warn("agent_chat.suggest_lane_name_failed", {
                 laneId: sourceLaneId,
                 temporaryBranch,
                 modelId: candidateModelId,
                 requestedModelId,
+                chatModelId: chatModelId || null,
+                provider: candidateProvider,
+                providerLevelFailure: providerLevel,
                 attemptCount,
                 error: error instanceof Error ? error.message : String(error),
               });
@@ -31361,6 +31415,7 @@ export function createAgentChatService(args: {
   const persistedImportedChatResult = async (
     managed: ManagedChatSession,
     provider: AgentChatImportProvider,
+    providerTargetId: string,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const summaryRow = sessionService.get(managed.session.id);
     if (!summaryRow) {
@@ -31372,6 +31427,7 @@ export function createAgentChatService(args: {
     return {
       chatSessionId: managed.session.id,
       chatSummary: await summarizeSessionRow(summaryRow),
+      providerTargetId,
     };
   };
 
@@ -31472,7 +31528,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return await persistedImportedChatResult(managed, "claude");
+      return await persistedImportedChatResult(managed, "claude", targetClaudeSessionId);
     } catch (error) {
       if (createdSessionId) {
         await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
@@ -31621,7 +31677,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return await persistedImportedChatResult(managed, "codex");
+      return await persistedImportedChatResult(managed, "codex", targetThreadId);
     } catch (error) {
       if (createdSessionId && forkedProviderThreadId) {
         const managed = managedSessions.get(createdSessionId);

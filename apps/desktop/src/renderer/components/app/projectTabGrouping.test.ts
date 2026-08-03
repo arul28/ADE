@@ -57,10 +57,11 @@ function remoteRecent(
 }
 
 describe("groupProjectTabs", () => {
-  it("merges a local and a remote checkout of the same repo into one tab", () => {
+  it("offers an unopened remote checkout of an open repo as a second machine", () => {
     const groups = groupProjectTabs({
       localTabs: [local("/Users/me/ADE", "git@github.com:arul28/ADE.git")],
-      remoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
+      remoteTabs: [],
+      knownRemoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
       remoteOriginByKey: { "remote:t1:p1": "https://github.com/arul28/ADE" },
     });
 
@@ -75,10 +76,12 @@ describe("groupProjectTabs", () => {
   it("matches SSH and HTTPS forms of the same origin", () => {
     const groups = groupProjectTabs({
       localTabs: [local("/Users/me/ADE", "git@github.com:arul28/ADE.git")],
-      remoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
+      remoteTabs: [],
+      knownRemoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
       remoteOriginByKey: { "remote:t1:p1": "https://github.com/arul28/ADE.git" },
     });
     expect(groups).toHaveLength(1);
+    expect(groups[0].machines).toHaveLength(2);
   });
 
   it("keeps different repos in separate tabs", () => {
@@ -115,13 +118,15 @@ describe("groupProjectTabs", () => {
     expect(groups[1].machines).toHaveLength(1);
   });
 
-  it("still merges the remote checkout when a local worktree is also open", () => {
+  it("attaches an unopened remote checkout to the parent repo, not the worktree", () => {
     const origin = "git@github.com:arul28/ADE.git";
     const groups = groupProjectTabs({
       localTabs: [local("/Users/me/ADE", origin), local("/Users/me/ADE/.ade/worktrees/lane-x", origin)],
-      remoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
+      remoteTabs: [],
+      knownRemoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
       remoteOriginByKey: { "remote:t1:p1": origin },
     });
+    expect(groups).toHaveLength(2);
     const merged = groups.find((g) => g.machines.length > 1);
     expect(merged?.machines.map((m) => m.machineName)).toEqual([
       LOCAL_MACHINE_NAME,
@@ -129,10 +134,37 @@ describe("groupProjectTabs", () => {
     ]);
   });
 
+  it("keeps two open tabs on two machines independent when they share an origin", () => {
+    // The owner's repro: two projects the user opened deliberately, on two
+    // machines, that happen to be checkouts of one repo. Collapsing them left a
+    // single tab whose machine followed whichever tab was active, so the tab
+    // being left looked like it jumped to the other machine.
+    const origin = "git@github.com:arul28/ADE.git";
+    const studio = { ...remote("studio", "project-1", "Mac Studio"), gitOriginUrl: origin };
+    const laptop = { ...remote("laptop", "project-2", "MacBook Pro"), gitOriginUrl: origin };
+
+    const shown = (activeBindingKey: string) => {
+      const groups = groupProjectTabs({
+        localTabs: [],
+        remoteTabs: [studio, laptop],
+        remoteOriginByKey: { [studio.key]: origin, [laptop.key]: origin },
+        activeBindingKey,
+      });
+      expect(groups).toHaveLength(2);
+      return groups.map((group) => activeMachineForGroup(group)?.machineName);
+    };
+
+    expect(shown(studio.key)).toEqual(["Mac Studio", "MacBook Pro"]);
+    expect(shown(laptop.key)).toEqual(["Mac Studio", "MacBook Pro"]);
+  });
+
   it("tracks which machine the active tab is bound to", () => {
+    // Activating a machine from the switcher binds a checkout that is not yet
+    // an open tab of its own, so the group must follow it.
     const groups = groupProjectTabs({
       localTabs: [local("/Users/me/ADE", "git@github.com:arul28/ADE.git")],
-      remoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
+      remoteTabs: [],
+      knownRemoteTabs: [remote("t1", "p1", "MacBook Pro (97)")],
       remoteOriginByKey: { "remote:t1:p1": "git@github.com:arul28/ADE.git" },
       activeBindingKey: "remote:t1:p1",
     });

@@ -408,7 +408,8 @@ ade doctor --online --text                        # also check the latest deskto
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
-ade lanes list --text
+ade lanes list --text                             # every git worktree of the project is a lane: this reconciles against git on each call, adopting worktrees made outside ADE and dropping lanes whose worktree is gone from git and disk. There is no attach/adopt step
+ade lanes import --branch feature/login --text    # lane for an existing branch, checked out in a new managed worktree; refuses when that branch is already checked out (that worktree is already a lane)
 ade lanes create "fix-checkout-flow" --parent main
 ade lanes create "fix-login" --base origin/main   # omit --base to branch from the configured new-lane base (remote-first by default)
 ade lanes child --lane lane-parent --name fix-followup            # child lane carries the parent's unmerged work; a base-less `ade lanes create`/`--auto-create-lane` from a lane with commits not yet on main prints a non-blocking stderr nudge to use this instead
@@ -554,6 +555,8 @@ ade --role cto actions list --domain attention --text # discover account-wide Ac
 ade --role cto actions run attention.getSnapshot --input-json '{"since":0}' --json
 ade actions run git.stageFile --arg laneId=lane-id --arg path=src/index.ts
 ade actions run pty.resumeSession --arg sessionId=session-id
+ade actions run external-sessions.list --input-json '{"scope":"project","limit":20}' --text   # claude/codex/cursor/droid/opencode sessions on this machine; discovery that cannot run — `opencode` is not installed, say — fails the call when that provider is the only one asked for, rather than reporting an empty list; in a multi-provider scan it is skipped and logged
+ade actions run external-sessions.import --input-json '{"provider":"codex","sessionId":"thread-id","laneId":"lane-1","target":"cli","mode":"resume"}' --text
 ade cursor cloud agents list --text
 ade cursor cloud agents create --repo https://github.com/owner/repo --prompt "fix flaky test" --auto-pr
 ade --role cto github app-auth login              # device-flow authorize the machine ADE GitHub App (headless/brain)

@@ -1,6 +1,7 @@
-import React, { Suspense, useCallback, useEffect, useState, useRef, type CSSProperties } from "react";
+import React, { Suspense, useEffect, useState, useRef, type CSSProperties } from "react";
 import { CopySimple, Checks } from "@phosphor-icons/react";
 import { useAppStore, type CodeBlockCopyButtonPosition } from "../../state/appStore";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 
 /* ── LRU cache for highlighted HTML ── */
 
@@ -127,65 +128,8 @@ function DiffCodeBlock({ code }: { code: string }) {
 
 /* ── Copy button ── */
 
-function copyTextToClipboard(text: string): Promise<boolean> {
-  if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-    return navigator.clipboard.writeText(text).then(() => true).catch(() => false);
-  }
-  const ta = document.createElement("textarea");
-  try {
-    ta.value = text;
-    ta.setAttribute("readonly", "");
-    ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    document.body.appendChild(ta);
-    ta.select();
-    const ok = document.execCommand("copy");
-    return Promise.resolve(ok);
-  } catch {
-    return Promise.resolve(false);
-  } finally {
-    if (ta.parentNode) ta.parentNode.removeChild(ta);
-  }
-}
-
 function CodeCopyButton({ code, position }: { code: string; position: CodeBlockCopyButtonPosition }) {
-  const [copied, setCopied] = useState(false);
-  const mountedRef = useRef(true);
-  const resetTimerRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => {
-      mountedRef.current = false;
-      if (resetTimerRef.current !== null) {
-        clearTimeout(resetTimerRef.current);
-      }
-    };
-  }, []);
-
-  const handleCopy = useCallback(() => {
-    void copyTextToClipboard(code)
-      .then((ok) => {
-        if (!mountedRef.current) return;
-        if (!ok) {
-          if (resetTimerRef.current !== null) {
-            clearTimeout(resetTimerRef.current);
-            resetTimerRef.current = null;
-          }
-          setCopied(false);
-          return;
-        }
-        if (resetTimerRef.current !== null) {
-          clearTimeout(resetTimerRef.current);
-        }
-        setCopied(true);
-        resetTimerRef.current = window.setTimeout(() => {
-          resetTimerRef.current = null;
-          if (!mountedRef.current) return;
-          setCopied(false);
-        }, 1_500);
-      });
-  }, [code]);
+  const { copy, copied } = useCopyToClipboard();
 
   // "auto" wraps the button in a sticky row so it tracks the transcript scroll; top/bottom stay absolute.
   if (position === "auto") {
@@ -203,7 +147,7 @@ function CodeCopyButton({ code, position }: { code: string; position: CodeBlockC
             background: "var(--chat-copy-button-bg)",
             color: "var(--chat-copy-button-fg)",
           }}
-          onClick={handleCopy}
+          onClick={() => void copy(code)}
           title={copied ? "Copied" : "Copy code"}
           aria-label={copied ? "Copied" : "Copy code"}
         >
@@ -225,7 +169,7 @@ function CodeCopyButton({ code, position }: { code: string; position: CodeBlockC
         background: "var(--chat-copy-button-bg)",
         color: "var(--chat-copy-button-fg)",
       }}
-      onClick={handleCopy}
+      onClick={() => void copy(code)}
       title={copied ? "Copied" : "Copy code"}
       aria-label={copied ? "Copied" : "Copy code"}
     >

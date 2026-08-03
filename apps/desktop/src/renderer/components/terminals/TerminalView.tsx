@@ -15,7 +15,15 @@ import {
 import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
+import { isWebClientMode } from "../../lib/webClientMode";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
+import {
+  MIN_VALID_COLS,
+  inferTerminalModesFromTranscript,
+  inferTranscriptColumns,
+  normalizeTranscriptToGrid,
+} from "./terminalTranscriptNormalize";
+import { installPtySizeOwnershipTracking, windowOwnsPtySize } from "./ptySizeOwnership";
 import type {
   OpenProjectBinding,
   PtyDataEvent,
@@ -86,8 +94,32 @@ type CachedRuntime = {
   settleTimer2: ReturnType<typeof setTimeout> | null;
   hydrateTimer: ReturnType<typeof setTimeout> | null;
   hydrateRetryTimer: ReturnType<typeof setTimeout> | null;
+  /** Full-snapshot bytes held until the first successful fit; see `replaceRuntimeTerminalData`. */
+  pendingReplaceData: string | null;
+  replaceFitRetryTimer: ReturnType<typeof setTimeout> | null;
+  replaceFitRetryAttempts: number;
   hydrationBackfillTimer: ReturnType<typeof setTimeout> | null;
   hydrationBackfillAttempts: number;
+  /** Compounded CSS zoom last compensated for; see `applyZoomCompensation`. */
+  lastZoomFactor: number;
+  /** Base (UNZOOMED) font size last requested by preferences. */
+  baseFontSize: number;
+  /** Whether the last hydration payload went through grid normalization. */
+  lastHydrationNormalized: boolean;
+  /**
+   * Hydration wrote while the terminal was still at its 80x24 constructor size
+   * (the fit budget expired on a pane that could not be measured). The bytes on
+   * screen are wrapped to the wrong width and overflow into scrollback; the
+   * first real fit re-runs hydration to replace them. See `rehydrateAfterFit`.
+   */
+  hydratedWhileUnfitted: boolean;
+  /**
+   * Column count the current hydration content was RENDERED at. xterm does not
+   * reflow a buffer it already committed, so once the pane settles at a
+   * different width that content is wrong until it is written again.
+   */
+  hydratedAtCols: number | null;
+  rehydrateDimsTimer: ReturnType<typeof setTimeout> | null;
   hasFittedOnce: boolean;
   hydrationStarted: boolean;
   hydrationCompleted: boolean;
@@ -141,13 +173,43 @@ const REPLAY_SCROLLBACK_LINES = 30_000;
 const HYDRATION_BACKFILL_RETRY_MS = 250;
 const HYDRATION_VISIBLE_BLANK_BACKFILL_RETRY_MS = 100;
 const HYDRATION_BACKFILL_MAX_ATTEMPTS = 120;
+/**
+ * Whether webfonts have finished loading, so a cell measurement can be trusted.
+ *
+ * The hosted client fetches its terminal fonts over HTTP with `font-display:
+ * swap` (webclient/main.tsx), and "JetBrains Mono" is a selectable terminal font
+ * (settings/terminalOptions.ts). During the swap window the browser paints a
+ * FALLBACK face, so a cell measured then has the fallback's advance width —
+ * which fits to the wrong column count for the whole session. Desktop loads the
+ * same faces off disk fast enough that the window effectively does not exist,
+ * which is why this is web-only and why a warm cache makes it come and go.
+ *
+ * Resolved (not pending) in any environment without `document.fonts`, notably
+ * jsdom: there is nothing to wait for and nothing to re-measure.
+ */
+let documentFontsSettled = typeof document === "undefined" || !document.fonts?.ready;
+if (typeof document !== "undefined" && document.fonts?.ready) {
+  const settle = () => {
+    documentFontsSettled = true;
+  };
+  document.fonts.ready.then(settle).catch(settle);
+}
+
+// Long enough to sit out a window drag or a tiling animation, short enough that
+// a revealed pane corrects itself before the user reads it as broken.
+const REHYDRATE_DIMS_DEBOUNCE_MS = 250;
+// The shared wait-for-a-trustworthy-grid budget (20 × 60ms), used by both
+// `waitForFitThenHydrate` and `applyPendingReplaceWhenFitted`: long enough for a
+// remount to measure its host, short enough that an unmeasurable pane still gets
+// its recovery snapshot rather than staying blank.
+const REPLACE_FIT_RETRY_MS = 60;
+const REPLACE_FIT_MAX_ATTEMPTS = 20;
 const MAX_PENDING_HYDRATION_BYTES = 2_000_000;
 const MAX_FRAME_WRITE_BYTES = 1_000_000;
 const MAX_PTY_INPUT_BATCH_BYTES = 16_384;
 const PTY_INPUT_BATCH_MS = 16;
 const PASTE_MODE_REFRESH_TIMEOUT_MS = 500;
 const EXITED_RUNTIME_KEEPALIVE_MS = 8_000;
-const MIN_VALID_COLS = 20;
 const MIN_VALID_ROWS = 6;
 const MIN_HOST_WIDTH_PX = 120;
 const MIN_HOST_HEIGHT_PX = 48;
@@ -608,10 +670,88 @@ function flushQueuedPtyResize(runtime: CachedRuntime): void {
   sendPtyResize(runtime, next);
 }
 
+/**
+ * One-line dimension report, for diagnosing "the text is jumbled" reports.
+ *
+ * A terminal only renders correctly while three widths agree: the grid xterm
+ * holds, the size the PTY was last told, and the size whatever bytes we are
+ * writing were produced at. When they disagree the symptom is always the same
+ * garbled output, and the three are otherwise invisible from a screenshot — so
+ * print them together, and make a disagreement loud.
+ */
+function describeTerminalDims(
+  runtime: CachedRuntime,
+  extra: {
+    reason: string;
+    sentResize?: TerminalDims | null;
+    snapshot?: TerminalDims | null;
+    note?: string;
+  },
+): string {
+  const measurement = measureHost(runtime.host);
+  const fmt = (dims: TerminalDims | null | undefined) =>
+    dims ? `${dims.cols}x${dims.rows}` : "-";
+  return [
+    "[ade-term]",
+    `reason=${extra.reason}`,
+    `session=${runtime.sessionId}`,
+    `xterm=${runtime.term.cols}x${runtime.term.rows}`,
+    `snapshot=${fmt(extra.snapshot)}`,
+    `sentResize=${fmt(extra.sentResize)}`,
+    `lastSent=${fmt(runtime.lastPtyResizeDims)}`,
+    // baseY is the scrollback depth, and it decides which surface the wheel
+    // acts on: at 0 the wheel is forwarded to the TUI, above 0 the local
+    // scrollback branch takes it. One number, and the scroll behaviour is no
+    // longer guesswork from a screenshot.
+    `baseY=${(() => { try { return runtime.term.buffer.active.baseY; } catch { return "?"; } })()}`,
+    `fitted=${runtime.hasFittedOnce}`,
+    `fonts=${documentFontsSettled}`,
+    `owns=${windowOwnsPtySize()}`,
+    `host=${Math.round(measurement.width)}x${Math.round(measurement.height)}px`,
+    ...(extra.note ? [extra.note] : []),
+  ].join(" ");
+}
+
+/**
+ * Single sink for the `[ade-term]` diagnostics.
+ *
+ * Severity is the whole point of the split: a mismatch, a declined
+ * normalization or a failed resize is a bug worth a warning, while the
+ * once-per-hydration "this is what happened" line is routine and must not make
+ * a healthy session look broken in the console. `console.debug` keeps the
+ * routine lines available (verbose level) without the yellow triangle.
+ */
+function logTerminalDiag(level: "debug" | "warn", line: string): void {
+  if (level === "warn") console.warn(line);
+  else console.debug(line);
+}
+
+/**
+ * Always-on mismatch reporting. A disagreement is a bug every time, is cheap to
+ * detect, and is the single fact that turns a "looks jumbled" screenshot into a
+ * diagnosis — so it warns unconditionally rather than hiding behind a flag.
+ */
+function reportTerminalDimsMismatch(
+  runtime: CachedRuntime,
+  extra: { reason: string; sentResize?: TerminalDims | null; snapshot?: TerminalDims | null },
+): void {
+  // COLUMNS only. Rows disagreeing is normal and harmless — a snapshot carries
+  // as many rows as it had content for, and a viewport taller than the capture
+  // just leaves blank space. Columns are what decide where every line wraps, so
+  // a column disagreement is the one that garbles text.
+  const cols = runtime.term.cols;
+  const mismatched =
+    (extra.snapshot != null && extra.snapshot.cols !== cols)
+    || (extra.sentResize != null && extra.sentResize.cols !== cols);
+  if (!mismatched) return;
+  logTerminalDiag("warn", describeTerminalDims(runtime, extra));
+}
+
 function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
   if (runtime.disposed) return;
   runtime.ptyResizeInFlight = true;
   runtime.inFlightPtyResizeDims = dims;
+  reportTerminalDimsMismatch(runtime, { reason: "pty-resize-send", sentResize: dims });
   const resize = runtime.runtimePin
     ? window.ade.pty.resize(
         { ptyId: runtime.ptyId, cols: dims.cols, rows: dims.rows },
@@ -622,11 +762,18 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
     .then(
       () => {
         runtime.lastPtyResizeDims = dims;
+        // The round trip is not instant, and the PTY repaints at the size it
+        // was given. If the grid moved while this was in flight, the repaint
+        // now landing was produced for a width xterm no longer has — the
+        // resize/repaint race, and the one ordering bug a screenshot cannot
+        // show.
+        reportTerminalDimsMismatch(runtime, { reason: "pty-resize-acked", sentResize: dims });
       },
       () => {
         if (sameDims(runtime.lastPtyResizeDims, dims)) {
           runtime.lastPtyResizeDims = null;
         }
+        logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "pty-resize-failed", sentResize: dims }));
       },
     )
     .finally(() => {
@@ -636,6 +783,15 @@ function sendPtyResize(runtime: CachedRuntime, dims: TerminalDims): void {
     });
 }
 
+/**
+ * Sends a resize, coalescing against whatever is already in flight.
+ *
+ * `force` means "send even though the dims look unchanged" — nothing more. Size
+ * OWNERSHIP is a policy decision and lives with the caller (`doFit`), because
+ * force must NOT be able to override it: a background mirror that forces its
+ * width onto a focused window is the resize war this arbitration exists to
+ * prevent.
+ */
 function requestPtyResize(runtime: CachedRuntime, dims: TerminalDims, force = false): void {
   if (runtime.disposed) return;
   if (!force && sameDims(runtime.lastPtyResizeDims, dims) && !runtime.ptyResizeInFlight) return;
@@ -648,11 +804,52 @@ function requestPtyResize(runtime: CachedRuntime, dims: TerminalDims, force = fa
   sendPtyResize(runtime, dims);
 }
 
+/**
+ * Whether xterm's current column count can be trusted to write width-sensitive
+ * bytes at.
+ *
+ * A fit is only as trustworthy as the cell it measured, so a settled fit against
+ * a fallback font face is still the wrong width for a snapshot or a transcript
+ * grid. Both conditions, one predicate — and the `fonts.ready` handler re-drives
+ * the waiters the moment the second one flips.
+ */
+function terminalWidthTrustworthy(runtime: CachedRuntime): boolean {
+  return runtime.hasFittedOnce && documentFontsSettled;
+}
+
 function clearTextureAtlas(runtime: CachedRuntime) {
   try {
     runtime.term.clearTextureAtlas();
   } catch {
     // ignore when the active renderer doesn't support the texture atlas API
+  }
+}
+
+/**
+ * Forces xterm to re-measure its cell size against the fonts loaded NOW.
+ *
+ * xterm measures the cell once during `open()` and afterwards only when
+ * `fontFamily` or `fontSize` CHANGES — its options setter fires nothing when the
+ * assigned value equals the current one, and `resize()` re-measures only if the
+ * existing measurement is invalid. So a terminal opened before its webfont
+ * arrived keeps the fallback's cell width forever, and refitting cannot help:
+ * FitAddon divides the element by that stale width, so it just recomputes the
+ * same wrong column count.
+ *
+ * There is no public "re-measure" API, so drive the one trigger there is. The
+ * sentinel is the same font stack with a trailing space: a different STRING (so
+ * the setter fires) that CSS resolves identically (so nothing repaints
+ * differently), and assigning the real value back fires a second measure that
+ * lands on the loaded face.
+ */
+function remeasureTerminalFont(runtime: CachedRuntime): void {
+  try {
+    const family = runtime.term.options.fontFamily;
+    if (!family) return;
+    runtime.term.options.fontFamily = `${family} `;
+    runtime.term.options.fontFamily = family;
+  } catch {
+    // ignore option writes after disposal
   }
 }
 
@@ -668,7 +865,10 @@ function applyRuntimeVisualOptions(
     runtime.term.options.fontFamily = args.preferences.fontFamily || DEFAULT_TERMINAL_FONT_FAMILY;
     // Integer cell metrics — see the ctor note: fractional sizes crowd glyphs and
     // dash box-drawing strokes in the WebGL renderer.
-    runtime.term.options.fontSize = Math.round(args.preferences.fontSize);
+    // Scaled by the zoom the host element cancels, so the terminal still renders
+    // at the size the zoom level asked for. See `applyZoomCompensation`.
+    runtime.baseFontSize = args.preferences.fontSize;
+    runtime.term.options.fontSize = Math.round(args.preferences.fontSize * runtime.lastZoomFactor);
     runtime.term.options.lineHeight = args.preferences.lineHeight;
     // Replay mode owns its own scrollback budget so the flattened transcript
     // stays available; ordinary preference updates must not clobber it.
@@ -917,6 +1117,10 @@ function updatePtyDataSubscriptions(removedRuntime?: CachedRuntime): void {
 }
 
 function clearRuntimeHydrationTimers(runtime: CachedRuntime): void {
+  if (runtime.rehydrateDimsTimer) {
+    clearTimeout(runtime.rehydrateDimsTimer);
+    runtime.rehydrateDimsTimer = null;
+  }
   if (runtime.hydrateTimer) {
     clearTimeout(runtime.hydrateTimer);
     runtime.hydrateTimer = null;
@@ -929,6 +1133,12 @@ function clearRuntimeHydrationTimers(runtime: CachedRuntime): void {
     clearTimeout(runtime.hydrationBackfillTimer);
     runtime.hydrationBackfillTimer = null;
   }
+  if (runtime.replaceFitRetryTimer) {
+    clearTimeout(runtime.replaceFitRetryTimer);
+    runtime.replaceFitRetryTimer = null;
+  }
+  runtime.pendingReplaceData = null;
+  runtime.replaceFitRetryAttempts = 0;
 }
 
 function pauseRuntimePtyStream(runtime: CachedRuntime): void {
@@ -1144,6 +1354,34 @@ function isTerminalMouseTrackingActive(runtime: CachedRuntime): boolean {
   return runtime.mouseTrackingModes.size > 0 || (xtermMode != null && xtermMode !== "none");
 }
 
+/**
+ * Keeps `scrollOnUserInput` from turning mouse motion into a scroll-to-bottom.
+ *
+ * xterm's `scrollOnUserInput` (default true, and what we want for typing —
+ * pressing a key should snap you back to the prompt) scrolls the viewport to
+ * the bottom whenever the terminal forwards user input to the application. Under
+ * mouse tracking a TUI enables (modes 1002/1003, "report motion"), a bare
+ * mousemove IS forwarded input, so simply moving the pointer over a terminal the
+ * user has scrolled back in yanks them to the bottom before they can read
+ * anything.
+ *
+ * So the option is not constant: it is off while the pointer is over a
+ * scrolled-back terminal that is reporting motion, and restored the moment the
+ * user types or returns to the bottom. Keyboard input keeps its snap; the mouse
+ * loses one it should never have had.
+ */
+function syncScrollOnUserInput(runtime: CachedRuntime, args: { pointerOver: boolean }): void {
+  const suppress = args.pointerOver
+    && isTerminalMouseTrackingActive(runtime)
+    && !shouldFollowTerminalOutput(runtime);
+  try {
+    if (runtime.term.options.scrollOnUserInput === !suppress) return;
+    runtime.term.options.scrollOnUserInput = !suppress;
+  } catch {
+    // ignore option writes after disposal
+  }
+}
+
 async function pasteNativeClipboardImageShortcut(runtime: CachedRuntime): Promise<boolean> {
   if (runtime.disposed) return false;
   try {
@@ -1169,13 +1407,29 @@ function formatClipboardImageForPty(path: string, mimeType: string): string {
   ].join("\n");
 }
 
-async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Promise<boolean> {
+type TerminalClipboardImage = { data: string; filename: string; mimeType: string };
+
+// Both attachment sinks decode `data` as bare base64: the desktop IPC handler
+// (Buffer.from(data, "base64")) and the sync host (which rejects anything
+// outside the base64 alphabet). The web adapter's readClipboardImage answers
+// with a full data URL, so strip the prefix rather than shipping bytes that
+// decode to garbage on one side and throw on the other.
+function base64FromImageData(value: string): string {
+  if (!value.startsWith("data:")) return value;
+  const comma = value.indexOf(",");
+  return comma >= 0 ? value.slice(comma + 1) : "";
+}
+
+async function attachClipboardImageToRuntime(
+  runtime: CachedRuntime,
+  image: TerminalClipboardImage,
+): Promise<boolean> {
   if (runtime.disposed) return false;
   try {
-    const image = await window.ade.app.readClipboardImage();
-    if (!image || runtime.disposed) return false;
+    const data = base64FromImageData(image.data);
+    if (!data) return false;
     const attachmentArgs = {
-      data: image.data,
+      data,
       filename: image.filename || "clipboard.png",
     };
     const saved = runtime.runtimePin
@@ -1187,6 +1441,84 @@ async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Pro
   } catch {
     return false;
   }
+}
+
+async function pasteRuntimeClipboardImageAttachment(runtime: CachedRuntime): Promise<boolean> {
+  if (runtime.disposed) return false;
+  let image: TerminalClipboardImage | null = null;
+  try {
+    image = await window.ade.app.readClipboardImage();
+  } catch {
+    return false;
+  }
+  if (!image || runtime.disposed) return false;
+  return await attachClipboardImageToRuntime(runtime, image);
+}
+
+// A paste event carries the image bytes of the device the user is actually
+// typing on, synchronously and without a permission prompt. On web,
+// navigator.clipboard.read() (the readClipboardImage path) is permission-gated
+// and, when the browser is remote, reads the wrong machine's clipboard — so
+// prefer the event's own items whenever the paste arrives as a real event.
+function clipboardImageBlobFromEvent(data: DataTransfer | null | undefined): Blob | null {
+  if (!data) return null;
+  const files = data.files as ArrayLike<File> | undefined;
+  for (let index = 0; index < (files?.length ?? 0); index += 1) {
+    const file = files?.[index];
+    if (file && typeof file.type === "string" && file.type.startsWith("image/")) return file;
+  }
+  const items = data.items as ArrayLike<DataTransferItem> | undefined;
+  for (let index = 0; index < (items?.length ?? 0); index += 1) {
+    const item = items?.[index];
+    if (!item || item.kind !== "file" || !item.type?.startsWith("image/")) continue;
+    // getAsFile must run inside the event handler; DataTransferItems are
+    // neutered once it returns.
+    const file = item.getAsFile();
+    if (file) return file;
+  }
+  return null;
+}
+
+// The attachment sink infers the stored file's type from the filename
+// extension (it renames the file to a uuid anyway), so name the paste after its
+// own mime instead of trusting a pasted File's name — a .png name carrying webp
+// bytes is rejected as a mime mismatch.
+const CLIPBOARD_IMAGE_EXTENSION_BY_MIME: Record<string, string> = {
+  "image/png": ".png",
+  "image/jpeg": ".jpg",
+  "image/gif": ".gif",
+  "image/webp": ".webp",
+  "image/bmp": ".bmp",
+  "image/x-icon": ".ico",
+  "image/svg+xml": ".svg",
+};
+
+async function pasteClipboardImageBlob(runtime: CachedRuntime, blob: Blob): Promise<boolean> {
+  if (runtime.disposed) return false;
+  const mimeType = blob.type?.toLowerCase() || "image/png";
+  const extension = CLIPBOARD_IMAGE_EXTENSION_BY_MIME[mimeType];
+  if (!extension) return false;
+  let dataUrl: string;
+  try {
+    dataUrl = await blobToDataUrl(blob);
+  } catch {
+    return false;
+  }
+  if (!dataUrl || runtime.disposed) return false;
+  return await attachClipboardImageToRuntime(runtime, {
+    data: dataUrl,
+    filename: `clipboard-image${extension}`,
+    mimeType,
+  });
+}
+
+function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? ""));
+    reader.onerror = () => reject(reader.error ?? new Error("Failed to read the pasted image."));
+    reader.readAsDataURL(blob);
+  });
 }
 
 function pasteClipboardImageShortcut(runtime: CachedRuntime, mode: TerminalImagePasteMode): Promise<boolean> {
@@ -1226,9 +1558,9 @@ function teardownRuntime(runtime: CachedRuntime) {
   clearPtyInputFlushTimer(runtime);
   if (runtime.settleTimer1) clearTimeout(runtime.settleTimer1);
   if (runtime.settleTimer2) clearTimeout(runtime.settleTimer2);
-  if (runtime.hydrateTimer) clearTimeout(runtime.hydrateTimer);
-  if (runtime.hydrateRetryTimer) clearTimeout(runtime.hydrateRetryTimer);
-  if (runtime.hydrationBackfillTimer) clearTimeout(runtime.hydrationBackfillTimer);
+  // Covers hydrate/hydrateRetry/backfill plus the two the hand-written list
+  // here kept missing: replaceFitRetryTimer and rehydrateDimsTimer.
+  clearRuntimeHydrationTimers(runtime);
   if (runtime.invalidFitRetryTimer) clearTimeout(runtime.invalidFitRetryTimer);
   runtime.macShiftSelectionCleanup?.();
 
@@ -1293,10 +1625,61 @@ function ensureOpen(runtime: CachedRuntime): boolean {
   return true;
 }
 
+/**
+ * The compounded CSS `zoom` the terminal would otherwise inherit.
+ *
+ * The hosted client scales its whole UI with `body { zoom: <factor> }`
+ * (webclient/adapter/misc.ts), which defaults to 1.1 at the "100%" setting.
+ */
+function webZoomFactor(): number {
+  if (typeof document === "undefined") return 1;
+  const raw = document.documentElement?.style?.getPropertyValue("--ade-web-zoom-factor");
+  const parsed = Number.parseFloat(raw ?? "");
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 1;
+}
+
+/**
+ * Cancels ancestor CSS zoom over the terminal, trading it for a scaled font.
+ *
+ * xterm converts a pointer position to a cell with
+ * `Math.ceil((clientY - rect.top) / cellHeight)` (getCoordsRelativeToElement /
+ * getCoords in the bundle). Under an ancestor `zoom`, the numerator is in the
+ * ZOOMED coordinate space while `cellHeight` comes from `charSizeService`
+ * measuring a DOM node in UNZOOMED CSS px. The quotient is therefore inflated by
+ * the zoom factor, and the error grows with distance from the top of the grid —
+ * which is exactly "I highlight a line and get the one below it", worse further
+ * down the pane.
+ *
+ * xterm has no notion of zoom, so rather than patch its arithmetic (fragile, and
+ * engine-specific — Safari and Chrome disagree about rect semantics under zoom)
+ * we make the arithmetic true again: give the host the reciprocal zoom so the
+ * COMPOUNDED factor at the terminal is exactly 1, then scale `fontSize` by the
+ * factor so it still renders at the size the zoom level asked for. As a bonus
+ * the canvas stops being a zoom-rasterized bitmap and renders at native
+ * resolution.
+ */
+function applyZoomCompensation(runtime: CachedRuntime): boolean {
+  const factor = webZoomFactor();
+  if (factor === runtime.lastZoomFactor) return false;
+  runtime.lastZoomFactor = factor;
+  try {
+    const hostStyle = runtime.host.style as CSSStyleDeclaration & { zoom?: string };
+    hostStyle.zoom = factor === 1 ? "" : String(1 / factor);
+    runtime.term.options.fontSize = Math.round(runtime.baseFontSize * factor);
+  } catch {
+    // ignore style/option writes after disposal
+  }
+  clearTextureAtlas(runtime);
+  return true;
+}
+
 function doFit(runtime: CachedRuntime, forcePtyResize = false) {
   if (runtime.disposed) return;
   if (!runtime.visible && runtime.hasFittedOnce) return;
   if (!ensureOpen(runtime)) return;
+  // Before measuring anything: a zoom change alters both the host box and the
+  // cell size, so compensating first means this fit measures the final state.
+  applyZoomCompensation(runtime);
   const measurement = measureHost(runtime.host);
   if (!measurement.visible) return;
   const previousDims = hasValidDims(runtime.lastDims)
@@ -1341,11 +1724,36 @@ function doFit(runtime: CachedRuntime, forcePtyResize = false) {
     return;
   }
 
+  const firstFit = !runtime.hasFittedOnce;
   runtime.hasFittedOnce = true;
+  // A fit is "valid" at anything above MIN_VALID_COLS, so a pane measured
+  // mid-layout or while collapsed can legitimately fit to ~20 columns and stick
+  // (observed in the wild: an .xterm-screen 182px wide rendering a 155-column
+  // session). Keying the correction on the FIRST fit would fire at that bogus
+  // width and never again, so it keys on the width CHANGING instead — which is
+  // also what makes a keep-alive pane correct itself when it is finally
+  // revealed at its real size.
+  scheduleRehydrateForDimsChange(runtime, next.cols);
+  // The width watch keys on the width CHANGING, which silently misses the case
+  // that armed it: content hydrated at xterm's 80-column constructor default
+  // that then fits to exactly 80 columns. `hydratedAtCols === cols` there, so
+  // the watch never fires and the 80-column wrapping (and its scrollback) is
+  // permanent. The first real fit is the moment the flag means what it says, so
+  // honour it directly.
+  if (firstFit && runtime.hydratedWhileUnfitted) rehydrateAfterFit(runtime);
   const prev = previousDims;
   if (!prev || prev.cols !== next.cols || prev.rows !== next.rows || forcePtyResize) {
-    runtime.lastDims = next;
-    requestPtyResize(runtime, next, forcePtyResize);
+    if (windowOwnsPtySize()) {
+      runtime.lastDims = next;
+      requestPtyResize(runtime, next, forcePtyResize);
+    } else {
+      // Suppressed, not discarded. `lastDims` deliberately does NOT advance —
+      // recording dims that were never sent would make the next fit look like a
+      // no-op and strand the PTY at the other viewer's width — and the pending
+      // force flag is what the focus/force path (and the safety-pass raf) uses
+      // to push these dims the moment this window becomes the owner.
+      runtime.pendingForceResize = true;
+    }
   }
 
   // Safety pass for right-edge clipping and stale col counts.
@@ -1515,28 +1923,149 @@ function replaceRuntimeTerminalData(runtime: CachedRuntime, data: string) {
   runtime.mouseTrackingModes.clear();
   void takePendingTerminalOffsetAnchor(runtime.sessionId);
 
-  try {
-    runtime.term.reset();
-  } catch {
-    // A renderer can disappear during recovery; keep the stream usable.
+  runtime.pendingReplaceData = data;
+  runtime.replaceFitRetryAttempts = 0;
+  applyPendingReplaceWhenFitted(runtime);
+}
+
+/**
+ * Writes a recovery snapshot only once the terminal has been measured.
+ *
+ * A snapshot is a stream of cursor-positioning sequences and hard-wrapped rows
+ * that only mean what they meant on the machine that produced them if the
+ * receiving terminal has the same column count. xterm does NOT reflow a buffer
+ * on resize, so bytes written at the constructor default (80 cols) and then fit
+ * to the real viewport keep the wrapping they were parsed with — which renders
+ * as a diagonal "staircase" of fragments through the scrollback, one fragment
+ * per line at a rising column offset.
+ *
+ * `startHydration` already waits for the first fit for exactly this reason
+ * (`waitForFitThenHydrate`). The `replace: true` path did not, and on the web
+ * client it is the common path: a remount re-attaches the mirror and the host
+ * answers with a full snapshot, routinely before the host element has been
+ * measured. Same wait, same attempt budget.
+ */
+function applyPendingReplaceWhenFitted(
+  runtime: CachedRuntime,
+  // Captured at the ENTRY that owns this payload and threaded through every
+  // retry tick. Re-reading `runtime.hydrationGeneration` on each tick would
+  // re-adopt whatever bumped it in the meantime, so a superseded retry would
+  // pass its own staleness check and write over the newer snapshot.
+  entryGeneration?: number,
+): void {
+  if (runtime.disposed || runtime.pendingReplaceData == null) return;
+  // Normalization awaits, and a newer snapshot may land in that window.
+  // `replaceRuntimeTerminalData` bumps this, so it is the token that says
+  // "the payload I was asked to write is still the current one".
+  const generation = entryGeneration ?? runtime.hydrationGeneration;
+  if (runtime.hydrationGeneration !== generation) return;
+  if (runtime.replaceFitRetryTimer) {
+    clearTimeout(runtime.replaceFitRetryTimer);
+    runtime.replaceFitRetryTimer = null;
   }
-  if (data) {
-    updateTerminalInputModes(runtime, data);
+
+  if (!runtime.hasFittedOnce) {
+    // Drive the measurement rather than only waiting on it: the snapshot can
+    // land before any scheduled fit has run, and a terminal that is genuinely
+    // unmeasurable (hidden pane) must still fall through below rather than
+    // stall the recovery forever.
+    doFit(runtime, true);
+    // That first fit can re-enter this function: it triggers `rehydrateAfterFit`
+    // for content hydrated while unmeasured, which re-arms the queued snapshot
+    // and drives it through a fresh generation. If it did, the payload has
+    // already been handled and this frame is stale — writing again would
+    // duplicate it and fight the newer generation's retry timer.
+    if (runtime.pendingReplaceData == null || runtime.hydrationGeneration !== generation) return;
+  }
+  const ready = terminalWidthTrustworthy(runtime);
+  if (!ready && runtime.replaceFitRetryAttempts < REPLACE_FIT_MAX_ATTEMPTS) {
+    runtime.replaceFitRetryAttempts += 1;
+    runtime.replaceFitRetryTimer = setTimeout(() => {
+      runtime.replaceFitRetryTimer = null;
+      applyPendingReplaceWhenFitted(runtime, generation);
+    }, REPLACE_FIT_RETRY_MS);
+    return;
+  }
+
+  if (!ready) {
+    // Budget spent without a trustworthy grid. Writing is still the right call
+    // — a blank pane is worse than a possibly-rewrapped one, and live output
+    // plus the next fit will correct it — but xterm is very likely still at its
+    // 80x24 constructor size here, so say so out loud instead of leaving a
+    // silently rewrapped screen to be reported as "jumbled" later.
+    logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "replace-write-unfitted" }));
+    // Same correction as the hydration fall-through: the first real fit re-runs
+    // hydration rather than leaving 80-column wrapping and its scrollback.
+    runtime.hydratedWhileUnfitted = true;
+  }
+
+  const data = runtime.pendingReplaceData;
+  runtime.pendingReplaceData = null;
+  runtime.replaceFitRetryAttempts = 0;
+
+  // A live-subscribe snapshot is the SAME raw transcript the preview path
+  // serves — up to LIVE_TERMINAL_SUBSCRIBE_MAX_BYTES (2 MB) of positioned TUI
+  // repaints — it just arrives as a `replace: true` PtyDataEvent instead of a
+  // hydration read. Writing it verbatim refills the buffer with bulk bytes:
+  // scrollback balloons, `baseY` goes large, and the wheel handler's local
+  // scrollback branch wins over forwarding to the TUI. Normalize it exactly as
+  // hydration does, then write.
+  const writeReplace = (text: string | null) => {
+    if (runtime.disposed || runtime.hydrationGeneration !== generation) return;
     try {
-      runtime.term.write(data);
-      runtime.hasAppliedTerminalContent = hasRenderableTerminalText(data);
+      runtime.term.reset();
     } catch {
-      // ignore write errors after disposal
+      // A renderer can disappear during recovery; keep the stream usable.
     }
+    if (text) {
+      updateTerminalInputModes(runtime, text);
+      try {
+        runtime.term.write(text);
+        runtime.hasAppliedTerminalContent = hasRenderableTerminalText(text);
+      } catch {
+        // ignore write errors after disposal
+      }
+    }
+    runtime.hydratedAtCols = recordHydratedCols(runtime, text ?? "");
+    scheduleVisibleFrameRefresh(runtime, { scrollToBottom: true });
+    scheduleFit(runtime, true);
+    // `replaceRuntimeTerminalData` marks hydration complete without ever going
+    // through `finalizeHydration`, so this is the only place the replace path
+    // can report. Without it a live web session — which hydrates ONLY from the
+    // subscribe backlog — produces total console silence, indistinguishable
+    // from instrumentation that never ran.
+    reportHydrationComplete(runtime, "replace");
+  };
+
+  if (data) {
+    void normalizeTranscriptToGrid(trimToLikelyTerminalFrameBoundary(data), {
+      maxRows: hydrationGridMaxRows(runtime),
+    })
+      .then((grid) => {
+        runtime.lastHydrationNormalized = Boolean(grid);
+        writeReplace(grid ? `${grid}${inferTerminalModesFromTranscript(data)}` : data);
+      })
+      .catch(() => {
+        runtime.lastHydrationNormalized = false;
+        writeReplace(data);
+      });
+    return;
   }
-  scheduleVisibleFrameRefresh(runtime, { scrollToBottom: true });
-  scheduleFit(runtime, true);
+  writeReplace(null);
 }
 
 function handleRuntimePtyData(runtime: CachedRuntime, ev: PtyDataEvent) {
   if (!shouldDeliverPtyEvent(runtime, ev.projectRoot)) return;
   if (!shouldRuntimeReceivePtyData(runtime)) {
-    updateTerminalInputModes(runtime, ev.data);
+    // A parked terminal already skips every xterm write. What it did NOT skip
+    // was this mode scan — a regex sweep over every chunk of every backgrounded
+    // session, which under keep-alive is N full TUI streams being parsed for
+    // nobody. Scan once on the way into the paused state (so the modes captured
+    // at park time are the last known good ones), then stop: `resume` runs a
+    // fresh hydration, and hydration now restores modes itself via
+    // `inferTerminalModesFromTranscript`, so nothing depends on tracking them
+    // while parked.
+    if (!runtime.liveStreamPaused) updateTerminalInputModes(runtime, ev.data);
     pauseRuntimePtyStream(runtime);
     return;
   }
@@ -1771,6 +2300,10 @@ async function readPreviewHydrationData(
         maxBytes: HYDRATE_TAIL_BYTES,
       });
   if (preview?.snapshot) {
+    reportTerminalDimsMismatch(runtime, {
+      reason: "snapshot-hydrate",
+      snapshot: { cols: preview.snapshot.cols, rows: preview.snapshot.rows },
+    });
     const snapshot = serializeSnapshotForHydration(preview.snapshot);
     if (snapshot) return { source: "snapshot", text: snapshot };
   }
@@ -1901,6 +2434,10 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
     }
 
     if (preview?.snapshot) {
+      reportTerminalDimsMismatch(runtime, {
+        reason: "snapshot-hydrate",
+        snapshot: { cols: preview.snapshot.cols, rows: preview.snapshot.rows },
+      });
       const snapshot = serializeSnapshotForHydration(preview.snapshot);
       if (snapshot) return { source: "snapshot", text: snapshot };
     }
@@ -1920,6 +2457,93 @@ async function readInitialHydrationData(runtime: CachedRuntime): Promise<Initial
   return transcript
     ? { source: "transcript", text: transcript }
     : { source: "empty", text: "" };
+}
+
+/**
+ * The one line that ALWAYS prints, once per hydration.
+ *
+ * Every other `[ade-term]` line is conditional on a mismatch, which means a
+ * healthy-looking run produces total silence — and silence is indistinguishable
+ * from "the instrumentation never ran". This makes that impossible: after every
+ * hydration, exactly one line states which byte path was taken, whether it was
+ * normalized, and the resulting `baseY` (0 means the wheel reaches the TUI;
+ * anything larger means bulk bytes refilled the buffer and local scrollback
+ * will capture the wheel instead).
+ */
+function reportHydrationComplete(
+  runtime: CachedRuntime,
+  // "replace" is not an `InitialHydrationData` source: a live-subscribe backlog
+  // never travels through `readInitialHydrationData`. It is still a hydration —
+  // it is the ONLY hydration a live web session gets — so it reports like one.
+  source: InitialHydrationData["source"] | "replace",
+): void {
+  logTerminalDiag(
+    "debug",
+    describeTerminalDims(runtime, {
+      reason: "hydrate-complete",
+      note: `source=${source} normalized=${runtime.lastHydrationNormalized ? "yes" : "no"}`,
+    }),
+  );
+}
+
+/**
+ * How many grid rows this runtime can absorb without creating scrollback.
+ *
+ * Only a MEASURED terminal knows: before the first fit xterm still reports its
+ * 80x24 constructor size, and clamping a 65-row screen to 24 would throw away
+ * content that the pane can actually show. Unfitted returns undefined, which
+ * leaves the pre-existing "write the whole grid" behaviour — the later fit and
+ * live output correct it, exactly as `replace-write-unfitted` already warns.
+ */
+function hydrationGridMaxRows(runtime: CachedRuntime): number | undefined {
+  if (!runtime.hasFittedOnce) return undefined;
+  try {
+    const rows = runtime.term.rows;
+    return rows >= MIN_VALID_ROWS ? rows : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Width-normalizes transcript-sourced hydration before it reaches the terminal.
+ *
+ * Only `transcript` needs it. A `snapshot` is already a rendered grid, `replay`
+ * deliberately keeps every redraw as its scrollback, and `empty` has nothing to
+ * normalize. Falls through to the original text whenever normalization declines
+ * (no absolute positioning) or fails, so this can only improve the result.
+ */
+async function normalizeHydrationData(
+  runtime: CachedRuntime,
+  data: InitialHydrationData,
+): Promise<InitialHydrationData> {
+  if (data.source !== "transcript" || !data.text) return data;
+  const grid = await normalizeTranscriptToGrid(trimToLikelyTerminalFrameBoundary(data.text), {
+    maxRows: hydrationGridMaxRows(runtime),
+  });
+  runtime.lastHydrationNormalized = Boolean(grid);
+  if (!grid) {
+    // `normalized=no` means the RAW bytes get written — positioned repaints at
+    // the recording's width, i.e. the staircase this whole path exists to
+    // prevent. Silence about WHY costs an investigation round every time, so
+    // the decline states its reason: below the column floor (nothing to gain,
+    // benign) versus a mirror that produced no rows (a real failure).
+    const trimmed = trimToLikelyTerminalFrameBoundary(data.text);
+    const cols = inferTranscriptColumns(trimmed);
+    logTerminalDiag("warn", describeTerminalDims(runtime, {
+      reason: "hydrate-normalize-declined",
+      note: `bytes=${data.text.length} trimmed=${trimmed.length} inferredCols=${cols} `
+        + `cause=${cols < MIN_VALID_COLS ? "below-col-floor" : "empty-grid-or-throw"}`,
+    }));
+    return data;
+  }
+  // Modes are read from the RAW text, never the trimmed/normalized grid, which
+  // has every escape sequence stripped by construction.
+  const modes = inferTerminalModesFromTranscript(data.text);
+  if (!modes) {
+    logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "hydrate-no-modes-recovered" }));
+  }
+  return { ...data, text: `${grid}${modes}` };
 }
 
 function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBackfillOptions = {}) {
@@ -1942,6 +2566,7 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
     const hydrationGeneration = runtime.hydrationGeneration;
 
     readPreviewHydrationData(runtime, { snapshotOnly })
+      .then((data) => normalizeHydrationData(runtime, data))
       .then((data) => {
         if (runtime.hydrationGeneration !== hydrationGeneration) return;
         if (!needsHydrationBackfill(runtime)) return;
@@ -1959,6 +2584,122 @@ function scheduleHydrationBackfill(runtime: CachedRuntime, options: HydrationBac
         scheduleHydrationBackfill(runtime, { snapshotOnly });
       });
   }, delayMs);
+}
+
+/**
+ * The width hydration content was rendered at, or null when there is nothing
+ * width-sensitive on screen. Empty hydrations must NOT arm the width watch:
+ * they have no committed rows to invalidate, and arming on them would make
+ * every later resize re-fetch a transcript for a blank pane.
+ */
+function recordHydratedCols(runtime: CachedRuntime, text: string): number | null {
+  if (!hasRenderableTerminalText(text)) return null;
+  try {
+    return runtime.term.cols;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Re-runs hydration when the pane settles at a different width than the content
+ * was written at.
+ *
+ * Debounced, because a window drag walks through dozens of widths and each
+ * hydration is a relay round-trip. The trailing edge is the one that matters:
+ * the width the pane actually came to rest at.
+ */
+function scheduleRehydrateForDimsChange(runtime: CachedRuntime, cols: number): void {
+  if (runtime.disposed || runtime.replayMode) return;
+  if (runtime.hydratedAtCols == null || runtime.hydratedAtCols === cols) return;
+  if (runtime.rehydrateDimsTimer) clearTimeout(runtime.rehydrateDimsTimer);
+  runtime.rehydrateDimsTimer = setTimeout(() => {
+    runtime.rehydrateDimsTimer = null;
+    if (runtime.disposed || runtime.replayMode) return;
+    let settled = cols;
+    try {
+      settled = runtime.term.cols;
+    } catch {
+      // a disposed terminal keeps the width we were called with
+    }
+    if (runtime.hydratedAtCols === settled) return;
+    runtime.hydratedWhileUnfitted = true;
+    rehydrateAfterFit(runtime);
+  }, REHYDRATE_DIMS_DEBOUNCE_MS);
+}
+
+/**
+ * Replaces a hydration that was written before the pane could be measured.
+ *
+ * `waitForFitThenHydrate` gives up after its budget and hydrates anyway — a
+ * blank pane is worse than a mis-wrapped one — but xterm is then still at its
+ * 80x24 constructor size, so the grid is wrapped to 80 columns and every row
+ * past the 24th is pushed into scrollback. Resizing afterwards does NOT undo
+ * either: xterm re-wraps what it can, but the rows it already committed stay
+ * broken and the scrollback stays (measured: 30 wrapped rows and baseY 60 at
+ * write, still 1 wrapped row and baseY 1 after the fit — a visible scrollbar
+ * over garbled text, which is exactly the reported symptom).
+ *
+ * The first real fit is the moment the correct size is finally known, so
+ * hydration is re-run from scratch against it. The generation bump makes any
+ * in-flight normalization from the unfitted pass land as a no-op.
+ */
+function rehydrateAfterFit(runtime: CachedRuntime): void {
+  if (!runtime.hydratedWhileUnfitted || runtime.disposed) return;
+  runtime.hydratedWhileUnfitted = false;
+  // Replay owns its scrollback deliberately (the transcript IS the product) and
+  // is written once for a disposed session; re-running it would fight the
+  // offset anchor for no gain.
+  if (runtime.replayMode) return;
+  logTerminalDiag("warn", describeTerminalDims(runtime, { reason: "rehydrate-after-fit" }));
+  runtime.hydrationGeneration += 1;
+  runtime.hydrationStarted = false;
+  runtime.hydrationCompleted = false;
+  // The re-run writes a FULL hydration payload, and the non-replay branch of
+  // `finalizeHydration` only appends — it never resets. Without clearing here,
+  // every width change stacks another copy of the transcript into the buffer.
+  // (`writeReplace` resets for the same reason; this is the other entry point.)
+  //
+  // `clearRuntimeHydrationTimers` also drops `pendingReplaceData`, so rescue a
+  // queued snapshot across it: a recovery snapshot is authoritative and, on the
+  // web client, is the ONLY content the session ever gets — losing it to a
+  // transcript re-read leaves a blank pane.
+  const queuedReplace = runtime.pendingReplaceData;
+  clearRuntimeHydrationTimers(runtime);
+  try {
+    runtime.term.reset();
+  } catch {
+    // a disposed renderer keeps whatever it has; the stream stays usable
+  }
+  runtime.hasAppliedTerminalContent = false;
+  // The buffer is empty again, so the "live output beat hydration to the
+  // screen" bookkeeping is no longer true — and it is sticky. Left set, the
+  // `preferLivePending` branch of `finalizeHydration` DISCARDS the payload this
+  // re-run just fetched in favour of pending chunks that the reset already
+  // erased, which is a blank pane on every width change after live output once
+  // arrived mid-hydration. Same clearing `resumeRuntimePtyStream` does.
+  runtime.displayedLiveDataBeforeHydration = false;
+  runtime.pendingHydrationChunks.length = 0;
+  runtime.pendingHydrationBytes = 0;
+
+  if (queuedReplace != null) {
+    // An authoritative snapshot supersedes a re-read: re-arm it instead of
+    // starting a transcript hydration that would race it.
+    //
+    // Take the same "hydration is settled" stance `replaceRuntimeTerminalData`
+    // does. This branch never reaches `startHydration`, so leaving the flags
+    // false above would strand the runtime mid-hydration forever: live chunks
+    // would accumulate in `pendingHydrationChunks` instead of being written,
+    // and everything else keyed on a completed hydration (paste round-trips,
+    // the offset anchor) would never run.
+    runtime.hydrationStarted = true;
+    runtime.hydrationCompleted = true;
+    runtime.pendingReplaceData = queuedReplace;
+    runtime.replaceFitRetryAttempts = 0;
+    applyPendingReplaceWhenFitted(runtime);
+    return;
+  }
+  startHydration(runtime);
 }
 
 function startHydration(runtime: CachedRuntime) {
@@ -1998,6 +2739,7 @@ function startHydration(runtime: CachedRuntime) {
       // local "exited N" state catches up.
       notifyRuntime(runtime);
       scheduleFit(runtime, true);
+      reportHydrationComplete(runtime, data.source);
       // Disposed sessions never receive live PTY data, so no backfill polling.
       return;
     }
@@ -2013,26 +2755,32 @@ function startHydration(runtime: CachedRuntime) {
       flushHydrationData(runtime, data.text, { appendPending: data.source !== "snapshot" });
     }
     runtime.hydrationCompleted = true;
+    // Arm the re-hydration: these bytes were wrapped to 80 columns and spilled
+    // into scrollback, and only the first real fit can correct them.
+    runtime.hydratedWhileUnfitted = !runtime.hasFittedOnce && hasRenderableTerminalText(data.text);
+    runtime.hydratedAtCols = recordHydratedCols(runtime, data.text);
     scheduleFit(runtime, true);
+    reportHydrationComplete(runtime, data.source);
     scheduleHydrationBackfill(runtime, { snapshotOnly: runtime.displayedLiveDataBeforeHydration });
   };
 
   const hydrateTranscript = () => {
     readInitialHydrationData(runtime)
+      .then((data) => normalizeHydrationData(runtime, data))
       .then(finalizeHydration)
       .catch(() => finalizeHydration({ source: "empty", text: "" }));
   };
 
   const waitForFitThenHydrate = (attempt: number) => {
     if (runtime.disposed || runtime.hydrationGeneration !== hydrationGeneration) return;
-    if (runtime.hasFittedOnce || attempt >= 20) {
+    if (terminalWidthTrustworthy(runtime) || attempt >= REPLACE_FIT_MAX_ATTEMPTS) {
       hydrateTranscript();
       return;
     }
     runtime.hydrateRetryTimer = setTimeout(() => {
       runtime.hydrateRetryTimer = null;
       waitForFitThenHydrate(attempt + 1);
-    }, 60);
+    }, REPLACE_FIT_RETRY_MS);
   };
 
   runtime.hydrateTimer = setTimeout(() => {
@@ -2245,8 +2993,17 @@ function createRuntime(args: {
     settleTimer2: null,
     hydrateTimer: null,
     hydrateRetryTimer: null,
+    pendingReplaceData: null,
+    replaceFitRetryTimer: null,
+    replaceFitRetryAttempts: 0,
     hydrationBackfillTimer: null,
     hydrationBackfillAttempts: 0,
+    lastZoomFactor: 1,
+    baseFontSize: args.preferences.fontSize,
+    lastHydrationNormalized: false,
+    hydratedWhileUnfitted: false,
+    hydratedAtCols: null,
+    rehydrateDimsTimer: null,
     hasFittedOnce: false,
     hydrationStarted: false,
     hydrationCompleted: false,
@@ -2299,6 +3056,22 @@ function createRuntime(args: {
       void writeTextPasteForTerminal(runtime, text);
       return;
     }
+    // native-shortcut mode deliberately hands ^V to the CLI so it reads the
+    // machine's own clipboard; only the attachment mode uploads bytes.
+    const imageBlob = runtime.imagePasteMode === "runtime-attachment" && !runtime.disposed
+      ? clipboardImageBlobFromEvent(ev.clipboardData)
+      : null;
+    if (imageBlob) {
+      // A blob whose mime is not in the extension table (or that fails to read)
+      // answers false, and dropping the paste there is silent — the user sees a
+      // paste that did nothing at all. Fall through to the shortcut path, which
+      // reads the clipboard itself and can still handle it.
+      void pasteClipboardImageBlob(runtime, imageBlob).then((handled) => {
+        if (handled || runtime.disposed) return;
+        void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
+      });
+      return;
+    }
     void pasteClipboardImageShortcut(runtime, runtime.imagePasteMode);
   }, true);
   runtime.macShiftSelectionCleanup = installMacShiftSelectionBridge({
@@ -2321,6 +3094,13 @@ function createRuntime(args: {
       // listener can read clipboardData synchronously.
       // Fallback: if no paste event fires within 120ms (e.g. browser security
       // restrictions), read the clipboard asynchronously.
+      //
+      // Never in the browser. A timer 120ms after keydown has lost the user
+      // activation the Clipboard API requires, so Safari answers the read with
+      // a "Paste" permission callout instead — and the fallback is not needed
+      // there, because a real browser always fires the paste event this waits
+      // for. It exists for Electron/xterm paths that sometimes do not.
+      if (isWebClientMode()) return false;
       const before = lastPasteEventAt;
       setTimeout(() => {
         if (lastPasteEventAt !== before || runtime.disposed) return;
@@ -2586,6 +3366,7 @@ export function TerminalView({
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+    installPtySizeOwnershipTracking();
 
     const mountConfig = mountConfigRef.current;
     const runtime = ensureRuntime({
@@ -2650,16 +3431,22 @@ export function TerminalView({
     });
     obs.observe(el);
 
-    const onWheel = (ev: WheelEvent) => {
-      if (runtime.disposed) return;
-      if (!(ev.target instanceof Node)) return;
-      if (!runtime.term.element || !runtime.term.element.contains(ev.target)) return;
-      const viewport = runtime.term.element.querySelector<HTMLElement>(".xterm-viewport");
-      if (!viewport) return;
-      const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
-      const hasScrollback = runtime.term.buffer.active.baseY > 0;
-      const mouseTrackingActive = isTerminalMouseTrackingActive(runtime);
-      if (!hasScrollback || (viewportScrollable && !mouseTrackingActive)) return;
+    // Wheel routing, matching what every real terminal emulator does
+    // (iTerm2, kitty, VS Code's terminal):
+    //
+    //   mouse tracking ON,  no Shift -> the APP gets the wheel as mouse reports
+    //   mouse tracking ON,  Shift    -> local scrollback, reporting bypassed
+    //   mouse tracking OFF           -> local scrollback (ordinary shells)
+    //
+    // The old rule preferred local scrollback whenever ANY scrollback existed,
+    // which is wrong the moment a full-screen TUI is running: the TUI scrolls
+    // its own pane and the emulator must stay out of the way. It also decayed
+    // badly in practice — every stray line of accrued scrollback made the
+    // hijack permanent, so the wheel stopped reaching the TUI while the
+    // keyboard (fn+PageUp/Down, which xterm routes to the app) kept working.
+    // That split between wheel and keys is the tell that this was a routing
+    // policy bug, not a scroll bug.
+    const scrollLocally = (ev: WheelEvent): void => {
       const direction = ev.deltaY > 0 ? 1 : -1;
       const magnitude = Math.max(1, Math.min(12, Math.round(Math.abs(ev.deltaY) / 32)));
       try {
@@ -2670,7 +3457,43 @@ export function TerminalView({
         // ignore
       }
     };
+    const onWheel = (ev: WheelEvent) => {
+      if (runtime.disposed) return;
+      if (!(ev.target instanceof Node)) return;
+      if (!runtime.term.element || !runtime.term.element.contains(ev.target)) return;
+      const viewport = runtime.term.element.querySelector<HTMLElement>(".xterm-viewport");
+      if (!viewport) return;
+
+      if (isTerminalMouseTrackingActive(runtime)) {
+        // Returning is the forwarding path: xterm's own mouse binding turns the
+        // wheel into a report for the application. Intercepting it here is
+        // exactly what stopped the TUI from ever seeing a scroll.
+        if (!ev.shiftKey) return;
+        scrollLocally(ev);
+        return;
+      }
+
+      const viewportScrollable = viewport.scrollHeight > viewport.clientHeight + 1;
+      const hasScrollback = runtime.term.buffer.active.baseY > 0;
+      if (!hasScrollback || viewportScrollable) return;
+      scrollLocally(ev);
+    };
     el.addEventListener("wheel", onWheel, { passive: false, capture: true });
+
+    // See `syncScrollOnUserInput`. Motion re-evaluates the suppression (the user
+    // may have scrolled back since the last move); leaving the pane or pressing
+    // a key hands the snap straight back to the keyboard.
+    const onPointerMove = () => {
+      if (runtime.disposed) return;
+      syncScrollOnUserInput(runtime, { pointerOver: true });
+    };
+    const onPointerLeave = () => {
+      if (runtime.disposed) return;
+      syncScrollOnUserInput(runtime, { pointerOver: false });
+    };
+    el.addEventListener("mousemove", onPointerMove, { passive: true, capture: true });
+    el.addEventListener("mouseleave", onPointerLeave, { passive: true, capture: true });
+    el.addEventListener("keydown", onPointerLeave, { capture: true });
 
     const intObs = new IntersectionObserver((entries) => {
       for (const entry of entries) {
@@ -2748,7 +3571,20 @@ export function TerminalView({
     if (fontsReady) {
       fontsReady
         .then(() => {
-          requestAnimationFrame(() => schedule(true));
+          if (runtime.disposed) return;
+          // Re-measure BEFORE refitting. A bare refit here divides the element
+          // by the cell width measured against the fallback face and lands on
+          // the same wrong column count — see `remeasureTerminalFont`.
+          remeasureTerminalFont(runtime);
+          clearTextureAtlas(runtime);
+          // Force the PTY resize even if cols/rows happen to come out equal:
+          // the host may already hold the fallback-derived size from the first
+          // fit, and doFit only pushes a resize when the dims changed.
+          requestAnimationFrame(() => {
+            if (runtime.disposed) return;
+            doFit(runtime, true);
+            applyPendingReplaceWhenFitted(runtime);
+          });
         })
         .catch(() => {});
     }
@@ -2778,6 +3614,9 @@ export function TerminalView({
       window.removeEventListener(WORK_SURFACE_REVEALED_EVENT, onWorkSurfaceRevealed);
       window.visualViewport?.removeEventListener("resize", onWindowResize);
       el.removeEventListener("wheel", onWheel, { capture: true });
+      el.removeEventListener("mousemove", onPointerMove, { capture: true });
+      el.removeEventListener("mouseleave", onPointerLeave, { capture: true });
+      el.removeEventListener("keydown", onPointerLeave, { capture: true });
 
       if (runtime.host.parentElement === el) {
         flushPendingFrameWrites(runtime);

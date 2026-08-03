@@ -667,8 +667,7 @@ final class DatabaseService {
         rebaseSuggestion: nil,
         autoRebaseStatus: nil,
         conflictStatus: nil,
-        stateSnapshot: nil,
-        adoptableAttached: lane.laneType == "attached" && lane.archivedAt == nil
+        stateSnapshot: nil
       )
     }).filter { orderedLaneIds.contains($0.lane.id) }
 

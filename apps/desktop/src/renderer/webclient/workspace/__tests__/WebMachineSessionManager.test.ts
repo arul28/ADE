@@ -103,6 +103,16 @@ class FakeSyncClient {
     return () => this.catalogListeners.delete(listener);
   }
 
+  emitProjectCatalog(projects: Array<{ id: string; displayName?: string }>) {
+    const payload = {
+      projects: projects.map(({ id, displayName }) => ({
+        ...this.project(id),
+        ...(displayName ? { displayName } : {}),
+      })),
+    };
+    this.catalogListeners.forEach((listener) => listener(payload));
+  }
+
   failAuthentication() {
     this.status = {
       ...this.status,
@@ -267,6 +277,34 @@ describe("WebMachineSessionManager", () => {
     expect(result.project.id).toBe("alternate-machine-1");
     expect(primary.switchProject).toHaveBeenCalledWith("alternate-machine-1");
     expect(manager.getSession("machine-2")?.state).toBe("live");
+  });
+
+  it("opens a project without a second catalog round-trip and converges on the push", async () => {
+    const primary = new FakeSyncClient();
+    const manager = new WebMachineSessionManager(primary.asClient(), accountClient);
+    manager.replaceEnvironments([environment(1)]);
+    await manager.connectEnvironment("machine-1");
+    const catalogCallsAfterConnect = primary.getProjectCatalog.mock.calls.length;
+
+    const result = await manager.openProject("machine-1", "alternate-machine-1");
+
+    // The switch result is authoritative for the project we asked for, so the
+    // activation path must not wait on another catalog fetch.
+    expect(primary.getProjectCatalog).toHaveBeenCalledTimes(catalogCallsAfterConnect);
+    expect(result.project.id).toBe("alternate-machine-1");
+    expect(manager.getSession("machine-1")?.activeProjectId).toBe("alternate-machine-1");
+    // One machine hosts one open project.
+    expect(
+      manager.getCatalog("machine-1").filter((entry) => entry.isOpen).map((entry) => entry.id),
+    ).toEqual(["alternate-machine-1"]);
+
+    primary.emitProjectCatalog([
+      { id: "alternate-machine-1", displayName: "Renamed by the host" },
+    ]);
+
+    expect(manager.getCatalog("machine-1").map((entry) => entry.displayName)).toEqual([
+      "Renamed by the host",
+    ]);
   });
 
   it("rejects a fifth concurrent admission instead of exceeding the pool", async () => {
