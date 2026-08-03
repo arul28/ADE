@@ -5,7 +5,19 @@ import path from "node:path";
 
 const WINDOWS_DPAPI_KEY_FILE = ".credential-key.dpapi";
 const WINDOWS_DPAPI_KEY_MAGIC = "ADE_WINDOWS_DPAPI_KEY_V1";
-const WINDOWS_DPAPI_TIMEOUT_MS = 5_000;
+/**
+ * DPAPI itself is a local, sub-millisecond call; essentially the whole budget
+ * pays for a Windows PowerShell 5.1 cold start. That start is not bounded by
+ * anything ADE controls - it loads the CLR and the System.Security assembly
+ * from disk, and Defender's on-access scanner inspects powershell.exe and each
+ * assembly the first time they are touched. On a contended machine (a CI
+ * runner, or a laptop right after login) it routinely runs several seconds,
+ * which a 5s budget turned into a hard "credentials are unavailable" failure
+ * for a helper that had done nothing wrong. Bound the helper generously
+ * instead: waiting longer only costs time in the case that was already broken,
+ * while a tight bound costs the user their credentials.
+ */
+const WINDOWS_DPAPI_TIMEOUT_MS = 30_000;
 const WINDOWS_DPAPI_MAX_OUTPUT_BYTES = 64 * 1024;
 const WINDOWS_DPAPI_POWERSHELL_KERNEL_PATH =
   "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
@@ -127,6 +139,13 @@ function runDpapiSync(operation: "protect" | "unprotect", value: Buffer): Buffer
     windowsHide: true,
   });
   if (result.error) {
+    // spawnSync folds "could not start" and "ran past the deadline" into the
+    // same field. They are different diagnoses - one means the helper is
+    // missing or blocked, the other means the machine was busy - and the async
+    // path already reports them apart.
+    if (isNodeErrorCode(result.error, "ETIMEDOUT")) {
+      throw new Error("Windows DPAPI credential protection timed out.");
+    }
     throw new Error("Windows DPAPI credential protection is unavailable.");
   }
   if (result.status !== 0) {
