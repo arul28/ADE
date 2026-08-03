@@ -500,13 +500,13 @@ jobs:
       # green checkmark over unrun CRR replication, sync host, sync service,
       # and device registry coverage. windows-latest is the only runner in this
       # workflow that has the extension, so this is where those tests actually
-      # execute. Do not add kvDb.rebuildRecovery.test.ts here: its temp-dir
-      # teardown unlinks an open SQLite handle, which is EBUSY on Windows.
+      # execute.
       - name: Test Windows CRDT, sync, and device registry contracts
         run: >-
           cd apps/desktop && npx vitest run
           src/main/services/state/kvDb.test.ts
           src/main/services/state/kvDb.migrations.test.ts
+          src/main/services/state/kvDb.rebuildRecovery.test.ts
           src/main/services/state/kvDb.sync.test.ts
           src/main/services/sync/deviceRegistryService.test.ts
           src/main/services/sync/syncHostService.test.ts
