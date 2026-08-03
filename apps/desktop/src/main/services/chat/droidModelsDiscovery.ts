@@ -9,6 +9,7 @@ import {
   type ModelDescriptor,
 } from "../../../shared/modelRegistry";
 import { spawnAsync } from "../shared/utils";
+import { ensureDroidSpawnsAreWindowless } from "./droidSdkWindowsHide";
 
 export type DroidExecHelpModelRow = {
   id: string;
@@ -327,6 +328,9 @@ function normalizeDroidDiscoveredModel(row: DroidExecHelpModelRow): DroidExecHel
 
 async function listDroidModelsFromSdk(droidPath: string): Promise<DroidExecHelpModelRow[]> {
   const now = Date.now();
+  // This runs createSession() in-process (not in the worker), so the SDK spawns
+  // `droid` straight from the Electron main process on a passive warm path.
+  ensureDroidSpawnsAreWindowless();
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 8_000);
   try {
