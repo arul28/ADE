@@ -145,59 +145,65 @@ function findExplicitCommandPath(command: string): string | null {
   return resolveExecutableFromKnownLocations(command)?.path ?? null;
 }
 
-async function commandExists(command: string): Promise<boolean> {
+/**
+ * Resolve where a CLI actually lives, or null when it is not installed.
+ *
+ * One function answers both "is it installed" and "what do we launch", so the
+ * Settings card can never advertise a provider the chat runtime cannot spawn:
+ * `installed` is exactly "this file exists" and `path` is exactly that file,
+ * which is what flows into {@link DetectedAuth} and on into
+ * `resolveClaudeCodeExecutable`/`resolveDroidExecutable`.
+ *
+ * Windows: never probe by exit code. `spawnAsync` routes extension-less
+ * commands through `cmd.exe /d /s /c "…"` (see `resolveCliSpawnInvocation`),
+ * and cmd.exe itself always starts — a missing binary comes back as exit 1
+ * with `'claude' is not recognized as an internal or external command`, not as
+ * the ENOENT spawn error (`status === null`) that means "missing" on
+ * macOS/Linux. An exit-code probe therefore reports *every* CLI as installed
+ * on Windows. `where` + the known-install-dir scan (which honours PATHEXT)
+ * answer the question honestly.
+ */
+async function resolveCommandLocation(command: string): Promise<string | null> {
   const explicitPath = findExplicitCommandPath(command);
-  if (explicitPath) return true;
+  if (explicitPath) return explicitPath;
 
-  // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
-  // If the binary exists, --version will produce *some* exit code.
-  // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
+  if (process.platform === "win32") {
+    try {
+      const result = await spawnAsync("where", [command], { timeout: 5_000 });
+      if (result.status === 0) {
+        const first = (result.stdout ?? "").trim().split(/\r?\n/)[0]?.trim();
+        if (first) return first;
+      }
+    } catch {
+      // Treat a failed lookup as "not installed" rather than guessing.
+    }
+    return null;
+  }
+
+  // POSIX: a direct spawn bypasses shell init (.zshrc errors, slow profiles),
+  // and here ENOENT really does surface as `status === null`.
   try {
     const direct = await spawnAsync(command, ["--version"], { timeout: 5_000 });
-    if (direct.status !== null) return true;
+    if (direct.status !== null) {
+      const which = await spawnAsync("which", [command], { timeout: 3_000 });
+      const line = which.status === 0 ? (which.stdout ?? "").trim() : "";
+      return line || command;
+    }
   } catch {
-    // fall through to shell-based check
+    // fall through to shell-based lookup
   }
 
-  // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
-    if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      return result.status === 0;
-    }
-    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], { timeout: 5_000 });
-    return result.status === 0;
-  } catch {
-    // fall through to explicit common-path lookup
-  }
-
-  return explicitPath != null;
-}
-
-async function commandPath(command: string): Promise<string> {
-  try {
-    if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      if (result.status === 0 && result.stdout?.trim()) {
-        return result.stdout.trim().split(/\r?\n/)[0] ?? command;
-      }
-      return findExplicitCommandPath(command) ?? command;
-    }
-    // Try which first (simpler, doesn't load full login shell)
-    const which = await spawnAsync("which", [command], { timeout: 3_000 });
-    if (which.status === 0 && which.stdout?.trim()) {
-      return which.stdout.trim();
-    }
-    const explicitPath = findExplicitCommandPath(command);
-    if (explicitPath) {
-      return explicitPath;
-    }
-    // Fallback to login shell lookup
     const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], { timeout: 5_000 });
-    return result.stdout?.trim() || command;
+    if (result.status === 0) {
+      const line = (result.stdout ?? "").trim();
+      if (line) return line;
+    }
   } catch {
-    return findExplicitCommandPath(command) ?? command;
+    // Not installed.
   }
+
+  return null;
 }
 
 async function refreshProcessPathFromShell(): Promise<void> {
@@ -1109,15 +1115,16 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   const statuses = await Promise.all(
     cliChecks.map(async (cli) => {
       let spawnName = cliSpawnCommand(cli);
-      let installed = false;
+      let path: string | null = null;
       for (const candidate of cliSpawnCommands(cli)) {
-        if (await commandExists(candidate)) {
+        const location = await resolveCommandLocation(candidate);
+        if (location) {
           spawnName = candidate;
-          installed = true;
+          path = location;
           break;
         }
       }
-      const path = installed ? await commandPath(spawnName) : null;
+      const installed = path !== null;
       const cmd = path ?? spawnName;
       if (!installed) {
         return {
@@ -1150,29 +1157,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
         };
       }
       if (cli === "droid") {
-        // Prefer the path we already proved via commandPath() above; only fall
-        // back to resolveDroidExecutable() when commandPath() failed.
-        let droidPath: string;
-        if (path) {
-          droidPath = path;
-        } else {
-          const resolved = resolveDroidExecutable({ env: process.env });
-          if (resolved.source === "fallback-command") {
-            return {
-              cli,
-              installed: false,
-              path: null,
-              authenticated: false,
-              verified: false,
-            };
-          }
-          droidPath = resolved.path;
-        }
-        const auth = await inspectDroidCliPresence(droidPath, { deep: options?.force === true });
+        // `path` is a file resolveCommandLocation() proved exists, so it is
+        // strictly better than resolveDroidExecutable(), whose last resort is
+        // the bare command name. Reached only when installed, so the shallow
+        // presence check below is asking about credentials, not existence.
+        const auth = await inspectDroidCliPresence(cmd, { deep: options?.force === true });
         return {
           cli,
           installed: auth.installed,
-          path: droidPath,
+          path,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };

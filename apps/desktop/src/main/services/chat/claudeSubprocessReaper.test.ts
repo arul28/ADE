@@ -48,10 +48,13 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+// These cover the POSIX signal path, which is why each reaper is pinned to
+// "darwin": on Windows there are no signals, and the reaper kills the whole
+// process tree with taskkill instead.
 describe("createClaudeSubprocessReaper", () => {
   it("registers and unregisters Claude subprocesses on exit", () => {
     const logger = createLogger();
-    const reaper = createClaudeSubprocessReaper({ logger });
+    const reaper = createClaudeSubprocessReaper({ logger, platform: "darwin" });
     const child = createProcess(1234);
 
     reaper.register(child, {
@@ -87,6 +90,7 @@ describe("createClaudeSubprocessReaper", () => {
     const spawnProcess = vi.fn(() => child);
     const reaper = createClaudeSubprocessReaper({
       logger,
+      platform: "darwin",
       spawnProcess: spawnProcess as any,
     });
 
@@ -125,6 +129,7 @@ describe("createClaudeSubprocessReaper", () => {
     const child = createProcess(2468);
     const reaper = createClaudeSubprocessReaper({
       logger,
+      platform: "darwin",
       killGraceMs: 25,
     });
     reaper.register(child, {
@@ -151,6 +156,7 @@ describe("createClaudeSubprocessReaper", () => {
     const otherChild = createProcess(2470);
     const reaper = createClaudeSubprocessReaper({
       logger,
+      platform: "darwin",
       killGraceMs: 25,
     });
     reaper.register(matchingChild, {
@@ -190,7 +196,7 @@ describe("createClaudeSubprocessReaper", () => {
       child.killed = true; // Node-faithful: true after the first delivered signal.
       return true;
     });
-    const reaper = createClaudeSubprocessReaper({ logger, killGraceMs: 25 });
+    const reaper = createClaudeSubprocessReaper({ logger, platform: "darwin", killGraceMs: 25 });
     reaper.register(child, {
       sessionId: "chat-hung",
       laneId: "lane-1",
@@ -234,6 +240,7 @@ describe("createClaudeSubprocessReaper", () => {
 
     createClaudeSubprocessReaper({
       logger,
+      platform: "darwin",
       killGraceMs: 25,
       registryPath,
       processKill,

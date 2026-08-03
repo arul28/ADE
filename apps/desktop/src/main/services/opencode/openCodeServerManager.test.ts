@@ -598,7 +598,10 @@ describe("openCodeServerManager", () => {
     expect(spec.args[0]).toBe("/d");
     expect(spec.args[1]).toBe("/s");
     expect(spec.args[2]).toBe("/c");
-    expect(spec.args[3]).toContain('&&"C:\\Users\\100%% dev\\bin\\opencode.bat" "serve" "--hostname=127.0.0.1" "--port=4310"');
+    // `quoteWindowsCmdArg` no longer doubles `%`: on a `cmd /c` command line
+    // `%%` survives literally, so a directory genuinely named `100% dev` used
+    // to be handed to cmd.exe as `100%% dev` and could not be launched.
+    expect(spec.args[3]).toContain('&&"C:\\Users\\100% dev\\bin\\opencode.bat" "serve" "--hostname=127.0.0.1" "--port=4310"');
   });
 
   it("reaps orphaned ADE-managed OpenCode processes on Windows with a tree kill and skips ones with a live owner", async () => {
