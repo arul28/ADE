@@ -6968,6 +6968,71 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(service.supportsRemoteAction("cto.clearLinearToken"))
   }
 
+  /// Current brains mark the Linear credential writes host-local
+  /// (`viewerAllowed: false`), so the mobile Linear screen must hide the API-key
+  /// and disconnect affordances even though the actions are advertised. An
+  /// older brain that still advertises them as viewer-allowed must keep them
+  /// available, so connecting to an old host does not regress.
+  @MainActor
+  func testLinearCredentialWritesAreViewerGatedButLegacyHostsStayAllowed() throws {
+    let remoteCommandDescriptorsKey = "ade.sync.remoteCommandDescriptors"
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    defer { UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey) }
+
+    let deniedDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { deniedDatabase.close() }
+    let deniedService = SyncService(database: deniedDatabase)
+    try deniedService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-current",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            ["action": "cto.setLinearToken", "policy": ["viewerAllowed": false]],
+            ["action": "cto.clearLinearToken", "policy": ["viewerAllowed": false]],
+            ["action": "sync.getWebPairingInfo", "policy": ["viewerAllowed": false]],
+            ["action": "cto.startLinearMobileOAuth", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(deniedService.supportsRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("cto.setLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("cto.clearLinearToken"))
+    XCTAssertFalse(deniedService.supportsViewerRemoteAction("sync.getWebPairingInfo"))
+    // OAuth is the surviving mobile connect path and stays viewer-allowed.
+    XCTAssertTrue(deniedService.supportsViewerRemoteAction("cto.startLinearMobileOAuth"))
+
+    UserDefaults.standard.removeObject(forKey: remoteCommandDescriptorsKey)
+    let legacyDatabase = makeDatabase(baseURL: makeTemporaryDirectory())
+    defer { legacyDatabase.close() }
+    let legacyService = SyncService(database: legacyDatabase)
+    try legacyService.applyHelloPayloadForTesting([
+      "brain": [
+        "deviceId": "host-legacy",
+        "deviceName": "Mac Studio",
+      ],
+      "features": [
+        "projectCatalog": false,
+        "commandRouting": [
+          "mode": "allowlisted",
+          "actions": [
+            ["action": "cto.setLinearToken", "policy": ["viewerAllowed": true]],
+            ["action": "cto.clearLinearToken", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+
+    XCTAssertTrue(legacyService.supportsViewerRemoteAction("cto.setLinearToken"))
+    XCTAssertTrue(legacyService.supportsViewerRemoteAction("cto.clearLinearToken"))
+  }
+
   @MainActor
   func testSyncServiceReadsExplicitFullMobileCompatibilityFromHello() async throws {
     let service = SyncService(database: makeDatabase(baseURL: makeTemporaryDirectory()))
@@ -9544,8 +9609,7 @@ final class ADETests: XCTestCase {
             laneId: "lane-child",
             agentSummary: ["summary": .string("Codex running")],
             updatedAt: "2026-03-18T00:14:00.000Z"
-          ),
-          adoptableAttached: false
+          )
         ),
         LaneListSnapshot(
           lane: archivedLane,
@@ -9553,8 +9617,7 @@ final class ADETests: XCTestCase {
           rebaseSuggestion: nil,
           autoRebaseStatus: nil,
           conflictStatus: nil,
-          stateSnapshot: nil,
-          adoptableAttached: false
+          stateSnapshot: nil
         ),
       ]
     )
@@ -11957,8 +12020,7 @@ final class ADETests: XCTestCase {
           updatedAt: nil
         ),
         createdAt: "2026-03-20T00:00:00.000Z",
-        archivedAt: nil,
-        adoptableAttached: true
+        archivedAt: nil
       ),
       makeLaneListSnapshot(
         id: "lane-worktree",
@@ -11976,8 +12038,7 @@ final class ADETests: XCTestCase {
           updatedAt: nil
         ),
         createdAt: "2026-03-10T00:00:00.000Z",
-        archivedAt: nil,
-        adoptableAttached: false
+        archivedAt: nil
       ),
       makeLaneListSnapshot(
         id: "lane-archived",
@@ -12010,6 +12071,12 @@ final class ADETests: XCTestCase {
 
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "docs main"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:dirty type:attached"))
+    // Nothing is created as `attached` any more, but existing rows keep the
+    // type and are never migrated. An unrecognized `is:` value matches nothing
+    // instead of degrading to a free-text search, so losing this case would
+    // empty the list rather than widen it.
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:attached"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[2], isPinned: false, query: "is:attached"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:pinned awaiting"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:clean is:primary"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:worktree"))
@@ -21471,8 +21538,7 @@ final class ADETests: XCTestCase {
     runtime: LaneRuntimeSummary,
     stateSnapshot: LaneStateSnapshotSummary? = nil,
     createdAt: String,
-    archivedAt: String?,
-    adoptableAttached: Bool = false
+    archivedAt: String?
   ) -> LaneListSnapshot {
     LaneListSnapshot(
       lane: LaneSummary(
@@ -21501,8 +21567,7 @@ final class ADETests: XCTestCase {
       rebaseSuggestion: nil,
       autoRebaseStatus: nil,
       conflictStatus: nil,
-      stateSnapshot: stateSnapshot,
-      adoptableAttached: adoptableAttached
+      stateSnapshot: stateSnapshot
     )
   }
 

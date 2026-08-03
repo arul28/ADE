@@ -88,6 +88,7 @@ import {
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
 import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
+import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
   isUnsupportedRecoveryActionError,
   LEGACY_RECOVERY_ACTION_BY_NEUTRAL,
@@ -1483,10 +1484,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
   lanes: `${ADE_BANNER}
   Lanes
 
-  Lanes are ADE-managed worktrees and branches. Most commands accept either
-  --lane <lane-id> or a positional lane id.
+  Every git worktree of the project is a lane. "ade lanes list" reconciles lane
+  rows against git on each call, so a worktree you created by hand shows up as a
+  lane with no attach step, and a lane whose worktree is gone from git and disk
+  stops being listed. Most commands accept either --lane <lane-id> or a
+  positional lane id.
 
-    $ ade lanes list --text                         Show lane stack graph and branch names
+    $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
@@ -1510,14 +1514,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
                                                     Child lanes carry the parent's unmerged work
-    $ ade lanes import --branch <branch>            Register an existing branch/worktree
+    $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
+                                                    worktree (fails if the branch is already checked out somewhere —
+                                                    that worktree is already a lane)
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
     $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
     $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
-    $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
@@ -4363,41 +4368,6 @@ function buildLanePlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "attach") {
-    return {
-      kind: "execute",
-      label: "lane attach",
-      steps: [
-        actionStep(
-          "result",
-          "lane",
-          "attach",
-          collectGenericObjectArgs(args, {
-            worktreePath: readValue(args, ["--path"]) ?? firstPositional(args),
-            name: readValue(args, ["--name"]),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "adopt-attached") {
-    const laneId = requireValue(
-      readLaneId(args) ?? firstPositional(args),
-      "laneId",
-    );
-    return {
-      kind: "execute",
-      label: "lane adopt attached",
-      steps: [
-        actionStep(
-          "result",
-          "lane",
-          "adoptAttached",
-          collectGenericObjectArgs(args, { laneId }),
-        ),
-      ],
-    };
-  }
   if (sub === "split-unstaged") {
     return {
       kind: "execute",
@@ -4438,19 +4408,6 @@ function buildLanePlan(args: string[]): CliPlan {
           "result",
           "import_lane",
           collectGenericObjectArgs(args, input),
-        ),
-      ],
-    };
-  }
-  if (sub === "unregistered" || sub === "list-unregistered") {
-    return {
-      kind: "execute",
-      label: "unregistered lanes",
-      steps: [
-        actionCallStep(
-          "result",
-          "list_unregistered_lanes",
-          collectGenericObjectArgs(args),
         ),
       ],
     };
@@ -15994,13 +15951,14 @@ async function runServe(
     record: ProjectRecord,
     overrides: Partial<SyncMobileProjectSummary> = {},
   ): Promise<SyncMobileProjectSummary> => {
-    const scope = await scopeRegistry.get(record.projectId);
-    const lanes = await scope.runtime.laneService
-      .list({ includeArchived: false, includeStatus: false })
-      .catch(() => []);
-    const laneCount = lanes.length;
+    // Hydrate the scope (callers depend on the project being open), but take the
+    // count from the same disk read the catalog uses. `laneService.list` counts
+    // rows without checking the worktree still exists, so a project with one
+    // deleted lane reported N here and N-1 in the catalog — a visible flicker
+    // the moment the phone opened it.
+    await scopeRegistry.get(record.projectId);
     return toMobileProjectSummary(record, {
-      laneCount,
+      laneCount: headlessProjectLaneCount(record.rootPath),
       isOpen: true,
       ...overrides,
     });
@@ -16112,10 +16070,17 @@ async function runServe(
           ? projectRegistry.get(catalogHostProjectId)
           : null,
       )
-        .map((record) =>
-          toMobileProjectSummary(record, {
-            isAvailable: fs.existsSync(record.rootPath),
-          }));
+        .map((record) => {
+          const isAvailable = fs.existsSync(record.rootPath);
+          return toMobileProjectSummary(record, {
+            isAvailable,
+            // Registry rows carry no lane data; read the count off disk so the
+            // catalog does not advertise "0 lanes" for every project. A root
+            // that isn't on this machine has nothing to read — skip the disk
+            // work and leave the summary's default count.
+            ...(isAvailable ? { laneCount: headlessProjectLaneCount(record.rootPath) } : {}),
+          });
+        });
       return {
         projects: markActiveHostProjectOpen(projects, activeHostProjectId),
       };
@@ -16155,13 +16120,11 @@ async function runServe(
             project,
           };
         }
-        const lanes = await scope.runtime.laneService
-          .list({ includeArchived: false, includeStatus: false })
-          .catch(() => []);
-        const laneCount = lanes.length;
+        // Same disk-backed count as the catalog and the open path, so the row
+        // the phone sees on connect matches the one it just tapped.
         const readyProject = toMobileProjectSummary(record, {
           isOpen: true,
-          laneCount,
+          laneCount: headlessProjectLaneCount(record.rootPath),
         });
         const activeScope = await scopeRegistry.resolveActiveSyncHost();
         const activeStatus = await activeScope?.runtime.syncService?.getStatus();

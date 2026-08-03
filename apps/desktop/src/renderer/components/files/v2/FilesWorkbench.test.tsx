@@ -202,6 +202,30 @@ describe("FilesWorkbench", () => {
     localStorage.clear();
   });
 
+  it("says so when the host capped the git decorations, and clears it when it stops", async () => {
+    const hint = /Some git decorations hidden/;
+    // A capped response leaves deep files undecorated, which is otherwise
+    // indistinguishable from those files being clean.
+    (window.ade.files.refreshGitDecorations as ReturnType<typeof vi.fn>).mockResolvedValue({
+      workspaceId: "workspace-a",
+      files: [],
+      directories: [],
+      truncated: true,
+    });
+    const view = render(<FilesWorkbench active />);
+    expect(await screen.findByText(hint)).toBeTruthy();
+
+    view.unmount();
+    (window.ade.files.refreshGitDecorations as ReturnType<typeof vi.fn>).mockResolvedValue({
+      workspaceId: "workspace-a",
+      files: [],
+      directories: [],
+    });
+    render(<FilesWorkbench active />);
+    await waitFor(() => expect(window.ade.files.refreshGitDecorations).toHaveBeenCalled());
+    await waitFor(() => expect(screen.queryByText(hint)).toBeNull());
+  });
+
   it("preserves dirty open tabs when switching explorer workspaces", async () => {
     render(<FilesWorkbench active />);
 
@@ -444,11 +468,13 @@ describe("FilesWorkbench", () => {
 
     listTreeChildren.mockClear();
     act(() => {
-      changeHandler?.({ workspaceId: "workspace-a", path: "bigdir/f-1.txt", type: "modified", ts: new Date().toISOString() });
+      changeHandler?.({ workspaceId: "workspace-a", path: "bigdir/f-1.txt", type: "created", ts: new Date().toISOString() });
     });
 
     // Debounced watcher refresh refetches the 4,000 loaded children (2 pages) —
     // freshness preserved without materializing the remaining 8,000 entries.
+    // (Only structural events re-list; a content-only `modified` event refreshes
+    // git decorations alone.)
     await waitFor(() => expect(listTreeChildren).toHaveBeenCalledTimes(2), { timeout: 3_000 });
     await waitFor(() => expect(screen.getByTestId("bigdir-children").textContent).toBe("4000"));
     expect(listTreeChildren).toHaveBeenCalledWith(expect.objectContaining({ offset: 0 }));
@@ -485,7 +511,7 @@ describe("FilesWorkbench", () => {
     // …while a watcher event queues a refresh that would have snapshotted the
     // pre-append 2,000-entry window.
     act(() => {
-      changeHandler?.({ workspaceId: "workspace-a", path: "bigdir/f-1.txt", type: "modified", ts: new Date().toISOString() });
+      changeHandler?.({ workspaceId: "workspace-a", path: "bigdir/f-1.txt", type: "created", ts: new Date().toISOString() });
     });
     await new Promise((resolve) => setTimeout(resolve, 300)); // debounce fires; refresh is queued behind the load-more
     releaseLoadMore();

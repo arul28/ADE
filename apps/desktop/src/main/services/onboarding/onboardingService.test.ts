@@ -70,9 +70,7 @@ describe("onboardingService integration", () => {
         logger: createLogger(),
         projectRoot,
         projectId: "proj",
-        baseRef: "main",
         freshProject: false,
-        laneService: { list: async () => [] } as any,
         projectConfigService: createInMemoryProjectConfigService()
       });
 
@@ -111,9 +109,7 @@ describe("onboardingService help state", () => {
       logger: createLogger(),
       projectRoot: "/tmp/ade-onboarding-help",
       projectId: "proj",
-      baseRef: "main",
       freshProject: false,
-      laneService: { list: async () => [] } as any,
       projectConfigService: createInMemoryProjectConfigService()
     });
     return { service, db };
@@ -154,9 +150,7 @@ describe("onboardingService help state", () => {
       logger: createLogger(),
       projectRoot: "/tmp/ade-onboarding-legacy",
       projectId: "proj",
-      baseRef: "main",
       freshProject: false,
-      laneService: { list: async () => [] } as any,
       projectConfigService: createInMemoryProjectConfigService(),
     });
 

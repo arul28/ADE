@@ -392,22 +392,6 @@ extension LanesTabView {
     } label: {
       Label("Copy path", systemImage: "doc.on.doc")
     }
-    if snapshot.adoptableAttached {
-      Button {
-        Task {
-          do {
-            _ = try await syncService.adoptAttachedLane(snapshot.lane.id)
-            await reload(refreshRemote: true)
-          } catch {
-            ADEHaptics.error()
-            errorMessage = error.localizedDescription
-          }
-        }
-      } label: {
-        Label("Move to ADE-managed worktree", systemImage: "folder.badge.gearshape")
-      }
-      .disabled(!canRunLiveActions)
-    }
   }
 
   @MainActor

@@ -108,4 +108,24 @@ describe("SecretsSection env import and export", () => {
     await waitFor(() => expect(get).toHaveBeenCalledTimes(2));
     expect(writeClipboardText).toHaveBeenCalledWith("replacement");
   });
+  // Regression: the shared copy hook reports a failed clipboard write by
+  // returning false instead of throwing, so `copySecret`'s try/catch no longer
+  // catches it. Before this was gated on the boolean, a denied clipboard still
+  // rendered the green "Copied EXISTING." confirmation while nothing was on the
+  // clipboard — the worst possible lie on the secrets surface.
+  it("reports an error instead of success when the clipboard write fails", async () => {
+    const { writeClipboardText } = installAdeMock();
+    writeClipboardText.mockRejectedValueOnce(new Error("clipboard unavailable"));
+    render(<SecretsSection />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Copy EXISTING" }));
+
+    const failure = await screen.findByText(/Couldn't copy EXISTING to the clipboard\./);
+    expect(failure).toBeTruthy();
+    // The underlying IPC reason stays visible for diagnosis.
+    expect(failure.textContent).toContain("clipboard unavailable");
+    expect(screen.queryByText("Copied EXISTING.")).toBeNull();
+    // The row's own confirmation must stay un-checked too.
+    expect(screen.getByRole("button", { name: "Copy EXISTING" })).toBeTruthy();
+  });
 });

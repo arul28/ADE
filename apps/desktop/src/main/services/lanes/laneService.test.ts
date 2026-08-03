@@ -13,6 +13,17 @@ vi.mock("../git/git", () => ({
 
 import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 
+/**
+ * A fixture repo root in the same path space real git reports from. `os.tmpdir()`
+ * is a symlink on macOS, and these tests fabricate git's output from the paths
+ * they build — git itself always answers with symlinks resolved, so an
+ * unresolved fixture root would model something git never produces. Tests that
+ * need a symlinked root build one explicitly.
+ */
+function makeTempRepoRoot(prefix: string): string {
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+}
+
 function createLogger() {
   return {
     debug: () => {},
@@ -109,7 +120,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("includes worktree availability in lane summaries", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-worktree-available-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-worktree-available-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-worktree-available", repoRoot });
@@ -160,7 +171,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("preserves agent summaries during status-only snapshot refreshes", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-status-snapshot-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-status-snapshot-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-status-snapshot", repoRoot });
@@ -216,7 +227,7 @@ describe("laneService createFromUnstaged", () => {
     // Regression: unchanged status polls used to rewrite updated_at on every
     // summary read, replicating a CRDT row change to phones every poll and
     // hammering the mobile Lanes list with no-op invalidations.
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-noop-snapshot-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-noop-snapshot-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-noop-snapshot", repoRoot });
@@ -279,7 +290,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("recreates the primary lane when the only stored primary lane is archived", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-archived-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-primary-archived-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
     db.run(
@@ -322,7 +333,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("notifies when a new lane is linked to a Linear issue", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-linear-card-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-linear-card-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-05-12T20:00:00.000Z";
     db.run(
@@ -369,7 +380,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("links Linear issues that do not belong to a Linear project", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-linear-projectless-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-linear-projectless-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-linear-projectless", repoRoot });
 
@@ -432,7 +443,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("moves unstaged and untracked changes into a new child lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-success-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-success-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-rescue-success", repoRoot });
 
@@ -525,7 +536,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("rejects the rescue flow when staged changes exist", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-staged-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-staged-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-rescue-staged", repoRoot });
 
@@ -556,7 +567,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("allows rescuing unstaged changes from the primary lane even when it is behind remote", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-primary-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-primary-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-rescue-primary", repoRoot });
 
@@ -646,7 +657,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("restores the source work and removes the new lane when applying in the target lane fails", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-rollback-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-rollback-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-rescue-rollback", repoRoot });
 
@@ -737,7 +748,7 @@ describe("laneService createFromUnstaged", () => {
   });
 
   it("rejects the rescue flow when there are no unstaged changes", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-rescue-empty-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-rescue-empty-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-rescue-empty", repoRoot });
 
@@ -776,7 +787,7 @@ describe("laneService automatic lane identity", () => {
   });
 
   it("serializes duplicate completions and renames the exact temporary branch once", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-auto-lane-identity-"));
+    const repoRoot = makeTempRepoRoot("ade-auto-lane-identity-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-auto-identity", repoRoot });
@@ -865,7 +876,7 @@ describe("laneService create", () => {
   });
 
   it("creates an unparented lane from the requested base branch", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-root-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-root-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -939,7 +950,7 @@ describe("laneService create", () => {
   });
 
   it("does not let a concurrent list adopt a half-created worktree as a duplicate lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-race-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-race-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -1054,7 +1065,7 @@ describe("laneService create", () => {
   });
 
   it("creates an unparented lane from an explicit start point", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-start-point-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-start-point-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
     let worktreeStartPoint: string | null = null;
@@ -1128,7 +1139,7 @@ describe("laneService create", () => {
   });
 
   it("creates a fresh lane from primary using the project default base by default", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-from-primary-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-from-primary-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -1208,7 +1219,7 @@ describe("laneService create", () => {
   });
 
   it("creates a root lane from the default base when the requested parent is primary", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-primary-parent-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-primary-parent-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -1291,7 +1302,7 @@ describe("laneService list repairs", () => {
   });
 
   it("repairs legacy root ADE lanes back to the default base when they have no open PR", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-repair-root-base-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-repair-root-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -1379,7 +1390,7 @@ describe("laneService list repairs", () => {
   });
 
   it("dedupes duplicate lane rows sharing a managed worktree, keeping the creator row", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-repair-dup-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-repair-dup-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const worktreesDir = path.join(repoRoot, "worktrees");
     const sharedWorktreePath = path.join(worktreesDir, "claude-pre-launch-review-ba241a46");
@@ -1499,6 +1510,899 @@ describe("laneService list repairs", () => {
   });
 });
 
+describe("laneService worktree reconcile", () => {
+  const INSERT_LANE = `
+    insert into lanes(
+      id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+      attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  const NOW = "2026-08-01T12:00:00.000Z";
+
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  async function makeProject(projectId: string, prefix: string) {
+    // Resolved, because that is the only kind of path real git ever reports and
+    // these fixtures stand in for its output. `os.tmpdir()` is itself a symlink
+    // on macOS, so without this the fixtures would sit in a path space git
+    // never produces.
+    const repoRoot = makeTempRepoRoot(prefix);
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, repoRoot, "demo", "main", NOW, NOW],
+    );
+    db.run(INSERT_LANE, ["lane-main", projectId, "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", NOW, null]);
+    return { db, repoRoot, worktreesDir: path.join(repoRoot, ".ade", "worktrees") };
+  }
+
+  function porcelain(entries: Array<{ path: string; branch?: string; bare?: boolean; prunable?: string }>): string {
+    return entries
+      .map((entry) =>
+        [
+          `worktree ${entry.path}`,
+          "HEAD 1111111",
+          ...(entry.bare ? ["bare"] : []),
+          ...(entry.branch ? [`branch refs/heads/${entry.branch}`] : []),
+          ...(entry.prunable ? [`prunable ${entry.prunable}`] : []),
+          "",
+        ].join("\n"),
+      )
+      .join("\n");
+  }
+
+  /**
+   * `git worktree list` plus the one-shot ownership probe are the only git calls
+   * a statusless lane list needs. Real git answers both `--show-toplevel` and
+   * `--git-common-dir` with symlinks resolved no matter which spelling of the
+   * cwd it was handed, so the stub resolves `opts.cwd` the same way.
+   * `commonDir` defaults to the project's own `.git`: a root checkout, which
+   * owns every worktree of the repository. Pass a directory outside the project
+   * root to model a project whose root is itself a linked worktree.
+   */
+  function stubGit(listWorktrees: () => string | Error, commonDir?: string) {
+    const resolvedCwd = (cwd: unknown) => {
+      const raw = String(cwd ?? "");
+      try {
+        return fs.realpathSync(raw);
+      } catch {
+        return raw;
+      }
+    };
+    vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(args);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+        return { exitCode: 0, stdout: "main\n", stderr: "" };
+      }
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute") {
+        const topLevel = resolvedCwd(opts?.cwd);
+        const resolvedCommonDir = commonDir ?? path.join(topLevel, ".git");
+        const lines = args.slice(2).map((flag) => (flag === "--show-toplevel" ? topLevel : resolvedCommonDir));
+        if (!lines.length) throw new Error(`Unexpected git call: ${args.join(" ")}`);
+        return { exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+      if (args[0] === "worktree" && args[1] === "list") {
+        const result = listWorktrees();
+        if (result instanceof Error) throw result;
+        return result as any;
+      }
+      throw new Error(`Unexpected git call: ${args.join(" ")}`);
+    });
+  }
+
+  it("adopts every git worktree as a lane, wherever it lives, and skips prunable ones", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-adopt-all", "ade-lane-adopt-all-");
+    const externalPath = path.resolve(path.join(repoRoot, "..", "external-checkout"));
+    const managedPath = path.join(worktreesDir, "managed-1234abcd");
+    const prunablePath = path.resolve(path.join(repoRoot, "..", "already-gone"));
+    try {
+      stubGit(() =>
+        porcelain([
+          { path: repoRoot, branch: "main" },
+          { path: externalPath, branch: "feature/external" },
+          { path: managedPath, branch: "ade/managed-1234abcd" },
+          { path: prunablePath, branch: "feature/gone", prunable: "gitdir file points to non-existent location" },
+        ]),
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-adopt-all",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.find((lane) => lane.branchRef === "feature/external")).toMatchObject({
+        laneType: "worktree",
+        baseRef: "main",
+        worktreePath: externalPath,
+      });
+      expect(lanes.find((lane) => lane.branchRef === "ade/managed-1234abcd")).toMatchObject({
+        laneType: "worktree",
+        worktreePath: managedPath,
+      });
+      // Prunable worktrees are already half-gone; adopting one would resurrect
+      // a lane that the next `git worktree prune` deletes.
+      expect(lanes.some((lane) => lane.branchRef === "feature/gone")).toBe(false);
+      // The repository root stays the primary lane and is never adopted twice.
+      expect(lanes.filter((lane) => lane.worktreePath === repoRoot)).toHaveLength(1);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // A project can be rooted at a linked worktree — WorktreeOpenDialog's "Open as
+  // a separate project instead", plus grandfathered projects. `git worktree list`
+  // run from there reports the whole repository, so an unscoped adopt would give
+  // this project lane rows for the main checkout and every sibling project's
+  // worktree — and a lane row is what the delete rails check before removing a
+  // folder.
+  it("adopts nothing outside its own .ade/worktrees when the project root is itself a linked worktree", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-linked-root", "ade-lane-linked-root-");
+    const mainCheckout = path.resolve(path.join(repoRoot, "..", "main-checkout"));
+    const siblingProject = path.resolve(path.join(repoRoot, "..", "sibling-project"));
+    const ownManagedPath = path.join(worktreesDir, "own-1234abcd");
+    try {
+      stubGit(
+        () =>
+          porcelain([
+            { path: mainCheckout, branch: "main" },
+            { path: repoRoot, branch: "feature/this-project" },
+            { path: siblingProject, branch: "feature/sibling" },
+            { path: ownManagedPath, branch: "ade/own-1234abcd" },
+          ]),
+        path.join(mainCheckout, ".git"),
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-linked-root",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.find((lane) => lane.branchRef === "ade/own-1234abcd")).toMatchObject({
+        laneType: "worktree",
+        worktreePath: ownManagedPath,
+      });
+      expect(lanes.some((lane) => lane.worktreePath === mainCheckout)).toBe(false);
+      expect(lanes.some((lane) => lane.worktreePath === siblingProject)).toBe(false);
+      expect(lanes.some((lane) => lane.branchRef === "feature/sibling")).toBe(false);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // The mirror image: the repo-wide listing does not speak for paths this
+  // project does not own, so it must not be used to declare their rows vanished.
+  it("does not reap a lane whose worktree lies outside its own .ade/worktrees when rooted at a linked worktree", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-linked-reap", "ade-lane-linked-reap-");
+    const mainCheckout = path.resolve(path.join(repoRoot, "..", "main-checkout"));
+    const foreignPath = path.resolve(path.join(repoRoot, "..", "someone-elses-worktree"));
+    const ownGonePath = path.join(worktreesDir, "own-gone-aaaabbbb");
+    try {
+      db.run(INSERT_LANE, ["lane-foreign", "proj-linked-reap", "Foreign", null, "worktree", "main", "ade/foreign", foreignPath, null, 0, null, null, null, null, "active", NOW, null]);
+      db.run(INSERT_LANE, ["lane-own-gone", "proj-linked-reap", "Own gone", null, "worktree", "main", "ade/own-gone", ownGonePath, null, 0, null, null, null, null, "active", NOW, null]);
+      stubGit(
+        () => porcelain([{ path: mainCheckout, branch: "main" }, { path: repoRoot, branch: "feature/this-project" }]),
+        path.join(mainCheckout, ".git"),
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-linked-reap",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.some((lane) => lane.id === "lane-foreign")).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-foreign"])).toMatchObject({ id: "lane-foreign" });
+      // A lane this project does own is still reaped normally.
+      expect(lanes.some((lane) => lane.id === "lane-own-gone")).toBe(false);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // git answers every path question with symlinks already resolved, while ADE
+  // holds whatever the user picked — routinely a symlinked parent such as
+  // `~/Projects` pointing at an external volume. Comparing the two spellings
+  // directly made the ownership probe read the repo's own checkout as foreign,
+  // scoping the project down to `managed-only` and then failing even that test,
+  // so adoption and reaping both went silently dead for the whole project.
+  it("adopts and reaps through a symlinked project root", async () => {
+    const projectId = "proj-symlink-root";
+    const realBase = makeTempRepoRoot("ade-lane-symlink-real-");
+    const linkHome = makeTempRepoRoot("ade-lane-symlink-link-");
+    const linkBase = path.join(linkHome, "projects");
+    fs.symlinkSync(realBase, linkBase, "dir");
+
+    const realRoot = path.join(realBase, "repo");
+    // Every path ADE is configured with goes through the symlink.
+    const linkRoot = path.join(linkBase, "repo");
+    const linkWorktreesDir = path.join(linkRoot, ".ade", "worktrees");
+    const realManaged = path.join(realRoot, ".ade", "worktrees", "adopted-1234abcd");
+    const realExternal = path.join(realBase, "external-checkout");
+    // A lane row written before the fix, spelled through the symlink, whose
+    // folder is gone from both git and disk.
+    const linkGone = path.join(linkWorktreesDir, "gone-aaaabbbb");
+
+    fs.mkdirSync(realManaged, { recursive: true });
+    fs.mkdirSync(realExternal, { recursive: true });
+
+    const db = await openKvDb(path.join(realRoot, "kv.sqlite"), createLogger());
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        [projectId, linkRoot, "demo", "main", NOW, NOW],
+      );
+      db.run(INSERT_LANE, ["lane-main", projectId, "Main", null, "primary", "main", "main", linkRoot, null, 1, null, null, null, null, "active", NOW, null]);
+      db.run(INSERT_LANE, ["lane-gone", projectId, "Gone", null, "worktree", "main", "ade/gone", linkGone, null, 0, null, null, null, null, "active", NOW, null]);
+
+      stubGit(() =>
+        porcelain([
+          { path: realRoot, branch: "main" },
+          { path: realManaged, branch: "ade/adopted-1234abcd" },
+          { path: realExternal, branch: "feature/external" },
+        ]),
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: linkRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir: linkWorktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      // `repository` scope, so a worktree outside `.ade/worktrees` is adopted too.
+      expect(lanes.find((lane) => lane.branchRef === "ade/adopted-1234abcd")).toMatchObject({
+        laneType: "worktree",
+        worktreePath: realManaged,
+      });
+      expect(lanes.find((lane) => lane.branchRef === "feature/external")).toMatchObject({
+        laneType: "worktree",
+        worktreePath: realExternal,
+      });
+      expect(lanes.some((lane) => lane.id === "lane-gone")).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-gone"])).toBeNull();
+      // The repository's own checkout stays the single primary lane under both
+      // of its spellings — resolving paths must not stop excluding it.
+      expect(lanes.filter((lane) => lane.worktreePath === realRoot || lane.worktreePath === linkRoot)).toHaveLength(1);
+      expect(lanes.filter((lane) => lane.laneType === "primary")).toHaveLength(1);
+    } finally {
+      db.close();
+      fs.rmSync(linkHome, { recursive: true, force: true });
+      fs.rmSync(realBase, { recursive: true, force: true });
+    }
+  });
+
+  it("removes a lane whose worktree is gone from both git and disk, purging its sessions", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-reap", "ade-lane-reap-");
+    const gonePath = path.join(worktreesDir, "gone-aaaabbbb");
+    const lifecycleEvents: any[] = [];
+    try {
+      db.run(INSERT_LANE, ["lane-gone", "proj-reap", "Gone", null, "worktree", "main", "ade/gone", gonePath, null, 0, null, null, null, null, "active", NOW, null]);
+      db.run(
+        "insert into claude_sessions(session_id, lane_id, title, created_at, updated_at) values (?, ?, ?, ?, ?)",
+        ["chat-gone", "lane-gone", "Chat in the removed lane", NOW, NOW],
+      );
+      db.run(
+        "insert into terminal_sessions(id, lane_id, title, status, started_at, transcript_path) values (?, ?, ?, 'exited', ?, ?)",
+        ["pty-gone", "lane-gone", "Terminal in the removed lane", NOW, "/tmp/gone.log"],
+      );
+      stubGit(() => porcelain([{ path: repoRoot, branch: "main" }]));
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reap",
+        defaultBaseRef: "main",
+        worktreesDir,
+        onLifecycleEvent: (event) => lifecycleEvents.push(event),
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.some((lane) => lane.id === "lane-gone")).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-gone"])).toBeNull();
+      expect(db.get("select session_id from claude_sessions where session_id = ?", ["chat-gone"])).toBeNull();
+      expect(db.get("select id from terminal_sessions where id = ?", ["pty-gone"])).toBeNull();
+      expect(lifecycleEvents).toContainEqual(
+        expect.objectContaining({ type: "lane-deleted", laneId: "lane-gone" }),
+      );
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  // The reap deletes the same rows a user-initiated delete does, so it owes the
+  // same file cleanup: without it every proof file the lane wrote is orphaned on
+  // disk with no row left pointing at it.
+  it("removes the reaped lane's proof files along with its rows", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-reap-proof", "ade-lane-reap-proof-");
+    const gonePath = path.join(worktreesDir, "gone-proof-aaaabbbb");
+    const artifactsDir = path.join(repoRoot, ".ade", "artifacts", "computer-use");
+    const proofFile = path.join(artifactsDir, "reaped.png");
+    try {
+      db.run(INSERT_LANE, ["lane-gone", "proj-reap-proof", "Gone", null, "worktree", "main", "ade/gone", gonePath, null, 0, null, null, null, null, "active", NOW, null]);
+      fs.mkdirSync(artifactsDir, { recursive: true });
+      fs.writeFileSync(proofFile, "reaped");
+      db.run(
+        `insert into computer_use_artifacts(
+           id, project_id, artifact_kind, backend_style, backend_name, source_tool_name,
+           original_type, title, description, uri, storage_kind, mime_type, metadata_json,
+           lane_id, created_at
+         ) values (?, 'proj-reap-proof', 'screenshot', 'manual', 'ade-cli', null, null, ?, null, ?, 'file', null, '{}', 'lane-gone', ?)`,
+        ["reaped", "reaped", ".ade/artifacts/computer-use/reaped.png", NOW],
+      );
+      stubGit(() => porcelain([{ path: repoRoot, branch: "main" }]));
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reap-proof",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      await service.list({ includeStatus: false });
+
+      expect(db.get("select id from lanes where id = ?", ["lane-gone"])).toBeNull();
+      expect(db.get("select id from computer_use_artifacts where id = ?", ["reaped"])).toBeNull();
+      expect(fs.existsSync(proofFile)).toBe(false);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a lane when only one of the two signals says the worktree is gone", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-reap-partial", "ade-lane-reap-partial-");
+    const onDiskPath = path.join(worktreesDir, "on-disk-aaaabbbb");
+    const registeredPath = path.join(worktreesDir, "registered-ccccdddd");
+    try {
+      // Directory still on disk, but git no longer registers it.
+      fs.mkdirSync(onDiskPath, { recursive: true });
+      db.run(INSERT_LANE, ["lane-on-disk", "proj-reap-partial", "On disk", null, "worktree", "main", "ade/on-disk", onDiskPath, null, 0, null, null, null, null, "active", NOW, null]);
+      // Registered by git (as prunable), but the directory is gone.
+      db.run(INSERT_LANE, ["lane-registered", "proj-reap-partial", "Registered", null, "worktree", "main", "ade/registered", registeredPath, null, 0, null, null, null, null, "active", NOW, null]);
+      stubGit(() =>
+        porcelain([
+          { path: repoRoot, branch: "main" },
+          { path: registeredPath, branch: "ade/registered", prunable: "gitdir file points to non-existent location" },
+        ]),
+      );
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reap-partial",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.map((lane) => lane.id)).toEqual(expect.arrayContaining(["lane-on-disk", "lane-registered"]));
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never removes lanes when git worktree list fails", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-reap-git-fail", "ade-lane-reap-git-fail-");
+    try {
+      db.run(INSERT_LANE, ["lane-a", "proj-reap-git-fail", "A", null, "worktree", "main", "ade/a", path.join(worktreesDir, "a-11112222"), null, 0, null, null, null, null, "active", NOW, null]);
+      db.run(INSERT_LANE, ["lane-b", "proj-reap-git-fail", "B", null, "worktree", "main", "ade/b", path.join(worktreesDir, "b-33334444"), null, 0, null, null, null, null, "active", NOW, null]);
+      stubGit(() => new Error("fatal: not a git repository"));
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reap-git-fail",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      const lanes = await service.list({ includeStatus: false });
+
+      expect(lanes.map((lane) => lane.id).sort()).toEqual(["lane-a", "lane-b", "lane-main"]);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("never removes an archived lane whose folder was reclaimed on purpose", async () => {
+    const { db, repoRoot, worktreesDir } = await makeProject("proj-reap-archived", "ade-lane-reap-archived-");
+    try {
+      db.run(INSERT_LANE, [
+        "lane-reclaimed", "proj-reap-archived", "Reclaimed", null, "worktree", "main", "ade/reclaimed",
+        path.join(worktreesDir, "reclaimed-aaaabbbb"), null, 0, null, null, null, null, "archived", NOW, NOW,
+      ]);
+      stubGit(() => porcelain([{ path: repoRoot, branch: "main" }]));
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-reap-archived",
+        defaultBaseRef: "main",
+        worktreesDir,
+      });
+
+      await service.list({ includeStatus: false });
+
+      expect(db.get("select status from lanes where id = ?", ["lane-reclaimed"])).toMatchObject({ status: "archived" });
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("laneService delete outside .ade/worktrees", () => {
+  const INSERT_LANE = `
+    insert into lanes(
+      id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+      attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  const NOW = "2026-08-01T12:00:00.000Z";
+
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  async function setup(opts: {
+    projectId: string;
+    prefix: string;
+    laneType?: "worktree" | "attached";
+    /** Where the lane's worktree lives; defaults to an external directory. */
+    makeWorktreePath?: (repoRoot: string) => string;
+    createDirectory?: boolean;
+  }) {
+    const repoRoot = makeTempRepoRoot(opts.prefix);
+    const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [opts.projectId, repoRoot, "demo", "main", NOW, NOW],
+    );
+    db.run(INSERT_LANE, ["lane-main", opts.projectId, "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", NOW, null]);
+    // A sibling of the repo, i.e. a worktree the user created outside ADE.
+    const worktreePath = (opts.makeWorktreePath
+      ?? ((root: string) => path.resolve(root, "..", `${path.basename(root)}-external`)))(repoRoot);
+    if (opts.createDirectory !== false) fs.mkdirSync(worktreePath, { recursive: true });
+    db.run(INSERT_LANE, [
+      "lane-external", opts.projectId, "External", null, opts.laneType ?? "worktree", "main", "feature/external",
+      worktreePath, opts.laneType === "attached" ? worktreePath : null, 0, null, null, null, null, "active", NOW, null,
+    ]);
+    const events: any[] = [];
+    const service = createLaneService({
+      db,
+      projectRoot: repoRoot,
+      projectId: opts.projectId,
+      defaultBaseRef: "main",
+      worktreesDir,
+      onDeleteEvent: (event) => events.push(event),
+    });
+    return { db, service, repoRoot, worktreesDir, worktreePath, events };
+  }
+
+  /** Clean worktree, `git worktree remove` behaves like the real thing. */
+  function stubGitForDelete(args: {
+    worktreePath: string;
+    removeExitCode?: number;
+    removeStderr?: string;
+    topLevel?: string | null;
+  }) {
+    vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+      const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+      if (laneBranchGitStub) return laneBranchGitStub;
+      if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute" && gitArgs[2] === "--show-toplevel") {
+        if (args.topLevel === null) return { exitCode: 128, stdout: "", stderr: "not a git repository" };
+        return { exitCode: 0, stdout: `${args.topLevel ?? opts?.cwd ?? ""}\n`, stderr: "" };
+      }
+      if (gitArgs[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+      if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+        const exitCode = args.removeExitCode ?? 0;
+        if (exitCode === 0) fs.rmSync(args.worktreePath, { recursive: true, force: true });
+        return { exitCode, stdout: "", stderr: args.removeStderr ?? "" };
+      }
+      if (gitArgs[0] === "worktree" && gitArgs[1] === "prune") return { exitCode: 0, stdout: "", stderr: "" };
+      if (gitArgs[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+      return { exitCode: 0, stdout: "", stderr: "" };
+    });
+    vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+      if (gitArgs[0] === "worktree" && gitArgs[1] === "list") return "" as any;
+      return { exitCode: 0, stdout: "", stderr: "" } as any;
+    });
+  }
+
+  it("really removes a worktree that lives outside .ade/worktrees", async () => {
+    const { db, service, worktreePath, events } = await setup({
+      projectId: "proj-delete-external",
+      prefix: "ade-lane-delete-external-",
+    });
+    try {
+      stubGitForDelete({ worktreePath });
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      const last = events[events.length - 1];
+      expect(last.progress.overallStatus).toBe("completed");
+      expect(last.progress.steps.find((step: any) => step.name === "git_worktree_remove")?.status).toBe("completed");
+    } finally {
+      db.close();
+    }
+  });
+
+  it("really removes the worktree of a legacy attached lane row", async () => {
+    const { db, service, worktreePath, events } = await setup({
+      projectId: "proj-delete-attached",
+      prefix: "ade-lane-delete-attached-",
+      laneType: "attached",
+    });
+    try {
+      stubGitForDelete({ worktreePath });
+
+      await service.delete({ laneId: "lane-external", deleteBranch: false });
+
+      expect(fs.existsSync(worktreePath)).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toBeNull();
+      expect(events[events.length - 1].progress.steps.some((step: any) => step.name === "git_worktree_remove")).toBe(true);
+    } finally {
+      db.close();
+    }
+  });
+
+  it("refuses to remove an external lane folder reached through a symlink", async () => {
+    const { db, service, repoRoot, worktreePath } = await setup({
+      projectId: "proj-delete-symlink",
+      prefix: "ade-lane-delete-symlink-",
+      createDirectory: false,
+    });
+    const realDirectory = path.resolve(repoRoot, "..", `${path.basename(repoRoot)}-real-external`);
+    try {
+      fs.mkdirSync(realDirectory, { recursive: true });
+      fs.writeFileSync(path.join(realDirectory, "work.txt"), "user work\n", "utf8");
+      fs.symlinkSync(realDirectory, worktreePath, "dir");
+      stubGitForDelete({ worktreePath });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        "ADE will not remove a lane folder through a symbolic link.",
+      );
+
+      expect(fs.existsSync(path.join(realDirectory, "work.txt"))).toBe(true);
+      expect(fs.existsSync(worktreePath)).toBe(true);
+      expect(vi.mocked(runGit).mock.calls.some(([gitArgs]) => gitArgs[0] === "worktree" && gitArgs[1] === "remove")).toBe(false);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+    } finally {
+      db.close();
+      fs.rmSync(realDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to delete an external folder that is not a git worktree root", async () => {
+    const { db, service, worktreePath } = await setup({
+      projectId: "proj-delete-unverified",
+      prefix: "ade-lane-delete-unverified-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({ worktreePath, topLevel: null });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /no longer points at its Git worktree root/i,
+      );
+
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+    } finally {
+      db.close();
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+
+  it("surfaces a failed git worktree remove instead of deleting an external folder itself", async () => {
+    const { db, service, worktreePath } = await setup({
+      projectId: "proj-delete-git-failure",
+      prefix: "ade-lane-delete-git-failure-",
+    });
+    try {
+      fs.writeFileSync(path.join(worktreePath, "work.txt"), "user work\n", "utf8");
+      stubGitForDelete({
+        worktreePath,
+        removeExitCode: 128,
+        removeStderr: "fatal: validation failed, cannot remove working tree",
+      });
+
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /cannot remove working tree/i,
+      );
+
+      expect(fs.existsSync(path.join(worktreePath, "work.txt"))).toBe(true);
+      expect(db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+      expect(
+        db.get(
+          "select worktree_path from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+          ["proj-delete-git-failure", worktreePath],
+        ),
+      ).toBeNull();
+    } finally {
+      db.close();
+      fs.rmSync(worktreePath, { recursive: true, force: true });
+    }
+  });
+});
+
+// A lane row adopted from `git worktree list` holds the resolved spelling of its
+// folder, while ADE is configured with whatever the user picked — routinely a
+// symlinked parent. Every guard that decides "is this ADE's own worktree folder"
+// has to accept both spellings, or ADE stops recognising the worktrees it made.
+describe("laneService symlinked project root path space", () => {
+  const INSERT_LANE = `
+    insert into lanes(
+      id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+      attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+    ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `;
+  const NOW = "2026-08-01T12:00:00.000Z";
+
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  /** Project configured through `linkBase -> realBase`, exactly as a user's `~/Projects` symlink. */
+  async function makeSymlinkedProject(projectId: string, prefix: string) {
+    const realBase = makeTempRepoRoot(`${prefix}real-`);
+    const linkHome = makeTempRepoRoot(`${prefix}link-`);
+    const linkBase = path.join(linkHome, "projects");
+    fs.symlinkSync(realBase, linkBase, "dir");
+
+    const realRoot = path.join(realBase, "repo");
+    const linkRoot = path.join(linkBase, "repo");
+    fs.mkdirSync(path.join(realRoot, ".ade", "worktrees"), { recursive: true });
+
+    const db = await openKvDb(path.join(realRoot, "kv.sqlite"), createLogger());
+    db.run(
+      "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+      [projectId, linkRoot, "demo", "main", NOW, NOW],
+    );
+    db.run(INSERT_LANE, ["lane-main", projectId, "Main", null, "primary", "main", "main", linkRoot, null, 1, null, null, null, null, "active", NOW, null]);
+    return {
+      db,
+      realBase,
+      linkHome,
+      realRoot,
+      linkRoot,
+      // What ADE is configured with, versus what git reports.
+      linkWorktreesDir: path.join(linkRoot, ".ade", "worktrees"),
+      realWorktreesDir: path.join(realRoot, ".ade", "worktrees"),
+      cleanup: () => {
+        db.close();
+        fs.rmSync(linkHome, { recursive: true, force: true });
+        fs.rmSync(realBase, { recursive: true, force: true });
+      },
+    };
+  }
+
+  it("recovers a managed worktree spelled the way git reports it, and still refuses one outside the folder", async () => {
+    const projectId = "proj-symlink-delete";
+    const fixture = await makeSymlinkedProject(projectId, "ade-lane-symlink-delete-");
+    const managedPath = path.join(fixture.realWorktreesDir, "managed-1234abcd");
+    const externalPath = path.join(fixture.realBase, "external-checkout");
+    try {
+      for (const dir of [managedPath, externalPath]) {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, "work.txt"), "work\n", "utf8");
+      }
+      fixture.db.run(INSERT_LANE, ["lane-managed", projectId, "Managed", null, "worktree", "main", "ade/managed", managedPath, null, 0, null, null, null, null, "active", NOW, null]);
+      fixture.db.run(INSERT_LANE, ["lane-external", projectId, "External", null, "worktree", "main", "feature/external", externalPath, null, 0, null, null, null, null, "active", NOW, null]);
+      // `git worktree remove` fails the way a half-deleted worktree makes it
+      // fail — the stale state the filesystem fallback exists for.
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute") {
+          // Real git resolves symlinks whichever spelling of the cwd it is handed.
+          let topLevel = String(opts?.cwd ?? "");
+          try {
+            topLevel = fs.realpathSync(topLevel);
+          } catch {
+            // A cwd that no longer exists answers with itself.
+          }
+          const lines = gitArgs.slice(2).map((flag) =>
+            (flag === "--show-toplevel" ? topLevel : path.join(fixture.realRoot, ".git")));
+          return { exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+        }
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "remove") {
+          return { exitCode: 128, stdout: "", stderr: "fatal: validation failed, cannot remove working tree" };
+        }
+        if (gitArgs[0] === "show-ref") return { exitCode: 1, stdout: "", stderr: "" };
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "list") return "" as any;
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db: fixture.db,
+        projectRoot: fixture.linkRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir: fixture.linkWorktreesDir,
+      });
+
+      await service.delete({ laneId: "lane-managed", deleteBranch: false });
+
+      // ADE's own folder, so the stale-state failure escalates to a real removal.
+      expect(fs.existsSync(managedPath)).toBe(false);
+      expect(fixture.db.get("select id from lanes where id = ?", ["lane-managed"])).toBeNull();
+
+      // A sibling of the project root is not ADE's to delete, under either spelling.
+      await expect(service.delete({ laneId: "lane-external", deleteBranch: false })).rejects.toThrow(
+        /cannot remove working tree/i,
+      );
+      expect(fs.existsSync(path.join(externalPath, "work.txt"))).toBe(true);
+      expect(fixture.db.get("select id from lanes where id = ?", ["lane-external"])).toMatchObject({ id: "lane-external" });
+      expect(
+        fixture.db.get(
+          "select worktree_path from local_worktree_residual_cleanups where project_id = ? and worktree_path = ?",
+          [projectId, externalPath],
+        ),
+      ).toBeNull();
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  // The residual sweep walks the configured spelling of `.ade/worktrees` while
+  // the "leave this alone" sets are built from git and from lane rows, which
+  // hold the resolved one. A live worktree that reads as unclaimed is one empty
+  // moment away from being swept as an unknown residual.
+  it("does not sweep a live worktree whose lane row spells it the way git does", async () => {
+    const projectId = "proj-symlink-sweep";
+    const fixture = await makeSymlinkedProject(projectId, "ade-lane-symlink-sweep-");
+    const savedPath = path.join(fixture.realWorktreesDir, "live-1234abcd");
+    try {
+      // Empty and old enough to look like an abandoned residual to the sweep.
+      fs.mkdirSync(savedPath, { recursive: true });
+      const longAgo = new Date(Date.now() - 60 * 60_000);
+      fs.utimesSync(savedPath, longAgo, longAgo);
+      fixture.db.run(INSERT_LANE, ["lane-live", projectId, "Live", null, "worktree", "main", "ade/live", savedPath, null, 0, null, null, null, null, "active", NOW, null]);
+
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute") {
+          let topLevel = String(opts?.cwd ?? "");
+          try {
+            topLevel = fs.realpathSync(topLevel);
+          } catch {
+            // A cwd that no longer exists answers with itself.
+          }
+          const lines = gitArgs.slice(2).map((flag) =>
+            (flag === "--show-toplevel" ? topLevel : path.join(fixture.realRoot, ".git")));
+          return { exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+        // Registered by the lane row alone, so the row's spelling is the only
+        // thing standing between this folder and the sweep.
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+          return `worktree ${fixture.realRoot}\nHEAD 1111111\nbranch refs/heads/main\n\n` as any;
+        }
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db: fixture.db,
+        projectRoot: fixture.linkRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir: fixture.linkWorktreesDir,
+      });
+
+      await service.list({ includeStatus: false });
+
+      expect(fs.existsSync(savedPath)).toBe(true);
+      expect(fixture.db.get("select id from lanes where id = ?", ["lane-live"])).toMatchObject({ id: "lane-live" });
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("restores an archived lane at its saved path instead of relocating it to a fresh one", async () => {
+    const projectId = "proj-symlink-restore";
+    const fixture = await makeSymlinkedProject(projectId, "ade-lane-symlink-restore-");
+    // Adopted from git, so the row holds the resolved spelling; the folder is
+    // gone, which is the only case that can relocate the worktree.
+    const savedPath = path.join(fixture.realWorktreesDir, "archived-1234abcd");
+    const addedPaths: string[] = [];
+    try {
+      fixture.db.run(INSERT_LANE, ["lane-archived", projectId, "Archived", null, "worktree", "main", "ade/archived", savedPath, null, 0, null, null, null, null, "archived", NOW, NOW]);
+
+      vi.mocked(runGit).mockImplementation(async (gitArgs: string[]) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(gitArgs);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        if (gitArgs[0] === "rev-parse" && gitArgs[1] === "--path-format=absolute") {
+          const lines = gitArgs.slice(2).map((flag) =>
+            flag === "--show-toplevel" ? fixture.realRoot : path.join(fixture.realRoot, ".git"));
+          return { exitCode: 0, stdout: `${lines.join("\n")}\n`, stderr: "" };
+        }
+        return { exitCode: 0, stdout: "", stderr: "" };
+      });
+      vi.mocked(runGitOrThrow).mockImplementation(async (gitArgs: string[]) => {
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "add") {
+          // `ade/*` branches only exist on origin in these fixtures, so restore
+          // takes the `worktree add -b <branch> <path> origin/<branch>` form.
+          const target = (gitArgs[2] === "-b" ? gitArgs[4] : gitArgs[2]) ?? "";
+          addedPaths.push(target);
+          fs.mkdirSync(target, { recursive: true });
+          return { exitCode: 0, stdout: "", stderr: "" } as any;
+        }
+        if (gitArgs[0] === "worktree" && gitArgs[1] === "list") {
+          return `worktree ${fixture.realRoot}\nHEAD 1111111\nbranch refs/heads/main\n\n` as any;
+        }
+        return { exitCode: 0, stdout: "", stderr: "" } as any;
+      });
+
+      const service = createLaneService({
+        db: fixture.db,
+        projectRoot: fixture.linkRoot,
+        projectId,
+        defaultBaseRef: "main",
+        worktreesDir: fixture.linkWorktreesDir,
+      });
+
+      const result = await service.unarchive({ laneId: "lane-archived" });
+
+      expect(result.worktreeRecreated).toBe(true);
+      expect(addedPaths).toEqual([savedPath]);
+      expect(fixture.db.get<{ worktree_path: string }>(
+        "select worktree_path from lanes where id = ?",
+        ["lane-archived"],
+      )?.worktree_path).toBe(savedPath);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+});
+
 describe("laneService importBranch", () => {
   beforeEach(() => {
     vi.mocked(getHeadSha).mockReset();
@@ -1507,7 +2411,7 @@ describe("laneService importBranch", () => {
   });
 
   it("surfaces unregistered managed .ade worktrees during lane list", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-list-managed-orphan-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-list-managed-orphan-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-list-managed-orphan", repoRoot });
     const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
@@ -1555,7 +2459,7 @@ describe("laneService importBranch", () => {
   });
 
   it("imports a branch from an explicit non-origin remote", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-upstream-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-upstream-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-upstream", repoRoot });
 
@@ -1625,7 +2529,7 @@ describe("laneService importBranch", () => {
   });
 
   it("rejects duplicate imported branches before creating a local tracking branch", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-duplicate-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-duplicate-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-duplicate", repoRoot });
     const now = "2026-03-11T12:05:00.000Z";
@@ -1672,7 +2576,7 @@ describe("laneService importBranch", () => {
   });
 
   it("restores a managed orphan worktree before rejecting an import duplicate", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-managed-orphan-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-managed-orphan-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-managed-orphan", repoRoot });
     const worktreesDir = path.join(repoRoot, ".ade", "worktrees");
@@ -1681,6 +2585,10 @@ describe("laneService importBranch", () => {
     vi.mocked(runGit).mockImplementation(async (args: string[]) => {
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/ade/dashboard-f6949524") {
         return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      // Ownership probe: this project root is the repository's own checkout.
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-common-dir") {
+        return { exitCode: 0, stdout: `${path.join(repoRoot, ".git")}\n`, stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -1724,8 +2632,8 @@ describe("laneService importBranch", () => {
     expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "add")).toBe(false);
   });
 
-  it("reports an actionable error when a branch is already checked out outside ADE lanes", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-external-orphan-"));
+  it("adopts a worktree checked out outside .ade/worktrees instead of importing its branch again", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-external-orphan-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-external-orphan", repoRoot });
     const externalPath = path.join(repoRoot, "..", "feature-taken");
@@ -1742,6 +2650,11 @@ describe("laneService importBranch", () => {
       }
       if (args[0] === "show-ref" && args[1] === "--verify" && args[3] === "refs/heads/feature/taken") {
         return { exitCode: 0, stdout: "", stderr: "" };
+      }
+      // Ownership probe: this project root is the repository's own checkout, so
+      // adoption reaches worktrees outside `.ade/worktrees` such as this one.
+      if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-common-dir") {
+        return { exitCode: 0, stdout: `${path.join(repoRoot, ".git")}\n`, stderr: "" };
       }
       throw new Error(`Unexpected git call: ${args.join(" ")}`);
     });
@@ -1770,13 +2683,24 @@ describe("laneService importBranch", () => {
     });
 
     await expect(service.importBranch({ branchRef: "origin/feature/taken" })).rejects.toThrow(
-      `Branch 'feature/taken' is already checked out at '${path.resolve(externalPath)}'`,
+      "Lane already exists for branch 'feature/taken'",
     );
+    expect(
+      db.get<{ branch_ref: string; worktree_path: string; lane_type: string; status: string }>(
+        "select branch_ref, worktree_path, lane_type, status from lanes where project_id = ? and branch_ref = ?",
+        ["proj-import-external-orphan", "feature/taken"],
+      ),
+    ).toMatchObject({
+      branch_ref: "feature/taken",
+      worktree_path: path.resolve(externalPath),
+      lane_type: "worktree",
+      status: "active",
+    });
     expect(vi.mocked(runGitOrThrow).mock.calls.some(([args]) => args[0] === "worktree" && args[1] === "add")).toBe(false);
   });
 
   it("reuses an existing local branch when importing a remote-qualified ref", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-local-existing-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-local-existing-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-local-existing", repoRoot });
 
@@ -1836,7 +2760,7 @@ describe("laneService importBranch", () => {
   });
 
   it("absorbs raced recovered rows while importing a branch", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-race-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-race-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = "proj-import-race";
     const racedLaneId = "raced-import-row";
@@ -1917,7 +2841,7 @@ describe("laneService importBranch", () => {
   });
 
   it("removes a created tracking branch when worktree setup fails during import", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-import-cleanup-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-import-cleanup-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-import-cleanup", repoRoot });
 
@@ -1977,7 +2901,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("skips rebasing when the parent head is already an ancestor of the lane head", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-skip-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-skip-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-skip", repoRoot });
     const logs: string[] = [];
@@ -2019,7 +2943,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("rebases an unparented lane against its stored base branch", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-root-base-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-root-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
     db.run(
@@ -2088,7 +3012,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("persists and restores the overridden base branch for PR-target rebases", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-root-override-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-root-override-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
     db.run(
@@ -2164,7 +3088,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("rejects overlapping rebase runs for the same stack while one is active", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-overlap-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-overlap-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-overlap", repoRoot });
 
@@ -2219,7 +3143,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("rebases an unparented lane onto an override branch and persists the new base ref", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-root-override-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-root-override-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-root-override", repoRoot });
     const now = "2026-03-11T12:00:00.000Z";
@@ -2291,7 +3215,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("rebases against the primary lane remote tracking ref when it is available", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-primary-remote-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-primary-remote-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-primary-remote", repoRoot });
 
@@ -2346,7 +3270,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("falls back to origin/<base_ref> for a detached root lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-origin-fallback-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-origin-fallback-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-origin-fallback", repoRoot });
     const logs: string[] = [];
@@ -2408,7 +3332,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("fails when neither origin/<base_ref> nor the local base branch can be resolved for a detached root lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-all-remote-fail-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-all-remote-fail-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-all-remote-fail", repoRoot });
     const logs: string[] = [];
@@ -2457,7 +3381,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("uses parent HEAD directly for non-primary (worktree) parent without remote resolution", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-worktree-parent-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-worktree-parent-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-worktree-parent", repoRoot });
     const logs: string[] = [];
@@ -2516,7 +3440,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("fails the rebase run when the detached root lane base branch cannot be resolved", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unresolvable-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-unresolvable-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-unresolvable", repoRoot });
 
@@ -2553,7 +3477,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("includes the resolved base-branch label in skip logs for detached root lanes", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-skip-label-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-skip-label-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-skip-label", repoRoot });
     const logs: string[] = [];
@@ -2605,7 +3529,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("fails the rebase run when the worktree has uncommitted changes", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-dirty-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-dirty-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-dirty", repoRoot });
     const logs: string[] = [];
@@ -2649,7 +3573,7 @@ describe("laneService rebaseStart", () => {
   });
 
   it("uses deduplicated candidate refs when upstream equals origin/<branch_ref>", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-dedup-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-dedup-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-dedup", repoRoot });
 
@@ -2708,7 +3632,7 @@ describe("laneService reparent", () => {
   });
 
   it("uses the primary lane's remote tracking ref when reparenting under primary", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-primary-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-primary-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-reparent-primary", repoRoot });
 
@@ -2773,7 +3697,7 @@ describe("laneService reparent", () => {
   });
 
   it("reparents onto stackBaseBranchRef when provided", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-stack-base-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-stack-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-reparent-stack-base", repoRoot });
 
@@ -2832,7 +3756,7 @@ describe("laneService reparent", () => {
   });
 
   it("restores the active branch profile when reparent rebase fails", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-rollback-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-rollback-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-reparent-rollback", repoRoot });
 
@@ -2886,7 +3810,7 @@ describe("laneService reparent", () => {
   });
 
   it("skips git rebase when parent and base ref are unchanged", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-reparent-noop-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-reparent-noop-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-reparent-noop", repoRoot });
 
@@ -2920,7 +3844,7 @@ describe("laneService createChild", () => {
   });
 
   it("createChild links existing app dependency installs into the worktree", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-deps-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-child-deps-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-child-deps", repoRoot });
     fs.mkdirSync(path.join(repoRoot, "apps", "desktop", "node_modules"), { recursive: true });
@@ -2970,7 +3894,7 @@ describe("laneService createChild", () => {
   });
 
   it("createChild from primary anchors the new lane to the project default base", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-primary-default-base-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-child-primary-default-base-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-03-11T12:00:00.000Z";
 
@@ -3047,7 +3971,7 @@ describe("laneService createChild", () => {
   });
 
   it("createChild with baseBranchRef tracks remote-only branch and bases lane on it", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-child-base-override-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-child-base-override-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-child-base-override", repoRoot });
 
@@ -3132,7 +4056,7 @@ describe("laneService updateAppearance color uniqueness", () => {
   });
 
   async function setup() {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-color-uniqueness-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-color-uniqueness-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-color-uniqueness", repoRoot });
     const service = createLaneService({
@@ -3234,7 +4158,7 @@ describe("laneService stale worktree status", () => {
   });
 
   it("does not report main checkout status for a stale lane directory inside the repo", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-stale-status-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-stale-status-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-stale-status", repoRoot });
     const childPath = path.join(repoRoot, "child");
@@ -3318,7 +4242,7 @@ describe("laneService delete teardown + cancellation + streaming", () => {
   }
 
   async function setupWithLane(opts: { teardown: ReturnType<typeof makeFakeServices>; events: any[]; createWorktree?: boolean }) {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-delete-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-delete-");
     const worktreesDir = path.join(repoRoot, "worktrees");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const projectId = "proj-delete";
@@ -4288,7 +5212,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("ensures and returns a profile for the lane's current branch_ref", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-list-profile-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-list-profile-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4314,7 +5238,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("throws when the lane is missing", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-list-missing-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-list-missing-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4335,7 +5259,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("updates the lane's branch_ref AND upserts a matching branch profile", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-update-bref-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-update-bref-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4373,7 +5297,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("rejects when laneId is empty", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-laneid-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-laneid-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4386,7 +5310,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("rejects when branchName is empty", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-branchname-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-branchname-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4400,7 +5324,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("rejects when the lane is archived", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-archived-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-archived-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4417,7 +5341,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("flags dirty worktree, duplicate owner, and active terminal sessions", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-flags-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-flags-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4458,7 +5382,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("strips remote prefix when only the remote ref exists", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-remote-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-remote-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4484,7 +5408,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("returns mode=create without consulting refs when explicitly requested", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-prev-create-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-prev-create-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4517,7 +5441,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("refuses to switch when the lane has uncommitted changes", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-dirty-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-dirty-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4541,7 +5465,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("refuses to switch to a branch that is already active in another lane", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-dup-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-dup-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4563,7 +5487,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("refuses to switch when active work exists and acknowledgeActiveWork is not set", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-active-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-active-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4590,7 +5514,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("checks out an existing local branch and updates the lane row + branch profile", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-existing-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-existing-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4630,7 +5554,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("creates a new branch via 'checkout -b' when mode='create'", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-create-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-create-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4678,7 +5602,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("rejects mode='create' when baseRef is missing", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-create-no-base-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-create-no-base-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4696,7 +5620,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("rejects mode='create' when the target branch already exists locally", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-create-exists-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-create-exists-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4726,7 +5650,7 @@ describe("laneService - branchSwitch", () => {
     });
 
     it("preserves PR rows whose head_branch matches the new branch and deletes stale ones", async () => {
-      const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-bsw-switch-pr-detach-"));
+      const repoRoot = makeTempRepoRoot("ade-bsw-switch-pr-detach-");
       const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
       try {
         seedBswProject(db, { projectId: "proj-1", repoRoot });
@@ -4810,7 +5734,7 @@ describe("laneService session-scoped Linear issue links", () => {
   }
 
   it("persists and lists Linear issues attached to a standalone session with no lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-standalone-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-standalone-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-standalone", repoRoot });
@@ -4849,7 +5773,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("attaches multiple issues in one batch call", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-batch-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-batch-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-batch", repoRoot });
@@ -4880,7 +5804,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("mirrors a session attach into the lane link table when the session has a lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-laned-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-laned-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-laned", repoRoot });
@@ -4945,7 +5869,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("detaches an issue from both the session and the mirrored lane link", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-detach-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-detach-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-detach", repoRoot });
@@ -4980,7 +5904,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("detaches all issues from a session when issueId is omitted", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-detach-all-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-detach-all-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-detach-all", repoRoot });
@@ -5011,7 +5935,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("re-attaching the same issue+role replaces rather than duplicates", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-dedupe-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-dedupe-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-dedupe", repoRoot });
@@ -5040,7 +5964,7 @@ describe("laneService session-scoped Linear issue links", () => {
   });
 
   it("skips issues missing required fields without persisting them", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-session-invalid-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-session-invalid-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-session-invalid", repoRoot });
@@ -5079,7 +6003,7 @@ describe("laneService unlinkLinearIssues", () => {
   }
 
   it("removes a specific non-primary lane link, leaving the primary intact", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unlink-one-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-unlink-one-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-unlink-one", repoRoot });
@@ -5119,7 +6043,7 @@ describe("laneService unlinkLinearIssues", () => {
   });
 
   it("removes all non-primary links when issueId is omitted but never the primary", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-unlink-all-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-unlink-all-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       await seedProjectAndStack(db, { projectId: "proj-unlink-all", repoRoot });
@@ -5169,7 +6093,7 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
   });
 
   it("removes the created worktree and branch when the lane-row insert fails", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-service-create-cleanup-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-service-create-cleanup-");
     const realDb = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     const now = "2026-05-12T20:00:00.000Z";
     realDb.run(
@@ -5251,94 +6175,6 @@ describe("laneService createWorktreeLane orphan cleanup", () => {
   });
 });
 
-describe("laneService attach", () => {
-  beforeEach(() => {
-    vi.mocked(getHeadSha).mockReset();
-    vi.mocked(runGit).mockReset();
-    vi.mocked(runGitOrThrow).mockReset();
-  });
-
-  it("emits a lane-created lifecycle event after attaching a worktree", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-attach-event-"));
-    const attachedPath = path.join(repoRoot, "attached");
-    fs.mkdirSync(attachedPath);
-    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
-    try {
-      const now = "2026-07-13T12:00:00.000Z";
-      db.run(
-        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
-        ["proj-attach", repoRoot, "demo", "main", now, now],
-      );
-      const commonDir = path.join(repoRoot, ".git");
-      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
-        if (args.includes("--show-toplevel")) return path.resolve(opts?.cwd ?? attachedPath);
-        if (args.includes("--git-common-dir")) return commonDir;
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-      vi.mocked(runGit).mockImplementation(async (args: string[]) => {
-        const laneBranchGitStub = defaultLaneBranchGitStub(args);
-        if (laneBranchGitStub) return laneBranchGitStub;
-        if (args.includes("--show-toplevel")) {
-          return { exitCode: 0, stdout: `${attachedPath}\n`, stderr: "" };
-        }
-        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
-          return { exitCode: 0, stdout: "feat-attached\n", stderr: "" };
-        }
-        if (args.includes("@{upstream}")) {
-          return { exitCode: 1, stdout: "", stderr: "no upstream" };
-        }
-        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
-        if (args[0] === "rev-list") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
-        if (args.includes("--git-dir")) {
-          return {
-            exitCode: 0,
-            stdout: `${path.join(commonDir, "worktrees", "attached")}\n`,
-            stderr: "",
-          };
-        }
-        if (args[0] === "push") return { exitCode: 0, stdout: "", stderr: "" };
-        throw new Error(`Unexpected git call: ${args.join(" ")}`);
-      });
-
-      const onLifecycleEvent = vi.fn();
-      const service = createLaneService({
-        db,
-        projectRoot: repoRoot,
-        projectId: "proj-attach",
-        defaultBaseRef: "main",
-        worktreesDir: path.join(repoRoot, "worktrees"),
-        onLifecycleEvent,
-        logger: createLogger(),
-      });
-
-      const summary = await service.attach({
-        name: "Attached feature",
-        attachedPath,
-      });
-
-      expect(onLifecycleEvent).toHaveBeenCalledTimes(1);
-      expect(onLifecycleEvent).toHaveBeenCalledWith({
-        type: "lane-created",
-        laneId: summary.id,
-        laneName: summary.name,
-        color: summary.color,
-        lane: summary,
-      });
-      await expect(service.attach({
-        name: "Attached feature again",
-        attachedPath,
-      })).rejects.toMatchObject({
-        code: "lane_already_linked",
-        message:
-          "lane_already_linked: This worktree is already linked as lane 'Attached feature'.",
-      });
-    } finally {
-      db.close();
-      fs.rmSync(repoRoot, { recursive: true, force: true });
-    }
-  });
-});
-
 describe("laneService rename", () => {
   const RENAME_NOW = "2026-06-29T12:00:00.000Z";
 
@@ -5390,7 +6226,7 @@ describe("laneService rename", () => {
   }
 
   it("updates the lane display name", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-rename-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       seedRenameProject(db, { projectId: "proj-rename", repoRoot });
@@ -5435,7 +6271,7 @@ describe("laneService rename", () => {
   });
 
   it("does not emit lifecycle events when archive and unarchive do not change status", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-archive-noop-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-archive-noop-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       seedRenameProject(db, { projectId: "proj-archive-noop", repoRoot });
@@ -5482,7 +6318,7 @@ describe("laneService rename", () => {
   });
 
   it("rejects duplicate lane names case-insensitively", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-dup-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-rename-dup-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       seedRenameProject(db, { projectId: "proj-rename-dup", repoRoot });
@@ -5521,7 +6357,7 @@ describe("laneService rename", () => {
   });
 
   it("rejects renaming the primary lane", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-rename-primary-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-rename-primary-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     try {
       seedRenameProject(db, { projectId: "proj-rename-primary", repoRoot });
@@ -5601,7 +6437,7 @@ describe("laneService branch drift", () => {
   }
 
   it("surfaces branchDrift on the lane summary when HEAD wandered off branch_ref", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-detect-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-detect-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-detect", repoRoot });
     const childPath = path.join(repoRoot, "child");
@@ -5631,7 +6467,7 @@ describe("laneService branch drift", () => {
   });
 
   it("switch-back refuses on a dirty worktree and leaves branch_ref untouched", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-dirty-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-dirty-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-dirty", repoRoot });
     const childPath = path.join(repoRoot, "child");
@@ -5659,7 +6495,7 @@ describe("laneService branch drift", () => {
   });
 
   it("switch-back checks the recorded branch back out on a clean worktree", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-switchback-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-switchback-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-switchback", repoRoot });
     const childPath = path.join(repoRoot, "child");
@@ -5691,7 +6527,7 @@ describe("laneService branch drift", () => {
   });
 
   it("keep-head re-points branch_ref and the branch-derived lane name in one write", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-keep-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-keep", repoRoot });
     // The lane name is literally advertising the branch it tracks.
@@ -5732,7 +6568,7 @@ describe("laneService branch drift", () => {
   });
 
   it("keep-head preserves a hand-written lane name", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-keep-name-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-keep-name-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-keep-name", repoRoot });
     // A hand-written name — it advertises no branch, so it must survive.
@@ -5758,7 +6594,7 @@ describe("laneService branch drift", () => {
   });
 
   it("rejects a resolution whose expected HEAD no longer matches the worktree", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-stale-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-stale-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-stale", repoRoot });
     const childPath = path.join(repoRoot, "child");
@@ -5785,7 +6621,7 @@ describe("laneService branch drift", () => {
   });
 
   it("refuses when the lane is already on its recorded branch", async () => {
-    const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-drift-none-"));
+    const repoRoot = makeTempRepoRoot("ade-lane-drift-none-");
     const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
     await seedProjectAndStack(db, { projectId: "proj-drift-none", repoRoot });
     const childPath = path.join(repoRoot, "child");

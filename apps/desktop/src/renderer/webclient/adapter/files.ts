@@ -10,9 +10,60 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
   const knownWorkspaceIdsByProject = new Map<string, Set<string>>();
   const HOT_FILE_READ_TTL_MS = 3_000;
   const readCache = createCoalescingReadCache(HOT_FILE_READ_TTL_MS);
+  const KEY_SEPARATOR = "\u0000";
 
   function clearReadCache(): void {
     readCache.clear();
+  }
+
+  // Read-cache keys carry their scope in dedicated segments so eviction can match
+  // project/action/workspace/path exactly instead of substring-matching the
+  // serialized args.
+  function readCacheKey(action: string, args: Record<string, unknown>): string {
+    const scopePath = args.parentPath ?? args.path;
+    return [
+      state.getProjectId() ?? "missing-project",
+      action,
+      stringField(args, "workspaceId"),
+      typeof scopePath === "string" ? scopePath : "",
+      stableCacheKey(args),
+    ].join(KEY_SEPARATOR);
+  }
+
+  function parsedReadCacheKey(key: string): { action: string; workspaceId: string; path: string } | null {
+    const parts = key.split(KEY_SEPARATOR);
+    if (parts.length < 5) return null;
+    return { action: parts[1]!, workspaceId: parts[2]!, path: parts[3]! };
+  }
+
+  /**
+   * Drop only the cached listings a write can invalidate: the workspace roster
+   * is unaffected by file writes, and a directory listing only changes when the
+   * write lands at or under it. Clearing the whole cache made every save re-list
+   * the tree and re-resolve workspaces on the next read.
+   */
+  function evictReadsForWrite(args: unknown, changedPaths: string[]): void {
+    const record = asRecord(args);
+    const workspaceId = stringField(record, "workspaceId");
+    if (!workspaceId) {
+      clearReadCache();
+      return;
+    }
+    const changed = changedPaths.filter(Boolean);
+    const parents = changed.map(parentDirectoryPath);
+    readCache.invalidate((key) => {
+      const parsed = parsedReadCacheKey(key);
+      if (!parsed) return true;
+      if (parsed.workspaceId !== workspaceId) return false;
+      if (parsed.action === "listWorkspaces") return false;
+      if (parsed.action === "listTreeChildren") {
+        // Ancestor listings show the changed entry itself; descendant listings
+        // are stale wholesale when a directory is renamed or removed.
+        return parents.some((parent) => isAtOrUnder(parent, parsed.path))
+          || changed.some((changedPath) => isAtOrUnder(parsed.path, changedPath));
+      }
+      return true;
+    });
   }
 
   function rememberWorkspaceId(workspaceId: string): void {
@@ -36,9 +87,7 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
     options: { cache?: boolean; surfaceErrors?: boolean } = {},
   ): Promise<T> {
     const projectId = state.getProjectId();
-    const cacheKey = options.cache
-      ? `${projectId ?? "missing-project"}\u0000${action}\u0000${stableCacheKey(asRecord(args))}`
-      : null;
+    const cacheKey = options.cache ? readCacheKey(action, asRecord(args)) : null;
     const fetchResult = async (): Promise<T> => {
       try {
         const result = await client.requestFile(action, asRecord(args) as never, {
@@ -56,13 +105,11 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
       : await fetchResult();
   }
 
+  // Write failures must reach the caller. Swallowing them let the Files
+  // workbench mark a tab saved for bytes that never left the browser.
   async function requestVoid(action: SupportedFileAction, args: unknown, event?: FileChangeEvent): Promise<void> {
-    try {
-      await requestFileBlob(client, state, action, asRecord(args));
-    } catch {
-      return;
-    }
-    clearReadCache();
+    await requestFileBlob(client, state, action, asRecord(args));
+    evictReadsForWrite(args, event ? [event.path, event.oldPath ?? ""] : []);
     if (event) events.emit("filesChanged", event);
   }
 
@@ -127,20 +174,12 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
       ok: false,
       error: "unsupported",
     }),
-    readFile: async (args: unknown): Promise<FileContent> => {
-      try {
-        return fileContentFromBlob(await requestFileBlob(client, state, "readFile", asRecord(args)));
-      } catch {
-        return {
-          content: "",
-          encoding: "utf-8",
-          size: 0,
-          languageId: "plaintext",
-          isBinary: false,
-          totalSize: 0,
-        };
-      }
-    },
+    // Rejects on a transport failure, exactly as the desktop host's `readFile`
+    // does. Answering a dropped relay call with empty content made a failure
+    // indistinguishable from a genuinely empty file: callers cached the "" and
+    // rendered a blank editor over a file that was fine on disk.
+    readFile: async (args: unknown): Promise<FileContent> =>
+      fileContentFromBlob(await requestFileBlob(client, state, "readFile", asRecord(args))),
     readFileRange: (args: unknown): Promise<FilesReadFileRangeResult> => {
       const record = asRecord(args);
       return requestResult("readFileRange", args, {
@@ -172,6 +211,7 @@ export function createFilesNamespace(infra: AdapterInfra): AdeNamespace<"files">
         path: stringField(record, "newPath"),
         oldPath: stringField(record, "oldPath"),
         ts: new Date().toISOString(),
+        origin: "self",
       });
     },
     delete: async (args: unknown) => {
@@ -207,5 +247,18 @@ function changeEvent(args: unknown, type: FileChangeEvent["type"]): FileChangeEv
     type,
     path: stringField(record, "path"),
     ts: new Date().toISOString(),
+    origin: "self",
   };
+}
+
+/** `""` for a root-level entry, otherwise the containing directory. */
+function parentDirectoryPath(path: string): string {
+  const normalized = path.replace(/\\/g, "/").replace(/\/+$/, "");
+  const index = normalized.lastIndexOf("/");
+  return index <= 0 ? "" : normalized.slice(0, index);
+}
+
+function isAtOrUnder(path: string, directory: string): boolean {
+  if (!directory) return true;
+  return path === directory || path.startsWith(`${directory}/`);
 }

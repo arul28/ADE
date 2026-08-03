@@ -82,11 +82,6 @@ const HistoryPage = React.lazy(() =>
 const AutomationsPage = React.lazy(() =>
   import("../automations/AutomationsPage").then((m) => ({ default: m.AutomationsPage }))
 );
-const WebWorkspaceHub = React.lazy(() =>
-  import("../../webclient/workspace/WebWorkspaceHub").then((module) => ({
-    default: module.WebWorkspaceHub,
-  }))
-);
 const AutomationsTemplatesPage = React.lazy(() =>
   import("../automations/AutomationsTemplatesPage").then((m) => ({ default: m.AutomationsTemplatesPage }))
 );
@@ -725,7 +720,9 @@ function ProjectTabHost() {
   const [routesBySurfaceKey, setRoutesBySurfaceKey] = React.useState<Record<string, string>>({});
   const isPersonalChatsRoute = location.pathname === "/chats" || location.pathname.startsWith("/chats/");
   const isAccountRoute = location.pathname === "/account" || location.pathname.startsWith("/account/");
-  const isWebHubRoute = location.pathname === "/hub";
+  // The Hub is retired: the hosted client's landing surface is the shared
+  // project welcome page. Old links and restored tabs still arrive here.
+  const isLegacyHubRoute = location.pathname === "/hub";
   const isExternalFilesRoute = location.pathname === "/files" && new URLSearchParams(location.search).has("externalPath");
   const activeBinding = !showWelcome && activeProject?.rootPath
     ? bindingForProject(activeProject, activeProjectBinding)
@@ -769,10 +766,15 @@ function ProjectTabHost() {
   }, [activeSurfaceKey]);
 
   React.useEffect(() => {
+    if (!isLegacyHubRoute) return;
+    navigate("/work", { replace: true });
+  }, [isLegacyHubRoute, navigate]);
+
+  React.useEffect(() => {
     // Machine-level routes (personal chats, account) are not project surfaces;
     // the route-restore below would otherwise clobber them with the active
     // project's stored route on load.
-    if (isPersonalChatsRoute || isAccountRoute || isWebHubRoute) return;
+    if (isPersonalChatsRoute || isAccountRoute || isLegacyHubRoute) return;
     const previousSurfaceKey = previousActiveSurfaceKeyRef.current;
     if (previousSurfaceKey === activeSurfaceKey) return;
     const currentRoute = serializeStoredProjectRoute(location);
@@ -795,7 +797,7 @@ function ProjectTabHost() {
     if (currentRoute !== nextRoute) {
       navigate(nextRoute, { replace: true });
     }
-  }, [activeSurfaceKey, isAccountRoute, isPersonalChatsRoute, isWebHubRoute, location, navigate, routesBySurfaceKey]);
+  }, [activeSurfaceKey, isAccountRoute, isLegacyHubRoute, isPersonalChatsRoute, location, navigate, routesBySurfaceKey]);
 
   React.useEffect(() => {
     if (!activeSurfaceKey) return;
@@ -945,11 +947,11 @@ function ProjectTabHost() {
     );
   }
 
-  if (!isWebHubRoute && !projectHydrated && !activeProject) {
+  if (!projectHydrated && !activeProject) {
     return GuardLoadingFallback;
   }
 
-  if (!isWebHubRoute && !isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
+  if (!isPersonalChatsRoute && !isAccountRoute && (!activeProject || showWelcome || mountedProjects.length === 0)) {
     return (
       <PageErrorBoundary>
         <ProjectWelcomePage />
@@ -978,7 +980,7 @@ function ProjectTabHost() {
     <div className="relative h-full min-h-0 w-full">
       {mountedProjects.map((entry) => {
         const { binding: projectBinding, project, surfaceKey } = entry;
-        if (webMode && (isWebHubRoute || surfaceKey !== activeSurfaceKey)) {
+        if (webMode && surfaceKey !== activeSurfaceKey) {
           return null;
         }
         const store = storesRef.current.get(surfaceKey);
@@ -988,7 +990,7 @@ function ProjectTabHost() {
         return (
           <ProjectSurface
             key={surfaceKey}
-            active={!isWebHubRoute && !isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
+            active={!isPersonalChatsRoute && !isAccountRoute && surfaceKey === activeSurfaceKey}
             project={project}
             projectBinding={projectBinding}
             route={route}
@@ -996,13 +998,6 @@ function ProjectTabHost() {
           />
         );
       })}
-      {isWebHubRoute ? (
-        <PageErrorBoundary>
-          <React.Suspense fallback={LazyFallback}>
-            <WebWorkspaceHub />
-          </React.Suspense>
-        </PageErrorBoundary>
-      ) : null}
       {isPersonalChatsRoute ? (
         <PageErrorBoundary>
           <React.Suspense fallback={LazyFallback}>

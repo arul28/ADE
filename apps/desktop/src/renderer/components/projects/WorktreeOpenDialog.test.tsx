@@ -21,22 +21,23 @@ vi.mock("react-router-dom", async () => {
   return { ...actual, useNavigate: () => navigateSpy };
 });
 
-const attach = vi.fn();
 const inspectPath = vi.fn();
+const listLanes = vi.fn();
 const openExternal = vi.fn();
 const switchToPath = vi.fn(async () => null);
 const switchProjectToPath = vi.fn(async () => {});
 
 beforeEach(() => {
   navigateSpy.mockReset();
-  attach.mockReset();
   inspectPath.mockReset();
+  listLanes.mockReset();
+  listLanes.mockResolvedValue([]);
   openExternal.mockReset();
   switchProjectToPath.mockReset();
   switchProjectToPath.mockResolvedValue(undefined);
   (globalThis as any).window.ade = {
     project: { inspectPath, switchToPath },
-    lanes: { attach },
+    lanes: { list: listLanes },
     app: { openExternal },
   };
   useAppStore.setState({
@@ -112,7 +113,6 @@ describe("WorktreeOpenDialog", () => {
         skipWorktreeGate: true,
       }),
     );
-    expect(attach).not.toHaveBeenCalled();
     await waitFor(() =>
       expect(navigateSpy).toHaveBeenCalledWith(
         "/lanes?laneId=lane-99&focus=single",
@@ -120,17 +120,31 @@ describe("WorktreeOpenDialog", () => {
     );
   });
 
-  it("variant B: attaches the worktree with the derived name then navigates", async () => {
-    attach.mockResolvedValueOnce({ id: "lane-new" });
+  it("variant B: opens the owning project and navigates to the lane it registered", async () => {
+    inspectPath.mockResolvedValueOnce(
+      baseInspection({
+        parent: {
+          rootPath: "/repos/app",
+          displayName: "app",
+          isKnownAdeProject: true,
+          existingLane: {
+            id: "lane-new",
+            name: "feature x",
+            branchRef: "feature/x",
+            color: null,
+            laneType: "worktree",
+          },
+        },
+      }),
+    );
     seed(baseInspection());
     renderDialog();
 
     fireEvent.click(screen.getByText("Open as a lane in app"));
 
     await waitFor(() =>
-      expect(attach).toHaveBeenCalledWith({
-        name: "feature/x",
-        attachedPath: WORKTREE_ROOT,
+      expect(switchProjectToPath).toHaveBeenCalledWith("/repos/app", {
+        skipWorktreeGate: true,
       }),
     );
     await waitFor(() =>
@@ -153,11 +167,10 @@ describe("WorktreeOpenDialog", () => {
         skipWorktreeGate: true,
       }),
     );
-    expect(attach).not.toHaveBeenCalled();
   });
 
-  it("attach failure shows an inline error and keeps the dialog open", async () => {
-    attach.mockRejectedValueOnce(new Error("something broke"));
+  it("a failed lane lookup shows an inline error and keeps the dialog open", async () => {
+    inspectPath.mockRejectedValueOnce(new Error("something broke"));
     seed(baseInspection());
     renderDialog();
 
@@ -168,42 +181,5 @@ describe("WorktreeOpenDialog", () => {
     // Dialog stays open, no navigation.
     expect(screen.getByText("Open as a lane in app")).toBeTruthy();
     expect(navigateSpy).not.toHaveBeenCalled();
-  });
-
-  it("already-linked attach error re-inspects and jumps to the existing lane", async () => {
-    attach.mockRejectedValueOnce(
-      new Error(
-        "lane_already_linked: This worktree is already linked as lane 'feature x'.",
-      ),
-    );
-    inspectPath.mockResolvedValueOnce(
-      baseInspection({
-        parent: {
-          rootPath: "/repos/app",
-          displayName: "app",
-          isKnownAdeProject: true,
-          existingLane: {
-            id: "lane-existing",
-            name: "feature x",
-            branchRef: "feature/x",
-            color: null,
-            laneType: "attached",
-          },
-        },
-      }),
-    );
-    seed(baseInspection());
-    renderDialog();
-
-    fireEvent.click(screen.getByText("Open as a lane in app"));
-
-    await waitFor(() =>
-      expect(inspectPath).toHaveBeenCalledWith(WORKTREE_ROOT, { fresh: true }),
-    );
-    await waitFor(() =>
-      expect(navigateSpy).toHaveBeenCalledWith(
-        "/lanes?laneId=lane-existing&focus=single",
-      ),
-    );
   });
 });

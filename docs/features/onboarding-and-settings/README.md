@@ -123,8 +123,8 @@ Shared types and IPC:
   `backgroundRefreshPausedUntil` are optional so a newer client remains
   compatible with an older remote runtime.
 - `apps/desktop/src/shared/ipc.ts` — channels:
-  - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
-    applySuggestedConfig, complete, setDismissed)
+  - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
+    complete, setDismissed)
   - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
     confirmTrust, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
@@ -164,11 +164,9 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
   — essential local tooling status for git and the terminal `ade` CLI.
 - `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
-  `LinearCard.tsx`, `WorktreesCard.tsx` — setup cards for repository auth,
-  Linear OAuth / API-key auth, and importing existing worktrees as lanes.
-  `WorktreesCard` refreshes the shared lane store after successful imports so
-  the first post-onboarding Work/Lanes views render the attached lanes without
-  waiting for a later project refresh.
+  `LinearCard.tsx` — setup cards for repository auth and Linear OAuth /
+  API-key auth. There is no worktree-import card: every git worktree in the
+  project already appears as a lane, so there is nothing to select.
 - `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
   `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
   brand/status styling tokens.
@@ -238,8 +236,21 @@ Renderer — settings:
   in the top bar, not as a Settings tab.
 - `apps/desktop/src/renderer/components/settings/settingsManifest.ts` —
   the registry. One `SettingEntry` per setting (`id`, `label`,
-  `keywords`, `tab`, `anchor`, `scope`, `group`). Add a setting here and
+  `keywords`, `tab`, `anchor`, `scope`, `web`, `group`). Add a setting here and
   it becomes navigable, searchable, and deep-linkable at once.
+  `scope` answers *who does this affect*; `web` (`SettingWebScope`) answers
+  *does it work at all from a browser, and what do we tell the user about where
+  it went*. A hosted browser has no Electron shell and reaches its machine only
+  through the actions the sync host registers, so a setting either travels to
+  that machine, syncs through the ADE account, never leaves the browser tab, or
+  is `hidden`. `hidden` is why Secrets, providers, GitHub credentials,
+  dictation, the CLI installer, auto-updates, storage, session lifecycle, and
+  lane templates stay off the web nav: their reads would land, but their writes
+  would resolve against a missing descriptor and silently vanish.
+  `sectionWebScope` resolves a section's scope, and `WebScopeBanner.tsx` prints
+  it as the section's opening line — so a toggle that will not follow you to
+  another browser says so before you flip it. Desktop renders sections exactly
+  as before, with no banner.
 - `apps/desktop/src/renderer/components/settings/primitives/` — the
   control vocabulary (`SettingsCard`, `SettingsGroup`, `ScopeChip`,
   `SettingsToggle` / `Segmented` / `Number` / `Select` / `Slider`,

@@ -1460,6 +1460,7 @@ export function createAiIntegrationService(args: {
       sessionId: args.sessionId,
       projectConfig: projectConfigService.get().effective,
       imagePaths: args.imagePaths,
+      reasoningEffort: args.reasoningEffort ?? null,
     });
     const durationMs = Date.now() - start;
     const provider = resolveProviderGroupForModel(descriptor) as AgentProvider;

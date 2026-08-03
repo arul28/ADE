@@ -45,7 +45,6 @@ function renderLaneMenu(overrides: Partial<Parameters<typeof LaneContextMenu>[0]
     lanesById: new Map([[lane.id, lane as LaneSummary]]),
     visibleLaneIds: [lane.id],
     onClose: vi.fn(),
-    onAdoptAttached: vi.fn(),
     onManage: vi.fn(),
     selectLane: vi.fn(),
     onRemoveFromSplit: vi.fn(),

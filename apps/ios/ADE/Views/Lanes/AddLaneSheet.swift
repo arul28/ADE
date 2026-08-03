@@ -70,24 +70,6 @@ struct AddLaneSheet: View {
               onComplete: handleCreate
             )
           }
-
-          LaneCreateOptionLink(
-            symbol: "link",
-            symbolTint: ADEColor.textSecondary,
-            title: "Attach worktree",
-            subtitle: "Register an existing worktree as a lane"
-          ) {
-            AddLaneAttachRoute(onComplete: handleCreate)
-          }
-
-          LaneCreateOptionLink(
-            symbol: "square.stack.3d.down.right",
-            symbolTint: ADEColor.tintLanes,
-            title: "Attach multiple worktrees",
-            subtitle: "Discover existing worktrees and attach them in bulk"
-          ) {
-            AddLaneMultiAttachRoute(onComplete: handleCreate)
-          }
         }
         .padding(16)
       }
@@ -156,21 +138,5 @@ private struct LaneCreateOptionLink<Destination: View>: View {
     }
     .buttonStyle(ADEScaleButtonStyle())
     .accessibilityLabel("\(title). \(subtitle)")
-  }
-}
-
-private struct AddLaneAttachRoute: View {
-  let onComplete: @MainActor (String) async -> Void
-
-  var body: some View {
-    LaneAttachSheet(onComplete: onComplete, wrapsInNavigationStack: false)
-  }
-}
-
-private struct AddLaneMultiAttachRoute: View {
-  let onComplete: @MainActor (String) async -> Void
-
-  var body: some View {
-    LaneMultiAttachSheet(onComplete: onComplete, wrapsInNavigationStack: false)
   }
 }

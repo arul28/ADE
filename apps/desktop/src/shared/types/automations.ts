@@ -279,6 +279,10 @@ export type AutomationPlannerCodexCliConfig = {
   askForApproval: "untrusted" | "on-failure" | "on-request" | "never";
   webSearch: boolean;
   additionalWritableDirs: string[];
+  /** Provider-native model id. Omitted means "whatever ~/.codex/config.toml defaults to". */
+  model?: string | null;
+  /** Codex reasoning tier forwarded as `-c model_reasoning_effort`. */
+  reasoningEffort?: string | null;
 };
 
 export type AutomationPlannerClaudeCliConfig = {

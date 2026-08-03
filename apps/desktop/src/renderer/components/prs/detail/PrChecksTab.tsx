@@ -29,6 +29,7 @@ import type {
 } from "../../../../shared/types";
 import { COLORS, MONO_FONT, RADII, SANS_FONT, SPACING, floatingPane } from "../../lanes/laneDesignTokens";
 import { formatDurationMs } from "../../../lib/format";
+import { useCopyToClipboard } from "../../../hooks/useCopyToClipboard";
 import { PrCommandPalettes, type PaletteCheck } from "../shared/PrCommandPalettes";
 import {
   PrCheckLogDrawer,
@@ -509,7 +510,7 @@ export function PrChecksTab({
   const [excerpt, setExcerpt] = React.useState<PrCheckLogExcerpt | null>(null);
   const [logLoading, setLogLoading] = React.useState(false);
   const [logError, setLogError] = React.useState<string | null>(null);
-  const [copied, setCopied] = React.useState(false);
+  const { copy, copied, reset: resetCopied } = useCopyToClipboard({ timeout: 1600 });
   const [selectedAttempt, setSelectedAttempt] = React.useState<number | null>(null);
   const [paletteOpen, setPaletteOpen] = React.useState(false);
   const [focusedFailureIdx, setFocusedFailureIdx] = React.useState(0);
@@ -587,8 +588,8 @@ export function PrChecksTab({
   // ---- log drawer -------------------------------------------------------
   const openDrawerFor = React.useCallback((node: PrWorkflowGraphNode) => {
     setDrawer({ node, jobId: resolveLogJobId(node) });
-    setCopied(false);
-  }, []);
+    resetCopied();
+  }, [resetCopied]);
 
   React.useEffect(() => {
     if (!drawer) {
@@ -734,15 +735,8 @@ export function PrChecksTab({
   const handleCopy = React.useCallback(() => {
     if (!excerpt) return;
     const markdown = buildLogExcerptMarkdown({ excerpt, elapsedLabel: drawerElapsed, pr });
-    const writeText = navigator.clipboard?.writeText;
-    if (!writeText) return;
-    void writeText.call(navigator.clipboard, markdown)
-      .then(() => {
-        setCopied(true);
-        window.setTimeout(() => setCopied(false), 1600);
-      })
-      .catch(() => {});
-  }, [excerpt, drawerElapsed, pr]);
+    void copy(markdown);
+  }, [copy, excerpt, drawerElapsed, pr]);
 
   const rerunFailedVisible = Boolean(onRerunChecks) && buckets.failed > 0;
   const drawerRerun = React.useMemo(() => {

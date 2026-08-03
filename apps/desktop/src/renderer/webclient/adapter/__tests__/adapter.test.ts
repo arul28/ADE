@@ -1587,7 +1587,7 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("captures web analytics at runtime scope with a durable browser-local opt-out", async () => {
+  it("captures web analytics at runtime scope by default with a durable browser-local opt-out", async () => {
     const stored = new Map<string, string>();
     vi.stubGlobal("window", {
       localStorage: {
@@ -1617,20 +1617,8 @@ describe("createAdeWebAdapter", () => {
 
     await expect(adapter.ade.analytics.getStatus()).resolves.toMatchObject({
       configured: true,
-      enabled: false,
-      effective: false,
-      consentRequired: true,
-    });
-    await expect(adapter.ade.analytics.capture({
-      event: "ade_screen_viewed",
-      properties: { screen: "work" },
-    })).resolves.toEqual({ accepted: false, reason: "disabled" });
-
-    await expect(adapter.ade.analytics.setEnabled(true)).resolves.toMatchObject({
-      configured: true,
       enabled: true,
       effective: true,
-      consentRequired: false,
     });
     await expect(adapter.ade.analytics.capture({
       event: "ade_screen_viewed",
@@ -1833,6 +1821,21 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
+  it("rejects a failed readFile instead of answering with an empty file", async () => {
+    const adapter = createAdeWebAdapter(fake.asClient(), fake.projects);
+    adapter.bindProject(project, "project-1");
+
+    fake.fileErrors.set("readFile", new Error("relay dropped the request"));
+    // Resolving empty content here is indistinguishable from a genuinely empty
+    // file: callers cache the "" and paint a blank editor over a healthy file,
+    // and a save from that state writes the blank back.
+    await expect(
+      adapter.ade.files.readFile({ workspaceId: "primary", path: "src/app.ts" } as never),
+    ).rejects.toThrow("relay dropped the request");
+
+    adapter.dispose();
+  });
+
   it("atomically replaces the bound project and refreshes every mounted domain", async () => {
     fake.descriptors = descriptors(["lanes.list"]);
     fake.commandResults.set("lanes.list", [{ id: "lane-old" }]);
@@ -1896,10 +1899,11 @@ describe("createAdeWebAdapter", () => {
     adapter.dispose();
   });
 
-  it("hydrates PR list reads from one cached mobile snapshot and coalesces invalidations", async () => {
+  it("hydrates PR list reads from one cached list read and coalesces invalidations", async () => {
     vi.useFakeTimers();
     fake.descriptors = descriptors([
-      "prs.getMobileSnapshot",
+      "prs.list",
+      "prs.listWithConflicts",
       "prs.getStatus",
       "prs.getChecks",
       "prs.getGitHubSnapshot",
@@ -1932,15 +1936,8 @@ describe("createAdeWebAdapter", () => {
       createdAt: "2026-07-16T00:00:00.000Z",
       updatedAt: "2026-07-17T00:00:00.000Z",
     };
-    fake.commandResults.set("prs.getMobileSnapshot", {
-      generatedAt: "2026-07-17T00:00:00.000Z",
-      prs: [pr],
-      stacks: [],
-      capabilities: {},
-      createCapabilities: { canCreateAny: false, defaultBaseBranch: "main", lanes: [] },
-      workflowCards: [],
-      live: true,
-    });
+    fake.commandResults.set("prs.list", [pr]);
+    fake.commandResults.set("prs.listWithConflicts", [{ ...pr, conflictAnalysis: null }]);
     fake.commandResults.set("prs.getStatus", { prId: "pr-1", isMergeable: true });
     fake.commandResults.set("prs.getChecks", [{ id: "check-1", status: "completed" }]);
     fake.commandResults.set("prs.getGitHubSnapshot", { repoPullRequests: [{ linkedPrId: "pr-1" }] });
@@ -1982,7 +1979,11 @@ describe("createAdeWebAdapter", () => {
     expect(github).toMatchObject({ repoPullRequests: [{ linkedPrId: "pr-1" }] });
     expect(contextsA).toEqual(contextsB);
     expect(lanesA).toEqual(lanesB);
-    expect(fake.commandCalls.filter((call) => call.action === "prs.getMobileSnapshot")).toHaveLength(1);
+    // The expensive mobile aggregate (per-lane rebase git sweep) must not be
+    // what a plain list read costs on web.
+    expect(fake.commandCalls.filter((call) => call.action === "prs.getMobileSnapshot")).toHaveLength(0);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.list")).toHaveLength(1);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.listWithConflicts")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "prs.getStatus")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "prs.getChecks")).toHaveLength(1);
@@ -1995,7 +1996,7 @@ describe("createAdeWebAdapter", () => {
     await vi.advanceTimersByTimeAsync(260);
     await adapter.ade.prs.listAll();
 
-    expect(fake.commandCalls.filter((call) => call.action === "prs.getMobileSnapshot")).toHaveLength(2);
+    expect(fake.commandCalls.filter((call) => call.action === "prs.list")).toHaveLength(2);
     expect(fake.commandCalls.filter((call) => call.action === "lanes.list")).toHaveLength(1);
     expect(fake.commandCalls.filter((call) => call.action === "github.getStatus")).toHaveLength(0);
 
@@ -2181,6 +2182,74 @@ describe("createAdeWebAdapter", () => {
 
     expect(fake.commandCalls).toHaveLength(0);
     expect(fake.terminalSubscribeCalls).toHaveLength(0);
+    adapter.dispose();
+  });
+
+  /**
+   * The Chats surface keeps the window's project binding while showing a
+   * projectless page, so its shell button pins pty.create to the very machine
+   * and project on the other end of this socket. That is not cross-machine
+   * routing — it restates where the call was already going.
+   */
+  it("routes a pin that names this adapter's own machine and project", async () => {
+    fake.descriptors = descriptors(["work.startCliSession"]);
+    fake.commandResults.set("work.startCliSession", {
+      sessionId: "session-1",
+      ptyId: "pty-1",
+    });
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    // targetId IS the environment id the client is connected to.
+    const selfPin = {
+      kind: "remote",
+      key: "remote:env-1:project-1",
+      targetId: "env-1",
+      runtimeName: "This machine",
+      projectId: "project-1",
+      rootPath: "/repo",
+      displayName: "Repo",
+    } as const;
+
+    await expect(adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "shell",
+      title: "Pinned shell",
+      cols: 80,
+      rows: 24,
+    }, selfPin)).resolves.toMatchObject({ sessionId: "session-1", ptyId: "pty-1" });
+    expect(fake.commandCalls).toContainEqual(expect.objectContaining({
+      action: "work.startCliSession",
+      opts: { projectId: "project-1" },
+    }));
+
+    adapter.dispose();
+  });
+
+  it("still refuses a same-machine pin naming a different project", async () => {
+    fake.descriptors = descriptors(["work.startCliSession"]);
+    const adapter = createAdeWebAdapter(fake.asClient());
+    adapter.bindProject(project, "project-1");
+    // Dropping this pin would mean "use project-1", which is a different
+    // request from the one the caller made — so it is not routable either.
+    const otherProjectPin = {
+      kind: "remote",
+      key: "remote:env-1:project-2",
+      targetId: "env-1",
+      runtimeName: "This machine",
+      projectId: "project-2",
+      rootPath: "/repo-2",
+      displayName: "Repo 2",
+    } as const;
+
+    await expect(adapter.ade.pty.create({
+      laneId: "lane-1",
+      toolType: "shell",
+      title: "Pinned shell",
+      cols: 80,
+      rows: 24,
+    }, otherProjectPin)).rejects.toThrow(/cross-machine web routing is not implemented/);
+    expect(fake.commandCalls).toHaveLength(0);
+
     adapter.dispose();
   });
 

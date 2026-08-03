@@ -20,17 +20,22 @@ import type {
   TerminalToolType,
 } from "../../../shared/types";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
+import { liveClaudeSessionIds } from "./claudeLiveSessions";
 import { claudeConfigDir, discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
 import { discoverDroidSessions } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
 import { resolveCodexComputerUseMcpConfig } from "../../utils/codexComputerUse";
+import { CLAUDE_SESSION_POINTER_MAX_LIMIT } from "../sessions/sessionService";
+import { createImportedSessionStore, type ImportedSessionStore } from "./importedSessionStore";
 import {
   commandArrayToLine,
+  cwdIsInScope,
   directShellLaunchForCommandLine,
   isPathInside,
   normalizeExternalSessionLimit,
+  realishPath,
   sortDiscoveryRecords,
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
@@ -92,6 +97,8 @@ type ExternalSessionsServiceArgs = {
   env?: NodeJS.ProcessEnv;
   /** Overrides the installed-droid `--fork` probe (tests / callers that already know). */
   droidForkSupported?: boolean;
+  /** Overrides the machine-local durable import log (tests). */
+  importedSessionStore?: ImportedSessionStore;
 };
 
 type LaneScopedExternalSessionImportArgs = ExternalSessionImportArgs & {
@@ -161,14 +168,6 @@ function providerSet(raw: ExternalSessionProvider[] | undefined): ExternalSessio
   return Array.from(new Set(raw.filter((provider): provider is ExternalSessionProvider => allowed.has(provider))));
 }
 
-function realish(filePath: string): string {
-  try {
-    return fs.realpathSync(filePath);
-  } catch {
-    return path.resolve(filePath);
-  }
-}
-
 function safeDirectoryExists(filePath: string, cache?: Map<string, boolean>): boolean {
   const cacheKey = path.resolve(filePath);
   const cached = cache?.get(cacheKey);
@@ -186,7 +185,7 @@ function safeDirectoryExists(filePath: string, cache?: Map<string, boolean>): bo
 function deriveProjectScopeRoots(projectRoot: string): string[] {
   const roots = new Set<string>();
   const raw = path.resolve(projectRoot);
-  const resolved = realish(projectRoot);
+  const resolved = realishPath(projectRoot);
   roots.add(raw);
   roots.add(resolved);
   const marker = `${path.sep}.ade${path.sep}worktrees${path.sep}`;
@@ -205,19 +204,13 @@ function resolveLaneCwd(laneService: LaneServiceLike, laneId: string): string {
   const direct = laneService.getLaneWorktreePath?.(clean);
   const worktreePath = direct ?? laneService.getLaneBaseAndBranch?.(clean)?.worktreePath ?? null;
   if (!worktreePath?.trim()) throw new Error(`Lane '${clean}' has no worktree configured.`);
-  return realish(worktreePath);
+  return realishPath(worktreePath);
 }
 
 function cwdMatches(cwd: string | null, requestedCwd: string | null): boolean | null {
   if (!requestedCwd) return null;
   if (!cwd) return null;
-  return realish(cwd) === realish(requestedCwd);
-}
-
-function isInProjectScope(cwd: string | null, scopeRoots: string[]): boolean {
-  if (!cwd) return false;
-  const resolved = realish(cwd);
-  return scopeRoots.some((root) => isPathInside(root, resolved));
+  return realishPath(cwd) === realishPath(requestedCwd);
 }
 
 function refRank(ref: ImportedSessionRef | null): number {
@@ -238,13 +231,23 @@ function putImportedRef(
   }
 }
 
+type ImportedRefIndex = {
+  refs: Map<string, ImportedSessionRef | null>;
+  /** `provider:id` keys for provider sessions ADE itself created by copying. */
+  adeCreated: Set<string>;
+};
+
 async function importedSessionRefs(
   sessionService: SessionServiceLike,
   chatImportedRefsProvider: ChatImportedRefsProvider | null | undefined,
+  importedStore: ImportedSessionStore,
   logger: LoggerLike,
-): Promise<Map<string, ImportedSessionRef | null>> {
+): Promise<ImportedRefIndex> {
   const refs = new Map<string, ImportedSessionRef | null>();
+  const adeCreated = new Set<string>();
+  const liveAdeSessionIds = new Set<string>();
   for (const session of sessionService.list({ limit: null })) {
+    liveAdeSessionIds.add(session.id);
     const metadata = session.resumeMetadata as (TerminalResumeMetadata & {
       importedFrom?: { provider?: ExternalSessionProvider; targetId?: string | null };
     }) | null | undefined;
@@ -259,7 +262,23 @@ async function importedSessionRefs(
       putImportedRef(refs, `${metadata.importedFrom.provider}:${metadata.importedFrom.targetId}`, ref);
     }
   }
-  for (const pointer of sessionService.listClaudeSessionPointers?.({ limit: 5000 }) ?? []) {
+  // The durable log is the only source that survives deleting the ADE session,
+  // and the only one that knows the provider id a fork import created.
+  for (const record of importedStore.list()) {
+    const ref: ImportedSessionRef | null = liveAdeSessionIds.has(record.adeSessionId)
+      ? { kind: record.kind, sessionId: record.adeSessionId }
+      : null;
+    putImportedRef(refs, `${record.provider}:${record.externalId}`, ref);
+    if (record.targetId) {
+      putImportedRef(refs, `${record.provider}:${record.targetId}`, ref);
+      if (record.targetId !== record.externalId) {
+        adeCreated.add(`${record.provider}:${record.targetId}`);
+      }
+    }
+  }
+  // Claude pointers are one of the imported-marking sources; ask for all of them
+  // rather than a page, at exactly the ceiling `sessionService` enforces.
+  for (const pointer of sessionService.listClaudeSessionPointers?.({ limit: CLAUDE_SESSION_POINTER_MAX_LIMIT }) ?? []) {
     const sessionId = pointer.sessionId?.trim();
     if (!sessionId) continue;
     const chatSessionId = pointer.chatSessionId?.trim();
@@ -284,7 +303,46 @@ async function importedSessionRefs(
       });
     }
   }
-  return refs;
+  return { refs, adeCreated };
+}
+
+/**
+ * The strongest ref among the ids this row stands for. Discovery collapses
+ * continuation chains and fork parents, so the id a session was imported under
+ * is often no longer the id it is listed under.
+ */
+function resolveImportedRef(
+  index: ImportedRefIndex,
+  record: Pick<ExternalSessionDiscoveryRecord, "id" | "provider" | "lineageIds">,
+): { imported: boolean; ref: ImportedSessionRef | null } {
+  let imported = false;
+  let ref: ImportedSessionRef | null = null;
+  for (const id of [record.id, ...(record.lineageIds ?? [])]) {
+    const key = `${record.provider}:${id}`;
+    if (!index.refs.has(key)) continue;
+    imported = true;
+    const candidate = index.refs.get(key) ?? null;
+    if (refRank(candidate) > refRank(ref)) ref = candidate;
+  }
+  return { imported, ref };
+}
+
+/**
+ * ADE's own copies re-list as fresh provider sessions: a cross-cwd Claude fork
+ * writes a transplanted transcript under a new uuid into `~/.claude`, and a
+ * Codex chat fork mints a new thread. Both are already open in ADE under their
+ * original row, so listing them again offers to import ADE's work into ADE.
+ *
+ * Every id has to be ADE-created. When discovery collapses the user's original
+ * into the copy, that one row is also the only place the original appears;
+ * hiding it would drop the conversation instead of marking it imported.
+ */
+function isAdeCreatedArtifact(
+  index: ImportedRefIndex,
+  record: Pick<ExternalSessionDiscoveryRecord, "id" | "provider" | "lineageIds">,
+): boolean {
+  return [record.id, ...(record.lineageIds ?? [])]
+    .every((id) => index.adeCreated.has(`${record.provider}:${id}`));
 }
 
 function toolTypeForProvider(provider: ExternalSessionProvider): TerminalToolType {
@@ -314,27 +372,39 @@ function targetKindForProvider(provider: ExternalSessionProvider): TerminalResum
   return provider === "codex" ? "thread" : "session";
 }
 
+/**
+ * The launch settings an import runs with, resolved once from the user's request
+ * and whatever discovery recovered from the session. Passed around whole: every
+ * consumer — the resume command, each fork command, the stored metadata — needs
+ * the same set, and the codex-only `codexComputerUse` is added at the one call
+ * site that can await it.
+ */
+type LaunchOverrides = {
+  model: string | null;
+  reasoningEffort: string | null;
+  fastMode: boolean | null;
+  permissionMode: TerminalResumeMetadata["launch"]["permissionMode"];
+  codexApprovalPolicy: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
+  codexSandbox: TerminalResumeMetadata["launch"]["codexSandbox"];
+  codexConfigSource: TerminalResumeMetadata["launch"]["codexConfigSource"];
+};
+
 function metadataForImport(args: {
   provider: ExternalSessionProvider;
   targetId: string | null;
   originalTargetId: string;
   mode: "resume" | "fork";
-  model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-  permissionMode?: string | null;
-  codexApprovalPolicy?: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
-  codexSandbox?: TerminalResumeMetadata["launch"]["codexSandbox"];
-  codexConfigSource?: TerminalResumeMetadata["launch"]["codexConfigSource"];
+  overrides: LaunchOverrides;
 }): TerminalResumeMetadata {
+  const overrides = args.overrides;
   const launch = {
-    ...(args.model ? { model: args.model } : {}),
-    ...(args.reasoningEffort ? { reasoningEffort: args.reasoningEffort } : {}),
-    ...(typeof args.fastMode === "boolean" ? { fastMode: args.fastMode } : {}),
-    ...(args.permissionMode ? { permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"] } : {}),
-    ...(args.codexApprovalPolicy ? { codexApprovalPolicy: args.codexApprovalPolicy } : {}),
-    ...(args.codexSandbox ? { codexSandbox: args.codexSandbox } : {}),
-    ...(args.codexConfigSource ? { codexConfigSource: args.codexConfigSource } : {}),
+    ...(overrides.model ? { model: overrides.model } : {}),
+    ...(overrides.reasoningEffort ? { reasoningEffort: overrides.reasoningEffort } : {}),
+    ...(typeof overrides.fastMode === "boolean" ? { fastMode: overrides.fastMode } : {}),
+    ...(overrides.permissionMode ? { permissionMode: overrides.permissionMode } : {}),
+    ...(overrides.codexApprovalPolicy ? { codexApprovalPolicy: overrides.codexApprovalPolicy } : {}),
+    ...(overrides.codexSandbox ? { codexSandbox: overrides.codexSandbox } : {}),
+    ...(overrides.codexConfigSource ? { codexConfigSource: overrides.codexConfigSource } : {}),
   };
   return {
     provider: args.provider,
@@ -354,45 +424,21 @@ async function forkCommandFor(args: {
   provider: ExternalSessionProvider;
   metadata: TerminalResumeMetadata;
   targetId: string;
-  model?: string | null;
-  reasoningEffort?: string | null;
-  fastMode?: boolean | null;
-  permissionMode?: string | null;
-  codexApprovalPolicy?: TerminalResumeMetadata["launch"]["codexApprovalPolicy"];
-  codexSandbox?: TerminalResumeMetadata["launch"]["codexSandbox"];
-  codexConfigSource?: TerminalResumeMetadata["launch"]["codexConfigSource"];
+  overrides: LaunchOverrides;
   transplantedClaude: boolean;
 }): Promise<string> {
+  const forkMetadata = { ...args.metadata, targetId: args.targetId };
+
   if (args.provider === "claude") {
-    const command = buildTrackedCliResumeCommand(
-      { ...args.metadata, targetId: args.targetId },
-      {
-        model: args.model,
-        reasoningEffort: args.reasoningEffort,
-        fastMode: args.fastMode,
-        permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-        codexApprovalPolicy: args.codexApprovalPolicy,
-        codexSandbox: args.codexSandbox,
-        codexConfigSource: args.codexConfigSource,
-      },
-    );
+    const command = buildTrackedCliResumeCommand(forkMetadata, args.overrides);
     return args.transplantedClaude ? command : `${command} --fork-session`;
   }
 
   if (args.provider === "codex") {
-    const resume = buildTrackedCliResumeCommand(
-      { ...args.metadata, targetId: args.targetId },
-      {
-        model: args.model,
-        reasoningEffort: args.reasoningEffort,
-        fastMode: args.fastMode,
-        permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-        codexApprovalPolicy: args.codexApprovalPolicy,
-        codexSandbox: args.codexSandbox,
-        codexConfigSource: args.codexConfigSource,
-        codexComputerUse: await resolveCodexComputerUseMcpConfig(),
-      },
-    );
+    const resume = buildTrackedCliResumeCommand(forkMetadata, {
+      ...args.overrides,
+      codexComputerUse: await resolveCodexComputerUseMcpConfig(),
+    });
     return withCodexNoAltScreen(resume.replace(/\bresume\b/u, "fork"));
   }
 
@@ -401,25 +447,18 @@ async function forkCommandFor(args: {
   }
 
   if (args.provider === "opencode") {
-    const resume = buildTrackedCliResumeCommand(
-      { ...args.metadata, targetId: args.targetId },
-      {
-        model: args.model,
-        reasoningEffort: args.reasoningEffort,
-        fastMode: args.fastMode,
-        permissionMode: args.permissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-        codexApprovalPolicy: args.codexApprovalPolicy,
-        codexSandbox: args.codexSandbox,
-        codexConfigSource: args.codexConfigSource,
-      },
-    );
-    return `${resume} --fork`;
+    return `${buildTrackedCliResumeCommand(forkMetadata, args.overrides)} --fork`;
   }
 
   throw new Error("Cursor sessions cannot be forked.");
 }
 
 export function createExternalSessionsService(args: ExternalSessionsServiceArgs) {
+  const importedStore = args.importedSessionStore ?? createImportedSessionStore({
+    ...(args.homeDir ? { homeDir: args.homeDir } : {}),
+    ...(args.env ? { env: args.env } : {}),
+    logger: args.logger,
+  });
   // Factory's docs describe `droid --fork`, but installed CLIs predating it only
   // expose `--resume`; offering fork against such a binary launches a failing command.
   let droidForkProbe: boolean | null = typeof args.droidForkSupported === "boolean" ? args.droidForkSupported : null;
@@ -520,7 +559,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       : requestedProviders;
     if (providers.length === 0) return [];
     const requestedLaneCwd = rawArgs.laneId ? resolveLaneCwd(args.laneService, rawArgs.laneId) : null;
-    const requestedCwd = rawArgs.cwd?.trim() ? realish(rawArgs.cwd) : requestedLaneCwd;
+    const requestedCwd = rawArgs.cwd?.trim() ? realishPath(rawArgs.cwd) : requestedLaneCwd;
     const scopeRoots = projectScoped ? deriveProjectScopeRoots(args.projectRoot) : [];
     const discoveryArgs: ExternalSessionDiscoveryArgs = {
       homeDir: args.homeDir,
@@ -546,18 +585,32 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
     }));
 
-    const imported = await importedSessionRefs(args.sessionService, args.chatImportedRefsProvider, args.logger);
+    const imported = await importedSessionRefs(
+      args.sessionService,
+      args.chatImportedRefsProvider,
+      importedStore,
+      args.logger,
+    );
     const activeCutoffMs = Date.now() - 2 * 60_000;
+    const liveClaudeIds = providers.includes("claude")
+      ? liveClaudeSessionIds({ homeDir: args.homeDir, env: args.env })
+      : null;
     const cwdExistenceCache = new Map<string, boolean>();
     const discovered = sortDiscoveryRecords(settled.flat(), discoveryLimit * providers.length);
-    const scoped = projectScoped
-      ? discovered.filter((session) => isInProjectScope(session.cwd, scopeRoots))
+    // `scopeRoots` is non-empty whenever `projectScoped`, so the util's
+    // empty-roots-means-everything behaviour is never reached here.
+    const inScope = projectScoped
+      ? discovered.filter((session) => cwdIsInScope(session.cwd, scopeRoots))
       : discovered;
+    // An exact lookup names the session the caller wants and must resolve even
+    // when that session is an ADE-created copy.
+    const scoped = requestedSessionId
+      ? inScope
+      : inScope.filter((session) => !isAdeCreatedArtifact(imported, session));
 
-    return scoped
+    const summaries = scoped
       .map((session): ExternalSessionSummary => {
-        const importKey = `${session.provider}:${session.id}`;
-        const importedRef = imported.get(importKey) ?? null;
+        const { imported: alreadyImported, ref: importedRef } = resolveImportedRef(imported, session);
         return {
           provider: session.provider,
           id: session.id,
@@ -569,15 +622,22 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
           updatedAt: session.updatedAt,
           messageCount: session.messageCount,
           launch: session.launch ?? null,
-          alreadyImported: importedRef != null,
+          alreadyImported,
           importedSessionRef: importedRef,
-          possiblyActive: typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
+          // Claude publishes its own live-session registry, which answers "open
+          // right now" instead of "written in the last two minutes".
+          possiblyActive: session.provider === "claude" && liveClaudeIds
+            ? liveClaudeIds.has(session.id)
+            : typeof session.sourceMtimeMs === "number" && session.sourceMtimeMs >= activeCutoffMs,
           cwdMatchesRequestedLane: cwdMatches(session.cwd, requestedCwd),
           capabilities: capabilitiesFor(session.provider, session, cwdExistenceCache),
         };
       })
-      .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0))
-      .slice(0, projectScoped ? limit : scoped.length);
+      .sort((left, right) => (right.updatedAt ?? 0) - (left.updatedAt ?? 0));
+    // Every provider discovers up to `discoveryLimit` of its own, so an unscoped
+    // union would otherwise hand back `limit x providers` rows for a caller that
+    // asked for `limit`.
+    return summaries.slice(0, limit);
   };
 
   const findExternalSummary = async (
@@ -632,14 +692,20 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const sessionId = validateExternalSessionId(provider, importArgs.sessionId);
     const laneId = importArgs.laneId.trim();
     const laneCwd = resolveLaneCwd(args.laneService, laneId);
-    if (importArgs.target === "chat") {
-      if (provider !== "claude" && provider !== "codex") {
-        throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
-      }
-      if (!args.chatImporter) {
-        throw new Error("Chat import unavailable: external chat importer is not configured.");
-      }
-    }
+    // Resolved before any discovery work, so an import that cannot run fails
+    // before it reads the provider's session store. Binding the importer here is
+    // also what lets the branch below use it without asserting it exists.
+    const chatImport = importArgs.target === "chat"
+      ? (() => {
+          if (provider !== "claude" && provider !== "codex") {
+            throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
+          }
+          if (!args.chatImporter) {
+            throw new Error("Chat import unavailable: external chat importer is not configured.");
+          }
+          return { provider, importer: args.chatImporter };
+        })()
+      : null;
     const summary = await findExternalSummary(provider, sessionId, laneCwd);
     if (!summary) {
       throw new Error(`${provider} external session '${sessionId}' was not found or is not resumable.`);
@@ -647,17 +713,14 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const sourceCwd = summary?.cwd ?? null;
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
     if (enforceLaneScopeCwd) {
-      const scopeRoot = realish(enforceLaneScopeCwd);
-      if (!sourceCwd || !isPathInside(scopeRoot, realish(sourceCwd))) {
+      const scopeRoot = realishPath(enforceLaneScopeCwd);
+      if (!sourceCwd || !isPathInside(scopeRoot, realishPath(sourceCwd))) {
         throw new Error("External session import is not permitted for this lane.");
       }
     }
 
-    if (importArgs.target === "chat") {
-      if (provider !== "claude" && provider !== "codex") {
-        throw new Error(`Chat import is only available for Claude and Codex sessions, not ${provider}.`);
-      }
-      const importer = args.chatImporter!;
+    if (chatImport) {
+      const { importer } = chatImport;
       if (!summary.capabilities.importToChat) {
         throw new Error(`${provider} session '${sessionId}' cannot be imported as an ADE chat.`);
       }
@@ -669,13 +732,38 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         throw new Error("Claude sessions from another folder must be copied into the target lane; continuing the original across folders is not supported.");
       }
       const result = await importer.importExternalChatSession({
-        provider,
+        provider: chatImport.provider,
         externalSessionId: sessionId,
         laneId,
         cwd: sourceCwd,
         fork: importArgs.mode === "fork",
         ...(summary?.title ? { title: summary.title } : {}),
       });
+      // A fork import binds the chat to a provider id that did not exist when
+      // the user picked the row; both ids have to be marked, or the fork lists
+      // back as a fresh session and the original loses its badge.
+      const providerTargetId = result.providerTargetId?.trim() || null;
+      const forkImport = importArgs.mode === "fork";
+      if (forkImport && (!providerTargetId || providerTargetId === sessionId)) {
+        // A fork always mints a new provider id; without it the copy cannot be
+        // marked ADE-created, and a source-only receipt would claim this import
+        // is accounted for while the copy lists back as a fresh session. Leave
+        // both rows unmarked and say why — the chat itself is already imported.
+        args.logger.warn("external_sessions.chat_fork_target_unknown", {
+          provider,
+          sessionId,
+          adeSessionId: result.chatSessionId,
+        });
+      } else {
+        importedStore.record({
+          provider,
+          externalId: sessionId,
+          targetId: providerTargetId && providerTargetId !== sessionId ? providerTargetId : null,
+          kind: "chat",
+          adeSessionId: result.chatSessionId,
+          mode: forkImport ? "fork" : "continue",
+        });
+      }
       return {
         kind: "chat",
         chatSessionId: result.chatSessionId,
@@ -712,7 +800,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
       if (provider === "claude") {
         if (!sourceCwd) throw new Error("Claude fork import requires the source session cwd.");
-        if (realish(sourceCwd) !== realish(laneCwd)) {
+        if (realishPath(sourceCwd) !== realishPath(laneCwd)) {
           const transplant = await transplantClaudeSession({
             sessionId,
             sourceCwd,
@@ -733,7 +821,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         runCwd = laneCwd;
       } else if (provider === "opencode") {
         if (!sourceCwd) throw new Error("OpenCode fork import requires the source session cwd.");
-        if (realish(sourceCwd) !== realish(laneCwd)) {
+        if (realishPath(sourceCwd) !== realishPath(laneCwd)) {
           throw new Error("OpenCode sessions cannot be copied into a different lane folder.");
         }
         metadataTargetId = null;
@@ -741,68 +829,58 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
     }
 
-    const resolvedModel = importArgs.model?.trim() || summary.launch?.model?.trim() || null;
-    const resolvedReasoningEffort = importArgs.reasoningEffort?.trim()
-      || summary.launch?.reasoningEffort?.trim()
-      || null;
-    const resolvedPermissionMode = importArgs.permissionMode?.trim()
-      || summary.launch?.permissionMode?.trim()
-      || null;
-    const resolvedFastMode = typeof importArgs.fastMode === "boolean"
-      ? importArgs.fastMode
-      : summary.launch?.fastMode ?? summary.launch?.codexFastMode ?? null;
-    const preserveDiscoveredCodexPermissions = provider === "codex" && importArgs.permissionMode == null;
-    const resolvedCodexApprovalPolicy = preserveDiscoveredCodexPermissions
-      ? summary.launch?.codexApprovalPolicy ?? null
-      : null;
-    const resolvedCodexSandbox = preserveDiscoveredCodexPermissions
-      ? summary.launch?.codexSandbox ?? null
-      : null;
-    const resolvedCodexConfigSource = preserveDiscoveredCodexPermissions
-      ? summary.launch?.codexConfigSource ?? null
-      : null;
+    // An explicit permission mode replaces the discovered codex permission
+    // triple wholesale; keeping half of each would launch a mix the user never
+    // chose. Normalized once so a blank string arriving over IPC counts as "no
+    // explicit mode" for both decisions rather than discarding the discovered
+    // triple and then falling back to defaults anyway.
+    const requestedPermissionMode = importArgs.permissionMode?.trim() || null;
+    const preserveDiscoveredCodexPermissions = provider === "codex" && requestedPermissionMode == null;
+    const overrides: LaunchOverrides = {
+      model: importArgs.model?.trim() || summary.launch?.model?.trim() || null,
+      reasoningEffort: importArgs.reasoningEffort?.trim()
+        || summary.launch?.reasoningEffort?.trim()
+        || null,
+      fastMode: typeof importArgs.fastMode === "boolean"
+        ? importArgs.fastMode
+        : summary.launch?.fastMode ?? summary.launch?.codexFastMode ?? null,
+      permissionMode: (requestedPermissionMode
+        || summary.launch?.permissionMode?.trim()
+        || null) as TerminalResumeMetadata["launch"]["permissionMode"],
+      codexApprovalPolicy: preserveDiscoveredCodexPermissions
+        ? summary.launch?.codexApprovalPolicy ?? null
+        : null,
+      codexSandbox: preserveDiscoveredCodexPermissions
+        ? summary.launch?.codexSandbox ?? null
+        : null,
+      codexConfigSource: preserveDiscoveredCodexPermissions
+        ? summary.launch?.codexConfigSource ?? null
+        : null,
+    };
     const metadata = metadataForImport({
       provider,
       targetId: metadataTargetId,
       originalTargetId: sessionId,
       mode: importArgs.mode,
-      model: resolvedModel,
-      reasoningEffort: resolvedReasoningEffort,
-      fastMode: resolvedFastMode,
-      permissionMode: resolvedPermissionMode,
-      codexApprovalPolicy: resolvedCodexApprovalPolicy,
-      codexSandbox: resolvedCodexSandbox,
-      codexConfigSource: resolvedCodexConfigSource,
+      overrides,
     });
     const startupCommand = importArgs.mode === "resume"
       ? buildTrackedCliResumeCommand(metadata, {
-          model: resolvedModel,
-          reasoningEffort: resolvedReasoningEffort,
-          fastMode: resolvedFastMode,
-          permissionMode: resolvedPermissionMode as TerminalResumeMetadata["launch"]["permissionMode"],
-          codexApprovalPolicy: resolvedCodexApprovalPolicy,
-          codexSandbox: resolvedCodexSandbox,
-          codexConfigSource: resolvedCodexConfigSource,
+          ...overrides,
           ...(provider === "codex" ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() } : {}),
         })
       : await forkCommandFor({
           provider,
           metadata,
           targetId: launchTargetId,
-          model: resolvedModel,
-          reasoningEffort: resolvedReasoningEffort,
-          fastMode: resolvedFastMode,
-          permissionMode: resolvedPermissionMode,
-          codexApprovalPolicy: resolvedCodexApprovalPolicy,
-          codexSandbox: resolvedCodexSandbox,
-          codexConfigSource: resolvedCodexConfigSource,
+          overrides,
           transplantedClaude,
         });
 
     const ptyArgs: PtyCreateArgs = {
       laneId,
       cwd: runCwd,
-      allowExternalCwd: realish(runCwd) !== realish(laneCwd),
+      allowExternalCwd: realishPath(runCwd) !== realishPath(laneCwd),
       cols: 120,
       rows: 36,
       title: summary?.title ?? `${provider} ${importArgs.mode} ${sessionId.slice(0, 8)}`,
@@ -814,6 +892,16 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     };
 
     const created = await args.ptyService.create(ptyArgs);
+    importedStore.record({
+      provider,
+      externalId: sessionId,
+      // Only a Claude transplant produces a new provider id ADE knows here; a
+      // Codex/Droid CLI fork mints its id inside the launched process.
+      targetId: launchTargetId !== sessionId ? launchTargetId : null,
+      kind: "cli",
+      adeSessionId: created.sessionId,
+      mode: importArgs.mode === "fork" ? "fork" : "continue",
+    });
     args.logger.info?.("external_sessions.imported_cli", {
       provider,
       sessionId,

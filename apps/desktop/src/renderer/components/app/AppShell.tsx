@@ -77,10 +77,7 @@ import { BrainRecoveryNotice } from "./BrainRecoveryNotice";
 import { WorktreeOpenDialog } from "../projects/WorktreeOpenDialog";
 import { showToast, useToasts } from "./toast/toastStore";
 import { useLaneEventToasts } from "./toast/useLaneEventToasts";
-import {
-  useProductAnalyticsLifecycle,
-  WebAnalyticsConsentBanner,
-} from "../analytics/ProductAnalyticsLifecycle";
+import { useProductAnalyticsLifecycle } from "../analytics/ProductAnalyticsLifecycle";
 import { useAppWideSessionAttention } from "../../hooks/useAppWideSessionAttention";
 import { useCtoAttention } from "../../hooks/useCtoAttention";
 import { ActivityPane } from "../activity/ActivityPane";
@@ -282,6 +279,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const projectBinding = useAppStore((s) => s.projectBinding);
   const projectRevision = useAppStore((s) => s.projectRevision);
   const setShowWelcome = useAppStore((s) => s.setShowWelcome);
+  const cancelNewTab = useAppStore((s) => s.cancelNewTab);
   const showWelcome = useAppStore((s) => s.showWelcome);
   const setPersonalChatsTabOpen = useAppStore(
     (s) => s.setPersonalChatsTabOpen,
@@ -354,11 +352,10 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const activityDeepLink = isActivityRoute(location.pathname);
   const isAccountRoute =
     location.pathname === "/account" || location.pathname.startsWith("/account/");
-  const isWebHubRoute = isWebClientMode() && location.pathname === "/hub";
   const isLanesRoute = location.pathname.startsWith("/lanes");
   const isWorkRoute = location.pathname === "/work" || location.pathname.startsWith("/work/");
   const productAnalyticsScreen = productAnalyticsScreenForPathname(location.pathname);
-  const productAnalytics = useProductAnalyticsLifecycle({
+  useProductAnalyticsLifecycle({
     projectRoot: currentProjectRoot,
     screen: productAnalyticsScreen,
   });
@@ -557,6 +554,11 @@ export function AppShell({ children }: { children: React.ReactNode }) {
           displayName: remoteBinding.displayName,
           baseRef: "main",
         });
+        // Binding a remote project fills the pending New Tab, exactly as
+        // opening a local one does. Every local open path clears this in the
+        // store; this branch bypasses them all, which left a blank "New Tab"
+        // pill sitting next to the tab it had just become.
+        if (currentIsNewTabOpen) cancelNewTab();
         setShowWelcome(false);
         clearScheduledRefreshes();
         void refreshLanes({ includeStatus: false });
@@ -670,6 +672,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       disposeProjectBindingChanged();
     };
   }, [
+    cancelNewTab,
     setProject,
     setProjectBinding,
     setProjectHydrated,
@@ -1175,7 +1178,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     !showWelcome &&
     location.pathname === "/work" &&
     onboardingStatusLoading;
-  const hideSidebar = isOnboardingRoute || isWebHubRoute || shouldHoldProjectRouteForOnboarding;
+  const hideSidebar = isOnboardingRoute || shouldHoldProjectRouteForOnboarding;
   const staleCliNoticeAgeHours = staleCliNotice
     ? getStaleRunningCliSessionAgeHours({
         status: "running",
@@ -1209,7 +1212,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <TopBar
           personalChatsRouteActive={isPersonalChatsRoute}
           accountRouteActive={isAccountRoute}
-          hubRouteActive={isWebHubRoute}
           onNavigate={(path, opts) => navigate(path, opts)}
           onOpenActivityPane={() => setActivityPaneOpen(true)}
         />
@@ -1220,13 +1222,6 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <AutoUpdateBanner />
 
       <BrainRecoveryNotice />
-
-      {productAnalytics.consentRequired ? (
-        <WebAnalyticsConsentBanner
-          onAllow={productAnalytics.allow}
-          onDecline={productAnalytics.decline}
-        />
-      ) : null}
 
       {!hideSidebar && projectMissing && project?.rootPath ? (
         <div className="shrink-0 mx-2 mt-1 rounded bg-red-500/8 px-3 py-1.5 text-[11px] font-mono text-red-800">

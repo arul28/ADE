@@ -8,6 +8,7 @@ import {
   X,
 } from "@phosphor-icons/react";
 import { useClickOutside } from "../../hooks/useClickOutside";
+import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { cn } from "../ui/cn";
 import { textareaCls } from "./designTokens";
 import { INPUT_CLS, INPUT_STYLE } from "./shared";
@@ -537,16 +538,9 @@ function ParamField({
 }
 
 function PlaceholderRow() {
-  const [copied, setCopied] = useState<string | null>(null);
-  const copy = async (placeholder: string) => {
-    try {
-      await navigator.clipboard.writeText(placeholder);
-      setCopied(placeholder);
-      window.setTimeout(() => setCopied((current) => (current === placeholder ? null : current)), 1200);
-    } catch {
-      // Clipboard may be blocked (e.g., insecure context) — silently no-op.
-    }
-  };
+  // Keyed: only the chip that was clicked shows the confirmation. Clipboard may
+  // be blocked (e.g., insecure context) — the hook then leaves the chip idle.
+  const { copy, isCopied } = useCopyToClipboard({ timeout: 1200 });
   return (
     <details className="rounded-md border border-white/[0.08] bg-white/[0.03] px-2.5 py-1.5 text-[10px]">
       <summary className="cursor-pointer text-[10px] uppercase tracking-[1px] text-muted-fg/70 hover:text-fg/85">
@@ -559,14 +553,14 @@ function PlaceholderRow() {
             type="button"
             className={cn(
               "rounded border px-1.5 py-0.5 text-[10px] transition-colors",
-              copied === placeholder.value
+              isCopied(placeholder.value)
                 ? "border-emerald-400/40 bg-emerald-500/10 text-emerald-200"
                 : "border-white/[0.08] bg-white/[0.03] text-muted-fg/70 hover:border-accent/40 hover:text-fg",
             )}
-            onClick={() => void copy(placeholder.value)}
+            onClick={() => void copy(placeholder.value, placeholder.value)}
             title={placeholder.value}
           >
-            {copied === placeholder.value ? "✓ copied" : placeholder.label}
+            {isCopied(placeholder.value) ? "✓ copied" : placeholder.label}
           </button>
         ))}
       </div>

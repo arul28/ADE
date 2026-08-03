@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { DeeplinkTarget } from "../../../shared/deeplinks";
 import type { WebClientEnvironmentRecord, WebRelayAccess, AdeSyncClient } from "../sync";
+import { WebClientEnvStore } from "../sync";
 import {
   BrowserAccountClient,
   browserAccountIsSignedIn,
@@ -15,7 +16,9 @@ import {
   WebWorkspaceProvider,
   type WebWorkspaceContextValue,
 } from "../workspace/WebWorkspaceContext";
+import type { WebMachineEntry } from "../workspace/webWorkspaceModel";
 import { WebMachineSessionManager } from "../workspace/WebMachineSessionManager";
+import { mergeWebMachines } from "../workspace/webWorkspaceModel";
 import { parseOpenTarget, parseWebPath, targetToWebPath } from "./webRoutes";
 import { ScreenShell } from "./ScreenShell";
 import { installSessionLifecycleChrome } from "./sessionLifecycleChrome";
@@ -58,6 +61,14 @@ async function loadAppRoot(): Promise<React.ComponentType> {
 
 const PENDING_TARGET_KEY = "ade-web:pending-target";
 const ACCOUNT_LEASE_CHECK_INTERVAL_MS = 30_000;
+/**
+ * Where a boot with nothing to restore lands. The shared App renders its
+ * project welcome surface on any app route while no project is open, so the
+ * hosted client has no separate landing route — and no Hub.
+ */
+const WELCOME_PATH = "/work";
+/** Retired routes that must not survive a reload. */
+const LEGACY_PATHS = new Set(["/pair", "/hub"]);
 const APP_ROUTE_ROOTS = [
   "/work",
   // Activity is a modal, but its pathname is a real deep link the shell turns
@@ -151,8 +162,11 @@ export function WebClientRoot({
   const [accountClient] = useState(
     () => providedAccountClient ?? new BrowserAccountClient(),
   );
+  // The catalog cache is its own store instance: it holds no credentials, so it
+  // must not wait behind the sync client's environment/trust bookkeeping.
+  const [catalogStore] = useState(() => new WebClientEnvStore());
   const [sessionManager] = useState(
-    () => new WebMachineSessionManager(client, accountClient),
+    () => new WebMachineSessionManager(client, accountClient, undefined, catalogStore),
   );
   const [phase, setPhase] = useState<Phase>(() => (
     window.location.pathname === "/account/callback"
@@ -170,6 +184,13 @@ export function WebClientRoot({
   const [workspaceNotice, setWorkspaceNotice] = useState<string | null>(null);
   const [federatedAdapter, setFederatedAdapter] = useState<FederatedWebAdapter | null>(null);
   const [activeAdapterGeneration, setActiveAdapterGeneration] = useState(0);
+  // Remounting the app tree is reserved for a genuinely different workspace —
+  // a new federated adapter, i.e. a different account, where `window.ade`
+  // itself is replaced. Switching tabs swaps the adapter *behind* the stable
+  // surface proxy, and the proxy re-attaches every unpinned subscription to the
+  // newly displayed adapter (see `setCurrentAdapter` in adapter/federated.ts),
+  // so the tree stays mounted and keeps its per-tab state.
+  const [workspaceGeneration, setWorkspaceGeneration] = useState(0);
   const federatedAdapterRef = useRef<FederatedWebAdapter | null>(null);
   const federatedAccountKeyRef = useRef<string | null>(null);
   const federatedAdapterDisposeRef = useRef<() => void>(() => {});
@@ -184,6 +205,14 @@ export function WebClientRoot({
     snapshot: BrowserAccountSnapshot,
   ): Promise<WebClientEnvironmentRecord[]> => {
     const ownerUserId = accountEnvironmentOwner(snapshot);
+    // Cached project names are account data too: drop another account's before
+    // this one's recents are allowed to paint.
+    try {
+      await catalogStore.pruneMachineCatalogs(ownerUserId);
+    } catch {
+      // Without browser storage there is nothing cached to leak.
+    }
+    await sessionManager.hydrateCatalogs(ownerUserId);
     try {
       const result = await client.pruneAccountOwnedEnvironments(ownerUserId);
       setWorkspaceNotice(null);
@@ -194,7 +223,7 @@ export function WebClientRoot({
       );
       return [];
     }
-  }, [client]);
+  }, [catalogStore, client, sessionManager]);
 
   const refreshVisibleEnvironments = useCallback(async () => {
     const environments = await sessionManager.refreshEnvironments();
@@ -207,6 +236,42 @@ export function WebClientRoot({
   }, [sessionManager]);
 
   useEffect(() => sessionManager.subscribe(setWorkspaceSnapshot), [sessionManager]);
+
+  const connectMachineEntry = useCallback(async (machine: WebMachineEntry): Promise<string> => {
+    if (machine.session?.state === "live") return machine.session.targetId;
+    if (machine.environment) {
+      await sessionManager.connectEnvironment(machine.environment.envId);
+      return machine.environment.envId;
+    }
+    if (machine.accountMachine) {
+      setConnectingMachineKey(machine.accountMachine.machineKey);
+      try {
+        const session = await sessionManager.connectAccountMachine(machine.accountMachine);
+        await refreshVisibleEnvironments();
+        return session.targetId;
+      } finally {
+        setConnectingMachineKey(null);
+      }
+    }
+    throw new Error("This machine has no connection ADE Web can dial.");
+  }, [refreshVisibleEnvironments, sessionManager]);
+
+  const reconnectLastActiveMachine = useCallback(async () => {
+    const machineKey = sessionManager.getLastActiveMachineKey();
+    if (!machineKey) return;
+    const machine = mergeWebMachines({
+      accountMachines: accountRef.current.machines,
+      snapshot: sessionManager.getSnapshot(),
+      relayBaseUrls: accountClient.getRelayBaseUrls(),
+    }).find((entry) => entry.key === machineKey);
+    if (!machine || machine.session) return;
+    try {
+      await connectMachineEntry(machine);
+    } catch {
+      // The welcome surface still lists this machine's cached projects, and
+      // opening one dials it again with the failure in view.
+    }
+  }, [accountClient, connectMachineEntry, sessionManager]);
 
   const installFederatedAdapter = useCallback(async (
     snapshot: BrowserAccountSnapshot,
@@ -245,6 +310,7 @@ export function WebClientRoot({
       setActiveAdapterGeneration((current) => current + 1);
     });
     setFederatedAdapter(adapter);
+    setWorkspaceGeneration((current) => current + 1);
     window.ade = adapter.ade;
     const restored = await adapter.restore();
     return { adapter, restored };
@@ -323,7 +389,7 @@ export function WebClientRoot({
     let disposed = false;
 
     void (async () => {
-      if (window.location.pathname === "/pair") {
+      if (LEGACY_PATHS.has(window.location.pathname)) {
         window.history.replaceState(null, "", "/");
       }
       const path = window.location.pathname;
@@ -335,10 +401,16 @@ export function WebClientRoot({
       pendingTargetRef.current = pendingTarget;
       stashTarget(pendingTarget);
 
+      const wasCallback = path === "/account/callback";
       const snapshot = await accountClient.bootstrap();
       if (disposed) return;
       setAccount(snapshot);
-      setPhase({ kind: "booting", message: "Opening the workspace Hub…" });
+      // A callback that lands signed-out means the sign-in genuinely failed.
+      // Without this the user is dropped on the gate with no explanation.
+      if (wasCallback && !browserAccountIsSignedIn(snapshot.state) && snapshot.message) {
+        setWorkspaceNotice(snapshot.message);
+      }
+      setPhase({ kind: "booting", message: "Opening your projects…" });
 
       const environments = await applyAccountPrivacy(snapshot);
       if (disposed) return;
@@ -355,8 +427,8 @@ export function WebClientRoot({
           ? targetToWebPath(restoredTarget)
           : isAppRoute(path)
             ? `${path}${window.location.search}`
-            : "/work"
-        : "/hub";
+            : WELCOME_PATH
+        : WELCOME_PATH;
       if (restored) {
         pendingTargetRef.current = null;
         stashTarget(null);
@@ -364,6 +436,10 @@ export function WebClientRoot({
       window.history.replaceState(null, "", initialPath);
       const AppRoot = await loadAppRoot();
       if (!disposed) setPhase({ kind: "ready", AppRoot });
+      // Nothing to restore means the welcome surface is what the user sees, and
+      // it has already painted from the persisted catalogs. Bringing the last
+      // machine back is a background refresh, never a gate on first paint.
+      if (!restored && !disposed) void reconnectLastActiveMachine();
     })().catch((error) => {
       if (disposed) return;
       setPhase({
@@ -386,6 +462,7 @@ export function WebClientRoot({
     accountClient,
     applyAccountPrivacy,
     installFederatedAdapter,
+    reconnectLastActiveMachine,
     sessionManager,
   ]);
 
@@ -450,6 +527,10 @@ export function WebClientRoot({
       async connectEnvironment(targetId) {
         await sessionManager.connectEnvironment(targetId);
       },
+      connectMachineEntry,
+      forgetMachineCatalog(machineKeys) {
+        for (const machineKey of machineKeys) sessionManager.forgetCatalog(machineKey);
+      },
       async renameMachine(machineKey, customName) {
         await accountClient.renameMachine(machineKey, customName);
         setAccount(accountClient.getSnapshot());
@@ -469,7 +550,14 @@ export function WebClientRoot({
   }, [
     account,
     accountClient,
+    // Not read here on purpose: consumers call imperative getters on `adapter`
+    // (`getDisplayedTargetId`, `getActiveBinding`). The adapter object is stable
+    // across tab switches, so without a revision in this dependency list the
+    // context value would keep its identity and memoized consumers would go on
+    // showing the previous tab. The full remount used to hide that.
+    activeAdapterGeneration,
     applyAccountPrivacy,
+    connectMachineEntry,
     connectingMachineKey,
     directoryLoading,
     federatedAdapter,
@@ -505,7 +593,7 @@ export function WebClientRoot({
       const AppRoot = phase.AppRoot;
       return (
         <WebWorkspaceProvider value={workspaceContext}>
-          <AppRoot key={activeAdapterGeneration} />
+          <AppRoot key={workspaceGeneration} />
         </WebWorkspaceProvider>
       );
     }

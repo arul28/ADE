@@ -2347,6 +2347,96 @@ describe("TerminalView", () => {
     expect(readTranscriptTailMock).not.toHaveBeenCalled();
   });
 
+  it("re-hydrates when a revealed pane settles at a different width than the content was written at", async () => {
+    // A pane measured while collapsed or mid-layout can fit to a legitimately
+    // "valid" ~20 columns and stick there; xterm never reflows what it already
+    // committed, so the session stays wrapped at the wrong width (observed: an
+    // .xterm-screen 182px wide rendering a 155-column session) with the
+    // overflow parked in scrollback under a visible scrollbar. The width
+    // settling somewhere else is the signal to write it again.
+    const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
+    const snapshotPreview = (serialized: string) => ({
+      terminalId: "session-rehydrate",
+      session: null,
+      source: "snapshot",
+      snapshot: {
+        version: 1,
+        terminalId: "session-rehydrate",
+        cols: 120,
+        rows: 32,
+        capturedAt: new Date().toISOString(),
+        status: "running",
+        runtimeState: "running",
+        bufferType: "alternate",
+        cursorX: 0,
+        cursorY: 0,
+        baseY: 0,
+        viewportY: 0,
+        serialized,
+        visibleRows: [],
+      },
+      transcript: null,
+      capturedAt: new Date().toISOString(),
+    });
+    previewMock.mockResolvedValue(snapshotPreview("\x1b[?1049hnarrow hydration\n"));
+
+    // Hydrate while the pane measures narrow.
+    mockState.nextFitDims = { cols: 24, rows: 12 };
+    render(<TerminalView ptyId="pty-rehydrate" sessionId="session-rehydrate" isActive />);
+    // Live output that beats hydration to the screen sets
+    // `displayedLiveDataBeforeHydration`, which is sticky. It must not survive
+    // into the re-hydration below: the `preferLivePending` branch would discard
+    // the freshly fetched payload in favour of pending chunks the reset already
+    // erased, leaving a blank pane on every later width change.
+    for (const listener of mockState.ptyDataListeners) {
+      listener({ ptyId: "pty-rehydrate", sessionId: "session-rehydrate", data: "live before hydration\n" });
+    }
+    await flushAllTimers();
+
+    const callsAfterFirstHydration = previewMock.mock.calls.length;
+    expect(callsAfterFirstHydration).toBeGreaterThan(0);
+
+    const terminal = mockState.terminalInstances.at(-1) as {
+      reset: ReturnType<typeof vi.fn>;
+      write: ReturnType<typeof vi.fn>;
+    } | undefined;
+    const resetsBeforeRehydration = terminal?.reset.mock.calls.length ?? 0;
+    terminal?.write.mockClear();
+
+    // The re-hydration serves a transcript, the source the `preferLivePending`
+    // branch can discard (a snapshot never takes that branch).
+    previewMock.mockResolvedValue({
+      terminalId: "session-rehydrate",
+      session: null,
+      source: "transcript",
+      snapshot: null,
+      transcript: "rehydrated transcript\n",
+      capturedAt: new Date().toISOString(),
+    });
+
+    // The pane is revealed at its real size: the fit lands on a new width.
+    mockState.nextFitDims = { cols: 120, rows: 40 };
+    triggerResizeObserver();
+    await flushAllTimers();
+
+    expect(previewMock.mock.calls.length).toBeGreaterThan(callsAfterFirstHydration);
+    // The re-run writes a FULL payload, and the hydration path only appends.
+    // Without a reset first, every width change stacks another copy of the
+    // transcript into the buffer instead of replacing it.
+    expect(terminal?.reset.mock.calls.length ?? 0).toBeGreaterThan(resetsBeforeRehydration);
+    // ...and the payload it fetched must actually reach the terminal. Reset
+    // without a write is the blank pane.
+    expect(terminal?.write.mock.calls.some(([text]) => String(text).includes("rehydrated transcript")))
+      .toBe(true);
+
+    // Settling back on the SAME width must not re-fetch — otherwise every
+    // window drag would replay the transcript over the relay.
+    const callsAfterRehydration = previewMock.mock.calls.length;
+    triggerResizeObserver();
+    await flushAllTimers();
+    expect(previewMock.mock.calls).toHaveLength(callsAfterRehydration);
+  });
+
   it("prefers serialized main-buffer snapshots so running terminals attach with scrollback", async () => {
     const previewMock = window.ade.terminal.preview as unknown as ReturnType<typeof vi.fn>;
     previewMock.mockResolvedValueOnce({
@@ -2727,7 +2817,7 @@ describe("TerminalView", () => {
     expect(terminal?.scrollToBottom).not.toHaveBeenCalled();
   });
 
-  it("uses wheel gestures to scroll main-buffer history when mouse tracking is active", async () => {
+  it("forwards the wheel to the app while mouse tracking is active, and scrolls history only on Shift+wheel", async () => {
     render(<TerminalView ptyId="pty-wheel-history" sessionId="session-wheel-history" isActive />);
     await flushAllTimers();
 
@@ -2760,15 +2850,31 @@ describe("TerminalView", () => {
       });
     }
 
-    const event = new WheelEvent("wheel", {
+    // Tracking is ON: a bare wheel belongs to the application, exactly as in
+    // iTerm2/kitty. The handler must NOT intercept it — the TUI scrolls its own
+    // pane, which is what fn+PageUp/Down already did through the keyboard path.
+    const forwarded = new WheelEvent("wheel", {
       bubbles: true,
       cancelable: true,
       deltaY: -96,
     });
-    viewport.dispatchEvent(event);
+    viewport.dispatchEvent(forwarded);
+
+    expect(terminal?.scrollLines).not.toHaveBeenCalled();
+    expect(forwarded.defaultPrevented).toBe(false);
+
+    // Shift+wheel is the emulator-conventional escape hatch to the local
+    // scrollback, and it bypasses mouse reporting.
+    const shifted = new WheelEvent("wheel", {
+      bubbles: true,
+      cancelable: true,
+      deltaY: -96,
+      shiftKey: true,
+    });
+    viewport.dispatchEvent(shifted);
 
     expect(terminal?.scrollLines).toHaveBeenCalledWith(-3);
-    expect(event.defaultPrevented).toBe(true);
+    expect(shifted.defaultPrevented).toBe(true);
   });
 
   it("does not replay transcript hydration over live PTY output that already painted", async () => {
@@ -2845,6 +2951,12 @@ describe("TerminalView", () => {
         replace: true,
       });
     }
+
+    // The replace payload is normalized (grid + mode restoration) before it is
+    // written, and that normalization awaits an offscreen xterm parse, so the
+    // reset/write land on a later tick rather than inside the listener call.
+    await flushPromises();
+    await flushAnimationFrame();
 
     expect(terminal?.reset).toHaveBeenCalledTimes(1);
     expect(terminal?.write).toHaveBeenCalledWith("authoritative snapshot\n");

@@ -44,6 +44,8 @@ import {
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
+  type LaneListSnapshot,
+  type LaneSummary,
   type OpenProjectBinding,
   type AgentChatRestoreCancelledQueueResult,
   type AgentChatResolveUnprocessedMessageArgs,
@@ -1100,8 +1102,12 @@ function listMockAgentChatSummaries(args: any = {}): any[] {
   return rows;
 }
 
-/** Returns a fresh snapshot object on every call to avoid shared-state leakage. */
-function makeLaneSnapshot(lane: any): any {
+/**
+ * Returns a fresh snapshot object on every call to avoid shared-state leakage.
+ * Annotated (rather than `any`) so the mock's wire shape is compiler-checked
+ * against the real emitters — that is what catches a dropped `adoptableAttached`.
+ */
+function makeLaneSnapshot(lane: LaneSummary): LaneListSnapshot {
   const runtimeBucket =
     lane.id === "lane-auth" || lane.id === "lane-checkout"
       ? "running"
@@ -1150,14 +1156,18 @@ function makeLaneSnapshot(lane: any): any {
         ? {
             laneId: lane.id,
             status: "conflict-active",
-            conflictCount: 2,
-            warningCount: 0,
-            updatedAt: now,
-            summary: "Mock conflict",
+            overlappingFileCount: 2,
+            peerConflictCount: 2,
+            lastPredictedAt: now,
           }
         : null,
     stateSnapshot: null,
-    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+    // Mirrors the real snapshot builders: always false, never computed. The
+    // field is deliberately REQUIRED on `LaneListSnapshot` even though no
+    // TypeScript surface reads it — shipped iOS builds decode it as a
+    // non-optional Bool, so every emitter (this preview included) must keep
+    // sending the key, and requiredness is what makes the compiler say so.
+    adoptableAttached: false,
   };
 }
 
@@ -3619,7 +3629,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         freshProject: false,
       }),
       detectDefaults: resolved({} as any),
-      detectExistingLanes: resolved([]),
       setDismissed: resolvedArg({
         completedAt: null,
         dismissedAt: new Date().toISOString(),
@@ -4250,13 +4259,6 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         previousBranchRef: "main",
         activeWork: [],
       }),
-      attach: resolvedArg({ id: "mock", name: "mock" }),
-      adoptAttached: resolvedArg({ id: "mock", name: "mock" }),
-      listUnregisteredWorktrees: resolved([
-        { path: "/Users/you/code/app-login", branch: "feat/login" },
-        { path: "/Users/you/code/app-api-fix", branch: "bugfix/api-timeout" },
-        { path: "/Users/you/experiments/spike", branch: "spike/new-renderer" },
-      ]),
       rename: resolvedArg(undefined),
       reparent: resolvedArg({}),
       updateAppearance: resolvedArg(undefined),

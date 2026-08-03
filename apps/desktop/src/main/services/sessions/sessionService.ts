@@ -131,6 +131,8 @@ const SESSION_COLUMNS = `
   s.chat_session_id as chatSessionId
 `;
 
+export const CLAUDE_SESSION_POINTER_MAX_LIMIT = 5000;
+
 const CLAUDE_SESSION_COLUMNS = `
   c.session_id as sessionId,
   c.lane_id as laneId,
@@ -803,8 +805,11 @@ export function createSessionService({ db }: { db: AdeDb }) {
         where.push("c.lane_id = ?");
         params.push(laneId);
       }
+      // External-session import asks for every pointer it can get to decide
+      // which Claude transcripts are already in ADE; a 500-row silent clamp made
+      // older imports look un-imported without telling the caller.
       const limit = typeof args.limit === "number" && Number.isFinite(args.limit) && args.limit > 0
-        ? Math.min(Math.trunc(args.limit), 500)
+        ? Math.min(Math.trunc(args.limit), CLAUDE_SESSION_POINTER_MAX_LIMIT)
         : 200;
       params.push(limit);
       const rows = db.all<ClaudeSessionRow>(

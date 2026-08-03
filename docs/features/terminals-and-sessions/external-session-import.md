@@ -32,11 +32,13 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 |---|---|
 | `apps/desktop/src/main/services/externalSessions/externalSessionsService.ts` | Service entry point. Runs provider discovery, applies the capabilities matrix, filters project/all scope, detects already-imported sessions, validates import ids, enforces optional lane cwd scope, builds CLI resume/fork commands, delegates chat import, and creates tracked PTYs. |
 | `apps/desktop/src/main/services/externalSessions/discoveryUtils.ts` | Shared discovery helpers: safe stat/read, top-N mtime sorting, JSONL prefix/suffix scans, one record classifier shared by prompt extraction and the recent-`messages` sampler, provider-wrapper cleanup, the preview-only markup-density gate, word-boundary clipping, title cleanup, cwd slug helpers, shell quoting, and path-inside checks. |
-| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles and excludes SDK entrypoints. |
-| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex rollout JSONL files under `CODEX_HOME/sessions/YYYY/MM/DD/` (default `~/.codex`), enriches them from `session_index.jsonl`, and maintains the rebuildable cwd/importability index used by project-scoped discovery. |
-| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Discovers current Cursor sessions from `~/.cursor/chats/<workspace-md5>/<agentId>/store.db`, merges legacy transcript previews from `~/.cursor/projects/.../agent-transcripts`, uses `.workspace-trusted` for exact cwd recovery, and excludes SDK `agent-<uuid>` sessions. |
-| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `~/.factory/sessions/<escaped-cwd>/`, using the `session_start` row for id/cwd/title. |
+| `apps/desktop/src/main/services/externalSessions/discoverClaude.ts` | Discovers resumable Claude CLI JSONL transcripts under `CLAUDE_CONFIG_DIR` or `~/.claude/projects/<cwd-slug>/<uuid>.jsonl`; reads `ai-title`/custom titles, excludes SDK-origin transcripts, and collapses continuation chains to their leaf. |
+| `apps/desktop/src/main/services/externalSessions/discoverCodex.ts` | Discovers interactive Codex threads from `CODEX_HOME/state_5.sqlite` (default `~/.codex`): top-level threads only, fork continuations collapsed, enriched from the rollout JSONL under `sessions/YYYY/MM/DD/` and `session_index.jsonl`. Falls back to scanning rollout files when the thread store is unusable. |
+| `apps/desktop/src/main/services/externalSessions/discoverCursor.ts` | Groups every Cursor artifact — `~/.cursor/chats/<workspace-md5>/<id>/store.db`, its `meta.json`, and `~/.cursor/projects/<slug>/agent-transcripts/` (including `empty-window`) — by the bare conversation uuid, keeps the fullest copy of each, resolves cwd from `meta.json` before the md5/slug reverse-mappings, and excludes SDK `agent-<uuid>` sessions. |
+| `apps/desktop/src/main/services/externalSessions/discoverDroid.ts` | Discovers Factory Droid JSONL sessions under `~/.factory/sessions/<escaped-cwd>/`, one record per session id, using the `session_start` row for id/cwd/title. |
 | `apps/desktop/src/main/services/externalSessions/discoverOpenCode.ts` | Discovers OpenCode sessions by running `opencode session list --pure --format json --max-count <N>` in the requested/project cwd. |
+| `apps/desktop/src/main/services/externalSessions/importedSessionStore.ts` | Machine-local durable log of every import (`<ADE_HOME>/external-sessions/imported.json`), the only imported-marking source that survives deleting the ADE session and the only one that knows a fork's new provider id. |
+| `apps/desktop/src/main/services/externalSessions/claudeLiveSessions.ts` | Reads Claude's own live-session registry (`<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`) and returns the session ids whose pid is still alive, for `possiblyActive`. |
 | `apps/desktop/src/main/services/externalSessions/claudeSessionTransplant.ts` | Non-destructive Claude transcript transplant. For forks it copies JSONL rows, rekeys `sessionId`, hard-links without clobbering, and leaves the source untouched; for moves it can link/unlink when requested by other callers. |
 | `apps/desktop/src/shared/cliLaunch.ts` | Canonical CLI launch/resume/fork command builders. External import uses `buildTrackedCliResumeCommand`, `withCodexNoAltScreen`, provider permission/model mappings, and shell quoting from here. |
 | `apps/desktop/src/shared/types/externalSessions.ts` | Canonical DTOs shared by desktop IPC, ADE actions, sync remote commands, `ade code`, and iOS. |
@@ -50,7 +52,7 @@ continuation metadata is recorded as soon as ADE knows the provider target.
 | `apps/ade-cli/src/adeRpcServer.ts` | Authorizes `run_ade_action` calls. Non-CTO callers are lane-scoped for `external-sessions`; CTO callers can use the domain unscoped. |
 | `apps/ade-cli/src/services/sync/syncRemoteCommandService.ts`, `apps/desktop/src/main/services/sync/syncRemoteCommandService.ts` | Registers `work.listExternalSessions` and `work.importExternalSession` for paired controllers. The desktop file is a re-export of the ade-cli implementation. |
 | `apps/desktop/src/shared/types/sync.ts` | Sync command DTO aliases for external-session list/import payloads and results. |
-| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop two-stage browser/details flow: provider filters, search (which spans the sampled `messages` text, not just titles), project/all scope, progressive scans, full details with a bounded scrollable message sample, target lane selection, imported/active badges, Open-in-ADE, and safe action dispatch. The dialog height is content-driven rather than pinned, because the details stage is far shorter than the list stage. |
+| `apps/desktop/src/renderer/components/terminals/importSessions/ImportSessionBrowser.tsx` | Desktop two-stage browser/details flow: provider filters, search (which spans the sampled `messages` text, not just titles), project/all scope, progressive scans, full details with a bounded scrollable message sample, target lane selection, imported/active badges, Open-in-ADE, and safe action dispatch. Asks for 200 rows per provider to match the service's project-scope discovery window; the default 50 threw away most of what was already scanned. A provider that fails its scan leaves a muted per-provider notice ("OpenCode CLI not found…") instead of an unexplained empty list, and only a total scan failure still becomes the blocking error state. The dialog height is content-driven rather than pinned, because the details stage is far shorter than the list stage. |
 | `apps/desktop/src/shared/externalSessionAffordances.ts`, `apps/desktop/src/renderer/components/terminals/importSessions/affordances.ts` | Canonical capability-to-action mapper for the 2x2 Continue/Copy x ADE-chat/CLI-session policy, plus the renderer compatibility export. Shared directly with the TUI. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/sessionPresentation.ts` | Pure desktop heading/time/anchor helpers. Provider titles win, then the opening prompt (`preview`), then cwd + relative time. `sessionAnchors` returns the row's "started"/"latest" pair and drops whichever one the heading is already showing, so a row never prints the same sentence twice. |
 | `apps/desktop/src/renderer/components/terminals/importSessions/contract.ts` | Renderer bridge/types/display helpers for external sessions. |
@@ -75,12 +77,8 @@ current project scope unless `scope: "all"` is requested, and returns
 File-backed providers are stat-first. Discovery gathers candidate files, sorts
 by mtime, and reads a bounded recent candidate window. Claude keeps scanning
 past filtered SDK transcripts until it has filled the requested CLI-session
-limit. Codex all-history discovery uses a larger bounded window so
-non-interactive rollouts cannot starve valid CLI results. Codex project-scoped
-discovery instead refreshes a rebuildable cwd/importability index under
-`$ADE_HOME/cache/external-sessions/`: it stats the rollout inventory, reads the
-`session_meta` prefix only for new or changed files, and filters the complete
-index without a fixed file-count ceiling. The cheap JSONL read is bounded by
+limit. Codex is the exception: it reads Codex's own thread store rather than the
+rollout inventory (see "Codex thread store" below). The cheap JSONL read is bounded by
 `JSONL_SCAN_BYTE_LIMIT` and `JSONL_SCAN_LINE_LIMIT`; meaningful user prompt
 counts are only computed for files under `MESSAGE_COUNT_MAX_BYTES`.
 Provider metadata, assistant/tool rows, local-command wrappers, and duplicate
@@ -90,6 +88,58 @@ runs `opencode session list --pure --format json --max-count <limit>` in the
 requested cwd, project root, or home directory. The list schema does not expose
 a preview or prompt count, and discovery deliberately avoids an expensive
 per-session `opencode export` fan-out.
+
+### Codex thread store
+
+Codex maintains `CODEX_HOME/state_5.sqlite`, and that database — not the
+`sessions/YYYY/MM/DD` rollout tree — is what ADE lists. It is strictly more
+complete than the files: on a real 7.2k-thread store, 4.1k rollouts are spawned
+subagents, and more than a third of them carry no parent id in their own
+`session_meta`. Listing from files alone therefore showed thousands of subagent
+runs as if they were conversations.
+
+Discovery opens the database read-only, never takes a write lock, and selects
+non-archived threads that are not a `thread_spawn_edges` child, newest first.
+`id`, `cwd`, timestamps, and title/preview text come straight from `threads`,
+which removes the per-file `session_meta` fan-out, the null-cwd project-scope
+loss, and the file-count ceiling that project-scoped discovery used to need. The
+thread id is the record identity everywhere, so a compressed `.jsonl.zst`
+rollout and a plain one can no longer produce two rows for one conversation.
+`rollout_path` can dangle (upstream `openai/codex#21196`); those threads still
+list from their database metadata.
+
+Two things the database does not answer are read from the rollout file, line 1
+only, and only for threads that survive the cheap filters: the `originator`
+(ADE's own Codex sessions are excluded from the import list) and
+`forked_from_id`. Line 1 is the limit on purpose — a fork replays its parent's
+transcript verbatim, so the parent's `session_meta` appears again further down.
+When a fork exists and its parent recorded no activity after the fork point, the
+parent is hidden: that pair is one conversation the user continued elsewhere. A
+parent that kept going after being forked stays listed alongside its fork, and
+only forks this surface would itself list can collapse a parent — ADE's own
+chats fork Codex threads, and collapsing a real terminal session into a fork the
+import list refuses to show would drop the conversation entirely.
+
+Classification fails **open**. A structured (object-shaped) `source` is a
+spawned subagent and is dropped, as are the known non-interactive `exec` and
+`vscode` entrypoints; an unrecognized `source` string is listed and logged as
+`external_sessions.codex_unknown_source`, because a new Codex entrypoint
+silently vanishing from the import list is worse than one extra row.
+
+When the database is missing, unreadable, or shaped differently than this build
+expects, discovery logs `external_sessions.codex_state_db_unavailable` or
+`external_sessions.codex_state_db_query_failed` and falls back to the older
+rollout-file scan with its bounded candidate window. That fallback cannot see
+spawn edges, so it lists subagent rollouts whose `session_meta` hides their
+parentage — it is a compatibility path, not an equivalent one.
+
+An **empty result is not by itself a reason to fall back.** Zero rows with
+threads present is a real answer — everything was archived, spawned, or out of
+scope — and falling back there would hand the list to a scan that cannot tell a
+subagent rollout from a conversation. So an empty result triggers one extra
+`SELECT 1 FROM threads LIMIT 1`, and only an actually empty table (a
+freshly-migrated or truncated `state_5.sqlite`, which is no authority on what
+exists) defers to the rollout tree.
 
 Titles and previews are deliberately separate:
 
@@ -150,13 +200,76 @@ heading, so a one-message thread with no provider title shows its prompt once.
 
 The service also stamps:
 
-- `alreadyImported` and `importedSessionRef`, by scanning ADE
-  `terminal_sessions` resume metadata and Claude session pointers. Chat refs
-  outrank CLI refs so the UI can offer one "Open in ADE" action.
-- `possiblyActive`, when the backing file mtime is within the recent active
-  window.
+- `alreadyImported` and `importedSessionRef` (see "Import marking" below).
+- `possiblyActive`. For Claude this is the CLI's own live-session registry,
+  `<CLAUDE_CONFIG_DIR>/sessions/<pid>.json`: an entry whose `pid` is still alive
+  means the session is open right now, which is the question the badge is
+  actually asking. Stale entries survive the process that wrote them, so
+  liveness is checked, never assumed. Every other provider — and Claude when the
+  registry directory does not exist — falls back to "backing file mtime within
+  the last two minutes". The residual gap is pid reuse across a reboot; it costs
+  one wrong badge, not a wrong import.
 - `cwdMatchesRequestedLane`, comparing the provider cwd to the requested lane
   cwd when known.
+
+### Import marking
+
+Four sources feed one `provider:id` → ref map. Chat refs outrank CLI refs,
+which outrank a bare "imported, nothing to open", so the UI can offer a single
+"Open in ADE" action.
+
+- **The durable import log**, `<ADE_HOME>/external-sessions/imported.json`
+  (`importedSessionStore.ts`). Every import appends one record: provider,
+  external id, the provider id ADE actually runs, chat/cli, continue/fork, ADE
+  session id, timestamp. It is machine-scoped and a plain atomically-written
+  JSON file with an `.lkg` fallback, deliberately **not** a cr-sqlite CRR table:
+  it maps onto provider stores that are themselves machine-local, so a Claude
+  transcript id means nothing on the paired machine.
+
+  The desktop app and the headless brain can share one ADE home, and the atomic
+  rename alone does not stop the later writer from clobbering a record the
+  earlier one added between its own read and write. So each append takes a lock
+  file for the span of one read-modify-write and re-reads inside it rather than
+  trusting the cache. `record` is synchronous all the way up to the import call,
+  so the wait has to block the main process — which is why `LOCK_WAIT_MS` is
+  200 ms, and why failing to take the lock writes anyway instead of erroring: a
+  lost race can drop one concurrent record, and that is a far better outcome
+  than failing an import that already succeeded. A lock older than 5 s is
+  treated as abandoned by a process that died holding it.
+- ADE `terminal_sessions` resume metadata (`provider`/`targetId` and
+  `importedFrom`).
+- Claude session pointers from `sessionService.listClaudeSessionPointers`.
+- The chat-imported refs provider (`session.importedFrom` over chat sessions).
+
+The last three are all derived from live rows, which is why the durable log
+exists. They lose the badge when the ADE session is deleted, and they never knew
+the *new* provider id a fork import created — a Codex `thread/fork` thread or a
+transplanted Claude transcript. Both ids are recorded, so the original keeps its
+badge and the copy is recognizable. When the ADE session behind a record is
+gone, the row still reports `alreadyImported: true` with a null
+`importedSessionRef`: it was imported, there is just nothing left to open.
+
+`listClaudeSessionPointers` used to clamp any request to 500 rows silently, so
+imports past that point looked un-imported; the ceiling is now
+`CLAUDE_SESSION_POINTER_MAX_LIMIT` (5000) and the default page stays 200.
+
+**Lineage.** Discovery collapses Claude continuation chains to their leaf and
+hides a Codex parent behind its fork, so the id a session was imported under is
+often no longer the id it is listed under. Collapsing providers therefore set
+`lineageIds` on the surviving record — the ids it supersedes — and marking
+matches against `id ∪ lineageIds`. The field is optional; Cursor, Droid, and
+OpenCode never collapse and never set it. It is discovery-internal and not part
+of `ExternalSessionSummary`, so no DTO, sync payload, or iOS mirror changes.
+
+**ADE-created artifacts are not new sessions.** A cross-cwd Claude fork writes a
+transplanted copy into `~/.claude` under a fresh uuid, and a Codex chat fork
+mints a new thread; both then re-list as fresh importable sessions. Rows whose
+ids are all recorded fork *targets* are dropped from the list. "All", not "any":
+when discovery collapses the user's original into the copy, that one row is also
+the only place the original appears, so it stays listed and simply reads as
+already imported. An exact `sessionId` lookup skips the filter entirely, the
+same way Claude dedupe does, so a caller that names an ADE-created id still
+resolves it.
 
 ### Capabilities matrix
 
@@ -230,8 +343,9 @@ or `ptyService.create` will treat the request as a missing-session resume.
 
 `resumeMetadata.importedFrom` records the original provider id and whether the
 ADE session opened or forked it. That metadata is what lets later Work
-continuation, `ade.pty.resumeSession`, and duplicate-import detection find the
-provider target again.
+continuation and `ade.pty.resumeSession` find the provider target again;
+duplicate-import detection reads the durable log described under "Import
+marking", because resume metadata dies with the session row.
 
 Successful imports return the persisted `TerminalSessionSummary` or
 `AgentChatSessionSummary` with the provider/ADE ids. Desktop and iOS install
@@ -264,6 +378,12 @@ Claude project folder under a fresh session id. The new ADE chat sets the
 Claude runtime `sdkSessionId`, sets `claudeBackgroundResumeSessionId`, mirrors a
 Claude pointer through `sessionService`, repairs known thinking-transcript id
 collisions when needed, and then appends the imported ADE transcript events.
+
+`importExternalChatSession` returns `providerTargetId` alongside the chat
+session: the Claude id actually adopted (transplanted or original) or the Codex
+thread actually bound (fork or original). Without it the service could only
+record the id the user picked, and a fork's own id would go unmarked. The field
+is optional on the result type and never crosses the wire.
 
 Codex chat import creates a Codex ADE session and asks the app-server for
 provider state. Open imports call `thread/read` with `includeTurns: true`.
@@ -344,8 +464,45 @@ Claude resume is strictly cwd-scoped. Same-cwd CLI fork can use
 `--fork-session`; cross-cwd fork has to copy/rekey the JSONL into the target
 cwd's Claude project folder. Claude `ai-title`, `customTitle`, and session-title
 records are preferred when present; otherwise ADE leaves `title` null and lets
-UI headings fall back to path/time. Transcripts with explicit `sdk-*`
-entrypoints are excluded because the Claude CLI cannot reliably resume them.
+UI headings fall back to path/time.
+
+Only `<projectSlug>/<uuid>.jsonl` is a session. Roughly nine in ten transcripts
+on disk are sidecars nested under `<sessionId>/subagents/**`, including workflow
+runs; discovery never descends into a project subdirectory, and non-uuid names
+such as `agent-*.jsonl` are ignored.
+
+SDK-origin transcripts — ADE's own Claude chats — are excluded because the CLI
+cannot reliably resume them, but the test is the entrypoint the session *starts*
+with, sampled over its head rows. Excluding on any single `sdk` row instead hid
+whole CLI sessions the moment one SDK-driven turn landed in them.
+
+A modern `claude --resume` appends in place, so one file normally spans every
+resume. New files appear on `--fork-session`, on `/branch`, on a rewind, and on
+`/cd`, which relocates the session into another project directory. Discovery
+therefore dedupes continuation chains globally, across all project directories,
+never per directory:
+
+- The chain key is the uuid of the **first record that carries one**. The
+  per-record camelCase `sessionId` is always rewritten to the filename, so it
+  proves nothing about ancestry; snake-case `session_id` is a genuine ancestor
+  pointer and is used as a second edge, but it is absent on SDK sessions.
+  First-message **text** must never key a chain: ADE injects the same preamble
+  into many chats, so identical openings are routine and unrelated. Finding that
+  first uuid is a bounded walk, not a single small window — one transcript in
+  seven opens with a pasted prompt big enough to push it past 64 KiB.
+- Only pure continuations collapse — one file's records are a prefix of, or
+  identical to, another's — and the leaf (longest, newest on a tie) is the row
+  that survives. Members that diverge are real forks and both stay listed.
+- The prefix test is bounded, never a full read of a multi-MB transcript: the
+  longer file must still contain the shorter file's final record uuid near the
+  shorter file's byte length, and record uuids sampled from windows at fractions
+  of the shorter file must also appear in the longer file's windows at the same
+  offsets. The tail check alone is not enough — a longer file can retain the
+  final record while having dropped records in between. Copies rewrite
+  `sessionId` with a same-length uuid, which is what keeps those byte offsets
+  aligned closely enough to sample.
+- An exact `sessionId` lookup skips dedupe entirely, so an ancestor the caller
+  named by id still resolves.
 
 ### Codex
 
@@ -374,19 +531,54 @@ that assert the actual request payloads and command argv.
 
 ### Cursor
 
-Current Cursor versions index resumable sessions in
-`~/.cursor/chats/<md5(exact-workspace-path)>/<agentId>/store.db`. ADE reads the
-hex-encoded meta record for provider id, name, and creation time, includes
-store-only sessions, and treats the SQLite WAL mtime as activity. Legacy
-`~/.cursor/projects/<slug>/agent-transcripts/<agentId>/` JSONL remains useful
-for prompt previews/counts. `.workspace-trusted` maps the lossy project slug to
-the exact workspace path; transcript cwd wins when present.
+**One conversation, up to four artifacts.** A single Cursor conversation can be
+written to disk in several places at once, and the bare conversation uuid is the
+only identity shared across all of them:
 
-SDK-origin `agent-<uuid>` transcripts are excluded because `cursor-agent` cannot
-resume them as meaningful CLI sessions; it would start empty. Cursor has no fork
-support and its resume is cwd-scoped. Cursor edit mode must not map to
-`--mode ask`; `ask` is read-only. In `cliLaunch.ts`, only plan mode maps to
-`--mode plan`, full-auto maps to `--force`, and edit/default omit a mode flag.
+- `~/.cursor/chats/<md5(exact-process-cwd)>/<id>/store.db` — the bucket name is
+  md5 of the *raw process cwd*, not the project root, so one project spawns a
+  bucket per directory a session was ever launched from (repo root and
+  `apps/desktop` are different buckets).
+- A second bucket for the same id, when the conversation was resumed from another
+  cwd. Resume does not mint a new id, so both buckets claim it — and the newer
+  one is usually the near-empty stub. Size, not recency, says which holds the
+  conversation.
+- `~/.cursor/projects/<slug>/agent-transcripts/<id>/<id>.jsonl`, sharing the id
+  space with `chats/`.
+- A duplicate of that transcript under `projects/empty-window/`. Either copy can
+  be the partial one.
+
+Discovery therefore groups by id first and picks the fullest artifact per group,
+rather than treating each file as its own session; without that, duplicates
+consume the caller's `limit` and the same conversation is listed more than once.
+
+`meta.json` next to `store.db` records `cwd` directly for newer sessions and is
+preferred over reverse-mapping the bucket md5 or the project slug — the hash is
+only reversible for a cwd ADE can already name, so buckets for nested cwds were
+previously invisible. `.workspace-trusted` and slug de-slugging remain the
+fallback for older sessions. ADE reads the store's hex-encoded meta record for
+name and creation time, includes store-only sessions, and treats the SQLite WAL
+mtime as activity. Newer session headers can carry a `blobEncryptionKey`; an
+unreadable body still leaves a resumable session, so `meta.json` supplies the
+title in that case.
+
+Scope is decided from directory names, `meta.json`, and `.workspace-trusted`
+before the recent-session cut, so out-of-project usage cannot crowd in-project
+conversations out of the list. Artifacts whose cwd nothing on disk can confirm
+(`empty-window`, buckets for deleted directories) are read only after every
+confirmed in-project match.
+
+Two ids are never sessions: SDK-origin `agent-<uuid>` runs, because
+`cursor-agent` cannot resume them as meaningful CLI sessions and would start
+empty; and `00000000-0000-4000-8000-000000000000`, which Cursor hands to
+unrelated runs, so grouping its artifacts would fuse strangers into one session.
+The `subagents/` tree beside a transcript holds nested runs and is not walked, and
+`~/.cursor/acp-sessions/` is not a CLI session store.
+
+Cursor has no fork support and its resume is cwd-scoped. Cursor edit mode must
+not map to `--mode ask`; `ask` is read-only. In `cliLaunch.ts`, only plan mode
+maps to `--mode plan`, full-auto maps to `--force`, and edit/default omit a mode
+flag.
 
 ### Droid
 
@@ -394,6 +586,16 @@ Droid stores sessions under `~/.factory/sessions/<escaped-cwd>/*.jsonl`. The
 first row must be `session_start`; ADE reads id, cwd, and title there. Current
 Droid rows can omit a start timestamp, so creation time falls back to the first
 timestamped message. `"New Session"` is a placeholder title and becomes null.
+The `<id>.settings.json` sidecar holds model/mode, and `sessions-index.json` is
+rewritten whole on every change — treat it as a hint, never as truth; ADE does
+not read either.
+
+The same id can appear under more than one escaped cwd, so discovery keeps one
+candidate per id and reads the fullest copy. Because the directory name *is* the
+slash-escaped cwd, out-of-project directories are ruled out before the
+recent-session cut; a directory name that is not an escaped absolute path can
+only be placed by the session's own `session_start` cwd, so those are read after
+every directory scope already confirmed.
 
 `droid --fork` is gated on an installed-CLI probe. Discovery can temporarily
 show fork disabled while the probe is pending; import awaits the probe and
@@ -404,7 +606,17 @@ cwd-locked.
 
 OpenCode discovery uses `opencode session list --pure --format json`; ADE does not
 walk OpenCode's private storage. Resume and fork commands use OpenCode's
-`--session`, `--continue`, and `--fork` flags. Sessions are per-project by cwd,
+`--session`, `--continue`, and `--fork` flags.
+
+A missing `opencode` binary throws rather than returning `[]`. An empty array is
+exactly what "no sessions yet" looks like, so the old behavior showed a machine
+without OpenCode installed an empty list and no reason for it. The service
+propagates that error to a caller that asked only for OpenCode — which is every
+call the desktop browser makes, since it scans one provider per request — and
+logs `external_sessions.discovery_failed` for a mixed-provider scan instead of
+failing the whole list. Note that binary resolution also searches HOME-derived
+CLI directories, so a test that wants "OpenCode is not installed" has to
+redirect `HOME` as well as `PATH`. Sessions are per-project by cwd,
 so ADE resumes or forks in the source project cwd rather than transplanting
 them into another lane cwd.
 

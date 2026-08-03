@@ -555,6 +555,83 @@ export function assertFileRequestWorkspaceVisibleToPeer(args: {
   }
 }
 
+/**
+ * Concurrency model for the per-peer message queue.
+ *
+ * Everything used to run on one serialized chain, so a cold search index build
+ * or a git blame head-of-line-blocked every other read from the same client.
+ * Reads now overlap each other — up to MAX_CONCURRENT_PEER_READS at a time —
+ * while every other envelope stays a barrier: a write waits for all preceding
+ * work and every later read waits for that write. A read therefore still
+ * observes every mutation the peer sent before it, and the only new
+ * interleaving is read-with-read, which these services already face from the
+ * desktop renderer's parallel IPC calls.
+ *
+ * Classification is deliberately conservative: file reads by action name, and
+ * remote commands whose method segment is a plain accessor (`get*`, `list*`,
+ * `read*`, `search*`). Everything else — including verbs that only look
+ * harmless, like `git.fetch` — is treated as a write.
+ */
+const MAX_CONCURRENT_PEER_READS = 4;
+
+const CONCURRENT_READ_FILE_ACTIONS: ReadonlySet<string> = new Set<SyncFileRequest["action"]>([
+  "listWorkspaces",
+  "listTree",
+  "listTreeChildren",
+  "refreshGitDecorations",
+  "readFile",
+  "readFileRange",
+  "gitBlame",
+  "quickOpen",
+  "searchText",
+  "readArtifact",
+]);
+
+const CONCURRENT_READ_COMMAND_PREFIXES = ["get", "list", "read", "search"] as const;
+
+export function isConcurrentReadCommandAction(action: string): boolean {
+  const method = action.slice(action.lastIndexOf(".") + 1);
+  return CONCURRENT_READ_COMMAND_PREFIXES.some((prefix) => {
+    if (method === prefix) return true;
+    if (!method.startsWith(prefix)) return false;
+    const next = method[prefix.length];
+    return next !== undefined && next === next.toUpperCase() && next !== next.toLowerCase();
+  });
+}
+
+export function isConcurrentReadEnvelope(envelope: ParsedSyncEnvelope): boolean {
+  if (envelope.type === "file_request") {
+    const action = toOptionalString((envelope.payload as Partial<SyncFileRequest> | null)?.action);
+    return action !== null && CONCURRENT_READ_FILE_ACTIONS.has(action);
+  }
+  if (envelope.type === "command") {
+    const action = toOptionalString((envelope.payload as Partial<SyncCommandPayload> | null)?.action);
+    return action !== null && isConcurrentReadCommandAction(action);
+  }
+  return false;
+}
+
+function acquirePeerReadSlot(peer: PeerState): Promise<void> {
+  if (peer.activeReadCount < MAX_CONCURRENT_PEER_READS) {
+    peer.activeReadCount += 1;
+    return Promise.resolve();
+  }
+  return new Promise<void>((resolve) => {
+    peer.readSlotWaiters.push(resolve);
+  });
+}
+
+function releasePeerReadSlot(peer: PeerState): void {
+  // Hand the slot straight to the longest-waiting read instead of releasing and
+  // re-acquiring it, so the FIFO order of queued reads is preserved.
+  const next = peer.readSlotWaiters.shift();
+  if (next) {
+    next();
+    return;
+  }
+  peer.activeReadCount = Math.max(0, peer.activeReadCount - 1);
+}
+
 type LanePresenceEntry = {
   marker: DeviceMarker;
   lastAnnouncedAtMs: number;
@@ -669,7 +746,12 @@ type PeerState = {
   rosterSubscribed: boolean;
   rosterSeq: number;
   rosterBaseline: Map<string, string>;
+  /** Settles when every envelope scheduled so far has finished (reads included). */
   messageQueue: Promise<void>;
+  /** Settles when the last write-classified envelope finished; reads wait on it. */
+  writeQueue: Promise<void>;
+  activeReadCount: number;
+  readSlotWaiters: Array<() => void>;
   queuedMessageCount: number;
   terminalInputQueue: Promise<void>;
   pendingTerminalOwnershipChanges: number;
@@ -2763,8 +2845,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "lanes.createChild":
       case "lanes.createFromUnstaged":
       case "lanes.importBranch":
-      case "lanes.attach":
-      case "lanes.adoptAttached":
         return result && typeof result === "object"
           ? decorateLaneSummary(result as LaneSummary)
           : result;
@@ -3270,6 +3350,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       rosterSeq: 0,
       rosterBaseline: new Map(),
       messageQueue: Promise.resolve(),
+      writeQueue: Promise.resolve(),
+      activeReadCount: 0,
+      readSlotWaiters: [],
       queuedMessageCount: 0,
       terminalInputQueue: Promise.resolve(),
       pendingTerminalOwnershipChanges: 0,
@@ -3340,9 +3423,9 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       const changesTerminalOwnership = envelope.type === "terminal_subscribe"
         || envelope.type === "terminal_unsubscribe";
       if (changesTerminalOwnership) peer.pendingTerminalOwnershipChanges += 1;
-      peer.messageQueue = peer.messageQueue
-        .catch(() => {})
-        .then(() => handleMessageWithTimeout(peer, envelope))
+      // The timeout starts when the handler starts, never while the envelope
+      // waits its turn — same as the fully serialized queue this replaced.
+      const runEnvelope = () => handleMessageWithTimeout(peer, envelope)
         .catch((error) => {
           args.logger.warn("sync_host.message_failed", {
             error: error instanceof Error ? error.message : String(error),
@@ -3360,6 +3443,25 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
             peer.pendingTerminalOwnershipChanges = Math.max(0, peer.pendingTerminalOwnershipChanges - 1);
           }
         });
+      const previousWork = peer.messageQueue.catch(() => {});
+      let scheduled: Promise<void>;
+      if (isConcurrentReadEnvelope(envelope)) {
+        // Wait for the preceding write barrier BEFORE taking a read slot: a
+        // read that held a slot while waiting on a write could starve an
+        // earlier read the write is itself waiting on.
+        scheduled = peer.writeQueue.catch(() => {}).then(async () => {
+          await acquirePeerReadSlot(peer);
+          try {
+            await runEnvelope();
+          } finally {
+            releasePeerReadSlot(peer);
+          }
+        });
+      } else {
+        scheduled = previousWork.then(runEnvelope);
+        peer.writeQueue = scheduled;
+      }
+      peer.messageQueue = Promise.all([previousWork, scheduled]).then(() => {});
     });
     ws.on("close", (code, reason) => {
       peer.lifecycleGeneration += 1;
@@ -5841,8 +5943,13 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
   }
 
   function assertMobileExternalWorkspaceBlocked(peer: PeerState, payload: SyncFileRequest): void {
+    // Only mobile peers can be blocked, and resolving the workspace costs a full
+    // roster sweep (fs.existsSync + statSync per external workspace + two DB
+    // reads). Settle the peer kind first so browser/desktop file requests never
+    // pay for a check that cannot fire.
+    if (!isMobilePeer(peer)) return;
     assertFileRequestWorkspaceVisibleToPeer({
-      isMobile: isMobilePeer(peer),
+      isMobile: true,
       workspace: workspaceForId(syncFileRequestWorkspaceId(payload)),
     });
   }
