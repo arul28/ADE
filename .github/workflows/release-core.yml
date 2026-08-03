@@ -85,7 +85,14 @@ jobs:
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
+      # Skipped for windows_proof only, alongside the main-ancestor check above
+      # and for the same reason: that mode exists to package and sign a commit
+      # that has not merged, and it runs solely from prepare-release.yml, which
+      # holds contents: read and cannot create a release or tag. Nothing can
+      # ship from a commit this step did not vet. Every publishing path leaves
+      # windows_proof false and is still gated here.
       - name: Ensure CI passed for release commit
+        if: ${{ !inputs.windows_proof }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
