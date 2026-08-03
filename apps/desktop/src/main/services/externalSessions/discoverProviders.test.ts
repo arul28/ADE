@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
@@ -720,7 +721,8 @@ describe("external session provider discovery", () => {
     // Use a writable temp dir (CI can't mkdir under /private/tmp) and derive the slug from it.
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "adecursorcwd")));
     expect(cwd.includes("-"), "temp cwd must be dash-free for the cursor slug round-trip").toBe(false);
-    const slug = cwd.replace(/^\/+/u, "").replace(/\//gu, "-");
+    // Cursor's own slug rule, reimplemented in shared/cursorProjectSlug.
+    const slug = cursorProjectSlug(cwd);
     const agentId = "33333333-3333-4333-8333-333333333333";
     const sdkAgentId = "agent-44444444-4444-4444-8444-444444444444";
     writeJsonl(path.join(homeDir, ".cursor", "projects", slug, "agent-transcripts", agentId, `${agentId}.jsonl`), [

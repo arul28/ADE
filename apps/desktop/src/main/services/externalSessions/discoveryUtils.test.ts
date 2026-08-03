@@ -219,7 +219,8 @@ describe("resolveCursorCwdFromSlug", () => {
       // character becomes `-`, runs collapse, ends are trimmed. The previous
       // fixture only replaced `/` and `.`, so on Windows it built a slug
       // containing `C:\…` — a string Cursor could never write, which made this
-      // assert an inversion of the wrong input.
+      // assert an inversion of the wrong input. Same rule as
+      // `cursorProjectSlug()` in apps/desktop/src/shared/cursorProjectSlug.ts.
       const slug = cwd.replace(/[^a-zA-Z0-9]/gu, "-").replace(/-+/gu, "-").replace(/^-+|-+$/gu, "");
       expect(resolveCursorCwdFromSlug(slug)).toBe(fs.realpathSync(cwd));
     } finally {
