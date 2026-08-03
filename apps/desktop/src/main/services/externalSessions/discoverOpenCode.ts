@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 import {
   asEpochMs,
   asRecord,
@@ -42,11 +43,23 @@ export async function discoverOpenCodeSessions(
   const env: NodeJS.ProcessEnv = { ...process.env, ...(args.env ?? {}), NO_COLOR: "1" };
   delete env.FORCE_COLOR;
 
+  // `npm i -g opencode-ai` installs `%APPDATA%\npm\opencode.cmd` on Windows, and
+  // Node refuses to spawn a `.cmd`/`.bat` without a shell (it fails with a bare
+  // `spawn EINVAL`). The same install is a directly executable script on macOS,
+  // so this path only breaks on Windows. Route through the shared invocation
+  // helper, which shims those targets through cmd.exe and leaves a real `.exe`
+  // untouched.
+  const invocation = resolveCliSpawnInvocation(
+    executable,
+    ["session", "list", "--pure", "--format", "json", "--max-count", String(requestedLimit)],
+    env,
+  );
+
   let stdout: string;
   try {
     const result = await execFileAsync(
-      executable,
-      ["session", "list", "--pure", "--format", "json", "--max-count", String(requestedLimit)],
+      invocation.command,
+      invocation.args,
       {
         cwd: path.resolve(cwd),
         encoding: "utf8",
@@ -54,6 +67,8 @@ export async function discoverOpenCodeSessions(
         killSignal: "SIGTERM",
         maxBuffer: 2 * 1024 * 1024,
         env,
+        windowsHide: true,
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       },
     );
     stdout = String(result.stdout ?? "");
@@ -62,6 +77,11 @@ export async function discoverOpenCodeSessions(
   }
   const jsonStart = stdout.indexOf("[");
   if (jsonStart < 0) {
+    // `opencode session list --format json` prints nothing at all when there are
+    // no sessions rather than an empty array, so a user who has simply never run
+    // the OpenCode CLI is not an error -- it is an empty result. Only treat
+    // non-empty output with no array in it as a genuine protocol failure.
+    if (stdout.trim().length === 0) return [];
     throw new Error("OpenCode session discovery returned no JSON session list.");
   }
 
