@@ -622,7 +622,18 @@ export function buildTrackedCliLaunchCommand(args: {
       ...codexComputerUseMcpFlags(args.codexComputerUse),
       ...permissionModeToCodexFlags(permissionMode),
     ];
-    const usePromptArg = codexModel === "gpt-5.3-codex";
+    // The launcher is the bare command `codex`, which on Windows has no
+    // extension and therefore always has to be spawned through
+    // `cmd.exe /d /s /c "…"`. cmd rewrites the command line before Codex sees
+    // it: `%` is doubled, `%NAME%` is expanded, newlines collapse to spaces,
+    // and the whole line is capped at ~8191 characters. The work-tab prompt is
+    // a ~2.4KB multi-line ADE preamble with the user's text appended, so
+    // passing it as argv corrupts it on every Windows launch. Fall back to the
+    // post-launch input path that every other Codex model already uses.
+    const platform = typeof process !== "undefined" && typeof process.platform === "string"
+      ? process.platform
+      : "";
+    const usePromptArg = codexModel === "gpt-5.3-codex" && platform !== "win32";
     if (usePromptArg) commandArgs.push(initialInput);
     return {
       command: "codex",
