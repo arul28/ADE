@@ -114,6 +114,26 @@ function isEexist(error: unknown): boolean {
     && (error as { code?: unknown }).code === "EEXIST";
 }
 
+/**
+ * Windows does not report lock contention as EEXIST the way POSIX does.
+ *
+ * Deleting a file on Windows only unlinks the name once every open handle to it
+ * closes, so between one holder's unlink and the last handle drop the lock name
+ * still occupies the directory in a "delete pending" state. A concurrent
+ * `open(lockPath, "wx")` against that name fails with a delete-pending or
+ * sharing violation, which Node surfaces as EPERM, EACCES or EBUSY instead of
+ * EEXIST. Those are the same "someone else holds it, try again" condition, so
+ * they have to keep the acquisition loop running; treating them as fatal makes
+ * every concurrent credential write a coin flip on Windows.
+ */
+function isLockContention(error: unknown): boolean {
+  if (isEexist(error)) return true;
+  if (process.platform !== "win32") return false;
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -280,10 +300,10 @@ function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
       }
       ensureMode600(lockPath);
     } catch (error: unknown) {
-      if (!isEexist(error)) throw error;
+      if (!isLockContention(error)) throw error;
       removeStaleLock(lockPath);
       if (Date.now() >= deadline) {
-        throw new Error("Timed out waiting for ADE credential store lock.");
+        throw new Error("Timed out waiting for ADE credential store lock.", { cause: error });
       }
       sleepSync(LOCK_RETRY_MS);
     }

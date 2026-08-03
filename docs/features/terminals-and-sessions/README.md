@@ -1133,9 +1133,13 @@ Renderer surfaces:
   argv/env per OS that skips the user's profile / rc / config files
   (zsh `-f` with `ZDOTDIR=/var/empty`, bash `--noprofile --norc` with
   `BASH_ENV=""`, fish `--no-config`, PowerShell `-NoLogo -NoProfile`,
-  `cmd.exe /d`); `ptyService.resolveShellCandidates({ clean: true })`
-  uses the same recipe for interactive shell sessions launched
-  without a startup command. `deriveTrackedCliInitialInputSessionMeta`
+  `cmd.exe /d`); `ptyService.resolveShellCandidates("clean")`
+  uses the same recipe for command-backed and provider-fallback shells. Plain
+  interactive shells use their login configuration. Windows accepts configured Windows PowerShell,
+  PowerShell 7, cmd, or an absolute Git for Windows `bash.exe` path and then
+  falls back through PowerShell 5.1, PowerShell 7, and cmd. Bare `bash.exe` and
+  `wsl.exe` are rejected so the local runtime never crosses into WSL.
+  `deriveTrackedCliInitialInputSessionMeta`
   seeds the session title and `goal` field from the first prompt
   (sanitised + clipped to ~72 chars) when the caller did not supply a
   manual title; ADE launch guidance is unwrapped first so lane/worktree

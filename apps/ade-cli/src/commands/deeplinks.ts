@@ -189,14 +189,23 @@ export function openUrlViaOs(url: string): { failed: boolean; message: string } 
     cmd = "open";
     args = [url];
   } else if (platform === "win32") {
-    cmd = "cmd";
-    args = ["/c", "start", "", url];
+    // Pass the URL as one argv value to a native Windows protocol handler.
+    // OAuth URLs routinely contain cmd.exe metacharacters such as `&` and `%`;
+    // routing them through `cmd /c start` can split or expand the URL even when
+    // Node itself was spawned with shell:false.
+    cmd = "rundll32.exe";
+    args = ["url.dll,FileProtocolHandler", url];
   } else {
     cmd = "xdg-open";
     args = [url];
   }
   try {
-    const r = spawnSync(cmd, args, { stdio: "ignore", timeout: 10_000 });
+    const r = spawnSync(cmd, args, {
+      stdio: "ignore",
+      timeout: 10_000,
+      windowsHide: true,
+      shell: false,
+    });
     if (r.error) return { failed: true, message: r.error.message };
     if (r.signal) return { failed: true, message: `${cmd} exited with signal ${r.signal}` };
     if (typeof r.status === "number" && r.status !== 0) {

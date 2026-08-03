@@ -150,6 +150,89 @@ describe("appControlService", () => {
     mockState.cdpResults.length = 0;
   });
 
+  it("passes Windows Electron launches to the PTY as structured argv and env", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const create = vi.fn(async () => ({
+      sessionId: "terminal-windows",
+      ptyId: "pty-windows",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      const value = "C:\\Program Files\\ADE's $lane %TEMP% & café";
+      await service.launch({
+        command: `ADE_TEST="${value}" npx electron "C:\\Program Files\\My & App café"`,
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        command: "npx",
+        args: [
+          "electron",
+          expect.stringMatching(/^--remote-debugging-port=\d+$/),
+          "C:\\Program Files\\My & App café",
+        ],
+        startupCommand: expect.not.stringContaining("ADE_TEST="),
+        env: expect.objectContaining({
+          ADE_TEST: value,
+          ADE_APP_CONTROL: "1",
+        }),
+      }));
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("preserves shell environment expansion for Electron launches outside Windows", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-darwin",
+      ptyId: "pty-darwin",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({
+        command: 'ADE_TEST="$HOME" npx electron "."',
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        startupCommand: expect.stringContaining('ADE_TEST="$HOME"'),
+      }));
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("command");
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("args");
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
   it("lets manual target switches win over an in-flight health poll", async () => {
     const targetA = target("a");
     const targetB = target("b");

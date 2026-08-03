@@ -1,10 +1,12 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   CliDeeplinkUsageError,
+  openUrlViaOs,
   runDeeplinkCommand,
   runDeeplinkCommandAsync,
   runLinearInstall,
@@ -12,7 +14,32 @@ import {
   runOpenCommand,
 } from "./deeplinks";
 
+vi.mock("node:child_process", () => ({
+  spawnSync: vi.fn(() => ({ status: 0, signal: null, error: undefined })),
+}));
+
 const UUID = "550e8400-e29b-41d4-a716-446655440000";
+
+describe("openUrlViaOs", () => {
+  it.runIf(process.platform === "win32")(
+    "passes Windows URLs containing shell metacharacters as one opaque argv value",
+    () => {
+      const url = 'https://accounts.google.com/o/oauth2/auth?client=a b&percent=%PATH%&quote="yes"&meta=^|<>()!';
+
+      expect(openUrlViaOs(url)).toEqual({ failed: false, message: "" });
+      expect(spawnSync).toHaveBeenCalledWith(
+        "rundll32.exe",
+        ["url.dll,FileProtocolHandler", url],
+        {
+          shell: false,
+          stdio: "ignore",
+          timeout: 10_000,
+          windowsHide: true,
+        },
+      );
+    },
+  );
+});
 
 describe("ade link", () => {
   it("emits an https lane link by default", () => {

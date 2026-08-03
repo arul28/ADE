@@ -12,6 +12,7 @@ import {
   setPathEnvValue,
 } from "./cliExecutableResolver";
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
@@ -85,9 +86,13 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
   droid: [["--version"], ["-V"], ["version"]],
 };
 
+function cliSpawnCommands(cli: CliName): readonly string[] {
+  if (cli === "cursor") return CURSOR_CLI_EXECUTABLES.launchCandidates;
+  return [cli];
+}
+
 function cliSpawnCommand(cli: CliName): string {
-  if (cli === "cursor") return "agent";
-  return cli;
+  return cliSpawnCommands(cli)[0]!;
 }
 
 const AUTH_INDICATORS = [
@@ -173,7 +178,10 @@ async function commandPath(command: string): Promise<string> {
   try {
     if (process.platform === "win32") {
       const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
+      if (result.status === 0 && result.stdout?.trim()) {
+        return result.stdout.trim().split(/\r?\n/)[0] ?? command;
+      }
+      return findExplicitCommandPath(command) ?? command;
     }
     // Try which first (simpler, doesn't load full login shell)
     const which = await spawnAsync("which", [command], { timeout: 3_000 });
@@ -1100,8 +1108,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
     cliChecks.map(async (cli) => {
-      const spawnName = cliSpawnCommand(cli);
-      const installed = await commandExists(spawnName);
+      let spawnName = cliSpawnCommand(cli);
+      let installed = false;
+      for (const candidate of cliSpawnCommands(cli)) {
+        if (await commandExists(candidate)) {
+          spawnName = candidate;
+          installed = true;
+          break;
+        }
+      }
       const path = installed ? await commandPath(spawnName) : null;
       const cmd = path ?? spawnName;
       if (!installed) {

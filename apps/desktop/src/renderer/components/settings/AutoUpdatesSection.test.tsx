@@ -29,6 +29,11 @@ describe("AutoUpdatesSection", () => {
     const automaticInstall = await screen.findByRole("switch", {
       name: "Install ADE updates automatically",
     });
+    // This toggle renders before the stored preferences arrive, and stays
+    // disabled until they do. React drops clicks on a disabled button, so
+    // clicking while the load is still in flight silently does nothing. Wait
+    // for the loaded state instead of racing the preference fetch's commit.
+    await waitFor(() => expect((automaticInstall as HTMLButtonElement).disabled).toBe(false));
     expect(automaticInstall.getAttribute("aria-checked")).toBe("false");
     expect(screen.queryByRole("switch", {
       name: "Wait until active work finishes",
@@ -74,6 +79,7 @@ describe("AutoUpdatesSection", () => {
       automaticInstall: true,
       onlyWhenIdle: false,
     }));
-    expect(onlyWhenIdle.getAttribute("aria-checked")).toBe("false");
+    // The saved preferences commit on a later tick than the call itself.
+    await waitFor(() => expect(onlyWhenIdle.getAttribute("aria-checked")).toBe("false"));
   });
 });

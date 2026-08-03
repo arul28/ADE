@@ -1824,7 +1824,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       // startupCommand/command/args is used as-is, never mixed with defaults
       // from the other fields. Only when the caller passes none of them do
       // we substitute the profile's default launch.
-      const launchFields = resolveLaunchFields({
+      const launchFields = args.runtimeCliLaunch ? {} : resolveLaunchFields({
         profile: args.profile,
         ...(args.permissionMode !== undefined ? { permissionMode: args.permissionMode } : {}),
         ...(args.orchestrationRole !== undefined ? { orchestrationRole: args.orchestrationRole } : {}),
@@ -1846,6 +1846,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         ...(launchFields.initialInput !== undefined ? { initialInput: launchFields.initialInput } : {}),
         ...(launchFields.initialInputDelayMs !== undefined ? { initialInputDelayMs: launchFields.initialInputDelayMs } : {}),
         ...(args.linearIssues?.length ? { linearIssues: args.linearIssues } : {}),
+        ...(args.runtimeCliLaunch ? { runtimeCliLaunch: args.runtimeCliLaunch } : {}),
         ...launchFields,
       };
       const result = args.pin

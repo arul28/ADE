@@ -1,8 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import net, { type AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import { localIpcListenOptions } from "../services/runtime/localIpcListenOptions";
 import { RemoteTargetRegistry } from "../../../desktop/src/main/services/remoteRuntime/remoteTargetRegistry";
 import type {
   RemoteRuntimeTarget,
@@ -300,7 +302,11 @@ async function startLocalBridgeListener(
   if (bridgeDir) {
     try { fs.chmodSync(bridgeDir, 0o700); } catch {}
   }
-  const bridgeSocketPath = bridgeDir ? path.join(bridgeDir, "bridge.sock") : null;
+  const bridgeSocketPath = process.platform === "win32"
+    ? `\\\\.\\pipe\\${directoryPrefix}${process.pid}-${randomUUID()}`
+    : bridgeDir
+      ? path.join(bridgeDir, "bridge.sock")
+      : null;
   const server = net.createServer(onConnection);
   server.maxConnections = 1;
   const removeFiles = (): void => {
@@ -322,7 +328,7 @@ async function startLocalBridgeListener(
       };
       server.once("listening", onListening);
       server.once("error", onError);
-      if (bridgeSocketPath) server.listen(bridgeSocketPath);
+      if (bridgeSocketPath) server.listen(localIpcListenOptions(bridgeSocketPath));
       else server.listen(0, "127.0.0.1");
     });
   } catch (error) {

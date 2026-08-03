@@ -27,9 +27,19 @@ import {
 } from "../../utils/codexComputerUse";
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
-import { resolveCliSpawnInvocation } from "../shared/processExecution";
+import {
+  resolveCliSpawnInvocation,
+  shouldUseWindowsCmdWrapper,
+  windowsTaskkillInvocation,
+} from "../shared/processExecution";
 import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./resourceUsageSampling";
-import { augmentProcessPathWithShellAndKnownCliDirs, getPathEnvValue, setPathEnvValue, splitPathEntries } from "../ai/cliExecutableResolver";
+import {
+  augmentProcessPathWithShellAndKnownCliDirs,
+  getPathEnvValue,
+  resolveExecutableFromKnownLocations,
+  setPathEnvValue,
+  splitPathEntries,
+} from "../ai/cliExecutableResolver";
 import type {
   PtyDataEvent,
   PtyExitEvent,
@@ -67,13 +77,21 @@ import {
   PTY_SEND_PRE_DELIVERY_ERROR_CODE,
 } from "../../../shared/types";
 import { isProviderSlashCommandInput } from "../../../shared/chatSlashCommands";
+import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import {
+  buildOpenCodeReplayResumeLaunchCommand,
+  buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeLaunchCommand,
   isClaudeBinaryCommand,
+  isLaunchProfile,
   sanitizeTrackedCliPromptSeed,
   shellCommandLineArgIndex,
   trackedCliTitleFromPromptSeed,
+  type TrackedCliLaunchCommand,
+  type WindowsShellLaunchMode,
   withClaudePluginInCommandLine,
   withCodexNoAltScreen,
+  resolveWindowsShellLaunchFields,
 } from "../../../shared/cliLaunch";
 import { claudeAgentSkillPluginRoots } from "../skills/agentSkillRuntimeService";
 import { stripAnsi } from "../../utils/ansiStrip";
@@ -122,6 +140,21 @@ function normalizeStartupCommandDelayMs(value: unknown): number {
   return typeof value === "number" && Number.isFinite(value)
     ? Math.max(0, Math.min(MAX_STARTUP_COMMAND_DELAY_MS, Math.floor(value)))
     : 0;
+}
+
+export function materializeRuntimeCliLaunch(
+  runtimeCliLaunch: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>,
+  laneWorktreePath: string,
+): TrackedCliLaunchCommand {
+  const provider = String(runtimeCliLaunch.provider);
+  if (!isLaunchProfile(provider) || provider === "shell") {
+    throw new Error(`Unsupported runtime CLI launch provider '${provider}'.`);
+  }
+  return buildTrackedCliLaunchCommand({
+    ...runtimeCliLaunch,
+    provider,
+    laneWorktreePath,
+  });
 }
 
 export type NodePtySpawnHelperExecutableResult =
@@ -395,6 +428,7 @@ function openCodeSupportsReplayResume(): boolean {
       timeout: 3000,
       maxBuffer: 512 * 1024,
       env,
+      windowsHide: true,
     });
     const output = `${String(result.stdout ?? "")}\n${String(result.stderr ?? "")}`;
     cachedOpenCodeReplayResumeSupport = result.status === 0
@@ -819,25 +853,15 @@ function terminatePtyProcessTree(
     return;
   }
   if (process.platform === "win32") {
-    try {
-      entry.pty.kill(signal);
-    } catch {
-      killPidBestEffort(rootPid, signal);
-    }
-    if (signal === "SIGKILL") return;
-    const timer = setTimeout(() => {
-      try {
-        process.kill(rootPid, 0);
-      } catch {
-        return;
-      }
+    const runTaskkill = (force: boolean): void => {
+      const invocation = windowsTaskkillInvocation(rootPid, { force });
       try {
         execFile(
-          "taskkill",
-          ["/pid", String(rootPid), "/T", "/F"],
+          invocation.command,
+          invocation.args,
           { timeout: 5_000, maxBuffer: 64 * 1024, windowsHide: true },
           (error) => {
-            if (error) return;
+            if (error || !force) return;
             logger.warn("pty.process_tree_force_killed", {
               sessionId: entry.sessionId,
               toolType: entry.toolTypeHint,
@@ -847,8 +871,22 @@ function terminatePtyProcessTree(
           },
         );
       } catch {
-        // taskkill may be unavailable; the initial node-pty signal still ran.
+        // taskkill may be unavailable; node-pty's own kill path still runs.
       }
+    };
+
+    // Capture the process tree while the ConPTY leader still exists. Waiting
+    // until after node-pty kills the leader can orphan descendants, at which
+    // point `taskkill /PID <leader> /T` can no longer discover them.
+    runTaskkill(signal === "SIGKILL");
+    try {
+      entry.pty.kill(signal);
+    } catch {
+      killPidBestEffort(rootPid, signal);
+    }
+    if (signal === "SIGKILL") return;
+    const timer = setTimeout(() => {
+      runTaskkill(true);
     }, PTY_PROCESS_TREE_KILL_DELAY_MS);
     timer.unref?.();
     return;
@@ -963,17 +1001,24 @@ function loginShellSpec(file: string): ShellSpec {
   return { file, args: [] };
 }
 
-function resolveShellCandidates(options: { clean?: boolean; login?: boolean } = {}): ShellSpec[] {
+function resolveShellCandidates(mode: WindowsShellLaunchMode = "interactive"): ShellSpec[] {
   if (process.platform === "win32") {
-    return options.clean
-      ? [
-          { file: "powershell.exe", args: ["-NoLogo", "-NoProfile"] },
-          { file: "cmd.exe", args: ["/d"] },
-        ]
-      : [
-          { file: "powershell.exe", args: [] },
-          { file: "cmd.exe", args: [] },
-        ];
+    const explicit = resolveWindowsShellLaunchFields(process.env.SHELL, { mode });
+    const fallbacks = [
+      resolveWindowsShellLaunchFields("powershell.exe", { mode }),
+      resolveWindowsShellLaunchFields("pwsh.exe", { mode }),
+      resolveWindowsShellLaunchFields("cmd.exe", { mode }),
+    ];
+    const seen = new Set<string>();
+    return [explicit, ...fallbacks]
+      .filter((candidate): candidate is NonNullable<typeof candidate> => Boolean(candidate))
+      .filter((candidate) => {
+        const key = candidate.command.toLowerCase();
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .map(({ command: file, args, env }) => ({ file, args, ...(env ? { env } : {}) }));
   }
   const candidates: string[] = [];
   const fromEnv = process.env.SHELL?.trim();
@@ -981,8 +1026,8 @@ function resolveShellCandidates(options: { clean?: boolean; login?: boolean } = 
   candidates.push("/bin/zsh", "/bin/bash", "/bin/sh");
   const uniq = Array.from(new Set(candidates.filter(Boolean)));
   return uniq.map((file) => {
-    if (options.clean) return cleanShellSpec(file);
-    if (options.login) return loginShellSpec(file);
+    if (mode === "clean") return cleanShellSpec(file);
+    if (mode === "login") return loginShellSpec(file);
     return { file, args: [] };
   });
 }
@@ -1020,6 +1065,26 @@ function isOpenCodeCommandName(command: string): boolean {
 function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolType | null): string {
   if (!isOpenCodeToolType(toolType) || !isOpenCodeCommandName(command)) return command;
   return resolveOpenCodeBinaryPath() ?? command;
+}
+
+function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
+  const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
+  if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
+  if (toolType !== "cursor" && toolType !== "cursor-cli") return command;
+  const trimmedCommand = command.trim();
+  const basename = trimmedCommand.split(/[\\/]/).pop()?.toLowerCase() ?? "";
+  if (/[\\/]/.test(trimmedCommand)) return command;
+  if (basename !== "cursor-agent" && basename !== "cursor-agent.exe" && basename !== "cursor-agent.cmd" && basename !== "cursor-agent.bat") {
+    return command;
+  }
+  // Cursor has shipped both `cursor-agent` and the legacy `agent` shim on
+  // Windows. Resolve the executable at the PTY boundary so fresh launches and
+  // durable resume metadata work with either installation layout.
+  for (const candidate of CURSOR_CLI_EXECUTABLES.launchCandidates) {
+    const resolved = resolveExecutableFromKnownLocations(candidate)?.path;
+    if (resolved) return resolved;
+  }
+  return command;
 }
 
 function withBundledOpenCodeCommandLine(commandLine: string, toolType: TerminalToolType | null): string {
@@ -2929,6 +2994,7 @@ export function createPtyService({
         timeout: 4000,
         maxBuffer: 1024 * 1024,
         env,
+        windowsHide: true,
       });
       if (result.error || result.status !== 0) return null;
       const stdout = String(result.stdout ?? "");
@@ -4396,12 +4462,18 @@ export function createPtyService({
       : undefined,
   });
 
+  const legacyResumeLaunch = (command: string): TrackedCliLaunchCommand => ({
+    startupCommand: command,
+    args: [],
+    ...directShellLaunchForCommandLine(command),
+  });
+
   const buildResumeCommandForSession = (
     session: TerminalSessionSummary,
     provider: TerminalResumeProvider,
     overrides: ReturnType<typeof resumeLaunchOverrides> & { prompt?: string | null },
     codexComputerUse: CodexComputerUseMcpConfig | null = null,
-  ): { command: string | null; promptAtLaunch: boolean } => {
+  ): { launch: TrackedCliLaunchCommand | null; promptAtLaunch: boolean } => {
     const prompt = typeof overrides.prompt === "string" && overrides.prompt.trim().length
       ? overrides.prompt
       : null;
@@ -4429,12 +4501,43 @@ export function createPtyService({
     const command = provider === "codex" && rawResumeCommand
       ? withCodexNoAltScreen(rawResumeCommand)
       : rawResumeCommand;
-    return { command, promptAtLaunch: Boolean(command && prompt && metadataResumeCommand && provider !== "cursor") };
+    let promptAtLaunch = Boolean(prompt && metadataResumeCommand && provider !== "cursor");
+    const launch = (() => {
+      if (!metadata || process.platform !== "win32") {
+        return command ? legacyResumeLaunch(command) : null;
+      }
+
+      const candidate = buildTrackedCliResumeLaunchCommand(
+        metadata,
+        metadataOverrides,
+        { platform: "win32" },
+      );
+      if (
+        promptAtLaunch
+        && candidate.command
+        && shouldUseWindowsCmdWrapper(candidate.command, "win32")
+      ) {
+        // cmd.exe expands percent-delimited environment variables before the
+        // provider sees argv. Keep user text out of that command line and send
+        // it through the PTY after the resumed provider is ready instead.
+        promptAtLaunch = false;
+        return buildTrackedCliResumeLaunchCommand(
+          metadata,
+          { ...metadataOverrides, prompt: null },
+          { platform: "win32" },
+        );
+      }
+      return candidate;
+    })();
+    return {
+      launch,
+      promptAtLaunch: Boolean(launch && promptAtLaunch),
+    };
   };
 
   const getOrCreateResumeFlight = (
     session: TerminalSessionSummary,
-    resumeCommand: string,
+    resumeLaunch: TrackedCliLaunchCommand,
     args: Pick<PtySendToSessionArgs, "cols" | "rows">,
   ): { flight: Promise<PtyCreateResult>; created: boolean } => {
     let flight = resumeRuntimeFlights.get(session.id);
@@ -4452,8 +4555,10 @@ export function createPtyService({
       title: session.goal?.trim() || session.title || "Terminal",
       tracked: session.tracked,
       toolType: session.toolType,
-      startupCommand: resumeCommand,
-      ...directShellLaunchForCommandLine(resumeCommand),
+      startupCommand: resumeLaunch.startupCommand,
+      ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
+      args: resumeLaunch.args,
+      ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
     });
     resumeRuntimeFlights.set(session.id, flight);
     void flight
@@ -4585,11 +4690,37 @@ export function createPtyService({
       });
       const { laneWorktreePath: worktreePath, cwd } = launchContext;
       const { cols, rows } = clampDims(args.cols, args.rows);
+      const runtimeCliLaunch = args.runtimeCliLaunch;
+      const materializedRuntimeLaunch = runtimeCliLaunch
+        ? materializeRuntimeCliLaunch(runtimeCliLaunch, worktreePath)
+        : null;
+      const effectiveArgs: PtyCreateArgs = materializedRuntimeLaunch
+        ? {
+            ...args,
+            startupCommand: materializedRuntimeLaunch.startupCommand,
+            ...(materializedRuntimeLaunch.command !== undefined
+              ? { command: materializedRuntimeLaunch.command }
+              : {}),
+            ...(materializedRuntimeLaunch.args !== undefined
+              ? { args: materializedRuntimeLaunch.args }
+              : {}),
+            ...(materializedRuntimeLaunch.initialInput !== undefined
+              ? { initialInput: materializedRuntimeLaunch.initialInput }
+              : {}),
+            ...(materializedRuntimeLaunch.initialInputDelayMs !== undefined
+              ? { initialInputDelayMs: materializedRuntimeLaunch.initialInputDelayMs }
+              : {}),
+            env: {
+              ...(args.env ?? {}),
+              ...(materializedRuntimeLaunch.env ?? {}),
+            },
+          }
+        : args;
 
       const requestedSessionId = typeof args.sessionId === "string" ? args.sessionId.trim() : "";
       const allowNewSessionId = args.allowNewSessionId === true;
       const isResumeAttempt =
-        typeof args.startupCommand === "string" && args.startupCommand.trim().length > 0;
+        typeof effectiveArgs.startupCommand === "string" && effectiveArgs.startupCommand.trim().length > 0;
       const existingSession = requestedSessionId.length
         ? sessionService.get(requestedSessionId)
         : null;
@@ -4664,8 +4795,8 @@ export function createPtyService({
           throw Object.assign(new Error(decision.message), { code: decision.code });
         }
       }
-      const requestedStartupCommand = typeof args.startupCommand === "string" ? args.startupCommand.trim() : "";
-      const requestedInitialInput = typeof args.initialInput === "string" ? args.initialInput : "";
+      const requestedStartupCommand = typeof effectiveArgs.startupCommand === "string" ? effectiveArgs.startupCommand.trim() : "";
+      const requestedInitialInput = typeof effectiveArgs.initialInput === "string" ? effectiveArgs.initialInput : "";
       const requestedResumeMetadata = args.resumeMetadata ?? null;
       let initialResumeMetadata = existingSession?.resumeMetadata
         ?? requestedResumeMetadata
@@ -4802,14 +4933,16 @@ export function createPtyService({
           .catch(() => {});
       }
 
-      const requestedDirectCommand = typeof args.command === "string" ? args.command.trim() : "";
-      const directCommand = resolveDirectOpenCodeCommand(requestedDirectCommand, toolTypeHint);
-      let directArgs = Array.isArray(args.args) ? args.args.filter((value): value is string => typeof value === "string") : [];
+      const requestedDirectCommand = typeof effectiveArgs.command === "string" ? effectiveArgs.command.trim() : "";
+      const directCommand = resolveDirectProviderCommand(requestedDirectCommand, toolTypeHint);
+      let directArgs = Array.isArray(effectiveArgs.args)
+        ? effectiveArgs.args.filter((value): value is string => typeof value === "string")
+        : [];
 
       const laneRuntimeEnv = (await getLaneRuntimeEnv?.(laneId)) ?? {};
       const sessionLinearEnv = getSessionLinearEnv?.({ sessionId, chatSessionId }) ?? {};
-      const explicitNoColor = hasEnvKey(args.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
-      const explicitForceColor = hasEnvKey(args.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
+      const explicitNoColor = hasEnvKey(effectiveArgs.env ?? {}, "NO_COLOR") || hasEnvKey(laneRuntimeEnv, "NO_COLOR");
+      const explicitForceColor = hasEnvKey(effectiveArgs.env ?? {}, "FORCE_COLOR") || hasEnvKey(laneRuntimeEnv, "FORCE_COLOR");
       const inheritedProcessEnv = { ...process.env };
       // The desktop/runtime itself may be launched from an agent shell. Do not
       // leak that host role into an ordinary terminal; tracked agent CLIs set
@@ -4819,7 +4952,7 @@ export function createPtyService({
         ...inheritedProcessEnv,
         ...laneRuntimeEnv,
         ...sessionLinearEnv,
-        ...(args.env ?? {})
+        ...(effectiveArgs.env ?? {})
       };
       if (explicitNoColor && !explicitForceColor) {
         delete baseLaunchEnv.FORCE_COLOR;
@@ -4898,10 +5031,10 @@ export function createPtyService({
       let pty: IPty;
       let selectedShell: ShellSpec | null = null;
       const useLoginInteractiveShell = toolTypeHint === "shell" && !directCommand && !startupCommand;
-      const shellCandidates = resolveShellCandidates({
-        clean: Boolean(directCommand || startupCommand),
-        login: useLoginInteractiveShell,
-      });
+      let shellMode: WindowsShellLaunchMode = "interactive";
+      if (directCommand || startupCommand) shellMode = "clean";
+      else if (useLoginInteractiveShell) shellMode = "login";
+      const shellCandidates = resolveShellCandidates(shellMode);
       let launchedDirectCommand = false;
       try {
         const spawnHelperRepair = ensureNodePtySpawnHelperExecutable();
@@ -5205,7 +5338,7 @@ export function createPtyService({
             });
           }
         };
-        const startupDelayMs = normalizeStartupCommandDelayMs(args.startupDelayMs);
+      const startupDelayMs = normalizeStartupCommandDelayMs(effectiveArgs.startupDelayMs);
         if (startupDelayMs > 0) {
           entry.startupTimer = setTimeout(writeStartupCommand, startupDelayMs);
           entry.startupTimer.unref?.();
@@ -5220,7 +5353,7 @@ export function createPtyService({
         const defaultInitialInputReadyTimeoutMs = provider === "codex"
           ? CODEX_CLI_READY_TIMEOUT_MS
           : AGENT_CLI_READY_TIMEOUT_MS;
-        const requestedInitialInputReadyTimeoutMs = args.initialInputReadyTimeoutMs;
+        const requestedInitialInputReadyTimeoutMs = effectiveArgs.initialInputReadyTimeoutMs;
         const parsedInitialInputReadyTimeoutMs = Math.floor(
           Number(requestedInitialInputReadyTimeoutMs ?? defaultInitialInputReadyTimeoutMs) || 0,
         );
@@ -5339,8 +5472,8 @@ export function createPtyService({
             err: String(err),
           });
         };
-        const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(args.initialInputDelayMs ?? 0) || 0)));
-        if (args.awaitInitialInput) {
+        const initialInputDelayMs = Math.max(0, Math.min(10_000, Math.floor(Number(effectiveArgs.initialInputDelayMs ?? 0) || 0)));
+        if (effectiveArgs.awaitInitialInput) {
           try {
             if (initialInputDelayMs > 0) await delay(initialInputDelayMs);
             await writeInitialInput();
@@ -5581,17 +5714,34 @@ export function createPtyService({
         }) ?? resumableSession;
       }
       const launchMetadata = resumableSession.resumeMetadata?.launch;
-      const openCodeReplayCommand = provider === "opencode"
+      const openCodeReplayLaunch = provider === "opencode"
         && resumableSession.resumeMetadata?.provider === "opencode"
         && openCodeSupportsReplayResume()
-        ? buildOpenCodeReplayResumeCommand({
-            permissionMode: overrides.permissionMode ?? resumableSession.resumeMetadata.launch.permissionMode ?? null,
-            targetId: sanitizeResumeTargetId(resumableSession.resumeMetadata.targetId ?? null),
-            model: overrides.model ?? launchMetadata?.model ?? null,
-            reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
-            fastMode: overrides.fastMode ?? launchMetadata?.fastMode ?? launchMetadata?.codexFastMode ?? null,
-            prompt: text,
-          })
+        ? (() => {
+            const targetId = sanitizeResumeTargetId(resumableSession.resumeMetadata?.targetId ?? null);
+            const replayArgs = {
+              permissionMode: overrides.permissionMode
+                ?? resumableSession.resumeMetadata?.launch.permissionMode
+                ?? null,
+              model: overrides.model ?? launchMetadata?.model ?? null,
+              reasoningEffort: overrides.reasoningEffort ?? launchMetadata?.reasoningEffort ?? null,
+              fastMode: overrides.fastMode
+                ?? launchMetadata?.fastMode
+                ?? launchMetadata?.codexFastMode
+                ?? null,
+              prompt: text,
+            };
+            return process.platform === "win32"
+              ? buildOpenCodeReplayResumeLaunchCommand({
+                  ...replayArgs,
+                  resumeTarget: targetId,
+                  continueLast: !targetId,
+                })
+              : legacyResumeLaunch(buildOpenCodeReplayResumeCommand({
+                  ...replayArgs,
+                  targetId,
+                }));
+          })()
         : null;
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
@@ -5606,28 +5756,37 @@ export function createPtyService({
         provider,
         {
           ...overrides,
-          ...(!openCodeReplayCommand && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
+          ...(!openCodeReplayLaunch && !resumeFlightAlreadyInProgress ? { prompt: text } : {}),
         },
         codexComputerUse,
       );
-      const promptAtLaunch = !openCodeReplayCommand && !resumeFlightAlreadyInProgress && builtResume.promptAtLaunch;
-      const resumeCommand = openCodeReplayCommand ?? builtResume.command;
-      if (!resumeCommand) {
+      const promptAtLaunch = !openCodeReplayLaunch
+        && !resumeFlightAlreadyInProgress
+        && builtResume.promptAtLaunch;
+      const resumeLaunch = openCodeReplayLaunch ?? builtResume.launch;
+      if (!resumeLaunch) {
         throw ptySendPreDeliveryError(`Terminal session '${sessionId}' does not have a resume command.`);
       }
 
-      const { flight, created: resumeFlightCreated } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
+      const { flight, created: resumeFlightCreated } = getOrCreateResumeFlight(
+        resumableSession,
+        resumeLaunch,
+        args,
+      );
       const created = await flight;
       // The message itself may be embedded in the provider's launch command,
       // so there is not always a later PTY write that can mark the new turn.
       // Wait until launch succeeds before clearing the previous turn's state.
       clearTrackedCliTurnStartMarkers(sessionId);
-      if ((resumeFlightCreated && Boolean(openCodeReplayCommand)) || promptAtLaunch) {
+      if ((resumeFlightCreated && Boolean(openCodeReplayLaunch)) || promptAtLaunch) {
         return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
       }
 
       const written = await writeSubmittedText(created.sessionId, text, provider, {
-        waitForReady: provider === "cursor" || resumeFlightAlreadyInProgress || !resumeFlightCreated,
+        waitForReady: process.platform === "win32"
+          || provider === "cursor"
+          || resumeFlightAlreadyInProgress
+          || !resumeFlightCreated,
       });
       if (!written) {
         logger.warn("pty.resume_send_input_failed_preserved", {
@@ -5661,17 +5820,17 @@ export function createPtyService({
       const codexComputerUse = provider === "codex"
         ? await resolveCodexComputerUseMcpConfig()
         : null;
-      const { command: resumeCommand } = buildResumeCommandForSession(
+      const { launch: resumeLaunch } = buildResumeCommandForSession(
         resumableSession,
         provider,
         resumeLaunchOverrides(args),
         codexComputerUse,
       );
-      if (!resumeCommand) {
+      if (!resumeLaunch) {
         throw new Error(`Terminal session '${sessionId}' does not have a resume command.`);
       }
 
-      const { flight } = getOrCreateResumeFlight(resumableSession, resumeCommand, args);
+      const { flight } = getOrCreateResumeFlight(resumableSession, resumeLaunch, args);
       const created = await flight;
       return buildSessionActionResult(created, { resumed: true, reusedExistingRuntime: false });
     },
@@ -5795,15 +5954,44 @@ export function createPtyService({
           throw new Error(`Session '${chatSessionId}' is not a chat CLI session.`);
         }
 
-        const resumeCommand = session.resumeMetadata
-          ? buildTrackedCliResumeCommand(
-              session.resumeMetadata,
-              session.resumeMetadata.provider === "codex"
-                ? { codexComputerUse: await resolveCodexComputerUseMcpConfig() }
-                : {},
+        const parsedResumeCommand = parseTrackedCliResumeCommand(
+          session.resumeCommand,
+          session.toolType,
+        );
+        const provider = session.resumeMetadata?.provider
+          ?? parsedResumeCommand?.provider
+          ?? providerFromTool(session.toolType);
+        const metadata = session.resumeMetadata
+          ?? (parsedResumeCommand && provider
+            ? {
+                provider,
+                targetKind: provider === "codex" ? "thread" : "session",
+                targetId: parsedResumeCommand.targetId,
+                launch: parseTrackedCliLaunchConfig(
+                  session.resumeCommand ?? "",
+                  session.toolType,
+                ) ?? {},
+              } satisfies TerminalResumeMetadata
+            : null);
+        const codexComputerUse = metadata?.provider === "codex"
+          ? await resolveCodexComputerUseMcpConfig()
+          : null;
+        const resumeOverrides = metadata?.provider === "codex"
+          ? { codexComputerUse }
+          : {};
+        const resumeLaunch = metadata && process.platform === "win32"
+          ? buildTrackedCliResumeLaunchCommand(
+              metadata,
+              resumeOverrides,
+              { platform: "win32" },
             )
-          : normalizeResumeCommand(session.resumeCommand, session.toolType);
-        if (!resumeCommand) {
+          : (() => {
+              const command = metadata
+                ? buildTrackedCliResumeCommand(metadata, resumeOverrides)
+                : normalizeResumeCommand(session.resumeCommand, session.toolType);
+              return command ? legacyResumeLaunch(command) : null;
+            })();
+        if (!resumeLaunch) {
           throw new Error(`Chat CLI session '${chatSessionId}' has no resume command available.`);
         }
 
@@ -5821,8 +6009,10 @@ export function createPtyService({
           title: session.title || session.goal || "Chat CLI",
           tracked: true,
           toolType: session.toolType,
-          startupCommand: resumeCommand,
-          ...directShellLaunchForCommandLine(resumeCommand),
+          startupCommand: resumeLaunch.startupCommand,
+          ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
+          args: resumeLaunch.args,
+          ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
         });
 
         logger.info("pty.reattach_chat_cli", {

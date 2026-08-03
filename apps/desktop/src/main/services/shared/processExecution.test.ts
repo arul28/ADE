@@ -116,7 +116,7 @@ describe("killWindowsProcessTree", () => {
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     const [command, args, options] = spawnSyncMock.mock.calls[0]!;
     expect(command).toBe("taskkill.exe");
-    expect(args).toEqual(["/T", "/F", "/PID", "4321"]);
+    expect(args).toEqual(["/PID", "4321", "/T", "/F"]);
     expect(options).toMatchObject({ windowsHide: true });
   });
 
@@ -222,7 +222,7 @@ describe("terminateProcessTree", () => {
 
     expect(terminateProcessTree(child)).toBe(true);
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/T", "/F", "/PID", "4321"]);
+    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/PID", "4321", "/T", "/F"]);
     expect(child.kill).not.toHaveBeenCalled();
   });
 

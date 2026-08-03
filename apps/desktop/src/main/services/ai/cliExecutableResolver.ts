@@ -310,6 +310,7 @@ function readShellPath(
         env,
         stdio: ["ignore", "pipe", "pipe"],
         timeout: timeoutMs,
+        windowsHide: true,
       },
     );
     const startIdx = raw.indexOf(PATH_MARKER_START);
