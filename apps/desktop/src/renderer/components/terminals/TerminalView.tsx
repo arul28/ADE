@@ -16,7 +16,14 @@ import { WORK_SURFACE_REVEALED_EVENT } from "./workSurfaceVisibility";
 import { installMacShiftSelectionBridge } from "./terminalMacShiftSelection";
 import { openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
+import type { TerminalToolType } from "../../../shared/types";
 import { peekPendingSessionAnchor, takePendingSessionAnchor } from "./pendingSessionAnchors";
+import {
+  readDismissedScrollHints,
+  terminalScrollHintFor,
+  writeDismissedScrollHint,
+  type TerminalScrollHintCopy,
+} from "./terminalScrollHint";
 import {
   MIN_VALID_COLS,
   inferTerminalModesFromTranscript,
@@ -3299,6 +3306,7 @@ export function TerminalView({
   isActive,
   isVisible = isActive,
   imagePasteMode = "native-shortcut",
+  toolType = null,
 }: {
   ptyId: string;
   sessionId: string;
@@ -3307,9 +3315,16 @@ export function TerminalView({
   isActive: boolean;
   isVisible?: boolean;
   imagePasteMode?: TerminalImagePasteMode;
+  /** Drives the web keyboard-scroll hint; absent means no hint. */
+  toolType?: TerminalToolType | null;
 }) {
   const appTheme = useAppStore((s) => s.theme);
   const terminalPreferences = useAppStore((s) => s.terminalPreferences);
+  // Keyboard-scroll hint: web only, and only for a session whose provider we
+  // have documented keys for. See `terminalScrollHint.ts` for why the wheel is
+  // slow over sync and why this is provider-specific.
+  const [scrollHint, setScrollHint] = useState<TerminalScrollHintCopy | null>(null);
+  const maybeShowScrollHintRef = useRef<(() => void) | null>(null);
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectKey = useAppStore(selectActiveProjectStateKey);
   const projectRevision = useAppStore((s) => s.projectRevision);
@@ -3468,7 +3483,11 @@ export function TerminalView({
         // Returning is the forwarding path: xterm's own mouse binding turns the
         // wheel into a report for the application. Intercepting it here is
         // exactly what stopped the TUI from ever seeing a scroll.
-        if (!ev.shiftKey) return;
+        if (!ev.shiftKey) {
+          // This IS the slow path: one report per notch, one round trip each.
+          maybeShowScrollHintRef.current?.();
+          return;
+        }
         scrollLocally(ev);
         return;
       }
@@ -3768,6 +3787,42 @@ export function TerminalView({
     };
   }, [isActive, isVisible, runtimeProjectRoot, sessionId]);
 
+  useEffect(() => {
+    if (!isWebClientMode()) {
+      maybeShowScrollHintRef.current = null;
+      return;
+    }
+    const copy = terminalScrollHintFor(toolType);
+    if (!copy) {
+      maybeShowScrollHintRef.current = null;
+      return;
+    }
+    maybeShowScrollHintRef.current = () => {
+      const storage = typeof window !== "undefined" ? window.localStorage : null;
+      if (readDismissedScrollHints(storage).has(copy.toolType)) return;
+      setScrollHint((current) => (current?.toolType === copy.toolType ? current : copy));
+    };
+    return () => {
+      maybeShowScrollHintRef.current = null;
+    };
+  }, [toolType]);
+
+  useEffect(() => {
+    if (!scrollHint) return;
+    // Long enough to read mid-scroll, short enough not to sit over output.
+    const timer = window.setTimeout(() => setScrollHint(null), 6000);
+    return () => window.clearTimeout(timer);
+  }, [scrollHint]);
+
+  const dismissScrollHint = () => {
+    // Persist outside the updater: React may invoke an updater twice (StrictMode),
+    // and a setState callback is not the place for a side effect.
+    if (scrollHint) {
+      writeDismissedScrollHint(typeof window !== "undefined" ? window.localStorage : null, scrollHint.toolType);
+    }
+    setScrollHint(null);
+  };
+
   return (
     <div
       ref={wrapperRef}
@@ -3785,6 +3840,24 @@ export function TerminalView({
       {exited != null ? (
         <div className="pointer-events-none absolute bottom-2 right-2 rounded-lg border border-border/15 bg-card backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg">
           exited {exited}
+        </div>
+      ) : null}
+      {scrollHint != null && exited == null ? (
+        <div
+          data-ade-terminal-scroll-hint={scrollHint.toolType}
+          className="absolute bottom-2 right-2 flex items-center gap-2 rounded-lg border border-border/15 bg-card/95 backdrop-blur-sm shadow-card px-2 py-1 text-[11px] text-muted-fg"
+        >
+          <span>
+            Faster: <span className="font-medium text-fg">{scrollHint.keys}</span>
+          </span>
+          <button
+            type="button"
+            onClick={dismissScrollHint}
+            aria-label="Dismiss scroll hint"
+            className="rounded px-1 text-muted-fg transition-colors hover:text-fg"
+          >
+            ×
+          </button>
         </div>
       ) : null}
     </div>

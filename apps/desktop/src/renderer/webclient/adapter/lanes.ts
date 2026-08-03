@@ -69,7 +69,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       return result;
     },
     previewBranchSwitch: (args: unknown) => call("lanes.previewBranchSwitch", args, null),
-    switchBranch: (args: unknown) => call("lanes.switchBranch", args, { ok: false, error: "unsupported" }, false),
     getBranchDrift: (args: unknown) => call("lanes.getBranchDrift", args, null),
     // The drift strip treats a resolved promise as "drift handled": it disarms
     // the warning and refreshes. A host that cannot run this must therefore
@@ -126,7 +125,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
         laneName: stringField(record, "laneName") || stringField(record, "name") || "Lane",
       });
     },
-    cancelDelete: (args: unknown) => call("lanes.cancelDelete", args, { cancelled: false, reason: "unsupported" }, false),
     listDeleteProgress: () => call("lanes.listDeleteProgress", {}, []),
     getDeleteRisk: (args: unknown) =>
       call("lanes.getDeleteRisk", args, {
@@ -165,11 +163,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
       }),
     getStackChain: (laneId: string) => call("lanes.getStackChain", { laneId }, []),
     getChildren: (laneId: string) => call("lanes.getChildren", { laneId }, []),
-    attachLinearIssueToSession: (args: unknown) => call("lanes.attachLinearIssueToSession", args, [], false),
-    detachLinearIssueFromSession: (args: unknown) => call("lanes.detachLinearIssueFromSession", args, false, false),
-    listLinearIssuesForSession: (args: unknown) => call("lanes.listLinearIssuesForSession", args, []),
-    listLinearIssuesForLaneSessions: (args: unknown) => call("lanes.listLinearIssuesForLaneSessions", args, []),
-    unlinkLinearIssues: (args: unknown) => call("lanes.unlinkLinearIssues", args, false, false),
     rebaseStart: (args: unknown) => call("lanes.rebaseStart", args, { ok: false, error: "unsupported" }, false),
     rebasePush: (args: unknown) => call("lanes.rebasePush", args, null, false),
     rebaseRollback: (args: unknown) => call("lanes.rebaseRollback", args, null, false),
@@ -188,9 +181,7 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     openFolder: async () => undefined,
     initEnv: (args: unknown) => call("lanes.initEnv", args, null, false),
     getEnvStatus: (args: unknown) => call("lanes.getEnvStatus", args, null),
-    getOverlay: (args: unknown) => call("lanes.getOverlay", args, {}),
     listTemplates: () => call("lanes.listTemplates", {}, []),
-    getTemplate: (args: unknown) => call("lanes.getTemplate", args, null),
     getDefaultTemplate: () => call("lanes.getDefaultTemplate", {}, null),
     setDefaultTemplate: async (args: unknown) => {
       await call("lanes.setDefaultTemplate", args, undefined, false);
@@ -201,45 +192,6 @@ export function createLanesNamespace(infra: AdapterInfra): AdeNamespace<"lanes">
     },
     deleteTemplate: async (args: unknown) => {
       await call("lanes.deleteTemplate", args, undefined, false);
-    },
-    portGetLease: (args: unknown) => call("lanes.portGetLease", args, null),
-    portListLeases: () => call("lanes.portListLeases", {}, []),
-    portAcquire: (args: unknown) => call("lanes.portAcquire", args, null, false),
-    portRelease: async (args: unknown) => {
-      await call("lanes.portRelease", args, undefined, false);
-    },
-    portListConflicts: () => call("lanes.portListConflicts", {}, []),
-    portRecoverOrphans: () => call("lanes.portRecoverOrphans", {}, [], false),
-    proxyGetStatus: () => call("lanes.proxyGetStatus", {}, { running: false, routes: [] }),
-    proxyStart: (args?: unknown) => call("lanes.proxyStart", args, { running: false, routes: [] }, false),
-    proxyStop: async () => {
-      await call("lanes.proxyStop", {}, undefined, false);
-    },
-    proxyAddRoute: (args: unknown) => call("lanes.proxyAddRoute", args, null, false),
-    proxyRemoveRoute: async (args: unknown) => {
-      await call("lanes.proxyRemoveRoute", args, undefined, false);
-    },
-    proxyGetPreviewInfo: (args: unknown) => call("lanes.proxyGetPreviewInfo", args, null),
-    proxyOpenPreview: async (args: unknown) => {
-      await call("lanes.proxyOpenPreview", args, undefined, false);
-    },
-    oauthGetStatus: () => call("lanes.oauthGetStatus", {}, { enabled: false }),
-    oauthUpdateConfig: async (args: unknown) => {
-      await call("lanes.oauthUpdateConfig", args, undefined, false);
-    },
-    oauthGenerateRedirectUris: (args: unknown) => call("lanes.oauthGenerateRedirectUris", args, []),
-    oauthEncodeState: (args: unknown) => call("lanes.oauthEncodeState", args, ""),
-    oauthDecodeState: (args: unknown) => call("lanes.oauthDecodeState", args, null),
-    oauthListSessions: () => call("lanes.oauthListSessions", {}, []),
-    diagnosticsGetStatus: () => call("lanes.diagnosticsGetStatus", {}, { status: "unknown" }),
-    diagnosticsGetLaneHealth: (args: unknown) => call("lanes.diagnosticsGetLaneHealth", args, null),
-    diagnosticsRunHealthCheck: (args: unknown) => call("lanes.diagnosticsRunHealthCheck", args, null, false),
-    diagnosticsRunFullCheck: () => call("lanes.diagnosticsRunFullCheck", {}, [], false),
-    diagnosticsActivateFallback: async (args: unknown) => {
-      await call("lanes.diagnosticsActivateFallback", args, undefined, false);
-    },
-    diagnosticsDeactivateFallback: async (args: unknown) => {
-      await call("lanes.diagnosticsDeactivateFallback", args, undefined, false);
     },
     onDeleteEvent: (listener: (event: unknown) => void) => events.on("lanesDelete", listener as never),
     onLifecycleEvent: (listener: (event: unknown) => void) => events.on("lanesLifecycle", listener as never),
