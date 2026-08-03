@@ -22,7 +22,7 @@ final class ClipPairingModel: ObservableObject {
   private let client = ClipPairingClient()
 
   var hostName: String {
-    payload?.hostIdentity.name ?? "your Mac"
+    payload?.hostIdentity.name ?? "your computer"
   }
 
   func handleInvocation(url: URL) {
@@ -127,7 +127,7 @@ struct ClipPairingView: View {
       ProgressView()
         .padding(.top, 4)
     case .invalidInvocation:
-      Text("Open ADE on your Mac and scan the pairing code it shows in Settings.")
+      Text("Open ADE on your computer and scan the pairing code it shows in Settings.")
         .font(.footnote)
         .foregroundStyle(.secondary)
         .multilineTextAlignment(.center)
@@ -211,11 +211,11 @@ struct ClipPairingView: View {
   private var subtitle: String {
     switch model.phase {
     case .enterPin, .pairing:
-      return "Enter the PIN shown in ADE on your Mac."
+      return "Enter the PIN shown in ADE on your computer."
     case .paired:
       return "Your iPhone is trusted. ADE picks this pairing up automatically."
     default:
-      return "ADE pairs your iPhone with your Mac to control agents from anywhere."
+      return "ADE pairs your iPhone with your computer to control agents from anywhere."
     }
   }
 }

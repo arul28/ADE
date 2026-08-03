@@ -318,9 +318,14 @@ describe("Cursor SDK hook installation", () => {
         electronPath: String.raw`C:\Users\Ada%20\AppData\Local\ADE.exe`,
         scriptPath: String.raw`C:\Users\Ada%20\.cursor\hooks\ade-tool-gate.cjs`,
       });
-      expect(fs.readFileSync(commandPath, "utf8")).toContain(
-        String.raw`"C:\Users\Ada%%20\AppData\Local\ADE.exe" "C:\Users\Ada%%20\.cursor\hooks\ade-tool-gate.cjs"`,
+      const script = fs.readFileSync(commandPath, "utf8");
+      expect(script).toContain(
+        String.raw`"C:\Users\Ada%%20\AppData\Local\ADE.exe" "C:\Users\Ada%%20\.cursor\hooks\ade-tool-gate.cjs" %*`,
       );
+      // Cursor's own hook arguments must reach the bridge script, the way the
+      // POSIX wrapper forwards "$@".
+      expect(script).toContain("%*");
+      expect(script).toContain("setlocal");
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

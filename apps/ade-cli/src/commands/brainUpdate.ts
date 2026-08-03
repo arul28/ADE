@@ -28,6 +28,7 @@ const SUPPORTED_TARGETS = new Set([
   "darwin-x64",
   "linux-arm64",
   "linux-x64",
+  "win32-x64",
 ]);
 
 export class BrainUpdateUsageError extends Error {}
@@ -83,6 +84,7 @@ export type BrainUpdateDeps = {
   env?: NodeJS.ProcessEnv;
   platform?: NodeJS.Platform;
   arch?: string;
+  execPath?: string;
   currentVersion?: string;
   now?: () => Date;
   tmpDir?: () => Promise<string>;
@@ -108,10 +110,12 @@ export function detectRuntimeTarget(
   arch: string = os.arch(),
 ): string {
   const normalizedArch = normalizeArch(arch);
-  const normalizedPlatform = platform === "darwin" || platform === "linux" ? platform : null;
+  const normalizedPlatform = platform === "darwin" || platform === "linux" || platform === "win32"
+    ? platform
+    : null;
   if (!normalizedPlatform || !normalizedArch) {
     throw new BrainUpdateUsageError(
-      `ADE brain update is only supported on macOS and Linux arm64/x64 runtimes; got ${platform}/${arch}.`,
+      `ADE brain update is supported on macOS/Linux arm64/x64 and Windows x64 runtimes; got ${platform}/${arch}.`,
     );
   }
   const target = `${normalizedPlatform}-${normalizedArch}`;
@@ -364,6 +368,7 @@ function runCommand(
     cwd: options.cwd,
     env: options.env,
     encoding: "utf8",
+    windowsHide: true,
   });
   return {
     status: result.status,
@@ -392,6 +397,59 @@ export function requestBrainServiceRestart(
       },
     },
   );
+}
+
+export function requestBrainServiceStop(
+  args: {
+    command: string;
+    commandArgs: string[];
+    env?: NodeJS.ProcessEnv;
+  },
+  run: typeof runCommand = runCommand,
+): BrainServiceRestartResult {
+  return run(
+    args.command,
+    [...args.commandArgs, "--uninstall-service"],
+    {
+      env: {
+        ...(args.env ?? process.env),
+        ADE_ALLOW_RUNTIME_SERVICE_SELF_MUTATION: "1",
+      },
+    },
+  );
+}
+
+export function requestBrainServiceStatus(
+  args: {
+    command: string;
+    commandArgs: string[];
+    env?: NodeJS.ProcessEnv;
+  },
+  run: typeof runCommand = runCommand,
+): BrainServiceRestartResult & { installed: boolean | null } {
+  const result = run(
+    args.command,
+    [...args.commandArgs, "--service-status", "--json"],
+    { env: args.env ?? process.env },
+  );
+  let installed: boolean | null = null;
+  if (result.status === 0) {
+    try {
+      const parsed = JSON.parse(result.stdout) as { installed?: unknown };
+      installed = typeof parsed.installed === "boolean" ? parsed.installed : null;
+    } catch {
+      installed = null;
+    }
+  }
+  return { ...result, installed };
+}
+
+function runtimeBinaryAssetName(target: string): string {
+  return `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
+}
+
+function installedRuntimeBinaryName(target: string): string {
+  return target.startsWith("win32-") ? "ade.exe" : "ade";
 }
 
 function runtimeNodeModulesPath(runtimeRoot: string): string {
@@ -503,7 +561,16 @@ async function promoteStagedNativeRuntime(manifest: BrainUpdateManifest): Promis
     return hasBackup ? backupPath : null;
   } catch (error) {
     if (hasBackup) {
-      await fsp.rename(backupPath, manifest.runtimeTargetDir).catch(() => undefined);
+      try {
+        await fsp.rename(backupPath, manifest.runtimeTargetDir);
+      } catch (restoreError) {
+        throw new Error(
+          `ADE native runtime promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          + `restoring the previous runtime also failed: ${restoreError instanceof Error ? restoreError.message : String(restoreError)}. `
+          + `Recovery files remain at ${backupPath}.`,
+          { cause: error },
+        );
+      }
     }
     throw error;
   }
@@ -513,10 +580,51 @@ async function rollbackPromotedNativeRuntime(
   manifest: BrainUpdateManifest,
   backupPath: string | null,
 ): Promise<void> {
-  await fsp.rm(manifest.runtimeTargetDir, { recursive: true, force: true }).catch(() => undefined);
+  await fsp.rm(manifest.runtimeTargetDir, { recursive: true, force: true });
   if (backupPath) {
     await fsp.rename(backupPath, manifest.runtimeTargetDir);
   }
+}
+
+const WINDOWS_DEFERRED_STAGING_CLEANUP = [
+  "$ErrorActionPreference='SilentlyContinue';",
+  "$target=$env:ADE_BRAIN_UPDATE_CLEANUP_DIR;",
+  "$parentPid=[int]$env:ADE_BRAIN_UPDATE_CLEANUP_PARENT_PID;",
+  "Wait-Process -Id $parentPid -ErrorAction SilentlyContinue;",
+  "for ($attempt=0; $attempt -lt 20; $attempt++) {",
+  "  Remove-Item -LiteralPath $target -Recurse -Force -ErrorAction SilentlyContinue;",
+  "  if (-not (Test-Path -LiteralPath $target)) { exit 0 }",
+  "  Start-Sleep -Milliseconds 500;",
+  "}",
+  "exit 1;",
+].join(" ");
+
+function isPathInside(parentPath: string, candidatePath: string): boolean {
+  const relative = path.relative(path.resolve(parentPath), path.resolve(candidatePath));
+  return relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+async function cleanupAppliedUpdateStaging(
+  stagingDir: string,
+  deps: BrainUpdateDeps,
+): Promise<void> {
+  const platform = deps.platform ?? process.platform;
+  const execPath = deps.execPath ?? process.execPath;
+  if (platform === "win32" && isPathInside(stagingDir, execPath)) {
+    (deps.spawnDetached ?? spawnDetached)(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", WINDOWS_DEFERRED_STAGING_CLEANUP],
+      {
+        env: {
+          ...(deps.env ?? process.env),
+          ADE_BRAIN_UPDATE_CLEANUP_DIR: stagingDir,
+          ADE_BRAIN_UPDATE_CLEANUP_PARENT_PID: String(process.pid),
+        },
+      },
+    );
+    return;
+  }
+  await fsp.rm(stagingDir, { recursive: true, force: true });
 }
 
 async function applyStagedBrainUpdate(
@@ -524,6 +632,11 @@ async function applyStagedBrainUpdate(
   deps: BrainUpdateDeps,
 ): Promise<Record<string, unknown>> {
   const manifest = readManifest(manifestPath);
+  if (manifest.target === "win32-x64" && !manifest.restartService) {
+    throw new BrainUpdateUsageError(
+      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+    );
+  }
   const stagingDir = path.dirname(manifestPath);
   const runtimeDir = path.dirname(manifest.runtimeTargetDir);
   const statusBase = {
@@ -541,12 +654,72 @@ async function applyStagedBrainUpdate(
       message,
       error,
     });
-  const cleanupStagingDir = async () => {
-    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+  const cleanupStagingDir = () => cleanupAppliedUpdateStaging(stagingDir, deps);
+  const cleanupStagingAfterSuccess = async (successMessage: string): Promise<string> => {
+    try {
+      await cleanupStagingDir();
+      return successMessage;
+    } catch (error) {
+      const cleanupError = error instanceof Error ? error.message : String(error);
+      const warningMessage = `${successMessage} Staging cleanup could not complete: ${cleanupError}. Remove ${stagingDir} manually.`;
+      await writeStatus("succeeded", warningMessage).catch(() => undefined);
+      return warningMessage;
+    }
+  };
+  const platform = deps.platform ?? process.platform;
+  const baseEnv = deps.env ?? process.env;
+  let windowsServiceStopped = false;
+  let windowsServiceWasInstalled = false;
+  const serviceEnv = () => ({
+    ...runtimeSidecarEnv(baseEnv, manifest.runtimeTargetDir),
+    ADE_HOME: manifest.adeHome,
+  });
+  const restartRolledBackWindowsService = (): string | null => {
+    if (!windowsServiceStopped || !windowsServiceWasInstalled || platform !== "win32") return null;
+    const rollbackRestart = requestBrainServiceRestart(
+      {
+        command: manifest.binaryPath,
+        commandArgs: ["serve"],
+        env: serviceEnv(),
+      },
+      deps.runCommand ?? runCommand,
+    );
+    if (rollbackRestart.status === 0) return null;
+    return rollbackRestart.stderr || rollbackRestart.stdout || "ADE brain service rollback restart failed.";
   };
 
   try {
     await writeStatus("applying", "Applying staged ADE brain runtime update.");
+    if (platform === "win32" && await pathExists(manifest.binaryPath)) {
+      const statusResult = requestBrainServiceStatus(
+        {
+          command: manifest.binaryPath,
+          commandArgs: ["serve"],
+          env: serviceEnv(),
+        },
+        deps.runCommand ?? runCommand,
+      );
+      if (statusResult.status !== 0 || statusResult.installed === null) {
+        throw new Error(
+          statusResult.stderr || statusResult.stdout || "ADE brain service state could not be read before replacing the Windows runtime.",
+        );
+      }
+      windowsServiceWasInstalled = statusResult.installed;
+      const stopResult = requestBrainServiceStop(
+        {
+          command: manifest.binaryPath,
+          commandArgs: ["serve"],
+          env: serviceEnv(),
+        },
+        deps.runCommand ?? runCommand,
+      );
+      if (stopResult.status !== 0) {
+        throw new Error(
+          stopResult.stderr || stopResult.stdout || "ADE brain service could not be stopped before replacing the Windows runtime.",
+        );
+      }
+      windowsServiceStopped = true;
+    }
     await fsp.mkdir(path.dirname(manifest.binaryPath), { recursive: true });
     await fsp.mkdir(path.dirname(manifest.runtimeTargetDir), { recursive: true });
     const replacementPath = path.join(
@@ -562,15 +735,29 @@ async function applyStagedBrainUpdate(
     let binaryBackedUp = false;
     let binaryPromoted = false;
     const rollbackPromotedAssets = async () => {
-      await fsp.rm(replacementPath, { force: true }).catch(() => undefined);
+      const rollbackErrors: string[] = [];
+      const attempt = async (label: string, action: () => Promise<void>) => {
+        try {
+          await action();
+        } catch (error) {
+          rollbackErrors.push(`${label}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      };
+      await attempt("staged binary cleanup", () => fsp.rm(replacementPath, { force: true }));
       if (binaryPromoted) {
-        await fsp.rm(manifest.binaryPath, { force: true });
+        await attempt("new binary removal", () => fsp.rm(manifest.binaryPath, { force: true }));
       }
       if (binaryBackedUp) {
-        await fsp.rename(binaryBackupPath, manifest.binaryPath);
+        await attempt("previous binary restoration", () => fsp.rename(binaryBackupPath, manifest.binaryPath));
       }
       if (nativePromoted) {
-        await rollbackPromotedNativeRuntime(manifest, nativeBackupPath);
+        await attempt(
+          "previous native runtime restoration",
+          () => rollbackPromotedNativeRuntime(manifest, nativeBackupPath),
+        );
+      }
+      if (rollbackErrors.length > 0) {
+        throw new Error(rollbackErrors.join("; "));
       }
     };
     const discardPromotedBackups = async () => {
@@ -596,14 +783,24 @@ async function applyStagedBrainUpdate(
       await fsp.rename(replacementPath, manifest.binaryPath);
       binaryPromoted = true;
     } catch (error) {
-      await rollbackPromotedAssets().catch(() => undefined);
+      try {
+        await rollbackPromotedAssets();
+      } catch (rollbackError) {
+        throw new Error(
+          `ADE runtime asset promotion failed (${error instanceof Error ? error.message : String(error)}); `
+          + `rollback also failed: ${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}. `
+          + `Recovery files were retained beside ${manifest.binaryPath} and ${manifest.runtimeTargetDir}.`,
+          { cause: error },
+        );
+      }
       throw error;
     }
 
     if (!manifest.restartService) {
-      await writeStatus("succeeded", "ADE brain runtime updated. Service restart was skipped.");
+      const successMessage = "ADE brain runtime updated. Service restart was skipped.";
+      await writeStatus("succeeded", successMessage);
       await discardPromotedBackups();
-      await cleanupStagingDir();
+      const message = await cleanupStagingAfterSuccess(successMessage);
       return {
         ok: true,
         action: "update",
@@ -613,15 +810,12 @@ async function applyStagedBrainUpdate(
         target: manifest.target,
         binaryPath: manifest.binaryPath,
         runtimePath: manifest.runtimeTargetDir,
-        message: "ADE brain runtime updated. Service restart was skipped.",
+        message,
       };
     }
 
     await writeStatus("restarting", "Restarting ADE brain service with the updated runtime.");
-    const env = {
-      ...runtimeSidecarEnv(process.env, manifest.runtimeTargetDir),
-      ADE_HOME: manifest.adeHome,
-    };
+    const env = serviceEnv();
     const result = requestBrainServiceRestart(
       {
         command: manifest.binaryPath,
@@ -638,7 +832,10 @@ async function applyStagedBrainUpdate(
       } catch (error) {
         rollbackMessage = `Rollback failed: ${error instanceof Error ? error.message : String(error)}`;
       }
-      const failureMessage = `${message} ${rollbackMessage}`;
+      const rollbackRestartError = restartRolledBackWindowsService();
+      const failureMessage = `${message} ${rollbackMessage}${
+        rollbackRestartError ? ` Previous Windows service restart also failed: ${rollbackRestartError}` : ""
+      }`;
       await writeStatus("failed", failureMessage, failureMessage);
       return {
         ok: false,
@@ -653,9 +850,10 @@ async function applyStagedBrainUpdate(
       };
     }
 
-    await writeStatus("succeeded", "ADE brain updated and service restart requested.");
+    const successMessage = "ADE brain updated and service restart requested.";
+    await writeStatus("succeeded", successMessage);
     await discardPromotedBackups();
-    await cleanupStagingDir();
+    const message = await cleanupStagingAfterSuccess(successMessage);
     return {
       ok: true,
       action: "update",
@@ -665,10 +863,14 @@ async function applyStagedBrainUpdate(
       target: manifest.target,
       binaryPath: manifest.binaryPath,
       runtimePath: manifest.runtimeTargetDir,
-      message: "ADE brain updated and service restart requested.",
+      message,
     };
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const baseMessage = error instanceof Error ? error.message : String(error);
+    const rollbackRestartError = restartRolledBackWindowsService();
+    const message = rollbackRestartError
+      ? `${baseMessage} Previous Windows service restart also failed: ${rollbackRestartError}`
+      : baseMessage;
     await writeStatus("failed", message, message).catch(() => undefined);
     return {
       ok: false,
@@ -689,6 +891,7 @@ function spawnDetached(command: string, args: string[], options: SpawnOptions): 
     ...options,
     detached: true,
     stdio: "ignore",
+    windowsHide: true,
   });
   child.unref();
 }
@@ -715,13 +918,18 @@ export async function runBrainUpdateCommand(
 
   const layout = resolveMachineAdeLayout(env, deps.platform ?? process.platform);
   const target = detectRuntimeTarget(deps.platform ?? process.platform, deps.arch ?? os.arch());
-  const binaryName = `ade-${target}`;
-  const nativeArchiveName = `${binaryName}.native.tar.gz`;
+  if (target === "win32-x64" && !options.restartService) {
+    throw new BrainUpdateUsageError(
+      "ADE brain update --no-restart is not supported on Windows because replacing the running executable requires re-registering its per-user startup service.",
+    );
+  }
+  const binaryName = runtimeBinaryAssetName(target);
+  const canonicalNativeArchiveName = `ade-${target}.native.tar.gz`;
   const binaryUrl = brainUpdateAssetUrl(options.repo, options.version, binaryName);
-  const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, nativeArchiveName);
+  const nativeArchiveUrl = brainUpdateAssetUrl(options.repo, options.version, canonicalNativeArchiveName);
   const checksumUrl = brainUpdateAssetUrl(options.repo, options.version, CHECKSUMS_ASSET);
   const installDir = path.resolve(options.installDir ?? layout.binDir);
-  const binaryPath = path.join(installDir, "ade");
+  const binaryPath = path.join(installDir, installedRuntimeBinaryName(target));
   const runtimeTargetDir = path.join(layout.runtimeDir, target);
   const currentVersion = deps.currentVersion ?? null;
   const summary = {
@@ -761,8 +969,8 @@ export async function runBrainUpdateCommand(
 
   try {
     const tmpDir = await (deps.tmpDir ?? (() => defaultUpdateStagingDir(layout.runtimeDir)))();
-    const stagedBinaryPath = path.join(tmpDir, "ade");
-    const nativeArchivePath = path.join(tmpDir, nativeArchiveName);
+    const stagedBinaryPath = path.join(tmpDir, installedRuntimeBinaryName(target));
+    const nativeArchivePath = path.join(tmpDir, canonicalNativeArchiveName);
     const checksumPath = path.join(tmpDir, CHECKSUMS_ASSET);
     const stagedRuntimeRoot = path.join(tmpDir, "runtime", target);
     const download = deps.downloadFile ?? defaultDownloadFile;
@@ -773,7 +981,7 @@ export async function runBrainUpdateCommand(
       checksumPath,
       binaryName,
       binaryPath: stagedBinaryPath,
-      nativeArchiveName,
+      nativeArchiveName: canonicalNativeArchiveName,
       nativeArchivePath,
     });
     await fsp.chmod(stagedBinaryPath, 0o755);

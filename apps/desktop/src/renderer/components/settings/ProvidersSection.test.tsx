@@ -654,4 +654,49 @@ describe("ProvidersSection", () => {
       expect(screen.queryByRole("dialog", { name: "Connect OpenAI" })).toBeNull();
     });
   });
+  // @cursor/sdk has no win32-arm64 build, so the Cursor card must be absent on
+  // Windows on ARM rather than present and permanently unconnectable.
+  // See apps/desktop/src/shared/providerPlatformSupport.ts.
+  describe("Cursor card platform gating", () => {
+    function setRuntimeTarget(platform: string, arch: string) {
+      const ade = window.ade as unknown as { app?: Record<string, unknown> };
+      ade.app = { ...(ade.app ?? {}), runtimeTarget: { platform, arch } };
+    }
+
+    it("hides the Cursor card on Windows on ARM", async () => {
+      setRuntimeTarget("win32", "arm64");
+      const view = renderProvidersSection();
+      const current = within(view.container);
+
+      await waitFor(() => {
+        expect(window.ade.ai.getStatus).toHaveBeenCalledTimes(1);
+      });
+
+      expect(current.queryByText("Uses CURSOR_API_KEY.")).toBeNull();
+      expect(current.queryByLabelText("Add Cursor API key")).toBeNull();
+      expect(current.queryByLabelText("Verify Cursor API key")).toBeNull();
+      // The other providers are untouched.
+      expect((await current.findAllByText("Claude Code")).length).toBeGreaterThan(0);
+      expect(current.getAllByText("Codex CLI").length).toBeGreaterThan(0);
+      expect(current.getAllByText("Droid").length).toBeGreaterThan(0);
+    });
+
+    it("keeps the Cursor card on Windows x64 and on macOS", async () => {
+      for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"]] as const) {
+        const getStatusMock = window.ade.ai.getStatus as ReturnType<typeof vi.fn>;
+        getStatusMock.mockReset();
+        getStatusMock.mockResolvedValue(buildStatus(true));
+        setRuntimeTarget(platform, arch);
+        const view = renderProvidersSection();
+        const current = within(view.container);
+
+        expect(
+          (await current.findAllByText("Uses CURSOR_API_KEY.")).length,
+          `${platform}-${arch}`,
+        ).toBeGreaterThan(0);
+        expect(current.queryByLabelText("Add Cursor API key"), `${platform}-${arch}`).toBeTruthy();
+        cleanup();
+      }
+    });
+  });
 });

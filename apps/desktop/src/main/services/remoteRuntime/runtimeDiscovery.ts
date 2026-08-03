@@ -175,7 +175,6 @@ export function discoveredRuntimeFromBonjourService(
     parsePositiveInteger(txt.projectCount) ??
     (projectIds.length > 0 ? projectIds.length : null);
   const os = firstNonEmpty([txt.platform]);
-  const isWindows = os?.toLowerCase() === "windows";
 
   return {
     id: hostIdentity ? `${hostIdentity}::${serviceKey}` : serviceKey,
@@ -190,10 +189,7 @@ export function discoveredRuntimeFromBonjourService(
     runtimeKind: firstNonEmpty([txt.runtimeKind]),
     runtimeVersion: firstNonEmpty([txt.runtimeVersion]),
     ...(os ? { os } : {}),
-    connectable: !isWindows,
-    ...(isWindows
-      ? { unsupportedReason: "Windows machines can't run the ADE remote runtime yet." }
-      : {}),
+    connectable: true,
     projectIds,
     projectCount,
     lastSeenAt: nowMs,
@@ -231,8 +227,7 @@ export function discoveredRuntimesFromTailscaleStatus(
     const hostIdentity = trimmed(peer.ID) ?? trimmed(peerKey);
     const online = peer.Online === true;
     const os = trimmed(peer.OS);
-    const isWindows = os?.toLowerCase() === "windows";
-    const connectable = online && !isWindows;
+    const connectable = online;
     const addresses = uniqueStrings([...tailscaleIps, dnsName]);
     discovered.push({
       id: `tailscale:${hostIdentity ?? tailscaleAddress}`,
@@ -250,9 +245,7 @@ export function discoveredRuntimesFromTailscaleStatus(
       connectable,
       ...(!connectable
         ? {
-            unsupportedReason: !online
-              ? "Offline"
-              : "Windows machines can't run the ADE remote runtime yet.",
+            unsupportedReason: "Offline",
           }
         : {}),
       projectIds: [],
@@ -297,7 +290,7 @@ function isTailscalePeerMachine(
  * Drops this machine's own Bonjour advertisement from the discovery list. The
  * ADE sync service advertises itself over mDNS with its `deviceId` in the TXT
  * payload (surfaced as `hostIdentity`); comparing that against the local sync
- * device id keeps the panel from listing "this Mac" as a connectable target.
+ * device id keeps the panel from listing "this computer" as a connectable target.
  */
 export function dropSelfDiscoveredMachines(
   machines: RemoteRuntimeDiscoveredMachine[],
@@ -395,6 +388,7 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
       {
         timeout: Math.max(500, timeoutMs),
         maxBuffer: 1024 * 1024,
+        windowsHide: true,
       },
     );
     return {

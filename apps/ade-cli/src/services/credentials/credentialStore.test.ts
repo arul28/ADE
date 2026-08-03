@@ -10,6 +10,11 @@ import {
   KeytarCredentialStore,
   createDefaultCredentialStore,
 } from "./credentialStore";
+import {
+  readOrCreateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterialAsync,
+  resolveWindowsDpapiPowerShellPath,
+} from "./windowsDpapiMaterial";
 
 let tempDir = "";
 
@@ -22,6 +27,93 @@ afterEach(() => {
 });
 
 describe("EncryptedFileCredentialStore", () => {
+  it.runIf(process.platform === "win32")(
+    "resolves Windows DPAPI PowerShell through kernel SystemRoot despite poisoned environment paths",
+    () => {
+      const previousSystemRoot = process.env.SystemRoot;
+      const previousWinDir = process.env.windir;
+      process.env.SystemRoot = path.join(tempDir, "attacker-system-root");
+      process.env.windir = path.join(tempDir, "attacker-windir");
+      try {
+        const resolved = resolveWindowsDpapiPowerShellPath();
+        expect(path.win32.isAbsolute(resolved)).toBe(true);
+        expect(resolved.toLowerCase()).toMatch(
+          /\\system32\\windowspowershell\\v1\.0\\powershell\.exe$/,
+        );
+        expect(resolved.toLowerCase()).not.toContain(tempDir.toLowerCase());
+      } finally {
+        if (previousSystemRoot === undefined) delete process.env.SystemRoot;
+        else process.env.SystemRoot = previousSystemRoot;
+        if (previousWinDir === undefined) delete process.env.windir;
+        else process.env.windir = previousWinDir;
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "binds headless credential encryption to the current Windows account with DPAPI",
+    async () => {
+      const previousNodeEnv = process.env.NODE_ENV;
+      const previousVitest = process.env.VITEST;
+      delete process.env.NODE_ENV;
+      delete process.env.VITEST;
+      try {
+        const syncDir = path.join(tempDir, "sync-dpapi");
+        const syncMaterial = readOrCreateWindowsDpapiMaterial(syncDir);
+        const protectedKeyPath = path.join(syncDir, ".credential-key.dpapi");
+        const protectedKey = fs.readFileSync(protectedKeyPath, "utf8");
+
+        expect(syncMaterial).toHaveLength(32);
+        expect(protectedKey).toContain("ADE_WINDOWS_DPAPI_KEY_V1");
+        expect(protectedKey).not.toContain(syncMaterial.toString("base64"));
+        expect(readOrCreateWindowsDpapiMaterial(syncDir)).toEqual(syncMaterial);
+
+        const store = new EncryptedFileCredentialStore({ secretsDir: syncDir });
+        store.setSync("account.session.v1", "windows-account-session");
+        const credentialsPath = path.join(syncDir, "credentials.json.enc");
+        const machineKeyPath = path.join(syncDir, ".machine-key");
+        expect(fs.readFileSync(credentialsPath, "utf8"))
+          .not.toContain("windows-account-session");
+
+        const explicitPathReader = new EncryptedFileCredentialStore({
+          credentialsPath,
+          machineKeyPath,
+        });
+        expect(explicitPathReader.getSync("account.session.v1"))
+          .toBe("windows-account-session");
+        await expect(explicitPathReader.get("account.session.v1"))
+          .resolves.toBe("windows-account-session");
+
+        const customCredentialDir = path.join(tempDir, "custom-credential-dir");
+        const customKeyDir = path.join(tempDir, "custom-key-dir");
+        const customMachineKeyPath = path.join(customKeyDir, ".machine-key");
+        const customStore = new EncryptedFileCredentialStore({
+          secretsDir: customCredentialDir,
+          machineKeyPath: customMachineKeyPath,
+        });
+        customStore.setSync("account.session.v1", "custom-key-location");
+        expect(fs.existsSync(path.join(customKeyDir, ".credential-key.dpapi"))).toBe(true);
+        expect(fs.existsSync(path.join(customCredentialDir, ".credential-key.dpapi"))).toBe(false);
+        expect(new EncryptedFileCredentialStore({
+          credentialsPath: path.join(customCredentialDir, "credentials.json.enc"),
+          machineKeyPath: customMachineKeyPath,
+        }).getSync("account.session.v1")).toBe("custom-key-location");
+
+        const asyncDir = path.join(tempDir, "async-dpapi");
+        const asyncMaterial = await readOrCreateWindowsDpapiMaterialAsync(asyncDir);
+        expect(asyncMaterial).toHaveLength(32);
+        expect(fs.readFileSync(path.join(asyncDir, ".credential-key.dpapi"), "utf8"))
+          .not.toContain(asyncMaterial.toString("base64"));
+      } finally {
+        if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+        else process.env.NODE_ENV = previousNodeEnv;
+        if (previousVitest === undefined) delete process.env.VITEST;
+        else process.env.VITEST = previousVitest;
+      }
+    },
+    20_000,
+  );
+
   it("persists credentials encrypted on disk", async () => {
     const store = new EncryptedFileCredentialStore({ secretsDir: tempDir });
 
@@ -195,6 +287,31 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(unbound.getSync("linear.token.v1")).toBeNull();
   });
 
+  it("atomically binds legacy Windows ciphertext on the first asynchronous credential read", async () => {
+    const legacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    });
+    legacyStore.setSync("account.session.v1", "legacy-async-windows-session");
+    const credentialsPath = path.join(tempDir, "credentials.json.enc");
+    const legacyCiphertext = fs.readFileSync(credentialsPath, "utf8");
+    const osMaterial = Buffer.from("windows-async-account-bound-material");
+
+    const upgraded = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => {
+        throw new Error("async migration must not use synchronous key access");
+      },
+      keyMaterialProviderAsync: async () => osMaterial,
+    });
+    await expect(upgraded.get("account.session.v1")).resolves.toBe("legacy-async-windows-session");
+    expect(fs.readFileSync(credentialsPath, "utf8")).not.toBe(legacyCiphertext);
+    expect(new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterialProvider: () => null,
+    }).getSync("account.session.v1")).toBeNull();
+  });
+
   it("uses the asynchronous key-material path for asynchronous reads", async () => {
     const osMaterial = Buffer.from("test-os-material");
     new EncryptedFileCredentialStore({
@@ -251,23 +368,21 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(asyncProvider).not.toHaveBeenCalled();
   });
 
-  it("can read legacy machine-key ciphertext before rewriting with OS-bound key material", async () => {
+  it("atomically binds legacy Windows ciphertext on the first synchronous credential read", () => {
     const legacy = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterialProvider: () => null,
     });
     legacy.setSync("agent.token", "legacy_secret");
+    const credentialPath = path.join(tempDir, "credentials.json.enc");
+    const legacyCiphertext = fs.readFileSync(credentialPath, "utf8");
 
     const upgraded = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
       keyMaterialProvider: () => Buffer.from("test-os-material"),
     });
     expect(upgraded.getSync("agent.token")).toBe("legacy_secret");
-    expect(legacy.getSync("agent.token")).toBe("legacy_secret");
-
-    upgraded.setSync("agent.token", "bound_secret");
-
-    expect(upgraded.getSync("agent.token")).toBe("bound_secret");
+    expect(fs.readFileSync(credentialPath, "utf8")).not.toBe(legacyCiphertext);
     expect(legacy.getSync("agent.token")).toBeNull();
   });
 

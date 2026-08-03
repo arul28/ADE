@@ -1393,6 +1393,7 @@ function createBashTool(
               stdio: ["ignore", "pipe", "pipe"],
               detached: process.platform !== "win32",
               windowsVerbatimArguments: process.platform === "win32",
+              windowsHide: true,
               env:
                 process.platform === "win32"
                   ? { ...process.env }

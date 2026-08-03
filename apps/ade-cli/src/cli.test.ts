@@ -27,6 +27,7 @@ import {
   resolveSnoozeUntilIso,
   renderLaneGraph,
   resolveAdeCodeModulePath,
+  resolveWindowsDesktopExecutable,
   resolveRoots,
   runCli,
   startHeadlessRpcSocketServer,
@@ -42,9 +43,12 @@ import {
   DEVELOPMENT_ADE_CLERK_ISSUER,
   DEVELOPMENT_ADE_CLERK_OAUTH_CLIENT_ID,
 } from "../../desktop/src/shared/accountDirectory";
+import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { generateRpcAuthToken } from "./rpcAuth";
 import { JsonRpcClient } from "./tuiClient/jsonRpcClient";
 import { EncryptedFileCredentialStore } from "./services/credentials/credentialStore";
+import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 
 type ResolveRootsOptions = Parameters<typeof resolveRoots>[0];
 
@@ -474,7 +478,7 @@ describe("ADE CLI", () => {
       "laneId=lane-1",
     ]);
 
-    expect(parsed.options.projectRoot).toBe("/tmp/project");
+    expect(parsed.options.projectRoot).toBe(path.resolve("/tmp/project"));
     expect(parsed.options.role).toBe("cto");
     expect(parsed.command).toEqual([
       "actions",
@@ -536,7 +540,7 @@ describe("ADE CLI", () => {
       "code",
       "--print-state",
     ]);
-    expect(parsed.options.projectRoot).toBe("/tmp/project");
+    expect(parsed.options.projectRoot).toBe(path.resolve("/tmp/project"));
     expect(parsed.command).toEqual(["code", "--print-state"]);
 
     const plan = buildCliPlan(parsed.command);
@@ -788,14 +792,32 @@ describe("ADE CLI", () => {
     },
   );
 
-  it("returns null for a named-pipe socket path (desktop path; no dir/chmod)", async () => {
-    // isAdeRuntimeNamedPipePath matches by string prefix, so this exercises the
-    // named-pipe early-return branch on any platform without touching the fs.
+  it("declares intended-user-only access when listening on a Windows named pipe", () => {
+    expect(localIpcListenOptions("\\\\.\\pipe\\ade-headless-security-test")).toEqual({
+      path: "\\\\.\\pipe\\ade-headless-security-test",
+      readableAll: false,
+      writableAll: false,
+    });
+    expect(localIpcListenOptions("/tmp/ade.sock")).toBe("/tmp/ade.sock");
+  });
+
+  (process.platform === "win32" ? it : it.skip)("hosts headless RPC on a Windows named pipe", async () => {
+    const socketPath = `\\\\.\\pipe\\ade-headless-${process.pid}-${Date.now()}`;
     const stop = await startHeadlessRpcSocketServer({
-      socketPath: "//./pipe/ade-headless-named-pipe-test",
+      socketPath,
       createHandler: () => (async () => ({})) as never,
     });
-    expect(stop).toBeNull();
+    try {
+      expect(stop).not.toBeNull();
+      const client = await JsonRpcClient.connect(socketPath);
+      try {
+        await expect(client.request("ping")).resolves.toEqual({});
+      } finally {
+        client.close();
+      }
+    } finally {
+      stop?.();
+    }
   });
 
   it("requires the per-boot bearer token on the headless TCP RPC listener", async () => {
@@ -874,6 +896,42 @@ describe("ADE CLI", () => {
     expect(isEphemeralRuntimeSocketPath("tcp://127.0.0.1:8765")).toBe(false);
   });
 
+  // Only a Windows runner can exercise this: `resolveMachineAdeLayout` yields a
+  // named pipe there and a filesystem socket everywhere else, so off win32
+  // there is no pipe endpoint to classify. Gated by the "Test Windows CLI
+  // contracts" step, which already runs this file natively.
+  (process.platform === "win32" ? it : it.skip)(
+    "classifies a scratch-home named pipe as ephemeral",
+    () => {
+      const scratchHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));
+      try {
+        withEnv({ ADE_HOME: scratchHome }, () => {
+          const scratchPipe = resolveMachineAdeLayout().socketPath;
+          expect(isAdeRuntimeNamedPipePath(scratchPipe)).toBe(true);
+          expect(isEphemeralRuntimeSocketPath(scratchPipe)).toBe(true);
+          // Win32 treats `/` and `\` interchangeably in a pipe path and matches
+          // pipe names case-insensitively, so every spelling of this endpoint
+          // has to classify the same way.
+          expect(
+            isEphemeralRuntimeSocketPath(scratchPipe.replace(/\\/g, "/").toUpperCase()),
+          ).toBe(true);
+          // A pipe that is not this home's own endpoint stays non-ephemeral,
+          // so the scratch-home check cannot leak onto a real machine brain.
+          expect(
+            isEphemeralRuntimeSocketPath("\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef"),
+          ).toBe(false);
+        });
+        withEnv({ ADE_HOME: path.join(os.homedir(), ".ade") }, () => {
+          expect(
+            isEphemeralRuntimeSocketPath(resolveMachineAdeLayout().socketPath),
+          ).toBe(false);
+        });
+      } finally {
+        fs.rmSync(scratchHome, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("blocks manual service-socket runtime spawn when service mutation is disabled", () => {
     expect(shouldBlockManualMachineRuntimeSpawn("/Users/example/.ade-beta/sock/ade.sock", {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
@@ -882,6 +940,9 @@ describe("ADE CLI", () => {
     expect(shouldBlockManualMachineRuntimeSpawn("tcp://127.0.0.1:9999", {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
+    expect(shouldBlockManualMachineRuntimeSpawn("\\\\.\\pipe\\ade-runtime-stable-test", {
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    })).toBe(true);
     expect(shouldBlockManualMachineRuntimeSpawn(path.join(os.tmpdir(), "ade-code-test", "ade.sock"), {
       ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
     })).toBe(false);
@@ -5908,6 +5969,50 @@ describe("ADE CLI", () => {
     expect(shouldAttemptDesktopSocketConnection("//./pipe/ade-123")).toBe(true);
   });
 
+  it("finds the Windows desktop executable beside a packaged CLI resource", () => {
+    const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-windows-desktop-"));
+    const cliEntry = path.join(installRoot, "resources", "ade-cli", "cli.cjs");
+    const appPath = path.join(installRoot, "ADE.exe");
+    fs.mkdirSync(path.dirname(cliEntry), { recursive: true });
+    fs.writeFileSync(cliEntry, "");
+    fs.writeFileSync(appPath, "");
+
+    try {
+      expect(resolveWindowsDesktopExecutable({
+        appName: "ADE",
+        env: {},
+        execPath: path.join(installRoot, "node.exe"),
+        entryPath: cliEntry,
+      })).toBe(appPath);
+    } finally {
+      fs.rmSync(installRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("does not reuse a Stable executable when ADE Beta was requested", () => {
+    const installRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-windows-beta-desktop-"));
+    const stableRoot = path.join(installRoot, "Programs", "ADE");
+    const stablePath = path.join(stableRoot, "ADE.exe");
+    const stableEntryPath = path.join(stableRoot, "resources", "ade-cli", "cli.cjs");
+    const betaPath = path.join(installRoot, "Programs", "ADE Beta", "ADE Beta.exe");
+    fs.mkdirSync(path.dirname(stableEntryPath), { recursive: true });
+    fs.writeFileSync(stablePath, "");
+    fs.writeFileSync(stableEntryPath, "");
+    fs.mkdirSync(path.dirname(betaPath), { recursive: true });
+    fs.writeFileSync(betaPath, "");
+
+    try {
+      expect(resolveWindowsDesktopExecutable({
+        appName: "ADE Beta",
+        env: { LOCALAPPDATA: installRoot },
+        execPath: stablePath,
+        entryPath: stableEntryPath,
+      })).toBe(betaPath);
+    } finally {
+      fs.rmSync(installRoot, { recursive: true, force: true });
+    }
+  });
+
   it("renders a compact lane graph", () => {
     const graph = renderLaneGraph({
       lanes: [
@@ -6064,7 +6169,7 @@ describe("ADE CLI", () => {
             kind: "screenshot",
             title: "Checkout complete",
             description: "Checkout complete",
-            path: "/tmp/done.png",
+            path: path.resolve("/tmp/done.png"),
           },
         ],
       },
@@ -6823,8 +6928,8 @@ describe("ADE CLI", () => {
         projectRoot: null,
         workspaceRoot: null,
       });
-      expect(roots.projectRoot).toBe("/explicit/project-root");
-      expect(roots.workspaceRoot).toBe("/explicit/project-root");
+      expect(roots.projectRoot).toBe(path.resolve("/explicit/project-root"));
+      expect(roots.workspaceRoot).toBe(path.resolve("/explicit/project-root"));
     } finally {
       if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
       else process.env.ADE_PROJECT_ROOT = prevProject;
@@ -6865,8 +6970,8 @@ describe("ADE CLI", () => {
         projectRoot: null,
         workspaceRoot: null,
       });
-      expect(roots.projectRoot).toBe("/explicit/project-root");
-      expect(roots.workspaceRoot).toBe("/explicit/workspace-root");
+      expect(roots.projectRoot).toBe(path.resolve("/explicit/project-root"));
+      expect(roots.workspaceRoot).toBe(path.resolve("/explicit/workspace-root"));
     } finally {
       if (prevProject === undefined) delete process.env.ADE_PROJECT_ROOT;
       else process.env.ADE_PROJECT_ROOT = prevProject;

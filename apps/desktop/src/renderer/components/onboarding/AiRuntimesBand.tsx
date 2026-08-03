@@ -12,6 +12,7 @@ import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
 import { ModelPicker } from "../shared/ModelPicker/ModelPicker";
 import { deriveConfiguredModelIds } from "../../lib/modelOptions";
 import { openExternalUrl } from "../../lib/openExternal";
+import { cursorProviderAvailable, rendererPlatformAttribute } from "../../lib/platform";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
@@ -35,13 +36,43 @@ type RuntimeMeta = {
   authCommand?: string;
 };
 
+// Factory publishes a PowerShell installer for its native Windows build; the
+// POSIX shell pipeline is not runnable there. The command shown here is the one
+// the user is expected to paste into their own shell.
+// https://docs.factory.ai/cli/getting-started/quickstart
+const DROID_INSTALL_COMMAND = rendererPlatformAttribute() === "win32"
+  ? "irm https://app.factory.ai/cli/windows | iex"
+  : "curl -fsSL https://app.factory.ai/cli | sh";
+
+/**
+ * Cursor ships a PowerShell installer for native Windows; the `curl … | bash`
+ * one-liner is documented for macOS, Linux and WSL only. Keep this in step with
+ * `cursorInstallCommand()` in apps/ade-cli/src/services/agentRegistry.ts.
+ */
+export function cursorInstallCommand(platform = rendererPlatformAttribute()): string {
+  if (platform === "win32") {
+    return `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`;
+  }
+  return 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash';
+}
+
 const RUNTIMES: RuntimeMeta[] = [
   { id: "claude", label: "Claude Code", brand: BRAND.claude, Logo: ClaudeLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @anthropic-ai/claude-code", authCommand: "claude /login" },
   { id: "codex", label: "Codex", brand: BRAND.codex, Logo: CodexLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @openai/codex", authCommand: "codex login" },
-  { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash' },
-  { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", authCommand: "droid login" },
+  { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: cursorInstallCommand() },
+  { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", installCommand: DROID_INSTALL_COMMAND, authCommand: "droid login" },
   { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup },
 ];
+
+/**
+ * Runtimes offered on this machine. Cursor drops out on Windows on ARM because
+ * `@cursor/sdk` has no win32-arm64 build, so onboarding must not ask the user to
+ * install something that cannot run. See shared/providerPlatformSupport.ts.
+ */
+export function availableRuntimes(): RuntimeMeta[] {
+  if (cursorProviderAvailable()) return RUNTIMES;
+  return RUNTIMES.filter((rt) => rt.id !== "cursor");
+}
 
 const FEATURES: Array<{ key: FeatureKey; label: string }> = [
   { key: "terminal_summaries", label: "Terminal summaries" },
@@ -73,12 +104,14 @@ export function AiRuntimesBand() {
 
   useEffect(() => { void refresh(); }, [refresh]);
 
+  const runtimes = useMemo(() => availableRuntimes(), []);
+
   const readyCount = useMemo(() => {
     if (!status) return 0;
     let n = 0;
     if (status.availableProviders.claude.binary.present && status.availableProviders.claude.auth.ready) n++;
     if (status.providerConnections?.codex?.runtimeAvailable) n++;
-    if (status.providerConnections?.cursor?.runtimeAvailable) n++;
+    if (cursorProviderAvailable() && status.providerConnections?.cursor?.runtimeAvailable) n++;
     if (status.providerConnections?.droid?.runtimeAvailable) n++;
     if (status.opencodeBinaryInstalled !== false) n++;
     return n;
@@ -176,14 +209,14 @@ export function AiRuntimesBand() {
         <div style={{ display: "flex", alignItems: "baseline", gap: 10 }}>
           <span style={SECTION_LABEL}>AI runtimes</span>
           <span style={{ fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted }}>
-            {loading ? "Checking…" : `${readyCount} of ${RUNTIMES.length} ready`}
+            {loading ? "Checking…" : `${readyCount} of ${runtimes.length} ready`}
           </span>
         </div>
         <RescanButton loading={loading} onClick={() => void refresh(true)} />
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 }}>
-        {RUNTIMES.map((rt) => (
+        {runtimes.map((rt) => (
           <RuntimeCard key={rt.id} meta={rt} status={status} onSaveCursorKey={saveCursorKey} />
         ))}
       </div>

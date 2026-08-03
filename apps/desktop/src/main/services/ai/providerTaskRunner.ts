@@ -176,6 +176,7 @@ async function runCommand(args: {
       env,
       stdio: [args.stdinText != null ? "pipe" : "ignore", "pipe", "pipe"],
       windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      windowsHide: true,
     });
 
     let stdout = "";

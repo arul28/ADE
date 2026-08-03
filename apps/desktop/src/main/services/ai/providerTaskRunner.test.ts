@@ -32,6 +32,37 @@ vi.mock("./codexExecutable", () => ({
 }));
 
 import { makeCodexCompatibleJsonSchema, runProviderTask } from "./providerTaskRunner";
+import { quoteWindowsCmdArg } from "../shared/processExecution";
+
+// `runCommand` launches CLIs through `resolveCliSpawnInvocation`. On Windows an
+// extensionless/`.cmd`/`.bat` launcher cannot be handed to CreateProcess, so the
+// invocation becomes `%ComSpec% /d /s /c "<quoted command line>"` and every
+// argument is folded into one string. These helpers assert the same argument
+// content on both shapes instead of encoding the POSIX shape only.
+const isWindowsLaunch = process.platform === "win32";
+
+function expectedLaunchCommand(executablePath: string): string {
+  return isWindowsLaunch ? (process.env.ComSpec?.trim() || "cmd.exe") : executablePath;
+}
+
+function launchArgvContains(argv: unknown, value: string): boolean {
+  const args = Array.isArray(argv) ? (argv as string[]) : [];
+  return isWindowsLaunch
+    ? args.join(" ").includes(quoteWindowsCmdArg(value))
+    : args.includes(value);
+}
+
+function launchArgvValueAfter(argv: unknown, flag: string): string | null {
+  const args = Array.isArray(argv) ? (argv as string[]) : [];
+  if (!isWindowsLaunch) {
+    const index = args.indexOf(flag);
+    return index >= 0 ? (args[index + 1] ?? null) : null;
+  }
+  const match = args
+    .join(" ")
+    .match(new RegExp(`${quoteWindowsCmdArg(flag).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} "([^"]+)"`));
+  return match?.[1] ?? null;
+}
 
 type MockSpawnProcess = EventEmitter & {
   stdout: EventEmitter;
@@ -143,9 +174,9 @@ describe("runProviderTask", () => {
     expect(result.text).toBe("READY");
     expect(spawnMock).toHaveBeenCalledTimes(1);
     const [command, argv, options] = spawnMock.mock.calls[0]!;
-    expect(command).toBe("C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd");
-    expect(argv).toContain("-p");
-    expect(argv).not.toContain("Summarize the worktree state.");
+    expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd"));
+    expect(launchArgvContains(argv, "-p")).toBe(true);
+    expect(launchArgvContains(argv, "Summarize the worktree state.")).toBe(false);
     expect(options).toMatchObject({
       stdio: ["pipe", "pipe", "pipe"],
     });
@@ -155,8 +186,7 @@ describe("runProviderTask", () => {
   it("pipes Codex prompts over stdin instead of argv", async () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-provider-task-runner-"));
     spawnMock.mockImplementationOnce((_command: unknown, argv: string[]) => {
-      const outputIndex = argv.indexOf("--output-last-message");
-      const outputPath = outputIndex >= 0 ? argv[outputIndex + 1] : null;
+      const outputPath = launchArgvValueAfter(argv, "--output-last-message");
       return createMockProcess({
         onStart: () => {
           if (outputPath) {
@@ -187,12 +217,12 @@ describe("runProviderTask", () => {
       expect(result.text).toBe("DONE");
       expect(spawnMock).toHaveBeenCalledTimes(1);
       const [command, argv, options] = spawnMock.mock.calls[0]!;
-      expect(command).toBe("C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd");
-      expect(argv).toContain("exec");
-      expect(argv).toContain("-");
-      expect(argv).toContain("--image");
-      expect(argv).toContain("/tmp/settings.png");
-      expect(argv).not.toContain("Fix the Windows launcher.");
+      expect(command).toBe(expectedLaunchCommand("C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd"));
+      expect(launchArgvContains(argv, "exec")).toBe(true);
+      expect(launchArgvContains(argv, "-")).toBe(true);
+      expect(launchArgvContains(argv, "--image")).toBe(true);
+      expect(launchArgvContains(argv, "/tmp/settings.png")).toBe(true);
+      expect(launchArgvContains(argv, "Fix the Windows launcher.")).toBe(false);
       expect(options).toMatchObject({
         stdio: ["pipe", "pipe", "pipe"],
       });

@@ -1031,7 +1031,7 @@ export type CrossMachineMachineLanes = {
   /**
    * Usually a remote target id. `THIS_MACHINE_ID` is stored only while the
    * active tab is bound remotely, because then `lanes` belongs to that remote
-   * binding and This Mac is one of the union's other machines.
+   * binding and This computer is one of the union's other machines.
    */
   machineId: string;
   /** Absolute machine name ("MacBook Pro (97)"). Never the word "remote". */
@@ -1404,7 +1404,7 @@ function formatProjectTransitionError(
   }
   const code = toAdeRecoveryErrorCode(parsed.code);
   const recoveryMessage = code === "disk_full"
-    ? "Your Mac ran out of storage while ADE was saving project data. Free up space, then try again."
+    ? "Your computer ran out of storage while ADE was saving project data. Free up space, then try again."
     : code === "brain_crash_looping" || code === "migration_incomplete" || code === "migration_unknown_state"
       ? "ADE's background service needs a repair before this project can open."
       : code && [

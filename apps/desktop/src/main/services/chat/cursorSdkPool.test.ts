@@ -7,6 +7,7 @@ import {
   acquireCursorSdkConnection,
   buildCursorSdkPaths,
   buildCursorSdkWorkerEnv,
+  cleanupCursorSdkRuntimePaths,
   isCursorSdkPooledAlive,
   releaseCursorSdkConnection,
   resolveCursorSdkUserHome,
@@ -173,6 +174,48 @@ describe("Cursor SDK pool paths", () => {
       expect(paths.socketPath).toContain(`ade-cursor-sdk-${process.getuid?.() ?? ""}`);
       expect(path.basename(paths.socketPath)).toBe("hook.sock");
     }
+  });
+
+  it("retries one-shot SDK state removal until the worker releases its handles", async () => {
+    // Cleanup runs while the worker is still shutting down. On Windows the
+    // SDK's open `state/index.db` makes the first `rmSync` fail with EBUSY and
+    // the state directory is leaked; POSIX unlinks it on the first try.
+    const cacheRoot = makeTempDir("ade-cursor-cleanup-");
+    const stateRoot = path.join(cacheRoot, "state");
+    fs.mkdirSync(stateRoot, { recursive: true });
+    fs.writeFileSync(path.join(stateRoot, "index.db"), "held");
+
+    const realRm = fs.rmSync;
+    let busyAttempts = 2;
+    const rmSpy = vi.spyOn(fs, "rmSync").mockImplementation(((target: fs.PathLike, options?: fs.RmOptions) => {
+      if (busyAttempts > 0) {
+        busyAttempts -= 1;
+        const error = new Error(`EBUSY: resource busy or locked, rmdir '${String(target)}'`) as NodeJS.ErrnoException;
+        error.code = "EBUSY";
+        throw error;
+      }
+      return realRm(target, options);
+    }) as typeof fs.rmSync);
+
+    try {
+      cleanupCursorSdkRuntimePaths({ cacheRoot, stateRoot, cleanupStateRoot: true });
+      const deadline = Date.now() + 5_000;
+      while (fs.existsSync(cacheRoot) && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      expect(busyAttempts).toBe(0);
+      expect(fs.existsSync(cacheRoot)).toBe(false);
+    } finally {
+      rmSpy.mockRestore();
+    }
+  });
+
+  it("leaves SDK state alone when cleanup was not requested", () => {
+    const cacheRoot = makeTempDir("ade-cursor-keep-");
+    const stateRoot = path.join(cacheRoot, "state");
+    fs.mkdirSync(stateRoot, { recursive: true });
+    cleanupCursorSdkRuntimePaths({ cacheRoot, stateRoot, cleanupStateRoot: false });
+    expect(fs.existsSync(stateRoot)).toBe(true);
   });
 
   it("keeps durable SDK state stable while pool-specific socket paths change", () => {

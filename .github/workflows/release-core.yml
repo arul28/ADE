@@ -11,16 +11,37 @@ on:
         description: Commit SHA or ref to build and release.
         required: true
         type: string
-      publish:
-        description: Whether to upload validated artifacts to a draft GitHub release.
+      windows_proof:
+        description: >-
+          Collect clean-host Windows proof evidence. Builds Windows even while
+          ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is off and emits the exact-SHA
+          proof manifest bundle. Deliberate evidence collection only; it does
+          not gate ordinary releases.
         required: false
         default: false
         type: boolean
+    outputs:
+      runtime_result:
+        description: Aggregate result of the build-runtime-binaries matrix.
+        value: ${{ jobs.build-results.outputs.runtime_result }}
+      mac_result:
+        description: Aggregate result of the build-mac-release matrix.
+        value: ${{ jobs.build-results.outputs.mac_result }}
+      windows_result:
+        description: >-
+          Result of build-win-release. 'skipped' when the Windows publication
+          gate is off and no proof run was requested.
+        value: ${{ jobs.build-results.outputs.windows_result }}
 
+# No job in this workflow may request more than these permissions. It is called
+# by prepare-release.yml with a read-only token, and GitHub rejects a called
+# workflow at parse time if any nested job requests more than the caller grants,
+# regardless of whether that job would ever run. Publishing lives in
+# release-publish.yml for exactly this reason.
 permissions:
   actions: read
   checks: read
-  contents: write
+  contents: read
 
 jobs:
   verify:
@@ -31,12 +52,47 @@ jobs:
           ref: ${{ inputs.target_ref }}
           fetch-depth: 0
 
+      - name: Validate release tag and target binding
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$RELEASE_TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Release tag must use the canonical v1.2.3 or v1.2.3-prerelease form."
+            exit 1
+          fi
+
+          target_sha="$(git rev-parse HEAD | tr '[:upper:]' '[:lower:]')"
+          if git ls-remote --exit-code --tags origin "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG:refs/tags/$RELEASE_TAG"
+            tag_sha="$(git rev-list -n 1 "refs/tags/$RELEASE_TAG" | tr '[:upper:]' '[:lower:]')"
+            if [ "$tag_sha" != "$target_sha" ]; then
+              echo "::error::Release tag $RELEASE_TAG resolves to $tag_sha, not approved target $target_sha."
+              exit 1
+            fi
+          fi
+
+      # Skipped only for windows_proof, which exists to collect clean-host
+      # evidence for a commit that has NOT merged yet -- proving the packaging
+      # and signing of a change is the whole point, and requiring main first
+      # would make that impossible. That mode is reachable only from
+      # prepare-release.yml, which holds contents: read and cannot publish, so
+      # nothing can ship from a commit this step did not vet. Every publishing
+      # path leaves windows_proof false and is still gated here.
       - name: Ensure release commit points to main
+        if: ${{ !inputs.windows_proof }}
         run: |
           git fetch origin main:refs/remotes/origin/main
           git merge-base --is-ancestor HEAD refs/remotes/origin/main
 
+      # Skipped for windows_proof only, alongside the main-ancestor check above
+      # and for the same reason: that mode exists to package and sign a commit
+      # that has not merged, and it runs solely from prepare-release.yml, which
+      # holds contents: read and cannot create a release or tag. Nothing can
+      # ship from a commit this step did not vet. Every publishing path leaves
+      # windows_proof false and is still gated here.
       - name: Ensure CI passed for release commit
+        if: ${{ !inputs.windows_proof }}
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
@@ -68,6 +124,43 @@ jobs:
 
           echo "ci-pass succeeded for $TARGET_REF: $url"
 
+      # Windows builds fresh on the tag, the same way macOS does. There is one
+      # maintainer-facing switch, ADE_WINDOWS_PUBLIC_RELEASE_ENABLED, plus the
+      # deliberate windows_proof dispatch input for clean-host evidence runs.
+      # Fail here, a minute in, rather than after a full Windows package build.
+      - name: Validate Windows release configuration
+        env:
+          PUBLISH_WINDOWS: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED }}
+          WINDOWS_PROOF: ${{ inputs.windows_proof }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          set -euo pipefail
+
+          if [ "$PUBLISH_WINDOWS" != "1" ] && [ "$WINDOWS_PROOF" != "true" ]; then
+            echo "Windows release is disabled for this run. Set ADE_WINDOWS_PUBLIC_RELEASE_ENABLED=1 to publish Windows assets."
+            exit 0
+          fi
+
+          if [ -z "$AZURE_TENANT_ID" ] || [ -z "$AZURE_CLIENT_ID" ] || [ -z "$AZURE_CLIENT_SECRET" ]; then
+            echo "::error::Windows releases require the AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET secrets."
+            exit 1
+          fi
+          if [ -z "$WINDOWS_SIGNING_EXPECTED_SUBJECT" ]; then
+            echo "::error::Windows releases require the WINDOWS_SIGNING_EXPECTED_SUBJECT secret to pin the approved publisher."
+            exit 1
+          fi
+          # Azure Artifact Signing renews the certificate daily and expires it
+          # after 72 hours, so a thumbprint pin would start failing releases
+          # within days. Refuse the secret rather than ignore it.
+          if [ -n "$WINDOWS_SIGNING_EXPECTED_THUMBPRINT" ]; then
+            echo "::error::WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline. Delete the secret and pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
+            exit 1
+          fi
+
   build-mac-release:
     needs:
       - verify
@@ -75,7 +168,8 @@ jobs:
     # One job per arch, in parallel on native runners (arm64 -> macos-15,
     # x64 -> macos-15-intel). Wall-clock ~= one arch's build+notarize instead of
     # both serialized. Each job signs+notarizes+staples its own arch; the
-    # per-arch updater manifests are merged in publish-release.
+    # per-arch updater manifests are merged by the publish-release job in
+    # release-publish.yml.
     strategy:
       fail-fast: false
       matrix:
@@ -242,78 +336,223 @@ jobs:
             apps/desktop/release/latest-mac-${{ matrix.arch }}.yml
           if-no-files-found: error
 
-  # Windows release builds are disabled for now — ADE ships macOS-only releases.
-  # To re-enable: uncomment this job, add `build-win-release` back to
-  # publish-release `needs`, and restore the win blocks in the publish job
-  # (artifact download, manifest validation, upload list).
-  # build-win-release:
-  #   needs:
-  #     - verify
-  #     - build-runtime-binaries
-  #   runs-on: windows-latest
-  #   concurrency:
-  #     group: release-${{ inputs.release_tag }}-win
-  #     cancel-in-progress: true
-  #   steps:
-  #     - uses: actions/checkout@v4
-  #       with:
-  #         ref: ${{ inputs.target_ref }}
-  #         fetch-depth: 0
-  #
-  #     - uses: actions/setup-node@v4
-  #       with:
-  #         node-version: 22
-  #         cache: npm
-  #         cache-dependency-path: |
-  #           apps/desktop/package-lock.json
-  #           apps/ade-cli/package-lock.json
-  #
-  #     - name: Install desktop dependencies
-  #       run: cd apps/desktop && npm ci
-  #
-  #     - name: Install ADE CLI dependencies
-  #       run: cd apps/ade-cli && npm ci
-  #
-  #     - name: Download ADE runtime binaries
-  #       uses: actions/download-artifact@v4
-  #       with:
-  #         pattern: ade-runtime-*
-  #         path: apps/desktop/resources/runtime
-  #         merge-multiple: true
-  #
-  #     - name: Materialize ADE runtime resources
-  #       env:
-  #         ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
-  #       run: cd apps/desktop && npm run materialize:runtime-resources
-  #
-  #     - name: Stamp release version
-  #       env:
-  #         ADE_RELEASE_TAG: ${{ inputs.release_tag }}
-  #       run: cd apps/desktop && npm run version:release
-  #
-  #     - name: Reset release output
-  #       shell: pwsh
-  #       run: |
-  #         Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
-  #         New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
-  #
-  #     - name: Build and validate Windows release
-  #       env:
-  #         ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-  #         ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-  #         CSC_LINK: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) || '' }}
-  #         CSC_KEY_PASSWORD: ${{ ((secrets.WINDOWS_CSC_LINK || secrets.WIN_CSC_LINK) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD)) && (secrets.WINDOWS_CSC_KEY_PASSWORD || secrets.WIN_CSC_KEY_PASSWORD) || '' }}
-  #       run: cd apps/desktop && npm run dist:win
-  #
-  #     - name: Upload validated Windows artifacts to workflow run
-  #       uses: actions/upload-artifact@v4
-  #       with:
-  #         name: ade-win-release-${{ inputs.release_tag }}
-  #         path: |
-  #           apps/desktop/release/*.exe
-  #           apps/desktop/release/*.exe.blockmap
-  #           apps/desktop/release/latest.yml
-  #         if-no-files-found: error
+  build-win-release:
+    # Same shape as build-mac-release: the tagged commit is built, signed and
+    # validated in-run, and its output is published by release-publish.yml. The
+    # windows_proof input additionally builds Windows while the publication gate
+    # is still off, so clean-host evidence can be collected deliberately.
+    if: ${{ vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof }}
+    needs:
+      - verify
+      - build-runtime-binaries
+    runs-on: windows-latest
+    concurrency:
+      group: release-${{ inputs.release_tag }}-win-x64
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            apps/desktop/package-lock.json
+            apps/ade-cli/package-lock.json
+
+      - name: Install desktop dependencies
+        run: cd apps/desktop && npm ci
+
+      - name: Install ADE CLI dependencies
+        run: cd apps/ade-cli && npm ci
+
+      - name: Require Windows Authenticode signing secrets
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+          WINDOWS_SIGNING_EXPECTED_THUMBPRINT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_THUMBPRINT }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_ID) -or [string]::IsNullOrWhiteSpace($env:AZURE_CLIENT_SECRET)) {
+            throw "Public Windows releases require AZURE_TENANT_ID, AZURE_CLIENT_ID and AZURE_CLIENT_SECRET."
+          }
+          if ([string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_SUBJECT)) {
+            throw "Public Windows releases require WINDOWS_SIGNING_EXPECTED_SUBJECT."
+          }
+          if (-not [string]::IsNullOrWhiteSpace($env:WINDOWS_SIGNING_EXPECTED_THUMBPRINT)) {
+            throw "WINDOWS_SIGNING_EXPECTED_THUMBPRINT is not supported by the Azure Artifact Signing pipeline; pin WINDOWS_SIGNING_EXPECTED_SUBJECT instead."
+          }
+
+      - name: Download ADE runtime binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ade-runtime-*
+          path: apps/desktop/resources/runtime
+          merge-multiple: true
+
+      - name: Materialize ADE runtime resources
+        env:
+          ADE_RUNTIME_ARTIFACTS_DIR: ${{ github.workspace }}\apps\desktop\resources\runtime
+        run: cd apps/desktop && npm run materialize:runtime-resources
+
+      - name: Stamp release version
+        env:
+          ADE_RELEASE_TAG: ${{ inputs.release_tag }}
+        run: cd apps/desktop && npm run version:release
+
+      - name: Reset release output
+        shell: pwsh
+        run: |
+          Remove-Item -Recurse -Force apps/desktop/release, apps/desktop/.cache -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Path apps/desktop/.cache | Out-Null
+
+      - name: Build and validate Windows release
+        env:
+          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
+          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
+          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
+          ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
+          ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
+          # Azure Artifact Signing service principal. EnvironmentCredential
+          # reads exactly these three names and is tried ahead of the managed
+          # identity probe that a GitHub-hosted runner cannot answer.
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+        run: cd apps/desktop && npm run dist:win:signed
+
+      - name: Test installed signed Windows product lifecycle
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
+          if ($installers.Count -ne 1) { throw "Expected exactly one signed Windows installer, found $($installers.Count)." }
+          & apps/desktop/scripts/windows-installed-product-smoke.ps1 -InstallerPath $installers[0].FullName
+
+      - name: Upload validated Windows release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-release-${{ inputs.release_tag }}
+          path: |
+            apps/desktop/release/ADE-*-win-x64.exe
+            apps/desktop/release/ADE-*-win-x64.exe.blockmap
+            apps/desktop/release/latest.yml
+          if-no-files-found: error
+
+      # Everything below is deliberate clean-host evidence collection. It builds
+      # the redacted proof bundle and its exact-SHA manifest, and never gates an
+      # ordinary release. The machine-checkable Windows gates all ran above:
+      # the job-level signing-secret requirement, --require-signing in
+      # run-electron-builder.mjs, --require-signed Authenticode verification in
+      # validate-win-artifacts.mjs, and the installed-product lifecycle smoke.
+      - name: Stage standalone runtime proof assets
+        if: ${{ inputs.windows_proof }}
+        shell: pwsh
+        run: |
+          $releaseDir = "apps/desktop/release"
+          Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.sh" -Destination "$releaseDir/install.sh"
+          Copy-Item -LiteralPath "apps/ade-cli/scripts/install-runtime.ps1" -Destination "$releaseDir/install.ps1"
+          $runtimeFiles = @(
+            "ade-darwin-arm64",
+            "ade-darwin-arm64.native.tar.gz",
+            "ade-darwin-x64",
+            "ade-darwin-x64.native.tar.gz",
+            "ade-linux-arm64",
+            "ade-linux-arm64.native.tar.gz",
+            "ade-linux-x64",
+            "ade-linux-x64.native.tar.gz",
+            "ade-win32-x64.exe",
+            "ade-win32-x64.native.tar.gz"
+          )
+          $actualRuntimeFiles = @(
+            Get-ChildItem -LiteralPath "apps/desktop/resources/runtime" -File -Filter "ade-*" |
+              ForEach-Object Name |
+              Sort-Object
+          )
+          $unexpectedRuntimeFiles = @($actualRuntimeFiles | Where-Object { $_ -notin $runtimeFiles })
+          $missingRuntimeFiles = @($runtimeFiles | Where-Object { $_ -notin $actualRuntimeFiles })
+          if ($unexpectedRuntimeFiles.Count -gt 0 -or $missingRuntimeFiles.Count -gt 0) {
+            throw "Runtime artifact inventory mismatch. Missing: $($missingRuntimeFiles -join ', '); unexpected: $($unexpectedRuntimeFiles -join ', ')."
+          }
+          foreach ($runtimeFile in $runtimeFiles) {
+            Copy-Item -LiteralPath "apps/desktop/resources/runtime/$runtimeFile" -Destination $releaseDir
+          }
+          $checksumFiles = @(
+            Get-Item -LiteralPath "$releaseDir/install.sh"
+            Get-Item -LiteralPath "$releaseDir/install.ps1"
+            $runtimeFiles | ForEach-Object { Get-Item -LiteralPath "$releaseDir/$_" }
+          ) | Sort-Object Name
+          $checksumLines = $checksumFiles | ForEach-Object {
+            $digest = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+            "$digest  $($_.Name)"
+          }
+          [System.IO.File]::WriteAllLines(
+            (Join-Path (Resolve-Path $releaseDir) "SHA256SUMS"),
+            $checksumLines,
+           [System.Text.UTF8Encoding]::new($false)
+          )
+
+      - name: Generate exact-SHA Windows proof manifest
+        if: ${{ inputs.windows_proof }}
+        shell: pwsh
+        run: >-
+          node apps/desktop/scripts/windows-proof-manifest.mjs create
+          --output apps/desktop/release/windows-proof-manifest.json
+          --release-dir apps/desktop/release
+          --target-sha "${{ inputs.target_ref }}"
+          --release-tag "${{ inputs.release_tag }}"
+          --repository "${{ github.repository }}"
+          --workflow-name "${{ github.workflow }}"
+          --workflow-run-id "${{ github.run_id }}"
+          --workflow-run-attempt "${{ github.run_attempt }}"
+          --workflow-url "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+      - name: Validate exact-SHA Windows build proof
+        if: ${{ inputs.windows_proof }}
+        shell: pwsh
+        run: >-
+          node apps/desktop/scripts/windows-proof-manifest.mjs validate
+          --manifest apps/desktop/release/windows-proof-manifest.json
+          --phase build
+          --expected-sha "${{ inputs.target_ref }}"
+          --expected-tag "${{ inputs.release_tag }}"
+          --expected-run-id "${{ github.run_id }}"
+          --artifact-root apps/desktop/release
+
+      - name: Upload validated Windows proof bundle
+        if: ${{ inputs.windows_proof }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ade-win-proof-${{ inputs.release_tag }}
+          # Clean-host evidence is reviewed by a human days or weeks after the
+          # run. Pinned instead of inherited so a lowered repository or
+          # organization default cannot expire the bundle mid-review.
+          # Keep this in sync with docs/playbooks/windows-signed-release.md.
+          retention-days: 90
+          path: |
+            apps/desktop/release/ADE-*-win-x64.exe
+            apps/desktop/release/ADE-*-win-x64.exe.blockmap
+            apps/desktop/release/ade-darwin-arm64
+            apps/desktop/release/ade-darwin-arm64.native.tar.gz
+            apps/desktop/release/ade-darwin-x64
+            apps/desktop/release/ade-darwin-x64.native.tar.gz
+            apps/desktop/release/ade-linux-arm64
+            apps/desktop/release/ade-linux-arm64.native.tar.gz
+            apps/desktop/release/ade-linux-x64
+            apps/desktop/release/ade-linux-x64.native.tar.gz
+            apps/desktop/release/ade-win32-x64.exe
+            apps/desktop/release/ade-win32-x64.native.tar.gz
+            apps/desktop/release/install.sh
+            apps/desktop/release/install.ps1
+            apps/desktop/release/SHA256SUMS
+            apps/desktop/release/latest.yml
+            apps/desktop/release/windows-proof-manifest.json
+          if-no-files-found: error
 
   build-runtime-binaries:
     needs: verify
@@ -323,12 +562,19 @@ jobs:
         include:
           - target: darwin-arm64
             os: macos-15
+            binary: ade-darwin-arm64
           - target: darwin-x64
             os: macos-15-intel
+            binary: ade-darwin-x64
           - target: linux-x64
             os: ubuntu-latest
+            binary: ade-linux-x64
           - target: linux-arm64
             os: ubuntu-24.04-arm
+            binary: ade-linux-arm64
+          - target: win32-x64
+            os: windows-latest
+            binary: ade-win32-x64.exe
     runs-on: ${{ matrix.os }}
     concurrency:
       group: release-${{ inputs.release_tag }}-runtime-${{ matrix.target }}
@@ -367,6 +613,18 @@ jobs:
           ADE_POSTHOG_PROJECT_TOKEN: ${{ secrets.ADE_POSTHOG_PROJECT_TOKEN }}
           ADE_POSTHOG_HOST: ${{ secrets.ADE_POSTHOG_HOST }}
         run: cd apps/ade-cli && npm run build:static -- --target ${{ matrix.target }}
+
+      - name: Sign and validate standalone Windows runtime
+        if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}
+        shell: pwsh
+        env:
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
+          WINDOWS_SIGNING_EXPECTED_SUBJECT: ${{ secrets.WINDOWS_SIGNING_EXPECTED_SUBJECT }}
+        run: |
+          & apps/ade-cli/scripts/sign-windows-runtime.ps1 `
+            -BinaryPath "apps/ade-cli/dist-static/${{ matrix.binary }}"
 
       - name: Materialize runtime notarization API key
         if: ${{ startsWith(matrix.target, 'darwin-') }}
@@ -428,8 +686,9 @@ jobs:
         run: cd apps/ade-cli && npm run notarize:static -- --binary=dist-static/ade-${{ matrix.target }}
 
       - name: Smoke test ADE runtime binary
+        shell: bash
         run: |
-          apps/ade-cli/dist-static/ade-${{ matrix.target }} --version
+          apps/ade-cli/dist-static/${{ matrix.binary }} --version
           archive="apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz"
           archive_listing="$RUNNER_TEMP/ade-${{ matrix.target }}-native-files.txt"
           tar -tzf "$archive" > "$archive_listing"
@@ -439,171 +698,56 @@ jobs:
             exit 1
           fi
 
+      - name: Assemble signed Windows standalone runtime bundle
+        if: ${{ matrix.target == 'win32-x64' && (vars.ADE_WINDOWS_PUBLIC_RELEASE_ENABLED == '1' || inputs.windows_proof) }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp apps/ade-cli/scripts/install-runtime.ps1 apps/ade-cli/dist-static/install.ps1
+          (
+            cd apps/ade-cli/dist-static
+            sha256sum install.ps1 ade-win32-x64.exe ade-win32-x64.native.tar.gz \
+              | LC_ALL=C sort -k2 > SHA256SUMS
+            sha256sum -c SHA256SUMS
+          )
+
       - name: Upload ADE runtime binary
         uses: actions/upload-artifact@v4
         with:
           name: ade-runtime-${{ matrix.target }}
           path: |
-            apps/ade-cli/dist-static/ade-${{ matrix.target }}
+            apps/ade-cli/dist-static/${{ matrix.binary }}
             apps/ade-cli/dist-static/ade-${{ matrix.target }}.native.tar.gz
+            apps/ade-cli/dist-static/install.ps1
+            apps/ade-cli/dist-static/SHA256SUMS
           if-no-files-found: error
           compression-level: 0
 
-  publish-release:
-    if: ${{ inputs.publish }}
+  build-results:
+    # This workflow deliberately holds no job that can write to the repository,
+    # so the publish gate cannot be evaluated here (see release-publish.yml).
+    # Republish the three build results the gate reads as workflow outputs.
+    # always() so a failed or skipped build is still reported rather than
+    # collapsing the outputs to empty, which is what lets the caller keep the
+    # original semantics: with the Windows gate on, a failed or skipped Windows
+    # build blocks the draft exactly as a failed macOS build does.
+    if: always()
     needs:
       - build-runtime-binaries
       - build-mac-release
+      - build-win-release
     runs-on: ubuntu-latest
+    outputs:
+      runtime_result: ${{ needs.build-runtime-binaries.result }}
+      mac_result: ${{ needs.build-mac-release.result }}
+      windows_result: ${{ needs.build-win-release.result }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.target_ref }}
-          fetch-depth: 1
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Download per-arch macOS release artifacts
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-mac-release-${{ inputs.release_tag }}-*
-          path: release-assets/mac
-          merge-multiple: true
-
-      - name: Merge per-arch updater manifests into latest-mac.yml
-        run: |
-          set -euo pipefail
-          # Each per-arch build uploaded latest-mac-<arch>.yml; merge them into a
-          # single latest-mac.yml whose files[] lists both arch zips (electron-updater
-          # picks the right one by arch). --ignore-scripts skips the heavy electron
-          # postinstall — we only need the pure-JS `yaml` dep for the merge.
-          (cd apps/desktop && npm ci --ignore-scripts)
-          node apps/desktop/scripts/merge-mac-latest-yml.mjs \
-            release-assets/mac/latest-mac-arm64.yml \
-            release-assets/mac/latest-mac-x64.yml \
-            release-assets/mac/latest-mac.yml
-          rm -f release-assets/mac/latest-mac-arm64.yml release-assets/mac/latest-mac-x64.yml
-
-      # Windows artifacts are intentionally NOT published right now. The
-      # standalone runtime assets are published because headless brains and
-      # mobile-driven recovery updates depend on the same release payloads the
-      # desktop bundle uploads for remote runtime bootstrap.
-      # - name: Download Windows release artifacts
-      #   uses: actions/download-artifact@v4
-      #   with:
-      #     name: ade-win-release-${{ inputs.release_tag }}
-      #     path: release-assets/win
-
-      - name: Download ADE runtime binaries
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: release-assets/runtime
-          merge-multiple: true
-
-      - name: Add standalone runtime installer
-        run: |
-          cp apps/ade-cli/scripts/install-runtime.sh release-assets/runtime/install.sh
-          chmod 755 release-assets/runtime/install.sh
-
-      - name: Generate standalone runtime checksums
-        run: |
-          set -euo pipefail
-          (cd release-assets/runtime && sha256sum install.sh ade-* | LC_ALL=C sort -k2 > SHA256SUMS)
-
-      - name: Validate publish asset manifest
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          require_file() {
-            local file="$1"
-            local label="${2:-$1}"
-            if [ ! -s "$file" ]; then
-              echo "::error::Missing or empty $label: $file"
-              exit 1
-            fi
-          }
-
-          require_glob() {
-            local pattern="$1"
-            local label="${2:-$1}"
-            mapfile -t matches < <(compgen -G "$pattern" || true)
-            if [ "${#matches[@]}" -eq 0 ]; then
-              echo "::error::Missing $label matching $pattern"
-              exit 1
-            fi
-            for file in "${matches[@]}"; do
-              require_file "$file" "$label"
-            done
-          }
-
-          require_glob 'release-assets/mac/*.dmg' 'macOS DMG'
-          require_glob 'release-assets/mac/*.zip' 'macOS zip'
-          require_file 'release-assets/mac/latest-mac.yml' 'macOS auto-update metadata'
-
-          # Windows artifacts are not published right now.
-          # require_glob 'release-assets/win/*.exe' 'Windows installer'
-          # require_glob 'release-assets/win/*.exe.blockmap' 'Windows blockmap'
-          # require_file 'release-assets/win/latest.yml' 'Windows auto-update metadata'
-          require_file 'release-assets/runtime/install.sh' 'standalone runtime installer'
-          if [ ! -x 'release-assets/runtime/install.sh' ]; then
-            echo "::error::Standalone runtime installer is not executable."
-            exit 1
-          fi
-          require_file 'release-assets/runtime/SHA256SUMS' 'standalone runtime checksum manifest'
-          (cd release-assets/runtime && sha256sum -c SHA256SUMS)
-
-          for target in darwin-arm64 darwin-x64 linux-arm64 linux-x64; do
-            require_file "release-assets/runtime/ade-$target" "ADE runtime binary for $target"
-            require_file "release-assets/runtime/ade-$target.native.tar.gz" "ADE native dependency archive for $target"
-            archive_listing="$RUNNER_TEMP/ade-$target-native-files.txt"
-            tar -tzf "release-assets/runtime/ade-$target.native.tar.gz" > "$archive_listing"
-            grep -q '^\./node_modules/' "$archive_listing" || {
-              echo "::error::ADE native dependency archive for $target is missing node_modules."
-              exit 1
-            }
-          done
-
-      - name: Create or update draft GitHub release
+      - name: Report build results
         env:
-          GH_TOKEN: ${{ github.token }}
-          TAG_NAME: ${{ inputs.release_tag }}
-          TARGET_REF: ${{ inputs.target_ref }}
-          GH_REPO: ${{ github.repository }}
+          RUNTIME_RESULT: ${{ needs.build-runtime-binaries.result }}
+          MAC_RESULT: ${{ needs.build-mac-release.result }}
+          WINDOWS_RESULT: ${{ needs.build-win-release.result }}
         run: |
-          shopt -s nullglob
-          # macOS-only, per-arch release surface. The per-arch zips + latest-mac.yml
-          # are what electron-updater consumes; the per-arch DMGs are the human
-          # downloads. Blockmaps are intentionally NOT published (they only enable
-          # differential downloads, which don't help the mac in-memory update path)
-          # to keep the asset list clean: 2 dmg + 2 zip + latest-mac.yml.
-          files=(
-            release-assets/mac/*.dmg
-            release-assets/mac/*.zip
-            release-assets/mac/latest-mac.yml
-            # release-assets/win/*.exe
-            # release-assets/win/*.exe.blockmap
-            # release-assets/win/latest.yml
-            release-assets/runtime/install.sh
-            release-assets/runtime/SHA256SUMS
-            release-assets/runtime/ade-*
-          )
-
-          if [ "${#files[@]}" -eq 0 ]; then
-            echo "::error::No release artifacts were found after validation."
-            exit 1
-          fi
-
-          if gh release view "$TAG_NAME" --repo "$GH_REPO" >/dev/null 2>&1; then
-            gh release upload "$TAG_NAME" "${files[@]}" --repo "$GH_REPO" --clobber
-          else
-            gh release create "$TAG_NAME" "${files[@]}" \
-              --repo "$GH_REPO" \
-              --draft \
-              --title "$TAG_NAME" \
-              --generate-notes \
-              --target "$TARGET_REF"
-          fi
+          echo "build-runtime-binaries: $RUNTIME_RESULT"
+          echo "build-mac-release: $MAC_RESULT"
+          echo "build-win-release: $WINDOWS_RESULT"

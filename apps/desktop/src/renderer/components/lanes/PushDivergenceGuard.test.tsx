@@ -257,7 +257,7 @@ describe("LaneGitActionsPane push divergence guard", () => {
   it("never warns about this machine's own entry", async () => {
     renderPane({
       otherMachineBranchStates: [
-        otherMachine({ machineId: "this-mac", machineName: "This Mac", headSha: null, ahead: 9 }),
+        otherMachine({ machineId: "this-mac", machineName: "This computer", headSha: null, ahead: 9 }),
       ],
     });
     await clickPush();

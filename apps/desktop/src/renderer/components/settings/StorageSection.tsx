@@ -1242,7 +1242,7 @@ export function StorageSection() {
     };
   }, [snapshot, laneIdByKey, runMaintenanceNow, showToast]);
 
-  const description = "What ADE keeps on this Mac for this project, and what you can safely clear.";
+  const description = "What ADE keeps on this computer for this project, and what you can safely clear.";
 
   return (
     <SettingsSectionShell id="storage" title="Storage" description={description} icon={HardDrives} brandColor={STORAGE_BRAND}>

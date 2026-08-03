@@ -19,7 +19,7 @@
 export type MachineBranchState = {
   machineId: string;
   /**
-   * Absolute machine name as shown to the user ("This Mac", "MacBook Pro (97)").
+   * Absolute machine name as shown to the user ("This computer", "MacBook Pro (97)").
    * Never a relative word like "remote" — the user has to know *which* machine.
    */
   machineName: string;

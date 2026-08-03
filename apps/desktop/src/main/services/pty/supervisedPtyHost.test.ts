@@ -6,11 +6,13 @@ import { createSupervisedPtyLoader, type HostedPty } from "./supervisedPtyHost";
 const mocks = vi.hoisted(() => ({
   fork: vi.fn(),
   spawn: vi.fn(),
+  spawnSync: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => ({
   fork: mocks.fork,
   spawn: mocks.spawn,
+  spawnSync: mocks.spawnSync,
 }));
 
 type FakeChild = EventEmitter & {
@@ -71,6 +73,7 @@ describe("createSupervisedPtyLoader", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    mocks.spawnSync.mockReturnValue({ status: 0, stdout: "", stderr: "", error: undefined });
   });
 
   afterEach(() => {
@@ -292,6 +295,38 @@ describe("createSupervisedPtyLoader", () => {
     });
 
     expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("kills the recorded ConPTY tree when a Windows host worker crashes", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    try {
+      const child = createFakeChild({ emitExitOnKill: false });
+      mocks.fork.mockReturnValueOnce(child);
+      const loader = createSupervisedPtyLoader({ logger: createLogger() as any });
+      const pty = loader().spawn("powershell.exe", [], spawnOptions()) as HostedPty;
+      const spawnRequest = child.sent[0] as { requestId: string; ptyId: string };
+      child.emitMessage({
+        type: "spawned",
+        requestId: spawnRequest.requestId,
+        ptyId: spawnRequest.ptyId,
+        pid: 789,
+        process: "powershell.exe",
+        cols: 80,
+        rows: 24,
+      });
+      await pty.__adePtyHostReady;
+
+      child.emit("exit", 1, null);
+
+      expect(mocks.spawnSync).toHaveBeenCalledWith(
+        "taskkill.exe",
+        ["/PID", "789", "/T", "/F"],
+        { windowsHide: true },
+      );
+    } finally {
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
   });
 
   it("force-cleans a killed host if the worker never reports PTY exit", async () => {

@@ -33,7 +33,7 @@ const THIS_MACHINE_NAME_PATTERN = new RegExp(THIS_MACHINE_NAME);
 
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
-  ThisMacCard: () => <div data-testid="this-mac-card">This Mac</div>,
+  ThisMacCard: () => <div data-testid="this-mac-card">This computer</div>,
   PhoneConnectionsTab: () => (
     <section data-testid="sync-devices-section" data-variant="phone">
       Phone connections

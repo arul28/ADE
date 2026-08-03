@@ -54,7 +54,7 @@ struct LinearPaneSheet: View {
   }
 
   /// Machine name for connect copy — the connected host's display name when
-  /// known, else a neutral "your Mac".
+  /// known, else a neutral "your computer".
   private var machineName: String { syncService.machineDisplayName }
 
   private var connectPrompt: some View {

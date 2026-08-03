@@ -12,6 +12,7 @@ import {
   setPathEnvValue,
 } from "./cliExecutableResolver";
 import { getLocalProviderDefaultEndpoint, type LocalProviderFamily } from "../../../shared/modelRegistry";
+import { CURSOR_CLI_EXECUTABLES } from "../../../shared/providerCliExecutables";
 import type { AiLocalProviderConfigs } from "../../../shared/types";
 import { inspectLocalProvider, clearLocalProviderInspectionCache } from "./localModelDiscovery";
 import { resolveDroidExecutable } from "./droidExecutable";
@@ -82,12 +83,20 @@ const CLI_AUTH_PROBES: Record<CliName, string[][]> = {
     ["status", "--json"],
     ["status"],
   ],
-  droid: [["--version"], ["-V"], ["version"]],
+  // Documented flags only. `droid --help` on v0.186.0 lists exec/daemon/search/
+  // update/mcp/plugin/computer/help and nothing else, so anything that is not a
+  // real subcommand — `version`, `whoami`, `account status` — is taken as a
+  // *prompt* and boots the full interactive TUI, burning the spawn timeout.
+  droid: [["--version"], ["-v"]],
 };
 
+function cliSpawnCommands(cli: CliName): readonly string[] {
+  if (cli === "cursor") return CURSOR_CLI_EXECUTABLES.launchCandidates;
+  return [cli];
+}
+
 function cliSpawnCommand(cli: CliName): string {
-  if (cli === "cursor") return "agent";
-  return cli;
+  return cliSpawnCommands(cli)[0]!;
 }
 
 const AUTH_INDICATORS = [
@@ -103,6 +112,10 @@ const AUTH_INDICATORS = [
 const STRONG_UNAUTH_INDICATORS = [
   /not logged in/i,
   /not authenticated/i,
+  // Droid's real refusal, verbatim from v0.186.0: "Error during droid
+  // execution: Authentication failed. Please log in using /login or set a valid
+  // FACTORY_API_KEY environment variable." None of the other patterns match it.
+  /authentication failed/i,
   /login required/i,
   /sign in required/i,
   /unauthorized/i,
@@ -140,56 +153,71 @@ function findExplicitCommandPath(command: string): string | null {
   return resolveExecutableFromKnownLocations(command)?.path ?? null;
 }
 
-async function commandExists(command: string): Promise<boolean> {
+/**
+ * Resolve where a CLI actually lives, or null when it is not installed.
+ *
+ * One function answers both "is it installed" and "what do we launch", so the
+ * Settings card can never advertise a provider the chat runtime cannot spawn:
+ * `installed` is exactly "this file exists" and `path` is exactly that file,
+ * which is what flows into {@link DetectedAuth} and on into
+ * `resolveClaudeCodeExecutable`/`resolveDroidExecutable`.
+ *
+ * Windows: never probe by exit code. `spawnAsync` routes extension-less
+ * commands through `cmd.exe /d /s /c "…"` (see `resolveCliSpawnInvocation`),
+ * and cmd.exe itself always starts — a missing binary comes back as exit 1
+ * with `'claude' is not recognized as an internal or external command`, not as
+ * the ENOENT spawn error (`status === null`) that means "missing" on
+ * macOS/Linux. An exit-code probe therefore reports *every* CLI as installed
+ * on Windows. `where.exe` + the known-install-dir scan (which honours PATHEXT)
+ * answer the question honestly.
+ */
+async function resolveCommandLocation(command: string): Promise<string | null> {
   const explicitPath = findExplicitCommandPath(command);
-  if (explicitPath) return true;
+  if (explicitPath) return explicitPath;
 
-  // Strategy 1: Direct spawn — bypasses shell init (.zshrc errors, slow profiles).
-  // If the binary exists, --version will produce *some* exit code.
-  // A spawn error (ENOENT) means the binary isn't on PATH → status is null.
+  if (process.platform === "win32") {
+    try {
+      // Spell the lookup `where.exe`, not `where`. `spawnAsync` routes an
+      // *extensionless* command through `cmd.exe /d /s /c "…"`; the extension
+      // here keeps the probe a direct spawn with no wrapper. Measured: direct
+      // `where.exe` 57.7ms vs `cmd + where` 73.7ms per lookup, and because the
+      // wrapper is what blocks the main thread, the worst *unrelated* IPC
+      // observed during a probe drops from 1364.5ms to 18.2ms.
+      const result = await spawnAsync("where.exe", [command], { timeout: 5_000 });
+      if (result.status === 0) {
+        const first = (result.stdout ?? "").trim().split(/\r?\n/)[0]?.trim();
+        if (first) return first;
+      }
+    } catch {
+      // Treat a failed lookup as "not installed" rather than guessing.
+    }
+    return null;
+  }
+
+  // POSIX: a direct spawn bypasses shell init (.zshrc errors, slow profiles),
+  // and here ENOENT really does surface as `status === null`.
   try {
     const direct = await spawnAsync(command, ["--version"], { timeout: 5_000 });
-    if (direct.status !== null) return true;
+    if (direct.status !== null) {
+      const which = await spawnAsync("which", [command], { timeout: 3_000 });
+      const line = which.status === 0 ? (which.stdout ?? "").trim() : "";
+      return line || command;
+    }
   } catch {
-    // fall through to shell-based check
+    // fall through to shell-based lookup
   }
 
-  // Strategy 2: Shell-based lookup (fallback for edge cases)
   try {
-    if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      return result.status === 0;
-    }
-    const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1" >/dev/null 2>&1', "--", command], { timeout: 5_000 });
-    return result.status === 0;
-  } catch {
-    // fall through to explicit common-path lookup
-  }
-
-  return explicitPath != null;
-}
-
-async function commandPath(command: string): Promise<string> {
-  try {
-    if (process.platform === "win32") {
-      const result = await spawnAsync("where", [command], { timeout: 5_000 });
-      return result.stdout?.trim().split(/\r?\n/)[0] ?? command;
-    }
-    // Try which first (simpler, doesn't load full login shell)
-    const which = await spawnAsync("which", [command], { timeout: 3_000 });
-    if (which.status === 0 && which.stdout?.trim()) {
-      return which.stdout.trim();
-    }
-    const explicitPath = findExplicitCommandPath(command);
-    if (explicitPath) {
-      return explicitPath;
-    }
-    // Fallback to login shell lookup
     const result = await spawnAsync(getLookupShell(), ["-lc", 'command -v "$1"', "--", command], { timeout: 5_000 });
-    return result.stdout?.trim() || command;
+    if (result.status === 0) {
+      const line = (result.stdout ?? "").trim();
+      if (line) return line;
+    }
   } catch {
-    return findExplicitCommandPath(command) ?? command;
+    // Not installed.
   }
+
+  return null;
 }
 
 async function refreshProcessPathFromShell(): Promise<void> {
@@ -378,6 +406,22 @@ async function inspectCursorCliAuthentication(command: string): Promise<{
   return { authenticated: false, verified: false, paidPlan: false };
 }
 
+/**
+ * Best-effort check for a Factory credential ADE can see without launching droid.
+ *
+ * KNOWN GAP, do not rediscover from scratch: on v0.186.0 `~/.factory/settings.json`
+ * holds UI preferences only — the real file on a signed-out machine is
+ * `{"logoAnimation":"off"}` — and no credential-shaped file exists anywhere under
+ * `~/.factory` (verified: cache/, certs/, droids/, logs/, sessions/, snapshots/,
+ * telemetry/, temp/ and four small JSON state files, none of them auth). A stack
+ * trace in `~/.factory/logs` names a dedicated
+ * `packages/runtime/auth/src/credentials/CredentialsStorage.ts`, so tokens almost
+ * certainly live somewhere else in a format we have not seen. Confirming that
+ * needs a signed-in Factory account, which this machine does not have, so the
+ * settings.json read stays (harmless, and correct if Factory ever writes there)
+ * and `false` continues to mean "no credential ADE can see" — never "signed out".
+ * Callers must not turn a false here into `verified: true`.
+ */
 async function hasDroidConfiguredCredentials(): Promise<boolean> {
   if (process.env.FACTORY_API_KEY?.trim()) {
     return true;
@@ -430,42 +474,25 @@ async function inspectDroidCliPresence(command: string, options?: { deep?: boole
     return { installed: true, authenticated: true, verified: true };
   }
 
-  try {
-    const result = await spawnAsync(command, ["exec", "--list-tools"], { timeout: 12_000 });
-    const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-    const normalized = combined.toLowerCase();
-    if (hasPattern(normalized, STRONG_UNAUTH_INDICATORS)) {
-      return { installed: true, authenticated: false, verified: true };
-    }
-    if (result.status === 0) {
-      return { installed: true, authenticated: true, verified: true };
-    }
-    if (hasPattern(normalized, AUTH_INDICATORS)) {
-      return { installed: true, authenticated: true, verified: true };
-    }
-  } catch {
-    // Current Droid releases may not support this probe or it may time out; fall back.
-  }
-
-  const authProbes: string[][] = [
-    ["account", "status"],
-    ["whoami"],
-  ];
-  for (const args of authProbes) {
-    try {
-      const result = await spawnAsync(command, args, { timeout: 12_000 });
-      const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
-      if (hasPattern(combined, STRONG_UNAUTH_INDICATORS)) {
-        return { installed: true, authenticated: false, verified: true };
-      }
-      if (hasPattern(combined, AUTH_INDICATORS)) {
-        return { installed: true, authenticated: true, verified: true };
-      }
-    } catch {
-      // try next probe
-    }
-  }
-
+  // Nothing further to ask. Droid v0.186.0 exposes no cheap auth probe, and the
+  // three this used to run were all wrong:
+  //
+  //   `droid exec --list-tools` exits 0 with no account at all — it prints the
+  //   local tool policy and never contacts Factory — so it reported a signed-out
+  //   machine as authenticated *and verified*. Measured: exit 0 and a full tool
+  //   listing here, while `droid exec "say hi"` returns "Authentication failed."
+  //
+  //   `whoami` and `account status` are not subcommands (see CLI_AUTH_PROBES),
+  //   so each booted the interactive TUI and ran until the spawn timeout — a
+  //   forced refresh spawned a 150MB agent twice to learn nothing.
+  //
+  // The only authoritative signal is a real `droid exec` round trip, which costs
+  // a model call on a signed-in machine and cannot be a detection probe. So stop
+  // at "installed, auth unknown": `verified: false` keeps this out of the
+  // explicitly-signed-out state, and buildProviderConnections renders it as
+  // "installed but no credentials were detected", which is exactly true. This
+  // now agrees with the shallow path — before, forcing a refresh made the answer
+  // worse, which is the opposite of what a refresh button should do.
   return { installed: true, authenticated: false, verified: false };
 }
 
@@ -1100,9 +1127,17 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
   // Probe all CLIs in parallel
   const statuses = await Promise.all(
     cliChecks.map(async (cli) => {
-      const spawnName = cliSpawnCommand(cli);
-      const installed = await commandExists(spawnName);
-      const path = installed ? await commandPath(spawnName) : null;
+      let spawnName = cliSpawnCommand(cli);
+      let path: string | null = null;
+      for (const candidate of cliSpawnCommands(cli)) {
+        const location = await resolveCommandLocation(candidate);
+        if (location) {
+          spawnName = candidate;
+          path = location;
+          break;
+        }
+      }
+      const installed = path !== null;
       const cmd = path ?? spawnName;
       if (!installed) {
         return {
@@ -1135,29 +1170,15 @@ export async function detectCliAuthStatuses(options?: { force?: boolean; skipAut
         };
       }
       if (cli === "droid") {
-        // Prefer the path we already proved via commandPath() above; only fall
-        // back to resolveDroidExecutable() when commandPath() failed.
-        let droidPath: string;
-        if (path) {
-          droidPath = path;
-        } else {
-          const resolved = resolveDroidExecutable({ env: process.env });
-          if (resolved.source === "fallback-command") {
-            return {
-              cli,
-              installed: false,
-              path: null,
-              authenticated: false,
-              verified: false,
-            };
-          }
-          droidPath = resolved.path;
-        }
-        const auth = await inspectDroidCliPresence(droidPath, { deep: options?.force === true });
+        // `path` is a file resolveCommandLocation() proved exists, so it is
+        // strictly better than resolveDroidExecutable(), whose last resort is
+        // the bare command name. Reached only when installed, so the shallow
+        // presence check below is asking about credentials, not existence.
+        const auth = await inspectDroidCliPresence(cmd, { deep: options?.force === true });
         return {
           cli,
           installed: auth.installed,
-          path: droidPath,
+          path,
           authenticated: auth.authenticated,
           verified: auth.verified,
         };

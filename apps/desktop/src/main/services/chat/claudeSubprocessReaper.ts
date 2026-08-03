@@ -1,10 +1,11 @@
-import { spawn, type ChildProcessByStdio } from "node:child_process";
+import { spawn, spawnSync, type ChildProcessByStdio } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { Readable, Writable } from "node:stream";
 import type { SpawnOptions, SpawnedProcess } from "@anthropic-ai/claude-agent-sdk";
 import type { Logger } from "../logging/logger";
+import { killWindowsProcessTree, resolveCliSpawnInvocation, terminateProcessTree } from "../shared/processExecution";
 
 export type ClaudeSubprocessMetadata = {
   sessionId: string;
@@ -22,6 +23,40 @@ export type ClaudeSubprocessRecord = ClaudeSubprocessMetadata & {
 };
 
 type ClaudeChildProcess = ChildProcessByStdio<Writable, Readable, null>;
+
+/**
+ * Image names a registered Claude subprocess can legitimately be running under
+ * on Windows: the resolved executable itself, or the interpreter that a shim
+ * hands off to (`claude.cmd` runs under cmd.exe, `claude.ps1` under PowerShell,
+ * an npm-linked entry under node.exe).
+ */
+function windowsExpectedImageNames(command: string): string[] {
+  const base = path.win32.basename(command).toLowerCase();
+  const stem = base.replace(/\.(cmd|bat|ps1|exe|com)$/u, "");
+  return [base, `${stem}.exe`, "cmd.exe", "powershell.exe", "pwsh.exe", "node.exe", "conhost.exe"];
+}
+
+function windowsPidImageName(pid: number): string | null {
+  try {
+    const result = spawnSync("tasklist.exe", ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"], {
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 5_000,
+    });
+    if (result.error || result.status !== 0) return null;
+    // CSV row: "image.exe","1234","Console","1","12,345 K"
+    const name = String(result.stdout ?? "").trim().match(/^"([^"]+)"/u)?.[1];
+    return name ? name.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+function windowsPidLooksLikeRecord(record: ClaudeSubprocessRecord): boolean {
+  const image = windowsPidImageName(record.pid);
+  if (!image) return true;
+  return windowsExpectedImageNames(record.command).includes(image);
+}
 type LiveClaudeSubprocess = {
   record: ClaudeSubprocessRecord;
   process: SpawnedProcess;
@@ -38,8 +73,12 @@ export function createClaudeSubprocessReaper(args: {
   clearTimer?: typeof clearTimeout;
   registryPath?: string | null;
   processKill?: (pid: number, signal?: NodeJS.Signals | 0) => boolean;
+  /** Overridable so the POSIX and Windows kill paths can each be exercised. */
+  platform?: NodeJS.Platform;
 }) {
   const logger = args.logger;
+  const platform = args.platform ?? process.platform;
+  const isWindows = platform === "win32";
   const killGraceMs = args.killGraceMs ?? 5_000;
   const spawnProcess = args.spawnProcess ?? spawn;
   const setTimer = args.setTimer ?? setTimeout;
@@ -118,6 +157,36 @@ export function createClaudeSubprocessReaper(args: {
 
   const terminatePid = (record: ClaudeSubprocessRecord, reason: string): void => {
     if (!isPidAlive(record.pid)) {
+      removeRegistryPid(record.pid);
+      return;
+    }
+    if (isWindows) {
+      // This registry outlives the app, and Windows recycles PIDs far faster
+      // than macOS, so a stale record can point at somebody else's process by
+      // the time we read it. Only refuse when Windows positively names an image
+      // that cannot be ours — an unreadable answer still gets reaped, because
+      // leaking a Claude subprocess is the worse failure.
+      if (!windowsPidLooksLikeRecord(record)) {
+        logger.warn("agent_chat.claude_subprocess_pid_reused", {
+          pid: record.pid,
+          sessionId: record.sessionId,
+          reason,
+        });
+        removeRegistryPid(record.pid);
+        return;
+      }
+      logger.warn("agent_chat.claude_subprocess_terminate", {
+        pid: record.pid,
+        sessionId: record.sessionId,
+        reason,
+      });
+      // `process.kill(pid, "SIGTERM")` on Windows is an immediate, ungraceful
+      // TerminateProcess of that one PID — it leaves the Claude binary's own
+      // children (ripgrep, MCP servers, node) orphaned. There is no graceful
+      // stage to escalate from, so kill the whole tree in one step.
+      killWindowsProcessTree(record.pid, (detail) => {
+        logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId: record.sessionId });
+      });
       removeRegistryPid(record.pid);
       return;
     }
@@ -220,11 +289,18 @@ export function createClaudeSubprocessReaper(args: {
     options: SpawnOptions,
     metadata: ClaudeSubprocessMetadata,
   ): SpawnedProcess => {
-    const child = spawnProcess(options.command, options.args, {
+    // A `.cmd`/`.bat` shim — what `npm i -g @anthropic-ai/claude-code` puts on
+    // PATH — cannot be handed to `spawn` directly: since the CVE-2024-27980 fix
+    // Node refuses it with EINVAL unless it goes through a command interpreter.
+    // `resolveCliSpawnInvocation` produces the correctly quoted cmd.exe (or
+    // PowerShell, for `.ps1`) invocation and is a no-op for a plain `.exe`.
+    const invocation = resolveCliSpawnInvocation(options.command, options.args, options.env, platform);
+    const child = spawnProcess(invocation.command, invocation.args, {
       cwd: options.cwd,
       env: options.env,
       signal: options.signal,
       stdio: ["pipe", "pipe", "ignore"],
+      windowsVerbatimArguments: invocation.windowsVerbatimArguments,
       windowsHide: true,
     }) as ClaudeChildProcess;
     register(child, metadata, options.command, options.args);
@@ -247,7 +323,17 @@ export function createClaudeSubprocessReaper(args: {
       reason,
     });
     try {
-      child.kill("SIGTERM");
+      if (isWindows) {
+        // taskkill /T /F is the only way to take the Claude binary's own
+        // children (ripgrep, MCP servers, and the cmd.exe that fronts a `.cmd`
+        // shim) down with it — `child.kill("SIGTERM")` on Windows terminates
+        // this one PID and orphans the rest.
+        terminateProcessTree(child as unknown as Parameters<typeof terminateProcessTree>[0], "SIGTERM", (detail) => {
+          logger.warn("agent_chat.claude_subprocess_taskkill_failed", { ...detail, sessionId: entry.record.sessionId });
+        });
+      } else {
+        child.kill("SIGTERM");
+      }
     } catch {
       // Best effort; the process may already be gone.
     }

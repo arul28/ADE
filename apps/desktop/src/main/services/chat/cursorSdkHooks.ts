@@ -333,10 +333,14 @@ export function writeCursorSdkHookWindowsCommandScript(args: {
   scriptPath: string;
 }): void {
   ensureDir(path.dirname(args.commandPath));
+  // `%*` forwards whatever Cursor passed (notably `--socket <path>`), matching
+  // the POSIX wrapper's `"$@"`. `setlocal` keeps ELECTRON_RUN_AS_NODE out of
+  // any parent environment that reuses this cmd instance.
   const source = [
     "@echo off",
+    "setlocal",
     "set ELECTRON_RUN_AS_NODE=1",
-    `${windowsBatchQuote(args.electronPath)} ${windowsBatchQuote(args.scriptPath)}`,
+    `${windowsBatchQuote(args.electronPath)} ${windowsBatchQuote(args.scriptPath)} %*`,
     "exit /b %ERRORLEVEL%",
     "",
   ].join("\r\n");

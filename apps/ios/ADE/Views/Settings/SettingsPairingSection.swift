@@ -23,14 +23,14 @@ struct SettingsPairingSection: View {
           SettingsPairActionRow(
             icon: "qrcode.viewfinder",
             title: "Scan a pairing code",
-            subtitle: "Scan the code shown in ADE on your Mac"
+            subtitle: "Scan the code shown in ADE on your computer"
           ) {
             presentedSheet = .scan
           }
 
           SettingsPairActionRow(
             icon: "dot.radiowaves.left.and.right",
-            title: "Find a nearby Mac",
+            title: "Find a nearby computer",
             subtitle: discoverSubtitle
           ) {
             presentedSheet = .discover
@@ -39,7 +39,7 @@ struct SettingsPairingSection: View {
           SettingsPairActionRow(
             icon: "terminal",
             title: "Set up with SSH",
-            subtitle: "Advanced: use SSH once to create an ADE pairing"
+            subtitle: "Advanced · macOS or Linux only"
           ) {
             presentedSheet = .ssh
           }
@@ -54,7 +54,7 @@ struct SettingsPairingSection: View {
       .tint(ADEColor.textSecondary)
 
       Label(
-        awayFromMacHelp,
+        awayFromComputerHelp,
         systemImage: "network"
       )
       .font(.footnote)
@@ -63,23 +63,23 @@ struct SettingsPairingSection: View {
     }
   }
 
-  private var awayFromMacHelp: String {
+  private var awayFromComputerHelp: String {
     if accountService.identity != nil {
-      return "You're signed in, so your Macs stay reachable from any network."
+      return "You're signed in, so your computers stay reachable from any network."
     }
-    return "Sign in to reach your Macs from any network."
+    return "Sign in to reach your computers from any network."
   }
 
   private var discoverSubtitle: String? {
     let count = snapshot.discoveredHostCount
     let savedCount = snapshot.savedReconnectHostCount
     if count == 0, savedCount > 0 {
-      return savedCount == 1 ? "1 saved Mac" : "\(savedCount) saved Macs"
+      return savedCount == 1 ? "1 saved computer" : "\(savedCount) saved computers"
     }
     if count == 0 {
-      return "Choose your Mac, then enter its ADE PIN"
+      return "Choose your computer, then enter its ADE PIN"
     }
-    return count == 1 ? "1 nearby Mac found · enter its ADE PIN" : "\(count) nearby Macs found"
+    return count == 1 ? "1 nearby computer found · enter its ADE PIN" : "\(count) nearby computers found"
   }
 }
 
@@ -470,7 +470,7 @@ struct DiscoverHostsSheet: View {
             VStack(spacing: 14) {
               ADESkeletonView(height: 56, cornerRadius: 14)
               ADESkeletonView(height: 56, cornerRadius: 14)
-              Text("Looking for Macs running ADE nearby…")
+              Text("Looking for computers running ADE nearby…")
                 .font(.caption)
                 .foregroundStyle(ADEColor.textSecondary)
                 .padding(.top, 4)
@@ -508,7 +508,7 @@ struct DiscoverHostsSheet: View {
       }
       .adeScreenBackground()
       .adeNavigationGlass()
-      .navigationTitle("Nearby Macs")
+      .navigationTitle("Nearby computers")
       .navigationBarTitleDisplayMode(.inline)
       .toolbar {
         ToolbarItem(placement: .cancellationAction) {

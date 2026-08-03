@@ -66,6 +66,19 @@ function processExists(pid: number): boolean {
   }
 }
 
+// A contended `open(..., "wx")` reports EEXIST on POSIX, but Windows keeps a
+// deleted name in the directory until the last handle closes. Between the
+// holder's unlink and that final drop, a contending open hits the
+// delete-pending name and Node surfaces EPERM, EACCES or EBUSY instead. Those
+// are contention, not failure, so the caller must wait rather than abort --
+// this is the brain-spawn path, where burst contention is the normal case.
+function isSocketSpawnLockContention(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "EEXIST") return true;
+  if (process.platform !== "win32") return false;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
 function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
   try {
     const stat = fs.statSync(lockPath);
@@ -134,11 +147,10 @@ export async function withSocketSpawnLock<T>(socketPath: string, task: () => Pro
       fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
       break;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw error;
+      if (!isSocketSpawnLockContention(error)) throw error;
       if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
+        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`, { cause: error });
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }

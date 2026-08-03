@@ -21,7 +21,11 @@
     "build:notch": "node ./scripts/build-attention-notch.mjs",
     "test:notch": "swift test --package-path ./native/ADEAttentionNotch",
     "build:webclient": "vite build --config vite.webclient.config.ts --configLoader runner && node ./scripts/check-webclient-entry.mjs",
-    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && electron-builder --win --x64 --publish never && npm run validate:win:release",
+    "dist:win:test": "node ./scripts/run-windows-test-build.mjs",
+    "dist:win": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win && npm run validate:win:release",
+    "dist:win:signed": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run validate:win:artifacts && npm run build && npm run package:win:signed && npm run validate:win:release:signed",
+    "package:win": "node ./scripts/run-electron-builder.mjs --win --x64 --publish never",
+    "package:win:signed": "node ./scripts/run-electron-builder.mjs --require-signing --win --x64 --publish never",
     "dist:mac": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac --publish never",
     "dist:mac:dir": "npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --dir --mac --publish never -c.mac.identity=null -c.mac.notarize=false",
     "dist:mac:signed": "node ./scripts/require-macos-release-secrets.cjs && npm run materialize:runtime-resources && npm run validate:runtime-resources && npm run sign:mac:runtime-archives && npm run materialize:whisper-resources && npm run validate:whisper-resources && npm run build:notch && npm run build && electron-builder --mac --publish never",
@@ -40,6 +44,7 @@
     "validate:whisper-resources": "node ./scripts/validate-whisper-resources.mjs",
     "validate:win:artifacts": "node ./scripts/validate-win-artifacts.mjs --mode=preflight",
     "validate:win:release": "node ./scripts/validate-win-artifacts.mjs --mode=release",
+    "validate:win:release:signed": "node ./scripts/validate-win-artifacts.mjs --mode=release --require-signed",
     "release:mac:local": "node ./scripts/release-mac-local.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
@@ -50,6 +55,9 @@
     "test:orchestrator-smoke": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts --reporter=verbose",
     "test:orchestrator-complex-mock": "vitest run src/main/services/orchestrator/orchestratorSmoke.test.ts -t \"complex mock prompt\" --reporter=verbose",
     "test:chat-model-runtime-audit": "node ./scripts/audit-chat-model-runtime.mjs --mode=dry-run --max-per-provider=2",
+    "validate:win:proof": "node ./scripts/windows-proof-manifest.mjs validate",
+    "validate:win:proof-inventory": "node ./scripts/windows-proof-manifest.mjs validate-inventory && node ./scripts/windows-proof-manifest.mjs validate-provenance",
+    "test:win:release-contract": "node --test ./scripts/windows-release-contract.test.mjs ./scripts/windows-authenticode.test.mjs ./scripts/windows-uninstall-cleanup.test.mjs ./scripts/windows-proof-manifest.test.mjs",
     "ade:dev": "npm --prefix ../ade-cli run dev -- --project-root ../..",
     "ade:build": "npm --prefix ../ade-cli run build",
     "ade:typecheck": "npm --prefix ../ade-cli run typecheck",
@@ -179,7 +187,8 @@
       "dist/**/*",
       "electron.cjs",
       "package.json",
-      "vendor/**/*"
+      "vendor/**/*",
+      "!node_modules/opencode-windows-x64/**"
     ],
     "asarUnpack": [
       "dist/main/packagedRuntimeSmoke.cjs",
@@ -209,10 +218,11 @@
       "node_modules/opencode-linux-arm64-musl/**",
       "node_modules/opencode-linux-x64-musl/**",
       "node_modules/opencode-windows-arm64/**",
-      "node_modules/opencode-windows-x64/**",
+      "node_modules/opencode-windows-x64-baseline/**",
       "node_modules/@cursor/sdk/**",
       "node_modules/@cursor/sdk-darwin-arm64/**",
       "node_modules/@cursor/sdk-darwin-x64/**",
+      "node_modules/@cursor/sdk-win32-x64/**",
       "node_modules/sqlite3/**",
       "vendor/crsqlite/**"
     ],
@@ -272,7 +282,9 @@
           "ade-darwin-arm64",
           "ade-darwin-arm64.native.tar.gz",
           "ade-darwin-x64",
-          "ade-darwin-x64.native.tar.gz"
+          "ade-darwin-x64.native.tar.gz",
+          "ade-win32-x64.exe",
+          "ade-win32-x64.native.tar.gz"
         ]
       },
       {
@@ -297,10 +309,6 @@
           "**/*",
           "!ggml-base.en.bin"
         ]
-      },
-      {
-        "from": "resources/app-update.yml",
-        "to": "app-update.yml"
       },
       {
         "from": "../../NOTICE",
@@ -332,7 +340,43 @@
         ],
         "rfc3161TimeStampServer": "http://timestamp.digicert.com"
       },
-      "artifactName": "${productName}-${version}-win-${arch}.${ext}"
+      "artifactName": "ADE-${version}-win-${arch}.${ext}",
+      "extraResources": [
+        {
+          "from": "scripts/windows-install-setup.ps1",
+          "to": "ade-cli/windows-install-setup.ps1"
+        },
+        {
+          "from": "scripts/windows-uninstall-cleanup.ps1",
+          "to": "ade-cli/windows-uninstall-cleanup.ps1"
+        },
+        {
+          "from": "scripts/windows-firewall-rules.ps1",
+          "to": "ade-cli/windows-firewall-rules.ps1"
+        },
+        {
+          "from": "resources/runtime",
+          "to": "runtime",
+          "filter": [
+            "ade-linux-arm64",
+            "ade-linux-arm64.native.tar.gz",
+            "ade-linux-x64",
+            "ade-linux-x64.native.tar.gz"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "include": "build/installer.nsh",
+      "uninstallDisplayName": "${productName}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": false,
+      "allowToChangeInstallationDirectory": false,
+      "runAfterFinish": false,
+      "createDesktopShortcut": false,
+      "createStartMenuShortcut": true,
+      "deleteAppDataOnUninstall": false
     },
     "mac": {
       "target": [

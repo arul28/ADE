@@ -1,4 +1,4 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID, createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -6,6 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
 import { buildPackagedRuntimeNodeModulePaths } from "../runtime/packagedNodePath";
+import { terminateChildProcessTree } from "../shared/utils";
 import type {
   CursorSdkCloudArtifactDescriptor,
   CursorSdkErrorDetail,
@@ -90,6 +91,12 @@ const pools = new Map<string, {
 }>();
 const pendingInits = new Map<string, Promise<CursorSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+/**
+ * How long the worker gets to answer the IPC `dispose` request before the pool
+ * kills its process tree. It has to cover cancelling an in-flight run and
+ * closing the SDK agent, and on Windows it is the only orderly path there is.
+ */
+const CURSOR_SDK_DISPOSE_GRACE_MS = 3_000;
 const CURSOR_SDK_WORKER_ENV_DENYLIST = [
   "CURSOR_API_KEY",
   "CURSOR_AUTH_TOKEN",
@@ -485,6 +492,8 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   fs.mkdirSync(paths.stateRoot, { recursive: true });
   ensurePrivateSocketPath(paths.socketPath);
 
+  // fork() forwards its options to spawn(), which supports windowsHide, but
+  // the installed @types/node ForkOptions declaration omits that property.
   const child = fork(workerPath, [], {
     cwd: args.workspacePath,
     env: buildCursorSdkWorkerEnv({
@@ -497,8 +506,11 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     }),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
-  });
+    windowsHide: true,
+  } as ForkOptions & { windowsHide: boolean });
   const pending = new Map<string, PendingRpc>();
+  let disposeTimer: NodeJS.Timeout | null = null;
+  let killTimer: NodeJS.Timeout | null = null;
   const bridge: CursorSdkBridge = {
     onEvent: null,
     onRunStarted: null,
@@ -612,14 +624,22 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
     dispose: () => {
       for (const [, waiter] of pending) waiter.reject(new Error("Cursor SDK worker disposed."));
       pending.clear();
+      // Windows has no graceful SIGTERM: `child.kill()` is TerminateProcess, so
+      // the worker's own signal handler never runs and the tools the SDK
+      // spawned (shell commands, the bundled ripgrep) are left behind. The IPC
+      // `dispose` request is therefore the only orderly shutdown path here, and
+      // the escalation must kill the whole tree rather than a single pid.
+      const escalate = (): void => {
+        if (child.exitCode != null || child.killed) return;
+        killTimer = terminateChildProcessTree(child, killTimer);
+      };
       const sent = sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as CursorSdkWorkerRequest);
-      if (!sent && child.exitCode == null && !child.killed) {
-        child.kill("SIGTERM");
+      if (!sent) {
+        escalate();
         return;
       }
-      setTimeout(() => {
-        if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
-      }, 800).unref();
+      disposeTimer = setTimeout(escalate, CURSOR_SDK_DISPOSE_GRACE_MS);
+      disposeTimer.unref();
     },
   };
 
@@ -768,6 +788,12 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   });
 
   child.on("exit", (code, signal) => {
+    // Never let an escalation fire after the worker is gone: on Windows that
+    // would run `taskkill /T /F` against a recycled pid.
+    if (disposeTimer) clearTimeout(disposeTimer);
+    if (killTimer) clearTimeout(killTimer);
+    disposeTimer = null;
+    killTimer = null;
     rejectPending(workerExitedError(code, signal));
     cleanupPoolEntry(pooled);
   });
@@ -817,7 +843,30 @@ async function createCursorSdkConnection(args: Parameters<typeof acquireCursorSd
   return pooled;
 }
 
-function cleanupCursorSdkRuntimePaths(entry: {
+// Cleanup runs as soon as the connection is released, but `dispose()` only
+// asks the worker to shut down — it is still alive, and on Windows a directory
+// cannot be removed while a process holds handles inside it (the SDK's local
+// platform keeps `state/index.db` and its -wal/-shm open). POSIX unlinks open
+// files happily, so the first attempt always wins there. Retry in the
+// background until the worker has actually exited, otherwise every one-shot
+// catalog/cloud request leaks a `state/` directory into the project's
+// `.ade/cache/cursor-sdk`.
+const CURSOR_SDK_CLEANUP_RETRY_LIMIT = 40;
+const CURSOR_SDK_CLEANUP_RETRY_DELAY_MS = 250;
+
+function removeCursorSdkRuntimePath(target: string, attempt = 0): void {
+  try {
+    fs.rmSync(target, { recursive: true, force: true });
+  } catch {
+    if (attempt >= CURSOR_SDK_CLEANUP_RETRY_LIMIT) return;
+    setTimeout(
+      () => removeCursorSdkRuntimePath(target, attempt + 1),
+      CURSOR_SDK_CLEANUP_RETRY_DELAY_MS,
+    ).unref();
+  }
+}
+
+export function cleanupCursorSdkRuntimePaths(entry: {
   cacheRoot?: string;
   stateRoot: string;
   socketPath?: string;
@@ -830,11 +879,7 @@ function cleanupCursorSdkRuntimePaths(entry: {
     targets.add(path.dirname(entry.socketPath));
   }
   for (const target of targets) {
-    try {
-      fs.rmSync(target, { recursive: true, force: true });
-    } catch {
-      // Best effort: stale one-shot SDK state should never break request cleanup.
-    }
+    removeCursorSdkRuntimePath(target);
   }
 }
 

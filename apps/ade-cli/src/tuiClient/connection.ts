@@ -880,7 +880,7 @@ export async function connectToAde(args: {
       const message = errorMessage(error);
       if (args.requireSocket) {
         if (args.remote) {
-          const remoteLabel = args.project.remoteLabel?.trim() || "the remote Mac";
+          const remoteLabel = args.project.remoteLabel?.trim() || "the remote computer";
           throw new Error(
             `Remote ADE connection to ${remoteLabel} was interrupted while ADE Code was starting: ` +
               `${remoteSocketFailureDetail(message, explicitSocketPath)}. ` +

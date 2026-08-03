@@ -64,7 +64,7 @@ export async function pairedRouteAccountProof(args: {
   const expectedOwnerUserId = args.credentials.accountOwnerUserId?.trim() ?? "";
   if (expectedOwnerUserId && proof.userId.trim() !== expectedOwnerUserId) {
     throw new PairedRuntimeRelayAuthRequiredError(
-      "Sign in with the same ADE account as this Mac to connect through Relay. Local network and Tailscale connections still work without an account.",
+      "Sign in with the same ADE account as this computer to connect through Relay. Local network and Tailscale connections still work without an account.",
     );
   }
   return { userId: proof.userId.trim(), token: proof.token.trim() };
@@ -78,7 +78,7 @@ export async function assertRelayAccountUnchanged(
   const currentProof = await getAccountRelayProof().catch(() => null);
   if (currentProof?.userId.trim() === initialProof.userId) return;
   throw new PairedRuntimeRelayAuthRequiredError(
-    "Your ADE account changed before the Relay connection finished. Sign in with the same account as this Mac and try again.",
+    "Your ADE account changed before the Relay connection finished. Sign in with the same account as this computer and try again.",
   );
 }
 

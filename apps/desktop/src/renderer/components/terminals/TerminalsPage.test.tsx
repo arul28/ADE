@@ -860,7 +860,7 @@ describe("TerminalsPage chat session activation", () => {
     });
   });
 
-  it("switches back to This Mac before selecting its shell from a remote-bound tab", async () => {
+  it("switches back to This computer before selecting its shell from a remote-bound tab", async () => {
     Object.defineProperty(window, "ade", {
       configurable: true,
       value: { builtInBrowser: { onEvent: vi.fn(() => vi.fn()) } },

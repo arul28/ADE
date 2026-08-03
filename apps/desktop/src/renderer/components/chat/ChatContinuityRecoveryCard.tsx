@@ -274,7 +274,7 @@ export function ChatContinuityRecoveryCard({
             <div className="mt-2.5 rounded-[calc(var(--chat-radius-card)-8px)] border border-amber-200/12 bg-amber-300/[0.05] px-3 py-2.5">
               <div className="text-[length:calc(var(--chat-font-size)*10.5/14)] leading-relaxed text-amber-50/78">
                 ADE will start a fresh AI session and brief it with a short summary from this
-                chat's saved history. The original conversation stays saved on this Mac.
+                chat's saved history. The original conversation stays saved on this computer.
               </div>
               <div className="mt-2 flex flex-wrap gap-1.5">
                 <button

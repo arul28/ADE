@@ -18,6 +18,7 @@ import {
   type ProviderFamily,
 } from "../../../../shared/modelRegistry";
 import { cn } from "../../ui/cn";
+import { cursorProviderAvailable } from "../../../lib/platform";
 import { ModelListRow } from "./ModelListRow";
 import { ModelPickerRail, type RailEntry, type RailSelection, type AuthStatus } from "./ModelPickerRail";
 import { useModelFavorites } from "./useModelFavorites";
@@ -254,15 +255,24 @@ export const ModelPickerContent = memo(function ModelPickerContent({
   }, [allowRegistryExpansion, authOnly, familyIsReady, models, registryFilter]);
 
   const providersPresent = useMemo<ProviderFamily[]>(() => {
+    // Cursor drops out of the rail on Windows on ARM, where @cursor/sdk has no
+    // build — otherwise the rail would offer a provider that can never load.
+    // See shared/providerPlatformSupport.ts.
+    const families = cursorProviderAvailable()
+      ? ALL_PROVIDER_FAMILIES
+      : ALL_PROVIDER_FAMILIES.filter((family) => family !== "cursor");
     const set = new Set<ProviderFamily>();
-    for (const m of expandedModels) set.add(m.family);
+    for (const m of expandedModels) {
+      if (m.family === "cursor" && !cursorProviderAvailable()) continue;
+      set.add(m.family);
+    }
     // Always include dynamic-only provider families (Cursor, Droid, OpenCode,
     // local runtimes). Their models may not exist until a catalog refresh runs,
     // but the rail entry must still be reachable without toggling "Show all models".
-    for (const family of ALL_PROVIDER_FAMILIES) set.add(family);
+    for (const family of families) set.add(family);
     // Stabilize rail order so it doesn't flicker as catalog discovery streams in.
-    return ALL_PROVIDER_FAMILIES.filter((family) => set.has(family))
-      .concat([...set].filter((family) => !ALL_PROVIDER_FAMILIES.includes(family)));
+    return families.filter((family) => set.has(family))
+      .concat([...set].filter((family) => !families.includes(family)));
   }, [expandedModels]);
 
   const railEntries = useMemo<RailEntry[]>(() => {

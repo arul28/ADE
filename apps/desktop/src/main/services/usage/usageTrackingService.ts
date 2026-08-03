@@ -797,6 +797,7 @@ async function pollCodexViaCliRpc(logger: Logger): Promise<FreshUsageProviderPol
           stdio: ["pipe", "pipe", "pipe"],
           env,
           windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+          windowsHide: true,
         });
 
         let stdout = "";

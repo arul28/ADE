@@ -89,13 +89,18 @@ export function shellHeaderInsetPx(displayZoom: number): number {
 /**
  * Sync the title bar's start padding to the current zoom so the macOS traffic
  * lights never overlap the logo. No-op off macOS (no native traffic lights) and
- * outside a DOM; there the static `--shell-header-padding-start` default stands.
+ * outside a DOM; there the static `--shell-header-inset-start` default stands.
+ *
+ * `--shell-header-inset-start` (not `--shell-header-padding-start`) because
+ * `data-theme` is set on <html>, <body>, and the shell wrapper, so each of them
+ * re-declares the padding tokens and would shadow this value before it reached
+ * the header. See the platform-inset block in index.css.
  */
 export function applyShellHeaderInset(displayZoom: number): void {
   if (!isMac) return;
   if (typeof document === "undefined") return;
   document.documentElement.style.setProperty(
-    "--shell-header-padding-start",
+    "--shell-header-inset-start",
     `${shellHeaderInsetPx(displayZoom)}px`,
   );
 }

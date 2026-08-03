@@ -126,8 +126,11 @@ ADE CLI — outbound + inbound:
 
 - `apps/ade-cli/src/commands/deeplinks.ts` — `ade open`, `ade link`,
   and `ade linear install` subcommands.
-  - `ade open <url>` invokes the OS opener (`open` / `xdg-open` / `start`)
-    on a validated `ade://` or `https://ade-app.dev/open?...` URL, which
+  - `ade open <url>` invokes the OS opener (`open` / `xdg-open` /
+    `rundll32.exe url.dll,FileProtocolHandler`). Windows passes the URL as one
+    direct process argument so OAuth query characters never enter `cmd.exe`.
+    The opener receives only a validated `ade://` or
+    `https://ade-app.dev/open?...` URL, which
     routes back through the registered protocol handler. The
     `--linear-issue <id> --branch <branch>` form is what Linear's
     "Open issue in coding tool" entry passes; the receiving install opens

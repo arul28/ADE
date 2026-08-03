@@ -923,7 +923,7 @@ export function ChatIosSimulatorPanel({
         ok: Boolean(idb?.available && companion?.available),
         detail: idb?.available && companion?.available
           ? "Tap, drag, type, and inspect actions are ready."
-          : "Tap, drag, type, and inspect actions are unavailable on this Mac.",
+          : "Tap, drag, type, and inspect actions are unavailable on this computer.",
       },
     ];
   }, [toolByName]);
@@ -941,7 +941,7 @@ export function ChatIosSimulatorPanel({
     if (!previewCapability.mcpbridgeAvailable) {
       return {
         title: "Xcode MCP bridge is not available",
-        detail: "Install or select Xcode 26.3 or newer so `xcrun mcpbridge` is available on this Mac.",
+        detail: "Install or select Xcode 26.3 or newer so `xcrun mcpbridge` is available on this computer.",
       };
     }
     if (!previewCapability.xcodeRunning) {
@@ -1011,7 +1011,7 @@ export function ChatIosSimulatorPanel({
   const liveInputBlocked = simulatorMutationBlocked || simulatorControlUnavailable;
   const liveInputBlockedMessage = simulatorMutationBlocked
     ? inputBlockedMessage
-    : "Simulator controls are unavailable on this Mac.";
+    : "Simulator controls are unavailable on this computer.";
 
   const changeMediaZoom = useCallback((delta: number) => {
     setMediaZoom((current) => {
@@ -3369,7 +3369,7 @@ export function ChatIosSimulatorPanel({
         ) : null}
         {mode === "interact" && !controlAvailable && !showSetupChecklist && !simulatorMutationBlocked ? (
           <div className="rounded border border-amber-400/15 bg-amber-500/10 px-1.5 py-1 font-sans text-[10px] text-amber-100/70">
-            Simulator controls are unavailable on this Mac.
+            Simulator controls are unavailable on this computer.
           </div>
         ) : null}
       </div> : null}

@@ -3,6 +3,10 @@ import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import {
+  readOrCreateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterialAsync,
+} from "./windowsDpapiMaterial";
 
 export interface CredentialStore {
   get(key: string): Promise<string | null>;
@@ -57,6 +61,10 @@ const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
 const MACOS_KEYCHAIN_READ_TIMEOUT_MS = 2_000;
 const MACOS_KEYCHAIN_NEGATIVE_CACHE_MS = 30_000;
 let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
+// Keyed by resolved secrets directory: DPAPI material is protected per
+// directory, so unlike the single macOS keychain item these cannot share a slot.
+const windowsDpapiMaterialCache = new Map<string, Buffer>();
+const windowsDpapiReadInFlight = new Map<string, Promise<Buffer | null>>();
 let defaultOsBoundKeyMaterialReadInFlight: Promise<Buffer | null> | null = null;
 let lastMissingDefaultOsBoundKeyMaterialAt = 0;
 
@@ -112,6 +120,26 @@ function isEexist(error: unknown): boolean {
     && error !== null
     && "code" in error
     && (error as { code?: unknown }).code === "EEXIST";
+}
+
+/**
+ * Windows does not report lock contention as EEXIST the way POSIX does.
+ *
+ * Deleting a file on Windows only unlinks the name once every open handle to it
+ * closes, so between one holder's unlink and the last handle drop the lock name
+ * still occupies the directory in a "delete pending" state. A concurrent
+ * `open(lockPath, "wx")` against that name fails with a delete-pending or
+ * sharing violation, which Node surfaces as EPERM, EACCES or EBUSY instead of
+ * EEXIST. Those are the same "someone else holds it, try again" condition, so
+ * they have to keep the acquisition loop running; treating them as fatal makes
+ * every concurrent credential write a coin flip on Windows.
+ */
+function isLockContention(error: unknown): boolean {
+  if (isEexist(error)) return true;
+  if (process.platform !== "win32") return false;
+  if (typeof error !== "object" || error === null || !("code" in error)) return false;
+  const code = (error as { code?: unknown }).code;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
 }
 
 function sleepSync(ms: number): void {
@@ -280,10 +308,10 @@ function withCredentialFileLock<T>(lockPath: string, fn: () => T): T {
       }
       ensureMode600(lockPath);
     } catch (error: unknown) {
-      if (!isEexist(error)) throw error;
+      if (!isLockContention(error)) throw error;
       removeStaleLock(lockPath);
       if (Date.now() >= deadline) {
-        throw new Error("Timed out waiting for ADE credential store lock.");
+        throw new Error("Timed out waiting for ADE credential store lock.", { cause: error });
       }
       sleepSync(LOCK_RETRY_MS);
     }
@@ -579,11 +607,28 @@ async function readMacKeychainMaterialAsync(): Promise<Buffer | null> {
   });
 }
 
-function readDefaultOsBoundKeyMaterial(): Buffer | null {
+function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
   const envMaterial = readCredentialPassphraseFromEnv();
   if (envMaterial) return envMaterial;
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (process.platform === "win32") {
+    // Windows re-spawned `powershell.exe` on every credential read, where macOS
+    // spawns `security` once and caches. That is a far worse trade than it
+    // looks: PowerShell 5.1 pays CLR load, System.Security from disk, and
+    // Defender's on-access scan each time.
+    //
+    // The cache must be keyed by directory, unlike macOS. Keychain material is
+    // one global item, but DPAPI material is protected per secrets directory
+    // (`<secretsDir>/.credential-key.dpapi`), so a single shared slot would
+    // hand one store another store's key.
+    const key = path.resolve(secretsDir);
+    const cached = windowsDpapiMaterialCache.get(key);
+    if (cached) return cached;
+    const material = readOrCreateWindowsDpapiMaterial(secretsDir);
+    if (material) windowsDpapiMaterialCache.set(key, material);
+    return material;
+  }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   const material = readOrCreateMacKeychainMaterial();
   if (material) {
@@ -593,11 +638,36 @@ function readDefaultOsBoundKeyMaterial(): Buffer | null {
   return material;
 }
 
-async function readDefaultOsBoundKeyMaterialAsync(): Promise<Buffer | null> {
+async function readDefaultOsBoundKeyMaterialAsync(secretsDir: string): Promise<Buffer | null> {
   const envMaterial = readCredentialPassphraseFromEnv();
   if (envMaterial) return envMaterial;
   if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
   if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
+  if (process.platform === "win32") {
+    const key = path.resolve(secretsDir);
+    const cached = windowsDpapiMaterialCache.get(key);
+    if (cached) return cached;
+    // In-flight dedup matters more here than it ever did on macOS: without it,
+    // concurrent credential reads each spawn their own PowerShell, and that
+    // contention is what makes a cold start slow enough to hit the timeout.
+    // No negative cache -- a locked keychain is a durable state worth backing
+    // off from, but a DPAPI failure is usually a transient timeout, and
+    // suppressing retries would make one slow cold start look permanent.
+    const pending = windowsDpapiReadInFlight.get(key);
+    if (pending) return await pending;
+    const inFlight = readOrCreateWindowsDpapiMaterialAsync(secretsDir).then((material) => {
+      if (material) windowsDpapiMaterialCache.set(key, material);
+      return material;
+    });
+    windowsDpapiReadInFlight.set(key, inFlight);
+    try {
+      return await inFlight;
+    } finally {
+      if (windowsDpapiReadInFlight.get(key) === inFlight) {
+        windowsDpapiReadInFlight.delete(key);
+      }
+    }
+  }
   if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
   if (
     lastMissingDefaultOsBoundKeyMaterialAt > 0
@@ -655,12 +725,14 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
+    const osBindingDir = path.dirname(this.machineKeyPath);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
-    this.keyMaterialProvider = args.keyMaterialProvider ?? readDefaultOsBoundKeyMaterial;
+    this.keyMaterialProvider = args.keyMaterialProvider
+      ?? (() => readDefaultOsBoundKeyMaterial(osBindingDir));
     this.keyMaterialProviderAsync = args.keyMaterialProviderAsync
       ?? (args.keyMaterialProvider
         ? async () => args.keyMaterialProvider?.() ?? null
-        : readDefaultOsBoundKeyMaterialAsync);
+        : () => readDefaultOsBoundKeyMaterialAsync(osBindingDir));
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
       : args.credentialChangePollIntervalMs;
@@ -687,7 +759,9 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
-    return this.readAll({ allowRewrite: false })[normalized] ?? null;
+    return this.withLock(
+      () => this.readAll({ allowRewrite: false, migrateLegacy: true })[normalized] ?? null,
+    );
   }
 
   getLastReadState(): CredentialStoreReadState {
@@ -754,7 +828,7 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     return this.readAll({ allowRewrite: false });
   }
 
-  private readAll(args: { allowRewrite: boolean }): Record<string, string> {
+  private readAll(args: { allowRewrite: boolean; migrateLegacy?: boolean }): Record<string, string> {
     const credentialsExist = fs.existsSync(this.credentialsPath);
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
@@ -777,12 +851,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
           throw error;
         }
         this.lastReadState = credentialsExist ? "available" : "missing";
-        if (args.allowRewrite) {
-          try {
-            this.writeAll(values);
-          } catch {
-            // Preserve read compatibility if migration cannot rewrite right now.
-          }
+        if (args.allowRewrite || args.migrateLegacy) {
+          this.writeAllWithKey(values, key);
         }
         return values;
       }
@@ -811,7 +881,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       throw new Error("Unsupported ADE credential store format.");
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, await this.keyMaterialProviderAsync());
+    const osMaterial = await this.keyMaterialProviderAsync();
+    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
     if (!key.equals(machineKey)) {
       try {
         const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
@@ -819,7 +890,16 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
         return values;
       } catch {
         try {
-          const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+          deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        } catch (error) {
+          this.lastReadState = "unreadable";
+          throw error;
+        }
+        try {
+          if (!osMaterial || osMaterial.length === 0) {
+            throw new Error("OS-bound credential material is unavailable during migration.");
+          }
+          const values = this.withLock(() => this.migrateLegacyUnderLock(osMaterial));
           this.lastReadState = "available";
           return values;
         } catch (error) {
@@ -841,7 +921,24 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private writeAll(values: Record<string, string>): void {
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
     const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
+    this.writeAllWithKey(values, key);
+  }
+
+  private writeAllWithKey(values: Record<string, string>, key: Buffer): void {
     writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
+  }
+
+  private migrateLegacyUnderLock(osMaterial: Buffer): Record<string, string> {
+    const raw = readJsonObject(this.credentialsPath);
+    const machineKey = readOrCreateMachineKey(this.machineKeyPath);
+    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
+    try {
+      return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+    } catch {
+      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+      this.writeAllWithKey(values, key);
+      return values;
+    }
   }
 
   private withLock<T>(fn: () => T): T {

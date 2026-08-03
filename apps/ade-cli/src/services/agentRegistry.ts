@@ -1,11 +1,17 @@
+import { CURSOR_CLI_EXECUTABLES } from "../../../desktop/src/shared/providerCliExecutables";
+
 export type AgentCliErrorCategory = "missing" | "unauthenticated";
 
 export type AgentCliDescriptor = {
   agent: string;
   displayName: string;
-  binaryNames: string[];
+  binaryNames: readonly string[];
   installCommand: string;
   authCommand: string;
+  authRecoveryRules?: readonly {
+    authCommand: string;
+    patterns: readonly RegExp[];
+  }[];
   missingErrorPatterns: RegExp[];
   notAuthErrorPatterns: RegExp[];
 };
@@ -23,6 +29,13 @@ function npmGlobalInstallCommand(packageName: string): string {
     return `npm install -g ${packageName}`;
   }
   return `mkdir -p "$HOME/.npm-global" "$HOME/.local/bin" && NPM_CONFIG_PREFIX="$HOME/.npm-global" npm install -g ${packageName}`;
+}
+
+function cursorInstallCommand(): string {
+  if (typeof process !== "undefined" && process.platform === "win32") {
+    return `powershell.exe -NoProfile -Command "irm 'https://cursor.com/install?win32=true' | iex"`;
+  }
+  return 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash';
 }
 
 export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
@@ -75,9 +88,10 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
   {
     agent: "cursor",
     displayName: "Cursor Agent",
-    binaryNames: ["cursor-agent", "cursor"],
-    installCommand: 'mkdir -p "$HOME/.local/bin" && curl https://cursor.com/install -fsS | bash',
+    binaryNames: CURSOR_CLI_EXECUTABLES.recoveryMentionNames,
+    installCommand: cursorInstallCommand(),
     authCommand: "cursor-agent login",
+    authRecoveryRules: CURSOR_CLI_EXECUTABLES.authRecoveryRules,
     missingErrorPatterns: [
       /\bcursor-agent\b.*\b(command not found|not recognized|not found|enoent)\b/i,
       /\bcursor\b.*\b(command not found|not recognized|enoent)\b/i,
@@ -85,6 +99,26 @@ export const AGENT_CLI_REGISTRY: AgentCliDescriptor[] = [
     ],
     notAuthErrorPatterns: [
       /\bcursor(?:-agent)?\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+    ],
+  },
+  {
+    agent: "droid",
+    displayName: "Factory Droid",
+    binaryNames: ["droid"],
+    installCommand: npmGlobalInstallCommand("droid"),
+    // Factory exposes sign-in through the interactive CLI's /login flow rather
+    // than a non-interactive `login` subcommand. Launching `droid` is therefore
+    // the portable recovery command on Windows, macOS, and Linux.
+    authCommand: "droid",
+    missingErrorPatterns: [
+      /\bdroid\b.*\b(command not found|not recognized|not found|enoent)\b/i,
+      /\bspawn\s+droid\s+enoent\b/i,
+    ],
+    notAuthErrorPatterns: [
+      /\bdroid\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+      /\bfactory\b.*\b(not logged in|not authenticated|unauthorized|authentication failed|login required)\b/i,
+      /\b(?:invalid|missing|no)\s+factory(?:_api_key| api key)\b/i,
+      /\bfactory(?:_api_key| api key)\b.*\b(invalid|missing|not found|not set|required|unauthorized|must be set)\b/i,
     ],
   },
 ];
@@ -98,17 +132,24 @@ function descriptorMatchesPreferred(descriptor: AgentCliDescriptor, preferredAge
 }
 
 function descriptorMentioned(descriptor: AgentCliDescriptor, text: string): boolean {
-  return descriptor.binaryNames.some((name) => new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text))
+  return descriptor.binaryNames.some((name) => binaryNameMentioned(text, name))
     || new RegExp(`\\b${descriptor.agent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`, "i").test(text);
 }
 
-function toMatch(descriptor: AgentCliDescriptor, category: AgentCliErrorCategory): AgentCliErrorMatch {
+function binaryNameMentioned(text: string, name: string): boolean {
+  return new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?:\\.exe|\\.cmd|\\.bat|\\.ps1)?\\b`, "i").test(text);
+}
+
+function toMatch(descriptor: AgentCliDescriptor, category: AgentCliErrorCategory, text: string): AgentCliErrorMatch {
+  const aliasAuthCommand = category === "unauthenticated"
+    ? descriptor.authRecoveryRules?.find((rule) => rule.patterns.some((pattern) => pattern.test(text)))?.authCommand
+    : undefined;
   return {
     agent: descriptor.agent,
     displayName: descriptor.displayName,
     category,
     installCommand: descriptor.installCommand,
-    authCommand: descriptor.authCommand,
+    authCommand: aliasAuthCommand ?? descriptor.authCommand,
   };
 }
 
@@ -124,10 +165,10 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
     const mentioned = descriptorMentioned(descriptor, text);
     if (!mentioned && descriptor !== preferred) continue;
     if (descriptor.missingErrorPatterns.some((pattern) => pattern.test(text))) {
-      return toMatch(descriptor, "missing");
+      return toMatch(descriptor, "missing", text);
     }
     if (descriptor.notAuthErrorPatterns.some((pattern) => pattern.test(text))) {
-      return toMatch(descriptor, "unauthenticated");
+      return toMatch(descriptor, "unauthenticated", text);
     }
   }
 
@@ -136,10 +177,10 @@ export function classifyAgentCliError(message: string, preferredAgent?: string |
       /\b(command not found|not recognized|enoent|executable file not found|no such file or directory)\b/i.test(text)
       || /\b(?:spawn|exec(?:ute)?|binary|command|executable)\b.*\bnot found\b/i.test(text)
     ) {
-      return toMatch(preferred, "missing");
+      return toMatch(preferred, "missing", text);
     }
     if (/\b(not logged in|not authenticated|unauthorized|authentication failed|login required|invalid api key|401|403)\b/i.test(text)) {
-      return toMatch(preferred, "unauthenticated");
+      return toMatch(preferred, "unauthenticated", text);
     }
   }
 

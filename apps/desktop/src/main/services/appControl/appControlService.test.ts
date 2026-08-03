@@ -1,6 +1,10 @@
 import type { EventEmitter } from "node:events";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Logger } from "../logging/logger";
+import { gitBashPath, shellQuote } from "./appControlLaunchCommand";
 
 type FakeCdpTarget = {
   id: string;
@@ -148,6 +152,139 @@ describe("appControlService", () => {
     mockState.sockets.length = 0;
     mockState.runtimeValues.length = 0;
     mockState.cdpResults.length = 0;
+  });
+
+  it("passes Windows Electron launches to the PTY as structured argv and env", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const create = vi.fn(async () => ({
+      sessionId: "terminal-windows",
+      ptyId: "pty-windows",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      const value = "C:\\Program Files\\ADE's $lane %TEMP% & café";
+      await service.launch({
+        command: `ADE_TEST="${value}" npx electron "C:\\Program Files\\My & App café"`,
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        command: "npx",
+        args: [
+          "electron",
+          expect.stringMatching(/^--remote-debugging-port=\d+$/),
+          "C:\\Program Files\\My & App café",
+        ],
+        startupCommand: expect.not.stringContaining("ADE_TEST="),
+        env: expect.objectContaining({
+          ADE_TEST: value,
+          ADE_APP_CONTROL: "1",
+        }),
+      }));
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("passes shell-specific Windows package-script commands through to the PTY", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-windows-shells",
+      ptyId: "pty-windows-shells",
+      pid: 42,
+    }));
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-app-control-shells-"));
+    fs.writeFileSync(path.join(projectRoot, "package.json"), JSON.stringify({
+      scripts: { dev: "echo preparing && electron ." },
+    }), "utf8");
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({ command: "npm run dev", cwd: projectRoot });
+
+      const createArgs = create.mock.calls[0]?.[0] as Record<string, any>;
+      expect(createArgs).not.toHaveProperty("command");
+      expect(createArgs.windowsStartupCommands.powershell).toContain("Set-Location -LiteralPath");
+      expect(createArgs.windowsStartupCommands.powershell).not.toContain(" && ");
+      expect(createArgs.windowsStartupCommands.cmd).toContain('cd /d "');
+      expect(createArgs.windowsStartupCommands.cmd).toContain(" && ");
+      // `projectRoot` is a host-native temp dir, so its shape differs per runner:
+      // a drive-letter path on windows-latest, a plain POSIX path on ubuntu.
+      // Derive the expected MSYS `cd` target from the fixture rather than hard
+      // coding a drive-letter root; appControlLaunchCommand.test.ts pins the
+      // drive-letter -> MSYS rewrite itself with literal inputs on every host.
+      const expectedGitBashCd = `cd -- ${shellQuote(gitBashPath(projectRoot))} && `;
+      expect(createArgs.windowsStartupCommands["git-bash"].slice(0, expectedGitBashCd.length))
+        .toBe(expectedGitBashCd);
+      expect(createArgs.windowsStartupCommands["git-bash"]).not.toContain(String.fromCharCode(92));
+      expect(createArgs.windowsStartupCommands["git-bash"]).toContain(" && ");
+      expect(createArgs.startupCommand).toBe(createArgs.windowsStartupCommands.powershell);
+    } finally {
+      service.dispose();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
+  });
+
+  it("preserves shell environment expansion for Electron launches outside Windows", async () => {
+    const originalPlatform = process.platform;
+    Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+    const create = vi.fn(async (_input: Record<string, unknown>) => ({
+      sessionId: "terminal-darwin",
+      ptyId: "pty-darwin",
+      pid: 42,
+    }));
+    const projectRoot = process.cwd();
+    const service = createAppControlService({
+      projectRoot,
+      logger: createLogger(),
+      resolveLaneId: () => "lane-1",
+      ptyService: {
+        create,
+        onExit: vi.fn(() => () => {}),
+        signalTerminal: vi.fn(),
+      } as any,
+    });
+
+    try {
+      await service.launch({
+        command: 'ADE_TEST="$HOME" npx electron "."',
+        cwd: projectRoot,
+      });
+
+      expect(create).toHaveBeenCalledWith(expect.objectContaining({
+        startupCommand: expect.stringContaining('ADE_TEST="$HOME"'),
+      }));
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("command");
+      expect(create.mock.calls[0]?.[0]).not.toHaveProperty("args");
+    } finally {
+      service.dispose();
+      Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    }
   });
 
   it("lets manual target switches win over an in-flight health poll", async () => {

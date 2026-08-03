@@ -238,6 +238,7 @@ export function createLaneEnvironmentService({
         env: process.env,
         stdio: ["ignore", "pipe", "pipe"],
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";

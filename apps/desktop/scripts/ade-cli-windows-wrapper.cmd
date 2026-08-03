@@ -6,7 +6,22 @@ set "CLI_JS=%ADE_CLI_JS%"
 if "%CLI_JS%"=="" set "CLI_JS=%SCRIPT_DIR%..\cli.cjs"
 
 set "RESOURCES_DIR=%SCRIPT_DIR%..\.."
-set "APP_EXE=%RESOURCES_DIR%\..\ADE.exe"
+set "APP_EXE_NAME=ADE.exe"
+set "CHANNEL_FILE=%SCRIPT_DIR%..\channel"
+if exist "%CHANNEL_FILE%" (
+  set /p ADE_BUNDLED_CHANNEL=<"%CHANNEL_FILE%"
+)
+if /I "%ADE_BUNDLED_CHANNEL%"=="beta" (
+  set "APP_EXE_NAME=ADE Beta.exe"
+  if not defined ADE_PACKAGE_CHANNEL set "ADE_PACKAGE_CHANNEL=beta"
+  if not defined ADE_DESKTOP_APP_NAME set "ADE_DESKTOP_APP_NAME=ADE Beta"
+)
+if /I "%ADE_BUNDLED_CHANNEL%"=="alpha" (
+  set "APP_EXE_NAME=ADE Alpha.exe"
+  if not defined ADE_PACKAGE_CHANNEL set "ADE_PACKAGE_CHANNEL=alpha"
+  if not defined ADE_DESKTOP_APP_NAME set "ADE_DESKTOP_APP_NAME=ADE Alpha"
+)
+set "APP_EXE=%RESOURCES_DIR%\..\%APP_EXE_NAME%"
 if not defined ADE_AGENT_SKILLS_DIRS if exist "%RESOURCES_DIR%\agent-skills" set "ADE_AGENT_SKILLS_DIRS=%RESOURCES_DIR%\agent-skills"
 set "NODE_PATH_VALUE=%RESOURCES_DIR%\app.asar.unpacked\node_modules;%RESOURCES_DIR%\app.asar\node_modules"
 if defined NODE_PATH (

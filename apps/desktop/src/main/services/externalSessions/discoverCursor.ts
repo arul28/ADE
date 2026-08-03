@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import {
   asEpochMs,
   asRecord,
@@ -44,7 +45,7 @@ function isCursorConversationId(id: string): boolean {
 }
 
 function cursorProjectSlugForCwd(cwd: string): string {
-  return cwd.replace(/^[/\\]+/u, "").replace(/[\\/]/gu, "-");
+  return cursorProjectSlug(cwd);
 }
 
 function cursorWorkspaceHash(cwd: string): string {

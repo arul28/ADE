@@ -94,7 +94,7 @@ final class DeepLinkRouter {
       )
     case "lane":
       // Lanes are a local-only desktop concept — the iOS client has no
-      // counterpart UI, so we surface a "Send to your Mac" card instead of
+      // counterpart UI, so we surface a "Send to your computer" card instead of
       // trying to navigate.
       guard let laneId = pathComponents.first,
             ADEDeepLinkURLParsing.isValidUUID(laneId) else { return }

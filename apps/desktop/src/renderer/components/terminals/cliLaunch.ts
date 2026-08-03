@@ -1,6 +1,7 @@
 import type { LaunchProfile } from "../../../shared/cliLaunch";
 import type {
   AgentChatPermissionMode,
+  PtyCreateArgs,
   TerminalResumeLaunchConfig,
   TerminalResumeProvider,
 } from "../../../shared/types";
@@ -26,6 +27,7 @@ export type WorkPtyLaunchArgs = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  runtimeCliLaunch?: NonNullable<PtyCreateArgs["runtimeCliLaunch"]>;
   tracked?: boolean;
   disposition?: WorkPtyLaunchDisposition;
   pin?: OpenProjectBinding | null;

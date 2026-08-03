@@ -102,6 +102,7 @@ export function runShellCommand(
       stdio: ["ignore", "pipe", "pipe"],
       env: process.env,
       windowsVerbatimArguments: useCmd,
+      windowsHide: true,
     });
 
     let stdout = "";

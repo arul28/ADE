@@ -59,7 +59,7 @@ struct SSHPairingView: View {
         }
       } message: {
         if case .needsHostConfirmation(let fingerprint) = model.state {
-          Text("Before continuing, compare this fingerprint with the one shown on your Mac:\n\n\(fingerprint)")
+          Text("Before continuing, compare this fingerprint with the one shown on your computer:\n\n\(fingerprint)")
         }
       }
       .onChange(of: model.state) { _, state in
@@ -97,7 +97,7 @@ struct SSHPairingView: View {
         .autocorrectionDisabled()
       TextField("SSH port", value: $port, format: .number)
         .keyboardType(.numberPad)
-      TextField("Mac username", text: $username)
+      TextField("Computer username", text: $username)
         .textInputAutocapitalization(.never)
         .autocorrectionDisabled()
     }
@@ -151,7 +151,7 @@ struct SSHPairingView: View {
         passphrase = ""
       }
       if let generated = model.generatedKey {
-        Text("Run this once on the Mac, then return here and pair:")
+        Text("Run this once on the computer, then return here and pair:")
           .font(.footnote)
           .foregroundStyle(.secondary)
         Text(generated.authorizationCommand)
@@ -166,7 +166,7 @@ struct SSHPairingView: View {
 
   private var securitySection: some View {
     Section("Security") {
-      Label("ADE asks you to compare the Mac's fingerprint before trusting it.", systemImage: "checkmark.shield")
+      Label("ADE asks you to compare the computer's fingerprint before trusting it.", systemImage: "checkmark.shield")
         .font(.footnote)
       Label("SSH is used only for setup. ADE reconnects normally after that.", systemImage: "link.badge.plus")
         .font(.footnote)
@@ -177,7 +177,7 @@ struct SSHPairingView: View {
   private var statusSection: some View {
     switch model.state {
     case .checkingHost:
-      Section { ProgressView("Checking the Mac…") }
+      Section { ProgressView("Checking the computer…") }
     case .pairing:
       Section { ProgressView("Connecting to ADE…") }
     case .paired(let machine, let warning):

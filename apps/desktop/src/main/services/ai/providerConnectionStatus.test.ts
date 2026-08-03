@@ -367,4 +367,92 @@ describe("buildProviderConnections", () => {
       else process.env.CURSOR_ADMIN_API_KEY = prevAdminKey;
     }
   });
+  // Cursor is gated out of Windows on ARM because @cursor/sdk publishes no
+  // win32-arm64 runtime. Platform/arch are forced here rather than read from the
+  // host, so these assertions run identically on every CI runner — no platform
+  // gate, no baseline entry needed.
+  describe("Cursor on Windows on ARM", () => {
+    async function withTarget<T>(
+      platform: string,
+      arch: string,
+      run: () => Promise<T>,
+    ): Promise<T> {
+      const prevPlatform = Object.getOwnPropertyDescriptor(process, "platform")!;
+      const prevArch = Object.getOwnPropertyDescriptor(process, "arch")!;
+      Object.defineProperty(process, "platform", { value: platform, configurable: true });
+      Object.defineProperty(process, "arch", { value: arch, configurable: true });
+      try {
+        // Must await inside the override: buildProviderConnections reads
+        // process.arch after its first await point.
+        return await run();
+      } finally {
+        Object.defineProperty(process, "platform", prevPlatform);
+        Object.defineProperty(process, "arch", prevArch);
+      }
+    }
+
+    it("reports Cursor as hard unavailable on win32-arm64 even with a verified key and a ready runtime", async () => {
+      const prevKey = process.env.CURSOR_API_KEY;
+      process.env.CURSOR_API_KEY = "key_live_cursor_agent";
+      mockState.getProviderRuntimeHealth.mockImplementation((provider: string) =>
+        provider === "cursor"
+          ? { state: "ready", message: null, checkedAt: "2026-05-01T12:00:00.000Z" }
+          : null,
+      );
+      try {
+        const result = await withTarget("win32", "arm64", () =>
+          buildProviderConnections(mergeCliStatuses([])),
+        );
+        expect(result.cursor.runtimeAvailable).toBe(false);
+        expect(result.cursor.runtimeDetected).toBe(false);
+        expect(result.cursor.authAvailable).toBe(false);
+        expect(result.cursor.usageAvailable).toBe(false);
+        expect(result.cursor.path).toBeNull();
+        expect(result.cursor.sources).toEqual([]);
+        expect(result.cursor.blocker).toMatch(/win32-arm64/);
+      } finally {
+        if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+        else process.env.CURSOR_API_KEY = prevKey;
+      }
+    });
+
+    it("leaves Cursor available on win32-x64 and darwin-arm64 with the same inputs", async () => {
+      const prevKey = process.env.CURSOR_API_KEY;
+      process.env.CURSOR_API_KEY = "key_live_cursor_agent";
+      mockState.getProviderRuntimeHealth.mockImplementation((provider: string) =>
+        provider === "cursor"
+          ? { state: "ready", message: null, checkedAt: "2026-05-01T12:00:00.000Z" }
+          : null,
+      );
+      try {
+        for (const [platform, arch] of [["win32", "x64"], ["darwin", "arm64"], ["darwin", "x64"]]) {
+          const result = await withTarget(platform!, arch!, () =>
+            buildProviderConnections(mergeCliStatuses([])),
+          );
+          expect(result.cursor.runtimeAvailable, `${platform}-${arch}`).toBe(true);
+          expect(result.cursor.runtimeDetected, `${platform}-${arch}`).toBe(true);
+          expect(result.cursor.path, `${platform}-${arch}`).toBe("@cursor/sdk");
+          expect(result.cursor.blocker, `${platform}-${arch}`).toBeNull();
+        }
+      } finally {
+        if (prevKey === undefined) delete process.env.CURSOR_API_KEY;
+        else process.env.CURSOR_API_KEY = prevKey;
+      }
+    });
+
+    it("does not touch Claude, Codex or Droid on win32-arm64", async () => {
+      const result = await withTarget("win32", "arm64", () =>
+        buildProviderConnections(
+          mergeCliStatuses([
+            { cli: "claude", installed: true, path: "claude", authenticated: true, verified: true },
+            { cli: "codex", installed: true, path: "codex", authenticated: true, verified: true },
+            { cli: "droid", installed: true, path: "droid", authenticated: true, verified: true },
+          ]),
+        ),
+      );
+      expect(result.claude.runtimeAvailable).toBe(true);
+      expect(result.codex.runtimeAvailable).toBe(true);
+      expect(result.droid.runtimeAvailable).toBe(true);
+    });
+  });
 });

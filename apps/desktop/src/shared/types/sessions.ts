@@ -291,6 +291,8 @@ export type ClaudeSessionPointer = {
   updatedAt: string;
 };
 
+export type WindowsShellKind = "powershell" | "cmd" | "git-bash";
+
 export type PtyCreateArgs = {
   sessionId?: string;
   /** Allow callers to pre-assign a new session id instead of only resuming an existing tracked session. */
@@ -309,6 +311,12 @@ export type PtyCreateArgs = {
   tracked?: boolean;
   toolType?: TerminalToolType | null;
   startupCommand?: string;
+  /**
+   * Shell-specific variants of startupCommand. On Windows the PTY selects the
+   * entry only after a native shell has spawned, so fallback shell selection
+   * cannot accidentally receive another shell's syntax.
+   */
+  windowsStartupCommands?: Partial<Record<WindowsShellKind, string>>;
   startupDelayMs?: number;
   /** Optional input to send to the PTY after the process starts. */
   initialInput?: string;

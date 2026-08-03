@@ -1,7 +1,7 @@
 # Sync and Multi-Device
 
 ADE syncs live runtime state across an ADE machine runtime and any connected
-controllers (other Macs, iPhones) using **cr-sqlite** as a CRDT-backed
+controllers (other computers, iPhones) using **cr-sqlite** as a CRDT-backed
 replication layer over a **WebSocket** transport. The design is local-first:
 eligible routes are preferred in **LAN → Tailscale → Relay** order for
 desktop-to-runtime, ADE Code, and iOS connections. The account-gated cloud
@@ -67,6 +67,14 @@ diagnostics. It is **disabled by default** and only activates when
 `ADE_DISABLE_SYNC_HOST=1` is not set). Production builds and dev
 sessions both leave it off; everything below describes the runtime-hosted
 path unless explicitly noted.
+
+Windows x64 can own the same machine sync authority as macOS/Linux. It uses a
+per-user/channel named pipe for local RPC and the packaged
+`vendor/crsqlite/win32-x64/crsqlite.dll` for CRR replication. The typed
+`crdtSyncAvailable` status prevents pairing when the extension is unavailable;
+Connections surfaces the failure with reinstall/restart guidance. Native
+macOS computer use and iOS Simulator are separate capabilities and do not gate
+Windows phone pairing, App Control, browser control, or proof ingestion.
 
 ### The machine-wide sync host lease
 
@@ -362,7 +370,7 @@ Runtime support files outside `services/sync/`:
   machine `name` is suffixed by package channel (`publishedMachineName`): a Beta
   build advertises `<name> · Beta` and an Alpha build `<name> · Alpha`, while a
   stable build (or an already-suffixed name) is left untouched, so the same
-  physical Mac running two channels shows as two distinguishable directory rows.
+  physical computer running two channels shows as two distinguishable directory rows.
   A LAN endpoint is only emitted for an address candidate whose `kind` is `lan`;
   because `syncPairingConnectInfo.buildAddressCandidates` now classifies the
   saved `lastHost` as `lan`/`tailscale` when it matches the current address set
@@ -401,7 +409,7 @@ Runtime support files outside `services/sync/`:
   publication re-reads the active sync snapshot and token so a brain started
   before sign-in still recovers. The last typed
   publisher outcome is exposed as `routeHealth.accountDirectory` in
-  `sync.getStatus`, `ade sync status`, and the desktop This Mac card, including
+  `sync.getStatus`, `ade sync status`, and the desktop This computer card, including
   the selected directory origin, HTTP status, bounded classified HTTP reason,
   timestamps, and reachable-route count. A non-success response contributes
   `lastHttpReason` and the same reason in `skipReason`; the parser consumes at
@@ -509,10 +517,10 @@ Desktop connection UI:
   Account page so signed-out users can return to the exact surface they left.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.tsx` —
   Connections uses the focused `"phone"` and `"web"` variants beneath a
-  shared **This Mac** card. The card owns the pairing-PIN manager and the
+  shared **This computer** card. The card owns the pairing-PIN manager and the
   internal phone QR; the Phone tab explains sign-in, QR + PIN, and Nearby + PIN,
   while Web is account-sign-in only. When a configured PIN is available only
-  as its at-rest PBKDF2 hash after a runtime restart, the This Mac card can
+  as its at-rest PBKDF2 hash after a runtime restart, the This computer card can
   generate and set a new six-digit PIN instead of leaving copy disabled.
   Initial-load failures show a short recovery action while keeping the raw
   message under **Technical details**: missing project registration asks the
@@ -521,12 +529,12 @@ Desktop connection UI:
   restart. The local-brain-only
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
-  Mac's identity, pairing code, and Phone/Web device lists.
+  computer's identity, pairing code, and Phone/Web device lists.
 - `apps/desktop/src/renderer/components/settings/useSyncConnections.ts` — the
   hook that keeps the Connections panel local-vs-remote aware. It fetches the
   binding-following `sync.getStatus` **and** the machine-level
-  `sync.getLocalStatus` on every refresh; the This Mac card always renders the
-  `getLocalStatus` snapshot, so it names the physical Mac even in a remote-bound
+  `sync.getLocalStatus` on every refresh; the This computer card always renders the
+  `getLocalStatus` snapshot, so it names the physical computer even in a remote-bound
   window, and never substitutes a routed (remote) snapshot when the local one is
   unavailable. It derives `isRemoteBound` by comparing the two snapshots'
   `localDevice.deviceId`, exposes the bound machine's display name for labeling,
@@ -534,8 +542,8 @@ Desktop connection UI:
   (`setPin`, `generatePin`, `clearPin`, `forgetDevice`, name edits) still follow
   the window binding, the panel renders the pairing code and device controls
   read-only while remote-bound and labels the connected device list with the
-  local Mac's name so it can't be mistaken for the bound machine's. When
-  remote-bound it also scopes the shown devices to this Mac's live
+  local computer's name so it can't be mistaken for the bound machine's. When
+  remote-bound it also scopes the shown devices to this computer's live
   `connectedPeers` (via `peerToRuntimeDeviceState`) instead of the routed
   `listDevices()` result, which would describe the remote machine; offline-paired
   rows are unavailable in that mode until a local-scoped device IPC exists.
@@ -550,7 +558,7 @@ Desktop connection UI:
   `deviceType === "browser"`.
 - `apps/desktop/src/renderer/components/settings/SyncDevicesSection.test.tsx`
   and `apps/desktop/src/renderer/components/app/TopBar.test.tsx` — focused
-  Phone/Web variants, This Mac PIN management, internal phone-QR interactions,
+  Phone/Web variants, This computer PIN management, internal phone-QR interactions,
   account-only web guidance, web-peer chip, and sheet dismissal coverage.
 
 Cross-machine Work union:
@@ -1035,7 +1043,7 @@ Canonical files (`apps/ade-cli/src/services/sync/`):
 - `syncPinStore.ts` — on-disk storage for the user-set 6-digit
   pairing PIN at `~/.ade/secrets/sync-pin.json`, chmodded `0600`. The
   runtime never rotates the PIN; the operator sets or clears it from
-  the **This Mac** card in the Connections panel.
+  the **This computer** card in the Connections panel.
 - `resolveTailscaleCliPath.ts` — Tailscale CLI discovery used for the
   tailnet `tailscale serve` publication path.
 - `syncDpop.ts` — device-bound pairing (DPoP) helpers: the canonical
@@ -1368,7 +1376,7 @@ exception. Preload invokes `ade.sync.getLocalStatus` directly; main dispatches
 `sync.getStatus` through the machine-level `LocalRuntimeConnectionPool`, never
 the active window's remote project binding, with only the local in-process
 diagnostics service as its unavailable-runtime fallback. This is the path the
-Connections This Mac projection and local pairing/device controls should use.
+Connections This computer projection and local pairing/device controls should use.
 
 During project transitions, mutating sync methods (`sync.setPin`,
 `sync.clearPin`, `sync.connectToBrain`, lane-presence updates, model-picker
@@ -1712,7 +1720,7 @@ successful adoption logs `sync_host.account_legacy_pairing_upgraded`.
   it (or after legacy migration), so after a restart the host can verify
   pairings with the existing digits if the user still knows them. It
   cannot display or copy those digits until the user generates or sets a
-  new PIN. The **This Mac** card in Connections exposes the
+  new PIN. The **This computer** card in Connections exposes the
   generate-new-PIN recovery path; the phone enters the same digits shown there
   after scanning the QR or choosing the machine from Nearby. ADE account
   sign-in is the primary PIN-less phone path through the directory and Relay.
@@ -2165,7 +2173,7 @@ feature is merged or because a deliberately isolated-port host is running.
   this release retain their saved local/direct reconnect path. Direct pairing
   uses a **user-set 6-digit PIN** stored as a PBKDF2 hash in
   `~/.ade/secrets/sync-pin.json` on the runtime machine. The runtime never
-  auto-rotates or TTLs the PIN; the user manages it from the **This Mac** card
+  auto-rotates or TTLs the PIN; the user manages it from the **This computer** card
   in Connections and clears it when they want to stop accepting new pairings.
   Plaintext is
   process-local and intentionally unrecoverable after restart, so Connections
@@ -2361,7 +2369,7 @@ feature is merged or because a deliberately isolated-port host is running.
 - **The pairing PIN is user-managed, not ADE-managed.** There is no
   expiry and no rotation. A machine that leaves the PIN set is
   perpetually pairable by anyone on the network who knows the digits
-  (subject to the per-IP rate limiter). Clearing the PIN from the **This Mac**
+  (subject to the per-IP rate limiter). Clearing the PIN from the **This computer**
   card in Connections is how you stop accepting new direct pairings;
   already-paired
   devices keep their per-device secret and remain connected. Because

@@ -31,8 +31,18 @@ export function ActivitySection() {
             borderRadius: 10,
           }}
         >
-          Sign in to ADE to sync Activity across your machines. The notch settings
-          below still apply to this Mac.
+          {/*
+            The second sentence is a promise about what still works while
+            signed out, and it is only true where the notch exists: every other
+            control below is disabled by `busy` (`loading || signedOut`), and
+            the notch cards are disabled by `!notchSupported`. Off macOS that
+            leaves nothing on this page that "still applies", so the sentence
+            is dropped rather than reworded — a Windows user was being pointed
+            at a section that is inert for them.
+          */}
+          {model.notchSupported
+            ? "Sign in to ADE to sync Activity across your machines. The notch settings below still apply to this computer."
+            : "Sign in to ADE to sync Activity across your machines."}
         </div>
       ) : null}
 

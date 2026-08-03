@@ -22,18 +22,34 @@ export function processOutputToString(value: Buffer | string | null | undefined)
 /**
  * Quote a single argument for a Windows `cmd.exe /s /c "..."` command line.
  *
- * SAFETY: this function strips `%` (variable expansion) and `\r\n` (line
- * breaks) but does NOT escape other cmd metacharacters such as `|`, `&`,
- * `<`, `>`, `!`, `^`. Those characters are inert only because the resulting
- * string is embedded inside a correctly delimited `cmd.exe /s /c "…"` command
- * line, usually through {@link resolveWindowsCmdInvocation} or
- * {@link resolveWindowsCmdLineInvocation}. Do NOT reuse this helper as a
- * general-purpose escaping primitive.
+ * SAFETY: this function neutralizes `\r\n` (line breaks) but does NOT escape
+ * cmd metacharacters such as `|`, `&`, `<`, `>`, `!`, `^`. Those characters are
+ * inert only because the resulting string is embedded inside a correctly
+ * delimited `cmd.exe /s /c "…"` command line, usually through
+ * {@link resolveWindowsCmdInvocation} or {@link resolveWindowsCmdLineInvocation}.
+ * Do NOT reuse this helper as a general-purpose escaping primitive.
+ *
+ * `%` IS NOT ESCAPED, AND CANNOT BE. Doubling to `%%` is a batch-file rule; on a
+ * command line `%%` survives literally, so the doubling only ever corrupted the
+ * argument without preventing anything. Measured through a real `.cmd` shim:
+ *
+ *   input           doubling `%%`          leaving `%` alone
+ *   "100% done"  -> "100%% done"           "100% done"
+ *   "%USERPROFILE%" -> "%C:\Users\me%"     "C:\Users\me"
+ *
+ * Caret escaping does not help either: inside a quoted argument `^` is inert,
+ * so `%^VAR%` arrives verbatim as `%^VAR%` — expansion blocked, text corrupted
+ * a different way. There is no correct quoting for `%` here, so leave it alone
+ * and let literal percent signs round-trip. Callers that must carry text
+ * containing `%VAR%` past cmd.exe have to keep it off the command line
+ * entirely — pipe it over stdin, or use the guard at ptyService.ts:4482.
+ *
+ * POSIX has no equivalent hazard: `%` is not special to `sh`.
  */
 export function quoteWindowsCmdArg(value: string): string {
   let quoted = "\"";
   let backslashes = 0;
-  for (const char of value.replace(/%/g, "%%").replace(/[\r\n]/g, " ")) {
+  for (const char of value.replace(/[\r\n]/g, " ")) {
     if (char === "\\") {
       backslashes += 1;
       continue;
@@ -79,12 +95,32 @@ export function resolveWindowsCmdLineInvocation(
   };
 }
 
+export function isWindowsPowerShellScript(command: string, platform: NodeJS.Platform = process.platform): boolean {
+  return platform === "win32" && path.win32.extname(command).toLowerCase() === ".ps1";
+}
+
+/**
+ * `.ps1` shims (npm writes one next to every `.cmd`) cannot be launched by
+ * cmd.exe or by `spawn` directly — PowerShell has to interpret them. `-File`
+ * keeps the remaining arguments literal rather than re-parsing them as script.
+ */
+export function resolveWindowsPowerShellInvocation(command: string, args: string[]): SpawnInvocation {
+  return {
+    command: "powershell.exe",
+    args: ["-NoLogo", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", command, ...args],
+    windowsVerbatimArguments: false,
+  };
+}
+
 export function resolveCliSpawnInvocation(
   command: string,
   args: string[],
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
 ): SpawnInvocation {
+  if (isWindowsPowerShellScript(command, platform)) {
+    return resolveWindowsPowerShellInvocation(command, args);
+  }
   if (shouldUseWindowsCmdWrapper(command, platform)) {
     return resolveWindowsCmdInvocation(command, args, env);
   }
@@ -95,13 +131,21 @@ export function resolveCliSpawnInvocation(
   };
 }
 
+export function windowsTaskkillInvocation(pid: number, options: { force?: boolean } = {}): SpawnInvocation {
+  return {
+    command: "taskkill.exe",
+    args: ["/PID", String(pid), "/T", ...(options.force ? ["/F"] : [])],
+  };
+}
+
 export function killWindowsProcessTree(
   pid: number,
   onFailure?: (detail: ProcessTreeFailureDetail) => void,
 ): boolean {
   if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    const out = spawnSync("taskkill.exe", ["/T", "/F", "/PID", String(pid)], { windowsHide: true });
+    const invocation = windowsTaskkillInvocation(pid, { force: true });
+    const out = spawnSync(invocation.command, invocation.args, { windowsHide: true });
     if (!out.error && out.status === 0) return true;
     onFailure?.({
       pid,

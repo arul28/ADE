@@ -1,9 +1,10 @@
-import { fork, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess, type ForkOptions } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Logger } from "../logging/logger";
+import { terminateChildProcessTree } from "../shared/utils";
 import type {
   DroidSdkAskUserRequest,
   DroidSdkAskUserResponse,
@@ -48,6 +49,10 @@ let droidSdkGenCounter = 0;
 const pools = new Map<string, { ref: number; generation: number; pooled: DroidSdkPooled }>();
 const pendingInits = new Map<string, Promise<DroidSdkPooled>>();
 const STALE_INIT_RETRY_LIMIT = 2;
+// @factory/droid-sdk's ProcessTransport.close() gives `droid` a 5s grace period
+// before escalating to SIGKILL. Force-killing the worker sooner than that tears
+// the worker down mid-close and leaves the `droid` process behind.
+const WORKER_FORCE_KILL_DELAY_MS = 6_000;
 const moduleDir =
   typeof __dirname === "string"
     ? __dirname
@@ -115,12 +120,15 @@ export async function acquireDroidSdkConnection(args: {
 }
 
 async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkConnection>[0]): Promise<DroidSdkPooled> {
+  // fork() forwards its options to spawn(), which supports windowsHide, but
+  // the installed @types/node ForkOptions declaration omits that property.
   const child = fork(resolveWorkerPath(), [], {
     cwd: args.workspacePath,
     env: sanitizeEnv(args.baseEnv ?? process.env),
     stdio: ["ignore", "pipe", "pipe", "ipc"],
     execArgv: [],
-  });
+    windowsHide: true,
+  } as ForkOptions & { windowsHide: boolean });
   const pending = new Map<string, PendingRpc>();
   const bridge: DroidSdkBridge = {
     onEvent: null,
@@ -205,8 +213,13 @@ async function createDroidSdkConnection(args: Parameters<typeof acquireDroidSdkC
       pending.clear();
       sendWorkerMessage({ type: "dispose", requestId: randomUUID() } as DroidSdkWorkerRequest);
       setTimeout(() => {
-        if (child.exitCode == null && !child.killed) child.kill("SIGTERM");
-      }, 800).unref();
+        if (child.exitCode != null || child.killed) return;
+        // `child.kill("SIGTERM")` is a single-PID TerminateProcess on Windows,
+        // so the `droid` process the worker spawned (and anything it spawned in
+        // turn) is orphaned rather than reaped. terminateChildProcessTree() uses
+        // `taskkill /T` on win32 and the process group elsewhere.
+        terminateChildProcessTree(child, null, 1_500).unref();
+      }, WORKER_FORCE_KILL_DELAY_MS).unref();
     },
   };
 

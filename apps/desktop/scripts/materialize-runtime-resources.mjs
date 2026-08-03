@@ -15,7 +15,7 @@ const repoRoot = path.resolve(desktopRoot, "..", "..");
 const cliRoot = path.join(repoRoot, "apps", "ade-cli");
 const runtimeRoot = path.join(desktopRoot, "resources", "runtime");
 const cliDistStaticRoot = path.join(cliRoot, "dist-static");
-const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"];
+const targets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64", "win32-x64"];
 const seaFuse = "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2";
 const allowHostOnlyRuntimeResources = process.env.ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY === "1";
 const maxDownloadRedirects = 10;
@@ -31,11 +31,11 @@ function npmCommand() {
 }
 
 function artifactNamesForTarget(target) {
-  return [`ade-${target}`, `ade-${target}.native.tar.gz`];
+  return [target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`, `ade-${target}.native.tar.gz`];
 }
 
 function isRuntimeBinaryName(name) {
-  return targets.some((target) => name === `ade-${target}`);
+  return targets.some((target) => name === artifactNamesForTarget(target)[0]);
 }
 
 function isRuntimeArtifactName(name) {

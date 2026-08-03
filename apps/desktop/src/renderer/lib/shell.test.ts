@@ -3,23 +3,23 @@ import { commandArrayToLine, parseCommandLine, quoteShellArg } from "./shell";
 
 describe("shell helpers", () => {
   it("quotes args with spaces when formatting a command line", () => {
-    expect(quoteShellArg("web app")).toBe('"web app"');
-    expect(commandArrayToLine(["pnpm", "--filter", "web app", "dev"])).toBe('pnpm --filter "web app" dev');
+    expect(quoteShellArg("web app", { platform: "linux" })).toBe('"web app"');
+    expect(commandArrayToLine(["pnpm", "--filter", "web app", "dev"], { platform: "linux" })).toBe('pnpm --filter "web app" dev');
   });
 
   it("parses quoted args back into argv", () => {
-    expect(parseCommandLine('pnpm --filter "web app" dev')).toEqual(["pnpm", "--filter", "web app", "dev"]);
+    expect(parseCommandLine('pnpm --filter "web app" dev', { platform: "linux" })).toEqual(["pnpm", "--filter", "web app", "dev"]);
   });
 
   it("preserves empty quoted POSIX arguments", () => {
-    expect(parseCommandLine('node "" " " \'\' tail')).toEqual(["node", "", " ", "", "tail"]);
-    expect(parseCommandLine(commandArrayToLine(["node", "", "tail"]))).toEqual(["node", "", "tail"]);
+    expect(parseCommandLine('node "" " " \'\' tail', { platform: "linux" })).toEqual(["node", "", " ", "", "tail"]);
+    expect(parseCommandLine(commandArrayToLine(["node", "", "tail"], { platform: "linux" }), { platform: "linux" })).toEqual(["node", "", "tail"]);
   });
 
   it("round-trips escaped quotes inside a quoted argument", () => {
-    const argv = parseCommandLine('node -e "console.log(\\"hello world\\")"');
+    const argv = parseCommandLine('node -e "console.log(\\"hello world\\")"', { platform: "linux" });
     expect(argv).toEqual(["node", "-e", 'console.log("hello world")']);
-    expect(parseCommandLine(commandArrayToLine(argv))).toEqual(argv);
+    expect(parseCommandLine(commandArrayToLine(argv, { platform: "linux" }), { platform: "linux" })).toEqual(argv);
   });
 
   it("preserves Windows executable paths with backslashes", () => {
