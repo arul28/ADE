@@ -401,6 +401,9 @@ export async function buildLaneListSnapshots(
     autoRebaseStatus: autoRebaseByLaneId.get(lane.id) ?? null,
     conflictStatus: conflictByLaneId.get(lane.id) ?? null,
     stateSnapshot: stateByLaneId.get(lane.id) ?? null,
-    adoptableAttached: lane.laneType === "attached" && lane.archivedAt == null,
+    // Deprecated, always false. Shipped iOS builds decode this as a
+    // non-optional Bool; dropping the key blanks their lane list. See the
+    // field's doc comment in shared/types/lanes.ts.
+    adoptableAttached: false,
   }));
 }

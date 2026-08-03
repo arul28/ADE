@@ -123,8 +123,8 @@ Shared types and IPC:
   `backgroundRefreshPausedUntil` are optional so a newer client remains
   compatible with an older remote runtime.
 - `apps/desktop/src/shared/ipc.ts` — channels:
-  - `ade.onboarding.*` (status, detectDefaults, detectExistingLanes,
-    applySuggestedConfig, complete, setDismissed)
+  - `ade.onboarding.*` (status, detectDefaults, applySuggestedConfig,
+    complete, setDismissed)
   - `ade.projectConfig.*` (get, validate, save, diffAgainstDisk,
     confirmTrust, export)
   - `ade.project.*` (listRecent, openRepo, switchProjectToPath,
@@ -164,11 +164,9 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
   — essential local tooling status for git and the terminal `ade` CLI.
 - `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,
-  `LinearCard.tsx`, `WorktreesCard.tsx` — setup cards for repository auth,
-  Linear OAuth / API-key auth, and importing existing worktrees as lanes.
-  `WorktreesCard` refreshes the shared lane store after successful imports so
-  the first post-onboarding Work/Lanes views render the attached lanes without
-  waiting for a later project refresh.
+  `LinearCard.tsx` — setup cards for repository auth and Linear OAuth /
+  API-key auth. There is no worktree-import card: every git worktree in the
+  project already appears as a lane, so there is nothing to select.
 - `apps/desktop/src/renderer/components/onboarding/InputPopover.tsx`,
   `RescanButton.tsx`, `onboardingTheme.ts` — shared setup-card controls and
   brand/status styling tokens.

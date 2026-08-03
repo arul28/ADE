@@ -1476,10 +1476,13 @@ const HELP_BY_COMMAND: Record<string, string> = {
   lanes: `${ADE_BANNER}
   Lanes
 
-  Lanes are ADE-managed worktrees and branches. Most commands accept either
-  --lane <lane-id> or a positional lane id.
+  Every git worktree of the project is a lane. "ade lanes list" reconciles lane
+  rows against git on each call, so a worktree you created by hand shows up as a
+  lane with no attach step, and a lane whose worktree is gone from git and disk
+  stops being listed. Most commands accept either --lane <lane-id> or a
+  positional lane id.
 
-    $ ade lanes list --text                         Show lane stack graph and branch names
+    $ ade lanes list --text                         Show lane stack graph and branch names (adopts new worktrees)
     $ ade lanes show <lane> --text                  Inspect one lane status
     $ ade lane drift --lane <lane> --text           Check whether the worktree HEAD drifted off the lane's branch
     $ ade lane drift resolve --lane <lane> --switch-back
@@ -1503,14 +1506,15 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade lanes create --branch-name <branch>       Override the auto-generated branch name
     $ ade lanes child --lane <parent> --name <name> Create a child lane under a parent
                                                     Child lanes carry the parent's unmerged work
-    $ ade lanes import --branch <branch>            Register an existing branch/worktree
+    $ ade lanes import --branch <branch>            Create a lane for an existing branch, checked out in a new managed
+                                                    worktree (fails if the branch is already checked out somewhere —
+                                                    that worktree is already a lane)
     $ ade lanes archive <lane>                      Archive a lane in ADE
     $ ade lanes reclaim-preview <lane>              Show reclaimable space and safety warnings
     $ ade lanes archive-and-reclaim <lane> --confirm RECLAIM
                                                     Archive the lane, then remove its ADE-managed local files
     $ ade lanes unarchive <lane>                    Restore an archived lane and recreate its worktree if needed
     $ ade lanes delete <lane> --force               Delete a lane and clean up its worktree
-    $ ade lanes attach --path <worktree> --name <n> Attach an external worktree
     $ ade lanes reparent <lane> --parent <parent>   Move lane onto a new parent (runs git rebase)
     $ ade lanes reparent <lane> --parent <parent> --stack-base-branch <branch>
                                                     Reparent and stack onto a specific branch (e.g. origin/main)
@@ -4355,41 +4359,6 @@ function buildLanePlan(args: string[]): CliPlan {
       ],
     };
   }
-  if (sub === "attach") {
-    return {
-      kind: "execute",
-      label: "lane attach",
-      steps: [
-        actionStep(
-          "result",
-          "lane",
-          "attach",
-          collectGenericObjectArgs(args, {
-            worktreePath: readValue(args, ["--path"]) ?? firstPositional(args),
-            name: readValue(args, ["--name"]),
-          }),
-        ),
-      ],
-    };
-  }
-  if (sub === "adopt-attached") {
-    const laneId = requireValue(
-      readLaneId(args) ?? firstPositional(args),
-      "laneId",
-    );
-    return {
-      kind: "execute",
-      label: "lane adopt attached",
-      steps: [
-        actionStep(
-          "result",
-          "lane",
-          "adoptAttached",
-          collectGenericObjectArgs(args, { laneId }),
-        ),
-      ],
-    };
-  }
   if (sub === "split-unstaged") {
     return {
       kind: "execute",
@@ -4430,19 +4399,6 @@ function buildLanePlan(args: string[]): CliPlan {
           "result",
           "import_lane",
           collectGenericObjectArgs(args, input),
-        ),
-      ],
-    };
-  }
-  if (sub === "unregistered" || sub === "list-unregistered") {
-    return {
-      kind: "execute",
-      label: "unregistered lanes",
-      steps: [
-        actionCallStep(
-          "result",
-          "list_unregistered_lanes",
-          collectGenericObjectArgs(args),
         ),
       ],
     };

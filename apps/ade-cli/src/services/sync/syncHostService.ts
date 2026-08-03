@@ -2763,8 +2763,6 @@ export function createSyncHostService(args: SyncHostServiceArgs) {
       case "lanes.createChild":
       case "lanes.createFromUnstaged":
       case "lanes.importBranch":
-      case "lanes.attach":
-      case "lanes.adoptAttached":
         return result && typeof result === "object"
           ? decorateLaneSummary(result as LaneSummary)
           : result;

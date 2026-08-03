@@ -1405,7 +1405,7 @@ iOS service files (`apps/ios/ADE/Services/`):
   timeout and legacy command fallback, lane
   reparent payload building with the optional stack base-branch
   override, project hub/catalog state, active-project scoping,
-  unregistered-worktree discovery, and local project-list hiding for
+  and local project-list hiding for
   "Remove from list" so cached DB rows and runtime catalog rows for
   the same root disappear together.
 - `SyncConnectionRace.swift` — the single happy-eyeballs race that dials

@@ -9544,8 +9544,7 @@ final class ADETests: XCTestCase {
             laneId: "lane-child",
             agentSummary: ["summary": .string("Codex running")],
             updatedAt: "2026-03-18T00:14:00.000Z"
-          ),
-          adoptableAttached: false
+          )
         ),
         LaneListSnapshot(
           lane: archivedLane,
@@ -9553,8 +9552,7 @@ final class ADETests: XCTestCase {
           rebaseSuggestion: nil,
           autoRebaseStatus: nil,
           conflictStatus: nil,
-          stateSnapshot: nil,
-          adoptableAttached: false
+          stateSnapshot: nil
         ),
       ]
     )
@@ -11957,8 +11955,7 @@ final class ADETests: XCTestCase {
           updatedAt: nil
         ),
         createdAt: "2026-03-20T00:00:00.000Z",
-        archivedAt: nil,
-        adoptableAttached: true
+        archivedAt: nil
       ),
       makeLaneListSnapshot(
         id: "lane-worktree",
@@ -11976,8 +11973,7 @@ final class ADETests: XCTestCase {
           updatedAt: nil
         ),
         createdAt: "2026-03-10T00:00:00.000Z",
-        archivedAt: nil,
-        adoptableAttached: false
+        archivedAt: nil
       ),
       makeLaneListSnapshot(
         id: "lane-archived",
@@ -12010,6 +12006,12 @@ final class ADETests: XCTestCase {
 
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "docs main"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:dirty type:attached"))
+    // Nothing is created as `attached` any more, but existing rows keep the
+    // type and are never migrated. An unrecognized `is:` value matches nothing
+    // instead of degrading to a free-text search, so losing this case would
+    // empty the list rather than widen it.
+    XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[1], isPinned: false, query: "is:attached"))
+    XCTAssertFalse(laneMatchesSearch(snapshot: snapshots[2], isPinned: false, query: "is:attached"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:pinned awaiting"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[0], isPinned: false, query: "is:clean is:primary"))
     XCTAssertTrue(laneMatchesSearch(snapshot: snapshots[2], isPinned: true, query: "is:worktree"))
@@ -21471,8 +21473,7 @@ final class ADETests: XCTestCase {
     runtime: LaneRuntimeSummary,
     stateSnapshot: LaneStateSnapshotSummary? = nil,
     createdAt: String,
-    archivedAt: String?,
-    adoptableAttached: Bool = false
+    archivedAt: String?
   ) -> LaneListSnapshot {
     LaneListSnapshot(
       lane: LaneSummary(
@@ -21501,8 +21502,7 @@ final class ADETests: XCTestCase {
       rebaseSuggestion: nil,
       autoRebaseStatus: nil,
       conflictStatus: nil,
-      stateSnapshot: stateSnapshot,
-      adoptableAttached: adoptableAttached
+      stateSnapshot: stateSnapshot
     )
   }
 

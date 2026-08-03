@@ -62,6 +62,13 @@ function readImportedSessionRef(summary: ExternalSessionSummary): ImportedSessio
   return { kind, sessionId };
 }
 
+/**
+ * The service scans 200 rows per provider when project-scoped; asking for the
+ * default 50 threw most of that away, so a busy project's older sessions were
+ * scanned and then dropped before they reached the pane.
+ */
+const BROWSE_LIMIT = 200;
+
 /** Merge freshly-resolved rows into the running list, de-duped by provider+id. */
 function mergeSessions(
   prev: ExternalSessionSummary[],
@@ -95,6 +102,9 @@ export function ImportSessionBrowser({
   const [sessions, setSessions] = useState<ExternalSessionSummary[]>([]);
   const [pendingProviders, setPendingProviders] = useState<ExternalSessionProvider[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // A provider that cannot run at all (OpenCode with no CLI installed) is not
+  // the same as a provider with no sessions, and the empty list cannot say so.
+  const [providerNotices, setProviderNotices] = useState<Partial<Record<ExternalSessionProvider, string>>>({});
   const [providerFilter, setProviderFilter] = useState<ProviderFilter>("all");
   const [query, setQuery] = useState("");
   const [showAllFolders, setShowAllFolders] = useState(false);
@@ -130,12 +140,13 @@ export function ImportSessionBrowser({
     const providers = providerFilter === "all" ? ALL_PROVIDERS : [providerFilter];
     setSessions([]);
     setLoadError(null);
+    setProviderNotices({});
     setPendingProviders(providers);
     let failures = 0;
     await Promise.all(
       providers.map(async (provider) => {
         try {
-          const result = await api.list({ providers: [provider], scope, laneId: targetLaneId });
+          const result = await api.list({ providers: [provider], scope, laneId: targetLaneId, limit: BROWSE_LIMIT });
           if (seq !== requestSeq.current) return;
           const rows = normalizeListResult(result);
           setSessions((prev) => mergeSessions(prev, rows));
@@ -143,9 +154,14 @@ export function ImportSessionBrowser({
             if (!current) return null;
             return rows.find((row) => row.provider === current.provider && row.id === current.id) ?? current;
           });
-        } catch {
+        } catch (error) {
           if (seq !== requestSeq.current) return;
           failures += 1;
+          const detail = error instanceof Error ? error.message.trim() : "";
+          setProviderNotices((prev) => ({
+            ...prev,
+            [provider]: detail || `${providerDisplayName(provider)} sessions couldn't be scanned.`,
+          }));
         } finally {
           if (seq === requestSeq.current) {
             setPendingProviders((prev) => prev.filter((p) => p !== provider));
@@ -197,6 +213,13 @@ export function ImportSessionBrowser({
   useEffect(() => {
     setActiveIndex((idx) => Math.min(idx, Math.max(0, visible.length - 1)));
   }, [visible.length]);
+
+  // Suppressed while `loadError` is up: that state already explains the scan.
+  const noticeText = useMemo(() => {
+    if (loadError) return null;
+    const messages = Object.values(providerNotices).filter((message): message is string => Boolean(message));
+    return messages.length ? messages.join(" ") : null;
+  }, [loadError, providerNotices]);
 
   const runImport = useCallback(
     async (summary: ExternalSessionSummary, affordance: ImportAffordance) => {
@@ -360,6 +383,13 @@ export function ImportSessionBrowser({
             </label>
           </div>
         </div> : null}
+
+        {!selectedSession && noticeText ? (
+          <div className="flex shrink-0 items-start gap-2 rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-[11px] text-muted-fg/70">
+            <Warning size={13} className="mt-px shrink-0 text-muted-fg/60" />
+            <span>{noticeText}</span>
+          </div>
+        ) : null}
 
         {importError ? (
           <div className="flex shrink-0 items-start gap-2 rounded-lg border border-red-400/20 bg-red-500/[0.06] px-3 py-2 text-[11px] text-red-300">

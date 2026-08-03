@@ -1,6 +1,8 @@
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import os from "node:os";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import type {
   ExternalSessionMessage,
   ExternalSessionProvider,
@@ -14,6 +16,13 @@ export type ExternalSessionDiscoveryRecord = Omit<
 > & {
   sourcePath?: string | null;
   sourceMtimeMs?: number | null;
+  /**
+   * Provider ids this row supersedes, because discovery collapsed them into it
+   * (a Claude continuation chain, a Codex parent hidden behind its fork). A
+   * session imported under one of those ids is this row, so imported-marking
+   * matches them alongside `id`. Optional: providers without collapse omit it.
+   */
+  lineageIds?: string[];
 };
 
 export type ExternalSessionDiscoveryArgs = {
@@ -37,18 +46,24 @@ export type ExternalSessionFileCandidate<T extends Record<string, unknown> = Rec
   size: number;
 };
 
-export const DEFAULT_EXTERNAL_SESSION_LIMIT = 50;
+const DEFAULT_EXTERNAL_SESSION_LIMIT = 50;
 export const MAX_EXTERNAL_SESSION_LIMIT = 5000;
-export const JSONL_SCAN_LINE_LIMIT = 80;
+const JSONL_SCAN_LINE_LIMIT = 80;
 export const JSONL_SCAN_BYTE_LIMIT = 512 * 1024;
-export const MESSAGE_COUNT_MAX_BYTES = 768 * 1024;
+const MESSAGE_COUNT_MAX_BYTES = 768 * 1024;
 export const EXTERNAL_SESSION_PREVIEW_MAX_LENGTH = 240;
 export const EXTERNAL_SESSION_TITLE_MAX_LENGTH = 160;
 export const EXTERNAL_SESSION_MESSAGES_MAX_COUNT = 8;
 export const EXTERNAL_SESSION_MESSAGE_MAX_LENGTH = 320;
 // Markup-dominant transport receipts are not useful session previews, while
 // ordinary prose containing a short JSX/XML fragment remains recoverable.
-export const EXTERNAL_SESSION_MARKUP_TEXT_MIN_RATIO = 0.35;
+const EXTERNAL_SESSION_MARKUP_TEXT_MIN_RATIO = 0.35;
+/**
+ * Reading a session means opening its file, and a file that turns out to be
+ * out of project, or not a session at all, yields nothing — so providers open
+ * more candidates than the caller asked for before the final sort trims back.
+ */
+export const EXTERNAL_SESSION_READ_BUDGET_MULTIPLIER = 2;
 const EXTERNAL_SESSION_CLIP_BOUNDARY_WINDOW_RATIO = 0.25;
 
 const PLACEHOLDER_SESSION_TITLES = new Set([
@@ -89,6 +104,45 @@ export function safeReadDir(dirPath: string): fs.Dirent[] {
   }
 }
 
+type DatabaseSyncConstructor = new (
+  dbPath: string,
+  options?: { readOnly?: boolean },
+) => DatabaseSyncType;
+
+const require = createRequire(path.join(process.cwd(), "ade-runtime.cjs"));
+const { DatabaseSync } = require("node:sqlite") as { DatabaseSync: DatabaseSyncConstructor };
+
+/**
+ * A handle on another tool's sqlite store — Codex's thread DB, a Cursor chat
+ * store. Always read-only: the owning process may be writing right now, and
+ * closing a read-write handle would checkpoint and rewrite its WAL underneath
+ * it. A missing file, a WAL awaiting recovery, or a schema this build does not
+ * understand all yield null so the caller can fall back to reading files.
+ */
+export function openExternalSessionDb(
+  dbPath: string,
+  logger?: ExternalSessionDiscoveryArgs["logger"],
+): DatabaseSyncType | null {
+  if (!safeStat(dbPath)?.isFile()) return null;
+  try {
+    return new DatabaseSync(dbPath, { readOnly: true });
+  } catch (error) {
+    logger?.warn?.("external_sessions.sqlite_db_unavailable", {
+      dbPath,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return null;
+  }
+}
+
+export function closeExternalSessionDb(db: DatabaseSyncType | null): void {
+  try {
+    db?.close();
+  } catch {
+    // best effort close
+  }
+}
+
 export function sessionFileCandidate<T extends Record<string, unknown>>(
   filePath: string,
   extra: T,
@@ -116,6 +170,19 @@ export function sortFileCandidatesByMtime<T extends ExternalSessionFileCandidate
     .slice(0, limit);
 }
 
+/**
+ * Which of two artifacts for the same session holds more of it. Resuming from a
+ * second cwd leaves a near-empty copy behind, and either copy can be the newer
+ * one, so size decides before mtime.
+ */
+export function moreCompleteFileCandidate<T extends { size: number; mtimeMs: number }>(
+  current: T,
+  next: T,
+): T {
+  if (next.size !== current.size) return next.size > current.size ? next : current;
+  return next.mtimeMs > current.mtimeMs ? next : current;
+}
+
 export function safeParseJson(line: string): unknown | null {
   try {
     return JSON.parse(line);
@@ -124,12 +191,13 @@ export function safeParseJson(line: string): unknown | null {
   }
 }
 
-export function readFilePrefix(filePath: string, maxBytes = JSONL_SCAN_BYTE_LIMIT): string | null {
+export function readFileWindow(filePath: string, offset: number, maxBytes: number): string | null {
   let fd: number | null = null;
   try {
+    if (maxBytes <= 0) return null;
     fd = fs.openSync(filePath, "r");
     const buf = Buffer.alloc(maxBytes);
-    const bytesRead = fs.readSync(fd, buf, 0, maxBytes, 0);
+    const bytesRead = fs.readSync(fd, buf, 0, maxBytes, Math.max(0, offset));
     if (bytesRead <= 0) return null;
     return buf.subarray(0, bytesRead).toString("utf8");
   } catch {
@@ -145,34 +213,40 @@ export function readFilePrefix(filePath: string, maxBytes = JSONL_SCAN_BYTE_LIMI
   }
 }
 
+export function readFilePrefix(filePath: string, maxBytes = JSONL_SCAN_BYTE_LIMIT): string | null {
+  return readFileWindow(filePath, 0, maxBytes);
+}
+
 export function readFileSuffix(filePath: string, maxBytes = JSONL_SCAN_BYTE_LIMIT): string | null {
-  let fd: number | null = null;
-  try {
-    const stat = fs.statSync(filePath);
-    const bytesToRead = Math.min(maxBytes, Math.max(0, stat.size));
-    if (bytesToRead <= 0) return null;
-    fd = fs.openSync(filePath, "r");
-    const buf = Buffer.alloc(bytesToRead);
-    const bytesRead = fs.readSync(fd, buf, 0, bytesToRead, Math.max(0, stat.size - bytesToRead));
-    if (bytesRead <= 0) return null;
-    return buf.subarray(0, bytesRead).toString("utf8");
-  } catch {
-    return null;
-  } finally {
-    if (fd !== null) {
-      try {
-        fs.closeSync(fd);
-      } catch {
-        // best effort close
-      }
-    }
-  }
+  const size = safeStat(filePath)?.size;
+  if (typeof size !== "number") return null;
+  const bytesToRead = Math.min(maxBytes, Math.max(0, size));
+  if (bytesToRead <= 0) return null;
+  return readFileWindow(filePath, size - bytesToRead, bytesToRead);
 }
 
 export function readJsonlRecords(filePath: string, maxLines = JSONL_SCAN_LINE_LIMIT): unknown[] {
   const text = readFilePrefix(filePath);
   if (!text) return [];
   const lines = text.split(/\r?\n/u).filter((line) => line.trim().length > 0).slice(0, maxLines);
+  return lines
+    .map((line) => safeParseJson(line))
+    .filter((record): record is Record<string, unknown> => record != null);
+}
+
+/**
+ * Records from the last `maxBytes` of a JSONL file. A suffix read almost always
+ * begins part-way through a record, so the leading fragment is dropped unless
+ * the window happened to land on a record boundary.
+ */
+export function readJsonlRecordsFromSuffix(
+  filePath: string,
+  maxBytes = JSONL_SCAN_BYTE_LIMIT,
+): unknown[] {
+  const text = readFileSuffix(filePath, maxBytes);
+  if (!text) return [];
+  const lines = text.split(/\r?\n/u);
+  if (!text.startsWith("{")) lines.shift();
   return lines
     .map((line) => safeParseJson(line))
     .filter((record): record is Record<string, unknown> => record != null);
@@ -367,7 +441,7 @@ export function cleanExternalSessionUserText(raw: string): string | null {
   return !isProviderGeneratedNotice(normalizedForNotice) ? cleaned : null;
 }
 
-export function stripAdeGuidance(raw: string): string {
+function stripAdeGuidance(raw: string): string {
   return cleanExternalSessionUserText(raw) ?? "";
 }
 
@@ -566,7 +640,8 @@ export function canonicalCodexRecords(records: unknown[]): unknown[] {
   ));
 }
 
-function isCanonicalCodexUserRecord(record: unknown): boolean {
+/** A Codex turn the user typed, in the `event_msg` form Codex writes first. */
+export function isCanonicalCodexUserRecord(record: unknown): boolean {
   const obj = asRecord(record);
   const payload = asRecord(obj?.payload);
   if (!obj || !payload || asString(obj.type)?.toLowerCase() !== "event_msg") return false;
@@ -792,7 +867,7 @@ export function realishPath(filePath: string): string {
   }
 }
 
-export function normalizeScopeRoots(scopeRoots: readonly string[] | null | undefined): string[] {
+function normalizeScopeRoots(scopeRoots: readonly string[] | null | undefined): string[] {
   const roots = new Set<string>();
   for (const root of scopeRoots ?? []) {
     const clean = root.trim();
@@ -812,22 +887,55 @@ function scopeRootPathVariants(scopeRoots: readonly string[] | null | undefined)
   return Array.from(roots);
 }
 
+/**
+ * `cwdIsInScope` runs once per discovered row — tens of thousands of rows for a
+ * large Codex history — and each call otherwise realpaths every scope root plus
+ * the row's own cwd. Both sides are memoised against the caller's `scopeRoots`
+ * array, which discovery builds once per listing, so the memo (and every
+ * resolved path in it) becomes collectable the moment that listing is done and
+ * never outlives the filesystem snapshot it was taken from.
+ */
+type ScopeIndex = { roots: string[]; resolvedCwds: Map<string, string> };
+
+/** Guards against a pathological listing whose rows are all distinct cwds. */
+const SCOPE_CWD_MEMO_LIMIT = 10_000;
+
+const scopeIndexByRootsArray = new WeakMap<readonly string[], ScopeIndex>();
+
+function scopeIndexFor(scopeRoots: readonly string[] | null | undefined): ScopeIndex {
+  if (!scopeRoots) return { roots: [], resolvedCwds: new Map() };
+  const cached = scopeIndexByRootsArray.get(scopeRoots);
+  if (cached) return cached;
+  const index: ScopeIndex = { roots: normalizeScopeRoots(scopeRoots), resolvedCwds: new Map() };
+  scopeIndexByRootsArray.set(scopeRoots, index);
+  return index;
+}
+
 export function cwdIsInScope(cwd: string | null | undefined, scopeRoots: readonly string[] | null | undefined): boolean {
-  const roots = normalizeScopeRoots(scopeRoots);
-  if (!roots.length) return true;
+  // An unscoped listing calls this once per discovered row, and there is nothing
+  // to memoise against without a roots array — answer before building an index.
+  if (!scopeRoots) return true;
+  const index = scopeIndexFor(scopeRoots);
+  if (!index.roots.length) return true;
   const clean = cwd?.trim();
   if (!clean) return false;
-  const resolved = realishPath(clean);
-  return roots.some((root) => isPathInside(root, resolved));
+  let resolved = index.resolvedCwds.get(clean);
+  if (resolved === undefined) {
+    resolved = realishPath(clean);
+    if (index.resolvedCwds.size >= SCOPE_CWD_MEMO_LIMIT) index.resolvedCwds.clear();
+    index.resolvedCwds.set(clean, resolved);
+  }
+  return index.roots.some((root) => isPathInside(root, resolved));
 }
 
 export function cwdCandidatesIncludeScope(
   candidates: string[],
   scopeRoots: readonly string[] | null | undefined,
 ): boolean {
-  const roots = normalizeScopeRoots(scopeRoots);
-  if (!roots.length) return true;
-  return candidates.some((candidate) => cwdIsInScope(candidate, roots));
+  // Passing `scopeRoots` straight through rather than its normalised copy keeps
+  // every candidate on the same memo entry.
+  if (!scopeIndexFor(scopeRoots).roots.length) return true;
+  return candidates.some((candidate) => cwdIsInScope(candidate, scopeRoots));
 }
 
 export function slugMatchesScopeRoots(

@@ -52,7 +52,6 @@ export type LaneMenuArgs = {
   visibleLaneIds: string[];
   isRemoteProject: boolean;
   onClose: () => void;
-  onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
   onRemoveFromSplit: (laneId: string) => void;
@@ -97,7 +96,6 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
     visibleLaneIds,
     isRemoteProject,
     onClose,
-    onAdoptAttached,
     onManage,
     selectLane,
     onRemoveFromSplit,
@@ -322,14 +320,6 @@ export function buildLaneMenuGroups(args: LaneMenuArgs): LaneMenuGroup[] {
   // ── Manage: last, because both entries open a surface that can delete.
   const manage: LaneMenuEntry[] = [];
   if (lane && !isPrimary) {
-    if (lane.laneType === "attached") {
-      manage.push({
-        kind: "action",
-        key: "adopt",
-        label: "Move To .ade/worktrees",
-        onSelect: () => { onClose(); selectLane(laneId); onAdoptAttached(laneId); },
-      });
-    }
     manage.push({
       kind: "action",
       key: "manage",

@@ -1995,6 +1995,14 @@ export type AgentChatImportExternalSessionArgs = {
 export type AgentChatImportExternalSessionResult = {
   chatSessionId: string;
   chatSummary: AgentChatSessionSummary;
+  /**
+   * The provider-native id the imported chat is actually bound to. It differs
+   * from the requested external id whenever the import copied the session — a
+   * Codex fork thread, or a transplanted Claude transcript — and the caller
+   * needs it to record that copy as ADE-created rather than a new session to
+   * import. Optional so a host predating it still satisfies the contract.
+   */
+  providerTargetId?: string | null;
 };
 
 /**

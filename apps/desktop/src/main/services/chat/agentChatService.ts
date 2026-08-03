@@ -31360,6 +31360,7 @@ export function createAgentChatService(args: {
   const persistedImportedChatResult = async (
     managed: ManagedChatSession,
     provider: AgentChatImportProvider,
+    providerTargetId: string,
   ): Promise<AgentChatImportExternalSessionResult> => {
     const summaryRow = sessionService.get(managed.session.id);
     if (!summaryRow) {
@@ -31371,6 +31372,7 @@ export function createAgentChatService(args: {
     return {
       chatSessionId: managed.session.id,
       chatSummary: await summarizeSessionRow(summaryRow),
+      providerTargetId,
     };
   };
 
@@ -31471,7 +31473,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return await persistedImportedChatResult(managed, "claude");
+      return await persistedImportedChatResult(managed, "claude", targetClaudeSessionId);
     } catch (error) {
       if (createdSessionId) {
         await deleteSession({ sessionId: createdSessionId }).catch((cleanupError) => {
@@ -31620,7 +31622,7 @@ export function createAgentChatService(args: {
       persistChatState(managed);
       await appendImportedChatEvents(managed, events);
       persistChatState(managed);
-      return await persistedImportedChatResult(managed, "codex");
+      return await persistedImportedChatResult(managed, "codex", targetThreadId);
     } catch (error) {
       if (createdSessionId && forkedProviderThreadId) {
         const managed = managedSessions.get(createdSessionId);

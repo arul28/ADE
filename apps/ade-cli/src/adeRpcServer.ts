@@ -697,7 +697,7 @@ const TOOL_SPECS: ToolSpec[] = [
   },
   {
     name: "list_lanes",
-    description: "List active lanes with metadata and branch status.",
+    description: "List active lanes with metadata and branch status. Every git worktree of the project is a lane, so this also picks up worktrees created outside ADE and drops lanes whose worktree no longer exists.",
     inputSchema: {
       type: "object",
       additionalProperties: false,
@@ -707,17 +707,8 @@ const TOOL_SPECS: ToolSpec[] = [
     }
   },
   {
-    name: "list_unregistered_lanes",
-    description: "List git worktrees that are not yet registered as ADE lanes.",
-    inputSchema: {
-      type: "object",
-      additionalProperties: false,
-      properties: {}
-    }
-  },
-  {
     name: "import_lane",
-    description: "Import an existing git branch/worktree into ADE lane tracking.",
+    description: "Create a lane for an existing git branch by checking it out in a new ADE-managed worktree. Fails when the branch is already checked out in another worktree, because that worktree is already a lane.",
     inputSchema: {
       type: "object",
       required: ["branchRef"],
@@ -1378,7 +1369,6 @@ const READ_ONLY_TOOLS = new Set([
   "get_lane_status",
   "get_lane_conflict_state",
   "list_lanes",
-  "list_unregistered_lanes",
   "git_get_sync_status",
   "git_list_branches",
   "git_get_user_identity",
@@ -4187,11 +4177,6 @@ async function runTool(args: {
     return {
       lanes: lanes.map((lane) => mapLaneSummary(lane as unknown as Record<string, unknown>))
     };
-  }
-
-  if (name === "list_unregistered_lanes") {
-    const worktrees = await runtime.laneService.listUnregisteredWorktrees();
-    return { worktrees };
   }
 
   if (name === "get_lane_status") {

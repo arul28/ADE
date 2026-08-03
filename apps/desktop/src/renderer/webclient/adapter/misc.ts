@@ -283,7 +283,6 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
   const onboarding: Record<string, unknown> = {
     getStatus: async () => onboardingStatus(),
     detectDefaults: async () => ({ tools: [], project: state.getProject() }),
-    detectExistingLanes: async () => [],
     setDismissed: async () => onboardingStatus(),
     complete: async () => onboardingStatus(),
     markGlossaryTermSeen: async () => ({ seenTermIds: [] }),

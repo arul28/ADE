@@ -2283,6 +2283,8 @@ describe("runtime lane snapshot actions", () => {
         autoRebaseStatus,
         conflictStatus,
         stateSnapshot,
+        // Deprecated wire-compat field: always false, but still emitted so
+        // shipped iOS builds can decode the snapshot.
         adoptableAttached: false,
       },
       {
@@ -2302,7 +2304,7 @@ describe("runtime lane snapshot actions", () => {
         autoRebaseStatus: null,
         conflictStatus: null,
         stateSnapshot: null,
-        adoptableAttached: true,
+        adoptableAttached: false,
       },
     ]);
   });

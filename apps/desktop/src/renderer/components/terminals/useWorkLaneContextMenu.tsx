@@ -48,7 +48,6 @@ export type ForeignLaneContextTrigger = (
 
 /** The behavioural half of the lane menu, minus the menu itself. */
 export type LaneMenuActions = {
-  onAdoptAttached: (laneId: string) => void;
   onManage: (laneId: string) => void;
   selectLane: (id: string) => void;
   onRemoveFromSplit: (laneId: string) => void;
@@ -99,7 +98,6 @@ export function useLaneMenuActions(args: {
   });
 
   return useMemo<LaneMenuActions>(() => ({
-    onAdoptAttached: (laneId) => goToLanesAction(laneId, "adopt"),
     onManage: (laneId) => {
       close();
       onManageLane(laneId);

@@ -643,7 +643,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[];
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
@@ -693,7 +692,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[]);
 
@@ -805,7 +803,6 @@ describe("appStore", () => {
           autoRebaseStatus: null,
           conflictStatus: null,
           stateSnapshot: null,
-          adoptableAttached: false,
         },
       ] as any[];
       (window.ade.lanes.listSnapshots as any).mockResolvedValueOnce(snapshots);
@@ -894,7 +891,6 @@ describe("appStore", () => {
             autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
-            adoptableAttached: false,
           },
           {
             lane: { id: "lane-2", name: "Lane 2" },
@@ -909,7 +905,6 @@ describe("appStore", () => {
             autoRebaseStatus: null,
             conflictStatus: null,
             stateSnapshot: null,
-            adoptableAttached: false,
           },
         ] as any[],
       });

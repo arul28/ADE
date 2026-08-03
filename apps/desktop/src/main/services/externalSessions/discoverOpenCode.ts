@@ -26,7 +26,13 @@ export async function discoverOpenCodeSessions(
   const limit = normalizeExternalSessionLimit(args.limit);
   const lookupId = args.sessionId?.trim() || null;
   const executable = resolveOpenCodeBinaryPath();
-  if (!executable) return [];
+  // Returning [] here is indistinguishable from "no sessions yet", which is why
+  // a machine without OpenCode installed used to show an empty list and no
+  // explanation. The service surfaces this to the caller that asked only for
+  // OpenCode and logs it for a mixed-provider scan.
+  if (!executable) {
+    throw new Error("OpenCode CLI not found: install `opencode` to import its sessions.");
+  }
   const requestedCwd = args.cwd?.trim() || args.projectRoot?.trim() || null;
   const cwd = requestedCwd ?? resolveHomeDir(args);
   // OpenCode may omit the directory from `session list` rows. When discovery

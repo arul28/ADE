@@ -1,23 +1,29 @@
-import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import {
   asEpochMs,
   asRecord,
   asString,
   cleanSessionTitle,
+  clipExternalSessionText,
+  closeExternalSessionDb,
   countJsonlUserMessagesCheap,
   cwdIsInScope,
   firstUserTextFromRecords,
+  isCanonicalCodexUserRecord,
   normalizeExternalSessionLimit,
+  openExternalSessionDb,
   readFileSuffix,
   readJsonlRecords,
+  readJsonlRecordsFromSuffix,
   canonicalCodexRecords,
   recentExternalSessionMessagesFromRecords,
   recordWithFile,
   resolveHomeDir,
   safeParseJson,
   safeReadDir,
+  safeStat,
   sessionFileCandidate,
   sortFileCandidatesByMtime,
   sortDiscoveryRecords,
@@ -37,6 +43,15 @@ const CODEX_LAUNCH_BACKWARD_SCAN_MAX_BYTES = 64 * 1024 * 1024;
 const CODEX_LAUNCH_BACKWARD_SCAN_MAX_LINE_BYTES = 1024 * 1024;
 const CODEX_RECENT_MESSAGES_BROWSE_BYTE_LIMIT = 64 * 1024;
 const CODEX_RECENT_MESSAGES_EXACT_BYTE_LIMIT = 128 * 1024;
+const CODEX_SESSION_META_MAX_BYTES = 64 * 1024;
+const CODEX_RECENT_SCAN_FLOOR = 1000;
+
+/** Codex's own thread store. Present since the multi-agent rewrite; absent on older installs. */
+const CODEX_STATE_DB_BASENAME = "state_5.sqlite";
+/** Upper bound on rows pulled from `threads` in one discovery pass. */
+const CODEX_STATE_DB_ROW_CEILING = 20_000;
+/** DB text columns only ever feed a clipped preview, so read a bounded prefix of each. */
+const CODEX_STATE_DB_TEXT_MAX_CHARS = 1024;
 
 type CodexIndexEntry = {
   id: string;
@@ -49,30 +64,43 @@ type CodexSessionMeta = {
   cwd: string | null;
   createdAt: number | null;
   title: string | null;
-  importable: boolean;
+  /** Raw: a plain string for interactive rollouts, an object for spawned subagents. */
+  source: unknown;
+  originator: string | null;
+  agentRole: string | null;
+  /** Set when this rollout replays another thread's transcript before diverging. */
+  forkedFromId: string | null;
 };
 
-type CodexSessionCandidate = ExternalSessionFileCandidate<{ meta?: CodexSessionMeta | null }>;
+type CodexSessionCandidate = ExternalSessionFileCandidate;
 
-type CodexScopeIndexEntry = {
-  mtimeMs: number;
-  size: number;
-  meta: CodexSessionMeta | null;
+/**
+ * Everything needed to build one discovery record, from whichever authority
+ * produced it. The state DB fills these directly; the file scan reconstructs
+ * them from `session_meta` prefixes.
+ */
+type CodexRecordSeed = {
+  id: string;
+  rolloutPath: string;
+  cwd: string | null;
+  title: string | null;
+  createdAt: number | null;
+  updatedAt: number | null;
+  mtimeMs: number | null;
+  /** Used only when the rollout file cannot be read (compressed or dangling). */
+  fallbackPreview: string | null;
+  /** Parent threads collapsed into this fork; see `isCodexForkContinuation`. */
+  lineageIds?: string[];
 };
 
-type CodexScopeIndexState = {
-  codexDir: string;
-  entries: Map<string, CodexScopeIndexEntry>;
-  persisted: boolean;
-  dirty: boolean;
-  pendingWrite: ReturnType<typeof setTimeout> | null;
+/**
+ * Per-discovery-run classification state. The warned set keeps one telemetry
+ * line per unrecognized `source` per run instead of one per rollout.
+ */
+type CodexClassifyContext = {
+  logger: ExternalSessionDiscoveryArgs["logger"];
+  warnedSources: Set<string>;
 };
-
-const CODEX_SESSION_META_MAX_BYTES = 64 * 1024;
-const CODEX_SCOPE_INDEX_VERSION = 1;
-const CODEX_SCOPE_INDEX_WRITE_DELAY_MS = 30_000;
-const CODEX_RECENT_SCAN_FLOOR = 1000;
-const codexScopeIndexStates = new Map<string, CodexScopeIndexState>();
 
 function readCodexIndex(indexPath: string): Map<string, CodexIndexEntry> {
   const map = new Map<string, CodexIndexEntry>();
@@ -131,6 +159,8 @@ function readCodexSessionMeta(
   if (lineStart >= bytesRead) return null;
   const newline = scratch.subarray(lineStart, bytesRead).indexOf(0x0a);
   const lineEnd = newline >= 0 ? lineStart + newline : bytesRead;
+  // Only line 1 is trusted: a fork replays the parent transcript verbatim, so a
+  // forked rollout carries the parent's `session_meta` again further down.
   const first = asRecord(safeParseJson(scratch.subarray(lineStart, lineEnd).toString("utf8")));
   const payload = asRecord(first?.payload);
   const type = asString(first?.type);
@@ -142,7 +172,10 @@ function readCodexSessionMeta(
     cwd: asString(payload.cwd),
     createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first.timestamp),
     title: titleFromCodexPayload(payload, undefined),
-    importable: isImportableCodexPayload(payload),
+    source: payload.source,
+    originator: asString(payload.originator),
+    agentRole: asString(payload.agent_role) ?? asString(payload.agentRole),
+    forkedFromId: asString(payload.forked_from_id) ?? asString(payload.forkedFromId),
   };
 }
 
@@ -153,7 +186,7 @@ function sortedChildDirs(dir: string, pattern: RegExp): string[] {
     .sort((left, right) => right.localeCompare(left));
 }
 
-export function matchesCodexLookup(entryName: string, sessionId: string | null): boolean {
+function matchesCodexLookup(entryName: string, sessionId: string | null): boolean {
   if (!sessionId) return true;
   return entryName.endsWith(`-${sessionId}.jsonl`) || entryName.endsWith(`-${sessionId}.jsonl.zst`);
 }
@@ -231,219 +264,69 @@ function codexHomeDir(args: ExternalSessionDiscoveryArgs): string {
   return configured ? path.resolve(configured) : path.join(resolveHomeDir(args), ".codex");
 }
 
-function isImportableCodexPayload(payload: Record<string, unknown>): boolean {
-  const rawSource = payload.source;
-  const source = asString(rawSource)?.toLowerCase() ?? null;
-  const originator = asString(payload.originator)?.toLowerCase() ?? null;
-  const agentRole = asString(payload.agent_role) ?? asString(payload.agentRole);
-  if (agentRole) return false;
-  // Current Codex subagents use an object-shaped `source` payload. External
-  // import is deliberately limited to interactive CLI/user-shell rollouts, so
-  // fail closed for any structured or otherwise unknown source representation.
-  if (rawSource != null && !source) return false;
+/**
+ * Codex spawns subagents with an object-shaped `source`. The state DB stores
+ * that column as its JSON serialization, so both representations must classify
+ * the same way.
+ */
+function structuredCodexSource(rawSource: unknown): boolean {
+  if (asRecord(rawSource)) return true;
+  const text = asString(rawSource);
+  return text != null && (text.startsWith("{") || text.startsWith("["));
+}
+
+/**
+ * External import is for interactive CLI/user-shell rollouts. Known
+ * non-interactive entrypoints are dropped; an unrecognized *string* source is
+ * listed anyway, because a new Codex entrypoint silently disappearing from the
+ * import list is worse than one extra row the user can ignore.
+ */
+function isImportableCodexSource(rawSource: unknown, ctx: CodexClassifyContext): boolean {
+  if (structuredCodexSource(rawSource)) return false;
+  const source = asString(rawSource)?.toLowerCase();
+  if (!source) return true;
   if (source === "exec" || source === "vscode") return false;
-  if (source && source !== "cli" && source !== "user_shell") return false;
-  if (!originator) return true;
-  return !(
-    originator === "ade"
-    || originator === "ade_desktop"
-    || originator === "codex desktop"
-    || originator === "codex_exec"
-    || originator.startsWith("codex_sdk")
-    || originator.startsWith("ade-title")
-  );
-}
-
-function isImportableCodexSession(meta: CodexSessionMeta): boolean {
-  return meta.importable;
-}
-
-function codexScopeIndexPath(
-  args: ExternalSessionDiscoveryArgs,
-  codexDir: string,
-): string {
-  const env = args.env ?? (args.homeDir ? undefined : process.env);
-  const configuredAdeHome = typeof env?.ADE_HOME === "string" ? env.ADE_HOME.trim() : "";
-  const adeHome = configuredAdeHome
-    ? path.resolve(configuredAdeHome)
-    : path.join(resolveHomeDir(args), ".ade");
-  const codexHomeKey = createHash("sha256")
-    .update(path.resolve(codexDir))
-    .digest("hex")
-    .slice(0, 16);
-  return path.join(
-    adeHome,
-    "cache",
-    "external-sessions",
-    `codex-cwd-index-${codexHomeKey}.json`,
-  );
-}
-
-function scopeIndexMetaFromValue(value: unknown): CodexSessionMeta | null {
-  const record = asRecord(value);
-  if (!record) return null;
-  const id = asString(record.id);
-  const cwd = record.cwd === null ? null : asString(record.cwd);
-  let createdAt: number | null;
-  if (record.createdAt === null) {
-    createdAt = null;
-  } else if (typeof record.createdAt === "number" && Number.isFinite(record.createdAt)) {
-    createdAt = record.createdAt;
-  } else {
-    return null;
-  }
-  const title = record.title === null ? null : asString(record.title);
-  if (
-    !id
-    || (record.cwd !== null && cwd === null)
-    || (record.title !== null && title === null)
-    || typeof record.importable !== "boolean"
-  ) return null;
-  return {
-    id,
-    cwd,
-    createdAt,
-    title,
-    importable: record.importable,
-  };
-}
-
-function loadCodexScopeIndex(
-  indexPath: string,
-  codexDir: string,
-): CodexScopeIndexState {
-  const cached = codexScopeIndexStates.get(indexPath);
-  if (cached?.codexDir === codexDir) return cached;
-  const state: CodexScopeIndexState = {
-    codexDir,
-    entries: new Map(),
-    persisted: false,
-    dirty: false,
-    pendingWrite: null,
-  };
-  try {
-    const parsed = asRecord(safeParseJson(fs.readFileSync(indexPath, "utf8")));
-    const rawEntries = asRecord(parsed?.entries);
-    if (
-      parsed?.version !== CODEX_SCOPE_INDEX_VERSION
-      || asString(parsed.codexDir) !== codexDir
-      || !rawEntries
-    ) {
-      codexScopeIndexStates.set(indexPath, state);
-      return state;
-    }
-    for (const [relativePath, rawEntry] of Object.entries(rawEntries)) {
-      if (!/^\d{4}\/\d{2}\/\d{2}\/[^/]+\.jsonl$/u.test(relativePath)) continue;
-      const entry = asRecord(rawEntry);
-      const mtimeMs = entry?.mtimeMs;
-      const size = entry?.size;
-      const meta = entry?.meta === null ? null : scopeIndexMetaFromValue(entry?.meta);
-      if (
-        typeof mtimeMs !== "number"
-        || !Number.isFinite(mtimeMs)
-        || typeof size !== "number"
-        || !Number.isFinite(size)
-        || size < 0
-        || (entry?.meta !== null && meta === null)
-      ) continue;
-      state.entries.set(relativePath, { mtimeMs, size, meta });
-    }
-    state.persisted = true;
-  } catch {
-    // Missing or corrupt indexes are rebuildable from Codex rollout metadata.
-  }
-  codexScopeIndexStates.set(indexPath, state);
-  return state;
-}
-
-function writeCodexScopeIndex(
-  indexPath: string,
-  state: CodexScopeIndexState,
-  logger: ExternalSessionDiscoveryArgs["logger"],
-): boolean {
-  const serializedEntries = Object.fromEntries(
-    Array.from(state.entries.entries()).sort(([left], [right]) => left.localeCompare(right)),
-  );
-  const serialized = `${JSON.stringify({
-    version: CODEX_SCOPE_INDEX_VERSION,
-    codexDir: state.codexDir,
-    entries: serializedEntries,
-  })}\n`;
-  const tempPath = `${indexPath}.tmp-${process.pid}-${randomUUID()}`;
-  try {
-    fs.mkdirSync(path.dirname(indexPath), { recursive: true });
-    fs.writeFileSync(tempPath, serialized, { encoding: "utf8", mode: 0o600 });
-    try {
-      fs.renameSync(tempPath, indexPath);
-    } catch {
-      fs.copyFileSync(tempPath, indexPath);
-      fs.unlinkSync(tempPath);
-    }
-  } catch (error) {
-    try {
-      fs.unlinkSync(tempPath);
-    } catch {
-      // best effort cleanup
-    }
-    logger?.warn?.("external_sessions.codex_cwd_index_write_failed", {
-      indexPath,
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return false;
+  if (source === "cli" || source === "user_shell") return true;
+  if (!ctx.warnedSources.has(source)) {
+    ctx.warnedSources.add(source);
+    ctx.logger?.warn?.("external_sessions.codex_unknown_source", { source });
   }
   return true;
 }
 
-function scheduleCodexScopeIndexWrite(
-  indexPath: string,
-  state: CodexScopeIndexState,
-  logger: ExternalSessionDiscoveryArgs["logger"],
-): void {
-  if (!state.dirty) return;
-  if (!state.persisted) {
-    if (writeCodexScopeIndex(indexPath, state, logger)) {
-      state.persisted = true;
-      state.dirty = false;
-    }
-    return;
-  }
-  if (state.pendingWrite) return;
-  state.pendingWrite = setTimeout(() => {
-    state.pendingWrite = null;
-    if (writeCodexScopeIndex(indexPath, state, logger)) {
-      state.dirty = false;
-    }
-  }, CODEX_SCOPE_INDEX_WRITE_DELAY_MS);
-  state.pendingWrite.unref();
+function isImportableCodexOriginator(originator: string | null): boolean {
+  if (!originator) return true;
+  const value = originator.toLowerCase();
+  return !(
+    value === "ade"
+    || value === "ade_desktop"
+    || value === "codex desktop"
+    || value === "codex_exec"
+    || value.startsWith("codex_sdk")
+    || value.startsWith("ade-title")
+  );
+}
+
+function isImportableCodexSession(meta: CodexSessionMeta, ctx: CodexClassifyContext): boolean {
+  if (meta.agentRole) return false;
+  if (!isImportableCodexSource(meta.source, ctx)) return false;
+  return isImportableCodexOriginator(meta.originator);
 }
 
 function firstCodexUserText(records: unknown[]): string | null {
-  const canonical = records.filter((item) => {
-    const record = asRecord(item);
-    const payload = asRecord(record?.payload);
-    if (asString(record?.type)?.toLowerCase() !== "event_msg") return false;
-    const type = asString(payload?.type)?.toLowerCase();
-    const role = asString(payload?.role)?.toLowerCase();
-    return type === "user_message" || (type === "message" && role === "user");
-  });
+  const canonical = records.filter(isCanonicalCodexUserRecord);
   return canonical.length
     ? firstUserTextFromRecords(canonical)
     : firstUserTextFromRecords(records);
 }
 
 function recentCodexRecords(filePath: string, exactLookup: boolean): unknown[] {
-  const text = readFileSuffix(
+  return readJsonlRecordsFromSuffix(
     filePath,
     exactLookup
       ? CODEX_RECENT_MESSAGES_EXACT_BYTE_LIMIT
       : CODEX_RECENT_MESSAGES_BROWSE_BYTE_LIMIT,
   );
-  if (!text) return [];
-  const lines = text.split(/\r?\n/u);
-  if (!text.startsWith("{")) lines.shift();
-  return lines
-    .map((line) => safeParseJson(line))
-    .filter((record): record is Record<string, unknown> => record != null);
 }
 
 function codexApprovalPolicy(payload: Record<string, unknown>): AgentChatCodexApprovalPolicy | null {
@@ -614,101 +497,6 @@ async function codexLaunchForFile(
   return Object.keys(fallback).length ? fallback : null;
 }
 
-function collectIndexedProjectScopedCodexSessionCandidates(
-  args: ExternalSessionDiscoveryArgs,
-  root: string,
-  codexDir: string,
-  limit: number,
-  scopeRoots: string[],
-): CodexSessionCandidate[] {
-  const scratch = Buffer.allocUnsafe(CODEX_SESSION_META_MAX_BYTES);
-  const indexPath = codexScopeIndexPath(args, codexDir);
-  const indexState = loadCodexScopeIndex(indexPath, codexDir);
-  const nextEntries = new Map<string, CodexScopeIndexEntry>();
-  const candidatesById = new Map<string, CodexSessionCandidate>();
-  let indexChanged = false;
-
-  for (const candidate of collectCodexSessionCandidates(root)) {
-    if (candidate.filePath.endsWith(".jsonl.zst")) continue;
-    const relativePath = path.relative(root, candidate.filePath).split(path.sep).join("/");
-    const cached = indexState.entries.get(relativePath);
-    let entry = cached;
-    if (
-      !entry
-      || entry.mtimeMs !== candidate.mtimeMs
-      || entry.size !== candidate.size
-    ) {
-      const meta = readCodexSessionMeta(candidate.filePath, scratch);
-      entry = {
-        mtimeMs: candidate.mtimeMs,
-        size: candidate.size,
-        meta,
-      };
-      indexChanged = true;
-    }
-    nextEntries.set(relativePath, entry);
-    if (!entry.meta?.importable || !cwdIsInScope(entry.meta.cwd, scopeRoots)) continue;
-    const meta = entry.meta;
-    const existing = candidatesById.get(meta.id);
-    if (!existing || candidate.mtimeMs > existing.mtimeMs) {
-      candidatesById.set(meta.id, { ...candidate, meta });
-    }
-  }
-
-  if (nextEntries.size !== indexState.entries.size) indexChanged = true;
-  indexState.entries = nextEntries;
-  if (indexChanged) indexState.dirty = true;
-  scheduleCodexScopeIndexWrite(indexPath, indexState, args.logger);
-  return sortFileCandidatesByMtime(Array.from(candidatesById.values()), limit);
-}
-
-function collectExactProjectScopedCodexSessionCandidates(
-  root: string,
-  limit: number,
-  scopeRoots: string[],
-  sessionId: string,
-): CodexSessionCandidate[] {
-  const scratch = Buffer.allocUnsafe(CODEX_SESSION_META_MAX_BYTES);
-  const candidates: CodexSessionCandidate[] = [];
-  for (const candidate of collectCodexSessionCandidates(root, sessionId)) {
-    if (candidate.filePath.endsWith(".jsonl.zst")) continue;
-    const meta = readCodexSessionMeta(candidate.filePath, scratch);
-    if (
-      meta
-      && isImportableCodexSession(meta)
-      && cwdIsInScope(meta.cwd, scopeRoots)
-    ) {
-      candidates.push({ ...candidate, meta });
-    }
-  }
-  return sortFileCandidatesByMtime(candidates, limit);
-}
-
-function projectScopedCodexSessionCandidates(
-  args: ExternalSessionDiscoveryArgs,
-  root: string,
-  codexDir: string,
-  limit: number,
-  scopeRoots: string[],
-  sessionId: string | null,
-): CodexSessionCandidate[] {
-  if (sessionId) {
-    return collectExactProjectScopedCodexSessionCandidates(
-      root,
-      limit,
-      scopeRoots,
-      sessionId,
-    );
-  }
-  return collectIndexedProjectScopedCodexSessionCandidates(
-    args,
-    root,
-    codexDir,
-    limit,
-    scopeRoots,
-  );
-}
-
 function idFromCodexFilename(filePath: string): string | null {
   const base = path.basename(filePath).replace(/\.jsonl(?:\.zst)?$/u, "");
   const match = base.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/iu);
@@ -718,10 +506,10 @@ function idFromCodexFilename(filePath: string): string | null {
 /**
  * Resolve a Codex rollout file path by session/thread id with NO originator
  * filtering. `discoverCodexSessions` is the external-import surface and
- * deliberately excludes ADE-originated rollouts (`isImportableCodexSession`),
- * which makes it wrong for flows that need ADE's own sessions — e.g. packaging
- * a cross-machine fork of an ADE-created Codex chat. Mirrors codex's own
- * filename-suffix lookup; returns the newest match or null.
+ * deliberately excludes ADE-originated rollouts, which makes it wrong for flows
+ * that need ADE's own sessions — e.g. packaging a cross-machine fork of an
+ * ADE-created Codex chat. Mirrors codex's own filename-suffix lookup; returns
+ * the newest match or null.
  */
 export function findCodexRolloutPathBySessionId(
   sessionId: string,
@@ -735,76 +523,320 @@ export function findCodexRolloutPathBySessionId(
   return candidates[0]?.filePath ?? null;
 }
 
+function asDbEpochMs(value: unknown): number | null {
+  if (typeof value === "bigint") return Number(value);
+  return asEpochMs(value);
+}
+
+type CodexThreadRow = {
+  id: string;
+  rolloutPath: string;
+  cwd: string | null;
+  source: unknown;
+  agentRole: string | null;
+  name: string | null;
+  createdAt: number | null;
+  updatedAt: number | null;
+};
+
+function codexThreadRow(value: unknown): CodexThreadRow | null {
+  const record = asRecord(value);
+  const id = asString(record?.id);
+  const rolloutPath = asString(record?.rolloutPath);
+  if (!record || !id || !rolloutPath) return null;
+  return {
+    id,
+    rolloutPath,
+    cwd: asString(record.cwd),
+    source: record.source,
+    agentRole: asString(record.agentRole),
+    name: asString(record.name),
+    createdAt: asDbEpochMs(record.createdAtMs),
+    updatedAt: asDbEpochMs(record.updatedAtMs),
+  };
+}
+
+/**
+ * Top-level threads only: every row in `thread_spawn_edges` is a spawned
+ * subagent, and the DB knows about children whose own `session_meta` carries no
+ * parent id at all. `archived` rollouts move out of `sessions/`, so excluding
+ * them here matches what the file scan can see.
+ *
+ * `*_ms` columns arrived in a later migration and backfill to 0 for rows the
+ * triggers never touched, hence the COALESCE onto the second-resolution ones.
+ */
+function codexThreadRowsSql(exactLookup: boolean): string {
+  return `
+    SELECT t.id AS id,
+           t.rollout_path AS rolloutPath,
+           t.cwd AS cwd,
+           t.source AS source,
+           t.agent_role AS agentRole,
+           t.name AS name,
+           COALESCE(NULLIF(t.created_at_ms, 0), t.created_at * 1000) AS createdAtMs,
+           COALESCE(NULLIF(t.updated_at_ms, 0), t.updated_at * 1000) AS updatedAtMs
+      FROM threads t
+     WHERE t.archived = 0
+       AND NOT EXISTS (
+             SELECT 1 FROM thread_spawn_edges e WHERE e.child_thread_id = t.id
+           )
+       ${exactLookup ? "AND t.id = ?" : ""}
+     ORDER BY updatedAtMs DESC, t.id DESC
+     LIMIT ?
+  `;
+}
+
+const CODEX_THREAD_TEXT_SQL = `
+  SELECT substr(t.preview, 1, ?) AS preview,
+         substr(t.first_user_message, 1, ?) AS firstUserMessage,
+         substr(t.title, 1, ?) AS title
+    FROM threads t
+   WHERE t.id = ?
+`;
+
+/**
+ * Whether the store holds any threads at all, asked only when a query came back
+ * empty. A freshly-migrated or truncated `state_5.sqlite` is not an authority on
+ * what exists, and must not shadow the rollout tree that still is.
+ */
+function codexStateDbHasThreads(db: DatabaseSyncType): boolean {
+  try {
+    return db.prepare("SELECT 1 AS present FROM threads LIMIT 1").get() != null;
+  } catch {
+    return false;
+  }
+}
+
+function codexThreadTextPreview(db: DatabaseSyncType, id: string): string | null {
+  try {
+    const row = asRecord(db.prepare(CODEX_THREAD_TEXT_SQL).get(
+      CODEX_STATE_DB_TEXT_MAX_CHARS,
+      CODEX_STATE_DB_TEXT_MAX_CHARS,
+      CODEX_STATE_DB_TEXT_MAX_CHARS,
+      id,
+    ));
+    return clipExternalSessionText(
+      asString(row?.preview) ?? asString(row?.firstUserMessage) ?? asString(row?.title),
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Hide a parent thread when a fork of it exists and the parent recorded no
+ * activity after the fork point: that pair is one conversation the user
+ * continued elsewhere. A parent that kept going after being forked is a
+ * genuinely separate conversation and stays in the list alongside its fork.
+ *
+ * Only forks that are themselves listable count. ADE's own chats fork Codex
+ * threads too, and collapsing a real terminal session into a fork this surface
+ * refuses to show would drop the conversation entirely.
+ */
+function isCodexForkContinuation(row: CodexThreadRow, forkedAtById: Map<string, number>): boolean {
+  const forkedAt = forkedAtById.get(row.id);
+  return forkedAt != null && (row.updatedAt ?? 0) <= forkedAt;
+}
+
+function codexSeedsFromStateDb(
+  args: ExternalSessionDiscoveryArgs,
+  codexDir: string,
+  limit: number,
+  lookupId: string | null,
+  ctx: CodexClassifyContext,
+): CodexRecordSeed[] | null {
+  const db = openExternalSessionDb(path.join(codexDir, CODEX_STATE_DB_BASENAME), args.logger);
+  if (!db) return null;
+  try {
+    let rows: CodexThreadRow[];
+    try {
+      const statement = db.prepare(codexThreadRowsSql(lookupId != null));
+      const raw = lookupId != null
+        ? statement.all(lookupId, CODEX_STATE_DB_ROW_CEILING)
+        : statement.all(CODEX_STATE_DB_ROW_CEILING);
+      rows = raw.map(codexThreadRow).filter((row): row is CodexThreadRow => row != null);
+    } catch (error) {
+      args.logger?.warn?.("external_sessions.codex_state_db_query_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return null;
+    }
+    // An empty *result* with threads present is a real answer — everything was
+    // archived, spawned, or out of scope — and must not fall back to the file
+    // scan, which cannot tell a subagent rollout from a session.
+    if (!rows.length && !codexStateDbHasThreads(db)) return null;
+
+    const scratch = Buffer.allocUnsafe(CODEX_SESSION_META_MAX_BYTES);
+    const forkedAtById = new Map<string, number>();
+    const forkSeedsByParent = new Map<string, CodexRecordSeed[]>();
+    const seeds: CodexRecordSeed[] = [];
+    for (const row of rows) {
+      if (seeds.length >= limit) break;
+      if (row.agentRole) continue;
+      if (!isImportableCodexSource(row.source, ctx)) continue;
+      if (!cwdIsInScope(row.cwd, args.scopeRoots)) continue;
+
+      const compressed = row.rolloutPath.endsWith(".jsonl.zst");
+      const meta = compressed ? null : readCodexSessionMeta(row.rolloutPath, scratch);
+      // A dangling `rollout_path` (upstream openai/codex#21196) leaves only the
+      // DB's own classification, which already passed above.
+      if (meta && !isImportableCodexSession(meta, ctx)) continue;
+
+      // Registered only once this row is known to be listable. A fork this
+      // surface refuses to show — an ADE chat's own fork — contributes no seed,
+      // so letting it hide its parent would drop the conversation entirely.
+      const forkedFromId = meta?.forkedFromId ?? null;
+      if (forkedFromId) {
+        // Rows arrive newest-first, and a parent worth collapsing stopped at or
+        // before the fork point, so such a parent is always seen after its fork.
+        const forkedAt = row.createdAt ?? meta?.createdAt;
+        if (forkedAt != null) {
+          forkedAtById.set(forkedFromId, Math.max(forkedAtById.get(forkedFromId) ?? 0, forkedAt));
+        }
+      }
+
+      if (isCodexForkContinuation(row, forkedAtById)) {
+        // The fork that hid this parent now speaks for it, including for an
+        // import the user made against the parent id before forking.
+        const absorbing = forkSeedsByParent.get(row.id) ?? [];
+        for (const forkSeed of absorbing) {
+          forkSeed.lineageIds = [...new Set([...(forkSeed.lineageIds ?? []), row.id])];
+        }
+        // This row is itself a fork of something older, and is no longer here to
+        // speak for it. Hand its parent claim to whatever absorbed it, so a
+        // P←F1←F2 chain leaves F2 holding both P and F1.
+        if (forkedFromId && absorbing.length) {
+          forkSeedsByParent.set(forkedFromId, [
+            ...(forkSeedsByParent.get(forkedFromId) ?? []),
+            ...absorbing,
+          ]);
+        }
+        continue;
+      }
+
+      const stat = safeStat(row.rolloutPath);
+      const seed: CodexRecordSeed = {
+        id: row.id,
+        rolloutPath: row.rolloutPath,
+        cwd: row.cwd ?? meta?.cwd ?? null,
+        title: row.name ?? meta?.title ?? null,
+        createdAt: row.createdAt ?? meta?.createdAt ?? null,
+        updatedAt: row.updatedAt,
+        mtimeMs: stat?.isFile() ? Math.floor(stat.mtimeMs) : null,
+        fallbackPreview: stat?.isFile() && !compressed && meta
+          ? null
+          : codexThreadTextPreview(db, row.id),
+      };
+      seeds.push(seed);
+      if (forkedFromId) {
+        const siblings = forkSeedsByParent.get(forkedFromId) ?? [];
+        siblings.push(seed);
+        forkSeedsByParent.set(forkedFromId, siblings);
+      }
+    }
+    return seeds;
+  } finally {
+    closeExternalSessionDb(db);
+  }
+}
+
+/**
+ * Pre-state-DB discovery: walk `sessions/YYYY/MM/DD` and classify each rollout
+ * from its `session_meta` prefix. Only reachable when the state DB is missing,
+ * unreadable, or shaped differently than this build expects.
+ */
+function codexSeedsFromFiles(
+  sessionsDir: string,
+  limit: number,
+  lookupId: string | null,
+  scopeRoots: string[] | null | undefined,
+  ctx: CodexClassifyContext,
+): CodexRecordSeed[] {
+  if (!fs.existsSync(sessionsDir)) return [];
+  const scoped = Boolean(scopeRoots?.length);
+  const scanLimit = Math.max(CODEX_RECENT_SCAN_FLOOR, limit * 20);
+  const candidates = scoped
+    ? collectCodexSessionCandidates(sessionsDir, lookupId)
+    : collectRecentCodexSessionCandidates(sessionsDir, scanLimit, lookupId);
+  const scratch = Buffer.allocUnsafe(CODEX_SESSION_META_MAX_BYTES);
+  const seedsById = new Map<string, CodexRecordSeed & { mtimeMs: number }>();
+
+  for (const candidate of candidates) {
+    const compressed = candidate.filePath.endsWith(".jsonl.zst");
+    const meta = compressed ? null : readCodexSessionMeta(candidate.filePath, scratch);
+    if (!compressed && !meta) continue;
+    if (meta && !isImportableCodexSession(meta, ctx)) continue;
+    const id = meta?.id ?? idFromCodexFilename(candidate.filePath);
+    if (!id || (lookupId && id !== lookupId)) continue;
+    if (!cwdIsInScope(meta?.cwd ?? null, scopeRoots)) continue;
+    const existing = seedsById.get(id);
+    if (existing && existing.mtimeMs >= candidate.mtimeMs) continue;
+    seedsById.set(id, {
+      id,
+      rolloutPath: candidate.filePath,
+      cwd: meta?.cwd ?? null,
+      title: meta?.title ?? null,
+      createdAt: meta?.createdAt ?? null,
+      updatedAt: null,
+      mtimeMs: candidate.mtimeMs,
+      fallbackPreview: null,
+    });
+  }
+
+  return Array.from(seedsById.values())
+    .sort((left, right) => right.mtimeMs - left.mtimeMs || left.id.localeCompare(right.id))
+    .slice(0, scoped ? limit : scanLimit);
+}
+
+async function codexRecordFromSeed(
+  seed: CodexRecordSeed,
+  indexed: CodexIndexEntry | undefined,
+  exactLookup: boolean,
+  logger: ExternalSessionDiscoveryArgs["logger"],
+): Promise<ExternalSessionDiscoveryRecord> {
+  const exists = safeStat(seed.rolloutPath)?.isFile() === true;
+  const readable = exists && !seed.rolloutPath.endsWith(".jsonl.zst");
+  const jsonl = readable ? readJsonlRecords(seed.rolloutPath) : [];
+  const first = asRecord(jsonl[0]);
+  const payload = asRecord(first?.payload);
+  const updatedAt = Math.max(seed.updatedAt ?? 0, indexed?.updatedAt ?? 0, seed.mtimeMs ?? 0);
+  const record = recordWithFile({
+    provider: "codex",
+    id: seed.id,
+    cwd: seed.cwd,
+    title: cleanSessionTitle(seed.title) ?? titleFromCodexPayload(payload ?? {}, indexed),
+    // A readable rollout is the only source that survives ADE-guidance and
+    // transport stripping intact; DB text only stands in when there is no file.
+    preview: readable ? firstCodexUserText(jsonl) : seed.fallbackPreview,
+    createdAt: seed.createdAt ?? asEpochMs(payload?.timestamp) ?? asEpochMs(first?.timestamp),
+    updatedAt: updatedAt || null,
+    messageCount: readable ? countJsonlUserMessagesCheap(seed.rolloutPath, "codex") : null,
+    launch: readable ? await codexLaunchForFile(seed.rolloutPath, jsonl, exactLookup, logger) : null,
+    filePath: exists ? seed.rolloutPath : null,
+    sourceMtimeMs: seed.mtimeMs,
+  });
+  if (seed.lineageIds?.length) record.lineageIds = seed.lineageIds;
+  return record;
+}
+
 export async function discoverCodexSessions(
   args: ExternalSessionDiscoveryArgs = {},
 ): Promise<ExternalSessionDiscoveryRecord[]> {
   const limit = normalizeExternalSessionLimit(args.limit);
   const lookupId = args.sessionId?.trim() || null;
   const codexDir = codexHomeDir(args);
-  const sessionsDir = path.join(codexDir, "sessions");
   const index = readCodexIndex(path.join(codexDir, "session_index.jsonl"));
-  const recordsById = new Map<string, ExternalSessionDiscoveryRecord>();
-  if (!fs.existsSync(sessionsDir)) return [];
+  const ctx: CodexClassifyContext = { logger: args.logger, warnedSources: new Set() };
 
-  const scanLimit = Math.max(CODEX_RECENT_SCAN_FLOOR, limit * 20);
-  const candidates = args.scopeRoots?.length
-    ? projectScopedCodexSessionCandidates(
-        args,
-        sessionsDir,
-        codexDir,
-        limit,
-        args.scopeRoots,
-        lookupId,
-      )
-    : collectRecentCodexSessionCandidates(sessionsDir, scanLimit, lookupId);
+  const seeds = codexSeedsFromStateDb(args, codexDir, limit, lookupId, ctx)
+    ?? codexSeedsFromFiles(path.join(codexDir, "sessions"), limit, lookupId, args.scopeRoots, ctx);
 
-  for (const candidate of candidates) {
-    const filePath = candidate.filePath;
-    const compressed = filePath.endsWith(".jsonl.zst");
-    if (compressed) {
-      const id = idFromCodexFilename(filePath);
-      if (!id || (lookupId && id !== lookupId) || recordsById.has(id)) continue;
-      const indexed = index.get(id);
-      recordsById.set(id, recordWithFile({
-        provider: "codex",
-        id,
-        cwd: null,
-        title: indexed?.title ?? null,
-        preview: null,
-        updatedAt: indexed?.updatedAt ?? candidate.mtimeMs,
-        filePath,
-        sourceMtimeMs: candidate.mtimeMs,
-      }));
-      continue;
-    }
-
-    const jsonl = readJsonlRecords(filePath);
-    const meta = candidate.meta ?? readCodexSessionMeta(filePath);
-    if (!meta || !isImportableCodexSession(meta)) continue;
-    const first = asRecord(jsonl[0]);
-    const payload = asRecord(first?.payload);
-    const id = meta.id;
-    if (!id || (lookupId && id !== lookupId) || recordsById.has(id)) continue;
-    const indexed = index.get(id);
-    const firstUserText = firstCodexUserText(jsonl);
-    const title = meta.title ?? titleFromCodexPayload(payload ?? {}, indexed);
-    const launch = await codexLaunchForFile(filePath, jsonl, lookupId != null, args.logger);
-    recordsById.set(id, recordWithFile({
-      provider: "codex",
-      id,
-      cwd: meta.cwd ?? asString(payload?.cwd),
-      title,
-      preview: firstUserText,
-      createdAt: meta.createdAt ?? asEpochMs(payload?.timestamp) ?? asEpochMs(first?.timestamp),
-      updatedAt: Math.max(indexed?.updatedAt ?? 0, candidate.mtimeMs),
-      messageCount: countJsonlUserMessagesCheap(filePath, "codex"),
-      launch,
-      filePath,
-      sourceMtimeMs: candidate.mtimeMs,
-    }));
+  const records: ExternalSessionDiscoveryRecord[] = [];
+  for (const seed of seeds) {
+    records.push(await codexRecordFromSeed(seed, index.get(seed.id), lookupId != null, args.logger));
   }
 
-  return sortDiscoveryRecords(Array.from(recordsById.values()), limit)
+  return sortDiscoveryRecords(records, limit)
     .map((record) => {
       if (!record.sourcePath || record.sourcePath.endsWith(".jsonl.zst")) return record;
       return {

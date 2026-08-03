@@ -38,7 +38,7 @@ const resolveIcon = vi.fn(async () => ({
 }));
 const forgetRecent = vi.fn(async () => [] as RecentProjectSummary[]);
 const inspectPath = vi.fn();
-const attach = vi.fn();
+const listLanes = vi.fn();
 const switchProjectToPath = vi.fn(async () => {});
 
 const WORKTREE_ROOT = "/repos/app-feature";
@@ -71,6 +71,25 @@ function inspection(
   };
 }
 
+/** What `inspectPath` reports once the owning project is open: the worktree
+ *  is registered as a lane, so `openWorktreeAsLane` has somewhere to navigate. */
+function mergedInspection(): ProjectPathInspection {
+  return inspection({
+    parent: {
+      rootPath: "/repos/app",
+      displayName: "app",
+      isKnownAdeProject: true,
+      existingLane: {
+        id: "lane-merged",
+        name: "feature/x",
+        branchRef: "feature/x",
+        color: null,
+        laneType: "worktree",
+      },
+    },
+  });
+}
+
 beforeEach(() => {
   for (const toast of getToasts()) dismissToast(toast.id);
   navigateSpy.mockReset();
@@ -80,14 +99,15 @@ beforeEach(() => {
   forgetRecent.mockResolvedValue([]);
   inspectPath.mockReset();
   inspectPath.mockResolvedValue(inspection());
-  attach.mockReset();
+  listLanes.mockReset();
+  listLanes.mockResolvedValue([]);
   switchProjectToPath.mockReset();
   switchProjectToPath.mockResolvedValue(undefined);
 
   (globalThis.window as any).ade = {
     project: { listRecent, resolveIcon, forgetRecent, inspectPath },
     lanes: {
-      attach,
+      list: listLanes,
       onLifecycleEvent: vi.fn(() => vi.fn()),
       onProxyEvent: vi.fn(() => vi.fn()),
       onPortEvent: vi.fn(() => vi.fn()),
@@ -133,8 +153,9 @@ describe("ProjectWelcomePage worktree recents", () => {
     ).toBeTruthy();
   });
 
-  it("merge confirm attaches the worktree, forgets the recent, and navigates", async () => {
-    attach.mockResolvedValueOnce({ id: "lane-merged" });
+  it("merge confirm forgets the recent and navigates to the auto-registered lane", async () => {
+    inspectPath.mockResolvedValueOnce(inspection());
+    inspectPath.mockResolvedValueOnce(mergedInspection());
     renderWelcome();
 
     await screen.findByText("app-feature");
@@ -148,12 +169,6 @@ describe("ProjectWelcomePage worktree recents", () => {
     fireEvent.click(confirm);
 
     await waitFor(() =>
-      expect(attach).toHaveBeenCalledWith({
-        name: "feature/x",
-        attachedPath: WORKTREE_ROOT,
-      }),
-    );
-    await waitFor(() =>
       expect(forgetRecent).toHaveBeenCalledWith(WORKTREE_ROOT),
     );
     await waitFor(() =>
@@ -163,8 +178,9 @@ describe("ProjectWelcomePage worktree recents", () => {
     );
   });
 
-  it("surfaces a post-switch attach failure through a persistent toast", async () => {
-    attach.mockRejectedValueOnce(new Error("attach broke"));
+  it("surfaces a post-switch merge failure through a persistent toast", async () => {
+    inspectPath.mockResolvedValueOnce(inspection());
+    inspectPath.mockRejectedValueOnce(new Error("merge broke"));
     renderWelcome();
 
     await screen.findByText("app-feature");
@@ -175,15 +191,16 @@ describe("ProjectWelcomePage worktree recents", () => {
     await waitFor(() =>
       expect(getToasts().at(-1)).toMatchObject({
         title: "Merge failed",
-        message: "attach broke",
+        message: "merge broke",
         tone: "error",
         durationMs: 0,
       }),
     );
   });
 
-  it("still lands on the lane when retiring the recents row fails after attach", async () => {
-    attach.mockResolvedValueOnce({ id: "lane-merged" });
+  it("still lands on the lane when retiring the recents row fails after the merge", async () => {
+    inspectPath.mockResolvedValueOnce(inspection());
+    inspectPath.mockResolvedValueOnce(mergedInspection());
     forgetRecent.mockRejectedValueOnce(new Error("forget failed"));
     renderWelcome();
 

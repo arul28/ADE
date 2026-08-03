@@ -64,9 +64,6 @@ import type {
 import type {
   BatchAssessmentResult,
   ApplyConflictProposalArgs,
-  AttachLaneArgs,
-  AdoptAttachedLaneArgs,
-  UnregisteredLaneCandidate,
   AppInfo,
   LocalRuntimeStatus,
   AppWelcomeVideoState,
@@ -436,7 +433,6 @@ import type {
   KeybindingOverride,
   KeybindingsSnapshot,
   OnboardingDetectionResult,
-  OnboardingExistingLaneCandidate,
   OnboardingHelpState,
   OnboardingStatus,
   LaneLinearIssue,
@@ -4500,10 +4496,6 @@ contextBridge.exposeInMainWorld("ade", {
       callProjectRuntimeActionOr("onboarding", "detectDefaults", {}, () =>
         ipcRenderer.invoke(IPC.onboardingDetectDefaults),
       ),
-    detectExistingLanes: async (): Promise<OnboardingExistingLaneCandidate[]> =>
-      callProjectRuntimeActionOr("onboarding", "detectExistingLanes", {}, () =>
-        ipcRenderer.invoke(IPC.onboardingDetectExistingLanes),
-      ),
     setDismissed: async (dismissed: boolean): Promise<OnboardingStatus> =>
       callProjectRuntimeActionOr(
         "onboarding",
@@ -5021,36 +5013,6 @@ contextBridge.exposeInMainWorld("ade", {
       );
       clearGitReadCaches();
       return result as ResolveLaneBranchDriftResult;
-    },
-    attach: async (args: AttachLaneArgs): Promise<LaneSummary> => {
-      clearGitReadCaches();
-      const lane = await callProjectRuntimeActionOr<LaneSummary>(
-        "lane",
-        "attach",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesAttach, args),
-      );
-      clearGitReadCaches();
-      return lane as LaneSummary;
-    },
-    listUnregisteredWorktrees: async (): Promise<UnregisteredLaneCandidate[]> =>
-      callProjectRuntimeActionOr("lane", "listUnregisteredWorktrees", {}, () =>
-        ipcRenderer.invoke(IPC.lanesListUnregisteredWorktrees),
-      ),
-    adoptAttached: async (
-      args: AdoptAttachedLaneArgs,
-      pin?: OpenProjectBinding | null,
-    ): Promise<LaneSummary> => {
-      clearGitReadCaches();
-      const lane = await callPinnedOrBoundRuntimeActionOr<LaneSummary>(
-        pin,
-        "lane",
-        "adoptAttached",
-        { args },
-        () => ipcRenderer.invoke(IPC.lanesAdoptAttached, args),
-      );
-      clearGitReadCaches();
-      return lane as LaneSummary;
     },
     rename: async (args: RenameLaneArgs, pin?: OpenProjectBinding | null): Promise<void> => {
       clearGitReadCaches();
