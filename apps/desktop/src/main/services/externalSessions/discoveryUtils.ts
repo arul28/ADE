@@ -693,6 +693,21 @@ export function resolveExistingPath(candidate: string): string | null {
   }
 }
 
+/**
+ * Cursor's project-directory slug, from the vendor's own shipped code
+ * (`@cursor/sdk` 1.0.23, `../utils/dist/index.js`): every non-alphanumeric
+ * character becomes `-`, runs of `-` collapse, leading/trailing `-` are
+ * trimmed. No case folding, no length cap, no platform branch.
+ *
+ * TODO: replace with an import of `shared/cursorProjectSlug` (Cursor lane,
+ * d6328117) once that module lands on a shared base — this copy exists only
+ * because the inverse below has to run before the branches merge, and it must
+ * not be allowed to drift from it.
+ */
+function slugLikeCursor(value: string): string {
+  return value.replace(/[^a-zA-Z0-9]/gu, "-").replace(/-+/gu, "-").replace(/^-+|-+$/gu, "");
+}
+
 function uniqueNames(names: string[]): string[] {
   return names.filter((name, index) => name.length > 0 && names.indexOf(name) === index);
 }
@@ -714,22 +729,76 @@ function cursorSlugMixedNames(parts: string[]): string[] {
 function cursorSlugSegmentNames(parts: string[]): string[] {
   const hyphen = parts.join("-");
   const dotted = parts.join(".");
+  const underscored = parts.join("_");
+  const spaced = parts.join(" ");
   const mixed = cursorSlugMixedNames(parts);
+  // Cursor slugs every non-alphanumeric character to `-`, so `_`, `.` and a
+  // space are all indistinguishable from a real hyphen by the time we read one
+  // back. Uniform joins for each cover the common cases; the `.`-prefixed forms
+  // recover a leading dot, which the vendor's trailing `^-+` trim erases
+  // entirely (`.ade` -> `ade`).
   return uniqueNames([
     hyphen,
     dotted,
+    underscored,
+    spaced,
     ...mixed,
     `.${hyphen}`,
     `.${dotted}`,
+    `.${underscored}`,
     ...mixed.map((name) => `.${name}`),
   ]);
 }
 
-function greedyCursorSlugCwdCandidate(slug: string): string | null {
-  const parts = slug.split("-").filter((part) => part.length > 0);
-  if (!parts.length) return null;
-  let current = path.parse(path.resolve("/")).root;
-  let index = 0;
+/**
+ * Windows drive roots that exist right now (`C:\`, `D:\`, …).
+ *
+ * A Cursor slug is anchored at a drive letter, and the process's own drive is
+ * not necessarily that drive, so the inversion cannot assume `path.resolve("/")`.
+ */
+function windowsDriveRoots(): string[] {
+  const roots: string[] = [];
+  for (let code = "A".charCodeAt(0); code <= "Z".charCodeAt(0); code += 1) {
+    const root = `${String.fromCharCode(code)}:${path.win32.sep}`;
+    if (safeStat(root)?.isDirectory()) roots.push(root);
+  }
+  return roots;
+}
+
+/**
+ * Roots to start walking from, paired with the slug parts still to consume.
+ *
+ * On Windows the first part is the drive letter itself — Cursor's rule turns
+ * `C:\Users\me\repo` into `C-Users-me-repo`, so the leading `C` is a segment,
+ * not a directory named `C`. Anchoring at the process's current drive root and
+ * then looking for a child literally named `C` is why this never resolved.
+ */
+function cursorSlugAnchors(parts: string[]): Array<{ root: string; index: number }> {
+  if (!parts.length) return [];
+  if (process.platform !== "win32") {
+    return [{ root: path.parse(path.resolve("/")).root, index: 0 }];
+  }
+  const anchors: Array<{ root: string; index: number }> = [];
+  const first = parts[0] ?? "";
+  if (/^[A-Za-z]$/u.test(first)) {
+    const driveRoot = `${first.toUpperCase()}:${path.win32.sep}`;
+    if (safeStat(driveRoot)?.isDirectory()) anchors.push({ root: driveRoot, index: 1 });
+  }
+  // A slug produced on another OS (an imported transcript, a synced profile)
+  // has no drive segment, so fall back to trying every drive that exists.
+  for (const root of windowsDriveRoots()) {
+    anchors.push({ root, index: 0 });
+  }
+  return anchors;
+}
+
+function greedyCursorSlugCwdCandidateFrom(
+  parts: string[],
+  root: string,
+  startIndex: number,
+): string | null {
+  let current = root;
+  let index = startIndex;
 
   while (index < parts.length) {
     let matched: { dir: string; nextIndex: number } | null = null;
@@ -753,6 +822,16 @@ function greedyCursorSlugCwdCandidate(slug: string): string | null {
   return current;
 }
 
+function greedyCursorSlugCwdCandidate(slug: string): string | null {
+  const parts = slug.split("-").filter((part) => part.length > 0);
+  if (!parts.length) return null;
+  for (const anchor of cursorSlugAnchors(parts)) {
+    const resolved = greedyCursorSlugCwdCandidateFrom(parts, anchor.root, anchor.index);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
 export function cursorSlugCwdCandidates(slug: string): string[] {
   const candidates: string[] = [];
   const add = (candidate: string) => {
@@ -762,25 +841,38 @@ export function cursorSlugCwdCandidates(slug: string): string[] {
   const greedy = greedyCursorSlugCwdCandidate(slug);
   if (greedy) add(greedy);
 
-  if (slug.startsWith("Users-")) {
-    const parts = slug.split("-");
-    if (parts.length >= 2) {
-      const username = parts[1];
-      const rest = parts.slice(2).join("-");
-      if (username && rest) {
-        const worktreeMarker = "-ade-worktrees-";
-        const markerIdx = rest.indexOf(worktreeMarker);
-        if (markerIdx >= 0) {
-          const projectPart = rest.slice(0, markerIdx);
-          const lanePart = rest.slice(markerIdx + worktreeMarker.length);
-          add(path.join("/Users", username, ...projectPart.split("-"), ".ade", "worktrees", lanePart));
-        }
-        add(path.join("/Users", username, ...rest.split("-")));
+  // Home-relative guess. On macOS a home-anchored slug starts `Users-<name>-`;
+  // on Windows the same path starts `C-Users-<name>-`, because the drive letter
+  // survives as its own segment and Cursor's rule has no platform branch. Slug
+  // the real home directory and strip that prefix instead of hardcoding
+  // `/Users`, so `C:\Users\me`, `/home/me` and a relocated profile all work.
+  const homeSlug = slugLikeCursor(resolveHomeDir());
+  if (homeSlug && (slug === homeSlug || slug.startsWith(`${homeSlug}-`))) {
+    const rest = slug.slice(homeSlug.length).replace(/^-+/u, "");
+    if (rest) {
+      const worktreeMarker = "-ade-worktrees-";
+      const markerIdx = rest.indexOf(worktreeMarker);
+      if (markerIdx >= 0) {
+        const projectPart = rest.slice(0, markerIdx);
+        const lanePart = rest.slice(markerIdx + worktreeMarker.length);
+        add(path.join(resolveHomeDir(), ...projectPart.split("-"), ".ade", "worktrees", lanePart));
       }
+      add(path.join(resolveHomeDir(), ...rest.split("-")));
     }
   }
 
-  add(`/${slug.replace(/-/gu, "/")}`);
+  // Last resort: treat every `-` as a path separator. On Windows the leading
+  // segment is a drive letter, so this has to become `C:\a\b` — never `\C\a\b`.
+  const slugParts = slug.split("-").filter((part) => part.length > 0);
+  if (slugParts.length) {
+    if (process.platform === "win32") {
+      if (/^[A-Za-z]$/u.test(slugParts[0] ?? "")) {
+        add(path.join(`${(slugParts[0] ?? "").toUpperCase()}:${path.win32.sep}`, ...slugParts.slice(1)));
+      }
+    } else {
+      add(`/${slugParts.join("/")}`);
+    }
+  }
   return candidates;
 }
 
@@ -850,8 +942,14 @@ export function slugMatchesScopeRoots(
 ): boolean {
   const roots = scopeRootPathVariants(scopeRoots);
   if (!roots.length) return true;
+  // Windows paths are case-insensitive, so a workspace the provider recorded as
+  // `c:\users\me\repo` slugs differently from ADE's `C:\Users\me\repo` scope
+  // root and an exact compare silently drops the session. The fold has to
+  // happen here: `slugForCwd` only ever sees one of the two sides.
+  const fold = (value: string): string => (process.platform === "win32" ? value.toLowerCase() : value);
+  const foldedSlug = fold(slug);
   return roots.some((root) => {
-    const rootSlug = slugForCwd(root);
-    return slug === rootSlug || slug.startsWith(`${rootSlug}-`);
+    const rootSlug = fold(slugForCwd(root));
+    return foldedSlug === rootSlug || foldedSlug.startsWith(`${rootSlug}-`);
   });
 }

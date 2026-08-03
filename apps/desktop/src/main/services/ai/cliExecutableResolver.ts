@@ -153,6 +153,7 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
   const voltaHome = env.VOLTA_HOME?.trim();
   const pnpmHome = env.PNPM_HOME?.trim();
   const asdfDataDir = env.ASDF_DATA_DIR?.trim();
+  const codexInstallDir = env.CODEX_INSTALL_DIR?.trim();
 
   return uniqueNonEmpty([
     // `npm i -g` writes `<cmd>.cmd` / `<cmd>.ps1` shims straight into %APPDATA%\npm.
@@ -204,8 +205,17 @@ function getWindowsKnownBinDirs(env: NodeJS.ProcessEnv, command: string): string
     pnpmHome || "",
     asdfDataDir ? path.join(asdfDataDir, "shims") : "",
     ...readNpmPrefixBinDirs(env),
-    command === "codex" && programFiles ? path.join(programFiles, "Codex") : "",
-    command === "codex" && localAppData ? path.join(localAppData, "Programs", "Codex") : "",
+    // Codex's standalone Windows installer (chatgpt.com/codex/install.ps1)
+    // unpacks to $CODEX_HOME\packages\standalone\current and exposes the binary
+    // through %CODEX_INSTALL_DIR%, defaulting to
+    // %LOCALAPPDATA%\Programs\OpenAI\Codex\bin. It prepends that to the
+    // *persisted* user PATH, which an already-running ADE never sees — so a PATH
+    // lookup alone reports a real install as absent. macOS needs no equivalent
+    // entry: the Unix default is $HOME/.local/bin, already listed above.
+    command === "codex" ? (codexInstallDir || "") : "",
+    command === "codex" && localAppData
+      ? path.join(localAppData, "Programs", "OpenAI", "Codex", "bin")
+      : "",
   ]);
 }
 
