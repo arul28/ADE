@@ -403,7 +403,7 @@ Runtime support files outside `services/sync/`:
   two minutes; `ade_account_session_unreadable` covers the brain being unable to
   read the account session at all (`sessionReadState === "unreadable"`, or a
   status read that threw), carrying only a coarse `code` for the read path
-  (`decrypt_failure`, `no_keychain_material`, `store_format`, `session_parse`,
+  (`decrypt_failure`, `no_os_key_material`, `store_format`, `session_parse`,
   `read_error`, `unknown`) that `accountAuthService.getSessionReadFailureReason()`
   supplies. See [logging](../../logging.md).
   Successful account sign-in also requests an immediate publish; the brain
@@ -467,7 +467,7 @@ Runtime support files outside `services/sync/`:
   neither works, the store self-heals once per 30 s by dropping the cached OS
   key material and retrying against a fresh read, then reports
   `getLastReadState() === "unreadable"` with a coarse
-  `getLastReadFailureReason()` of `decrypt_failure`, `no_keychain_material`, or
+  `getLastReadFailureReason()` of `decrypt_failure`, `no_os_key_material`, or
   `store_format`. It never writes an empty store over ciphertext it could not
   decrypt.
 - `apps/ade-cli/src/services/credentials/osBoundKeyMaterial.ts` — everything

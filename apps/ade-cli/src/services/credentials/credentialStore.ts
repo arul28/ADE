@@ -26,10 +26,12 @@ export type CredentialStoreReadFailureReason =
   /** The ciphertext exists but no available key decrypts it. */
   | "decrypt_failure"
   /**
-   * OS-held key material was expected but could not be obtained — the macOS
-   * keychain item on darwin, the DPAPI-protected key file on win32.
+   * OS-held key material was expected but the key was derived without it. On
+   * darwin that is an unreadable keychain item; on win32 a DPAPI failure throws
+   * out of the read instead of returning null, so it never lands here. The name
+   * stays platform-neutral because the condition it describes is.
    */
-  | "no_keychain_material"
+  | "no_os_key_material"
   /** The file exists but is not a recognised credential envelope. */
   | "store_format";
 
@@ -603,21 +605,22 @@ function isSameKeyMaterial(left: Buffer | null, right: Buffer | null): boolean {
  * material. Injecting the trio together makes that contract explicit; omitting
  * the whole object takes the process-wide OS defaults.
  *
- * Every member receives the store's secrets directory. macOS ignores it (one
- * global keychain item per machine) but Windows DPAPI material is protected per
- * directory, so without it a store with a custom `machineKeyPath` would be
- * handed a different store's key. Sources that do not care may ignore the
- * argument.
+ * Every member receives `keyBindingDir` — the directory this store's machine key
+ * lives in, which is where the rest of its key derivation belongs too. macOS
+ * ignores it (one global keychain item per machine) but Windows DPAPI material
+ * is protected per directory, so without it a store with a custom
+ * `machineKeyPath` would be handed a different store's key. Sources that do not
+ * care may ignore the argument.
  */
 export type CredentialKeyMaterialSource = {
-  read(secretsDir: string): Buffer | null;
+  read(keyBindingDir: string): Buffer | null;
   /** Defaults to an asynchronous wrapper around `read()`. */
-  readAsync?(secretsDir: string): Promise<Buffer | null>;
+  readAsync?(keyBindingDir: string): Promise<Buffer | null>;
   /**
    * Drops whatever cache backs the readers so a failed decrypt can be retried
    * against freshly-read material. Omit to opt out of self-heal entirely.
    */
-  invalidate?(secretsDir: string): void;
+  invalidate?(keyBindingDir: string): void;
 };
 
 const DEFAULT_KEY_MATERIAL_SOURCE: Required<CredentialKeyMaterialSource> = {
@@ -673,7 +676,7 @@ function decodeCredentialStore(
   const reason: CredentialStoreReadFailureReason = formatIsUnsupported
     ? "store_format"
     : !osBound && expectsOsBoundKeyMaterial()
-      ? "no_keychain_material"
+      ? "no_os_key_material"
       : "decrypt_failure";
   return { ok: false, error: lastError, osBound, reason };
 }
@@ -722,21 +725,17 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
-    const osBindingDir = path.dirname(this.machineKeyPath);
+    const keyBindingDir = path.dirname(this.machineKeyPath);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
     const keyMaterial = args.keyMaterial ?? DEFAULT_KEY_MATERIAL_SOURCE;
-    // The key material is selected by the directory the MACHINE KEY lives in,
-    // not by `secretsDir`: a store given an explicit `machineKeyPath` outside
-    // `secretsDir` keeps its whole key derivation — machine key and Windows
-    // DPAPI file alike — in one directory.
-    this.readKeyMaterial = () => keyMaterial.read(osBindingDir);
+    this.readKeyMaterial = () => keyMaterial.read(keyBindingDir);
     this.readKeyMaterialAsync = async () => (
-      keyMaterial.readAsync ? keyMaterial.readAsync(osBindingDir) : keyMaterial.read(osBindingDir)
+      keyMaterial.readAsync ? keyMaterial.readAsync(keyBindingDir) : keyMaterial.read(keyBindingDir)
     );
     // An injected source owns its own cache lifetime, so self-heal is available
     // only when that source supplies the matching invalidation hook.
     this.invalidateKeyMaterial = keyMaterial.invalidate
-      ? () => keyMaterial.invalidate?.(osBindingDir)
+      ? () => keyMaterial.invalidate?.(keyBindingDir)
       : null;
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
@@ -873,6 +872,18 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
       // cached its own copy. Re-read the keychain once and retry before
       // declaring the store permanently unreadable. A malformed file is not a
       // key problem, so it never spends a keychain read.
+      //
+      // Known cost, accepted: on Windows an uncached key-material read is a
+      // synchronous PowerShell spawn budgeted at 30 s, and one that has to
+      // create the key spawns twice (protect, then unprotect). This path can
+      // take up to two uncached reads — the failing one above plus the
+      // refreshed one below — while holding the credential file lock, whose
+      // peer timeout is 15 s, so a peer process can see "Timed out waiting for
+      // ADE credential store lock" during a recovery. The common case is
+      // cheaper: the failing read is usually served from cache, which is the
+      // premise of the self-heal. Accepted because the alternative is no
+      // self-heal at all; raising the lock timeout or moving key-material reads
+      // outside the lock is a separate change.
       const retried = retryDecodeWithRefreshedKeyMaterial({
         raw,
         machineKey,

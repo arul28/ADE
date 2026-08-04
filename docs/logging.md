@@ -113,7 +113,7 @@ failure: the desktop app is signed in, but the ADE brain cannot decrypt the
 shared `credentials.json.enc` and therefore never publishes the machine to the
 account directory. The account-directory publisher emits it once per unreadable
 *episode* (a readable status ends the episode) carrying only a coarse `code` for
-the read path — `decrypt_failure`, `no_keychain_material`, `store_format`,
+the read path — `decrypt_failure`, `no_os_key_material`, `store_format`,
 `session_parse`, `read_error`, or `unknown`. No paths, key material, ciphertext,
 or account identifiers reach the payload, and a 24-hour deduplication window per
 code bounds it further.

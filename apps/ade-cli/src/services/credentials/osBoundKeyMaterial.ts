@@ -16,11 +16,12 @@ import {
  * itself only deals with ciphertext.
  *
  * The two supported bindings are shaped differently, and the difference is why
- * every entry point takes a `secretsDir`:
- *   - macOS holds ONE global keychain item for the machine, so `secretsDir` is
- *     ignored there.
- *   - Windows holds a DPAPI-protected key file PER secrets directory
- *     (`<secretsDir>/.credential-key.dpapi`), so the directory selects which
+ * every entry point takes a `keyBindingDir` — the directory the caller keeps its
+ * machine key in:
+ *   - macOS holds ONE global keychain item for the machine, so `keyBindingDir`
+ *     is ignored there.
+ *   - Windows holds a DPAPI-protected key file PER directory
+ *     (`<keyBindingDir>/.credential-key.dpapi`), so the directory selects which
  *     key is being asked for. Sharing a single slot across directories would
  *     hand one store another store's key.
  */
@@ -71,7 +72,7 @@ export type MacKeychainCommands = {
   add: (secret: string) => MacKeychainAddOutcome;
 };
 
-export function readCredentialPassphraseFromEnv(): Buffer | null {
+function readCredentialPassphraseFromEnv(): Buffer | null {
   const passphrase = process.env.ADE_CREDENTIAL_STORE_PASSPHRASE?.trim();
   return passphrase ? Buffer.from(passphrase, "utf8") : null;
 }
@@ -88,7 +89,7 @@ export type OsBoundKeyMaterialBinding =
   | "env_passphrase"
   /** Explicit opt-out, or a test process that must not touch the real OS store. */
   | "disabled"
-  /** `<secretsDir>/.credential-key.dpapi`, protected per directory. */
+  /** `<keyBindingDir>/.credential-key.dpapi`, protected per directory. */
   | "windows_dpapi"
   /** One global `security` generic-password item per machine. */
   | "macos_keychain"
@@ -279,7 +280,7 @@ export type OsBoundKeyMaterialResolver = {
  * suppressing creation for it would starve first-run item creation forever
  * because the async path refreshes the miss timestamp on every read.
  */
-export function createOsBoundKeyMaterialResolver(args: {
+export function createMacKeychainMaterialResolver(args: {
   read: () => OsBoundKeyMaterialResolution;
   readAsync: () => Promise<OsBoundKeyMaterialResolution>;
   now?: () => number;
@@ -344,7 +345,7 @@ export function createOsBoundKeyMaterialResolver(args: {
   };
 }
 
-const defaultOsBoundKeyMaterialResolver = createOsBoundKeyMaterialResolver({
+const defaultMacKeychainMaterialResolver = createMacKeychainMaterialResolver({
   read: readOrCreateMacKeychainMaterial,
   readAsync: readMacKeychainMaterialAsync,
 });
@@ -359,13 +360,13 @@ const defaultOsBoundKeyMaterialResolver = createOsBoundKeyMaterialResolver({
  * dropped: a Windows invalidation that only cleared the macOS resolver would
  * leave the self-heal retry re-reading the same stale DPAPI material.
  */
-export function invalidateDefaultOsBoundKeyMaterialCache(secretsDir: string): void {
+export function invalidateDefaultOsBoundKeyMaterialCache(keyBindingDir: string): void {
   switch (resolveOsBoundKeyMaterialBinding()) {
     case "windows_dpapi":
-      invalidateWindowsDpapiMaterial(secretsDir);
+      invalidateWindowsDpapiMaterial(keyBindingDir);
       return;
     case "macos_keychain":
-      defaultOsBoundKeyMaterialResolver.invalidate();
+      defaultMacKeychainMaterialResolver.invalidate();
       return;
     default:
       // Nothing is cached when no OS binding is in play.
@@ -381,31 +382,31 @@ export function invalidateDefaultOsBoundKeyMaterialCache(secretsDir: string): vo
  * PowerShell timeout would read a DPAPI-bound store as empty and, on the write
  * path, silently re-seal it unbound.
  */
-export function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
+export function readDefaultOsBoundKeyMaterial(keyBindingDir: string): Buffer | null {
   switch (resolveOsBoundKeyMaterialBinding()) {
     case "env_passphrase":
       return readCredentialPassphraseFromEnv();
     // Windows keeps its own per-directory cache and create race inside
     // `windowsDpapiMaterial`, so it does not go through the macOS resolver.
     case "windows_dpapi":
-      return readOrCreateWindowsDpapiMaterial(secretsDir);
+      return readOrCreateWindowsDpapiMaterial(keyBindingDir);
     case "macos_keychain":
-      return defaultOsBoundKeyMaterialResolver.read();
+      return defaultMacKeychainMaterialResolver.read();
     default:
       return null;
   }
 }
 
 export async function readDefaultOsBoundKeyMaterialAsync(
-  secretsDir: string,
+  keyBindingDir: string,
 ): Promise<Buffer | null> {
   switch (resolveOsBoundKeyMaterialBinding()) {
     case "env_passphrase":
       return readCredentialPassphraseFromEnv();
     case "windows_dpapi":
-      return await readOrCreateWindowsDpapiMaterialAsync(secretsDir);
+      return await readOrCreateWindowsDpapiMaterialAsync(keyBindingDir);
     case "macos_keychain":
-      return await defaultOsBoundKeyMaterialResolver.readAsync();
+      return await defaultMacKeychainMaterialResolver.readAsync();
     default:
       return null;
   }

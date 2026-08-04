@@ -438,7 +438,7 @@ describe("account machine publisher health", () => {
         signedIn: sessionReadState === "available",
         sessionReadState,
         sessionReadFailureReason: sessionReadState === "unreadable"
-          ? ("no_keychain_material" as const)
+          ? ("no_os_key_material" as const)
           : null,
       }),
       getSnapshot: async () => snapshot(),
@@ -455,8 +455,8 @@ describe("account machine publisher health", () => {
     expect(captureAnalytics).toHaveBeenCalledWith({
       event: "ade_account_session_unreadable",
       surface: "api",
-      properties: { code: "no_keychain_material" },
-      dedupeKey: "account-session-unreadable:no_keychain_material",
+      properties: { code: "no_os_key_material" },
+      dedupeKey: "account-session-unreadable:no_os_key_material",
       minimumIntervalMs: 24 * 60 * 60 * 1_000,
     });
 

@@ -113,7 +113,7 @@ export type AccountSessionReadState = "available" | "missing" | "unreadable";
  * be reported as a product-analytics property.
  */
 export type AccountSessionReadFailureReason =
-  /** Everything the credential store itself can report (decrypt/keychain/format). */
+  /** Everything the credential store itself can report (decrypt/key-material/format). */
   | CredentialStoreReadFailureReason
   /** The credential decrypted but the stored session record did not parse. */
   | "session_parse"

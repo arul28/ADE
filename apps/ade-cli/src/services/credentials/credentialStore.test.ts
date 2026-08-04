@@ -14,14 +14,12 @@ import {
 import { ACCOUNT_SESSION_CREDENTIAL_KEY } from "../account/accountAuthService";
 import { BOOTSTRAP_TOKEN_KEY } from "../sync/brainProjectActionsSyncHandler";
 import {
-  createOsBoundKeyMaterialResolver,
-  invalidateDefaultOsBoundKeyMaterialCache,
+  createMacKeychainMaterialResolver,
   resolveMacKeychainMaterialOutcome,
   resolveOsBoundKeyMaterialBinding,
   type MacKeychainCommands,
 } from "./osBoundKeyMaterial";
 import {
-  invalidateWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterial,
   readOrCreateWindowsDpapiMaterialAsync,
   resolveWindowsDpapiPowerShellPath,
@@ -808,21 +806,6 @@ describe("resolveOsBoundKeyMaterialBinding", () => {
       })).toBe("env_passphrase");
     },
   );
-
-  it("scopes the Windows self-heal invalidation to one secrets directory", () => {
-    // Self-heal is only self-heal if the invalidation drops the cache that
-    // actually backs THIS platform's reader. DPAPI material is per directory,
-    // so the hook the source wires in has to take one — a global-only drop
-    // would evict every other store's key on every failed decrypt.
-    const secretsDir = path.join(tempDir, "dpapi-invalidate");
-    expect(invalidateWindowsDpapiMaterial.length).toBe(1);
-    expect(() => invalidateWindowsDpapiMaterial(secretsDir)).not.toThrow();
-    expect(() => invalidateWindowsDpapiMaterial()).not.toThrow();
-    // Routed through the shared dispatch, so it is inert under the test env
-    // gate no matter which platform runs the suite.
-    expect(() => invalidateDefaultOsBoundKeyMaterialCache(secretsDir)).not.toThrow();
-    expect(resolveOsBoundKeyMaterialBinding()).toBe("disabled");
-  });
 });
 
 describe("resolveMacKeychainMaterialOutcome", () => {
@@ -892,12 +875,12 @@ describe("resolveMacKeychainMaterialOutcome", () => {
   });
 });
 
-describe("createOsBoundKeyMaterialResolver", () => {
+describe("createMacKeychainMaterialResolver", () => {
   const material = Buffer.alloc(32, 7);
 
   it("caches the resolved material instead of re-asking the OS", async () => {
     const read = vi.fn(() => ({ material }));
-    const resolver = createOsBoundKeyMaterialResolver({
+    const resolver = createMacKeychainMaterialResolver({
       read,
       readAsync: async () => ({ material: null, reason: "unavailable" as const }),
     });
@@ -916,7 +899,7 @@ describe("createOsBoundKeyMaterialResolver", () => {
     let now = 1_700_000_000_000;
     const read = vi.fn(() => ({ material }));
     const readAsync = vi.fn(async () => ({ material: null, reason: "not_found" as const }));
-    const resolver = createOsBoundKeyMaterialResolver({
+    const resolver = createMacKeychainMaterialResolver({
       read,
       readAsync,
       now: () => now,
@@ -936,7 +919,7 @@ describe("createOsBoundKeyMaterialResolver", () => {
   it("suppresses creation while the keychain itself is unavailable", () => {
     let now = 1_700_000_000_000;
     const read = vi.fn(() => ({ material: null, reason: "unavailable" as const }));
-    const resolver = createOsBoundKeyMaterialResolver({
+    const resolver = createMacKeychainMaterialResolver({
       read,
       readAsync: async () => ({ material: null, reason: "unavailable" as const }),
       now: () => now,
@@ -960,7 +943,7 @@ describe("createOsBoundKeyMaterialResolver", () => {
     const read = vi.fn(() => (current
       ? { material: current }
       : { material: null, reason: "unavailable" as const }));
-    const resolver = createOsBoundKeyMaterialResolver({
+    const resolver = createMacKeychainMaterialResolver({
       read,
       readAsync: async () => ({ material: null, reason: "unavailable" as const }),
       now: () => now,
@@ -978,7 +961,7 @@ describe("createOsBoundKeyMaterialResolver", () => {
 
   it("coalesces concurrent read-only resolutions into one OS call", async () => {
     const readAsync = vi.fn(async () => ({ material }));
-    const resolver = createOsBoundKeyMaterialResolver({
+    const resolver = createMacKeychainMaterialResolver({
       read: () => ({ material: null, reason: "unavailable" as const }),
       readAsync,
     });

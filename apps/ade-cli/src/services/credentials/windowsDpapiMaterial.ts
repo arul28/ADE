@@ -22,8 +22,25 @@ const WINDOWS_DPAPI_MAX_OUTPUT_BYTES = 64 * 1024;
 const WINDOWS_DPAPI_POWERSHELL_KERNEL_PATH =
   "\\\\?\\GLOBALROOT\\SystemRoot\\System32\\WindowsPowerShell\\v1.0\\powershell.exe";
 
+/**
+ * Windows deliberately has no negative cache, unlike the macOS keychain
+ * resolver. A locked keychain is a durable state worth backing off from, but a
+ * DPAPI failure is almost always a transient PowerShell timeout — suppressing
+ * retries for it would turn one slow cold start into a permanent-looking
+ * "credentials are unavailable".
+ */
 const cachedKeyMaterial = new Map<string, Buffer>();
+/**
+ * Concurrent credential reads would otherwise each spawn their own PowerShell,
+ * and that contention is precisely what makes a cold start slow enough to hit
+ * the timeout above. One in-flight read per key path serves them all.
+ */
 const keyMaterialReadInFlight = new Map<string, Promise<Buffer>>();
+/**
+ * Bumped by every invalidation so a read that started before it cannot write
+ * its now-stale material back into the cache.
+ */
+let dpapiEpoch = 0;
 
 const WINDOWS_DPAPI_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
@@ -211,30 +228,29 @@ function runDpapiAsync(operation: "protect" | "unprotect", value: Buffer): Promi
   });
 }
 
-function protectedKeyPath(secretsDir: string): string {
-  return path.resolve(secretsDir, WINDOWS_DPAPI_KEY_FILE);
+function protectedKeyPath(keyBindingDir: string): string {
+  return path.resolve(keyBindingDir, WINDOWS_DPAPI_KEY_FILE);
 }
 
 /**
- * Drops the in-process DPAPI material cache so the next read re-runs the
- * unprotect against whatever is on disk now.
+ * Drops the in-process DPAPI material cache for one key-binding directory so
+ * the next read re-runs the unprotect against whatever is on disk now.
  *
  * The credential store's self-heal needs this on Windows for the same reason it
  * needs it on macOS: a peer process can win the key-creation race after this
  * process cached its own copy, and without a way to drop that copy every later
- * decrypt keeps failing against material that is already known to be wrong. The
- * in-flight promise is deliberately left alone — it is already reading, and
- * dropping it would only duplicate the PowerShell spawn the dedup exists to
- * avoid; the cache write it performs is superseded by the next invalidation.
+ * decrypt keeps failing against material that is already known to be wrong.
  *
- * Omit `secretsDir` to drop every entry.
+ * The in-flight promise is deliberately left alone — it is already reading, and
+ * dropping it would only duplicate the PowerShell spawn the dedup exists to
+ * avoid. Bumping the epoch is what makes that safe: the read still resolves for
+ * its own callers, but its cache write is discarded, so material this
+ * invalidation just rejected cannot reappear behind the self-heal's 30 s
+ * throttle.
  */
-export function invalidateWindowsDpapiMaterial(secretsDir?: string): void {
-  if (secretsDir === undefined) {
-    cachedKeyMaterial.clear();
-    return;
-  }
-  cachedKeyMaterial.delete(protectedKeyPath(secretsDir));
+export function invalidateWindowsDpapiMaterial(keyBindingDir: string): void {
+  dpapiEpoch += 1;
+  cachedKeyMaterial.delete(protectedKeyPath(keyBindingDir));
 }
 
 function unprotectKey(keyPath: string): Buffer {
@@ -260,11 +276,12 @@ async function unprotectKeyAsync(keyPath: string): Promise<Buffer> {
  * key crosses the PowerShell boundary only on stdin/stdout and the persisted
  * blob is unusable from another Windows account.
  */
-export function readOrCreateWindowsDpapiMaterial(secretsDir: string): Buffer {
-  const keyPath = protectedKeyPath(secretsDir);
+export function readOrCreateWindowsDpapiMaterial(keyBindingDir: string): Buffer {
+  const keyPath = protectedKeyPath(keyBindingDir);
   const cached = cachedKeyMaterial.get(keyPath);
   if (cached) return cached;
 
+  const readEpoch = dpapiEpoch;
   let material: Buffer;
   try {
     material = unprotectKey(keyPath);
@@ -284,18 +301,21 @@ export function readOrCreateWindowsDpapiMaterial(secretsDir: string): Buffer {
       material = unprotectKey(keyPath);
     }
   }
-  cachedKeyMaterial.set(keyPath, material);
+  if (readEpoch === dpapiEpoch) cachedKeyMaterial.set(keyPath, material);
   return material;
 }
 
 /** Async counterpart used by brain-facing credential reads. */
-export async function readOrCreateWindowsDpapiMaterialAsync(secretsDir: string): Promise<Buffer> {
-  const keyPath = protectedKeyPath(secretsDir);
+export async function readOrCreateWindowsDpapiMaterialAsync(
+  keyBindingDir: string,
+): Promise<Buffer> {
+  const keyPath = protectedKeyPath(keyBindingDir);
   const cached = cachedKeyMaterial.get(keyPath);
   if (cached) return cached;
   const existing = keyMaterialReadInFlight.get(keyPath);
   if (existing) return await existing;
 
+  const readEpoch = dpapiEpoch;
   const read = (async () => {
     let material: Buffer;
     try {
@@ -316,7 +336,10 @@ export async function readOrCreateWindowsDpapiMaterialAsync(secretsDir: string):
         material = await unprotectKeyAsync(keyPath);
       }
     }
-    cachedKeyMaterial.set(keyPath, material);
+    // An invalidation while this read was in flight means the material it
+    // produced is already known to be stale; hand it to this read's own callers
+    // but never let it repopulate the cache the self-heal just cleared.
+    if (readEpoch === dpapiEpoch) cachedKeyMaterial.set(keyPath, material);
     return material;
   })();
   keyMaterialReadInFlight.set(keyPath, read);
