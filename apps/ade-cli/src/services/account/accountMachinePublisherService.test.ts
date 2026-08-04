@@ -1493,4 +1493,17 @@ describe("createEpisodeAnalytics", () => {
 
     expect(late).not.toHaveBeenCalled();
   });
+
+  it("swallows a throwing capture and still consumes the episode", () => {
+    // A synchronous capture failure escaping here would surface as the
+    // publisher's transport_error instead of the real token_unreadable
+    // outcome, hiding the repair path from the user.
+    const capture = vi.fn(() => { throw new Error("posthog exploded"); });
+    const episode = analyticsFor(() => capture);
+
+    expect(() => episode.report({ dedupeValue: "boom", properties: {} })).not.toThrow();
+    episode.report({ dedupeValue: "boom", properties: {} });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+  });
 });

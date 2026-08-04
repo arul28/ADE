@@ -327,7 +327,10 @@ describe("ProjectRecoveryService.restartBrain", () => {
     await expect(service.restartBrain()).resolves.toBeUndefined();
 
     expect(connectionPool.installServiceBestEffort).toHaveBeenCalledWith({ forceRestart: true });
-    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {});
+    // The ping is explicitly bounded: the RPC client's default is 10 minutes,
+    // which would park this call — and any repair waiting on it — on a brain
+    // that binds the socket but never answers.
+    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 20_000 });
   });
 
   const installStatusPool = (
@@ -428,5 +431,57 @@ describe("ProjectRecoveryService.restartBrain", () => {
     await expect(repair).resolves.toMatchObject({ ok: true });
     await expect(service.restartBrain()).resolves.toBeUndefined();
     expect(connectionPool.installServiceBestEffort).toHaveBeenCalledWith({ forceRestart: true });
+  });
+
+  it("waits for an in-flight restart before repair takes the database", async () => {
+    // The other direction of the same invariant: a restart that began before
+    // repair() was called must finish its install before repair stops the
+    // service, or the queued install rebinds a brain during exclusive DB work.
+    const connectionPool = installedPool();
+    let releaseInstall = (): void => {};
+    let installStarted = (): void => {};
+    const installBlocked = new Promise<void>((resolve) => { releaseInstall = resolve; });
+    const installRunning = new Promise<void>((resolve) => { installStarted = resolve; });
+    vi.mocked(connectionPool.installServiceBestEffort).mockImplementation(async () => {
+      installStarted();
+      await installBlocked;
+    });
+    const quickCheck = vi.fn(async () => ({ healthy: true, detail: "ok" }));
+    const service = createProjectRecoveryService(deps({ connectionPool, quickCheck }));
+
+    const restart = service.restartBrain();
+    await installRunning;
+    const repair = service.repair(tempRoot());
+    // Repair must be parked on the restart, not already owning the database.
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(quickCheck).not.toHaveBeenCalled();
+
+    releaseInstall();
+    await expect(restart).resolves.toBeUndefined();
+    await expect(repair).resolves.toMatchObject({ ok: true });
+    expect(quickCheck).toHaveBeenCalled();
+  });
+
+  it("still runs repair when the in-flight restart it waited on failed", async () => {
+    // Recovery is the user's last resort: a rejected restart must not take the
+    // repair run down with it.
+    const connectionPool = installStatusPool("failed", "launchctl bootstrap failed");
+    let releaseInstall = (): void => {};
+    let installStarted = (): void => {};
+    const installBlocked = new Promise<void>((resolve) => { releaseInstall = resolve; });
+    const installRunning = new Promise<void>((resolve) => { installStarted = resolve; });
+    vi.mocked(connectionPool.installServiceBestEffort).mockImplementation(async () => {
+      installStarted();
+      await installBlocked;
+    });
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    const restart = service.restartBrain();
+    await installRunning;
+    const repair = service.repair(tempRoot());
+    releaseInstall();
+
+    await expect(restart).rejects.toThrow("launchctl bootstrap failed");
+    await expect(repair).resolves.toMatchObject({ ok: true });
   });
 });

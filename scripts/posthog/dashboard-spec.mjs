@@ -531,7 +531,7 @@ export const dashboardSpec = Object.freeze({
         insight(
           "reliability-incidents",
           "Reliability incidents",
-          "Brain wedge recoveries, sustained route-publish failures, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
+          "Brain wedge recoveries, sustained route-publish failures, unreadable brain account sessions, relay suppression by a rival process, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
           trends({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recovered from wedge"),

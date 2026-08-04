@@ -1278,7 +1278,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
         await restoration.wait()
       }
     }
-    while !restoration.isWaiting { await Task.yield() }
+    await restoration.waitUntilWaiting()
     XCTAssertEqual(service.connectionState, .connected)
     XCTAssertTrue(service.isAttached)
 
@@ -1311,7 +1311,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
         await restoration.wait()
       }
     }
-    while !restoration.isWaiting { await Task.yield() }
+    await restoration.waitUntilWaiting()
     service.teardownSocketForTesting()
     restoration.resume()
     let completed = await postHello.value
@@ -1899,6 +1899,28 @@ private final class DeferredRecoveryWork {
   private var continuation: CheckedContinuation<Void, Never>?
 
   var isWaiting: Bool { continuation != nil }
+
+  /// Bounded readiness wait. If the continuation is never installed (the work
+  /// body did not run), spinning on `isWaiting` would hang the whole test
+  /// runner; fail loudly instead.
+  func waitUntilWaiting(
+    timeout: TimeInterval = 5,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !isWaiting {
+      if Date() >= deadline {
+        XCTFail(
+          "Deferred recovery work never installed its continuation within \(timeout)s.",
+          file: file,
+          line: line
+        )
+        return
+      }
+      await Task.yield()
+    }
+  }
 
   func wait() async {
     await withCheckedContinuation { continuation in

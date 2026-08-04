@@ -462,12 +462,18 @@ export function RemoteTargetList({
   // failure's "for N min" stays truthful while the panel is open. getInfo is a
   // cheap one-shot; there is no push event for the publisher's health.
   const publishHealthMountedRef = useRef(true);
+  // The interval and the post-repair refresh can overlap; without a generation
+  // an older in-flight read can land last and restore the failing banner the
+  // newer read already cleared.
+  const publishHealthRequestRef = useRef(0);
   const refreshPublishHealth = useCallback(() => {
     const infoPromise = window.ade.app?.getInfo?.();
     if (!infoPromise) return;
+    const requestId = ++publishHealthRequestRef.current;
     void infoPromise
       .then((info) => {
         if (!publishHealthMountedRef.current) return;
+        if (requestId !== publishHealthRequestRef.current) return;
         const health = info.localRuntime?.publishHealth ?? null;
         setLocalPublishHealth(
           health

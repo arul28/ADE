@@ -367,6 +367,14 @@ export class ProjectRecoveryService {
   private readonly now: () => number;
   /** Set for the whole of `repair()`; see `restartBrain()` for why. */
   private repairInFlight = false;
+  /**
+   * Settled-either-way handle on an in-flight `restartBrain()`. The flag above
+   * only closes one direction (a restart started after repair began); a repair
+   * started *during* a restart must wait for the install to finish, or that
+   * install can bind a replacement brain to the socket while repair owns the
+   * database.
+   */
+  private restartInFlight: Promise<void> | null = null;
 
   constructor(private readonly deps: ProjectRecoveryServiceDeps) {
     this.socketPath = deps.socketPath ?? resolveMachineAdeLayout({ ...process.env, ADE_HOME: deps.adeHome }).socketPath;
@@ -440,7 +448,10 @@ export class ProjectRecoveryService {
       return { ok: false, reason: "restart_error", detail: errorMessage(error) };
     }
     try {
-      await this.deps.connectionPool.callSync("ping", {});
+      // Bound the ping: RuntimeRpcClient's default is 10 minutes, and a brain
+      // that binds the socket but never answers would otherwise park both this
+      // call and any `repair()` waiting on it for that whole window.
+      await this.deps.connectionPool.callSync("ping", {}, { timeoutMs: BRAIN_RESTART_TIMEOUT_MS });
     } catch (error) {
       return { ok: false, reason: "ping_error", detail: errorMessage(error) };
     }
@@ -461,7 +472,15 @@ export class ProjectRecoveryService {
    */
   async restartBrain(): Promise<void> {
     if (this.repairInFlight) throw new Error("Recovery is already running.");
-    const outcome = await this.restartServiceAndWait(true);
+    const restart = this.restartServiceAndWait(true);
+    // Never-rejecting handle so `repair()` can await it without inheriting a
+    // restart failure; the real outcome is still thrown to this caller below.
+    const settled = restart.then(() => undefined, () => undefined);
+    this.restartInFlight = settled;
+    void settled.then(() => {
+      if (this.restartInFlight === settled) this.restartInFlight = null;
+    });
+    const outcome = await restart;
     if (outcome.ok) return;
     switch (outcome.reason) {
       case "install_skipped":
@@ -555,6 +574,18 @@ export class ProjectRecoveryService {
     // cannot reinstall the brain while the steps below own the database.
     this.repairInFlight = true;
     try {
+      // A restart that started before the flag was set is not covered by it:
+      // let its install finish before repair stops the service and takes the
+      // database. Never fails repair — this is the user's last resort, so the
+      // wait is bounded and repair proceeds regardless of how the restart ends.
+      // Repair's own stop_service step is what actually guarantees exclusivity;
+      // this wait only avoids racing an install that is already underway.
+      if (this.restartInFlight) {
+        await Promise.race([
+          this.restartInFlight,
+          new Promise<void>((resolve) => setTimeout(resolve, BRAIN_RESTART_TIMEOUT_MS)),
+        ]);
+      }
       return await this.runRepair(projectRoot, opts);
     } finally {
       this.repairInFlight = false;

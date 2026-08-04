@@ -36,13 +36,21 @@ export function createEpisodeAnalytics(args: {
     report(input): void {
       if (emitted) return;
       emitted = true;
-      args.capture()?.({
-        event: args.event,
-        surface: "api",
-        properties: input.properties,
-        dedupeKey: `${args.dedupePrefix}:${input.dedupeValue}`,
-        minimumIntervalMs: EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
-      });
+      // `emitted` is set first on purpose: a throwing capture still consumes
+      // the episode, so a permanently broken analytics sink cannot turn this
+      // into a per-attempt retry loop. Analytics must never change the health
+      // outcome its caller is about to record.
+      try {
+        args.capture()?.({
+          event: args.event,
+          surface: "api",
+          properties: input.properties,
+          dedupeKey: `${args.dedupePrefix}:${input.dedupeValue}`,
+          minimumIntervalMs: EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
+        });
+      } catch {
+        // Best effort only.
+      }
     },
     end(): void {
       emitted = false;

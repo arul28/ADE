@@ -107,6 +107,14 @@ export function ipcInvokeTimeoutMs(channel: string, args: readonly unknown[] = [
     case IPC.agentChatHandoff:
     case IPC.agentChatPrepareCrossMachineHandoff:
       return 150_000;
+    // A brain restart waits through the service install, then for the
+    // replacement brain to rebind (20s) and answer a ping (20s). The install
+    // leg can be 120s rather than 60s, because a forced restart queues behind
+    // an in-flight non-forced install instead of joining it. The renderer must
+    // not give up before the main process knows the outcome, or the Repair
+    // button reports a failure for a restart that actually succeeded.
+    case IPC.appRestartBackgroundService:
+      return 4 * 60_000;
     case IPC.iosSimulatorLaunch:
       return 10 * 60_000;
     case IPC.transcriptionTranscribe:
