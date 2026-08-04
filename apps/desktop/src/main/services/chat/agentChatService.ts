@@ -486,7 +486,9 @@ import { extractLeadingSlashCommand, isProviderSlashCommandInput } from "../../.
 import {
   deriveDeterministicAutoLaneIdentity,
   deriveDeterministicLaneNameFromPrompt,
+  deriveDeterministicLaneTitleFromPrompt,
   GENERIC_LANE_FALLBACK_NAME,
+  GENERIC_LANE_FALLBACK_TITLE,
   genericLaneFallbackName,
   genericSuffixFromLaneFallbackName,
 } from "../../../shared/laneNameFallback";
@@ -539,6 +541,15 @@ import {
   resolveCursorSdkModelSelectionParams,
 } from "./cursorModelsDiscovery";
 import { discoverDroidSdkModelDescriptors } from "./droidModelsDiscovery";
+import {
+  AUTO_LANE_IDENTITY_JSON_SCHEMA,
+  AUTO_TITLE_SYSTEM_PROMPT,
+  buildNamingModelCandidates,
+  LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT,
+  LEGACY_LANE_NAME_SYSTEM_PROMPT,
+  MAX_NAMING_WORDS,
+  runNamingAcrossProviders,
+} from "./sessionNaming";
 import {
   mapCursorSdkMessageToChatEvents,
   mapCursorSdkRunResultToDoneEvent,
@@ -2779,20 +2790,6 @@ const DEFAULT_DROID_MODEL = DEFAULT_DROID_DESCRIPTOR?.providerModelId ?? "claude
 const DEFAULT_REASONING_EFFORT = "medium";
 const DEFAULT_AUTO_TITLE_MODEL_ID = "anthropic/claude-haiku-4-5";
 
-/**
- * Failures that condemn every model behind a provider — a missing or unusable
- * CLI, an account that cannot run the model, auth, or quota. Retrying a sibling
- * model on the same provider just burns another spawn, so naming skips ahead to
- * a different provider instead.
- */
-const PROVIDER_LEVEL_NAMING_FAILURE_PATTERN =
-  /enoent|eacces|spawn\b|not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|api[_ -]?key|credential|not supported with|unsupported model|model[_ -]?not[_ -]?found|does not exist|insufficient|quota|rate limit/i;
-
-function isProviderLevelNamingFailure(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error ?? "");
-  return PROVIDER_LEVEL_NAMING_FAILURE_PATTERN.test(message);
-}
-
 const MAX_CHAT_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_THRESHOLD_BYTES = 200 * 1024;
 const CLAUDE_TOOL_OUTPUT_TRIM_PREVIEW_CHARS = 24 * 1024;
@@ -2952,42 +2949,6 @@ function evictOldestEntries<K, V>(map: Map<K, V>, maxSize: number): void {
     map.delete(next.value);
   }
 }
-const AUTO_TITLE_SYSTEM_PROMPT = `You title software development chat sessions.
-Return only the title text.
-- Use 2 to 6 words.
-- Focus on the task, feature, bug, or deliverable.
-- Never start with Completed, Complete, Done, Finished, Resolved, or Success.
-- No quotes.
-- No emoji.
-- No trailing punctuation.`;
-
-const LANE_NAME_FROM_PROMPT_SYSTEM_PROMPT = `Generate the stable identity for an automatically created software workspace.
-Return strict JSON only: {"laneTitle":"...","branchFragment":"..."}.
-laneTitle:
-- Natural readable user-facing title, 2 to 6 words, with spaces and natural title capitalization.
-- Preserve meaningful capitalization such as ADE, GitHub, iOS, macOS, Codex, OpenAI, and OAuth.
-- Describe the durable workstream, outcome, feature, bug, UI surface, or command.
-- Prefer meaningful nouns and product concepts over procedural wording.
-- Avoid prompt, question, request, conversation, chat, task, discuss, investigate, or look into unless genuinely part of a feature name.
-- Avoid generic leading verbs such as Fix, Update, Improve, Handle, or Work On when a specific noun phrase is available.
-- Do not repeat the user's sentence verbatim. No quotes, emoji, or trailing punctuation.
-branchFragment:
-- Describe the same workstream in 2 to 6 short specific words.
-- Lowercase ASCII and hyphen-separated. Do not include the ade/ prefix.
-- No spaces, quotes, refs/heads/, punctuation-heavy text, or leading/trailing separators.
-- Keep it concise and safe for GitHub, PR lists, terminals, and Git branch naming.
-Attached images are primary context for visual and UI requests.`;
-const LEGACY_LANE_NAME_SYSTEM_PROMPT = `Name a git worktree lane.
-Return only a short 2 to 5 word slug-friendly name with no slash, quotes, emoji, or trailing punctuation.`;
-const AUTO_LANE_IDENTITY_JSON_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    laneTitle: { type: "string" },
-    branchFragment: { type: "string" },
-  },
-  required: ["laneTitle", "branchFragment"],
-} as const;
 const CODEX_REASONING_EFFORTS: Array<{ effort: string; description: string }> = [
   { effort: "none", description: "No extra reasoning when supported by the runtime." },
   { effort: "minimal", description: "Minimal reasoning for fastest responses." },
@@ -4325,7 +4286,17 @@ function sanitizeAutoTitle(raw: string, maxChars = AUTO_TITLE_MAX_CHARS): string
 
   if (/^(session closed|chat completed)\b/u.test(collapsed)) return null;
 
-  return normalized.length > maxChars ? normalized.slice(0, maxChars).trimEnd() : normalized;
+  if (normalized.length <= maxChars) return normalized;
+  // Cut on a word boundary so an over-long title reads as a shorter phrase
+  // instead of stopping mid-word ("…installation simplific").
+  const clipped = normalized.slice(0, maxChars);
+  const lastBoundary = clipped.lastIndexOf(" ");
+  // Cut back to the last space only while at least half the budget survives —
+  // a title whose first word is longer than that is better clipped than gutted.
+  const trimmed = (lastBoundary >= Math.floor(maxChars / 2) ? clipped.slice(0, lastBoundary) : clipped)
+    .replace(/[^\p{L}\p{N})\]]+$/u, "")
+    .trimEnd();
+  return trimmed.length ? trimmed : clipped.trimEnd();
 }
 
 function fallbackLaneNameFromPrompt(prompt: string): string {
@@ -4365,8 +4336,10 @@ function normalizeSuggestedLaneTitle(raw: string): string | null {
   const title = sanitizeAutoTitle(raw, 72);
   if (!title) return null;
   const words = title.split(/\s+/u).filter(Boolean);
-  if (words.length < 2 || words.length > 6 || /[-_/]{2,}/u.test(title)) return null;
-  return title;
+  if (words.length < 2 || /[-_/]{2,}/u.test(title)) return null;
+  // Six words is the guideline given to the model, not a rejection rule: a
+  // seven-word answer is clamped, never discarded in favour of a slug.
+  return words.length > MAX_NAMING_WORDS ? words.slice(0, MAX_NAMING_WORDS).join(" ") : title;
 }
 
 function parseAutoLaneIdentity(raw: string): { laneTitle: string | null; branchFragment: string | null } | null {
@@ -4377,10 +4350,10 @@ function parseAutoLaneIdentity(raw: string): { laneTitle: string | null; branchF
     if (Object.keys(record).some((key) => key !== "laneTitle" && key !== "branchFragment")) return null;
     const branchRaw = typeof record.branchFragment === "string" ? record.branchFragment.trim() : "";
     const branchWords = branchRaw.split("-").filter(Boolean);
-    const branchFragment = branchWords.length >= 2
-      && branchWords.length <= 6
-      && /^[a-z0-9]+(?:-[a-z0-9]+)+$/u.test(branchRaw)
-      ? normalizeSuggestedLaneName(branchRaw)
+    // Same guideline-not-gate rule as the title: an over-long fragment is
+    // clamped to the first words rather than thrown away.
+    const branchFragment = branchWords.length >= 2 && /^[a-z0-9]+(?:-[a-z0-9]+)+$/u.test(branchRaw)
+      ? normalizeSuggestedLaneName(branchWords.slice(0, MAX_NAMING_WORDS).join("-"))
       : null;
     return {
       laneTitle: typeof record.laneTitle === "string" ? normalizeSuggestedLaneTitle(record.laneTitle) : null,
@@ -10788,24 +10761,21 @@ export function createAgentChatService(args: {
     const availableModels = await getAvailableRegistryModels(auth);
     if (!availableModels.length) return;
 
-    const preferredModelId =
-      [
+    // Same chain as automatic lane naming: preferred title models -> the model
+    // this chat was launched with -> a different provider -> deterministic. One
+    // provider being down (auth, missing binary, account-rejected model) must
+    // not leave the chat sitting on its provider default title.
+    const candidateModelIds = buildNamingModelCandidates({
+      availableModels,
+      preferred: [
         config.titleModelId,
         DEFAULT_AUTO_TITLE_MODEL_ID,
-        "anthropic/claude-haiku-4-5",
-        "openai/gpt-5.4-mini",
-        "openai/gpt-5.2",
-        "openai/gpt-5.4",
+        managed.session.modelId,
+        managed.session.model,
         availableModels[0]?.id,
-      ].find((candidate) => {
-        const modelId = typeof candidate === "string" ? candidate.trim() : "";
-        return modelId.length > 0 && availableModels.some((descriptor) => descriptor.id === modelId);
-      }) ?? null;
-
-    if (!preferredModelId) return;
-
-    const descriptor = getModelById(preferredModelId);
-    if (!descriptor) return;
+      ],
+    });
+    if (!candidateModelIds.length) return;
 
     const laneName = sessionService.get(managed.session.id)?.laneName ?? "Current lane";
     const currentTitle = sessionService.get(managed.session.id)?.title ?? null;
@@ -10825,30 +10795,67 @@ export function createAgentChatService(args: {
 
     managed.autoTitleInFlight = true;
     try {
-      const result = await runSessionIntelligencePrompt({
-        cwd: managed.laneWorktreePath,
-        modelId: descriptor.id,
-        systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
-        prompt: [
-          args.stage === "final"
-            ? "Write a final concise title for this completed coding chat."
-            : "Write a concise title for this new coding chat.",
-          titleContext.join("\n"),
-        ].join("\n\n"),
-        taskType: "session_title",
+      // A model that answers unusably (a rejected or empty title) returns null
+      // so the next candidate still gets a turn — a working model beats a slug.
+      const { result: adopted, attemptCount } = await runNamingAcrossProviders<string>(candidateModelIds, {
+        shouldStop: () => sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted,
+        run: async (descriptor) => {
+          const result = await runSessionIntelligencePrompt({
+            cwd: managed.laneWorktreePath,
+            modelId: descriptor.id,
+            systemPrompt: AUTO_TITLE_SYSTEM_PROMPT,
+            prompt: [
+              args.stage === "final"
+                ? "Write a final concise title for this completed coding chat."
+                : "Write a concise title for this new coding chat.",
+              titleContext.join("\n"),
+            ].join("\n\n"),
+            taskType: "session_title",
+          });
+          // Guard BEFORE the write: setManagedSessionTitle has side effects
+          // (session meta, runtime push), so a manual rename that landed while
+          // this request was in flight must stop it here, not after.
+          if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return null;
+          return setManagedSessionTitle(managed, result.text);
+        },
+        onFailure: ({ descriptor, provider, providerLevelFailure, attemptCount, error }) => {
+          logger.warn("agent_chat.auto_title_failed", {
+            sessionId: managed.session.id,
+            stage: args.stage,
+            modelId: descriptor.id,
+            provider,
+            providerLevelFailure,
+            attemptCount,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
       });
-      // Re-check after async — user may have manually renamed while the request was in flight.
-      if (sessionIsManuallyNamed(managed)) return;
-      if (managed.runtimeTitleAdopted) return;
-      const nextTitle = setManagedSessionTitle(managed, result.text);
-      if (!nextTitle) return;
+      if (adopted) {
+        managed.autoTitleStage = args.stage;
+        return;
+      }
+
+      // Every model failed. A chat with a real user prompt must never sit on its
+      // provider default title, so derive one from the seed the same way an
+      // automatically created lane derives its title.
+      if (sessionIsManuallyNamed(managed) || managed.runtimeTitleAdopted) return;
+      // Only rescue a still-default title — never downgrade a title an earlier
+      // stage already generated.
+      const titleNow = sessionService.get(managed.session.id)?.title ?? null;
+      if (hasCustomChatSessionTitle(titleNow, managed.session.provider)) return;
+      const deterministic = deriveDeterministicLaneTitleFromPrompt(seed);
+      // Hold the deterministic title to the same floor as a model-written one:
+      // a lone word is not a better answer than the provider default.
+      if (!deterministic || deterministic === GENERIC_LANE_FALLBACK_TITLE) return;
+      if (deterministic.split(/\s+/u).filter(Boolean).length < 2) return;
+      const fallbackTitle = setManagedSessionTitle(managed, deterministic);
+      if (!fallbackTitle) return;
       managed.autoTitleStage = args.stage;
-    } catch (error) {
-      logger.warn("agent_chat.auto_title_failed", {
+      logger.info("agent_chat.auto_title_deterministic_fallback", {
         sessionId: managed.session.id,
         stage: args.stage,
-        modelId: descriptor.id,
-        error: error instanceof Error ? error.message : String(error),
+        attemptCount,
+        titleLength: fallbackTitle.length,
       });
     } finally {
       managed.autoTitleInFlight = false;
@@ -11160,7 +11167,7 @@ export function createAgentChatService(args: {
     const temporaryBranch = String(args.temporaryBranch ?? "").trim();
     let identity = fallback;
     let source: "ai" | "deterministic" = "deterministic";
-    let selectedModelId = "";
+    let selectedModelId: string | null = null;
     let attemptCount = 0;
 
     let cwd = projectRoot;
@@ -11194,70 +11201,27 @@ export function createAgentChatService(args: {
         if (config.titleGenerationEnabled !== false) {
           const auth = await detectAuth();
           const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-          const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
-          const pickAvailable = (...candidates: Array<string | null | undefined>): string =>
-            candidates.find((candidate): candidate is string =>
-              typeof candidate === "string" && availableIds.has(candidate.trim()))?.trim() ?? "";
-
           // Chain: configured naming model -> the model this chat was launched
           // with -> a different provider -> deterministic. The launched model is
           // always present (not only when no naming model is configured) and a
           // cross-provider candidate is always reachable, so an outage confined
           // to one provider (auth, missing binary, account-rejected model) can no
           // longer end naming outright.
-          const launchedModelId = pickAvailable(chatModelId, requestedModelId);
-          const primaryModelId = pickAvailable(
-            config.titleModelId,
-            launchedModelId,
-            DEFAULT_AUTO_TITLE_MODEL_ID,
-            availableModels[0]?.id,
-          );
-          const primaryDescriptor = getModelById(primaryModelId);
-          const primaryProvider = primaryDescriptor
-            ? resolveProviderGroupForModel(primaryDescriptor)
-            : null;
-          const launchedDescriptor = launchedModelId ? getModelById(launchedModelId) : null;
-          const launchedProvider = launchedDescriptor
-            ? resolveProviderGroupForModel(launchedDescriptor)
-            : null;
-          const leadingProviders = new Set(
-            [primaryProvider, launchedProvider].filter((group): group is ModelProviderGroup => group !== null),
-          );
-          const crossProviderFallback = availableModels.find(
-            (descriptor) => !leadingProviders.has(resolveProviderGroupForModel(descriptor)),
-          )?.id;
-          const sameProviderFallback = availableModels.find(
-            (descriptor) => descriptor.id !== primaryModelId
-              && primaryProvider !== null
-              && resolveProviderGroupForModel(descriptor) === primaryProvider,
-          )?.id;
-          const candidateModelIds = [
-            primaryModelId,
-            launchedModelId,
-            crossProviderFallback,
-            sameProviderFallback,
-            availableModels.find((descriptor) => descriptor.id !== primaryModelId)?.id,
-          ].reduce<string[]>((acc, candidate) => {
-            const modelId = typeof candidate === "string" ? candidate.trim() : "";
-            if (!modelId || acc.includes(modelId) || !availableIds.has(modelId)) return acc;
-            return [...acc, modelId];
-          }, []);
+          const candidateModelIds = buildNamingModelCandidates({
+            availableModels,
+            preferred: [
+              config.titleModelId,
+              chatModelId,
+              requestedModelId,
+              DEFAULT_AUTO_TITLE_MODEL_ID,
+              availableModels[0]?.id,
+            ],
+          });
 
           // Naming runs in the background, but it still must not walk the whole
           // registry when everything is down.
-          const maxNamingAttempts = 3;
-          const exhaustedProviders = new Set<ModelProviderGroup>();
-          for (const candidateModelId of candidateModelIds) {
-            if (attemptCount >= maxNamingAttempts) break;
-            const descriptor = getModelById(candidateModelId);
-            if (!descriptor) continue;
-            const candidateProvider = resolveProviderGroupForModel(descriptor);
-            // A provider-level failure condemns every model behind it, so skip to
-            // the next candidate from a provider that has not failed that way.
-            if (exhaustedProviders.has(candidateProvider)) continue;
-            attemptCount += 1;
-            selectedModelId = descriptor.id;
-            try {
+          const attempt = await runNamingAcrossProviders<{ laneTitle: string; branchFragment: string }>(candidateModelIds, {
+            run: async (descriptor) => {
               const result = await runSessionIntelligencePrompt({
                 cwd,
                 modelId: descriptor.id,
@@ -11269,31 +11233,30 @@ export function createAgentChatService(args: {
                 taskType: "session_title",
               });
               const parsed = parseAutoLaneIdentity(result.text);
-              if (!parsed) break;
-              if (!parsed.laneTitle && !parsed.branchFragment) break;
-              identity = {
+              if (!parsed || (!parsed.laneTitle && !parsed.branchFragment)) return null;
+              return {
                 laneTitle: parsed.laneTitle ?? fallback.laneTitle,
                 branchFragment: parsed.branchFragment ?? fallback.branchFragment,
               };
-              source = "ai";
-              break;
-            } catch (error) {
-              const providerLevel = isProviderLevelNamingFailure(error);
-              if (providerLevel) {
-                exhaustedProviders.add(candidateProvider);
-              }
+            },
+            onFailure: ({ descriptor, provider, providerLevelFailure, error }) => {
               logger.warn("agent_chat.suggest_lane_name_failed", {
                 laneId: sourceLaneId,
                 temporaryBranch,
-                modelId: candidateModelId,
+                modelId: descriptor.id,
                 requestedModelId,
                 chatModelId: chatModelId || null,
-                provider: candidateProvider,
-                providerLevelFailure: providerLevel,
-                attemptCount,
+                provider,
+                providerLevelFailure,
                 error: error instanceof Error ? error.message : String(error),
               });
-            }
+            },
+          });
+          attemptCount = attempt.attemptCount;
+          selectedModelId = attempt.selectedModelId;
+          if (attempt.result) {
+            identity = attempt.result;
+            source = "ai";
           }
         }
       }
@@ -11348,37 +11311,37 @@ export function createAgentChatService(args: {
       if (config.titleGenerationEnabled === false) return fallback();
       const auth = await detectAuth();
       const availableModels = getRegistryModels(auth).filter((descriptor) => !descriptor.deprecated);
-      const availableIds = new Set(availableModels.map((descriptor) => descriptor.id));
-      const candidates = [
-        config.titleModelId,
-        requestedModelId,
-        DEFAULT_AUTO_TITLE_MODEL_ID,
-        "anthropic/claude-haiku-4-5",
-        availableModels[0]?.id,
-      ].filter((candidate, index, all): candidate is string =>
-        typeof candidate === "string"
-        && candidate.length > 0
-        && availableIds.has(candidate)
-        && all.indexOf(candidate) === index);
-      for (const modelId of candidates) {
-        try {
+      const candidateModelIds = buildNamingModelCandidates({
+        availableModels,
+        preferred: [
+          config.titleModelId,
+          requestedModelId,
+          DEFAULT_AUTO_TITLE_MODEL_ID,
+          availableModels[0]?.id,
+        ],
+      });
+      const { result: suggested } = await runNamingAcrossProviders<string>(candidateModelIds, {
+        run: async (descriptor) => {
           const result = await runSessionIntelligencePrompt({
             cwd: projectRoot,
-            modelId,
+            modelId: descriptor.id,
             systemPrompt: LEGACY_LANE_NAME_SYSTEM_PROMPT,
             prompt: `User message for the new lane:\n${prompt.slice(0, 2000)}`,
             taskType: "session_title",
           });
-          const normalized = normalizeSuggestedLaneName(result.text);
-          if (normalized) return normalized;
-        } catch (error) {
+          return normalizeSuggestedLaneName(result.text);
+        },
+        onFailure: ({ descriptor, provider, providerLevelFailure, error }) => {
           logger.warn("agent_chat.suggest_lane_name_failed", {
-            modelId,
+            modelId: descriptor.id,
             requestedModelId,
+            provider,
+            providerLevelFailure,
             error: error instanceof Error ? error.message : String(error),
           });
-        }
-      }
+        },
+      });
+      if (suggested) return suggested;
     } catch (error) {
       logger.warn("agent_chat.suggest_lane_name_unavailable", {
         modelId: requestedModelId,

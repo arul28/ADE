@@ -129,8 +129,6 @@ export function deriveDeterministicLaneNameFromPrompt(
 ): string {
   const collapsed = cleanPromptForNaming(prompt);
   if (!collapsed.length) return genericLaneFallbackName(options.genericSuffix);
-  const priorityWords = priorityNamingWords(collapsed);
-  if (priorityWords.length) return priorityWords.join("-");
   const tokens = collapsed.toLowerCase().match(/[a-z0-9]+/g) ?? [];
   const meaningfulWords = tokens
     .filter((token) => token.length > 1 && !LANE_FALLBACK_STOPWORDS.has(token))
@@ -165,7 +163,6 @@ export function deriveDeterministicLaneTitleFromPrompt(prompt: string): string {
   return fragment
     .split("-")
     .filter(Boolean)
-    .slice(0, 6)
     .map((word) => PRESERVED_TITLE_WORDS.get(word) ?? `${word.charAt(0).toUpperCase()}${word.slice(1)}`)
     .join(" ");
 }
@@ -182,37 +179,6 @@ export function deriveDeterministicAutoLaneIdentity(prompt: string): {
 
 export function isAutoLaneTemporaryBranch(branchRef: string): boolean {
   return AUTO_LANE_TEMP_BRANCH_RE.test(branchRef);
-}
-
-function priorityNamingWords(cleanedPrompt: string): string[] {
-  const normalized = cleanedPrompt.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-  if (!normalized) return [];
-  if (
-    /\b(?:name|names|naming)\b/u.test(normalized)
-    && /\bauto(?:matically)?\b/u.test(normalized)
-    && /\bcreated?\b/u.test(normalized)
-    && /\blanes?\b/u.test(normalized)
-  ) {
-    return ["naming", "auto", "created", "lanes"];
-  }
-  const provider = [
-    "claude",
-    "codex",
-    "cursor",
-    "droid",
-    "opencode",
-  ].find((candidate) => new RegExp(`\\b${candidate}\\b`, "u").test(normalized))
-    ?? (/\bopen code\b/u.test(normalized) ? "opencode" : null);
-  if (!provider) return [];
-  const mentionsAuth = /\b(auth|authenticate|authentication|credential|credentials|creds|oauth)\b/u.test(normalized);
-  const mentionsLogin = /\b(log\s+in|login(?!\s+history)|signin|sign\s*in)\b/u.test(normalized);
-  const mentionsUiControl = /\b(button|cta|call to action|chip|banner)\b/u.test(normalized);
-  if (!mentionsAuth && !mentionsLogin) return [];
-  if (!mentionsLogin && !mentionsUiControl) return [];
-  const words = [provider, "auth"];
-  if (mentionsLogin) words.push("login");
-  if (mentionsUiControl) words.push("button");
-  return [...new Set(words)].slice(0, 5);
 }
 
 export function genericSuffixFromLaneFallbackName(fallbackName: string | null | undefined): string | null {

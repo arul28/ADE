@@ -29,6 +29,10 @@ import {
   type DoctorRow,
 } from "./commands/doctor";
 export { readInstalledDesktopVersion } from "./commands/doctor";
+import {
+  MAX_STATUS_NOTE_CHARACTERS,
+  STATUS_NOTE_GUIDELINE_WORDS,
+} from "../../desktop/src/shared/sessionStatusNote";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
@@ -1743,7 +1747,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade chat create --from-linear-issue ENG-431 --parent <session> --type subagent
                                                     Start a child chat with an attached issue + kickoff (alias: --linear-issue-json)
     $ ade chat send <session> --text "next step"    Send a message; steers automatically if the turn is active
-    $ ade chat note "testing desktop auth fallback" # Update the Work status line (3–6 words, max 72 characters)
+    $ ade chat note "testing desktop auth fallback" # Update the Work status line (aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer; truncated past ${MAX_STATUS_NOTE_CHARACTERS} characters)
     $ ade chat ask "Which account should I use?"    Escalate a blocking question to the user
                                                     'note' and 'ask' default to the caller and accept --session <id>.
                                                     'chat settle' / 'chat unsettle' were removed: only the user (or a

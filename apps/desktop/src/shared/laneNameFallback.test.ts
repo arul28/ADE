@@ -13,14 +13,14 @@ import {
 describe("automatic lane identity fallback", () => {
   it("keeps the lane title readable and the branch fragment Git-friendly", () => {
     expect(deriveDeterministicAutoLaneIdentity("Can we discuss how ADE names auto-created lanes?")).toEqual({
-      laneTitle: "Naming Auto Created Lanes",
-      branchFragment: "naming-auto-created-lanes",
+      laneTitle: "ADE Names Auto Created Lanes",
+      branchFragment: "ade-names-auto-created-lanes",
     });
   });
 
   it("preserves product capitalization in readable titles", () => {
     expect(deriveDeterministicLaneTitleFromPrompt("The Claude auth login button hangs after OAuth redirects")).toBe(
-      "Claude Auth Login Button",
+      "Claude Auth Login Button Hangs",
     );
   });
 
@@ -37,14 +37,6 @@ describe("lane name fallback", () => {
     expect(deriveDeterministicLaneNameFromPrompt("Can you please fix the login bug?")).toBe("fix-login-bug");
   });
 
-  it("prefers concrete auth/login UI nouns over conversational lead-ins", () => {
-    expect(
-      deriveDeterministicLaneNameFromPrompt(
-        "correct me if im wrong, but i though ade had a way to detect failed claude creds and present a button ro usmthin in the chat to run claude auth login in ade chat temrinal, use context skill, and look into this",
-      ),
-    ).toBe("claude-auth-login-button");
-  });
-
   it("keeps prompt-specific context for broad provider auth prompts", () => {
     expect(deriveDeterministicLaneNameFromPrompt("Debug the Claude OAuth token expiry bug")).toBe(
       "debug-claude-oauth-token-expiry",
@@ -57,6 +49,17 @@ describe("lane name fallback", () => {
         "Debug cursor SDK chat mobile sync issues. Look at the full login history, then follow the Claude MD guidance.",
       ),
     ).toBe("debug-cursor-sdk-mobile-sync");
+  });
+
+  it("does not collapse an unrelated prompt into a provider auth name", () => {
+    // Regression: a keyword trap used to rename any prompt that mentioned a
+    // provider plus a login-ish phrase to "<provider>-auth-login", inventing
+    // words the prompt never contained.
+    const name = deriveDeterministicLaneNameFromPrompt(
+      "Plan ADE distribution and packaging. Claude runs the handoff, and users sign in once.",
+    );
+    expect(name).not.toBe("claude-auth-login");
+    expect(name).toContain("distribution");
   });
 
   it("turns a URL-heavy 'take a look at' prompt into clean tokens, not url noise", () => {

@@ -263,7 +263,8 @@ describe("buildRosterSnapshot", () => {
 
     expect(byId.get("chat-run")).toMatchObject({
       settledAt: "2026-01-02T00:01:00Z",
-      statusNote: "Indexing complete and waiting for final…",
+      // Eight words survive: the note only truncates past 72 characters.
+      statusNote: "Indexing complete and waiting for final review now",
       exitCode: null,
     });
     expect(byId.get("chat-await")).toMatchObject({

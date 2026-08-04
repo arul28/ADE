@@ -1188,6 +1188,15 @@ Renderer surfaces:
   lane-aware skill roots so prompt text can point agents at the active
   Agent Skills search path and explain the `<skill>/SKILL.md`
   package shape.
+- `apps/desktop/src/shared/sessionStatusNote.ts` — normalizes an
+  agent-authored status line at the session-service boundary. Exports
+  `STATUS_NOTE_GUIDELINE_WORDS` (six — the guideline the CLI help,
+  bootstrap guidance, and the control-plane skill quote) and
+  `MAX_STATUS_NOTE_CHARACTERS` (72 — the only hard bound). It collapses
+  whitespace, drops empty notes, and ellipsizes past the character
+  budget. It deliberately does **not** amputate at six words: the
+  decisive half of a note is often in words seven and eight, and
+  silently deleting it made the Work row lie.
 - `apps/desktop/src/shared/agentSkillRoots.ts` — resolves candidate
   Agent Skill roots from the active lane worktree, ancestor and home
   `.claude` / `.agents` / `.ade` / `.codex` directories, inherited
@@ -1520,8 +1529,8 @@ does not fail on desktop; it surfaces as changeset-apply errors on the phone.
    not dismiss the user's pending question. Provider
    structured input carries its own pending item id. OSC markers and
    prompt-looking output never create `Needs you`. `ade chat note ""` clears
-   only the status line. Status notes are normalized to 3–6 words and at most
-   72 characters at the session-service boundary so the sidebar remains
+   only the status line. Status notes are trimmed to at
+   most 72 characters at the session-service boundary so the sidebar remains
    glanceable; blocking detail belongs in the separate `ade chat ask` question.
 
    Beyond the binary settle there is a tri-state **settle override**

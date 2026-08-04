@@ -476,8 +476,27 @@ Sessions auto-title through two stages when
 `ai.sessionIntelligence.titles.refreshOnComplete` (default true) triggers a final
 refresh after a turn completes.
 
+Both stages walk the shared naming chain built by `buildNamingModelCandidates`
+in `sessionNaming.ts` — the configured `titleModelId`, the default title model,
+the model the chat itself was launched with, then a model from a provider none
+of those belong to — and run it through `runNamingAcrossProviders`. A
+provider-level failure (missing CLI, auth, quota, or an account that cannot run
+the requested model) condemns every remaining model behind that provider, so
+one provider being down cannot end titling outright.
+
+Six words is the guideline the prompt gives the model, not a rejection rule: a
+seven-word title is clamped to the first six rather than discarded, and an
+over-long title is cut on a word boundary so it never stops mid-word. If every
+candidate fails, the chat falls back to a title derived deterministically from
+the seed prompt — the same derivation an automatically created lane uses — so a
+chat with a real prompt never sits on its provider default title. The fallback
+only rescues a still-default title, and only when it produces at least two
+words.
+
 Manual renaming sets `manuallyNamed: true`, which permanently
-suppresses further auto-title generation.
+suppresses further auto-title generation. The manual-rename check runs *before*
+the title write, not after, because adopting a title has side effects (session
+meta, runtime push) that a rename landing mid-request must stop.
 
 ## CTO vs. regular chat routing
 

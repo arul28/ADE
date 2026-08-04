@@ -1379,3 +1379,24 @@ describe("RightPane feedback form", () => {
     expect(draft.summary).toBe("add dark mode");
   });
 });
+
+describe("RightPane list rows", () => {
+  it("clips a long chat row to the pane instead of wrapping it onto extra lines", () => {
+    // A status note is bounded at 72 characters, not at six words, so a chat
+    // row can easily exceed the 38-column pane. It must clip, not wrap.
+    const longRow = "● claude-auth-login · claude · done: reworked automatic naming so the note keeps its meaning";
+    const content = {
+      kind: "list" as const,
+      title: "Chats",
+      rows: [longRow, "● short row"],
+      action: { kind: "chat-list" as const, ids: ["a", "b"] },
+    };
+    const result = render(<RightPane content={content} focused width={38} />);
+    const lines = stripAnsi(result.lastFrame() ?? "").split("\n");
+    const rowLines = lines.filter((line) => line.includes("claude-auth-login"));
+    expect(rowLines).toHaveLength(1);
+    expect(rowLines[0]?.length).toBeLessThanOrEqual(38);
+    expect(rowLines[0]).toContain("…");
+    expect(lines.some((line) => line.includes("short row"))).toBe(true);
+  });
+});

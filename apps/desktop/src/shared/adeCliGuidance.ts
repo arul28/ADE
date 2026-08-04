@@ -1,3 +1,4 @@
+import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import { formatAdeAgentSkillRootsForPrompt, getAdeAgentSkillRootsForPrompt } from "./agentSkillRoots";
 
 export const adeBundledAgentSkills = [
@@ -25,7 +26,7 @@ export const adeBundledAgentSkills = [
  */
 export const ADE_SESSION_STATUS_PROTOCOL_GUIDANCE = [
   "ADE control protocol for truthful Work status:",
-  '- Working: `ade chat note "testing desktop auth fallback"`; use 3–6 words and at most 72 characters. Longer notes truncate.',
+  `- Working: \`ade chat note "testing desktop auth fallback"\`; aim for ${STATUS_NOTE_GUIDELINE_WORDS} words or fewer — a guideline, not a hard limit. Notes truncate past ${MAX_STATUS_NOTE_CHARACTERS} characters, so a long note still beats no note.`,
   '- Blocked on input: call `ade chat note "<what and why>"`, then `ade chat ask "<the exact question>"`; a note alone can leave an idle row looking Done.',
   "- The next accepted user message clears the prior hand-raise. Re-note and re-ask before ending if still blocked.",
   '- Done: report it and leave `ade chat note "<delivered result>"`.',
