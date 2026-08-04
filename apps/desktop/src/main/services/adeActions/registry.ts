@@ -2116,6 +2116,13 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       // so the same argument meant "dismiss the prompt" over sync and nothing at
       // all here. Fail loudly instead of settling while quietly ignoring half of
       // what was asked; `session.settleSession` is the path that dismisses.
+      //
+      // Why the flag lives on the PLURAL action over sync at all, since that
+      // looks backwards from here: mobile cannot reach the singular one —
+      // `session.settleSession` is absent from the mobile compatibility lists
+      // in `shared/syncMobileCompatibility.ts`, so the phone only ever has
+      // `settleSessions`. This registry has no such constraint, so it refuses
+      // rather than duplicating the single-id special case.
       if (record.dismissPendingInput === true) {
         throw new Error(
           "session.settleSessions does not dismiss pending input; use session.settleSession for a single session.",

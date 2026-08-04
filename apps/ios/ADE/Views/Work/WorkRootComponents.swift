@@ -497,55 +497,6 @@ struct WorkSidebarSectionHeader: View {
 // jump-to-attention is already covered by the bell → Activity drawer, which
 // bands needs-you first with per-session navigation.
 
-struct WorkRunningBanner: View {
-  @Environment(\.accessibilityReduceMotion) var reduceMotion
-
-  let liveSessions: [TerminalSessionSummary]
-  let attentionCount: Int
-
-  @State var isPulsing = false
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Circle()
-        .fill(attentionCount > 0 ? ADEColor.warning : ADEColor.success)
-        .frame(width: 10, height: 10)
-        .scaleEffect(isPulsing && !reduceMotion ? 1.2 : 1.0)
-        .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
-        .onAppear {
-          guard !reduceMotion else { return }
-          isPulsing = true
-        }
-      VStack(alignment: .leading, spacing: 2) {
-        Text(bannerTitle)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(bannerMessage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      Spacer()
-    }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
-  }
-
-  var bannerTitle: String {
-    workRunningBannerTitle(
-      liveChatCount: liveCounts.chat,
-      liveTerminalCount: liveCounts.terminal,
-      attentionCount: attentionCount
-    )
-  }
-
-  var bannerMessage: String {
-    workRunningBannerMessage(liveTerminalCount: liveCounts.terminal, attentionCount: attentionCount)
-  }
-
-  var liveCounts: (chat: Int, terminal: Int) {
-    workRunningBannerLiveCounts(liveSessions)
-  }
-}
-
 /// The lane half of a session row's long-press menu, mirroring desktop's
 /// `Lane ▸` submenu (`laneContextMenuItems.tsx`).
 ///
@@ -670,9 +621,11 @@ struct WorkSessionListRow: View {
   /// belongs to the status slot, which uses it to keep a heuristic row
   /// *settleable*, and it is a different question from "can the host dismiss
   /// this prompt". The only shape it admits that these three do not is a
-  /// non-chat row with no `attentionRequestedAt` — and `ptyService.ts:4494`
-  /// documents that stamp as a known MISLABEL from regex-scanning a plain PTY
-  /// stream. For that row `dismissPendingInputBeforeSettle` has nothing to
+  /// non-chat row with no `attentionRequestedAt` — which `ptyService.ts`
+  /// documents as a MISLABEL from regex-scanning a plain PTY stream (search
+  /// "is a MISLABEL and known to be one"; cited by phrase rather than line
+  /// because that file moves). For that row `dismissPendingInputBeforeSettle`
+  /// has nothing to
   /// clear and throws, so offering "Dismiss & settle" could only ever produce
   /// an error toast and a rolled-back optimistic write. Falling through to the
   /// disabled "Resolve input to settle" row is the honest answer.

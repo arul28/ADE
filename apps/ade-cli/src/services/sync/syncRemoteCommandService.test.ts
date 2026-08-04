@@ -2405,6 +2405,45 @@ describe("session lifecycle remote commands", () => {
     expect(sessionService.settleSessions).toHaveBeenCalledWith(["session-1"]);
   });
 
+  // The non-chat branch is the one iOS actually exercises for an escalated
+  // `ade chat ask` on a CLI row: no chat service to ask, so the host clears the
+  // explicit attention request by forcing the pty back to idle.
+  it("dismisses a non-chat row through the pty runtime, not the chat service", async () => {
+    const dismissPendingInputForSettlement = vi.fn(() => true);
+    const { service, sessionService } = createLifecycleService({
+      agentChatService: { dismissPendingInputForSettlement },
+      session: {
+        id: "session-1",
+        toolType: "codex",
+        attentionRequestedAt: "2026-07-29T21:00:00.000Z",
+      },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    }))).resolves.toEqual(["session-1"]);
+
+    expect(dismissPendingInputForSettlement).not.toHaveBeenCalled();
+    expect(sessionService.settleSessions).toHaveBeenCalledWith(["session-1"]);
+  });
+
+  // A bare terminal prompt has nothing the host knows how to clear. iOS gates
+  // this shape out of the menu, so reaching it means a race — it must surface as
+  // an error rather than settling a session still blocked on a human.
+  it("refuses to dismiss a non-chat row with nothing pending", async () => {
+    const { service, sessionService } = createLifecycleService({
+      session: { id: "session-1", toolType: "codex" },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    }))).rejects.toThrow(/Resolve the terminal input/);
+
+    expect(sessionService.settleSessions).not.toHaveBeenCalled();
+  });
+
   it("leaves a multi-session settle untouched when it does not ask to dismiss", async () => {
     const dismissPendingInputForSettlement = vi.fn(() => true);
     const { service, sessionService } = createLifecycleService({

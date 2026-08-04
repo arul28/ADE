@@ -4104,14 +4104,14 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
           "session.settleSessions supports dismissPendingInput for a single session only; send one id per request.",
         );
       }
-      for (const sessionId of sessionIds) {
-        await dismissPendingInputBeforeSettle({
-          sessionId,
-          sessionService: args.sessionService,
-          agentChatService: args.agentChatService ?? null,
-          ptyService: args.ptyService,
-        });
-      }
+      // Single call, not a loop: the guard above proved there is exactly one id,
+      // and a loop here would read as a batch the guard exists to forbid.
+      await dismissPendingInputBeforeSettle({
+        sessionId: sessionIds[0]!,
+        sessionService: args.sessionService,
+        agentChatService: args.agentChatService ?? null,
+        ptyService: args.ptyService,
+      });
     }
     return args.sessionService.settleSessions(sessionIds);
   });
