@@ -244,6 +244,23 @@ describe("WebConnectionsChip", () => {
     expect(screen.getByLabelText("Connect to Mac Studio")).toBeTruthy();
   });
 
+  it("portals the popover to document.body, out of the header's clipped strip", async () => {
+    // Regression: the header's trailing strip is overflow-hidden so it clips
+    // instead of sliding under the Windows caption buttons. Rendered inline,
+    // the popover opened INSIDE that strip — present in the DOM, styled
+    // visible, and completely clipped away, with nothing in the console. The
+    // desktop Connections panel escapes through a body portal; the chip's
+    // popover must do the same, and this is the one assertion jsdom can make
+    // about it (it cannot see CSS clipping).
+    renderChip([
+      machine({ machineKey: "studio", name: "Mac Studio", dialable: true, online: true }),
+    ]);
+
+    openPopover();
+    const popover = await screen.findByRole("dialog");
+    expect(popover.parentElement).toBe(document.body);
+  });
+
   it("reports the focused project tab's machine, not whichever one is live", () => {
     renderChip(
       [
