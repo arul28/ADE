@@ -8998,11 +8998,27 @@ final class SyncService: ObservableObject {
   }
 
   /// Declared settle. Stamps `settled_at` locally to match what the host writes.
-  func settleSession(sessionId: String) async throws {
+  ///
+  /// `dismissPendingInput` is the needs-you variant — desktop's "Dismiss &
+  /// settle" — and it must ONLY be passed for a row that genuinely has a pending
+  /// prompt: the host throws "Resolve the terminal input before settling this
+  /// session." when the flag arrives for a row with nothing pending, which would
+  /// roll back the optimistic write and surface an error on an ordinary settle.
+  ///
+  /// It rides on the SAME plural action the plain settle uses. The singular
+  /// `session.settleSession` also accepts the flag but is not in the mobile
+  /// compatibility lists, so routing there would break against older hosts. The
+  /// argument itself is optional host-side and defaults to today's behaviour, so
+  /// a host that predates it simply settles the row and leaves the prompt.
+  func settleSession(sessionId: String, dismissPendingInput: Bool = false) async throws {
+    var args: [String: Any] = ["sessionIds": [sessionId]]
+    if dismissPendingInput {
+      args["dismissPendingInput"] = true
+    }
     try await sendSessionLifecycleCommand(
       sessionId: sessionId,
       action: "session.settleSessions",
-      args: ["sessionIds": [sessionId]],
+      args: args,
       // The bulk action answers with the ids it CHANGED, so an absent id means
       // the machine settled nothing. Mirrors the desktop `settleMany`.
       resultShape: .changedIdList,
@@ -10720,6 +10736,48 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(
       action: "work.stopRuntime",
       args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// Whether this host advertises `work.deleteSession` — the delete path for a
+  /// CLI or shell row, which chats never used (`chat.delete` owns those). The
+  /// command is queueable, so this stays true while offline and the delete is
+  /// replayed on reconnect.
+  var supportsWorkSessionDeletion: Bool {
+    canInvokeRemoteAction("work.deleteSession")
+  }
+
+  /// Delete a non-chat session. The host handler is
+  /// `deleteTerminalSessionWithRuntimeCleanup`, so this ALREADY stops a live
+  /// runtime before deleting — "Stop & delete" and "Delete session" are the same
+  /// command with different labels, not two code paths.
+  ///
+  /// Advertise-checked rather than fired hopefully: an older host would answer
+  /// with an opaque method-not-found, and a delete that silently does nothing is
+  /// worse than one that says why.
+  ///
+  /// The guard reuses `supportsWorkSessionDeletion` so the condition that SHOWS
+  /// the affordance and the condition that THROWS cannot drift apart. The
+  /// message stays custom rather than routing through
+  /// `requireInvokableRemoteAction` because an out-of-date host is the only way
+  /// this fails in practice — the command is viewer-allowed and queueable, so
+  /// neither the viewer nor the offline branch of the shared helper can trip —
+  /// and "update the desktop app" is more actionable than the generic copy.
+  func deleteWorkSession(sessionId: String) async throws {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    guard supportsWorkSessionDeletion else {
+      throw NSError(domain: "ADE", code: 27, userInfo: [
+        NSLocalizedDescriptionKey:
+          "This machine's ADE is too old to delete sessions from a phone. Update the desktop app and try again.",
+      ])
+    }
+    let scope = chatCommandScope(for: trimmed)
+    _ = try await sendCommand(
+      action: "work.deleteSession",
+      args: ["sessionId": trimmed],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )

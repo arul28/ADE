@@ -1540,6 +1540,10 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       service.supportsSessionSnoozeActions,
       "Snooze must stay hidden on a host that never advertised session.snoozeSession."
     )
+    XCTAssertFalse(
+      service.supportsWorkSessionDeletion,
+      "work.deleteSession is not in the REQUIRED contract, so a legacy host that never advertises it must leave the delete affordance hidden rather than offering a control that fails."
+    )
   }
 
   @MainActor
@@ -1631,6 +1635,123 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       service.capturedOutboundEnvelopeCountForTesting(type: "command"),
       0,
       "An unsupported lifecycle action must never reach the wire or the durable queue."
+    )
+  }
+
+  // MARK: - work.deleteSession host compatibility
+  //
+  // `work.deleteSession` is NOT in MOBILE_SYNC_REQUIRED_REMOTE_COMMAND_ACTIONS
+  // (apps/desktop/src/shared/syncMobileCompatibility.ts) — adding it there would
+  // flip every shipped phone into limited mode against an older brain. So the
+  // phone must feature-detect it from the advertised descriptors, and every
+  // branch that cannot prove support has to refuse locally, before the wire.
+
+  @MainActor
+  func testWorkSessionDeletionIsGatedOnTheAdvertisedDescriptor() async throws {
+    let defaultsSnapshot = snapshotDefaults(keys: connectionDefaultsKeys)
+    let baseURL = FileManager.default.temporaryDirectory
+      .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
+    let database = DatabaseService(baseURL: baseURL)
+    let service = SyncService(database: database)
+    service.beginOutboundEnvelopeCaptureForTesting()
+    service.configureConnectedTransportForTesting()
+    defer {
+      service.endOutboundEnvelopeCaptureForTesting()
+      service.disconnect(clearCredentials: false)
+      restoreDefaults(defaultsSnapshot, keys: connectionDefaultsKeys)
+      database.close()
+      try? FileManager.default.removeItem(at: baseURL)
+    }
+
+    // A host that satisfies the whole REQUIRED contract — `mode: "full"` — and
+    // still has never heard of `work.deleteSession`. This is the shape that
+    // matters: full compatibility is NOT permission to assume an optional
+    // action exists.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "no-delete-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": [
+          "actions": [
+            ["action": "work.listSessions", "policy": ["viewerAllowed": true]],
+          ],
+        ],
+      ],
+    ])
+    XCTAssertEqual(service.hostCompatibilityMode, .full)
+    XCTAssertFalse(
+      service.supportsWorkSessionDeletion,
+      "No descriptor means no capability: the gate must default to false, not to the host's overall mode."
+    )
+
+    service.resetOutboundEnvelopeCaptureForTesting()
+    do {
+      try await service.deleteWorkSession(sessionId: "session-1")
+      XCTFail("Deleting against a host that never advertised work.deleteSession must throw.")
+    } catch {
+      XCTAssertTrue(
+        error.localizedDescription.contains("too old"),
+        "The refusal should tell the user their desktop is out of date rather than surface a method-not-found."
+      )
+    }
+    XCTAssertEqual(
+      service.capturedOutboundEnvelopeCountForTesting(type: "command"),
+      0,
+      "An unadvertised delete must never reach the wire or the durable queue."
+    )
+
+    // A viewer-denied descriptor is the second unsupported shape: the action
+    // exists on the host, but this device may not invoke it. `supports` is not
+    // the gate — `canInvokeRemoteAction` is — so the affordance must stay hidden.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "viewer-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": [
+          "actions": [
+            ["action": "work.deleteSession", "policy": ["viewerAllowed": false, "queueable": true]],
+          ],
+        ],
+      ],
+    ])
+    XCTAssertTrue(service.supportsRemoteAction("work.deleteSession"))
+    XCTAssertFalse(
+      service.supportsWorkSessionDeletion,
+      "A viewer device must not be offered a delete the host will refuse."
+    )
+
+    service.resetOutboundEnvelopeCaptureForTesting()
+    do {
+      try await service.deleteWorkSession(sessionId: "session-1")
+      XCTFail("A viewer-denied delete must throw rather than reach the host.")
+    } catch {
+      // The message is the same "update your desktop" copy: from the phone's
+      // side both are "this machine will not let me do it", and the delete
+      // affordance is hidden in both cases anyway.
+    }
+    XCTAssertEqual(
+      service.capturedOutboundEnvelopeCountForTesting(type: "command"),
+      0,
+      "A viewer-denied delete must not reach the wire either."
+    )
+
+    // The real host shape: viewer-allowed and queueable, exactly as
+    // syncRemoteCommandService registers it.
+    try service.applyHelloPayloadForTesting([
+      "brain": ["deviceId": "new-host", "deviceName": "Mac Studio"],
+      "features": [
+        "mobileCompatibility": ["mode": "full", "missingActions": [String]()],
+        "commandRouting": [
+          "actions": [
+            ["action": "work.deleteSession", "policy": ["viewerAllowed": true, "queueable": true]],
+          ],
+        ],
+      ],
+    ])
+    XCTAssertTrue(
+      service.supportsWorkSessionDeletion,
+      "A host advertising the action viewer-allowed and queueable must unlock the delete affordance."
     )
   }
 

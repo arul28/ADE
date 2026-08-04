@@ -2313,6 +2313,7 @@ describe("session lifecycle remote commands", () => {
   function createLifecycleService(options?: {
     pushPublisherService?: Record<string, unknown>;
     session?: Record<string, unknown>;
+    agentChatService?: Record<string, unknown>;
   }) {
     const sessionService = {
       settleSession: vi.fn(() => true),
@@ -2330,6 +2331,7 @@ describe("session lifecycle remote commands", () => {
     const { service } = createService({
       sessionService,
       ...(options?.pushPublisherService ? { pushPublisherService: options.pushPublisherService } : {}),
+      ...(options?.agentChatService ? { agentChatService: options.agentChatService } : {}),
     });
     return { service, sessionService };
   }
@@ -2365,6 +2367,95 @@ describe("session lifecycle remote commands", () => {
 
     expect(handleSessionSettled).not.toHaveBeenCalled();
     expect(sessionService.settleSession).toHaveBeenCalledWith("session-1", {});
+  });
+
+  // `dismissPendingInputBeforeSettle` mutates and can then throw for a row with
+  // nothing pending. Run over a batch, that clears the earlier rows' prompts and
+  // then settles nothing — a half-applied write reported as a plain error. The
+  // guard has to reject before the first mutation, not merely fail overall.
+  it("rejects a multi-session settle that asks to dismiss, before mutating anything", async () => {
+    const dismissPendingInputForSettlement = vi.fn(() => true);
+    const { service, sessionService } = createLifecycleService({
+      agentChatService: { dismissPendingInputForSettlement },
+      session: { id: "session-1", toolType: "codex-chat" },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1", "session-2"],
+      dismissPendingInput: true,
+    }))).rejects.toThrow(/single session only/);
+
+    expect(dismissPendingInputForSettlement).not.toHaveBeenCalled();
+    expect(sessionService.settleSessions).not.toHaveBeenCalled();
+  });
+
+  it("still dismisses and settles a single-session bulk settle", async () => {
+    const dismissPendingInputForSettlement = vi.fn(() => true);
+    const { service, sessionService } = createLifecycleService({
+      agentChatService: { dismissPendingInputForSettlement },
+      session: { id: "session-1", toolType: "codex-chat" },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    }))).resolves.toEqual(["session-1"]);
+
+    expect(dismissPendingInputForSettlement).toHaveBeenCalledWith({ sessionId: "session-1" });
+    expect(sessionService.settleSessions).toHaveBeenCalledWith(["session-1"]);
+  });
+
+  // The non-chat branch is the one iOS actually exercises for an escalated
+  // `ade chat ask` on a CLI row: no chat service to ask, so the host clears the
+  // explicit attention request by forcing the pty back to idle.
+  it("dismisses a non-chat row through the pty runtime, not the chat service", async () => {
+    const dismissPendingInputForSettlement = vi.fn(() => true);
+    const { service, sessionService } = createLifecycleService({
+      agentChatService: { dismissPendingInputForSettlement },
+      session: {
+        id: "session-1",
+        toolType: "codex",
+        attentionRequestedAt: "2026-07-29T21:00:00.000Z",
+      },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    }))).resolves.toEqual(["session-1"]);
+
+    expect(dismissPendingInputForSettlement).not.toHaveBeenCalled();
+    expect(sessionService.settleSessions).toHaveBeenCalledWith(["session-1"]);
+  });
+
+  // A bare terminal prompt has nothing the host knows how to clear. iOS gates
+  // this shape out of the menu, so reaching it means a race — it must surface as
+  // an error rather than settling a session still blocked on a human.
+  it("refuses to dismiss a non-chat row with nothing pending", async () => {
+    const { service, sessionService } = createLifecycleService({
+      session: { id: "session-1", toolType: "codex" },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    }))).rejects.toThrow(/Resolve the terminal input/);
+
+    expect(sessionService.settleSessions).not.toHaveBeenCalled();
+  });
+
+  it("leaves a multi-session settle untouched when it does not ask to dismiss", async () => {
+    const dismissPendingInputForSettlement = vi.fn(() => true);
+    const { service, sessionService } = createLifecycleService({
+      agentChatService: { dismissPendingInputForSettlement },
+    });
+
+    await expect(service.execute(makePayload("session.settleSessions", {
+      sessionIds: ["session-1", "session-2"],
+    }))).resolves.toEqual(["session-1"]);
+
+    expect(dismissPendingInputForSettlement).not.toHaveBeenCalled();
+    expect(sessionService.settleSessions).toHaveBeenCalledWith(["session-1", "session-2"]);
   });
 
   it("leaves settlement push projection to the central session listener", async () => {

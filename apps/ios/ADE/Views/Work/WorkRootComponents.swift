@@ -2,10 +2,17 @@ import SwiftUI
 import UIKit
 import AVKit
 
-/// Work sidebar toolbar matching the desktop `SessionListPane` layout: compact search field,
-/// inline "New chat" accent button, and a funnel toggle that reveals the Group-by + Lane filter
-/// panel. Replaces the earlier phone-only filter card stack so mobile and desktop share the same
-/// information architecture.
+// The session row card itself (`WorkSessionRow`, its leaf views and the preview-line
+// helpers) lives in `WorkSessionRowCard.swift`; this file keeps the surrounding list chrome.
+
+/// Work sidebar toolbar matching the desktop `SessionListPane` layout: one 44pt row holding the
+/// search field, the funnel toggle that reveals the Group-by + Lane filter panel, and a compose
+/// menu carrying both creation actions.
+///
+/// The header is one row on purpose. It used to be three — search + funnel, then a full-width
+/// "Start new chat" / "Add lane" hero pair, then a `N waiting` chip — which pushed the first
+/// session row most of a thumb below the top bar and spent amber on a count that the bell already
+/// badges. Creation is a two-item menu behind one icon; the count rollup is gone entirely.
 struct WorkFiltersSection: View {
   @Binding var searchText: String
   @Binding var selectedLaneId: String
@@ -13,8 +20,6 @@ struct WorkFiltersSection: View {
   @Binding var organization: WorkSessionOrganization
   @Binding var filterOpen: Bool
   let lanes: [LaneSummary]
-  let liveCount: Int
-  let needsInputCount: Int
   let isLive: Bool
   let onClear: () -> Void
   let onNewChat: () -> Void
@@ -56,7 +61,10 @@ struct WorkFiltersSection: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 8)
-        .frame(minHeight: 32)
+        // 44, not the old 32: a text field's tap target is its own bounds, so a
+        // `.contentShape` on a taller wrapper would not extend it. This is the
+        // one control in the row that has to grow to reach the minimum.
+        .frame(minHeight: 44)
         .frame(maxWidth: .infinity)
         .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
@@ -81,74 +89,57 @@ struct WorkFiltersSection: View {
               RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(filterOpen ? ADEColor.accent.opacity(0.32) : ADEColor.glassBorder, lineWidth: 0.5)
             )
+            // The chip stays 32pt; the hit area is grown to 44 around it rather
+            // than by inflating the visual, which is what keeps the row's rhythm.
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel("Toggle filter panel")
-      }
 
-      HStack(spacing: 8) {
-        Button(action: onNewChat) {
-          HStack(spacing: 8) {
-            Image(systemName: "plus")
-              .font(.system(size: 13, weight: .bold))
-            Text("Start new chat")
-              .font(.subheadline.weight(.semibold))
+        // Creation is one icon with two items. Both used to be full-width hero
+        // buttons stacked under the search field; they are rare actions that were
+        // spending the most valuable strip on the screen.
+        Menu {
+          Button(action: onNewChat) {
+            Label("New chat", systemImage: "plus.bubble")
           }
-          .foregroundStyle(.white)
-          .frame(maxWidth: .infinity, minHeight: 44)
-          .background(ADEColor.accent, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .stroke(.white.opacity(0.18), lineWidth: 0.6)
-          )
-          .shadow(color: ADEColor.accent.opacity(0.18), radius: 6, x: 0, y: 2)
+          Button(action: onAddLane) {
+            Label("New lane", systemImage: "plus.square.on.square")
+          }
+        } label: {
+          Image(systemName: "square.and.pencil")
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(isLive ? ADEColor.accent : ADEColor.textMuted)
+            .frame(width: 32, height: 32)
+            .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+              RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(isLive ? ADEColor.accent.opacity(0.3) : ADEColor.glassBorder, lineWidth: 0.6)
+            )
+            .frame(width: 44, height: 44)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!isLive)
         .opacity(isLive ? 1 : 0.55)
-        .accessibilityLabel("Start new chat")
-
-        Button(action: onAddLane) {
-          HStack(spacing: 7) {
-            Image(systemName: "plus.square.on.square")
-              .font(.system(size: 13, weight: .semibold))
-            Text("Add lane")
-              .font(.subheadline.weight(.semibold))
-              .lineLimit(1)
-          }
-          .foregroundStyle(isLive ? ADEColor.accent : ADEColor.textMuted)
-          .frame(minWidth: 116, minHeight: 44)
-          .padding(.horizontal, 12)
-          .background(ADEColor.composerBackground, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-          .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-              .stroke(isLive ? ADEColor.accent.opacity(0.3) : ADEColor.glassBorder, lineWidth: 0.6)
-          )
-        }
-        .buttonStyle(.plain)
-        .disabled(!isLive)
-        .opacity(isLive ? 1 : 0.55)
-        .accessibilityLabel("Add lane")
-        .accessibilityHint(isLive ? "Opens lane creation options" : "Reconnect to machine before creating lanes")
+        .accessibilityLabel("New chat or lane")
+        .accessibilityHint(isLive ? "Opens chat and lane creation options" : "Reconnect to machine before creating lanes")
       }
+      .frame(minHeight: 44)
 
-      if needsInputCount > 0 || hasActiveFilters {
+      if hasActiveFilters {
         HStack(spacing: 6) {
-          if needsInputCount > 0 {
-            WorkFlatCountChip(icon: "exclamationmark.circle.fill", text: "\(needsInputCount) waiting", tint: ADEColor.warning)
-          }
           Spacer(minLength: 0)
-          if hasActiveFilters {
-            Button("Clear") {
-              withAnimation(.snappy(duration: 0.18)) {
-                onClear()
-              }
+          Button("Clear") {
+            withAnimation(.snappy(duration: 0.18)) {
+              onClear()
             }
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(ADEColor.accent)
-            .buttonStyle(.plain)
-            .accessibilityLabel("Clear Work filters")
           }
+          .font(.caption.weight(.semibold))
+          .foregroundStyle(ADEColor.accent)
+          .buttonStyle(.plain)
+          .accessibilityLabel("Clear Work filters")
         }
       }
 
@@ -292,7 +283,9 @@ struct WorkFilterMenuLabel: View {
           .font(.caption.weight(.semibold))
           .foregroundStyle(ADEColor.textPrimary)
           .lineLimit(1)
-          .truncationMode(.middle)
+          // Tail, never middle. Middle truncation eats the distinguishing middle
+          // of a name and leaves two fragments that read as one mangled word.
+          .truncationMode(.tail)
       }
       Spacer(minLength: 0)
       Image(systemName: "chevron.up.chevron.down")
@@ -324,6 +317,12 @@ struct WorkSidebarSectionHeader: View {
   /// harnesses don't have to wire it.
   var onOpenPullRequest: (LanePrTag) -> Void = { _ in }
   var onRefreshOrphanedSessions: (() -> Void)? = nil
+  /// Lane-scoped git state (dirty / ahead / behind). It used to be repeated on
+  /// every session row of the lane, which said the same fact five times and made
+  /// a row rebuild on every lane status poll. It is one lane's state, so it is
+  /// stated once, here. Nil for status and time sections, which span lanes and
+  /// therefore have no single true answer.
+  var laneStatus: LaneStatus? = nil
 
   /// Collapsed and holding only settled work: render one thin muted row with the
   /// count folded in, instead of a full-weight header over nothing.
@@ -359,6 +358,14 @@ struct WorkSidebarSectionHeader: View {
           .buttonStyle(.plain)
           .frame(minWidth: 44, minHeight: 44)
           .accessibilityHint("Refreshes lane and session records. Nothing is deleted.")
+      }
+
+      // Left of the PR indicator and deliberately quieter than both it and the
+      // lane name: this is context, not a call to action. Dropped entirely on a
+      // folded quiet row, where the section is one thin line and every glyph
+      // competes with the count.
+      if !isQuietRow, let laneStatus, laneGitStateIsNoteworthy(laneStatus) {
+        laneGitStateChips(laneStatus)
       }
 
       if let pullRequest {
@@ -399,6 +406,50 @@ struct WorkSidebarSectionHeader: View {
     .opacity(isQuietRow ? 0.72 : 1)
   }
 
+  /// Nothing to say when the worktree is clean and level with its base — an
+  /// always-present "0 ahead, 0 behind" would be chrome, not information.
+  private func laneGitStateIsNoteworthy(_ status: LaneStatus) -> Bool {
+    status.dirty || status.ahead > 0 || status.behind > 0
+  }
+
+  @ViewBuilder
+  private func laneGitStateChips(_ status: LaneStatus) -> some View {
+    HStack(spacing: 5) {
+      if status.dirty {
+        Circle()
+          .fill(ADEColor.warning.opacity(0.85))
+          .frame(width: 5, height: 5)
+      }
+      if status.ahead > 0 {
+        laneGitCountChip(symbol: "arrow.up", count: status.ahead)
+      }
+      if status.behind > 0 {
+        laneGitCountChip(symbol: "arrow.down", count: status.behind)
+      }
+    }
+    .foregroundStyle(ADEColor.textMuted)
+    .fixedSize()
+    .accessibilityElement(children: .ignore)
+    .accessibilityLabel(laneGitStateAccessibilityLabel(status))
+  }
+
+  private func laneGitCountChip(symbol: String, count: Int) -> some View {
+    HStack(spacing: 1) {
+      Image(systemName: symbol)
+        .font(.system(size: 7, weight: .bold))
+      Text("\(count)")
+        .font(.caption2.monospacedDigit())
+    }
+  }
+
+  private func laneGitStateAccessibilityLabel(_ status: LaneStatus) -> String {
+    var parts: [String] = []
+    if status.dirty { parts.append("uncommitted changes") }
+    if status.ahead > 0 { parts.append("\(status.ahead) ahead") }
+    if status.behind > 0 { parts.append("\(status.behind) behind") }
+    return parts.joined(separator: ", ")
+  }
+
   private var quietAwareLabelColor: Color {
     if isQuietRow { return ADEColor.textSecondary }
     if group.isOrphaned { return ADEColor.warning }
@@ -437,113 +488,37 @@ struct WorkSidebarSectionHeader: View {
   }
 }
 
-/// Flat-capsule variant of `ADEGlassChip` used when the chip sits inside a `.adeGlassCard` so we avoid
-/// glass-on-glass stacking. Visual spec matches `ADEGlassChip` minus the inner `.glassEffect()`.
-struct WorkFlatCountChip: View {
-  let icon: String
-  let text: String
-  let tint: Color
+// `WorkFlatCountChip` and `WorkLiveCountPill` used to live here: an above-the-list
+// "N waiting" chip and a tappable top-bar pill, both fed from one screen-wide
+// needs-input count that `WorkRootSessionPresentation` no longer publishes at
+// all. They are deleted, not moved. Amber means "your move"
+// and nothing else, and spending it three times on one screen (pill, chip, row
+// badge) is precisely what made the per-row badge stop registering. The pill's
+// jump-to-attention is already covered by the bell → Activity drawer, which
+// bands needs-you first with per-session navigation.
 
-  var body: some View {
-    HStack(spacing: 3) {
-      Image(systemName: icon)
-        .font(.system(size: 8, weight: .semibold))
-      Text(text)
-        .font(.system(.caption2).weight(.medium))
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 6)
-    .padding(.vertical, 3)
-    .background(tint.opacity(0.1), in: Capsule())
-  }
-}
-
-/// Compact live-chat count pill for the Work toolbar. Mirrors the desktop's `ade-liquid-glass-pill`
-/// count badge next to the tab title \u2014 a tiny `\u25cf N` capsule that flips to warning tint when any
-/// chat is awaiting input. Tap target delegates to the caller so the list can scroll to the live row.
-struct WorkLiveCountPill: View {
-  let liveCount: Int
-  let attentionCount: Int
-  let onTap: () -> Void
-
-  var tint: Color {
-    attentionCount > 0 ? ADEColor.warning : ADEColor.success
-  }
-
-  var label: String {
-    attentionCount > 0 ? "\(attentionCount) waiting" : "\(liveCount) live"
-  }
-
-  var body: some View {
-    Button(action: onTap) {
-      HStack(spacing: 5) {
-        Circle()
-          .fill(tint)
-          .frame(width: 6, height: 6)
-          .shadow(color: tint.opacity(0.6), radius: 4, x: 0, y: 0)
-        Text(label)
-          .font(.caption2.monospacedDigit().weight(.semibold))
-          .foregroundStyle(tint)
-      }
-      .padding(.horizontal, 9)
-      .padding(.vertical, 5)
-      .background(tint.opacity(0.14), in: Capsule())
-      .overlay(
-        Capsule().stroke(tint.opacity(0.28), lineWidth: 0.5)
-      )
-    }
-    .buttonStyle(.plain)
-    .accessibilityLabel("\(liveCount) Work session\(liveCount == 1 ? "" : "s") live, \(attentionCount) waiting for input. Tap to jump.")
-  }
-}
-
-struct WorkRunningBanner: View {
-  @Environment(\.accessibilityReduceMotion) var reduceMotion
-
-  let liveSessions: [TerminalSessionSummary]
-  let attentionCount: Int
-
-  @State var isPulsing = false
-
-  var body: some View {
-    HStack(spacing: 10) {
-      Circle()
-        .fill(attentionCount > 0 ? ADEColor.warning : ADEColor.success)
-        .frame(width: 10, height: 10)
-        .scaleEffect(isPulsing && !reduceMotion ? 1.2 : 1.0)
-        .animation(ADEMotion.pulse(reduceMotion: reduceMotion), value: isPulsing)
-        .onAppear {
-          guard !reduceMotion else { return }
-          isPulsing = true
-        }
-      VStack(alignment: .leading, spacing: 2) {
-        Text(bannerTitle)
-          .font(.subheadline.weight(.semibold))
-          .foregroundStyle(ADEColor.textPrimary)
-        Text(bannerMessage)
-          .font(.caption)
-          .foregroundStyle(ADEColor.textSecondary)
-      }
-      Spacer()
-    }
-    .adeGlassCard(cornerRadius: 18, padding: 14)
-  }
-
-  var bannerTitle: String {
-    workRunningBannerTitle(
-      liveChatCount: liveCounts.chat,
-      liveTerminalCount: liveCounts.terminal,
-      attentionCount: attentionCount
-    )
-  }
-
-  var bannerMessage: String {
-    workRunningBannerMessage(liveTerminalCount: liveCounts.terminal, attentionCount: attentionCount)
-  }
-
-  var liveCounts: (chat: Int, terminal: Int) {
-    workRunningBannerLiveCounts(liveSessions)
-  }
+/// The lane half of a session row's long-press menu, mirroring desktop's
+/// `Lane ▸` submenu (`laneContextMenuItems.tsx`).
+///
+/// Bundled instead of eight loose closures because every call site wires all of
+/// them or none, and because the two availability flags have to travel with the
+/// actions they gate. `colorAvailable` / `manageAvailable` are per-command
+/// gates: a host that does not advertise `lanes.updateAppearance` must not show
+/// a colour row that silently fails.
+///
+/// Desktop items with no phone analogue are deliberately absent, not forgotten:
+/// Open in / Remove from Split, Close Other Tabs, Select All Lanes and Reveal in
+/// Finder all describe a windowing model a phone does not have.
+struct WorkSessionLaneMenuActions {
+  var colorAvailable: Bool = false
+  var manageAvailable: Bool = false
+  var onStartChat: (LaneSummary) -> Void = { _ in }
+  var onCopyLaneLink: (LaneSummary) -> Void = { _ in }
+  var onCopyBranchLink: (LaneSummary) -> Void = { _ in }
+  var onCopyLinearLink: (LaneSummary) -> Void = { _ in }
+  var onCopyPath: (LaneSummary) -> Void = { _ in }
+  var onSetColor: (LaneSummary, String?) -> Void = { _, _ in }
+  var onManage: (LaneSummary) -> Void = { _ in }
 }
 
 /// Single-row renderer for the session list that carries the swipe + context-menu action set.
@@ -584,10 +559,27 @@ struct WorkSessionListRow: View {
   /// The host advertises snooze / wake.
   var snoozeAvailable: Bool = false
   var onSettle: (TerminalSessionSummary) -> Void = { _ in }
+  /// Settle a needs-you row AND clear its pending prompt. Separate from
+  /// `onSettle` because the host rejects the dismiss flag on a row with nothing
+  /// pending — the two are different commands, not one command with a toggle.
+  var onDismissAndSettle: (TerminalSessionSummary) -> Void = { _ in }
   var onUnsettle: (TerminalSessionSummary) -> Void = { _ in }
   var onKeepActive: (TerminalSessionSummary) -> Void = { _ in }
   var onSnooze: (TerminalSessionSummary, WorkSnoozeDuration) -> Void = { _, _ in }
   var onWake: (TerminalSessionSummary) -> Void = { _ in }
+  /// The host advertises `work.deleteSession` — the stop-then-delete path for a
+  /// non-chat row. Older hosts never had it, so a phone talking to one hides the
+  /// two destructive items rather than offering a control that always fails.
+  var deleteSessionAvailable: Bool = false
+  /// Deletes a CLI/shell session (running or stopped). Chats keep `onDelete`;
+  /// the two go through different host commands and different confirmations.
+  var onDeleteSession: (TerminalSessionSummary) -> Void = { _ in }
+  /// Opens this session in the hosted web client. Purely local — it builds a URL
+  /// and hands it to the system, so it needs no host command and no gate.
+  var onOpenInWeb: (TerminalSessionSummary) -> Void = { _ in }
+  /// Lane-scoped actions for the `Lane ▸` submenu. Nil (the default) renders no
+  /// submenu at all, which is also what a row with no resolvable lane gets.
+  var laneMenu: WorkSessionLaneMenuActions? = nil
 
   /// Observed so the muted glyph and menu label re-render the moment a mute
   /// flips anywhere (this menu, the open chat's header menu, settings).
@@ -607,21 +599,74 @@ struct WorkSessionListRow: View {
     session.isSnoozed()
   }
 
-  /// An escalated ask outranks settle: a row blocked on the user is not "done",
-  /// and settling it would bury the very thing asking for attention. Resolve
-  /// the ask first. Already-settled rows offer Unsettle instead.
+  private var isChat: Bool { isChatSession(session) }
+
+  /// Mid-flight. Desktop hides Settle for all three of these
+  /// (`SessionContextMenu.tsx:196-199`): filing away a row the machine is still
+  /// working in claims an outcome that has not happened yet, and the row is
+  /// about to change state on its own anyway. iOS used to allow it, which let a
+  /// user settle a session mid-turn.
+  private var isActivelyRunning: Bool {
+    canonicalPhase == .starting || canonicalPhase == .running || canonicalPhase == .stale
+  }
+
+  /// Whether a needs-you ask can be DISMISSED as part of settling. A chat
+  /// resolves its own prompts, and an escalated ask carries a record the host
+  /// knows how to clear. A bare terminal prompt has neither, so settling it
+  /// would hide a question the machine is still blocked on — which is why
+  /// desktop explains the absence instead of quietly dropping the item.
+  ///
+  /// These are exactly desktop's three clauses (`SessionContextMenu.tsx:200-203`).
+  /// Do NOT add `attentionSource == "provider_structured"` here: that clause
+  /// belongs to the status slot, which uses it to keep a heuristic row
+  /// *settleable*, and it is a different question from "can the host dismiss
+  /// this prompt". The only shape it admits that these three do not is a
+  /// non-chat row with no `attentionRequestedAt` — which `ptyService.ts`
+  /// documents as a MISLABEL from regex-scanning a plain PTY stream (search
+  /// "is a MISLABEL and known to be one"; cited by phrase rather than line
+  /// because that file moves). For that row `dismissPendingInputBeforeSettle`
+  /// has nothing to
+  /// clear and throws, so offering "Dismiss & settle" could only ever produce
+  /// an error toast and a rolled-back optimistic write. Falling through to the
+  /// disabled "Resolve input to settle" row is the honest answer.
+  private var canDismissNeedsYou: Bool {
+    canonicalPhase != .needsYou
+      || isChat
+      || session.attentionRequestedAt != nil
+  }
+
   private var canSettle: Bool {
-    lifecycleAvailable && canonicalPhase != .needsYou && canonicalPhase != .settled
+    lifecycleAvailable
+      && canonicalPhase != .settled
+      && !isActivelyRunning
+      && canDismissNeedsYou
+  }
+
+  /// The settle for a needs-you row also clears the pending prompt, and says so.
+  /// The host REJECTS the dismiss flag on a row with nothing pending, so this is
+  /// the only condition under which the dismissing variant may be sent.
+  private var settleDismissesPendingInput: Bool {
+    canonicalPhase == .needsYou
+  }
+
+  /// Needs-you with an ask nothing can dismiss. Desktop renders a DISABLED row
+  /// here rather than nothing: an item that silently disappears reads as a bug,
+  /// while "Resolve input to settle" states the precondition.
+  private var settleBlockedOnInput: Bool {
+    lifecycleAvailable && canonicalPhase == .needsYou && !canDismissNeedsYou
   }
 
   private var canUnsettle: Bool {
     lifecycleAvailable && canonicalPhase == .settled
   }
 
-  /// "Keep active" only means something once a row would otherwise read settled
-  /// — explicitly declared by an agent, user, operator, or merge policy.
+  /// "Keep active" only means something against a DECLARED settle — one an
+  /// agent, user, operator or merge policy wrote into `settled_at`. A settle the
+  /// UI merely derived has no column for the pin to hold down, so desktop
+  /// restricts the item the same way (`SessionContextMenu.tsx:209`, `:250`).
   private var canKeepActive: Bool {
     lifecycleAvailable
+      && session.settledAt != nil
       && session.resolvedSettleOverride != .active
       && canonicalPhase == .settled
   }
@@ -663,13 +708,10 @@ struct WorkSessionListRow: View {
       }
     }
     .buttonStyle(.plain)
-    .simultaneousGesture(
-      LongPressGesture(minimumDuration: 0.45)
-        .onEnded { _ in
-          guard !isSelecting else { return }
-          onLongPressSelect(session)
-        }
-    )
+    // No raw `LongPressGesture` here. A 0.45s press competed with the very same
+    // long press that opens `.contextMenu`, so whichever recogniser won was a
+    // coin toss and the menu felt broken. The menu's own "Select" item is the
+    // single way into multi-select now.
     .swipeActions(edge: .trailing, allowsFullSwipe: false) {
       if isStoppableRuntimeStatus(session, status: rowStatus) {
         Button("Stop runtime", role: .destructive) {
@@ -677,8 +719,15 @@ struct WorkSessionListRow: View {
         }
         .tint(ADEColor.danger)
       } else if shouldShowDeleteAction {
-        Button("Delete", role: .destructive) {
+        Button("Delete chat", role: .destructive) {
           onDelete(session)
+        }
+        .tint(ADEColor.danger)
+      } else if canDeleteStoppedSession(status: rowStatus) {
+        // A stopped CLI or shell row. Until `work.deleteSession` was wired there
+        // was no way at all to delete one of these from a phone.
+        Button("Delete session", role: .destructive) {
+          onDeleteSession(session)
         }
         .tint(ADEColor.danger)
       }
@@ -687,9 +736,9 @@ struct WorkSessionListRow: View {
       // desktop-style always-visible moon button.
       if canSettle {
         Button {
-          onSettle(session)
+          settle()
         } label: {
-          Label("Settle", systemImage: "checkmark.circle")
+          Label(settleLabel, systemImage: "checkmark.circle")
         }
         .tint(ADEColor.accent)
       } else if canUnsettle {
@@ -720,69 +769,16 @@ struct WorkSessionListRow: View {
         }
       }
     }
+    // Desktop's tree, in desktop's order (`SessionContextMenu.tsx`): identity
+    // first, then lifecycle, then the places this session also appears, then —
+    // fenced behind a divider and never before it — the deletes. Ordering is not
+    // cosmetic here: a mis-tap right after the menu opens lands mid-list, which
+    // is exactly where the deletes used to sit.
     .contextMenu {
-      Button {
-        onLongPressSelect(session)
-      } label: {
-        Label("Select", systemImage: "checkmark.circle")
-      }
-      Button {
-        onRename(session)
-      } label: {
-        Label("Rename", systemImage: "pencil")
-      }
-      if isStoppableRuntimeStatus(session, status: rowStatus) {
-        Button(role: .destructive) {
-          onStopRuntime(session)
-        } label: {
-          Label("Stop runtime", systemImage: "stop.fill")
-        }
-      }
-      if shouldShowDeleteAction {
-        Button(role: .destructive) {
-          onDelete(session)
-        } label: {
-          Label("Delete chat", systemImage: "trash")
-        }
-      }
-      lifecycleMenuSection
-      Divider()
-      Button {
-        onGoToLane(session)
-      } label: {
-        Label("Go to lane", systemImage: "arrow.triangle.branch")
-      }
-      if let pullRequest {
-        Button {
-          onOpenPullRequest(session, pullRequest)
-        } label: {
-          Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
-        }
-      }
-      Button {
-        onCopyId(session)
-      } label: {
-        Label("Copy session ID", systemImage: "doc.on.doc")
-      }
-      Button {
-        onCopyDeepLink(session)
-      } label: {
-        Label("Copy session link", systemImage: "link")
-      }
-      Button {
-        onPin(session)
-      } label: {
-        Label(session.pinned ? "Unpin from front" : "Pin to front",
-              systemImage: session.pinned ? "pin.slash" : "pin")
-      }
-      if isChatSession(session) {
-        Button {
-          PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
-        } label: {
-          Label(isMuted ? "Unmute notifications" : "Mute notifications",
-                systemImage: isMuted ? "bell" : "bell.slash")
-        }
-      }
+      identityMenuSection
+      lifecycleMenuSection(status: rowStatus)
+      goToMenuSection
+      destructiveMenuSection(status: rowStatus)
     }
     .overlay {
       if isLaneDeleting {
@@ -805,32 +801,80 @@ struct WorkSessionListRow: View {
     isChatSession(session)
   }
 
-  /// Full lifecycle set: settle / unsettle, a snooze submenu of durations,
-  /// wake now, and the keep-active pin. Durations use a native nested `Menu`,
-  /// never a popover — this is a long-press context menu on a phone.
+  /// Stop-then-delete for a live CLI/shell row: desktop's "Stop & delete".
+  private func canStopAndDeleteSession(status: String) -> Bool {
+    deleteSessionAvailable && isStoppableRuntimeStatus(session, status: status)
+  }
+
+  /// Plain delete for a CLI/shell row that is already stopped. `work.delete
+  /// Session` handles both, but the labels differ because the consequences do.
+  private func canDeleteStoppedSession(status: String) -> Bool {
+    deleteSessionAvailable && !isChat && !isStoppableRuntimeStatus(session, status: status)
+  }
+
+  private var settleLabel: String {
+    settleDismissesPendingInput ? "Dismiss & settle" : "Settle"
+  }
+
+  private func settle() {
+    if settleDismissesPendingInput {
+      onDismissAndSettle(session)
+    } else {
+      onSettle(session)
+    }
+  }
+
+  // MARK: - Menu sections
+
+  /// What this row is called and how it is filed. Unlabelled: it is the first
+  /// block under the finger and needs no signpost.
   @ViewBuilder
-  private var lifecycleMenuSection: some View {
-    if lifecycleAvailable || snoozeAvailable {
+  private var identityMenuSection: some View {
+    Button {
+      onLongPressSelect(session)
+    } label: {
+      Label("Select", systemImage: "checkmark.circle")
+    }
+    Button {
+      onRename(session)
+    } label: {
+      Label("Rename", systemImage: "pencil")
+    }
+    Button {
+      onPin(session)
+    } label: {
+      Label(session.pinned ? "Unpin from front" : "Pin to front",
+            systemImage: session.pinned ? "pin.slash" : "pin")
+    }
+    if isChat {
+      Button {
+        PushNotificationService.shared.setMuted(!isMuted, sessionId: session.id)
+      } label: {
+        Label(isMuted ? "Unmute notifications" : "Mute notifications",
+              systemImage: isMuted ? "bell" : "bell.slash")
+      }
+    }
+  }
+
+  /// Everything that changes where the list files this row: stop (runtime),
+  /// snooze/wake (visibility), settle/keep-active (state). Durations use a
+  /// native nested `Menu`, never a popover — this is a long press on a phone.
+  ///
+  /// Keep it exhaustive. A row that reaches the end of this block with nothing
+  /// rendered is a row the user cannot un-hide.
+  @ViewBuilder
+  private func lifecycleMenuSection(status: String) -> some View {
+    let canStopRuntime = isStoppableRuntimeStatus(session, status: status)
+    if canStopRuntime || lifecycleAvailable || snoozeAvailable {
       Divider()
-      if canSettle {
+      // Stop runtime moved here from the identity block: it is a lifecycle
+      // change, and it is NOT destructive — the session and its transcript
+      // survive — so it must not sit next to the deletes.
+      if canStopRuntime {
         Button {
-          onSettle(session)
+          onStopRuntime(session)
         } label: {
-          Label("Settle", systemImage: "checkmark.circle")
-        }
-      }
-      if canUnsettle {
-        Button {
-          onUnsettle(session)
-        } label: {
-          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
-        }
-      }
-      if canKeepActive {
-        Button {
-          onKeepActive(session)
-        } label: {
-          Label("Keep active", systemImage: "pin.circle")
+          Label("Stop runtime", systemImage: "stop.fill")
         }
       }
       if snoozeAvailable {
@@ -852,6 +896,179 @@ struct WorkSessionListRow: View {
           } label: {
             Label("Snooze", systemImage: "moon.zzz")
           }
+        }
+      }
+      if canSettle {
+        Button {
+          settle()
+        } label: {
+          Label(settleLabel, systemImage: "checkmark.circle")
+        }
+      } else if settleBlockedOnInput {
+        // Disabled on purpose. Hiding Settle here would leave the user hunting
+        // for an item that simply vanished; this states the precondition.
+        Button {} label: {
+          Label("Resolve input to settle", systemImage: "exclamationmark.bubble")
+        }
+        .disabled(true)
+      }
+      if canUnsettle {
+        Button {
+          onUnsettle(session)
+        } label: {
+          Label("Unsettle", systemImage: "arrow.uturn.backward.circle")
+        }
+      }
+      if canKeepActive {
+        Button {
+          onKeepActive(session)
+        } label: {
+          Label("Keep active", systemImage: "pin.circle")
+        }
+      }
+    }
+  }
+
+  /// The other surfaces that show this same session, plus the clipboard rows and
+  /// the lane submenu. Copy and Lane are nested because a phone context menu
+  /// past roughly ten top-level rows stops being scannable.
+  @ViewBuilder
+  private var goToMenuSection: some View {
+    Divider()
+    Button {
+      onGoToLane(session)
+    } label: {
+      Label("Go to lane", systemImage: "arrow.triangle.branch")
+    }
+    if let pullRequest {
+      Button {
+        onOpenPullRequest(session, pullRequest)
+      } label: {
+        Label("Open in PRs tab", systemImage: "arrow.triangle.pull")
+      }
+    }
+    Button {
+      onOpenInWeb(session)
+    } label: {
+      Label("Open in web", systemImage: "safari")
+    }
+    Menu {
+      Button {
+        onCopyId(session)
+      } label: {
+        Label("Session ID", systemImage: "number")
+      }
+      Button {
+        onCopyDeepLink(session)
+      } label: {
+        Label("Session link", systemImage: "link")
+      }
+    } label: {
+      Label("Copy", systemImage: "doc.on.doc")
+    }
+    laneMenuSection
+  }
+
+  /// `Lane ▸`. Rendered only when the row actually resolves a lane and the
+  /// screen wired the actions — on iOS every row has a lane header or a lane
+  /// chip, so this is the lane menu for the whole app, not just singleton rows.
+  @ViewBuilder
+  private var laneMenuSection: some View {
+    if let lane, let laneMenu {
+      Menu {
+        Button {
+          laneMenu.onStartChat(lane)
+        } label: {
+          Label("Start chat in lane", systemImage: "plus.bubble")
+        }
+        Menu {
+          Button {
+            laneMenu.onCopyLaneLink(lane)
+          } label: {
+            Label("ADE lane link", systemImage: "link")
+          }
+          Button {
+            laneMenu.onCopyBranchLink(lane)
+          } label: {
+            Label("Branch link", systemImage: "arrow.triangle.branch")
+          }
+          // Only a lane that actually carries a Linear issue URL — the copy is
+          // that URL verbatim, so there is nothing to offer without one.
+          if primaryLaneLinearIssue(for: lane)?.url != nil {
+            Button {
+              laneMenu.onCopyLinearLink(lane)
+            } label: {
+              Label("Linear issue link", systemImage: "square.on.square")
+            }
+          }
+          Button {
+            laneMenu.onCopyPath(lane)
+          } label: {
+            Label("Path", systemImage: "folder")
+          }
+        } label: {
+          Label("Copy", systemImage: "doc.on.doc")
+        }
+        if laneMenu.colorAvailable {
+          Menu {
+            ForEach(LaneColorPalette.entries) { entry in
+              Button {
+                laneMenu.onSetColor(lane, entry.hex)
+              } label: {
+                Label(entry.name, systemImage: lane.color?.lowercased() == entry.hex.lowercased()
+                  ? "checkmark.circle.fill"
+                  : "circle.fill")
+              }
+            }
+            Divider()
+            Button {
+              laneMenu.onSetColor(lane, nil)
+            } label: {
+              Label("No color", systemImage: "circle.dashed")
+            }
+          } label: {
+            Label("Color", systemImage: "paintpalette")
+          }
+        }
+        if laneMenu.manageAvailable {
+          // Last inside the submenu, like desktop: it opens a surface that can
+          // archive or delete the lane.
+          Button {
+            laneMenu.onManage(lane)
+          } label: {
+            Label("Manage lane", systemImage: "slider.horizontal.3")
+          }
+        }
+      } label: {
+        Label("Lane", systemImage: "arrow.triangle.branch")
+      }
+    }
+  }
+
+  /// Destructive, last, and behind a divider — the whole point of the reorder.
+  @ViewBuilder
+  private func destructiveMenuSection(status: String) -> some View {
+    if canStopAndDeleteSession(status: status) || shouldShowDeleteAction || canDeleteStoppedSession(status: status) {
+      Divider()
+      if canStopAndDeleteSession(status: status) {
+        Button(role: .destructive) {
+          onDeleteSession(session)
+        } label: {
+          Label("Stop & delete", systemImage: "trash")
+        }
+      }
+      if shouldShowDeleteAction {
+        Button(role: .destructive) {
+          onDelete(session)
+        } label: {
+          Label("Delete chat", systemImage: "trash")
+        }
+      }
+      if canDeleteStoppedSession(status: status) {
+        Button(role: .destructive) {
+          onDeleteSession(session)
+        } label: {
+          Label("Delete session", systemImage: "trash")
         }
       }
     }
@@ -1013,510 +1230,6 @@ struct WorkLanePrIndicator: View {
     .fixedSize()
     .accessibilityElement(children: .ignore)
     .accessibilityLabel("Pull request #\(tag.githubPrNumber), \(lanePrStateLabel(tag.state))")
-  }
-}
-
-/// The compact second line shared by every native Work session row.
-///
-/// Keep this precedence identical to the desktop card:
-/// explicit ask → agent note → sanitized last output → summary → goal.
-/// Output intentionally wins over the older AI summary so a failed/missing
-/// status-note write still leaves the user with the freshest truthful line.
-func workSessionRowPreviewSource(
-  session: TerminalSessionSummary,
-  chatSummary: AgentChatSessionSummary?,
-  isSettled: Bool
-) -> String? {
-  let primaryText = chatSummary?.title ?? session.title
-
-  func inlineText(_ raw: String?, terminalOutput: Bool = false) -> String? {
-    guard let raw else { return nil }
-    let rendered = terminalOutput ? sanitizeTerminalOutputForDisplay(raw) : raw
-    guard let normalized = workSessionPreviewText(rendered) else { return nil }
-    let inline = workSummarizeInlineText(normalized, maxChars: 120)
-    return inline.isEmpty ? nil : inline
-  }
-
-  if session.attentionRequestedAt?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
-     let message = inlineText(session.attentionMessage) {
-    return message
-  }
-  if let note = inlineText(session.statusNote) {
-    return isSettled ? "Done: \(note)" : note
-  }
-  for rawOutput in [chatSummary?.lastOutputPreview, session.lastOutputPreview] {
-    if let output = inlineText(rawOutput, terminalOutput: true), output != primaryText {
-      return output
-    }
-  }
-  for rawSummary in [chatSummary?.summary, session.summary] {
-    if let summary = inlineText(rawSummary), summary != primaryText {
-      return summary
-    }
-  }
-  for rawGoal in [chatSummary?.goal, session.goal] {
-    if let goal = inlineText(rawGoal), goal != primaryText {
-      return goal
-    }
-  }
-  return nil
-}
-
-private struct WorkSessionRowRenderSignature: Equatable {
-  let sessionId: String
-  let title: String
-  let provider: String?
-  let symbolProvider: String?
-  let laneName: String
-  let laneColor: String?
-  let laneDirty: Bool
-  let laneAhead: Int
-  let laneBehind: Int
-  let activityTimestamp: String
-  let previewText: String?
-  let pinned: Bool
-  let pullRequestNumber: Int?
-  let pullRequestState: String?
-  let status: String
-  let canonicalPhase: CanonicalSessionPhase
-  /// The rendered capsule and dot, not just the phase behind them: the badge
-  /// kind moves on its own when planning starts or stops, and the tone is what
-  /// the dot is painted with.
-  let badgeKind: SessionBadgeKind?
-  let rowTone: ActivityTone
-  let model: String?
-  let showsLaneIdentity: Bool
-  let settledAt: String?
-  let statusNote: String?
-  let attentionRequestedAt: String?
-  let attentionMessage: String?
-  let lastTurnFailedAt: String?
-  let settleOverride: String?
-  let snoozedUntil: String?
-  // `snoozedAt` is the early-wake comparison baseline behind
-  // `session.wokeMarker()`, which the row body renders. Without it a change
-  // confined to that column leaves the stale woke marker on screen.
-  let snoozedAt: String?
-  let wokeAt: String?
-  let wokeReason: String?
-  // Deterministic inputs to the attention capsule, so a badge transition
-  // (needs_you / failed) re-renders even when the display status is unchanged.
-  let runtimeState: String
-  let pendingInputItemId: String?
-  let exitCode: Int?
-  let isArchived: Bool
-  let isMuted: Bool
-  let isSelectedTransitionSource: Bool
-  let compact: Bool
-
-  init(
-    session: TerminalSessionSummary,
-    lane: LaneSummary?,
-    pullRequest: LanePrTag?,
-    chatSummary: AgentChatSessionSummary?,
-    status: String,
-    isArchived: Bool,
-    isMuted: Bool,
-    isSelectedTransitionSource: Bool,
-    compact: Bool,
-    showsLaneIdentity: Bool
-  ) {
-    self.sessionId = session.id
-    self.title = chatSummary?.title ?? session.title
-    self.provider = chatSummary?.provider ?? session.toolType
-    self.symbolProvider = chatSummary?.provider
-    self.laneName = session.laneName
-    self.laneColor = lane?.color
-    self.laneDirty = lane?.status.dirty == true
-    self.laneAhead = lane?.status.ahead ?? 0
-    self.laneBehind = lane?.status.behind ?? 0
-    self.activityTimestamp = workSessionActivityTimestamp(session: session, summary: chatSummary)
-    let canonical = workCanonicalSessionState(session: session, summary: chatSummary)
-    self.previewText = workSessionRowPreviewSource(
-      session: session,
-      chatSummary: chatSummary,
-      isSettled: canonical.phase == .settled
-    )
-    self.pinned = session.pinned
-    self.pullRequestNumber = pullRequest?.githubPrNumber
-    self.pullRequestState = pullRequest.map { lanePrStateLabel($0.state) }
-    self.status = status
-    self.canonicalPhase = canonical.phase
-    self.badgeKind = workSessionStatusBadge(session: session, summary: chatSummary)?.kind
-    self.rowTone = workSessionRowTone(session: session, summary: chatSummary)
-    self.model = chatSummary?.model
-    self.showsLaneIdentity = showsLaneIdentity
-    self.settledAt = session.settledAt
-    self.statusNote = session.statusNote
-    self.attentionRequestedAt = session.attentionRequestedAt
-    self.attentionMessage = session.attentionMessage
-    self.lastTurnFailedAt = session.lastTurnFailedAt
-    self.settleOverride = session.settleOverride
-    self.snoozedUntil = session.snoozedUntil
-    self.snoozedAt = session.snoozedAt
-    self.wokeAt = session.wokeAt
-    self.wokeReason = session.wokeReason
-    self.runtimeState = session.runtimeState
-    self.pendingInputItemId = session.pendingInputItemId
-    self.exitCode = session.exitCode
-    self.isArchived = isArchived
-    self.isMuted = isMuted
-    self.isSelectedTransitionSource = isSelectedTransitionSource
-    self.compact = compact
-  }
-}
-
-struct WorkSessionRow: View, Equatable {
-  let session: TerminalSessionSummary
-  let lane: LaneSummary?
-  var pullRequest: LanePrTag? = nil
-  let chatSummary: AgentChatSessionSummary?
-  let status: String
-  let isArchived: Bool
-  var isMuted: Bool = false
-  let transitionNamespace: Namespace.ID?
-  let isSelectedTransitionSource: Bool
-  var compact: Bool = false
-  /// The singleton form: no lane header above this row, so the row shows the
-  /// lane itself. Under a lane header the chip would just repeat the header.
-  var showsLaneIdentity: Bool = true
-  private let renderSignature: WorkSessionRowRenderSignature
-
-  init(
-    session: TerminalSessionSummary,
-    lane: LaneSummary?,
-    pullRequest: LanePrTag? = nil,
-    chatSummary: AgentChatSessionSummary?,
-    status: String,
-    isArchived: Bool,
-    isMuted: Bool = false,
-    transitionNamespace: Namespace.ID?,
-    isSelectedTransitionSource: Bool,
-    compact: Bool = false,
-    showsLaneIdentity: Bool = true
-  ) {
-    self.session = session
-    self.lane = lane
-    self.pullRequest = pullRequest
-    self.chatSummary = chatSummary
-    self.status = status
-    self.isArchived = isArchived
-    self.isMuted = isMuted
-    self.transitionNamespace = transitionNamespace
-    self.isSelectedTransitionSource = isSelectedTransitionSource
-    self.compact = compact
-    self.showsLaneIdentity = showsLaneIdentity
-    self.renderSignature = WorkSessionRowRenderSignature(
-      session: session,
-      lane: lane,
-      pullRequest: pullRequest,
-      chatSummary: chatSummary,
-      status: status,
-      isArchived: isArchived,
-      isMuted: isMuted,
-      isSelectedTransitionSource: isSelectedTransitionSource,
-      compact: compact,
-      showsLaneIdentity: showsLaneIdentity
-    )
-  }
-
-  static func == (lhs: WorkSessionRow, rhs: WorkSessionRow) -> Bool {
-    lhs.renderSignature == rhs.renderSignature
-  }
-
-  var body: some View {
-    if compact {
-      compactBody
-    } else {
-      standardBody
-    }
-  }
-
-  private var compactBody: some View {
-    HStack(alignment: .center, spacing: 8) {
-      WorkProviderBareLogo(
-        provider: chatSummary?.provider ?? session.toolType,
-        fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
-        tint: providerTintColor,
-        size: 20
-      )
-
-      Text(chatSummary?.title ?? session.title)
-        .font(.caption.weight(.semibold))
-        .foregroundStyle(ADEColor.textPrimary)
-        .lineLimit(1)
-        .truncationMode(.tail)
-
-      if let badge = capsuleBadge {
-        WorkSessionStatusCapsule(badge: badge)
-      }
-
-      Spacer(minLength: 6)
-
-      if isPendingSyncCreation {
-        Text("Pending sync")
-          .font(.caption2.weight(.semibold))
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      } else {
-        Text(relativeTimestampCompact(workSessionActivityTimestamp(session: session, summary: chatSummary)))
-          .font(.caption2.monospacedDigit())
-          .foregroundStyle(ADEColor.textMuted)
-          .lineLimit(1)
-      }
-    }
-    .padding(.horizontal, 10)
-    .padding(.vertical, 8)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(providerTintColor.opacity(0.07), in: RoundedRectangle(cornerRadius: 11, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 11, style: .continuous)
-        .stroke(providerTintColor.opacity(0.18), lineWidth: 0.6)
-    )
-    .opacity(isSettled ? 0.7 : 1)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(accessibilityLabel)
-  }
-
-  private var standardBody: some View {
-    HStack(alignment: .center, spacing: 12) {
-      WorkProviderBareLogo(
-        provider: chatSummary?.provider ?? session.toolType,
-        fallbackSymbol: sessionSymbol(session, provider: chatSummary?.provider),
-        tint: providerTintColor,
-        size: 32
-      )
-      .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-icon-\(session.id)" : nil, in: transitionNamespace)
-
-      VStack(alignment: .leading, spacing: 3) {
-        HStack(alignment: .center, spacing: 6) {
-          Group {
-            if isSettled {
-              // Hollow, not filled: settled work is put away, and the ring says
-              // that without spending a solid dot on it. Tinted rather than
-              // white so it still carries the phase's hue.
-              Circle()
-                .stroke(rowTint.opacity(0.7), lineWidth: 1)
-            } else {
-              Circle()
-                .fill(rowTint)
-            }
-          }
-          .frame(width: 6, height: 6)
-          Text(chatSummary?.title ?? session.title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(ADEColor.textPrimary)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-title-\(session.id)" : nil, in: transitionNamespace)
-          if session.pinned {
-            Image(systemName: "pin.fill")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.accent)
-          }
-          if isMuted {
-            Image(systemName: "bell.slash")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .accessibilityLabel("Notifications muted")
-          }
-          if let badge = capsuleBadge {
-            WorkSessionStatusCapsule(badge: badge)
-          }
-          Spacer(minLength: 6)
-          Text(relativeTimestampCompact(renderSignature.activityTimestamp))
-            .font(.caption2.monospacedDigit())
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-        }
-
-        if let preview = renderSignature.previewText {
-          Text(preview)
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-            .truncationMode(.tail)
-        }
-
-        HStack(spacing: 6) {
-          Text(shortProviderLabel(chatSummary?.provider ?? session.toolType))
-            .font(.caption2)
-            .foregroundStyle(ADEColor.textMuted)
-            .lineLimit(1)
-
-          // The model the turn actually runs on. iOS carried it in the chat
-          // summary and never showed it, so two rows on the same provider were
-          // indistinguishable.
-          if let model = renderSignature.model, !model.isEmpty {
-            Text("·")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-            Text(shortModelLabel(model))
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.middle)
-              .layoutPriority(-1)
-          }
-
-          // Under a lane header the lane chip only repeats the header, so it is
-          // spent here on the model instead. A headerless (singleton) row is the
-          // only thing carrying the lane, and always shows it.
-          if showsLaneIdentity {
-            Text("·")
-              .font(.caption2)
-              .foregroundStyle(ADEColor.textMuted.opacity(0.5))
-
-            if let laneAccent = LaneColorPalette.color(forHex: lane?.color) {
-              Circle()
-                .fill(laneAccent)
-                .frame(width: 6, height: 6)
-            } else {
-              Image(systemName: "arrow.triangle.branch")
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundStyle(ADEColor.textMuted)
-            }
-            Text(session.laneName)
-              .font(.caption2)
-              .foregroundStyle(LaneColorPalette.color(forHex: lane?.color) ?? ADEColor.textMuted)
-              .lineLimit(1)
-              .truncationMode(.middle)
-              .layoutPriority(-1)
-          }
-
-          if lane?.status.dirty == true {
-            Circle()
-              .fill(ADEColor.warning)
-              .frame(width: 6, height: 6)
-              .accessibilityLabel("Uncommitted changes")
-          }
-
-          if let ahead = lane?.status.ahead, ahead > 0 {
-            HStack(spacing: 1) {
-              Image(systemName: "arrow.up")
-                .font(.system(size: 9, weight: .semibold))
-              Text("\(ahead)")
-                .font(.caption2.monospacedDigit())
-            }
-            .foregroundStyle(ADEColor.success)
-          }
-
-          if let behind = lane?.status.behind, behind > 0 {
-            HStack(spacing: 1) {
-              Image(systemName: "arrow.down")
-                .font(.system(size: 9, weight: .semibold))
-              Text("\(behind)")
-                .font(.caption2.monospacedDigit())
-            }
-            .foregroundStyle(ADEColor.warning)
-          }
-
-          Spacer(minLength: 0)
-
-          if let wakeLabel = snoozeWakeLabel {
-            WorkSessionLifecycleTag(symbol: "moon.zzz", text: wakeLabel, tint: ADEColor.info)
-          } else if let woke = session.wokeMarker() {
-            WorkSessionLifecycleTag(symbol: "sun.max", text: woke.wokeLabel, tint: ADEColor.warning)
-          }
-
-          if isPendingSyncCreation {
-            HStack(spacing: 4) {
-              Image(systemName: "clock.arrow.circlepath")
-                .font(.system(size: 9, weight: .semibold))
-              Text("Pending sync")
-                .font(.caption2.weight(.semibold))
-            }
-            .foregroundStyle(ADEColor.textMuted)
-          } else if isArchived {
-            Text("ARCHIVED")
-              .font(.caption2.monospaced().weight(.semibold))
-              .foregroundStyle(ADEColor.warning)
-              .adeMatchedGeometry(id: isSelectedTransitionSource ? "work-status-\(session.id)" : nil, in: transitionNamespace)
-          }
-        }
-      }
-    }
-    .padding(14)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(providerTintColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .overlay(
-      RoundedRectangle(cornerRadius: 16, style: .continuous)
-        .stroke(providerTintColor.opacity(0.25), lineWidth: 0.75)
-    )
-    .opacity(isSettled ? 0.7 : 1)
-    .adeMatchedTransitionSource(id: isSelectedTransitionSource ? "work-container-\(session.id)" : nil, in: transitionNamespace)
-    .accessibilityElement(children: .combine)
-    .accessibilityLabel(accessibilityLabel)
-    .adeInspectable(
-      "Work.Session.Row",
-      metadata: [
-        "sessionId": session.id,
-        "laneId": session.laneId,
-        "laneName": session.laneName,
-        "title": chatSummary?.title ?? session.title
-      ]
-    )
-  }
-
-  var providerTintColor: Color {
-    providerTint(chatSummary?.provider ?? session.toolType)
-  }
-
-  /// The row's status capsule, in the full shared vocabulary — needs you,
-  /// failed, stale, working, planning, done. Nil for the resting states, so the
-  /// row never shifts layout to say that nothing is happening.
-  var capsuleBadge: SessionBadge? {
-    workSessionStatusBadge(session: session, summary: chatSummary)
-  }
-
-  var canonicalState: CanonicalSessionState {
-    workCanonicalSessionState(session: session, summary: chatSummary)
-  }
-
-  var isSettled: Bool {
-    canonicalState.phase == .settled
-  }
-
-  /// Non-nil only while the snooze window is still open. Snooze is a visibility
-  /// overlay, so it changes what the row says, never its canonical phase.
-  var snoozeWakeLabel: String? {
-    guard session.isSnoozed() else { return nil }
-    return workSnoozeWakeLabel(session.snoozedUntil)
-  }
-
-  var isPendingSyncCreation: Bool {
-    workIsPendingChatCreationSession(session)
-  }
-
-  /// The status dot's hue. Reads the canonical phase through the shared tone
-  /// table rather than the coarse four-value status string, so the dot and the
-  /// capsule above it can never tell different stories.
-  var rowTint: Color {
-    if isPendingSyncCreation { return ADEColor.textMuted }
-    if isArchived { return ADEColor.warning }
-    return activityToneColor(renderSignature.rowTone)
-  }
-
-  var accessibilityLabel: String {
-    var parts = [chatSummary?.title ?? session.title, session.laneName, sessionStatusLabel(for: status)]
-    if let model = renderSignature.model, !model.isEmpty {
-      parts.append(shortModelLabel(model))
-    }
-    if session.pinned {
-      parts.append("pinned")
-    }
-    if isArchived {
-      parts.append("archived")
-    }
-    if isSettled {
-      parts.append("settled")
-    }
-    if let wakeLabel = snoozeWakeLabel {
-      parts.append("snoozed \(wakeLabel.lowercased())")
-    } else if let woke = session.wokeMarker() {
-      parts.append("woke, \(woke.wokeLabel.lowercased())")
-    }
-    return parts.joined(separator: ", ")
   }
 }
 
