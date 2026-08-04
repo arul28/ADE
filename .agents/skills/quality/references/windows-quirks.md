@@ -62,10 +62,13 @@ PIDs fast, so a late `taskkill /T /F` can hit an unrelated process.
 `apps/desktop/src/main/services/shared/processExecution.ts`, or
 `signalChildProcessTree` / `terminateChildProcessTree` in
 `services/shared/utils.ts`. On Windows both run `taskkill /T /F` **and**
-`child.kill()`, and both refuse a child that already reported `exitCode !== null
-|| signalCode !== null` — that check is the PID-reuse guard, not an
-optimization, so the child object you pass must carry those live fields (a
-`{ pid }` snapshot defeats it). `signalChildProcessTree` applies the guard on
+`child.kill()`, and both refuse a child that already reported a non-null
+`exitCode` / `signalCode` — that check is the PID-reuse guard, not an
+optimization, so pass the live child object, not a `{ pid }` snapshot. A handle
+missing those fields is treated as *not tracked* and is still killed: reading an
+absent field as "already exited" would silently leak the whole tree, which is
+the worse of the two failures. You lose the PID-reuse protection, not the kill.
+`signalChildProcessTree` applies the guard on
 every platform; `terminateProcessTree` applies it on the win32 branch, where the
 `taskkill` hazard lives. For ConPTY, kill the tree *before* node-pty kills the
 leader (`services/pty/ptyService.ts`); afterwards `taskkill /PID <leader> /T`
