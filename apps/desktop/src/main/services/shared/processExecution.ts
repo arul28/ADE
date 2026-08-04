@@ -1,5 +1,27 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+
+/**
+ * Resolve `taskkill` through the kernel's SystemRoot alias rather than `PATH`.
+ *
+ * A bare `"taskkill.exe"` is PATH-relative, so any writable directory earlier on
+ * PATH than System32 gets to supply the binary the Electron main process runs
+ * to kill process trees. `windows-quirks.md` names `trustedWindowsTools` as the
+ * answer for exactly this.
+ *
+ * Falls back to the PATH spelling if resolution throws, deliberately: refusing
+ * to kill leaks whole process trees, which is the worse of the two failures.
+ * Non-win32 keeps the plain name so cross-platform tests stay deterministic.
+ */
+export function windowsTaskkillCommand(): string {
+  if (process.platform !== "win32") return "taskkill.exe";
+  try {
+    return resolveTrustedWindowsTool("taskkill");
+  } catch {
+    return "taskkill.exe";
+  }
+}
 
 export type SpawnInvocation = {
   command: string;
@@ -163,7 +185,7 @@ export function resolveCliSpawnInvocation(
 
 export function windowsTaskkillInvocation(pid: number, options: { force?: boolean } = {}): SpawnInvocation {
   return {
-    command: "taskkill.exe",
+    command: windowsTaskkillCommand(),
     args: ["/PID", String(pid), "/T", ...(options.force ? ["/F"] : [])],
   };
 }

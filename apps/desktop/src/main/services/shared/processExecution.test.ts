@@ -1,4 +1,5 @@
 import type * as childProcess from "node:child_process";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const spawnSyncMock = vi.fn();
@@ -20,6 +21,7 @@ import {
   resolveWindowsCmdInvocation,
   shouldUseWindowsCmdWrapper,
   terminateProcessTree,
+  windowsTaskkillCommand,
 } from "./processExecution";
 
 describe("processExecution", () => {
@@ -142,9 +144,23 @@ describe("killWindowsProcessTree", () => {
     expect(failure).not.toHaveBeenCalled();
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     const [command, args, options] = spawnSyncMock.mock.calls[0]!;
-    expect(command).toBe("taskkill.exe");
+    expect(command).toBe(windowsTaskkillCommand());
     expect(args).toEqual(["/PID", "4321", "/T", "/F"]);
     expect(options).toMatchObject({ windowsHide: true });
+  });
+
+  // A bare "taskkill.exe" is PATH-relative, so a writable directory earlier on
+  // PATH than System32 supplies the binary the main process runs to kill trees.
+  // On Windows the command must be an absolute path under the real System32.
+  it.runIf(process.platform === "win32")("resolves taskkill off PATH on Windows", () => {
+    const command = windowsTaskkillCommand();
+    expect(path.win32.isAbsolute(command)).toBe(true);
+    expect(command.toLowerCase()).toContain("system32");
+    expect(command.toLowerCase().endsWith("taskkill.exe")).toBe(true);
+  });
+
+  it.runIf(process.platform !== "win32")("keeps the plain taskkill spelling off Windows", () => {
+    expect(windowsTaskkillCommand()).toBe("taskkill.exe");
   });
 
   it("invokes the failure callback with taskkill stderr when exit is non-zero", () => {

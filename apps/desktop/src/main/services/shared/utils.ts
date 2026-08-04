@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { resolveCliSpawnInvocation } from "./processExecution";
+import { resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -155,7 +155,7 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
     if (isValidPid(pid)) {
       const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
       try {
-        const result = spawnSync("taskkill.exe", taskkillArgs, {
+        const result = spawnSync(windowsTaskkillCommand(), taskkillArgs, {
           stdio: "ignore",
           windowsHide: true,
         });
