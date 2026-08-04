@@ -17,6 +17,27 @@ permissions:
   contents: read
 
 jobs:
+  # ── Stage 0: change detection ─────────────────────────────────────────
+  # package-win takes ~40 minutes and ran on every push, so a docs-only
+  # change paid for a full NSIS installer build. This job decides whether
+  # it has to; ci-pass below then distinguishes "skipped because nothing
+  # relevant changed" from "skipped because something upstream broke".
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      package-win: ${{ steps.filter.outputs.package-win }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            package-win:
+              - "apps/desktop/**"
+              - "apps/ade-cli/**"
+              - ".github/workflows/ci.yml"
+              - "!**/*.md"
+
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
     runs-on: ubuntu-latest
@@ -533,6 +554,10 @@ jobs:
           src/main/services/updates/autoUpdateService.test.ts
           src/main/windowAppearance.test.ts
           src/renderer/lib/pathUtils.test.ts
+          src/main/services/shared/pathCompare.test.ts
+          src/main/services/externalSessions/discoveryUtils.test.ts
+          src/main/services/externalSessions/externalSessionsService.test.ts
+          src/main/services/lanes/laneStorageLifecycle.test.ts
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to
@@ -561,7 +586,14 @@ jobs:
           src/main/services/sync/syncService.test.ts
 
   package-win:
-    needs: build-runtime-binaries
+    needs: [changes, build-runtime-binaries]
+    # Never skipped on main or on a dispatch: release-core.yml's verify job
+    # requires a ci-pass check run on the exact SHA it builds, so every SHA
+    # that could be released must have had its installer actually built.
+    if: >-
+      needs.changes.outputs.package-win == 'true'
+      || github.event_name == 'workflow_dispatch'
+      || github.ref == 'refs/heads/main'
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -663,6 +695,7 @@ jobs:
   ci-pass:
     if: always()
     needs:
+      - changes
       - install
       - secret-scan
       - typecheck-desktop
@@ -687,11 +720,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs passed
+        env:
+          PACKAGE_WIN_RESULT: ${{ needs.package-win.result }}
+          PACKAGE_WIN_CHANGED: ${{ needs.changes.outputs.package-win }}
         run: |
+          set -euo pipefail
           if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
-             [[ "${{ contains(needs.*.result, 'skipped') }}" == "true" ]] ||
              [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::One or more required jobs failed, were skipped, or were cancelled"
+            echo "::error::One or more required jobs failed or were cancelled"
             exit 1
           fi
-          echo "All CI jobs passed"
+          # 'skipped' still means failure for every job EXCEPT package-win, and
+          # package-win may only skip when the filter proved nothing relevant
+          # changed. Enumerated rather than checking needs.* so that adding a
+          # conditional job later cannot start silently passing while skipped.
+          for result in \
+            "changes=${{ needs.changes.result }}" \
+            "install=${{ needs.install.result }}" \
+            "secret-scan=${{ needs.secret-scan.result }}" \
+            "typecheck-desktop=${{ needs.typecheck-desktop.result }}" \
+            "typecheck-ade-cli=${{ needs.typecheck-ade-cli.result }}" \
+            "typecheck-web=${{ needs.typecheck-web.result }}" \
+            "typecheck-webhook-relay=${{ needs.typecheck-webhook-relay.result }}" \
+            "typecheck-push-relay=${{ needs.typecheck-push-relay.result }}" \
+            "typecheck-tunnel-relay=${{ needs.typecheck-tunnel-relay.result }}" \
+            "typecheck-account-directory=${{ needs.typecheck-account-directory.result }}" \
+            "lint-desktop=${{ needs.lint-desktop.result }}" \
+            "test-desktop=${{ needs.test-desktop.result }}" \
+            "test-ade-cli=${{ needs.test-ade-cli.result }}" \
+            "test-webhook-relay=${{ needs.test-webhook-relay.result }}" \
+            "test-push-relay=${{ needs.test-push-relay.result }}" \
+            "test-tunnel-relay=${{ needs.test-tunnel-relay.result }}" \
+            "test-account-directory=${{ needs.test-account-directory.result }}" \
+            "build=${{ needs.build.result }}" \
+            "build-runtime-binaries=${{ needs.build-runtime-binaries.result }}" \
+            "windows-foundation=${{ needs.windows-foundation.result }}" \
+            "validate-docs=${{ needs.validate-docs.result }}"; do
+            if [[ "${result#*=}" != "success" ]]; then
+              echo "::error::${result%%=*} did not succeed (${result#*=})"
+              exit 1
+            fi
+          done
+          if [[ "$PACKAGE_WIN_RESULT" == "skipped" ]]; then
+            if [[ "$PACKAGE_WIN_CHANGED" == "true" ]]; then
+              echo "::error::package-win was skipped although packaging inputs changed"
+              exit 1
+            fi
+            echo "package-win skipped: no packaging-relevant paths changed"
+          elif [[ "$PACKAGE_WIN_RESULT" != "success" ]]; then
+            echo "::error::package-win did not succeed ($PACKAGE_WIN_RESULT)"
+            exit 1
+          fi
+          echo "All required CI jobs passed"
