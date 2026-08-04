@@ -58,6 +58,12 @@ if defined ADE_NEEDS_TTY (
       exit /b %ERRORLEVEL%
     )
   )
+  rem Reaching here means no Node 22+ was found. The bundled Electron cannot
+  rem stand in for it: ELECTRON_RUN_AS_NODE gives no TTY on Windows, so the TUI
+  rem cannot start under it at all. The CLI's runtime dependencies are unpacked
+  rem from app.asar precisely so a plain node can load them (see asarUnpack in
+  rem apps/desktop/package.json) - without that unpack this branch would fail
+  rem with "Cannot find module '@linear/sdk'" instead.
   echo ade: '%~1' needs an interactive terminal, which the bundled ADE runtime cannot provide on Windows. 1>&2
   echo Install Node.js 22 or newer and run this command again, or set ADE_CLI_NODE to a Node 22+ executable. 1>&2
   exit /b 127
