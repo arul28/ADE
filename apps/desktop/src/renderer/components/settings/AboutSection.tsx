@@ -3,6 +3,7 @@ import { ArrowCircleUp, ArrowsClockwise, CheckCircle, WarningCircle } from "@pho
 import type { AppInfo, AutoUpdateSnapshot, LatestReleaseInfo } from "../../../shared/types";
 import { COLORS, MONO_FONT, SANS_FONT, cardStyle, inlineBadge, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { useAutoUpdateSnapshot } from "../app/useAutoUpdateSnapshot";
+import { isWindowsPlatform, requestWindowsBetaNotice } from "../../lib/windowsBetaNotice";
 
 const labelStyle: React.CSSProperties = {
   fontSize: 11,
@@ -283,6 +284,38 @@ export function AboutSection({ embedded = false }: { embedded?: boolean } = {}) 
           </div>
         ) : null}
       </div>
+
+      {/* ADE is GA on macOS and Linux; only the Windows port is in beta. This is
+          the re-open surface for the start-up notice — the header build chip only
+          exists on alpha/beta packages, so a Windows Stable install needs it. */}
+      {isWindowsPlatform() ? (
+        <div
+          style={{
+            marginTop: embedded ? 14 : 18,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            flexWrap: "wrap",
+            padding: "10px 12px",
+            borderRadius: 9,
+            border: "1px solid color-mix(in srgb, var(--color-border) 80%, transparent)",
+            background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+          }}
+        >
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, fontFamily: SANS_FONT, color: COLORS.textPrimary }}>
+              ADE on Windows is in beta
+            </div>
+            <div style={{ marginTop: 3, fontSize: 11, fontFamily: SANS_FONT, color: COLORS.textMuted, lineHeight: 1.5 }}>
+              What to expect, known gaps, and how to report a bug.
+            </div>
+          </div>
+          <button type="button" style={outlineButton()} onClick={requestWindowsBetaNotice}>
+            Open notice
+          </button>
+        </div>
+      ) : null}
 
       {(updateAvailable || !isDev) ? (
         <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: embedded ? 14 : 18, flexWrap: "wrap" }}>

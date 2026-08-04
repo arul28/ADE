@@ -729,8 +729,8 @@ declare global {
         /**
          * Release channel of this build, captured in preload from the argv the
          * main process injects. Synchronous for the same reason as
-         * `runtimeTarget`: the shell header gates the channel badge and the
-         * early-build notice at first paint. `app.getInfo().packageChannel`
+         * `runtimeTarget`: the shell header gates the channel badge at first
+         * paint. `app.getInfo().packageChannel`
          * carries the same value for callers that already await it.
          */
         packageChannel: AppPackageChannel;

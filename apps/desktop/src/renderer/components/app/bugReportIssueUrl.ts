@@ -10,7 +10,7 @@ import { ADE_GITHUB_NEW_ISSUE_URL } from "../../../shared/productLinks";
  */
 export const MAX_ISSUE_URL_LENGTH = 6000;
 
-export type ChannelIssueUrlInput = {
+export type BugReportIssueUrlInput = {
   appInfo: AppInfo | null;
   /**
    * The synchronously-known channel. Used when `appInfo` has not arrived (or
@@ -30,7 +30,7 @@ function fieldRow(label: string, value: string | null | undefined): string {
   return `- ${label}: ${value && value.trim() ? value.trim() : "unknown"}`;
 }
 
-export function buildChannelIssueBody(input: ChannelIssueUrlInput): string {
+export function buildBugReportIssueBody(input: BugReportIssueUrlInput): string {
   const info = input.appInfo;
   const channel = info?.packageChannel ?? input.channel;
   const platform = info?.platform ?? "unknown";
@@ -63,7 +63,7 @@ export function buildChannelIssueBody(input: ChannelIssueUrlInput): string {
   ].join("\n");
 }
 
-export function buildChannelIssueTitle(input: ChannelIssueUrlInput): string {
+export function buildBugReportIssueTitle(input: BugReportIssueUrlInput): string {
   const info = input.appInfo;
   const channel = info?.packageChannel ?? input.channel;
   const version = info?.appVersion ? ` ${info.appVersion}` : "";
@@ -77,10 +77,10 @@ export function buildChannelIssueTitle(input: ChannelIssueUrlInput): string {
  * The repository comes from `ADE_GITHUB_URL`, which mirrors
  * apps/desktop/package.json `build.publish` — no second hardcoded owner/repo.
  */
-export function buildChannelIssueUrl(input: ChannelIssueUrlInput): string {
+export function buildBugReportIssueUrl(input: BugReportIssueUrlInput): string {
   const base = input.newIssueUrl ?? ADE_GITHUB_NEW_ISSUE_URL;
-  const title = buildChannelIssueTitle(input);
-  const body = buildChannelIssueBody(input);
+  const title = buildBugReportIssueTitle(input);
+  const body = buildBugReportIssueBody(input);
 
   const withBody = (candidateBody: string): string => {
     const params = new URLSearchParams();

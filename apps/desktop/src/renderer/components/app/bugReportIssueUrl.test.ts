@@ -3,9 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { AppInfo } from "../../../shared/types/core";
 import {
   MAX_ISSUE_URL_LENGTH,
-  buildChannelIssueBody,
-  buildChannelIssueUrl,
-} from "./channelIssueUrl";
+  buildBugReportIssueBody,
+  buildBugReportIssueUrl,
+} from "./bugReportIssueUrl";
 
 function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
   return {
@@ -27,9 +27,9 @@ function appInfo(overrides: Partial<AppInfo> = {}): AppInfo {
   };
 }
 
-describe("buildChannelIssueUrl", () => {
+describe("buildBugReportIssueUrl", () => {
   it("prefills the version and channel", () => {
-    const url = buildChannelIssueUrl({
+    const url = buildBugReportIssueUrl({
       appInfo: appInfo(),
       channel: "beta",
       osRelease: "Windows 11 (platformVersion 15.0.0)",
@@ -42,7 +42,7 @@ describe("buildChannelIssueUrl", () => {
 
   it("carries the platform, arch, OS release and runtime versions", () => {
     const decoded = new URL(
-      buildChannelIssueUrl({
+      buildBugReportIssueUrl({
         appInfo: appInfo(),
         channel: "beta",
         osRelease: "Windows 11 (platformVersion 15.0.0)",
@@ -56,12 +56,12 @@ describe("buildChannelIssueUrl", () => {
   });
 
   it("targets the repository from build.publish", () => {
-    const url = buildChannelIssueUrl({ appInfo: appInfo(), channel: "beta" });
+    const url = buildBugReportIssueUrl({ appInfo: appInfo(), channel: "beta" });
     expect(url.startsWith("https://github.com/arul28/ADE/issues/new?")).toBe(true);
   });
 
   it("URL-encodes the body rather than emitting raw newlines", () => {
-    const url = buildChannelIssueUrl({ appInfo: appInfo(), channel: "beta" });
+    const url = buildBugReportIssueUrl({ appInfo: appInfo(), channel: "beta" });
     expect(url).not.toContain("\n");
     expect(url).toContain("body=");
     expect(new URL(url).searchParams.get("body")).toContain("ADE version: 1.2.51");
@@ -69,7 +69,7 @@ describe("buildChannelIssueUrl", () => {
 
   it("still labels the channel when AppInfo has not arrived", () => {
     const decoded = new URL(
-      buildChannelIssueUrl({ appInfo: null, channel: "alpha", osRelease: null }),
+      buildBugReportIssueUrl({ appInfo: null, channel: "alpha", osRelease: null }),
     ).searchParams.get("body") ?? "";
     expect(decoded).toContain("Package channel: alpha");
     expect(decoded).toContain("ADE version: unknown");
@@ -77,7 +77,7 @@ describe("buildChannelIssueUrl", () => {
   });
 
   it("stays under the GitHub length ceiling even with absurd inputs", () => {
-    const url = buildChannelIssueUrl({
+    const url = buildBugReportIssueUrl({
       appInfo: appInfo({ appVersion: "1.2.51" }),
       channel: "beta",
       osRelease: "\n".repeat(20000),
@@ -86,7 +86,7 @@ describe("buildChannelIssueUrl", () => {
   });
 
   it("keeps the normal report comfortably short", () => {
-    const url = buildChannelIssueUrl({
+    const url = buildBugReportIssueUrl({
       appInfo: appInfo(),
       channel: "beta",
       osRelease: "Windows 11 (platformVersion 15.0.0)",
@@ -95,9 +95,9 @@ describe("buildChannelIssueUrl", () => {
   });
 });
 
-describe("buildChannelIssueBody", () => {
+describe("buildBugReportIssueBody", () => {
   it("marks unknown fields instead of emitting empty rows", () => {
-    const body = buildChannelIssueBody({ appInfo: null, channel: "beta" });
+    const body = buildBugReportIssueBody({ appInfo: null, channel: "beta" });
     expect(body).toContain("- Electron: unknown");
     expect(body).toContain("### Steps to reproduce");
   });

@@ -1,4 +1,5 @@
 import React from "react";
+import { ArrowSquareOut, BookOpenText, Bug, GithubLogo, WindowsLogo } from "@phosphor-icons/react";
 
 import type { AppInfo } from "../../../shared/types/core";
 import type { AppPackageChannel } from "../../../shared/packageChannel";
@@ -8,39 +9,117 @@ import {
 } from "../../../shared/productLinks";
 import { COLORS, SANS_FONT, outlineButton, primaryButton } from "../lanes/laneDesignTokens";
 import { openExternalUrl } from "../../lib/openExternal";
+import { rendererPackageChannel } from "../../lib/packageChannel";
 import {
-  ADE_OPEN_CHANNEL_NOTICE_EVENT,
-  rendererPackageChannel,
-} from "../../lib/packageChannel";
-import { buildChannelIssueUrl, detectOsRelease } from "./channelIssueUrl";
+  ADE_OPEN_WINDOWS_BETA_NOTICE_EVENT,
+  isWindowsPlatform,
+} from "../../lib/windowsBetaNotice";
+import { buildBugReportIssueUrl, detectOsRelease } from "./bugReportIssueUrl";
 
-export type ChannelNoticeModalProps = {
+export type WindowsBetaNoticeModalProps = {
+  /**
+   * Only used for diagnostics and for the separate-ADE-home line: a packaged
+   * alpha/beta build runs out of its own ADE home, a Stable install does not.
+   * It is never rendered as user-facing chrome.
+   */
   channel: AppPackageChannel;
-  /** Host platform. Only the Windows-specific line is gated on it. */
-  platform: string;
   onClose: () => void;
   /** Test seam: skips the async AppInfo fetch. */
   appInfoOverride?: AppInfo | null;
   osReleaseOverride?: string | null;
 };
 
-function channelName(channel: AppPackageChannel): string {
-  return channel === "alpha" ? "alpha" : "beta";
+/**
+ * ADE home for this build, mirroring main.ts `applyPackagedChannelDefaults()`:
+ * it only sets `ADE_HOME=~/.ade-<channel>` for alpha/beta packages, so a Stable
+ * install shares the default ADE home and must not claim otherwise.
+ */
+function separateAdeHome(channel: AppPackageChannel): string | null {
+  return channel === "stable" ? null : `~/.ade-${channel}`;
 }
 
-function adeHomeForChannel(channel: AppPackageChannel): string {
-  // Matches main.ts applyPackagedChannelDefaults(): ADE_HOME defaults to
-  // ~/.ade-<channel> for every non-stable package.
-  return channel === "alpha" ? "~/.ade-alpha" : "~/.ade-beta";
+function LinkRow({
+  icon,
+  label,
+  detail,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  detail: string;
+  onClick: () => void;
+}): React.ReactElement {
+  const [hover, setHover] = React.useState(false);
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 11,
+        width: "100%",
+        textAlign: "left",
+        padding: "10px 12px",
+        borderRadius: 10,
+        border: `1px solid ${
+          hover ? COLORS.accentBorder : "color-mix(in srgb, var(--color-border) 80%, transparent)"
+        }`,
+        background: hover
+          ? "color-mix(in srgb, var(--color-accent) 7%, transparent)"
+          : "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+        cursor: "pointer",
+        fontFamily: SANS_FONT,
+        transition: "background 120ms ease, border-color 120ms ease",
+      }}
+    >
+      <span
+        aria-hidden
+        style={{
+          display: "inline-flex",
+          alignItems: "center",
+          justifyContent: "center",
+          width: 26,
+          height: 26,
+          flexShrink: 0,
+          borderRadius: 7,
+          color: COLORS.textSecondary,
+          background: "color-mix(in srgb, var(--color-fg) 5%, transparent)",
+        }}
+      >
+        {icon}
+      </span>
+      <span style={{ display: "grid", gap: 2, minWidth: 0, flex: 1 }}>
+        <span style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.textPrimary }}>{label}</span>
+        <span
+          style={{
+            fontSize: 11,
+            color: COLORS.textMuted,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {detail}
+        </span>
+      </span>
+      <ArrowSquareOut
+        size={14}
+        aria-hidden
+        style={{ flexShrink: 0, color: hover ? COLORS.accent : COLORS.textMuted }}
+      />
+    </button>
+  );
 }
 
-export function ChannelNoticeModal({
+export function WindowsBetaNoticeModal({
   channel,
-  platform,
   onClose,
   appInfoOverride,
   osReleaseOverride,
-}: ChannelNoticeModalProps): React.ReactElement | null {
+}: WindowsBetaNoticeModalProps): React.ReactElement | null {
   const [appInfo, setAppInfo] = React.useState<AppInfo | null>(appInfoOverride ?? null);
   const [osRelease, setOsRelease] = React.useState<string | null>(osReleaseOverride ?? null);
 
@@ -79,30 +158,9 @@ export function ChannelNoticeModal({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [onClose]);
 
-  const isWindows = /^win/i.test(platform);
-  const name = channelName(channel);
   const version = appInfo?.appVersion ?? null;
-  const issueUrl = buildChannelIssueUrl({ appInfo, channel, osRelease });
-
-  const headline = isWindows
-    ? `ADE on Windows is an early ${name}.`
-    : `This is an early ${name} build of ADE.`;
-
-  const body: React.CSSProperties = {
-    fontFamily: SANS_FONT,
-    fontSize: 13,
-    lineHeight: 1.6,
-    color: COLORS.textSecondary,
-  };
-  const linkStyle: React.CSSProperties = {
-    color: COLORS.accent,
-    background: "none",
-    border: "none",
-    padding: 0,
-    font: "inherit",
-    cursor: "pointer",
-    textDecoration: "underline",
-  };
+  const issueUrl = buildBugReportIssueUrl({ appInfo, channel, osRelease });
+  const adeHome = separateAdeHome(channel);
 
   return (
     <div
@@ -125,71 +183,146 @@ export function ChannelNoticeModal({
       <div
         role="dialog"
         aria-modal="true"
-        aria-labelledby="ade-channel-notice-title"
+        aria-labelledby="ade-windows-beta-notice-title"
+        aria-describedby="ade-windows-beta-notice-body"
         style={{
           width: "min(520px, 100%)",
-          borderRadius: 12,
+          borderRadius: 14,
           border: `1px solid ${COLORS.border}`,
           background: "var(--color-card)",
           boxShadow: "0 24px 80px rgba(0,0,0,0.45)",
           overflow: "hidden",
         }}
       >
-        <div style={{ padding: "18px 20px 14px", borderBottom: `1px solid ${COLORS.border}` }}>
-          <div
-            id="ade-channel-notice-title"
-            style={{ fontFamily: SANS_FONT, fontSize: 16, fontWeight: 700, color: COLORS.textPrimary }}
-          >
-            {headline}
-          </div>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, marginTop: 3 }}>
-            {version ? `${name} ${version}` : name}
-          </div>
-        </div>
-        <div style={{ padding: 20, display: "grid", gap: 10 }}>
-          <div style={body}>
-            Its data lives in a separate ADE home ({adeHomeForChannel(channel)}), so it does not
-            touch a Stable install.
-          </div>
-          <div style={body}>
-            Bugs and PRs are encouraged. Report a bug prefills this build&apos;s diagnostics; PRs go
-            to{" "}
-            <button type="button" style={linkStyle} onClick={() => openExternalUrl(ADE_GITHUB_URL)}>
-              github.com/arul28/ADE
-            </button>
-            .
-          </div>
-          <div style={body}>
-            Known gaps on Windows are listed in{" "}
-            <button
-              type="button"
-              style={linkStyle}
-              onClick={() => openExternalUrl(ADE_WINDOWS_SUPPORT_DOC_URL)}
-            >
-              docs/development/windows-support.md
-            </button>
-            .
-          </div>
-        </div>
         <div
           style={{
-            padding: "14px 20px",
             display: "flex",
-            justifyContent: "flex-end",
-            gap: 10,
-            borderTop: `1px solid ${COLORS.border}`,
+            alignItems: "flex-start",
+            gap: 13,
+            padding: "20px 22px 16px",
+            borderBottom: `1px solid ${COLORS.borderMuted}`,
           }}
         >
-          <button type="button" onClick={onClose} style={outlineButton({ height: 34 })}>
-            Dismiss
-          </button>
-          <button
-            type="button"
-            onClick={() => openExternalUrl(issueUrl)}
-            style={primaryButton({ height: 34 })}
+          <span
+            aria-hidden
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              width: 36,
+              height: 36,
+              flexShrink: 0,
+              borderRadius: 10,
+              color: COLORS.accent,
+              background: COLORS.accentSubtle,
+              border: `1px solid ${COLORS.accentBorder}`,
+            }}
           >
-            Report a bug
-          </button>
+            <WindowsLogo size={19} weight="fill" />
+          </span>
+          <div style={{ minWidth: 0 }}>
+            <div
+              id="ade-windows-beta-notice-title"
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 16,
+                fontWeight: 700,
+                letterSpacing: "-0.01em",
+                color: COLORS.textPrimary,
+              }}
+            >
+              ADE on Windows is in beta
+            </div>
+            <div
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                lineHeight: 1.5,
+                color: COLORS.textMuted,
+                marginTop: 3,
+              }}
+            >
+              The Windows build is the newest part of ADE and is still catching up.
+            </div>
+          </div>
+        </div>
+
+        <div style={{ padding: "16px 22px 18px", display: "grid", gap: 13 }}>
+          <div
+            id="ade-windows-beta-notice-body"
+            style={{
+              fontFamily: SANS_FONT,
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: COLORS.textSecondary,
+            }}
+          >
+            Day-to-day work — lanes, chats, terminals, PRs — is expected to hold up. Some corners
+            are rougher here than on macOS or Linux, and a few are still missing. When something
+            breaks, reporting it is what closes the gap.
+          </div>
+
+          {adeHome ? (
+            <div
+              style={{
+                fontFamily: SANS_FONT,
+                fontSize: 12,
+                lineHeight: 1.55,
+                color: COLORS.textMuted,
+                padding: "9px 11px",
+                borderRadius: 9,
+                border: `1px solid ${COLORS.borderMuted}`,
+                background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
+              }}
+            >
+              This build keeps its data in a separate ADE home ({adeHome}), so it never touches
+              another ADE install on this machine.
+            </div>
+          ) : null}
+
+          <div style={{ display: "grid", gap: 8 }}>
+            <LinkRow
+              icon={<BookOpenText size={15} />}
+              label="Known gaps on Windows"
+              detail="docs/development/windows-support.md"
+              onClick={() => openExternalUrl(ADE_WINDOWS_SUPPORT_DOC_URL)}
+            />
+            <LinkRow
+              icon={<GithubLogo size={15} />}
+              label="Source, issues, and pull requests"
+              detail="github.com/arul28/ADE"
+              onClick={() => openExternalUrl(ADE_GITHUB_URL)}
+            />
+          </div>
+        </div>
+
+        <div
+          style={{
+            padding: "13px 22px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+            borderTop: `1px solid ${COLORS.borderMuted}`,
+            background: "color-mix(in srgb, var(--color-fg) 2%, transparent)",
+          }}
+        >
+          <span style={{ fontFamily: SANS_FONT, fontSize: 11, color: COLORS.textMuted }}>
+            {version ? `ADE ${version}` : ""}
+          </span>
+          <span style={{ display: "flex", gap: 10 }}>
+            <button type="button" onClick={onClose} style={outlineButton({ height: 34 })}>
+              Dismiss
+            </button>
+            <button
+              type="button"
+              onClick={() => openExternalUrl(issueUrl)}
+              style={primaryButton({ height: 34, fontWeight: 600 })}
+            >
+              <Bug size={14} weight="fill" />
+              Report a bug
+            </button>
+          </span>
         </div>
       </div>
     </div>
@@ -197,43 +330,31 @@ export function ChannelNoticeModal({
 }
 
 /**
- * Mounts the early-build notice once per app start, and re-opens it when the
- * header badge asks for it.
+ * Mounts the Windows beta notice once per app start, and re-opens it when a
+ * surface (the header build chip, Settings → About) asks for it.
  *
- * Stable builds return null before any state, effect, or IPC: the channel comes
- * from the synchronous preload bridge, so a stable build renders nothing and
- * fetches nothing.
+ * Gated on the HOST PLATFORM, not the release channel: every Windows install
+ * shows it, Stable included, and macOS/Linux render nothing. The platform comes
+ * from the synchronous preload bridge, so a non-Windows build returns null
+ * before any effect or IPC — it never calls `app.getInfo()`.
  */
-export function ChannelNoticeHost({
-  channel = rendererPackageChannel(),
+export function WindowsBetaNoticeHost({
   platform,
+  channel = rendererPackageChannel(),
 }: {
-  channel?: AppPackageChannel;
   platform?: string;
+  channel?: AppPackageChannel;
 } = {}): React.ReactElement | null {
-  const isPrerelease = channel !== "stable";
-  const [open, setOpen] = React.useState(isPrerelease);
+  const isWindows = platform === undefined ? isWindowsPlatform() : isWindowsPlatform(platform);
+  const [open, setOpen] = React.useState(isWindows);
 
   React.useEffect(() => {
-    if (!isPrerelease) return;
+    if (!isWindows) return;
     const onRequest = () => setOpen(true);
-    window.addEventListener(ADE_OPEN_CHANNEL_NOTICE_EVENT, onRequest);
-    return () => window.removeEventListener(ADE_OPEN_CHANNEL_NOTICE_EVENT, onRequest);
-  }, [isPrerelease]);
+    window.addEventListener(ADE_OPEN_WINDOWS_BETA_NOTICE_EVENT, onRequest);
+    return () => window.removeEventListener(ADE_OPEN_WINDOWS_BETA_NOTICE_EVENT, onRequest);
+  }, [isWindows]);
 
-  if (!isPrerelease || !open) return null;
-  const resolvedPlatform =
-    platform
-    ?? (typeof window !== "undefined"
-      ? (window as { ade?: { app?: { runtimeTarget?: { platform?: string } } } }).ade?.app
-        ?.runtimeTarget?.platform
-      : undefined)
-    ?? "";
-  return (
-    <ChannelNoticeModal
-      channel={channel}
-      platform={resolvedPlatform}
-      onClose={() => setOpen(false)}
-    />
-  );
+  if (!isWindows || !open) return null;
+  return <WindowsBetaNoticeModal channel={channel} onClose={() => setOpen(false)} />;
 }

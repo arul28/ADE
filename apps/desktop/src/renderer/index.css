@@ -511,6 +511,16 @@ h6 {
   color: color-mix(in srgb, var(--color-warning) 95%, var(--shell-header-fg));
 }
 
+/* Off Windows the chip is a label, not a control: there is no Windows beta
+   notice to re-open there, so it must not offer a click affordance. */
+.ade-shell-channel-badge[data-static="true"],
+.ade-shell-channel-badge[data-static="true"]:hover {
+  cursor: default;
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 42%, transparent);
+  color: color-mix(in srgb, var(--color-warning) 82%, var(--shell-header-fg));
+}
+
 .ade-shell-channel-badge:focus-visible {
   outline: 1px solid color-mix(in srgb, var(--color-warning) 70%, transparent);
   outline-offset: 1px;

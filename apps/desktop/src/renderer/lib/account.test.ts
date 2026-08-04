@@ -104,6 +104,82 @@ describe("account status cache", () => {
   });
 });
 
+describe("account machines cache", () => {
+  const originalAde = globalThis.window.ade;
+
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: originalAde,
+    });
+    vi.restoreAllMocks();
+  });
+
+  function installBridge(listMachines: () => Promise<unknown>): void {
+    Object.defineProperty(globalThis.window, "ade", {
+      configurable: true,
+      writable: true,
+      value: { account: { listMachines } } as unknown as typeof window.ade,
+    });
+  }
+
+  const okResult = {
+    state: "ok" as const,
+    machines: [{ machineKey: "mk-studio" }],
+    message: null,
+  };
+
+  it("keeps the last known list when a later fetch fails", async () => {
+    const listMachines = vi
+      .fn()
+      .mockResolvedValueOnce(okResult)
+      .mockResolvedValueOnce({ state: "unavailable", machines: [], message: null });
+    installBridge(listMachines as () => Promise<unknown>);
+
+    const { fetchAccountMachines } = await import("./account");
+
+    await expect(fetchAccountMachines({ force: true })).resolves.toBe(okResult);
+    // A failed refresh must not become "no computers yet".
+    await expect(fetchAccountMachines({ force: true })).resolves.toBe(okResult);
+    expect(listMachines).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets an authoritative signed-out result clear the cache", async () => {
+    const signedOut = { state: "signed_out" as const, machines: [], message: null };
+    const listMachines = vi
+      .fn()
+      .mockResolvedValueOnce(okResult)
+      .mockResolvedValueOnce(signedOut);
+    installBridge(listMachines as () => Promise<unknown>);
+
+    const { fetchAccountMachines } = await import("./account");
+
+    await fetchAccountMachines({ force: true });
+    await expect(fetchAccountMachines({ force: true })).resolves.toBe(signedOut);
+  });
+
+  it("shares one in-flight request across concurrent openers", async () => {
+    const pending = deferred<unknown>();
+    const listMachines = vi.fn(() => pending.promise);
+    installBridge(listMachines as () => Promise<unknown>);
+
+    const { fetchAccountMachines } = await import("./account");
+
+    const first = fetchAccountMachines({ force: true });
+    const second = fetchAccountMachines({ force: true });
+    pending.resolve(okResult);
+
+    await expect(first).resolves.toBe(okResult);
+    await expect(second).resolves.toBe(okResult);
+    expect(listMachines).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("account avatar presentation", () => {
   it("never uses a GitHub integration avatar while ADE is signed out", async () => {
     const { accountAvatarImage } = await import("./account");

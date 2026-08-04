@@ -24,7 +24,7 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
       return {
         appVersion: "web",
         // The hosted web client is not a packaged channel build; the channel
-        // badge and early-build notice belong to the desktop app.
+        // badge belongs to the desktop app.
         packageChannel: "stable",
         isPackaged: false,
         // No `automations.*` action is registered host-side, so the builder's
