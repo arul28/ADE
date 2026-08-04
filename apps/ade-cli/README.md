@@ -480,7 +480,7 @@ ade chat read session-id --limit 20 --max-chars 8000 --text
 ade chat read session-id --page --cursor 4096 --limit 20 --max-chars 8000 --text
 ade chat message session-id --kind auto --text "status/context"
 ade chat steer session-id --text "active-turn context"
-ade chat note "testing desktop auth fallback"               # update Work status (3–6 words, max 72 characters); add --session <id> to target explicitly
+ade chat note "testing desktop auth fallback"               # update Work status (aim for 6 words or fewer; truncated past 72 characters); add --session <id> to target explicitly
 ade chat ask "Which account should I use?"                 # escalate a blocking question; add --session <id> to target explicitly
 ade session show session-id --text                          # settle/snooze state, and why a snoozed row came back
 ade session snooze session-id --for 1h                      # 30m|1h|4h|1d|1.5h; a bare number means minutes; relative durations cap at 30d

@@ -1597,6 +1597,37 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+function installAutoTitleAuth(): void {
+  // Auto-titling is skipped outright when no model is reachable.
+  vi.mocked(detectAllAuth).mockResolvedValue([
+    { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    { type: "cli-subscription" as any, cli: "claude", authenticated: true, path: "/usr/bin/claude", verified: true },
+  ] as never);
+}
+
+function installAutoTitleClaudeStream(): void {
+  let streamCall = 0;
+  vi.mocked(claudeSdkCreateSessionCompat).mockReturnValue({
+    send: vi.fn().mockResolvedValue(undefined),
+    stream: vi.fn(() => (async function* () {
+      streamCall += 1;
+      if (streamCall === 1) {
+        yield { type: "system", subtype: "init", session_id: "sdk-session-1", slash_commands: [] };
+        yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+        return;
+      }
+      yield {
+        type: "assistant",
+        message: { content: [{ type: "text", text: "Done" }], usage: { input_tokens: 1, output_tokens: 1 } },
+      };
+      yield { type: "result", usage: { input_tokens: 1, output_tokens: 1 } };
+    })()),
+    close: vi.fn(),
+    sessionId: "sdk-session-1",
+    setPermissionMode: vi.fn().mockResolvedValue(undefined),
+  } as any);
+}
+
 const HANDOFF_TEST_SHA = "1234567890abcdef1234567890abcdef12345678";
 const HANDOFF_BEHIND_SHA = "0123456789abcdef0123456789abcdef01234567";
 const HANDOFF_DIVERGED_SHA = "fedcba9876543210fedcba9876543210fedcba98";
@@ -13425,6 +13456,73 @@ describe("createAgentChatService", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
 
       expect(aiIntegrationService.summarizeTerminal).not.toHaveBeenCalled();
+    });
+
+    it("does not clobber a manual rename that lands while auto-titling is in flight", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      installAutoTitleClaudeStream();
+      installAutoTitleAuth();
+
+      let renameDuringNaming: Promise<unknown> | null = null;
+      const { service, sessionService, aiIntegrationService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+
+      // The naming request only resolves after the user has renamed the chat,
+      // which is exactly the race that used to overwrite their title and clear
+      // the manuallyNamed flag.
+      aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        renameDuringNaming = service.updateSession({
+          sessionId: session.id,
+          title: "User Picked This",
+          manuallyNamed: true,
+        });
+        await renameDuringNaming;
+        return { text: "Model Picked That" } as never;
+      });
+
+      await service.sendMessage({ sessionId: session.id, text: "Build me a new feature" });
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "done");
+      for (let i = 0; i < 40 && !renameDuringNaming; i += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      await renameDuringNaming;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      expect(renameDuringNaming, "auto-title never ran, so the race was not exercised").not.toBeNull();
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      expect(sessionService.get(session.id)?.title).toBe("User Picked This");
+      expect(sessionService.get(session.id)?.manuallyNamed).toBe(true);
+      expect(sessionService.updateMeta).not.toHaveBeenCalledWith(
+        expect.objectContaining({ title: "Model Picked That" }),
+      );
+    });
+
+    it("falls back to a deterministic title when every naming model fails", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      installAutoTitleClaudeStream();
+      installAutoTitleAuth();
+
+      const { service, sessionService, aiIntegrationService } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+      // A provider-level failure condemns each provider in turn, so the chain
+      // runs out of models — the chat must still never sit on "Claude Chat".
+      aiIntegrationService.summarizeTerminal.mockRejectedValue(
+        new Error("The model is not supported when using Codex with a ChatGPT account."),
+      );
+
+      const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
+      await service.sendMessage({ sessionId: session.id, text: "Rewrite the lane naming fallback chain" });
+      await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "done");
+      await new Promise((resolve) => setTimeout(resolve, 50));
+
+      const title = sessionService.get(session.id)?.title ?? "";
+      expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
+      expect(title).not.toBe("Claude Chat");
+      expect(title.split(/\s+/).filter(Boolean).length).toBeGreaterThanOrEqual(2);
+      expect(title.toLowerCase()).toContain("lane");
     });
   });
 
@@ -37729,10 +37827,36 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(result.laneTitle).toBe("Claude OAuth Login");
-    expect(result.branchFragment).toBe("claude-auth-login-button");
+    expect(result.branchFragment).toBe("claude-auth-login-button-hangs");
   });
 
-  it("treats fully invalid structured fields as deterministic fallback", async () => {
+  it("clamps an over-long AI identity instead of discarding it for a slug", async () => {
+    vi.mocked(detectAllAuth).mockResolvedValue([
+      { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
+    ]);
+    const { service, aiIntegrationService } = createSuggestService();
+    // Six words is guidance for the model, not a gate: a seven-word answer is
+    // trimmed, never thrown away in favour of the deterministic slug.
+    vi.mocked(aiIntegrationService.summarizeTerminal).mockResolvedValueOnce({
+      text: JSON.stringify({
+        laneTitle: "Rework Session Naming Fallback Chain For Chats",
+        branchFragment: "rework-session-naming-fallback-chain-for-chats",
+      }),
+    } as any);
+
+    const result = await service.generateAutoLaneIdentity({
+      prompt: "Rework the session naming fallback chain",
+      modelId: "openai/gpt-5.4",
+      laneId: "lane-1",
+      temporaryBranch: "ade/1a2b3c4d",
+    });
+
+    expect(result.source).toBe("ai");
+    expect(result.laneTitle).toBe("Rework Session Naming Fallback Chain For");
+    expect(result.branchFragment).toBe("rework-session-naming-fallback-chain-for");
+  });
+
+  it("retries the next model when structured fields are unusable, then falls back deterministically", async () => {
     vi.mocked(detectAllAuth).mockResolvedValue([
       { type: "cli-subscription" as any, cli: "codex", authenticated: true, path: "/usr/bin/codex", verified: true },
     ]);
@@ -37749,11 +37873,13 @@ describe("suggestLaneNameFromPrompt", () => {
     });
 
     expect(result).toMatchObject({
-      laneTitle: "Claude Auth Login Button",
-      branchFragment: "claude-auth-login-button",
+      laneTitle: "Claude Auth Login Button Hangs",
+      branchFragment: "claude-auth-login-button-hangs",
       source: "deterministic",
     });
-    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(1);
+    // An unusable answer no longer ends the chain: the remaining candidates
+    // still get a turn before naming settles for the deterministic slug.
+    expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalledTimes(3);
   });
 
   it("uses the configured naming model before the launched model", async () => {

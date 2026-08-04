@@ -194,10 +194,14 @@ iOS companion (`apps/ios/ADE/Views/Lanes/`):
   result. Mobile calls the same host operation through `SyncService.suggestLaneName`
   (the non-queueable `lanes.suggestName` sync command →
   `agentChatService.generateAutoLaneIdentity` on the host).
-  Deterministic fallback intentionally remains a bounded shared heuristic
-  (noise removal, a few durable-concept rules, and capped meaningful tokens);
-  broader semantic extraction is deferred so offline naming stays predictable
-  and reviewable. New hosts apply the identity and return `hostApplied`, after
+  Deterministic fallback (`apps/desktop/src/shared/laneNameFallback.ts`)
+  intentionally remains a bounded shared heuristic: stopword/noise removal and
+  capped meaningful tokens drawn from words the prompt actually contains. It
+  carries no keyword rules that substitute a canned phrase for the prompt — an
+  earlier trap renamed any prompt mentioning a provider plus a login-ish phrase
+  to `<provider>-auth-login`, inventing words the user never wrote. Broader
+  semantic extraction is deferred so offline naming stays predictable and
+  reviewable. New hosts apply the identity and return `hostApplied`, after
   which mobile refreshes lane state; the direct `lanes.rename` path remains only
   for compatibility with older hosts. Naming never blocks or fails lane
   creation or session launch — any failure / timeout / offline / host-disabled

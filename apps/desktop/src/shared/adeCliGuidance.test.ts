@@ -1,3 +1,4 @@
+import { MAX_STATUS_NOTE_CHARACTERS, STATUS_NOTE_GUIDELINE_WORDS } from "./sessionStatusNote";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
@@ -36,8 +37,8 @@ describe("ADE bootstrap guidance", () => {
     expect(bootstrap).toContain("ade chat scheduled-work create");
     expect(bootstrap).toContain("tracked provider CLIs");
     expect(bootstrap).toContain('ade chat note "testing desktop auth fallback"');
-    expect(bootstrap).toContain("use 3–6 words");
-    expect(bootstrap).toContain("72 characters");
+    expect(bootstrap).toContain("6 words or fewer");
+    expect(bootstrap).toContain(`${MAX_STATUS_NOTE_CHARACTERS} characters`);
     expect(bootstrap).toContain('ade chat ask "<the exact question>"');
     expect(bootstrap).toContain("a note alone can leave an idle row looking Done");
     expect(bootstrap).toContain("The next accepted user message clears the prior hand-raise");
@@ -75,8 +76,9 @@ describe("ADE bootstrap guidance", () => {
     for (const invariant of [
       "ade chat note",
       "ade chat ask",
-      "3–6 words",
-      "72 characters",
+      "6 words or fewer",
+      `${MAX_STATUS_NOTE_CHARACTERS} characters`,
+      `${STATUS_NOTE_GUIDELINE_WORDS} words or fewer`,
       "next accepted user message clears the prior hand-raise",
       "You cannot settle or unsettle a session",
     ]) {

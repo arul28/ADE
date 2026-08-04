@@ -2385,14 +2385,21 @@ function RightPaneComponent({
             // list) can't scroll past the content into a blank pane.
             const listStart = Math.max(0, Math.min(scrollOffsetRows, Math.max(0, content.rows.length - DETAILS_BODY_MAX_LINES)));
             const visibleRows = content.rows.slice(listStart, listStart + DETAILS_BODY_MAX_LINES);
+            // A row is free text (a chat row carries an agent-authored status
+            // note up to its full 72-character budget), so it has to be clipped
+            // to the pane: an unclipped row wraps onto extra lines and pushes
+            // the "N more" footer and every row below it out of the window.
+            const rowWidth = Math.max(8, paneWidth - 4);
             return content.rows.length ? visibleRows.map((row, visibleIndex) => {
               const index = listStart + visibleIndex;
+              const prefix = content.action ? `${index === selectedIndex ? theme.rail : " "} ` : "";
               return (
                 <Text
                   key={`${content.action?.ids[index] ?? row}:${index}`}
+                  wrap="truncate-end"
                   color={content.action && (index === selectedIndex || hoveredId === `right:list:${index}`) ? theme.color.violet : undefined}
                 >
-                  {content.action ? `${index === selectedIndex ? theme.rail : " "} ${row}` : row}
+                  {`${prefix}${endTruncate(row, Math.max(4, rowWidth - prefix.length))}`}
                 </Text>
               );
             }) : <Text color={theme.color.t4} dimColor>{content.emptyText ?? "No data."}</Text>;
