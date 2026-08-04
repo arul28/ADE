@@ -17,27 +17,6 @@ permissions:
   contents: read
 
 jobs:
-  # ── Stage 0: change detection ─────────────────────────────────────────
-  # package-win takes ~40 minutes and ran on every push, so a docs-only
-  # change paid for a full NSIS installer build. This job decides whether
-  # it has to; ci-pass below then distinguishes "skipped because nothing
-  # relevant changed" from "skipped because something upstream broke".
-  changes:
-    runs-on: ubuntu-latest
-    outputs:
-      package-win: ${{ steps.filter.outputs.package-win }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dorny/paths-filter@v3
-        id: filter
-        with:
-          filters: |
-            package-win:
-              - "apps/desktop/**"
-              - "apps/ade-cli/**"
-              - ".github/workflows/ci.yml"
-              - "!**/*.md"
-
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
     runs-on: ubuntu-latest
@@ -585,101 +564,6 @@ jobs:
           src/main/services/sync/syncHostService.test.ts
           src/main/services/sync/syncService.test.ts
 
-  package-win:
-    needs: [changes, build-runtime-binaries]
-    # Never runs on a pull request. Building the NSIS installer takes ~40
-    # minutes, which is not a reasonable price for review feedback, and a PR
-    # cannot ship anything on its own.
-    #
-    # It still runs on every push to main and on dispatch, and that is
-    # load-bearing rather than belt-and-braces: release-core.yml's verify job
-    # requires a ci-pass check run on the exact SHA it builds, so every SHA
-    # that could be released must have had its installer really built. That is
-    # why `github.ref == 'refs/heads/main'` is its own disjunct: on main the
-    # paths filter is deliberately bypassed, so even a docs-only commit builds
-    # the installer. Releasable SHAs are never sampled.
-    if: >-
-      github.event_name != 'pull_request'
-      && (needs.changes.outputs.package-win == 'true'
-        || github.event_name == 'workflow_dispatch'
-        || github.ref == 'refs/heads/main')
-    runs-on: windows-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-          cache-dependency-path: |
-            apps/desktop/package-lock.json
-            apps/ade-cli/package-lock.json
-
-      - name: Install desktop dependencies
-        run: cd apps/desktop && npm ci
-
-      - name: Install ADE CLI dependencies
-        run: cd apps/ade-cli && npm ci
-
-      - name: Download ADE runtime sidecars
-        uses: actions/download-artifact@v4
-        with:
-          pattern: ade-runtime-*
-          path: apps/desktop/resources/runtime
-          merge-multiple: true
-
-      - name: Validate Windows release contract
-        run: npm --prefix apps/desktop run test:win:release-contract
-
-      - name: Build unsigned Stable Windows preview
-        env:
-          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
-          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-        run: cd apps/desktop && npm run dist:win
-
-      - name: Record Stable installer
-        shell: pwsh
-        run: |
-          $installers = @(Get-ChildItem "apps/desktop/release/ADE-[0-9]*-win-x64.exe" -File)
-          if ($installers.Count -ne 1) { throw "Expected exactly one Stable Windows installer, found $($installers.Count)." }
-          "ADE_STABLE_INSTALLER=$($installers[0].FullName)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Build unsigned Beta Windows preview
-        env:
-          ADE_PACKAGE_CHANNEL: beta
-          ADE_RELEASE_REPOSITORY: ${{ github.repository }}
-          ELECTRON_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron
-          ELECTRON_BUILDER_CACHE: ${{ github.workspace }}\apps\desktop\.cache\electron-builder
-        run: cd apps/desktop && npm run dist:win
-
-      - name: Test Stable and Beta installed-product lifecycles
-        shell: pwsh
-        run: |
-          # Channel builds output to release-<channel>, not release/. Only
-          # Stable uses release/ (see scripts/run-electron-builder.mjs, which
-          # sets directories.output for every non-stable channel so a Beta build
-          # cannot overwrite Stable's artifacts).
-          $betaInstallers = @(Get-ChildItem "apps/desktop/release-beta/ADE-Beta-[0-9]*-win-x64.exe" -File)
-          if ($betaInstallers.Count -ne 1) { throw "Expected exactly one Beta Windows installer, found $($betaInstallers.Count)." }
-          & apps/desktop/scripts/windows-installed-product-smoke.ps1 `
-            -InstallerPath $env:ADE_STABLE_INSTALLER `
-            -CompanionInstallerPath $betaInstallers[0].FullName
-
-      - name: Upload Windows preview artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ade-win-preview-${{ github.sha }}
-          path: |
-            apps/desktop/release/*.exe
-            apps/desktop/release/*.exe.blockmap
-            apps/desktop/release/latest.yml
-            apps/desktop/release-beta/*.exe
-            apps/desktop/release-beta/*.exe.blockmap
-            apps/desktop/release-beta/latest.yml
-          if-no-files-found: error
-          retention-days: 14
   validate-docs:
     needs: install
     runs-on: ubuntu-latest
@@ -711,7 +595,6 @@ jobs:
   ci-pass:
     if: always()
     needs:
-      - changes
       - install
       - secret-scan
       - typecheck-desktop
@@ -731,7 +614,6 @@ jobs:
       - build
       - build-runtime-binaries
       - windows-foundation
-      - package-win
       - validate-docs
     runs-on: ubuntu-latest
     steps:
@@ -743,8 +625,6 @@ jobs:
           # `needs:` and forgotten in the loop was never skip-checked, silently
           # and forever. Deriving the list means it cannot drift.
           NEEDS_JSON: ${{ toJSON(needs) }}
-          PACKAGE_WIN_CHANGED: ${{ needs.changes.outputs.package-win }}
-          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
           # Read the results ONCE into a variable rather than streaming jq
@@ -760,29 +640,15 @@ jobs:
           fi
           failed=0
           while IFS='=' read -r job result; do
-            case "$result" in
-              success) ;;
-              skipped)
-                # 'skipped' means failure for every job EXCEPT package-win, so a
-                # conditional job added later cannot start passing green while
-                # dead. package-win has exactly two legitimate skips: a pull
-                # request never builds the installer, and a push where the paths
-                # filter proved no packaging input changed.
-                if [[ "$job" != "package-win" ]]; then
-                  echo "::error::${job} was skipped"
-                  failed=1
-                elif [[ "$IS_PULL_REQUEST" != "true" && "$PACKAGE_WIN_CHANGED" == "true" ]]; then
-                  echo "::error::package-win was skipped although packaging inputs changed"
-                  failed=1
-                else
-                  echo "package-win skipped: pull request, or no packaging-relevant paths changed"
-                fi
-                ;;
-              *)
-                echo "::error::${job} did not succeed (${result})"
-                failed=1
-                ;;
-            esac
+            # 'skipped' means failure too: every job in needs is unconditional,
+            # so a conditional job added later cannot start passing green while
+            # dead. Installers are NOT built here -- release-core.yml builds
+            # macOS and Windows fresh on the release tag, exactly like macOS
+            # has always worked. CI's job is tests, not packaging.
+            if [[ "$result" != "success" ]]; then
+              echo "::error::${job} did not succeed (${result})"
+              failed=1
+            fi
           done <<< "$results"
           if [[ "$failed" != "0" ]]; then exit 1; fi
           echo "All required CI jobs passed"

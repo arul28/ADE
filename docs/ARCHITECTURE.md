@@ -1515,8 +1515,9 @@ Stages:
    - `build` — desktop, ade-cli, and web built sequentially after install.
    - `validate-docs` — `node scripts/validate-docs.mjs`.
 3. **Windows foundation proof** (`windows-foundation`) — a native `windows-latest` runner typechecks desktop and CLI code and exercises the per-user/channel service, filesystem layout, process/executable, named-pipe, PTY, packaged CR-SQLite, and platform-capability contracts.
-4. **Windows package proof** (`package-win`) — a `windows-latest` runner downloads every Darwin/Linux runtime sidecar, runs the release-contract test, builds an unsigned x64 NSIS preview, performs packaged CLI/TUI/PTY/provider/CR-SQLite/updater-authority smoke validation, then exercises fresh install, repair, reinstall, launch/deep-link registration, file association, startup registration, PATH ownership, and uninstall cleanup before uploading the installer, blockmap, and `latest.yml` for 14 days.
-5. **Gate** (`ci-pass`) — all required jobs, including `windows-foundation` and `package-win`, must pass (`if: always()` with failure/cancelled detection).
+4. **Gate** (`ci-pass`) — every job in its `needs:` list must succeed; a `skipped` result counts as failure so a conditional job can never pass green while dead (`if: always()`, results derived from `toJSON(needs)`).
+
+CI never builds installers — for any platform. Packaging (macOS DMG/ZIP and the signed Windows NSIS installer, including the installed-product lifecycle smoke: install, repair, reinstall, deep-link/file-association/startup/PATH registration, uninstall cleanup) happens once, on the release tag, in `release-core.yml`. CI's job is tests; the release's job is artifacts.
 
 Sharding is required because the desktop suite is large enough to be slow in a single process.
 

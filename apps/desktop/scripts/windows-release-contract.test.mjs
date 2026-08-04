@@ -325,21 +325,9 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
   assert.match(winArtifactValidator, /build\.win\.artifactName must be/);
   // Stable builds to apps/desktop/release; every non-stable channel is
   // redirected to release-<channel> so a Beta build cannot overwrite Stable's
-  // artifacts. The workflow's lookups have to agree with that redirect --
-  // asserting the CI file merely CONTAINS a glob is not enough, because a glob
-  // pointing at the wrong directory reads as present and then finds nothing at
-  // run time. Pin both halves so they cannot drift apart again.
+  // artifacts. The release workflow builds only Stable (no ADE_PACKAGE_CHANNEL
+  // is set), so its lookup in release/ agrees with that redirect.
   assert.match(electronBuilderWrapper, /--config\.directories\.output=release-\$\{packageChannel\}/);
-  const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
-  assert.match(packageJob, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
-  assert.match(packageJob, /release-beta\/ADE-Beta-\[0-9\]\*-win-x64\.exe/);
-  // The Beta installer no longer lands in release/, so a lookup there finds
-  // zero files rather than the wrong one.
-  assert.doesNotMatch(packageJob, /[^-]release\/ADE-Beta-/);
-  assert.doesNotMatch(packageJob, /ADE Beta-/);
-  // Uploaded previews must cover both channels; release/ alone silently drops
-  // the Beta installer now that it builds elsewhere.
-  assert.match(packageJob, /apps\/desktop\/release-beta\/\*\.exe/);
   assert.match(releaseWorkflow, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
 });
 
@@ -644,29 +632,23 @@ test("one repository variable decides whether a release carries Windows", () => 
   assert.deepEqual([...windowsVariables], ["ADE_WINDOWS_PUBLIC_RELEASE_ENABLED"]);
 });
 
-test("pushes to main build and smoke an unsigned Windows installer", () => {
-  const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
-  // Read the gate out of the `if:` expression, not the whole job: the comment
-  // above it quotes both conditions verbatim, so a job-wide match would pass on
-  // the prose alone after someone deleted the condition itself.
-  const conditionStart = packageJob.indexOf("\n    if:");
-  assert.notEqual(conditionStart, -1, "package-win must carry an if: gate");
-  const packageJobCondition = packageJob.slice(
-    conditionStart,
-    packageJob.indexOf("\n    runs-on:", conditionStart),
-  );
-  assert.match(packageJobCondition, /github\.event_name != 'pull_request'/);
-  // The main-ref disjunct bypasses the paths filter on purpose, and
-  // release-core.yml's verify job depends on it: verify requires a ci-pass
-  // check run on the exact SHA it builds, so a releasable SHA must never be one
-  // whose installer the paths filter skipped.
-  assert.match(packageJobCondition, /github\.ref == 'refs\/heads\/main'/);
-  assert.match(packageJob, /runs-on: windows-latest/);
-  assert.match(packageJob, /npm run dist:win/);
-  assert.match(packageJob, /ADE_PACKAGE_CHANNEL: beta/);
-  assert.match(packageJob, /windows-installed-product-smoke\.ps1/);
-  assert.match(packageJob, /-CompanionInstallerPath/);
-  assert.match(packageJob, /ADE_STABLE_INSTALLER/);
+test("CI runs Windows tests but never builds installers -- packaging belongs to the release tag", () => {
+  // CI packaged a full unsigned Stable + Beta NSIS pair on every push to main:
+  // ~40 minutes per commit for artifacts nothing consumed. No macOS installer
+  // has ever been built in CI either -- release-core.yml builds every platform
+  // fresh on the release tag, signed, and its verify job needs ci-pass (the
+  // TESTS) on that SHA, not a pre-built installer. These pins keep packaging
+  // from creeping back into the per-commit path.
+  assert.doesNotMatch(ciWorkflow, /npm run dist:win/);
+  assert.doesNotMatch(ciWorkflow, /dist:win:signed/);
+  assert.doesNotMatch(ciWorkflow, /\bpackage-win\b/);
+  // The Windows test job stays: it is the platform's test-desktop, not packaging.
+  assert.match(ciWorkflow, /windows-foundation:/);
+  const ciPass = jobBlock(ciWorkflow, "ci-pass", null);
+  assert.match(ciPass, /- windows-foundation/);
+  // The signed release path carries the packaging + installed-product smoke.
+  assert.match(releaseWorkflow, /dist:win:signed/);
+  assert.match(releaseWorkflow, /windows-installed-product-smoke\.ps1/);
   const installedSmoke = fs.readFileSync(
     path.join(desktopRoot, "scripts", "windows-installed-product-smoke.ps1"),
     "utf8",
@@ -674,10 +656,6 @@ test("pushes to main build and smoke an unsigned Windows installer", () => {
   assert.match(installedSmoke, /Stop-InstalledProductProcesses/);
   assert.match(installedSmoke, /ExecutablePath/);
   assert.match(installedSmoke, /missing-executable repair/);
-  assert.match(packageJob, /Test Stable and Beta installed-product lifecycles/);
-  assert.doesNotMatch(packageJob, /dist:win:signed/);
-  const ciPass = jobBlock(ciWorkflow, "ci-pass", null);
-  assert.match(ciPass, /- package-win/);
 });
 
 test("Windows package smoke requires every bundled provider runtime", () => {
