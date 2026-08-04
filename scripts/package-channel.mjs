@@ -103,16 +103,47 @@ function parseArgs(argv) {
   return options;
 }
 
+// Node-ecosystem launchers that Windows ships as `.cmd` shims rather than real
+// executables. An allowlist, not "anything without an extension": `git` is also
+// extensionless on the command line but is a genuine `git.exe`, so rewriting it
+// to `git.cmd` would break it.
+const WINDOWS_CMD_SHIM_COMMANDS = new Set(["npm", "npx", "yarn", "pnpm"]);
+
+/**
+ * Windows ships npm/npx as `.cmd` shims, which Node cannot spawn by bare name
+ * (`ENOENT`) and cannot spawn by `.cmd` name either — that has been rejected
+ * outright since CVE-2024-27980 (`EINVAL`). Both were measured here. The shim
+ * needs a shell, which is the same conclusion run-windows-test-build.mjs
+ * reached. This helper existed only for the macOS path, where the bare name is
+ * correct, so the gap surfaced the first time channel packaging ran on Windows.
+ *
+ * Arguments containing spaces are quoted because `shell: true` re-parses the
+ * command line. Every argument here is a literal this script controls, so this
+ * is belt-and-braces rather than load-bearing.
+ */
+function resolveRunnableCommand(command, args) {
+  if (process.platform !== "win32" || path.extname(command) || !WINDOWS_CMD_SHIM_COMMANDS.has(command)) {
+    return { command, args, shell: false };
+  }
+  return {
+    command: `${command}.cmd`,
+    args: args.map((arg) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg)),
+    shell: true,
+  };
+}
+
 function run(command, args, options = {}) {
   const cwd = options.cwd ?? currentRepoRoot;
   const env = options.env ?? process.env;
   const printable = [command, ...args].join(" ");
   process.stdout.write(`[ade] ${cwd}$ ${printable}\n`);
   if (options.dryRun) return;
-  const result = spawnSync(command, args, {
+  const invocation = resolveRunnableCommand(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd,
     env,
     stdio: "inherit",
+    shell: invocation.shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
