@@ -657,7 +657,11 @@ jobs:
       - name: Test Stable and Beta installed-product lifecycles
         shell: pwsh
         run: |
-          $betaInstallers = @(Get-ChildItem "apps/desktop/release/ADE-Beta-[0-9]*-win-x64.exe" -File)
+          # Channel builds output to release-<channel>, not release/. Only
+          # Stable uses release/ (see scripts/run-electron-builder.mjs, which
+          # sets directories.output for every non-stable channel so a Beta build
+          # cannot overwrite Stable's artifacts).
+          $betaInstallers = @(Get-ChildItem "apps/desktop/release-beta/ADE-Beta-[0-9]*-win-x64.exe" -File)
           if ($betaInstallers.Count -ne 1) { throw "Expected exactly one Beta Windows installer, found $($betaInstallers.Count)." }
           & apps/desktop/scripts/windows-installed-product-smoke.ps1 `
             -InstallerPath $env:ADE_STABLE_INSTALLER `
@@ -671,6 +675,9 @@ jobs:
             apps/desktop/release/*.exe
             apps/desktop/release/*.exe.blockmap
             apps/desktop/release/latest.yml
+            apps/desktop/release-beta/*.exe
+            apps/desktop/release-beta/*.exe.blockmap
+            apps/desktop/release-beta/latest.yml
           if-no-files-found: error
           retention-days: 14
   validate-docs:
