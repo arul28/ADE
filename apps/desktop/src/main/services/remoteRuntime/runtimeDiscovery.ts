@@ -411,15 +411,21 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
       /ENOENT|not found|no such file/i.test(message);
     let code: string;
     let summary: string;
+    // Each message has to say what is missing from the list, not just that a
+    // step failed: the user sees this next to a machine list and needs to know
+    // whether something is absent from it and what to do about that.
     if (timedOut) {
       code = "tailscale-timeout";
-      summary = "Tailscale discovery timed out; LAN discovery still ran.";
+      summary =
+        "Tailscale didn't answer in time, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — reopen this panel to try again.";
     } else if (notFound) {
       code = "tailscale-unavailable";
-      summary = "Tailscale CLI was not found; only LAN discovery ran.";
+      summary =
+        "The Tailscale command wasn't found, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — install Tailscale, or set ADE_TAILSCALE_CLI to its path.";
     } else {
       code = "tailscale-status-failed";
-      summary = "Tailscale discovery failed; LAN discovery still ran.";
+      summary =
+        "Tailscale couldn't report its status, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — check that Tailscale is running and signed in, then reopen this panel.";
     }
     return {
       machines: [],

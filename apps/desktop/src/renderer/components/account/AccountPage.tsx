@@ -36,7 +36,9 @@ import {
   accountAvatarImage,
   accountInitials,
   accountProviderCaption,
+  invalidateAccountMachines,
   providerTint,
+  publishAccountMachines,
   publishAccountStatus,
   useAccountStatus,
   type AdeAccountMachine,
@@ -416,7 +418,11 @@ function YourMacsCard() {
       return;
     }
     try {
-      setResult(await api.listMachines());
+      const next = await api.listMachines();
+      setResult(next);
+      // Warm the shared cache so the Connections popover opens with this list
+      // instead of racing its own cold fetch.
+      publishAccountMachines(next);
     } catch {
       setResult({ state: "unavailable", machines: [], message: null });
     } finally {
@@ -561,6 +567,7 @@ function YourMacsCard() {
     try {
       await api.removeMachine(target.machineKey);
       setPendingRemoval(null);
+      invalidateAccountMachines();
       await load();
     } catch (err) {
       setRemoveError(err instanceof Error ? err.message : "Couldn't remove that computer from your account.");

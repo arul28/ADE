@@ -1220,6 +1220,28 @@ describe("RemoteTargetList", () => {
     );
   });
 
+  it("does not claim the account is empty when the account list failed to load", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [],
+    });
+    installAdeMock();
+
+    render(
+      <RemoteTargetList
+        accountMachines={[]}
+        accountMachinesState="unavailable"
+        accountSignedIn
+      />,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/couldn't reach your ADE account/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/No computers yet/i)).toBeNull();
+  });
+
   it("shows an account connect failure only on the machine that failed", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({

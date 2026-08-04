@@ -24,7 +24,7 @@ import {
   shouldIgnoreDevelopmentAccountDirectoryUrl,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
-import type { AccountAuthService } from "./accountAuthService";
+import type { AccountAuthService, AccountSessionReadState } from "./accountAuthService";
 import { defaultRelayUrl } from "../sync/syncCloudRelayStore";
 
 type AccountMachinePairer = {
@@ -130,9 +130,28 @@ function packagedSafeAccountDirectoryOverride(
   return rawUrl ?? undefined;
 }
 
+/**
+ * "Signed out" and "this machine's stored session could not be READ" look
+ * identical to `getStatus()` — both report `signedIn: false` — but they need
+ * different words. Signing out is something the user did; an unreadable
+ * session is a local decrypt/credential-store failure that has changed nothing
+ * about the account, and telling the user to sign in makes them destroy a
+ * session that is still perfectly valid. Only the first tells them to sign in.
+ */
+function notSignedInMessage(
+  readState: AccountSessionReadState | undefined,
+  action: "remove a machine from your ADE account" | "rename a machine",
+): string {
+  if (readState === "unreadable") {
+    return `ADE couldn't read this computer's saved sign-in, so nothing was changed. Wait a moment and try again to ${action}; if it keeps failing, sign in again on this computer.`;
+  }
+  return `Not signed in — sign in to ${action}.`;
+}
+
 export class AccountMachineDirectoryService {
   constructor(
-    private readonly account: Pick<AccountAuthService, "getStatus" | "getAccessToken">,
+    private readonly account: Pick<AccountAuthService, "getStatus" | "getAccessToken">
+      & Partial<Pick<AccountAuthService, "getSessionReadState">>,
     private readonly options: {
       directoryBaseUrl?: () => string | null;
       pairedStore?: AccountMachinePairer;
@@ -147,7 +166,16 @@ export class AccountMachineDirectoryService {
   async listMachines(options: AccountMachineListOptions = {}): Promise<AdeAccountMachinesResult> {
     const status = this.account.getStatus();
     if (!status.signedIn && status.source !== "env-token") {
-      return { state: "signed_out", machines: [], message: null };
+      // An unreadable stored session is a local failure, not a sign-out. Report
+      // it as unavailable so the surface says "couldn't load" instead of
+      // inviting the user to sign in over a session that is still valid.
+      return this.account.getSessionReadState?.() === "unreadable"
+        ? {
+          state: "unavailable",
+          machines: [],
+          message: "ADE couldn't read this computer's saved sign-in. Try again in a moment.",
+        }
+        : { state: "signed_out", machines: [], message: null };
     }
     let token: string;
     try {
@@ -181,7 +209,10 @@ export class AccountMachineDirectoryService {
 
     const status = this.account.getStatus();
     if (!status.signedIn && status.source !== "env-token") {
-      throw new Error("Not signed in — sign in to remove a machine from your ADE account.");
+      throw new Error(notSignedInMessage(
+        this.account.getSessionReadState?.(),
+        "remove a machine from your ADE account",
+      ));
     }
     let token: string;
     try {
@@ -278,7 +309,10 @@ export class AccountMachineDirectoryService {
 
     const status = this.account.getStatus();
     if (!status.signedIn && status.source !== "env-token") {
-      throw new Error("Not signed in — sign in to rename a machine.");
+      throw new Error(notSignedInMessage(
+        this.account.getSessionReadState?.(),
+        "rename a machine",
+      ));
     }
     let token: string;
     try {

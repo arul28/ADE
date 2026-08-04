@@ -863,6 +863,13 @@ export function RemoteTargetList({
     sections.available.length +
     sections.unavailable.length;
 
+  // "The account list did not arrive" — distinct from "the account has none".
+  const accountMachinesLoadFailed = Boolean(
+    accountMachinesState
+    && accountMachinesState !== "ok"
+    && accountMachinesState !== "signed_out",
+  );
+
   const nearbyPairingByAccountMachineKey = useMemo(() => {
     const matches = new Map<string, RemoteRuntimeDiscoveredMachine>();
     for (const accountMachine of visibleAccountMachines ?? []) {
@@ -1268,15 +1275,22 @@ export function RemoteTargetList({
         {renderSection("available")}
         {renderSection("unavailable")}
 
-        {accountMachinesState && accountMachinesState !== "ok" && accountMachinesState !== "signed_out" ? (
+        {accountMachinesLoadFailed ? (
           <div style={helperTextStyle}>
             {accountMachinesState === "not_configured"
               ? "Account computers aren't available yet. Saved and nearby computers still work."
-              : "We couldn't load your account computers. Saved and nearby computers still work."}
+              : "We couldn't reach your ADE account, so computers linked to it aren't listed. Saved and nearby computers still work — close and reopen this panel to try again."}
           </div>
         ) : null}
 
-        {!loading && totalRows === 0 && !addMode && !loadingDiscovered ? (
+        {/* Only claim the account is empty when we actually know it is: a failed
+            account fetch leaves `totalRows` at 0 too, and "No computers yet" then
+            states something false about the user's account. */}
+        {!loading
+          && totalRows === 0
+          && !accountMachinesLoadFailed
+          && !addMode
+          && !loadingDiscovered ? (
           <div style={helperTextStyle}>
             No computers yet. Choose Add machine to connect one.
           </div>

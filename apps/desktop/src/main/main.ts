@@ -202,7 +202,10 @@ import {
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
-import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
+import {
+  ACCOUNT_SESSION_CREDENTIAL_KEY,
+  getSignedInAccountAccessToken,
+} from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
 import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/pushRegistrationStore";
 import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
@@ -557,6 +560,10 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
         secretsDir,
         safeStorage,
         legacyStore,
+        // The ADE account session stays in the file store: it is shared with the
+        // CLI daemon, which cannot reach Electron's safeStorage. This store must
+        // neither adopt it nor delete the file it lives in.
+        sharedLegacyKeys: [ACCOUNT_SESSION_CREDENTIAL_KEY],
       });
     }
   } catch {

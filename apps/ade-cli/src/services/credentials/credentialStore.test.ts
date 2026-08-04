@@ -438,7 +438,7 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(raw).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
-  it("migrates a legacy encrypted-file store to safeStorage and removes the sibling file store", () => {
+  it("copies a legacy encrypted-file store into safeStorage without deleting the sibling file store", () => {
     const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
     legacyStore.setSync("linear.token.v1", "lin_secret");
 
@@ -446,8 +446,30 @@ describe("ElectronSafeStorageCredentialStore", () => {
 
     expect(store.getSync("linear.token.v1")).toBe("lin_secret");
     expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
-    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
-    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+    // The file store stays readable: the account auth service (desktop AND CLI
+    // daemon) keeps its session there and must survive this migration.
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(true);
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
+    expect(legacyStore.getSync("linear.token.v1")).toBe("lin_secret");
+  });
+
+  it("leaves a live ADE account session signed in when the desktop store migrates", () => {
+    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    legacyStore.setSync("account.session.v1", "the-live-session");
+    legacyStore.setSync("github.token.v1", "ghp_desktop");
+
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      sharedLegacyKeys: ["account.session.v1"],
+    });
+
+    expect(store.getSync("github.token.v1")).toBe("ghp_desktop");
+    // The session is neither adopted here (no stale second copy) nor destroyed.
+    expect(store.getSync("account.session.v1")).toBeNull();
+    expect(
+      new EncryptedFileCredentialStore({ secretsDir: tempDir }).getSync("account.session.v1"),
+    ).toBe("the-live-session");
   });
 
   it("migrates a shared-path safeStorage file to the dedicated safeStorage file", () => {

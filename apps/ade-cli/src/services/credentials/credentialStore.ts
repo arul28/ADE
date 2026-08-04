@@ -954,6 +954,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly lockPath: string;
   private readonly legacyLockPath: string;
   private readonly legacyStore: CredentialStoreMigrationSource | null;
+  private readonly sharedLegacyKeys: ReadonlySet<string>;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
@@ -965,6 +966,14 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     legacyLockPath?: string;
     legacyStore?: CredentialStoreMigrationSource | null;
     keyMaterialProvider?: () => Buffer | null;
+    /**
+     * Keys the sibling `EncryptedFileCredentialStore` still OWNS at runtime —
+     * the ADE account session above all, which the CLI daemon and the desktop
+     * main process both read from the shared file store. They are left in the
+     * legacy file and never copied here, so this store cannot end up holding a
+     * second, silently stale copy of a live credential.
+     */
+    sharedLegacyKeys?: readonly string[];
   }) {
     this.safeStorage = args.safeStorage;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
@@ -981,6 +990,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
         keyMaterialProvider: args.keyMaterialProvider,
       })
       : args.legacyStore;
+    this.sharedLegacyKeys = new Set(args.sharedLegacyKeys ?? []);
   }
 
   async get(key: string): Promise<string | null> {
@@ -1093,11 +1103,29 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
 
   private migrateLegacyStore(safeLockHeld: boolean): Record<string, string> | null {
     const migrate = () => withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
-      const legacyValues = this.readLegacySafeStorageFile() ?? this.readLegacyEncryptedFileStore();
-      if (!legacyValues) return null;
-      this.writeAll(legacyValues);
-      this.removeLegacyFileStore();
-      return legacyValues;
+      // A safeStorage-format file at the legacy path is this store's own older
+      // location: nothing else can read it, so moving it is a true move.
+      const legacySafeValues = this.readLegacySafeStorageFile();
+      if (legacySafeValues) {
+        this.writeAll(legacySafeValues);
+        this.removeLegacyFileStore();
+        return legacySafeValues;
+      }
+      // The encrypted-FILE store is a different matter: `credentials.json.enc`
+      // + `.machine-key` are where the shared account auth service keeps the
+      // ADE account session, for this process AND for the CLI daemon. Deleting
+      // them here (which this path used to do) destroyed a perfectly good
+      // session behind the user's back — the next `getStatus()` reported signed
+      // out, and the next account call failed with "Not signed in". Copy what
+      // this store owns and leave the file store intact.
+      const legacyFileValues = this.readLegacyEncryptedFileStore();
+      if (!legacyFileValues) return null;
+      const migrated: Record<string, string> = {};
+      for (const [key, value] of Object.entries(legacyFileValues)) {
+        if (!this.sharedLegacyKeys.has(key)) migrated[key] = value;
+      }
+      this.writeAll(migrated);
+      return migrated;
     });
     if (safeLockHeld) return migrate();
     return withCredentialFileLock(this.lockPath, migrate);
