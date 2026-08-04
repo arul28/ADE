@@ -409,6 +409,8 @@ import type {
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  ChatMentionSuggestArgs,
+  ChatMentionSuggestResult,
   PromptStashCreateArgs,
   PromptStashDeleteArgs,
   PromptStashEntry,
@@ -1398,6 +1400,7 @@ const READ_ONLY_RUNTIME_ACTION_PREFIXES = [
 const READ_ONLY_RUNTIME_ACTIONS = new Set([
   "chat.codexFuzzyFileSearch",
   "chat.fileSearch",
+  "chat.listMentionSuggestions",
   "chat.modelCatalog",
   "chat.resolveSmartLinkPreview",
   "file.quickOpen",
@@ -6499,6 +6502,21 @@ contextBridge.exposeInMainWorld("ade", {
     ): Promise<AgentChatFileSearchResult[]> =>
       callPinnedOrBoundRuntimeActionOr(pin, "chat", "fileSearch", { args }, () =>
         ipcRenderer.invoke(IPC.agentChatFileSearch, args),
+      ),
+    // Composer @-mention suggestions. Daemon-routed by design (same rule as
+    // universal search): there is no in-process IPC fallback, so packaged and
+    // remote-bound windows behave identically. An unbound runtime yields an
+    // empty menu section rather than a hard error.
+    listMentionSuggestions: async (
+      args: ChatMentionSuggestArgs,
+      pin?: OpenProjectBinding | null,
+    ): Promise<ChatMentionSuggestResult> =>
+      callPinnedOrBoundRuntimeActionOr(
+        pin,
+        "chat",
+        "listMentionSuggestions",
+        { args },
+        async () => ({ suggestions: [] }),
       ),
     promptStashes: {
       list: async (

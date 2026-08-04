@@ -112,7 +112,7 @@ import {
   captureDailyUsageAnalytics,
   completedDailyUsageAnalyticsTarget,
 } from "../../desktop/src/main/services/analytics/dailyUsageAnalytics";
-import { captureAgentTurnSettledAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
+import { captureAgentTurnSettledAnalytics, captureChatMentionsExpandedAnalytics } from "../../desktop/src/main/services/analytics/agentTurnProductAnalytics";
 import { createSessionDeltaService } from "../../desktop/src/main/services/sessions/sessionDeltaService";
 import { createReviewService } from "../../desktop/src/main/services/review/reviewService";
 import { createProcessRegistryService } from "../../desktop/src/main/services/runtime/processRegistryService";
@@ -1228,6 +1228,11 @@ export async function createAdeRuntime(args: {
         analytics: productAnalyticsService,
         projectId,
         event,
+      }),
+      onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        sessionId: event.sessionId,
       }),
       onSessionEnded: (event) => {
         pushEvent("runtime", { type: "agent_chat_session_ended", ...event });

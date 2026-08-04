@@ -19155,6 +19155,62 @@ describe("createAgentChatService", () => {
       ]));
     });
 
+    // Regression: mention expansion once lived only in steerUserMessage, which
+    // the daemon-routed exported steer() never calls — packaged builds shipped
+    // raw chips. Expansion now sits in steerWithOptions, the single funnel, so
+    // the exported steer must deliver <ade-mention> blocks to the provider
+    // while the transcript keeps the user's literal chip text.
+    it("expands @-mention chips on the exported steer path before provider delivery", async () => {
+      const events: AgentChatEventEnvelope[] = [];
+      const { service } = createService({
+        onEvent: (event: AgentChatEventEnvelope) => events.push(event),
+      });
+
+      const session = await service.createSession({
+        laneId: "lane-1",
+        provider: "codex",
+        model: "gpt-5.4",
+      });
+
+      await service.sendMessage({
+        sessionId: session.id,
+        text: "Start working",
+      }, { awaitDispatch: true });
+      await waitForEvent(
+        events,
+        (event): event is AgentChatEventEnvelope & {
+          event: Extract<AgentChatEventEnvelope["event"], { type: "status" }>;
+        } =>
+          event.event.type === "status"
+          && event.event.turnStatus === "started"
+          && event.event.turnId === "turn-1",
+      );
+
+      const raw = "apply the fix from @chat:other-session-id";
+      const result = await service.steer({ sessionId: session.id, text: raw });
+      expect(result.queued).toBe(false);
+
+      const steerPayload = mockState.codexRequestPayloads.find(
+        (payload) => payload.method === "turn/steer",
+      );
+      expect(steerPayload, "steer must reach the provider").toBeTruthy();
+      const providerText = JSON.stringify(steerPayload!.params);
+      // The provider sees the pointer block (unresolved here — the fixture has
+      // no such chat — which still proves expansion ran on this path).
+      expect(providerText).toContain("<ade-mention");
+      expect(providerText).toContain("other-session-id");
+      // The transcript keeps the literal chip, not the expansion blob.
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          event: expect.objectContaining({
+            type: "user_message",
+            text: raw,
+            steerId: result.steerId,
+          }),
+        }),
+      ]));
+    });
+
     it("adopts Codex active turn mismatches and retries delivered steers", async () => {
       const events: AgentChatEventEnvelope[] = [];
       const { service } = createService({

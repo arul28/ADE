@@ -21,6 +21,7 @@ import {
   type AgentChatEventHistorySnapshot,
   type AgentChatContextAttachment,
   type AgentChatFileRef,
+  type ChatMentionSuggestion,
   type AutoLaneIdentitySuggestion,
   type AgentChatInteractionMode,
   type AgentChatDispatchSteerMode,
@@ -7587,10 +7588,9 @@ export function AgentChatPane({
   const searchAttachments = useCallback(async (query: string): Promise<AgentChatFileRef[]> => {
     if (!laneId) return [];
     const trimmed = query.trim();
-    if (!trimmed.length) return [];
 
     // Try Codex fuzzy file search if we have an active Codex session
-    if (selectedSessionId && sessionProvider === "codex") {
+    if (trimmed.length && selectedSessionId && sessionProvider === "codex") {
       try {
         const codexHits = await window.ade.agentChat.fileSearch({ sessionId: selectedSessionId, query: trimmed }, ...chatPinArgsFor(chatRuntimePinRef));
         if (codexHits.length > 0) {
@@ -7616,6 +7616,29 @@ export function AgentChatPane({
       type: inferAttachmentType(hit.path)
     }));
   }, [laneId, selectedSessionId, sessionProvider]);
+
+  // Entity @-mention suggestions (chats / lanes / terminals) for the active
+  // project. Daemon-routed through the chat action domain; an unbound runtime
+  // yields an empty list rather than an error, so the file section still works.
+  const searchMentions = useCallback(async (query: string): Promise<ChatMentionSuggestion[]> => {
+    const pin = selectedSessionId ? chatRuntimePinRef.current : draftExecutionBindingRef.current;
+    if (!selectedSessionId && draftExecutionBindingRequiredRef.current && !pin) return [];
+    try {
+      // Optional call: the webclient adapter's agentChat surface may not
+      // implement this yet, and a missing method must degrade to "no rows".
+      const result = await window.ade.agentChat.listMentionSuggestions?.(
+        {
+          query: query.trim(),
+          // A chat never suggests itself.
+          ...(selectedSessionId ? { excludeSessionId: selectedSessionId } : {}),
+        },
+        pin,
+      );
+      return result?.suggestions ?? [];
+    } catch {
+      return [];
+    }
+  }, [selectedSessionId]);
 
   const claimDraftAttachmentOwner = useCallback(() => {
     if (!selectedSessionIdRef.current) {
@@ -12176,6 +12199,7 @@ export function AgentChatPane({
             onAddContextAttachment={addContextAttachment}
             onRemoveContextAttachment={removeContextAttachment}
             onSearchAttachments={searchAttachments}
+            onSearchMentions={searchMentions}
             onClearEvents={() => {
               if (selectedSessionId) {
                 clearSessionView(selectedSessionId);

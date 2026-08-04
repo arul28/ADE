@@ -50,7 +50,7 @@ import {
   getSharedProductAnalyticsService,
 } from "./services/analytics/productAnalyticsService";
 import { detectInstallSource } from "./services/analytics/installSource";
-import { captureAgentTurnSettledAnalytics } from "./services/analytics/agentTurnProductAnalytics";
+import { captureAgentTurnSettledAnalytics, captureChatMentionsExpandedAnalytics } from "./services/analytics/agentTurnProductAnalytics";
 import { initPerfRunFromEnv } from "./services/perf/perfLog";
 import { startMetricsSampler } from "./services/perf/metricsSampler";
 import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
@@ -3349,6 +3349,11 @@ app.whenReady().then(async () => {
         analytics: productAnalyticsService,
         projectId,
         event,
+      }),
+      onChatMentionsExpanded: (event) => captureChatMentionsExpandedAnalytics({
+        analytics: productAnalyticsService,
+        projectId,
+        sessionId: event.sessionId,
       }),
       onSessionEnded: onTrackedSessionEnded,
       getDirtyFileTextForPath: async (absPath: string) => {

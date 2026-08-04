@@ -2478,9 +2478,9 @@ function segmentPromptLineText(
   text: string,
   rowStart: number,
   tokens: PromptRenderTokenRange[],
-): Array<{ text: string; kind: "plain" | "file" | "command" | "link" }> {
+): Array<{ text: string; kind: "plain" | "file" | "command" | "mention" | "link" }> {
   if (!tokens.length || !text) return text ? [{ text, kind: "plain" }] : [];
-  const segments: Array<{ text: string; kind: "plain" | "file" | "command" | "link" }> = [];
+  const segments: Array<{ text: string; kind: "plain" | "file" | "command" | "mention" | "link" }> = [];
   let pos = 0;
   for (const token of tokens) {
     const start = Math.max(0, token.start - rowStart);
@@ -2495,6 +2495,10 @@ function segmentPromptLineText(
 }
 
 export const MENTION_REMOTE_DEBOUNCE_MS = 160;
+/** Rows the mention palette renders at most. */
+export const MENTION_MAX_ROWS = 10;
+/** File rows requested from quick-open, and reserved when browsing on a bare `@`. */
+export const MENTION_FILE_ROWS = 5;
 const STARTUP_RECONNECT_DELAY_MS = 3_000;
 
 type MentionRemoteCacheEntry = {
@@ -7315,7 +7319,13 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
 
     const publishSuggestions = (remote: MentionSuggestion[] = []) => {
       if (cancelled) return;
-      const next = [...localSuggestions(), ...remote, ...attachedSuggestions()].slice(0, 10);
+      const local = localSuggestions();
+      // On a bare `@` every lane and chat matches, so without a reservation the
+      // row cap would drop the whole browse list of files. Only browse mode
+      // trims locals; typed queries keep their existing ordering untouched.
+      const fileRows = query ? 0 : Math.min(remote.filter((s) => s.kind === "file").length, MENTION_FILE_ROWS);
+      const localBudget = Math.max(0, MENTION_MAX_ROWS - fileRows);
+      const next = [...local.slice(0, localBudget), ...remote, ...attachedSuggestions()].slice(0, MENTION_MAX_ROWS);
       setMentionSuggestions(next);
       setMentionIndex((index) => Math.min(index, Math.max(0, next.length - 1)));
     };
@@ -7325,21 +7335,23 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       const remote: MentionSuggestion[] = [];
       if (conn && laneId) {
         const cache = mentionRemoteCacheEntry(mentionRemoteCacheRef.current, laneId);
-        const filesPromise = query
-          ? cache.filesByQuery.get(query)
-            ? Promise.resolve(cache.filesByQuery.get(query)!)
-            : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
-              workspaceId: laneId,
-              query,
-              limit: 5,
-            }))
-              .then((files) => {
-                const safeFiles = Array.isArray(files) ? files : [];
-                cache.filesByQuery.set(query, safeFiles);
-                return safeFiles;
-              })
-              .catch(() => [])
-          : Promise.resolve([] as Array<{ path: string }>);
+        // An empty query is a valid request: it browses the workspace
+        // (shallowest paths first) instead of returning nothing, matching the
+        // desktop composer's `@` behavior. The cache keys on the query string,
+        // so "" caches like any typed query.
+        const filesPromise = cache.filesByQuery.get(query)
+          ? Promise.resolve(cache.filesByQuery.get(query)!)
+          : Promise.resolve(conn.action<Array<{ path: string }>>("file", "quickOpen", {
+            workspaceId: laneId,
+            query,
+            limit: MENTION_FILE_ROWS,
+          }))
+            .then((files) => {
+              const safeFiles = Array.isArray(files) ? files : [];
+              cache.filesByQuery.set(query, safeFiles);
+              return safeFiles;
+            })
+            .catch(() => []);
         const commitsPromise = cache.commits
           ? Promise.resolve(cache.commits)
           : Promise.resolve(conn.action<Array<Record<string, unknown>>>("git", "listRecentCommits", {

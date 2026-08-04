@@ -387,6 +387,39 @@ describe("fileService", () => {
     }
   });
 
+  it("browses the workspace shallowest-first when quick open gets an empty query", async () => {
+    // A bare `@` in any composer (desktop, TUI, iOS, web) sends query "".
+    // That must return a navigable list, not nothing.
+    const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-quick-open-browse-"));
+    const { execSync } = await import("node:child_process");
+    execSync("git init", { cwd: rootPath, stdio: "ignore" });
+    const laneService = createLaneServiceStub(rootPath);
+    const service = createFileService({ laneService });
+
+    try {
+      fs.mkdirSync(path.join(rootPath, "src", "deep", "deeper"), { recursive: true });
+      fs.writeFileSync(path.join(rootPath, "README.md"), "# root\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "index.ts"), "export const a = 1;\n", "utf8");
+      fs.writeFileSync(path.join(rootPath, "src", "deep", "deeper", "buried.ts"), "export const b = 2;\n", "utf8");
+
+      const browsed = await service.quickOpen({ workspaceId: "workspace-1", query: "" });
+      const paths = browsed.map((item) => item.path);
+
+      expect(paths).toContain("README.md");
+      expect(paths).toContain("src/index.ts");
+      expect(paths).toContain("src/deep/deeper/buried.ts");
+      // Shallower paths outrank deeper ones so the browse list opens at the top
+      // of the tree rather than in some arbitrary nested directory.
+      expect(paths.indexOf("README.md")).toBeLessThan(paths.indexOf("src/index.ts"));
+      expect(paths.indexOf("src/index.ts")).toBeLessThan(paths.indexOf("src/deep/deeper/buried.ts"));
+      // Whitespace-only is the same browse request, not a distinct query.
+      const whitespace = await service.quickOpen({ workspaceId: "workspace-1", query: "   " });
+      expect(whitespace.map((item) => item.path)).toEqual(paths);
+    } finally {
+      removeTestTree(rootPath);
+    }
+  });
+
   it("includes ignored files in quick open and search when requested", async () => {
     const rootPath = fs.mkdtempSync(path.join(os.tmpdir(), "ade-file-service-search-"));
     const { execSync } = await import("node:child_process");

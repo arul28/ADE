@@ -47,6 +47,11 @@ import {
   replaceComposerTriggerSpan,
   type ComposerTrigger,
 } from "../../../shared/composerTriggers";
+import {
+  formatChatMentionToken,
+  isChatMentionTokenBody,
+} from "../../../shared/chatMentions";
+import type { ChatMentionSuggestion } from "../../../shared/types/chatMentions";
 import { cn } from "../ui/cn";
 import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
@@ -1515,6 +1520,7 @@ export function AgentChatComposer({
   onAddContextAttachment,
   onRemoveContextAttachment,
   onSearchAttachments,
+  onSearchMentions,
   onInteractionModeChange,
   onClaudeModeChange,
   onClaudePermissionModeChange,
@@ -1672,6 +1678,11 @@ export function AgentChatComposer({
   onAddContextAttachment?: (attachment: AgentChatContextAttachment) => void;
   onRemoveContextAttachment?: (key: string) => void;
   onSearchAttachments: (query: string) => Promise<AgentChatFileRef[]>;
+  /**
+   * Entity @-mention suggestions (chats / lanes / terminals in the active
+   * project). Omitted when the session has no bound runtime to ask.
+   */
+  onSearchMentions?: (query: string) => Promise<ChatMentionSuggestion[]>;
   onExecutionModeChange?: (mode: AgentChatExecutionMode) => void;
   onInteractionModeChange?: (mode: AgentChatInteractionMode) => void;
   onClaudeModeChange?: (mode: AgentChatClaudePermissionMode) => void;
@@ -1978,6 +1989,7 @@ export function AgentChatComposer({
     return findConfirmedComposerTokens(draft, {
       isFile: (body) => attachedPaths.has(body),
       isCommand: (body) => knownSlashCommandNames.has(body.toLowerCase()),
+      isMention: isChatMentionTokenBody,
     });
   }, [attachedPaths, draft, knownSlashCommandNames, useRichComposer]);
   const [plainOverlayScrollTop, setPlainOverlayScrollTop] = useState(0);
@@ -2671,16 +2683,25 @@ export function AgentChatComposer({
     });
   }, [resizeTextarea]);
 
-  const createComposerTokenChipNode = useCallback((kind: "file" | "command", text: string): HTMLElement => {
+  const createComposerTokenChipNode = useCallback((
+    kind: "file" | "command" | "mention",
+    text: string,
+    // Mentions serialize to an opaque `@chat:<id>` pointer, so the chip shows a
+    // human label instead. Files/commands keep label === serialized text.
+    displayLabel?: string,
+  ): HTMLElement => {
     const chip = document.createElement("span");
     chip.contentEditable = "false";
     chip.dataset.composerChip = kind;
     chip.dataset.composerChipText = text;
     chip.className = "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
-    chip.title = text;
+    // An untitled entity can produce an empty displayLabel; fall back to the
+    // serialized token so a chip is never visually blank.
+    const chipLabel = displayLabel?.trim() || null;
+    chip.title = chipLabel && chipLabel !== text ? `${chipLabel} — ${text}` : text;
     const label = document.createElement("span");
     label.className = "truncate";
-    label.textContent = text;
+    label.textContent = chipLabel ?? text;
     chip.appendChild(label);
     return chip;
   }, []);
@@ -2744,7 +2765,10 @@ export function AgentChatComposer({
   // Replaces the active trigger span in the rich editor with either plain
   // text or a non-editable chip node followed by a space. Returns false when
   // no trigger span can be located (caller falls back to caret insertion).
-  const replaceRichTriggerWith = useCallback((insertion: { text: string } | { chipKind: "file" | "command"; chipText: string }): boolean => {
+  const replaceRichTriggerWith = useCallback((insertion:
+    | { text: string }
+    | { chipKind: "file" | "command" | "mention"; chipText: string; chipLabel?: string }
+  ): boolean => {
     const editor = richEditorRef.current;
     if (!editor) return false;
     editor.focus({ preventScroll: true });
@@ -2765,7 +2789,7 @@ export function AgentChatComposer({
       return true;
     }
     context.range.deleteContents();
-    const chip = createComposerTokenChipNode(insertion.chipKind, insertion.chipText);
+    const chip = createComposerTokenChipNode(insertion.chipKind, insertion.chipText, insertion.chipLabel);
     context.range.insertNode(chip);
     const space = document.createTextNode(" ");
     chip.after(space);
@@ -3857,6 +3881,23 @@ export function AgentChatComposer({
         restoreTextareaCaret(next.caret);
       }
       onAddAttachment({ path: item.path, type: inferAttachmentType(item.path) });
+    } else if (item.type === "mention" && commandMenuTrigger) {
+      // A mention is a pointer, not an attachment: nothing is resolved or read
+      // now. The token is expanded into an <ade-mention> block at send time.
+      const token = formatChatMentionToken(item.mention.kind, item.mention.id);
+      if (useRichComposer) {
+        if (!replaceRichTriggerWith({
+          chipKind: "mention",
+          chipText: token,
+          chipLabel: item.mention.title,
+        })) {
+          insertTextIntoRichEditor(`${token} `);
+        }
+      } else {
+        const next = replaceComposerTriggerSpan(draft, commandMenuTrigger, `${token} `);
+        onDraftChange(next.text);
+        restoreTextareaCaret(next.caret);
+      }
     } else if (item.type === "command" && commandMenuTrigger) {
       const selected = effectiveSlashCommands.find((cmd) => cmd.command.replace(/^\//, "") === item.name);
       const wholeDraft = composerTriggerSpansWholeDraft(draft, commandMenuTrigger);
@@ -5238,6 +5279,7 @@ export function AgentChatComposer({
               source: c.source,
             }))}
             onFileSearch={onSearchAttachments}
+            onMentionSearch={onSearchMentions}
             anchor={commandMenuAnchor}
             onSelect={handleCommandMenuSelect}
             onClose={() => setCommandMenuTrigger(null)}

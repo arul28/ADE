@@ -35,6 +35,11 @@ import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/pa
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
+  CHAT_MENTION_KINDS,
+  CHAT_MENTION_MAX_PER_KIND,
+  rankChatMentionSuggestions,
+} from "../shared/chatMentions";
+import {
   DEFAULT_AUTO_UPDATE_PREFERENCES,
   isAdeUsageRangePreset,
   type AdeUsageRangePreset,
@@ -45,6 +50,10 @@ import {
   type AgentChatRecoverTurnResult,
   type AgentChatPrepareCrossMachineHandoffArgs,
   type AgentChatInterruptResult,
+  type ChatMentionKind,
+  type ChatMentionSuggestArgs,
+  type ChatMentionSuggestion,
+  type ChatMentionSuggestResult,
   type LaneListSnapshot,
   type LaneSummary,
   type OpenProjectBinding,
@@ -4995,6 +5004,56 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
         dryRun: true,
       }),
       fileSearch: resolvedArg([]),
+      // Composer @-mention suggestions. Mirrors the real action's contract
+      // (per-kind cap + shared ranking) off the mock rosters so the sectioned
+      // @ menu is exercisable in the Vite-only preview.
+      listMentionSuggestions: async (
+        args: ChatMentionSuggestArgs = {},
+        _pin?: OpenProjectBinding | null,
+      ): Promise<ChatMentionSuggestResult> => {
+        const query = typeof args.query === "string" ? args.query : "";
+        const epoch = (value: unknown): number | null => {
+          const parsed = Date.parse(String(value ?? ""));
+          return Number.isFinite(parsed) ? parsed : null;
+        };
+        const chats: ChatMentionSuggestion[] = MOCK_SESSIONS
+          .filter((row) => !row.archivedAt && row.id !== args.excludeSessionId)
+          .filter((row) => String(row.toolType ?? "").includes("chat"))
+          .map((row) => ({
+            kind: "chat" as const,
+            id: String(row.id),
+            title: String(row.title ?? row.goal ?? `Chat ${String(row.id).slice(0, 8)}`),
+            subtitle: [row.laneName, row.status].filter(Boolean).join(" · "),
+            lastActivityAt: epoch(row.endedAt) ?? epoch(row.startedAt),
+          }));
+        const lanes: ChatMentionSuggestion[] = MOCK_LANES
+          .filter((row) => !row.archivedAt)
+          .map((row) => ({
+            kind: "lane" as const,
+            id: String(row.id),
+            title: String(row.name),
+            subtitle: String(row.branchRef ?? ""),
+            lastActivityAt: epoch(row.createdAt),
+          }));
+        const terminals: ChatMentionSuggestion[] = MOCK_SESSIONS
+          .filter((row) => !row.archivedAt && row.ptyId && !String(row.toolType ?? "").includes("chat"))
+          .map((row) => ({
+            kind: "terminal" as const,
+            id: String(row.id),
+            title: String(row.title ?? row.goal ?? `Terminal ${String(row.id).slice(0, 8)}`),
+            subtitle: [row.laneName, row.status].filter(Boolean).join(" · "),
+            lastActivityAt: epoch(row.endedAt) ?? epoch(row.startedAt),
+          }));
+        const byKind: Record<ChatMentionKind, ChatMentionSuggestion[]> = {
+          chat: chats,
+          lane: lanes,
+          terminal: terminals,
+        };
+        return {
+          suggestions: CHAT_MENTION_KINDS.flatMap((kind) =>
+            rankChatMentionSuggestions(byKind[kind], query, CHAT_MENTION_MAX_PER_KIND)),
+        };
+      },
       getTurnFileDiff: resolvedArg(null),
       listSubagents: resolvedArg([]),
       killDroidWorker: resolvedArg(undefined),
@@ -5578,6 +5637,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
           }
         };
         walk(rootNodes, 0);
+        if (!q) {
+          // Mirror the real index service: an empty query browses the
+          // workspace shallowest-path-first, tie-broken by path.
+          const depthOf = (p: string) => p.split(/[/\\]/).length;
+          flat.sort((a, b) => depthOf(a.path) - depthOf(b.path) || a.path.localeCompare(b.path));
+        }
         return flat.slice(0, limit);
       },
       searchText: resolvedArg([]),
