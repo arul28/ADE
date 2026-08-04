@@ -30,8 +30,8 @@ enum CanonicalSessionPhase: Equatable {
 ///
 /// The first three are the attention states — the ones something downstream may
 /// reasonably treat as "act on this". The rest are the descriptive half of the
-/// vocabulary. All six are reached through `workSessionStatusBadge`, which is
-/// what the row actually renders; the canonical state itself carries only a
+/// vocabulary. All six are reached through `workSessionRowPresentation`, which
+/// is what the row actually renders; the canonical state itself carries only a
 /// phase, so nothing can render a badge without going through that table.
 ///
 /// Only `stopped` and `ended` earn no capsule: their story is the neutral dot
@@ -250,8 +250,8 @@ func workActivityPhase(for phase: CanonicalSessionPhase) -> AccountAttentionPhas
   case .stale: return .stale
   // Settled is a declared "this is finished and filed", which is exactly what
   // the emerald `completed` presentation says. Note that the STATUS SLOT shows
-  // nothing at all for settled — see `workSessionStatusPresentation` — but the
-  // phase still needs a hue for the dot and for out-of-context capsules.
+  // nothing at all for settled — see `workSessionStatusSlot` — but the phase
+  // still needs a hue for the dot and for out-of-context capsules.
   case .settled: return .completed
   // Ready and idle are emerald "Done", not the neutral "Ready"/"Idle" this file
   // used to ask for. Desktop's `PHASE_PRESENTATION` maps both to
@@ -341,14 +341,24 @@ struct WorkSessionRowPresentation: Equatable {
   let phase: CanonicalSessionPhase
   /// The whole badge, not just its kind: the compact row renders the label and
   /// tone directly and must not re-derive them from a second table.
+  ///
+  /// Overlay-blind on purpose. This is the out-of-context capsule — a settled
+  /// row still reads "Done" here even though its `status` slot is nil, and a
+  /// snoozed row still reports the state it is actually in. Nil for
+  /// `stopped`/`ended`, which say what they need to say with the neutral dot
+  /// alone.
   let badge: SessionBadge?
+  /// The hue of the row's status dot. Same derivation as the capsule, so a row
+  /// whose capsule says "Working" can never wear a green dot.
   let tone: ActivityTone
+  /// The row's ONE status slot. See `workSessionStatusSlot` for the overlay
+  /// precedence this answers, and why settled resolves to nil.
   let status: WorkSessionStatusPresentation?
 }
 
-/// The one derivation behind every Work row. `workSessionStatusBadge`,
-/// `workSessionRowTone`, and `workSessionStatusPresentation` are thin reads of
-/// this; prefer calling it directly when a caller wants more than one of them.
+/// The one derivation behind every Work row — the phase, the capsule, the dot
+/// hue, and the status slot all come out of this single call, so nothing can
+/// read one of them from a second table or a second clock.
 func workSessionRowPresentation(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
@@ -445,31 +455,6 @@ private func workSessionStatusSlot(
   )
 }
 
-/// The capsule a Work row renders: the full vocabulary, not just the attention
-/// third. Nil for `stopped`/`ended`, which say what they need to say with the
-/// neutral dot alone.
-///
-/// Overlay-blind on purpose. This is the out-of-context capsule — a settled row
-/// still reads "Done" here even though its status SLOT is empty, and a snoozed
-/// row still reports the state it is actually in. Anything rendering the row's
-/// one status slot wants `workSessionStatusPresentation` instead.
-func workSessionStatusBadge(
-  session: TerminalSessionSummary,
-  summary: AgentChatSessionSummary?,
-  now: Date = Date()
-) -> SessionBadge? {
-  workSessionRowPresentation(session: session, summary: summary, now: now).badge
-}
-
-/// See `workSessionStatusSlot` for the precedence this answers.
-func workSessionStatusPresentation(
-  session: TerminalSessionSummary,
-  summary: AgentChatSessionSummary?,
-  now: Date = Date()
-) -> WorkSessionStatusPresentation? {
-  workSessionRowPresentation(session: session, summary: summary, now: now).status
-}
-
 /// The italic line-3 preview, with the provenance the renderer needs.
 ///
 /// Only `ask` and `note` linkify: those two are prose an agent wrote AT the
@@ -489,16 +474,6 @@ struct WorkSessionPreviewLine: Equatable {
   let text: String
   let linkify: Bool
   let source: Source
-}
-
-/// The hue of the row's status dot. Same derivation as the capsule, so a row
-/// whose capsule says "Working" can never wear a green dot.
-func workSessionRowTone(
-  session: TerminalSessionSummary,
-  summary: AgentChatSessionSummary?,
-  now: Date = Date()
-) -> ActivityTone {
-  workSessionRowPresentation(session: session, summary: summary, now: now).tone
 }
 
 /// Canonical state for a concrete Work row. This is the one bridge from the
