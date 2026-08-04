@@ -948,8 +948,23 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
   return identity;
 }
 
+/**
+ * Where electron-builder wrote this build.
+ *
+ * Channel builds get their own output tree — `release-beta`, `release-alpha` —
+ * because installer filenames are disambiguated but `latest.yml` and
+ * `win-unpacked/` are not, so a channel build would otherwise overwrite the
+ * updater manifest a Stable build left behind. This has to derive the directory
+ * the same way run-electron-builder.mjs does, or the validator scans an empty
+ * `release/` and reports the build missing when it succeeded.
+ */
+function defaultReleaseDir() {
+  const { packageChannel } = packageIdentity;
+  return path.join(desktopRoot, packageChannel === "stable" ? "release" : `release-${packageChannel}`);
+}
+
 async function validateReleaseArtifacts() {
-  const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? path.join(desktopRoot, "release");
+  const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? defaultReleaseDir();
   const installerRegex = windowsInstallerPattern(packageIdentity);
   const installerPath =
     resolveAbsolute(readFlag("--installer")) ?? (await findArtifact(releaseDir, installerRegex, "Windows installer"));
