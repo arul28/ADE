@@ -29,6 +29,7 @@ import { isSyncServiceUnavailableError } from "../../../shared/runtimeErrors";
 import { buildMachineOnlySyncSnapshot } from "../sync/machineOnlySyncSnapshot";
 import { encodeCodedErrorMessage, parseCodedErrorMessage } from "../../../shared/codedError";
 import { areAutomationsEnabledForPackagedState } from "../../../shared/automationAvailability";
+import { normalizeAppPackageChannel } from "../../../shared/packageChannel";
 import { findRecentProjectForRepo } from "../projects/repoProjectResolver";
 import { getModelById } from "../../../shared/modelRegistry";
 import { isAgentChatTurnRecoveryAction } from "../../../shared/types/chat";
@@ -3900,6 +3901,10 @@ export function registerIpc({
       : null;
     return {
       appVersion: app.getVersion(),
+      // main.ts's applyPackagedChannelDefaults() has already normalized this
+      // env var (and pointed ADE_HOME at ~/.ade-<channel>) before any window
+      // exists, so reading it here is the same value the preload sees in argv.
+      packageChannel: normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL),
       isPackaged: app.isPackaged,
       automationsEnabled: areAutomationsEnabledForPackagedState(app.isPackaged),
       platform: process.platform,

@@ -25,6 +25,10 @@ import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
+  PACKAGE_CHANNEL_ARGV_PREFIX,
+  normalizeAppPackageChannel,
+} from "../shared/packageChannel";
+import {
   areAutomationsEnabledForPackagedState,
 } from "../shared/automationAvailability";
 import {
@@ -667,6 +671,14 @@ async function createWindow(args: {
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
+      // The renderer gates the channel badge/notice synchronously at first
+      // paint, so the channel has to arrive without an IPC round trip. argv is
+      // the deterministic carrier: this runs long after
+      // applyPackagedChannelDefaults(), and unlike the inherited environment it
+      // does not depend on when Chromium snapshotted process.env.
+      additionalArguments: [
+        `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+      ],
     },
   });
 

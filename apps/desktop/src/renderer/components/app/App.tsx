@@ -17,6 +17,7 @@ import {
   type InboundDeeplinkDispatchOptions,
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
+import { ChannelNoticeHost } from "./ChannelNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -1402,6 +1403,10 @@ export function App() {
       <Router>
         <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
           <OnboardingBootstrap />
+          {/* Early-build notice: shown on every start off the stable channel,
+              and re-openable from the header channel chip. Renders nothing at
+              all on stable. */}
+          <ChannelNoticeHost />
           <AppNavigationBridge />
           <CrossRepoPrBanner />
           <ClipboardDeeplinkBanner />

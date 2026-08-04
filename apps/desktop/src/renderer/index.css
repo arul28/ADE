@@ -482,6 +482,46 @@ h6 {
   background: var(--shell-header-divider);
 }
 
+/* Channel chip — only rendered off the stable channel. Lives in the header's
+   normal left region (there is no platform inset to borrow outside darwin) and
+   stays clear of the Windows caption buttons, which the header reserves through
+   --shell-header-inset-end. */
+.ade-shell-channel-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 18px;
+  padding-inline: 7px;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 16%, transparent);
+  color: color-mix(in srgb, var(--color-warning) 82%, var(--shell-header-fg));
+  font-family: var(--font-mono);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+
+.ade-shell-channel-badge:hover {
+  background: color-mix(in srgb, var(--color-warning) 26%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning) 60%, transparent);
+  color: color-mix(in srgb, var(--color-warning) 95%, var(--shell-header-fg));
+}
+
+.ade-shell-channel-badge:focus-visible {
+  outline: 1px solid color-mix(in srgb, var(--color-warning) 70%, transparent);
+  outline-offset: 1px;
+}
+
+.ade-shell-channel-badge-version {
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  opacity: 0.82;
+}
+
 .ade-shell-header-utility-cluster {
   --shell-header-utility-h: 18px;
 }

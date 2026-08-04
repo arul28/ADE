@@ -64,6 +64,7 @@ import type {
   AppResourceUsageSnapshot,
 } from "../../../shared/types";
 import { AutoUpdateControl } from "./AutoUpdateControl";
+import { ChannelBadge } from "./ChannelBadge";
 import { FeedbackReporterModal } from "./FeedbackReporterModal";
 import { useDialogFocusTrap } from "./HeaderSheet";
 import { HelpMenu } from "../onboarding/HelpMenu";
@@ -2232,6 +2233,11 @@ export function TopBar({
         style={{ height: 20 }}
         draggable={false}
       />
+
+      {/* Channel chip — nothing on stable. Sits with the app identity, before
+          the project tabs, and opts out of the drag region like every other
+          interactive header child. */}
+      <ChannelBadge />
 
       {/* Divider */}
       <div className="ade-shell-header-divider h-3 w-px shrink-0" />

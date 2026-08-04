@@ -31,6 +31,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
@@ -74,6 +75,35 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+/**
+ * The mock is stable by default so the browser preview matches a normal build.
+ * Override it to exercise the channel badge / early-build notice without
+ * packaging anything:
+ *   http://localhost:5173/#/work?adeChannel=beta   (or ?adeChannel=beta)
+ *   localStorage.setItem("ade.mock.packageChannel", "alpha")
+ */
+function browserMockPackageChannel(): AppPackageChannel {
+  if (typeof window === "undefined") return "stable";
+  try {
+    const search = new URLSearchParams(window.location.search);
+    const hash = window.location.hash;
+    const hashQueryIndex = hash.indexOf("?");
+    const hashSearch = new URLSearchParams(
+      hashQueryIndex >= 0 ? hash.slice(hashQueryIndex + 1) : "",
+    );
+    const fromUrl = search.get("adeChannel") ?? hashSearch.get("adeChannel");
+    if (fromUrl) {
+      window.localStorage?.setItem("ade.mock.packageChannel", fromUrl);
+      return normalizeAppPackageChannel(fromUrl);
+    }
+    return normalizeAppPackageChannel(
+      window.localStorage?.getItem("ade.mock.packageChannel"),
+    );
+  } catch {
+    return "stable";
+  }
+}
+
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
@@ -2965,9 +2995,12 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       };
     })(),
     app: {
+      // Mirrors the preload's synchronous channel bridge.
+      packageChannel: browserMockPackageChannel(),
       ping: resolved("pong" as const),
       getInfo: resolved({
         appVersion: "0.0.0-browser",
+        packageChannel: browserMockPackageChannel(),
         isPackaged: false,
         automationsEnabled: true,
         platform: "browser",
