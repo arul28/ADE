@@ -323,12 +323,23 @@ test("Windows installer names stay GitHub-safe so latest.yml matches the publish
   );
   assert.match(winArtifactValidator, /isGithubSafeAssetName\(installerName\)/);
   assert.match(winArtifactValidator, /build\.win\.artifactName must be/);
-  // The Stable glob must not depend on step ordering to avoid selecting the
-  // Beta installer once both live in apps/desktop/release.
+  // Stable builds to apps/desktop/release; every non-stable channel is
+  // redirected to release-<channel> so a Beta build cannot overwrite Stable's
+  // artifacts. The workflow's lookups have to agree with that redirect --
+  // asserting the CI file merely CONTAINS a glob is not enough, because a glob
+  // pointing at the wrong directory reads as present and then finds nothing at
+  // run time. Pin both halves so they cannot drift apart again.
+  assert.match(electronBuilderWrapper, /--config\.directories\.output=release-\$\{packageChannel\}/);
   const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
   assert.match(packageJob, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
-  assert.match(packageJob, /release\/ADE-Beta-\[0-9\]\*-win-x64\.exe/);
+  assert.match(packageJob, /release-beta\/ADE-Beta-\[0-9\]\*-win-x64\.exe/);
+  // The Beta installer no longer lands in release/, so a lookup there finds
+  // zero files rather than the wrong one.
+  assert.doesNotMatch(packageJob, /[^-]release\/ADE-Beta-/);
   assert.doesNotMatch(packageJob, /ADE Beta-/);
+  // Uploaded previews must cover both channels; release/ alone silently drops
+  // the Beta installer now that it builds elsewhere.
+  assert.match(packageJob, /apps\/desktop\/release-beta\/\*\.exe/);
   assert.match(releaseWorkflow, /release\/ADE-\[0-9\]\*-win-x64\.exe/);
 });
 
