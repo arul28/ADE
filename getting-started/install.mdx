@@ -1,10 +1,10 @@
 ---
 title: "Install ADE"
-description: "Download ADE for macOS, install the iOS companion from TestFlight, and run in guest mode with no account."
+description: "Download ADE for macOS, install the Windows beta, add the iOS companion from TestFlight, and run in guest mode with no account."
 icon: "download"
 ---
 
-ADE is a native macOS app with an iOS companion. Download the Mac app, launch it with no account, then add the phone app from TestFlight when you want mobile review and chat.
+ADE is a native desktop app with an iOS companion. It is generally available on macOS and in beta on Windows 10/11 x64. Install the desktop app, launch it with no account, then add the phone app from TestFlight when you want mobile review and chat.
 
 <Frame caption="Add your first repository from the welcome screen">
   <img src="/media/features/project/add-project-button.webp" alt="Add your first repository from the ADE welcome screen" />
@@ -13,8 +13,8 @@ ADE is a native macOS app with an iOS companion. Download the Mac app, launch it
 ## Requirements
 
 <CardGroup cols={3}>
-  <Card title="macOS 13+" icon="apple">
-    Apple Silicon or Intel. ADE ships as a signed, notarized macOS app.
+  <Card title="macOS 13+ or Windows 10/11" icon="desktop">
+    macOS on Apple Silicon or Intel, generally available and shipped as a signed, notarized app. Windows is in beta, x64 only — see [ADE on Windows](/getting-started/windows).
   </Card>
   <Card title="Git" icon="git-alt">
     Required — ADE uses branches and worktrees to run lanes.
@@ -26,10 +26,10 @@ ADE is a native macOS app with an iOS companion. Download the Mac app, launch it
 
 ## Install
 
-The fastest path is Homebrew. Prefer a download? Grab the DMG from GitHub Releases.
+On macOS the fastest path is Homebrew. Prefer a download? Grab the DMG from GitHub Releases.
 
 <AccordionGroup>
-  <Accordion title="Homebrew (recommended)" icon="terminal">
+  <Accordion title="macOS — Homebrew (recommended)" icon="terminal">
     ```bash
     brew install --cask arul28/ade/ade
     ```
@@ -40,13 +40,18 @@ The fastest path is Homebrew. Prefer a download? Grab the DMG from GitHub Releas
     brew upgrade --cask ade
     ```
   </Accordion>
-  <Accordion title="Download the DMG" icon="download">
+  <Accordion title="macOS — download the DMG" icon="download">
     1. Open [GitHub Releases](https://github.com/arul28/ADE/releases/latest) and download the latest ADE macOS `.dmg`.
     2. Open the DMG and drag **ADE.app** into `/Applications`.
     3. Launch ADE from `/Applications` or Spotlight. If macOS asks for confirmation, choose **Open**.
   </Accordion>
+  <Accordion title="Windows (beta)" icon="windows">
+    ADE for Windows ships as a per-user NSIS installer for Windows 10/11 x64. It needs no administrator rights and installs the app, the `ade` CLI, `ade code`, and the background ADE brain into your user profile.
+
+    Public Windows downloads are not published yet — the signed installer ships once the Windows release proof passes. Until then, build from source, and read [ADE on Windows](/getting-started/windows) for the capabilities that differ from macOS.
+  </Accordion>
   <Accordion title="Install the iOS companion" icon="mobile-screen">
-    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Pair it after the Mac app is running from the desktop **Mobile** control.
+    Open [TestFlight](https://testflight.apple.com/join/ZSdJGKPy) on your iPhone and install ADE Mobile. Pair it after the desktop app is running, from the desktop **Mobile** control.
   </Accordion>
 </AccordionGroup>
 
@@ -59,7 +64,7 @@ ADE keeps itself current with a built-in auto-updater: it downloads new releases
 </Note>
 
 <Info>
-ADE's desktop app is macOS-only today. The iOS companion is available through TestFlight. A Windows build is paused — releases ship for macOS.
+macOS is the generally available desktop platform. Windows 10/11 x64 is in beta: the app, brain, and CLI all run, but native OS computer use, the iOS Simulator drawer, and the Notch are macOS-only. [ADE on Windows](/getting-started/windows) lists every difference. The iOS companion is available through TestFlight.
 </Info>
 
 ## Next

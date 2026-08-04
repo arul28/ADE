@@ -66,8 +66,8 @@ export function DownloadPage() {
         key: "mac" as const,
         title: "macOS",
         icon: <Apple className="h-5 w-5" />,
-        note: "Current beta release target: DMG and ZIP from GitHub Releases.",
-        hint: "ADE for computers bundles the app, ade CLI, ade code, and the background ADE brain.",
+        note: "Generally available. macOS 13+, DMG and ZIP from GitHub Releases.",
+        hint: "Signed and notarized. Bundles the app, ade CLI, ade code, and the background ADE brain.",
         actionHref: LINKS.releasesLatest,
         actionLabel: "Download for Mac",
         analyticsFeature: MARKETING_FEATURES.DOWNLOAD_MAC,
@@ -77,13 +77,13 @@ export function DownloadPage() {
         title: "Windows",
         icon: <Monitor className="h-5 w-5" />,
         note: WINDOWS_DOWNLOAD_ENABLED
-          ? "Windows 10 and 11 x64 installer from GitHub Releases."
-          : "Windows x64 preview builds are in release validation.",
+          ? "Beta. Windows 10 and 11 x64 installer from GitHub Releases."
+          : "Beta. Windows 10 and 11 x64. The installer is not published yet.",
         hint: WINDOWS_DOWNLOAD_ENABLED
-          ? "The NSIS installer includes the app, ade CLI, ade code, and the background ADE brain."
-          : "Public download stays off until the signed Windows release is approved.",
+          ? "Per-user installer, no administrator rights. Includes the app, ade CLI, ade code, and the background ADE brain. Native OS computer use, the iOS Simulator, and the Notch are macOS-only."
+          : "The signed installer ships once the Windows release proof passes. Native OS computer use, the iOS Simulator, and the Notch are macOS-only.",
         actionHref: WINDOWS_DOWNLOAD_ENABLED ? LINKS.releasesLatest : LINKS.releases,
-        actionLabel: WINDOWS_DOWNLOAD_ENABLED ? "Download for Windows" : "View Windows release status",
+        actionLabel: WINDOWS_DOWNLOAD_ENABLED ? "Download for Windows" : "Check Windows beta status",
         analyticsFeature: WINDOWS_DOWNLOAD_ENABLED
           ? MARKETING_FEATURES.DOWNLOAD_WINDOWS
           : MARKETING_FEATURES.VIEW_RELEASES,
@@ -92,8 +92,8 @@ export function DownloadPage() {
         key: "linux" as const,
         title: "Linux",
         icon: <Cpu className="h-5 w-5" />,
-        note: "AppImage and package builds are not published yet.",
-        hint: "Use the source build path for now.",
+        note: "No desktop installer is published for Linux.",
+        hint: "Linux runs ADE as a remote runtime that a macOS or Windows desktop drives over SSH. For a local Linux machine, build from source.",
         actionHref: LINKS.releases,
         actionLabel: "Check releases",
         analyticsFeature: MARKETING_FEATURES.VIEW_RELEASES,
@@ -128,8 +128,9 @@ export function DownloadPage() {
         </Reveal>
         <Reveal delay={0.1}>
           <p className="mt-5 max-w-2xl text-pretty text-base leading-relaxed text-muted-fg sm:text-lg">
-            Get ADE for macOS from GitHub Releases, follow Windows x64 release validation, install the iOS companion
-            from TestFlight, or build from source. Computer installs include the app, ade CLI, ade code, and ADE brain.
+            ADE is generally available on macOS and in beta on Windows 10/11 x64. Get the macOS build from GitHub
+            Releases, install the iOS companion from TestFlight, or build from source. Desktop installs include the
+            app, ade CLI, ade code, and the ADE brain.
           </p>
         </Reveal>
 
@@ -263,9 +264,10 @@ export function DownloadPage() {
             />
             <div className="mt-8 grid gap-4 text-sm text-muted-fg md:grid-cols-2">
               <Card tone="solid" className="p-4 shadow-glass-sm">
-                Official macOS releases are signed and notarized. Windows pull-request previews may be unsigned and are
-                intended only for internal testing; public Windows downloads use the signed installer from the approved
-                GitHub Release.
+                Official macOS releases are signed and notarized. The Windows beta installs per user with no
+                administrator rights, x64 only — ARM64 is not supported. Windows pull-request previews may be unsigned
+                and are intended only for internal testing; public Windows downloads use the signed installer from the
+                approved GitHub Release.
               </Card>
               <Card tone="solid" className="p-4 shadow-glass-sm">
                 Cloud features are optional. ADE is designed to keep the repo authoritative and treat hosted results as

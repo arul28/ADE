@@ -6,7 +6,7 @@
 
 <p align="center">
   <strong>A single native workspace for every AI coding agent.</strong><br />
-  <em>macOS, iOS, CLI — synced in real time.</em>
+  <em>macOS, Windows, iOS, CLI — synced in real time.</em>
 </p>
 
 <p align="center">
@@ -28,15 +28,16 @@
   <img src="https://img.shields.io/github/downloads/arul28/ADE/total?style=flat-square&label=downloads&labelColor=12101a&color=a78bfa" alt="Downloads" />
   <a href="https://github.com/arul28/ADE/stargazers"><img src="https://img.shields.io/github/stars/arul28/ADE?style=flat-square&labelColor=12101a&color=a78bfa" alt="Stars" /></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-efe6d0?style=flat-square&labelColor=12101a" alt="macOS 13+" />
+  <img src="https://img.shields.io/badge/Windows-10%2F11%20x64%20beta-efe6d0?style=flat-square&labelColor=12101a" alt="Windows 10/11 x64 beta" />
 </p>
 
 <p align="center">
   <a href="https://ade-app.dev"><img src="assets/readme/hero.png" alt="ADE — every AI coding tool, one app that runs everywhere" width="900" /></a>
 </p>
 
-ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same worktree-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your Mac.
+ADE runs **Claude Code, Codex, Cursor, Factory Droid, OpenCode** — every major AI coding agent — inside one native workspace. Claude runs through the bundled Claude Agent SDK, while desktop and `ade code` share the same worktree-scoped chat runtime. Every task is its own git worktree, so agents ship features in parallel. Review and merge PRs in-app. Approve a diff from your phone while another agent tests on your desktop.
 
-Free, open source, local-first. Bring your own keys or subs.
+Generally available on macOS. Windows 10/11 x64 is in beta. Free, open source, local-first. Bring your own keys or subs.
 
 ---
 
@@ -105,7 +106,7 @@ An always-on CTO with context across every worktree. Pulls work from Linear, dis
 <td width="45%" valign="middle">
 
 ### Everything above. On your phone.
-Every worktree, every agent, every PR — synced to iOS. Start a task on macOS, approve the diff from the train.
+Every worktree, every agent, every PR — synced to iOS. Start a task on the desktop, approve the diff from the train.
 
 </td>
 <td width="55%" valign="middle" align="center">
@@ -124,7 +125,7 @@ Plus files, terminals, git history, the workspace graph, multi-tasking, Linear s
 
 ## Install
 
-Download ADE for macOS from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), open it on any git repo, and add a provider key (or subscription) in Settings. Install the iOS companion from [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). Runs in Guest Mode without an account.
+Download ADE for macOS from [**GitHub Releases**](https://github.com/arul28/ADE/releases/latest), open it on any git repo, and add a provider key (or subscription) in Settings. Windows 10/11 x64 is in beta; see [Windows](#windows) below. Install the iOS companion from [**TestFlight**](https://testflight.apple.com/join/ZSdJGKPy). Runs in Guest Mode without an account.
 
 ### macOS
 
@@ -149,7 +150,15 @@ direct pairing reachable when the devices are on different networks.
 
 ### Windows
 
-Windows releases are paused for now — current releases ship macOS only. The Windows build pipeline still exists (commented out in the release workflow) and will return in a future release.
+Windows 10/11 **x64** is supported in beta. ARM64 is not supported.
+
+ADE for Windows installs with a per-user NSIS installer — no administrator rights — and lays down the app, the `ade` CLI, `ade code`, and the background ADE brain under your user profile. The brain runs from a per-user startup entry, so it returns at the next sign-in without a service install or an elevated shell.
+
+Public Windows installers are not published yet. The signed installer ships once the Windows release proof passes; until then the release assets are macOS-only and the Windows build comes from source. Pull-request preview builds are unsigned and are for internal testing.
+
+What is not on Windows: native OS computer use (screenshot, video, GUI automation), the iOS Simulator drawer and Xcode Preview, and the Notch. App Control over CDP, the built-in browser, proof-file ingestion, phone pairing, and the local brain all work. Claude Code turns respawn the CLI instead of reattaching to a live background job, and the Claude Code sandbox is unavailable (permission modes still apply). A Windows machine can drive a remote macOS or Linux runtime over SSH, but cannot itself be an SSH bootstrap target.
+
+Requirements: Windows 10 or 11 x64, Git for Windows on `PATH`, Node 22.13+ for headless CLI workflows. Full detail: [docs/development/windows-support.md](docs/development/windows-support.md).
 
 ## CLI
 

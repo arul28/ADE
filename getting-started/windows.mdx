@@ -1,0 +1,74 @@
+---
+title: "ADE on Windows"
+description: "What the Windows beta supports, what is missing compared with macOS, and how to install it."
+icon: "windows"
+---
+
+ADE is generally available on macOS and runs in **beta on Windows**. The Windows build is the same app, brain, and CLI — lanes, agent chat, PRs, terminals, the built-in browser, and phone pairing all work. A short list of macOS-native capabilities has no Windows counterpart, and this page names all of them.
+
+## Requirements
+
+<CardGroup cols={3}>
+  <Card title="Windows 10 or 11, x64" icon="windows">
+    ARM64 is not supported. There is no emulated fallback.
+  </Card>
+  <Card title="Git" icon="git-alt">
+    Git for Windows on `PATH` — ADE uses branches and worktrees to run lanes.
+  </Card>
+  <Card title="One AI provider" icon="key">
+    Claude Code, Codex, Cursor, Factory Droid, or OpenCode. Cursor installs natively; WSL is not required.
+  </Card>
+</CardGroup>
+
+## Install
+
+The Windows installer is a **per-user NSIS installer**. It does not ask for administrator rights, installs into your user profile, and adds the app, the `ade` CLI, `ade code`, and the background ADE brain.
+
+The brain runs from a per-user startup entry, so it comes back at your next sign-in without a service install or an elevated shell.
+
+<Warning>
+Public Windows downloads are not published yet. The signed installer ships once the Windows release proof passes; until then the [releases page](https://github.com/arul28/ADE/releases) lists macOS assets only, and the Windows build is available by building from source.
+</Warning>
+
+Check the [download page](https://ade-app.dev/download) for current status. Pull-request preview builds are unsigned and are for internal testing, not general use.
+
+## What is different from macOS
+
+<CardGroup cols={2}>
+  <Card title="Computer use is browser-only" icon="camera">
+    Native OS screenshot, video, and GUI automation are unavailable. App Control over CDP, the built-in browser, and attaching proof files with `ade proof attach` all work.
+  </Card>
+  <Card title="No iOS Simulator or Xcode Preview" icon="mobile-screen">
+    Both need macOS and Xcode. The Simulator drawer is hidden on Windows.
+  </Card>
+  <Card title="No ADE Notch" icon="ellipsis">
+    The Notch is a macOS window-server feature with no Windows counterpart.
+  </Card>
+  <Card title="Claude Code turns are slower" icon="clock">
+    Each follow-up prompt respawns the CLI instead of replying into a live background job, so in-flight context is not carried over.
+  </Card>
+  <Card title="No Claude Code sandbox" icon="shield">
+    Permission modes work; the sandbox does not. Claude Code sandboxing is WSL-2 only.
+  </Card>
+  <Card title="Credentials use DPAPI" icon="lock">
+    There is no Keychain. Secrets are protected per Windows user account rather than per item.
+  </Card>
+</CardGroup>
+
+Two more boundaries worth knowing before you plan around them:
+
+- **Remote machines work in one direction.** A Windows machine can drive a remote macOS or Linux runtime over SSH, provided you installed a released build. Windows cannot be the *target* of an SSH bootstrap — you cannot point another machine's ADE at a Windows box.
+- **Some operations need real symlinks.** ADE uses junctions where it can. The rest require Developer Mode or an elevated shell, which Windows requires for symlink creation.
+
+Anything else that looks weaker or missing on Windows is a bug worth reporting, not a known gap.
+
+## Next
+
+<CardGroup cols={2}>
+  <Card title="Connect a provider" icon="key" href="/getting-started/connect-provider">
+    Add Claude Code, Codex, Cursor, Factory Droid, or OpenCode.
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/reference/troubleshooting">
+    Diagnostics for the brain, providers, and sync.
+  </Card>
+</CardGroup>

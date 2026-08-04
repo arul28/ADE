@@ -6,6 +6,10 @@ icon: "terminal"
 
 On macOS, ADE captures screenshots and short recordings with the system's built-in tools — no extra install. The first capture may ask for **Screen Recording** permission in **System Settings → Privacy & Security**; grant it to ADE, then quit and relaunch.
 
+<Note>
+OS-level screenshot and recording capture is macOS-only. On [Windows](/getting-started/windows), `ade proof capture` is unavailable and reports that capture is not supported; browser traces, console logs, and `ade proof attach <path>` work normally.
+</Note>
+
 Both you and agents capture proof the same way, through the `ade proof` CLI. Captures are intentional — you run a command when a moment deserves evidence. Each capture is scoped to the chat or lane it runs in: agents launched inside ADE pick up the right owner automatically from the session they're running in, so most captures need no owner flags at all.
 
 ## Capture, then it's filed
