@@ -140,7 +140,14 @@ export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "st
  * left to signal on either platform.
  */
 export function signalChildProcessTree(child: KillableChildProcess, signal: NodeJS.Signals): boolean {
-  if (child.exitCode !== null || child.signalCode !== null) return false;
+  // Coalesce through `?? null`: an ABSENT field means "not tracked", not
+  // "already exited". A bare `!== null` reads `undefined` as exited and refuses
+  // to kill, which silently leaks the whole tree — the exact failure this
+  // function exists to prevent, and the more dangerous direction of the two.
+  // Handles reach here through `as unknown as ChildProcess` casts that the type
+  // cannot police, so only an explicit non-null value counts as proof the pid
+  // was reaped.
+  if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
   const pid = child.pid ?? null;
 
   if (process.platform === "win32") {

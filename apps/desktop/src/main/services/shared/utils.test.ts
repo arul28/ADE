@@ -751,6 +751,28 @@ describe("signalChildProcessTree", () => {
     signalChildProcessTree(child, "SIGTERM");
     expect(kills).toContain("SIGTERM");
   });
+
+  // The guard must read an ABSENT exitCode/signalCode as "not tracked", not as
+  // "already exited". Callers reach this through `as unknown as ChildProcess`
+  // casts the type cannot police, so a bare `!== null` silently stops killing
+  // them and leaks the tree — the failure this function exists to prevent, and
+  // strictly worse than the PID-reuse case the guard is aimed at.
+  it("signals a child whose handle does not expose exitCode or signalCode", () => {
+    const kills: NodeJS.Signals[] = [];
+    const child = {
+      pid: 999_999,
+      stdin: null,
+      stdout: null,
+      stderr: null,
+      kill: (signal?: NodeJS.Signals | number) => {
+        kills.push(signal as NodeJS.Signals);
+        return true;
+      },
+    } as unknown as Parameters<typeof signalChildProcessTree>[0];
+
+    expect(signalChildProcessTree(child, "SIGTERM")).toBe(true);
+    expect(kills).toContain("SIGTERM");
+  });
 });
 
 describe("terminateChildProcessTree", () => {

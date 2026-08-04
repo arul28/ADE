@@ -202,7 +202,10 @@ export function terminateProcessTree(
   onWindowsTaskkillFailure?: (detail: ProcessTreeFailureDetail) => void,
 ): boolean {
   if (process.platform === "win32") {
-    if (child.exitCode !== null || child.signalCode !== null) return false;
+    // `?? null` for the same reason as `signalChildProcessTree`: an absent
+    // field means "not tracked", and reading it as "already exited" refuses the
+    // kill and leaks the tree.
+    if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
     // `taskkill` exiting 0 means the kill was dispatched, not that every
     // descendant is gone, so it cannot stand in for signaling the child we
     // actually hold. Run both: the tree kill reaches grandchildren that
