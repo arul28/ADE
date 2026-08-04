@@ -1394,16 +1394,18 @@ describe("sessionService resume metadata", () => {
       "select status_note as statusNote from terminal_sessions where id = ?",
       ["session-markers"],
     )?.statusNote).toBe(`${"n".repeat(71)}…`);
+    // Nine words survive: six words is the guideline agents are given, but the
+    // only enforced bound is the 72-character display budget.
     service.setStatusNote(
       "session-markers",
       "  CI is green and waiting for Codex review now  ",
     );
     expect(service.get("session-markers")?.statusNote)
-      .toBe("CI is green and waiting for…");
+      .toBe("CI is green and waiting for Codex review now");
     expect(db.get<{ statusNote: string }>(
       "select status_note as statusNote from terminal_sessions where id = ?",
       ["session-markers"],
-    )?.statusNote).toBe("CI is green and waiting for…");
+    )?.statusNote).toBe("CI is green and waiting for Codex review now");
     service.setStatusNote("session-markers", "界".repeat(100));
     expect(service.get("session-markers")?.statusNote).toBe(`${"界".repeat(71)}…`);
     service.setStatusNote("session-markers", "   ");
@@ -1416,7 +1418,7 @@ describe("sessionService resume metadata", () => {
     expect(db.get<{ statusNote: string }>(
       "select status_note as statusNote from terminal_sessions where id = ?",
       ["session-markers"],
-    )?.statusNote).toBe("Completed fixes and waiting for release…");
+    )?.statusNote).toBe("Completed fixes and waiting for release review now");
     service.requestAttention("session-markers", `  ${"a".repeat(510)}  `);
     expect(service.get("session-markers")).toEqual(expect.objectContaining({
       settledAt: null,
