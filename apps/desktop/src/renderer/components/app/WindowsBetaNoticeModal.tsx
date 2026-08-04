@@ -18,9 +18,8 @@ import { buildBugReportIssueUrl, detectOsRelease } from "./bugReportIssueUrl";
 
 export type WindowsBetaNoticeModalProps = {
   /**
-   * Only used for diagnostics and for the separate-ADE-home line: a packaged
-   * alpha/beta build runs out of its own ADE home, a Stable install does not.
-   * It is never rendered as user-facing chrome.
+   * Reported in the prefilled bug report so a report names the exact build.
+   * Never rendered as user-facing chrome — release channels are dev vocabulary.
    */
   channel: AppPackageChannel;
   onClose: () => void;
@@ -28,15 +27,6 @@ export type WindowsBetaNoticeModalProps = {
   appInfoOverride?: AppInfo | null;
   osReleaseOverride?: string | null;
 };
-
-/**
- * ADE home for this build, mirroring main.ts `applyPackagedChannelDefaults()`:
- * it only sets `ADE_HOME=~/.ade-<channel>` for alpha/beta packages, so a Stable
- * install shares the default ADE home and must not claim otherwise.
- */
-function separateAdeHome(channel: AppPackageChannel): string | null {
-  return channel === "stable" ? null : `~/.ade-${channel}`;
-}
 
 function LinkRow({
   icon,
@@ -160,7 +150,6 @@ export function WindowsBetaNoticeModal({
 
   const version = appInfo?.appVersion ?? null;
   const issueUrl = buildBugReportIssueUrl({ appInfo, channel, osRelease });
-  const adeHome = separateAdeHome(channel);
 
   return (
     <div
@@ -261,24 +250,6 @@ export function WindowsBetaNoticeModal({
             are rougher here than on macOS or Linux, and a few are still missing. When something
             breaks, reporting it is what closes the gap.
           </div>
-
-          {adeHome ? (
-            <div
-              style={{
-                fontFamily: SANS_FONT,
-                fontSize: 12,
-                lineHeight: 1.55,
-                color: COLORS.textMuted,
-                padding: "9px 11px",
-                borderRadius: 9,
-                border: `1px solid ${COLORS.borderMuted}`,
-                background: "color-mix(in srgb, var(--color-fg) 3%, transparent)",
-              }}
-            >
-              This build keeps its data in a separate ADE home ({adeHome}), so it never touches
-              another ADE install on this machine.
-            </div>
-          ) : null}
 
           <div style={{ display: "grid", gap: 8 }}>
             <LinkRow

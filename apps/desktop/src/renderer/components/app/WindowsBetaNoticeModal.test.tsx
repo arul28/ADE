@@ -139,38 +139,31 @@ describe("WindowsBetaNoticeModal", () => {
     );
     const text = screen.getByRole("dialog").textContent ?? "";
     expect(text).toContain("ADE on Windows is in beta");
-    // The one place an "alpha"/"beta" token may appear is the ADE home PATH of a
-    // dev build; no channel label is rendered as chrome.
-    expect(text.replace(/~\/\.ade-alpha/g, "")).not.toMatch(/alpha/i);
+    // No channel vocabulary at all now. The ADE-home callout was the only place
+    // an alpha/beta token could legitimately reach a user, and it is gone.
+    expect(text).not.toMatch(/alpha/i);
     expect(text).not.toMatch(/beta 1\.2\.51|1\.2\.51 beta/i);
   });
 
-  it("states the separate ADE home on a channel build that has one", () => {
-    installAde("alpha");
-    render(
-      <WindowsBetaNoticeModal
-        channel="alpha"
-        onClose={() => {}}
-        appInfoOverride={appInfo({ packageChannel: "alpha" })}
-        osReleaseOverride={null}
-      />,
-    );
-    expect(screen.getByText(/~\/\.ade-alpha/)).toBeTruthy();
-  });
-
-  it("does NOT claim a separate ADE home on a stable install", () => {
-    installAde("stable");
-    render(
-      <WindowsBetaNoticeModal
-        channel="stable"
-        onClose={() => {}}
-        appInfoOverride={appInfo({ packageChannel: "stable" })}
-        osReleaseOverride={null}
-      />,
-    );
-    const text = screen.getByRole("dialog").textContent ?? "";
-    expect(text).not.toMatch(/separate ADE home/);
-    expect(text).not.toMatch(/~\/\.ade/);
+  it("never mentions an ADE home, on any channel", () => {
+    // The callout was dev-facing plumbing in a user-facing dialog: it only ever
+    // rendered on channel builds, so most Windows users never saw it, and the
+    // ones who did did not need it.
+    for (const channel of ["alpha", "beta", "stable"] as const) {
+      installAde(channel);
+      const { unmount } = render(
+        <WindowsBetaNoticeModal
+          channel={channel}
+          onClose={() => {}}
+          appInfoOverride={appInfo({ packageChannel: channel })}
+          osReleaseOverride={null}
+        />,
+      );
+      const text = screen.getByRole("dialog").textContent ?? "";
+      expect(text).not.toMatch(/separate ADE home/);
+      expect(text).not.toMatch(/~\/\.ade/);
+      unmount();
+    }
   });
 
   it("opens the prefilled issue URL through the external-link bridge, and still reports the channel", async () => {
