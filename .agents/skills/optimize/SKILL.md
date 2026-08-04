@@ -27,6 +27,8 @@ Be concrete. Every optimization should be backed by at least one of:
 
 Do not make speculative cleanup the main result. If you cannot reproduce a suspected issue, leave a short note and move to the next measurable surface.
 
+**Every optimization must hold on Windows too.** Parity is a default requirement for all new code, and perf work is where it quietly breaks: caching a path as a raw string then comparing it with `===`, replacing a process-tree kill with a cheaper `child.kill()`, dropping a `windowsHide: true` spawn option, removing a file-lock retry loop as "dead code", or reusing a PID as identity. Check any such change against `../quality/references/windows-quirks.md` first. A measurement taken only on macOS does not establish that the Windows path is unaffected — say which host produced each number. If a win is achievable on one platform only, keep the other platform's correct path rather than regressing it, and say so in the final report.
+
 ---
 
 ## Phase 0: Understand the surface

@@ -4,7 +4,8 @@ ADE-specific correctness rules for the `/quality` Track A review. These encode
 bug classes ADE has actually shipped and had to fix. Each rule is a **check**:
 confirm the pattern against the real diff before raising a finding, and verify
 any named service/flag still exists (this repo moves fast) rather than asserting
-it from this list. Companion: the general `correctness-security-review.md`.
+it from this list. Companions: the general `correctness-security-review.md`, and
+`windows-quirks.md` for the Windows failure classes rule 10 governs.
 
 ---
 
@@ -127,8 +128,16 @@ succeed.
 
 ## 10. Windows foundation parity
 
+**Class:** Windows parity is a **default requirement** for all new code, not a
+conditional check on obviously-platform-shaped diffs. The regressions that ship
+are the ones in code nobody classified as path-or-process work. Every diff gets
+Windows review; `windows-quirks.md` is the failure-class list and names the
+canonical helper for each one. A capability that cannot work on Windows is a
+`/quality` gate row (gate reason three), never a silent divergence.
+
 **Check:** When a lane touches path construction, process launch, executable
-lookup, local IPC, SQLite/native artifacts, service lifecycle, or Computer Use:
+lookup, local IPC, SQLite/native artifacts, service lifecycle, or Computer Use,
+these foundation-specific checks apply on top of the default review:
 
 - Windows service health means the channel runtime answers on the expected
   per-user pipe with the recorded PID; a live supervisor alone is not health.

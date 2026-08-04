@@ -66,6 +66,27 @@ Internal docs live under `docs/` (rebuilt tree). The public Mintlify site
 
 ---
 
+## Windows parity (load when the lane touches a Windows-sensitive surface)
+
+Windows parity is a default requirement for all new code, so a lane hitting any
+of these paths starts Windows-aware rather than discovering it in `/quality`.
+
+| Path pattern | Windows docs |
+|---|---|
+| Anything matching `**/*[Ww]indows*`, `**/win32*`, `apps/ade-cli/src/serviceManager/**`, `apps/ade-cli/src/lib/trustedWindowsTools.ts` | `WINDOWS_PORT.md` + `docs/development/windows-support.md` |
+| `**/services/shared/processExecution.ts`, `services/shared/utils.ts`, `services/pty/**`, `services/processes/**`, `services/sessions/**` (process launch, kill, ConPTY) | `docs/development/windows-support.md` |
+| `**/pathCompare.ts`, `renderer/lib/pathUtils.ts`, `services/projects/machineLayout.ts`, any new path construction or comparison | `docs/development/windows-support.md` |
+| `services/runtime/**`, `localIpcListenOptions.ts`, local IPC / socket / named-pipe endpoints | `docs/development/windows-support.md` |
+| `services/credentials/**`, `safeStorage`/DPAPI/Keychain callers | `docs/development/windows-support.md` |
+| `services/computerUse/**`, `services/appControl/**`, `renderer/lib/platform.ts`, any platform capability gate | `WINDOWS_PORT.md` |
+| `.github/workflows/**` (Windows jobs), `scripts/package-channel.mjs`, packaging/native artifacts | `docs/development/windows-release-proof.md` |
+| Release, signing, installer, updater feed (`latest.yml`) | `docs/playbooks/windows-signed-release.md` + `docs/development/windows-release-proof.md` |
+
+Companion reference for the failure classes themselves (read alongside the docs,
+not instead of them): `.agents/skills/quality/references/windows-quirks.md`.
+
+---
+
 **Cross-cutting:** any change to `preload/`, `shared/ipc.ts`, or `registerIpc`
 also loads `docs/ARCHITECTURE.md` (IPC + data plane sections). Keep IPC
 contracts, preload types, shared types, and renderer usage in sync — see the

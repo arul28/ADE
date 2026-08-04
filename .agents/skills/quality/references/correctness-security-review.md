@@ -50,6 +50,13 @@ elsewhere. Trace side effects end-to-end:
   (in-process dev vs runtime-backed/daemon production) can crash in the mode it
   wasn't tested in. This is ADE's most common production-only bug class — see
   `ade-review-rules.md` §1–2.
+- **The Windows build is one of those surfaces.** Parity is a default
+  requirement for all new code, so trace every change through Windows the same
+  way you trace it through the daemon path — not only when the diff looks
+  path-or-process-shaped. `windows-quirks.md` lists the classes and the helper
+  each one has; a diff that hand-rolls what a named helper already does is a
+  finding. A capability that genuinely cannot work on Windows is not a finding
+  you fix, it is a gate row (see the `/quality` skill's Windows parity rules).
 
 ## 2. Breaking Devex (developer experience)
 

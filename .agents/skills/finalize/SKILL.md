@@ -46,6 +46,8 @@ Outputs are exactly two things: the Phase 4 summary, and fatal-error messages (t
 - Do NOT skip the sharded test run or substitute project-subset runs for it. `/finalize` is the gate that runs the full suite.
 - Do NOT use bare `pkill -f vitest` / `pkill -f node`. Always scope to `apps/desktop`, `apps/ade-cli`, or `apps/web`.
 - Do NOT declare remote PR review clean from `/finalize` alone — see Phase 3j handoff.
+- Do NOT let a simplification break Windows. Parity is a default requirement for all new code, so every Phase 2 rewrite is subject to `../quality/references/windows-quirks.md` — a "cleaner" `===` path comparison, a `child.kill()` replacing `terminateProcessTree`, a hand-built shell string replacing structured argv, or a lock check narrowed to `EEXIST` are all regressions, not simplifications. Platform branches that look redundant usually are not.
+- Do NOT treat a Windows-host local run as authoritative. `WINDOWS_PORT.md` records that POSIX-only fixtures, Unix-socket browser tests, `chmod` assertions, and some SQLite teardown races fail on a Windows host by design; compare against that baseline before calling the gate red.
 
 ## Pipeline Overview
 

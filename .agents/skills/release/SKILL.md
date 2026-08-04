@@ -9,12 +9,19 @@ Use this skill when the user wants to release ADE, automate releases from a
 cron/agent, decide whether a release is needed, publish a desktop release, or
 ship a TestFlight build.
 
-This is a **GitHub desktop + local ASC iOS release flow**. Desktop releases
-must use the repository GitHub Actions release workflow so macOS updater assets
-are produced reproducibly as per-arch ZIP/DMG artifacts, and so the signed
-Windows installer is produced on a Windows runner this Mac cannot provide. This
-Mac may still run checks, create release docs/tags, monitor and recover the
-workflow, and build and upload iOS/TestFlight releases through ASC.
+This is a **GitHub desktop + local ASC iOS release flow**. Desktop releases must
+use the repository GitHub Actions release workflow for **both** platforms: macOS
+updater assets are produced reproducibly as per-arch ZIP/DMG artifacts on a macOS
+runner, and the signed Windows installer is produced on a Windows runner. Neither
+is built from the release host, whatever that host is — macOS and Windows are
+peers here, not a primary and a follow-up.
+
+The release host runs checks, creates release docs/tags, and monitors and
+recovers the workflow. The only host-dependent phase is iOS: building and
+uploading TestFlight releases through ASC requires a macOS host. On a Windows
+host, run the desktop release normally and stop before the mobile phase, stating
+that iOS needs a macOS host — do not report a desktop-only release as complete
+when iOS was also in scope.
 
 A **preflight** is a cheap check that runs before expensive build/upload work.
 Use preflights to catch release blockers while fixes can still be committed
@@ -35,7 +42,7 @@ without burning a notarization, TestFlight upload, or build number.
   an emergency unblock. Normal mobile releases must include the app, widgets,
   and App Clip after signing is fixed.
 - **Desktop release uses GitHub Actions only.** Do not build, sign, notarize, or
-  upload desktop release assets from this Mac unless the user explicitly asks
+  upload desktop release assets from the release host unless the user explicitly asks
   for a one-off manual recovery.
 - **No universal updater ZIPs.** `latest-mac.yml` must reference per-arch
   `arm64` and `x64` ZIPs. Never publish a `latest-mac.yml` that points to
@@ -58,9 +65,12 @@ without burning a notarization, TestFlight upload, or build number.
 
 ## Machine Notes
 
-This release lane runs on an Apple Silicon Mac (`arm64`), but desktop release
-artifacts are produced remotely by GitHub Actions. Treat local desktop packaging
-scripts as diagnostic/recovery tools only.
+Detect the release host rather than assuming it (`uname -s` / `process.platform`)
+— this lane runs on Windows or on an Apple Silicon Mac. Either way, desktop
+release artifacts for both platforms are produced remotely by GitHub Actions;
+treat local desktop packaging scripts as diagnostic/recovery tools only. Host
+type affects exactly two things: shell syntax for the commands below, and
+whether the iOS/TestFlight phase can run at all (macOS only).
 
 Desktop updater correctness requires, on macOS:
 
@@ -328,7 +338,7 @@ Do this only if desktop scope is `yes`.
 
 The desktop happy path is GitHub Actions. Do not run local desktop release
 commands such as `release:mac:local`, `dist:mac:universal:signed`,
-`dist:mac:perarch:signed`, or manual `gh release upload` from this Mac.
+`dist:mac:perarch:signed`, or manual `gh release upload` from the release host.
 
 ### Create the release tag
 

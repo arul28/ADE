@@ -118,5 +118,15 @@ For each finding:
 4. **Auto-fix** — the synthesis step applies it directly if it is unambiguous and
    behavior-preserving
 
+**A judo move must not cost Windows parity.** Windows parity is a default
+requirement, and platform handling is exactly the kind of code that reads as
+redundant. Before proposing a move, check it against `windows-quirks.md`:
+collapsing `pathsEqual` back to `===`, replacing `terminateProcessTree` with
+`child.kill()`, folding a `.cmd`/`.ps1`/`PATHEXT` branch into one call,
+narrowing a lock check to `EEXIST`, or deleting a "duplicate" `win32` branch are
+regressions dressed as simplifications. Standard 5 (direct code) and standard 7
+(canonical layers) both prefer the **named cross-platform helper** over an
+inlined shortcut — that is the simpler code here, not the platform branch.
+
 Do not list findings you will not fix. Every finding either gets fixed in this
 pass or is flagged as requiring human judgment with a clear explanation of why.

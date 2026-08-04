@@ -11,9 +11,13 @@ Audit the work you just did in this session. Don't stop at "it compiles" or "it 
 
 3. **Hunt edge cases.** Off-by-ones, empty collections, unicode, concurrency, first-run vs. repeat-run, reduce-motion / accessibility, different device/viewport sizes, streaming vs. terminal states, cancellation, partial failure. Pick the categories that actually apply to what you changed and work through them.
 
+   **Windows always applies** — parity is a default requirement, not a category you skip because the diff "isn't platform code". Walk the Windows classes in `../quality/references/windows-quirks.md`: path case-insensitivity and `===`/`startsWith` comparisons, separators and drive letters, process-tree kills and detached-child leaks, env for the installed app, named pipes vs Unix sockets, file locking (open files can't be deleted or renamed), DPAPI/`safeStorage` instead of Keychain, PowerShell vs `cmd.exe` quoting, `PATHEXT` executable resolution, and capability gates that name the capability rather than the whole product.
+
 4. **Check the surrounding contract.** Did the change break any callers, tests, types, styling, or invariants elsewhere? Grep for references to anything you removed or renamed and confirm.
 
-5. **Fix what you find.** For each real bug or gap, make the fix directly. For anything genuinely ambiguous, call it out rather than guessing.
+5. **Fix what you find.** For each real bug or gap, make the fix directly — including Windows breakage; a Windows bug is a bug. For anything genuinely ambiguous, call it out rather than guessing.
+
+   If a capability genuinely **cannot** work on Windows, stop and ask instead of fixing or shipping it half-working. State the exact capability and the OS-level reason, say whether macOS/Linux keep it, then offer **hidden** (absent on Windows) vs **disabled with a reason shown** vs **removed** with a recommendation. Those are different user experiences — the human picks per item.
 
 6. **Report.** End with a short list: what you checked, what you fixed, and anything you deliberately left alone (and why).
 

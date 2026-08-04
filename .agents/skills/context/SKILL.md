@@ -61,6 +61,27 @@ If the area maps to a performance skill (`ade-perf-boot`, `ade-perf-lanes`,
 `ade-perf-prs`, `ade-perf-work`, or `ade-tui-web-preview`), open that skill too
 **before editing** — it records measured patterns you must preserve.
 
+### Windows parity docs
+
+Windows parity is a **default requirement** for all new ADE code — Windows is
+part of "done", not a follow-up. If the lane touches any Windows-sensitive
+surface in the doc-map's **Windows parity** table (paths, process launch/kill,
+local IPC, credentials, capability gates, packaging, release), load the mapped
+Windows docs in this step and name them in the summary:
+
+- `WINDOWS_PORT.md` (root) — port status, the readiness table, the original
+  release-blocking findings and how each was closed.
+- `docs/development/windows-support.md` — installed-host behavior: supervisor,
+  pipe/channel isolation, provider/PTY matrix, uninstall residue.
+- `docs/development/windows-release-proof.md` — what counts as Windows proof.
+- `docs/playbooks/windows-signed-release.md` — signing/installer/updater flow.
+
+Also open `.agents/skills/quality/references/windows-quirks.md` before editing —
+it lists the failure classes and the canonical helper for each, so you write
+Windows-correct code the first time instead of having `/quality` find it.
+Where parity is genuinely impossible, that is a human decision (hide / disable
+with a reason shown / remove), not something to work around silently.
+
 ---
 
 ## Step 4 — Ongoing work (the *why*, not just filenames)
@@ -92,6 +113,8 @@ lanes, PRs, and proof/artifacts (Electron + React + TS; CLI in `apps/ade-cli`).
 **Branch:** [name] · [N changed files | fresh lane]
 **Area:** [feature] — [desktop / cli / tui / ios / cross-cutting]
 **Docs:** [loaded list]   **Perf skill:** [ade-perf-* loaded | none for this area]
+**Windows:** [Windows docs loaded — parity required for all new code | not a
+Windows-sensitive surface, parity still required]
 
 **In flight:** [what the work does + why, or "Fresh lane — no in-flight work"]
 **Tracking:** [open N / done N · Linear: IDs or none · gaps if any]
