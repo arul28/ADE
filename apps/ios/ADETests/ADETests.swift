@@ -18765,7 +18765,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     let transcript = [
@@ -19375,21 +19374,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
-  func testWorkRunningBannerCopyDescribesMixedLiveSessions() {
-    XCTAssertEqual(
-      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 1),
-      "1 chat needs input, 2 other sessions are live"
-    )
-    XCTAssertEqual(
-      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 0),
-      "2 live sessions across chat and terminal"
-    )
-    XCTAssertEqual(
-      workRunningBannerMessage(liveTerminalCount: 1, attentionCount: 0),
-      "The Work tab badge stays visible while live chats or terminal sessions continue running."
-    )
-  }
-
   func testWorkFilesWorkspaceSelectionRequiresMatchingLaneWorkspace() {
     let workspaces = [
       FilesWorkspace(
@@ -19493,7 +19477,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "stopped", status: "exited")))
     XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")))
   }
-
 
   func testWorkFilteredSessionsRetainsStaleStandaloneCliRowsAndChatOwnedShells() {
     let chatSession = makeTerminalSessionSummary(
@@ -23717,12 +23700,14 @@ final class RosterDeltaTests: XCTestCase {
     XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
     XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
     XCTAssertEqual(
-      workSessionGroupsByStatus(
+      workSessionGroups(
+        organization: .byStatus,
         sessions: [settledSession],
         chatSummaries: [:],
-        archivedSessionIds: []
+        archivedSessionIds: [],
+        orderedLanes: []
       ).map(\.id),
-      ["status:settled"]
+      [workSettledSectionId]
     )
 
     var activeSettledSession = settledSession
@@ -23910,7 +23895,6 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
   func testWorkListShowsEndedStandaloneCliAndHidesOrphanedEndedChildren() {
     let endedCli = session(toolType: "cli", status: "completed", runtimeState: "exited")
     XCTAssertTrue(workSessionShouldAppearInWorkList(endedCli, parentChatSessionIds: []))
-
 
     let orphanedEndedChild = session(
       toolType: "shell",

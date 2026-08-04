@@ -277,7 +277,7 @@ import type { createUsageTrackingService } from "../../../../desktop/src/main/se
 import type { ProductAnalyticsService } from "../../../../desktop/src/main/services/analytics/productAnalyticsService";
 import { parseProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
 import { deleteTerminalSessionWithRuntimeCleanup } from "../../../../desktop/src/main/services/sessions/deleteTerminalSession";
-import { settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
+import { dismissPendingInputBeforeSettle, settleTerminalSession } from "../../../../desktop/src/main/services/sessions/settleTerminalSession";
 import type { createSessionDeltaService } from "../../../../desktop/src/main/services/sessions/sessionDeltaService";
 import type { createSessionService } from "../../../../desktop/src/main/services/sessions/sessionService";
 import { getSharedModelPickerStore, type ModelPickerStore } from "../modelPickerStore";
@@ -4084,8 +4084,37 @@ function registerWorkRemoteCommands({ args, register }: RemoteCommandRegistratio
     const sessionId = requireString(payload.sessionId, "session.unsettleSession requires sessionId.");
     return { ok: args.sessionService.unsettleSession(sessionId), sessionId };
   });
-  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) =>
-    args.sessionService.settleSessions(parseRemoteSessionIds(payload, "session.settleSessions")));
+  // Bulk settle. `dismissPendingInput` is OPTIONAL and additive: mobile sends
+  // it for the "Dismiss & settle" row action (the same thing desktop passes to
+  // `sessions.settle`), while older clients omit it and get the historical
+  // settle-only behaviour. The settle write itself is unchanged so the reply
+  // stays the changed-id list clients match on.
+  register("session.settleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
+    const sessionIds = parseRemoteSessionIds(payload, "session.settleSessions");
+    if (payload.dismissPendingInput === true) {
+      // Single-session only, ON PURPOSE. `dismissPendingInputBeforeSettle`
+      // throws for a row with nothing pending, and it mutates (clears pending
+      // input, forces the pty runtime idle) as it goes — so a mixed batch would
+      // dismiss the first k-1 rows, throw on the k-th, and settle none of them.
+      // Reject the combination before touching anything rather than leaving a
+      // half-applied batch behind a plain error. Do not "generalize" this
+      // without first making the dismiss loop atomic.
+      if (sessionIds.length !== 1) {
+        throw new Error(
+          "session.settleSessions supports dismissPendingInput for a single session only; send one id per request.",
+        );
+      }
+      // Single call, not a loop: the guard above proved there is exactly one id,
+      // and a loop here would read as a batch the guard exists to forbid.
+      await dismissPendingInputBeforeSettle({
+        sessionId: sessionIds[0]!,
+        sessionService: args.sessionService,
+        agentChatService: args.agentChatService ?? null,
+        ptyService: args.ptyService,
+      });
+    }
+    return args.sessionService.settleSessions(sessionIds);
+  });
   register("session.unsettleSessions", { viewerAllowed: true, queueable: true }, async (payload) => {
     args.sessionService.unsettleSessions(parseRemoteSessionIds(payload, "session.unsettleSessions"));
     return { ok: true };

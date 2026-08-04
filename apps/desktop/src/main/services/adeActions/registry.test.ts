@@ -1591,6 +1591,35 @@ describe("runtime session actions", () => {
     expect(runtime.sessionDeltaService?.getSessionDelta).toHaveBeenCalledWith("session-1");
   });
 
+  // The sync remote-command path honours `dismissPendingInput` for a single
+  // session. This bulk action never has, and used to drop the key silently — so
+  // the same argument meant "dismiss the prompt" over sync and nothing at all
+  // here. Settling while quietly ignoring half the request is the failure mode.
+  it("refuses a bulk settle that asks to dismiss pending input", () => {
+    const settleSessions = vi.fn(() => ["session-1"]);
+    const runtime = {
+      sessionService: {
+        get: vi.fn(),
+        list: vi.fn(),
+        settleSessions,
+      },
+    } as unknown as Parameters<typeof getAdeActionDomainServices>[0];
+    const sessionService = getAdeActionDomainServices(runtime).session as {
+      settleSessions: (args: unknown) => unknown;
+    } & Record<string, unknown>;
+
+    expect(() => sessionService.settleSessions({
+      sessionIds: ["session-1"],
+      dismissPendingInput: true,
+    })).toThrow(/does not dismiss pending input/);
+    expect(settleSessions).not.toHaveBeenCalled();
+
+    // Without the flag the bulk path is untouched.
+    expect(sessionService.settleSessions({ sessionIds: ["session-1", "session-2"] }))
+      .toEqual(["session-1"]);
+    expect(settleSessions).toHaveBeenCalledWith(["session-1", "session-2"]);
+  });
+
   it("exposes caller note/ask writes but no caller-scoped settle action", async () => {
     const requestAttention = vi.fn(() => true);
     const setStatusNote = vi.fn(() => true);
