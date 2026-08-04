@@ -21,7 +21,7 @@ import {
 // ---------------------------------------------------------------------------
 // The hosted client's connections list.
 //
-// ADE Web has no "This Mac", so which machine you are on is the single most
+// ADE Web has no "This computer", so which machine you are on is the single most
 // load-bearing fact in the shell — it gets a permanent chip in the top bar
 // instead of a page you navigate to. Everything the retired Hub could do to a
 // machine (connect, rename, remove from the account, forget in this browser)
@@ -30,7 +30,7 @@ import {
 // What it is NOT is a switcher. Desktop binds a machine per tab, and the web
 // client copies that exactly: the project tab's machine picker is the only
 // control that decides which machine a surface talks to. This chip reports
-// status and manages the account's Macs. Clicking a disconnected row still
+// status and manages the account's machines. Clicking a disconnected row still
 // dials it — that is infrastructure, not "make this the app's machine" — and
 // the collapsed label mirrors whatever the focused project tab is bound to.
 //
@@ -248,7 +248,7 @@ export function WebConnectionsChip() {
                 className="px-3 py-5 text-center text-[11px] leading-5"
                 style={{ color: COLORS.textMuted, fontFamily: SANS_FONT }}
               >
-                No Macs on this account yet.
+                No machines on this account yet.
               </div>
             ) : machines.map((machine) => (
               <WebMachineRow
@@ -291,7 +291,7 @@ export function WebConnectionsChip() {
               fontFamily: MONO_FONT,
             }}
           >
-            To add a Mac: sign in to ADE on it.
+            To add a machine: sign in to ADE on it.
           </div>
         </div>
       ) : null}

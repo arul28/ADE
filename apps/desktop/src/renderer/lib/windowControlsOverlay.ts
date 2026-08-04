@@ -19,6 +19,9 @@
  * caption-button width is simply what is left over at the trailing edge.
  */
 
+import { rendererPlatformAttribute } from "./platform";
+import { DEFAULT_ZOOM, zoomFactorForDisplay } from "./zoom";
+
 /**
  * Deliberately not `--shell-header-padding-end`: `data-theme` is set on <html>,
  * <body>, and the shell wrapper, so each of those re-declares the padding
@@ -107,6 +110,43 @@ export function windowsCaptionInsetPx(args: CaptionInsetArgs): number | null {
   const trailing = viewportWidth - (rect.x + rect.width);
   if (!Number.isFinite(trailing) || trailing <= 0) return null;
   return Math.round(trailing) + WINDOWS_CAPTION_GUTTER_PX;
+}
+
+/**
+ * The vertical half of the same problem, and the one the overlay rect cannot
+ * answer: `titleBarOverlay` is declared in the main process in DIP, so the
+ * caption strip does not follow renderer zoom or the ADE theme the way the
+ * header underneath it does. Left alone it overhangs into the tab strip when
+ * zoomed out — clicks in the overhang go to the OS, not to ADE — and stays
+ * near-black on the light theme.
+ *
+ * Zoom and theme change independently and neither call site knows the other's
+ * value, so the last of each is held here and both are pushed every time.
+ * macOS is excluded outright: the OS lays out and recolours the traffic lights
+ * itself, and a second source of truth would only fight it.
+ */
+export type TitleBarOverlayTheme = "dark" | "light";
+
+let overlayTheme: TitleBarOverlayTheme = "dark";
+let overlayDisplayZoom = DEFAULT_ZOOM;
+
+export function syncWindowsTitleBarOverlay(
+  next: { theme?: TitleBarOverlayTheme; displayZoom?: number } = {},
+): void {
+  if (next.theme) overlayTheme = next.theme;
+  if (typeof next.displayZoom === "number" && Number.isFinite(next.displayZoom)) {
+    overlayDisplayZoom = next.displayZoom;
+  }
+  if (rendererPlatformAttribute() !== "win32") return;
+  if (typeof window === "undefined") return;
+  const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
+  if (typeof setOverlay !== "function") return;
+  void Promise.resolve(
+    setOverlay({
+      theme: overlayTheme,
+      zoomFactor: zoomFactorForDisplay(overlayDisplayZoom),
+    }),
+  ).catch(() => {});
 }
 
 function readOverlay(): WindowControlsOverlayLike | null {

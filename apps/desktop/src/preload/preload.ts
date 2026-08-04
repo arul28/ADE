@@ -9472,6 +9472,16 @@ contextBridge.exposeInMainWorld("ade", {
     getLevel: (): number => webFrame.getZoomLevel(),
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor(),
+    /**
+     * Resize/recolour the Windows caption strip so it tracks the renderer's own
+     * header. Windows-only in the main process; on macOS the OS owns traffic
+     * light layout and colour, so this resolves `{ applied: false }`.
+     */
+    setTitleBarOverlay: async (arg: {
+      theme?: "dark" | "light";
+      zoomFactor?: number;
+    }): Promise<{ applied: boolean }> =>
+      ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

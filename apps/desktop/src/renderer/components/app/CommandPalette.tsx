@@ -53,6 +53,7 @@ import {
   type ThreadIndexEntry,
 } from "./commandPaletteThreads";
 import { fadeScale } from "../../lib/motion";
+import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { PROJECT_BROWSER_CLOSE_EVENT } from "../../lib/projectBrowserEvents";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
@@ -979,9 +980,7 @@ export function CommandPalette({
   const openTargetLabel = openTarget ? pathLabel(openTarget) : null;
   const canOpenHighlighted =
     Boolean(openTarget) && openTarget !== activeBrowseRoot;
-  const isMac =
-    typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
-  const openShortcutLabel = `${isMac ? "⌘" : "Ctrl"}↵`;
+  const openShortcutLabel = `${isMacPlatform() ? "⌘" : modifierKeyLabel}↵`;
 
   // Restore the per-location last path whenever browsing begins or the active
   // location changes. `startProjectBrowse` already seeds the path for the

@@ -21,6 +21,7 @@ import {
   type CrossMachineLaneMarker,
   type CrossMachineLaneRow,
 } from "../../state/crossMachineLanes";
+import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { resolveLaneAccentColor } from "../../../shared/laneColorPalette";
 import { LaneMachineMarker } from "./LaneMachineMarker";
 import { SessionCard } from "./SessionCard";
@@ -150,10 +151,6 @@ const QUIET_LABEL_CLASS = "font-semibold uppercase tracking-[0.09em] text-muted-
 
 type PaletteCombo = { key: string; ctrl: boolean; meta: boolean; alt: boolean; shift: boolean };
 
-function isMacPlatform(): boolean {
-  return typeof navigator !== "undefined" && navigator.platform.toLowerCase().includes("mac");
-}
-
 /**
  * First alternative of a keybinding string ("Mod+K", "Mod+K,Ctrl+P"), resolved
  * against the platform the way `lib/keybindings` resolves it when matching.
@@ -182,16 +179,22 @@ function parsePrimaryCombo(binding: string): PaletteCombo | null {
   return combo.key ? combo : null;
 }
 
-/** `⌘K` on macOS, `Ctrl+K` elsewhere — display only. */
-function shortcutChipLabel(binding: string): string | null {
+/** `⌘K` on macOS, `Ctrl+K` elsewhere — display only. Exported for tests. */
+export function shortcutChipLabel(binding: string): string | null {
   const combo = parsePrimaryCombo(binding);
   if (!combo) return null;
   const mac = isMacPlatform();
   const parts: string[] = [];
-  if (combo.ctrl) parts.push(mac ? "⌃" : "Ctrl");
+  if (combo.ctrl) parts.push(mac ? "⌃" : modifierKeyLabel);
   if (combo.alt) parts.push(mac ? "⌥" : "Alt");
   if (combo.shift) parts.push(mac ? "⇧" : "Shift");
-  if (combo.meta) parts.push(mac ? "⌘" : "Meta");
+  // Off macOS there is no Meta key on the keyboard. A binding that spells the
+  // modifier out ("Cmd+K", "Meta+K") resolves to the same key "Mod" does, so
+  // it has to print as that key — the chip used to read "Meta+K". Skipped when
+  // Ctrl already claimed the slot so "Ctrl+Cmd+K" isn't printed twice.
+  if (combo.meta && !(!mac && combo.ctrl)) {
+    parts.push(mac ? "⌘" : modifierKeyLabel);
+  }
   parts.push(combo.key.length === 1 ? combo.key.toUpperCase() : combo.key);
   return mac ? parts.join("") : parts.join("+");
 }

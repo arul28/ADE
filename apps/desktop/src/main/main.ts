@@ -53,6 +53,8 @@ import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import {
   ADE_WINDOWS_APP_USER_MODEL_ID,
   windowChromeOptions,
+  windowsTitleBarOverlay,
+  type WindowsTitleBarOverlayTheme,
 } from "./windowAppearance";
 import { openKvDb } from "./services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
@@ -1356,6 +1358,29 @@ app.whenReady().then(async () => {
       }
     }
   };
+
+  // Window chrome: only Windows has a caption strip ADE owns. macOS traffic
+  // lights are laid out and recoloured by the OS, so the renderer's calls are
+  // a no-op there rather than a second, competing source of truth.
+  ipcMain.handle(
+    IPC.appSetTitleBarOverlay,
+    (
+      event,
+      arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
+    ): { applied: boolean } => {
+      if (process.platform !== "win32") return { applied: false };
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win || win.isDestroyed()) return { applied: false };
+      try {
+        win.setTitleBarOverlay(windowsTitleBarOverlay(arg));
+        return { applied: true };
+      } catch {
+        // A window created without `titleBarOverlay` throws rather than
+        // no-opping; nothing else about the window depends on this succeeding.
+        return { applied: false };
+      }
+    },
+  );
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     setPtyDataSubscriptionsForSender(

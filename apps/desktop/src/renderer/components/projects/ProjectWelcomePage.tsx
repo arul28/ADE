@@ -78,7 +78,7 @@ export function ProjectWelcomePage() {
   /**
    * The one recents row being opened on the hosted client, by row key.
    *
-   * Not a machine key: every row on a Mac shares that Mac's connection state,
+   * Not a machine key: every row on a machine shares that machine's connection state,
    * so keying the "Reconnecting…" chrome off the machine lit up every card that
    * happened to live on it. Which repo you clicked is the thing the spinner is
    * reporting, and only the row knows that.
@@ -557,7 +557,7 @@ export function ProjectWelcomePage() {
           disabled={webMode && !activeWebMachine}
           title={
             webMode && !activeWebMachine
-              ? "Connect a Mac first — projects are added on the machine that hosts them."
+              ? "Connect a machine first — projects are added on the machine that hosts them."
               : undefined
           }
           onClick={() => {
@@ -721,7 +721,7 @@ export function ProjectWelcomePage() {
                 const canMerge = !isRemote && Boolean(rp.worktreeOf) && rp.exists;
                 const machine = webMode && targetId ? webMachineByKey.get(targetId) ?? null : null;
                 // The connect/open stages belong to the row that was clicked.
-                // Every other row on the same Mac sees the same machine-level
+                // Every other row on the same machine sees the same machine-level
                 // "connecting", so it has to be suppressed there explicitly —
                 // otherwise one click spins the whole list.
                 const isOpeningRow = openingRowKey === key;

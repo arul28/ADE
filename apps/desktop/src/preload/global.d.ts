@@ -2607,6 +2607,10 @@ declare global {
         getLevel: () => number;
         setLevel: (level: number) => void;
         getFactor: () => number;
+        setTitleBarOverlay: (arg: {
+          theme?: "dark" | "light";
+          zoomFactor?: number;
+        }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
       };
       cto?: {

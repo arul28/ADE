@@ -45,7 +45,7 @@ export class UnsupportedRemoteCommandError extends Error {
   constructor(readonly action: string) {
     // Matches the phrasing the explicit `callRequired` fallbacks already use,
     // so every "the host can't do this" failure reads the same way.
-    super(`Action '${action}' is unavailable on the connected ADE host. Update ADE on that Mac to use it.`);
+    super(`Action '${action}' is unavailable on the connected ADE host. Update ADE on that machine to use it.`);
     this.name = "UnsupportedRemoteCommandError";
   }
 }

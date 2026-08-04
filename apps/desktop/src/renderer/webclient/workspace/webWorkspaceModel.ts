@@ -7,7 +7,7 @@
 // machines this browser tab has never connected to. That answer merges three
 // sources:
 //
-//   - the account directory (every Mac signed in to the account),
+//   - the account directory (every machine signed in to the account),
 //   - this browser's saved pairings (`WebClientEnvironmentRecord`),
 //   - the live session pool plus the persisted per-machine catalogs.
 //
@@ -55,7 +55,7 @@ export type WebMachineEntry = {
   lastSeenAt: string | number | null;
 };
 
-/** Account rows share the environment identity when the Mac has a device id. */
+/** Account rows share the environment identity when the machine has a device id. */
 function accountMachineCatalogKey(machine: AdeAccountMachine): string {
   return machine.deviceId
     ? machineCatalogKey({ hostDeviceId: machine.deviceId })
@@ -164,7 +164,7 @@ export function webMachineLastSeenPhrase(value: string | number | null): string 
 function reachabilityCopy(status: WebMachineStatus, lastSeenAt: string | number | null): string {
   switch (status) {
     case "live":
-      return "Connected — ADE Web is talking to this Mac now";
+      return "Connected — ADE Web is talking to this machine now";
     case "connecting":
       return "Connecting to this machine…";
     case "parked":
@@ -175,7 +175,7 @@ function reachabilityCopy(status: WebMachineStatus, lastSeenAt: string | number 
       const seen = webMachineLastSeenPhrase(lastSeenAt);
       return seen
         ? `Offline — last seen ${seen}`
-        : "Offline — sign in to ADE on this Mac to bring it back";
+        : "Offline — sign in to ADE on this machine to bring it back";
     }
   }
 }
@@ -238,7 +238,7 @@ export function mergeWebMachines(args: {
   // A machine whose environment has no host device id AND whose account row has
   // no device id lands in two rows. There is no key both sides share in that
   // case — `machineKeyUrl` is a relay URL, not an identity — and merging on
-  // display name would silently fuse two different Macs, which is worse than
+  // display name would silently fuse two different machines, which is worse than
   // showing one twice.
   for (const machine of accountMachines) {
     const entry = ensure(accountMachineCatalogKey(machine));
@@ -293,7 +293,7 @@ function machineStatus(
     case "parked":
       return "parked";
   }
-  // Otherwise the account directory knows whether the Mac is reachable.
+  // Otherwise the account directory knows whether the machine is reachable.
   if (entry.accountMachine) {
     return accountMachineConnectionState(entry.accountMachine, relayBaseUrls) === "available"
       ? "available"

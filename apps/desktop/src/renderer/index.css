@@ -15,7 +15,10 @@
   --pane-radius: 12px;
   --pane-minimized-height: 28px;
 
-  --font-sans: "Geist", -apple-system, BlinkMacSystemFont, sans-serif;
+  /* Both Apple fallbacks are unresolvable off macOS, so a Windows box with no
+     Geist landed on Arial. `system-ui` and "Segoe UI" keep it on the platform
+     UI face instead — same stack webclient.html already ships. */
+  --font-sans: "Geist", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", "Geist Mono", ui-monospace, monospace;
   --animate-pulse: ade-duty-pulse 2s infinite;
   --animate-ping: ade-duty-ping 2s infinite;

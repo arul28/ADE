@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { importAffordancesFor, shortenCwd } from "./affordances";
+import { shortenExternalSessionCwd } from "../../../../shared/externalSessionAffordances";
 import { sessionAnchors, sessionHeading } from "./sessionPresentation";
 import type { ExternalSessionCapabilities, ExternalSessionSummary } from "./contract";
 
@@ -242,6 +243,34 @@ describe("shortenCwd", () => {
   it("falls back to a readable label when the path is missing", () => {
     expect(shortenCwd("")).toBe("its original folder");
     expect(shortenCwd(null)).toBe("its original folder");
+  });
+
+  /**
+   * A Windows path is one segment when split on "/", so the length check
+   * always passed and the full path went out untouched — to be clipped from
+   * the right by CSS, which is where the identifying repo folder lives. Every
+   * row read `C:\Users\arul2\Doc…`.
+   */
+  it("shortens Windows paths and keeps their separator", () => {
+    // Outside the home directory on purpose: `abbreviateHome` reads the
+    // ambient USERPROFILE, and this case is about the split, not about `~`.
+    expect(shortenCwd("D:\\work\\Documents\\Programming\\ADE"))
+      .toBe("…\\Documents\\Programming\\ADE");
+    expect(shortenCwd("D:\\work\\Documents\\Programming\\ADE", 2))
+      .toBe("…\\Programming\\ADE");
+  });
+
+  it("leaves a Windows path alone when it is already short enough", () => {
+    expect(shortenCwd("D:\\dev\\ade")).toBe("D:\\dev\\ade");
+  });
+
+  it("honours an injected home abbreviation", () => {
+    expect(shortenExternalSessionCwd("C:\\Users\\me\\dev\\monorepo\\apps\\desktop", {
+      abbreviateHome: (value) => value.replace("C:\\Users\\me", "~"),
+    })).toBe("…\\monorepo\\apps\\desktop");
+    expect(shortenExternalSessionCwd("C:\\Users\\me\\dev", {
+      abbreviateHome: (value) => value.replace("C:\\Users\\me", "~"),
+    })).toBe("~\\dev");
   });
 });
 

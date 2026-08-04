@@ -29,6 +29,7 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -1391,6 +1392,9 @@ export function App() {
     // Keep theme consistent for portals mounted outside the app root.
     document.documentElement.setAttribute("data-theme", theme);
     document.body.setAttribute("data-theme", theme);
+    // The Windows caption strip is painted by the OS from a colour ADE hands
+    // it, so it does not inherit `data-theme` the way the header does.
+    syncWindowsTitleBarOverlay({ theme });
   }, [theme]);
 
   return (

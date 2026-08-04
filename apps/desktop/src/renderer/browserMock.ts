@@ -6304,6 +6304,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getLevel: () => 0,
       setLevel: (_level: number) => {},
       getFactor: () => 1,
+      setTitleBarOverlay: async () => ({ applied: false }),
       onCommand: () => () => {},
     },
     updateCheckForUpdates: resolved(undefined),

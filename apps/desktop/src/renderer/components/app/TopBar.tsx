@@ -38,6 +38,7 @@ import {
   getStoredZoomLevel,
   applyShellHeaderInset,
 } from "../../lib/zoom";
+import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 import { cn } from "../ui/cn";
 import {
   readStoredProjectRoute,
@@ -1134,6 +1135,9 @@ export function TopBar({
     window.ade.zoom.setLevel(displayZoomToLevel(clamped));
     localStorage.setItem(ZOOM_LEVEL_KEY, String(clamped));
     applyShellHeaderInset(clamped);
+    // Windows twin of the traffic-light inset: the native caption strip is
+    // sized in DIP and does not follow renderer zoom on its own.
+    syncWindowsTitleBarOverlay({ displayZoom: clamped });
     zoomRef.current = clamped;
     setZoom(clamped);
   }, []);

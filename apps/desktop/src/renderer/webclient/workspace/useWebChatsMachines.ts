@@ -2,10 +2,10 @@
  * The Chats page's machine picker, in the browser.
  *
  * Desktop already ships this control: `/chats` runs on whichever machine the
- * window is bound to, and its picker rebinds the window — "This Mac" resolving
+ * window is bound to, and its picker rebinds the window — "This computer" resolving
  * through `chat/thisMachineProjectRoot.ts`. The hosted client keeps the same
  * control and the same meaning, with one substitution: a browser has no "This
- * Mac", so the options are the account's Macs and rebinding means pointing the
+ * computer", so the options are the account's machines and rebinding means pointing the
  * federated adapter's chats surface at one of them.
  *
  * Options are keyed by `machineCatalogKey`, not by target id, because a machine
@@ -44,7 +44,7 @@ export function useWebChatsMachines(): WebChatsMachinePicker | null {
   const select = useCallback(async (machineId: string): Promise<string | null> => {
     if (!workspace) return null;
     const machine = machines.find((entry) => entry.key === machineId);
-    if (!machine) return "That Mac is no longer on this account.";
+    if (!machine) return "That machine is no longer on this account.";
     try {
       const targetId = await workspace.connectMachineEntry(machine);
       await workspace.adapter.activateChats(targetId);
