@@ -458,7 +458,7 @@ export function RemoteTargetList({
     };
   }, []);
 
-  // This Mac's route-publish health, refreshed periodically so a persisting
+  // This computer's route-publish health, refreshed periodically so a persisting
   // failure's "for N min" stays truthful while the panel is open. getInfo is a
   // cheap one-shot; there is no push event for the publisher's health.
   const publishHealthMountedRef = useRef(true);
@@ -1063,7 +1063,7 @@ export function RemoteTargetList({
     setAddMode(next);
   }, []);
 
-  // Signed in, account Macs appear in the list automatically, so the add sheet
+  // Signed in, account computers appear in the list automatically, so the add sheet
   // only offers Nearby + SSH. Signed out, we lead with the account sign-in.
   const addChoices = useMemo(
     () => {
@@ -1079,22 +1079,22 @@ export function RemoteTargetList({
           key: "signin",
           icon: UserCircle,
           label: "Sign in to ADE",
-          detail: "The easiest way to find and connect to your other Macs.",
+          detail: "The easiest way to find and connect to your other computers.",
           onSelect: () => onAccountRequested?.(),
         });
       }
       choices.push({
         key: "nearby",
         icon: WifiHigh,
-        label: "Find nearby Macs",
-        detail: "Search this Wi-Fi for Macs with ADE open.",
+        label: "Find nearby computers",
+        detail: "Search this Wi-Fi for computers with ADE open.",
         onSelect: () => chooseAddMode("nearby"),
       });
       choices.push({
         key: "ssh",
         icon: TerminalWindow,
         label: "Add over SSH (Advanced)",
-        detail: "Connect with the Mac's SSH address and private key.",
+        detail: "Connect with the computer's SSH address and private key.",
         onSelect: () => chooseAddMode("ssh"),
       });
       return choices;
@@ -1148,7 +1148,7 @@ export function RemoteTargetList({
               >
                 <Warning size={13} weight="fill" style={{ flexShrink: 0 }} />
                 <span>
-                  Other devices may not reach this Mac — route publish failing for{" "}
+                  Other devices may not reach this computer — route publish failing for{" "}
                   {publishHealthDisplay.minutes} min
                 </span>
                 {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
@@ -1258,7 +1258,7 @@ export function RemoteTargetList({
                 {loadingDiscovered ? <div style={helperTextStyle}>Scanning nearby machines…</div> : null}
                 {!loadingDiscovered && nearbyMachines.length === 0 ? (
                   <div style={helperTextStyle}>
-                    No Macs found. Open ADE on the other Mac and make sure both are on the same Wi-Fi or Tailscale network.
+                    No computers found. Open ADE on the other computer and make sure both are on the same Wi-Fi or Tailscale network.
                   </div>
                 ) : null}
                 {nearbyMachines.map((machine) => (
@@ -1315,14 +1315,14 @@ export function RemoteTargetList({
         {accountMachinesState && accountMachinesState !== "ok" && accountMachinesState !== "signed_out" ? (
           <div style={helperTextStyle}>
             {accountMachinesState === "not_configured"
-              ? "Account Macs aren't available yet. Saved and nearby Macs still work."
-              : "We couldn't load your account Macs. Saved and nearby Macs still work."}
+              ? "Account computers aren't available yet. Saved and nearby computers still work."
+              : "We couldn't load your account computers. Saved and nearby computers still work."}
           </div>
         ) : null}
 
         {!loading && totalRows === 0 && !addMode && !loadingDiscovered ? (
           <div style={helperTextStyle}>
-            No Macs yet. Choose Add machine to connect one.
+            No computers yet. Choose Add machine to connect one.
           </div>
         ) : null}
         {loadingDiscovered ? (

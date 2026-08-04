@@ -46,10 +46,16 @@ Source dev launches use the temp dev endpoint and `ade-desktop-dev` Electron pro
 
 Three ways to put `ade` on a machine:
 
-1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers.
+1. **Standalone runtime install** — single static binary plus its native dependency archive, fetched from a GitHub release. Suitable for headless macOS/Linux servers and Windows x64 machines.
 
    ```bash
    curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+   ```
+
+   Windows PowerShell:
+
+   ```powershell
+   irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
    ```
 
    Environment overrides accepted by `install.sh`:
@@ -59,7 +65,9 @@ Three ways to put `ade` on a machine:
    - `ADE_RELEASE_REPO=owner/repo` — fetch from a fork.
    - `ADE_HOME=/custom/.ade` — change the per-machine state root.
 
-   The script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`, verifies it and `ade-<platform-arch>.native.tar.gz` against `SHA256SUMS`, extracts the archive to `$ADE_HOME/runtime/<platform-arch>/`, runs `ade --version` to verify, and best-effort registers the per-user login service on macOS / systemd.
+   For an unpublished Windows proof bundle, run `install.ps1 -AssetDirectory <bundle-directory>` (or set `ADE_RELEASE_ASSET_DIR`) to install the local checksum, executable, and native archive without creating a GitHub Release.
+
+   The POSIX script downloads `ade-<platform-arch>` to `$ADE_INSTALL_DIR/ade`; the PowerShell script downloads `ade-win32-x64.exe` to `$ADE_INSTALL_DIR\ade.exe`. Both verify the binary and matching `.native.tar.gz` against `SHA256SUMS`, extract native dependencies under `$ADE_HOME/runtime/<platform-arch>/`, run `ade --version`, and register the per-user login service. The PowerShell installer also adds the install directory to the current user's `PATH` unless `-NoPath` is passed; use `-NoService` to skip startup registration.
 
 2. **Desktop bundle** — every packaged ADE.app ships the CLI. macOS path:
 
@@ -93,9 +101,54 @@ The ADE brain runs as a per-user login service. The implementations live in `src
 | --- | --- | --- |
 | macOS | launchd `LaunchAgent` | `~/Library/LaunchAgents/com.ade.runtime.plist` |
 | Linux | `systemctl --user` | `~/.config/systemd/user/<ADE_RUNTIME_SERVICE_NAME>.service` |
-| Windows | `schtasks.exe ONLOGON` | scheduled task `ADE Runtime` |
+| Windows | HKCU `Run` entry + PowerShell supervisor | `HKCU\...\CurrentVersion\Run` value `ADE Runtime (<channel>-<hash>)` |
 
-The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright and is used for both launchd and systemd unit names. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
+The default service label is `com.ade.runtime`; channel builds override it via `ADE_PACKAGE_CHANNEL=alpha|beta` (`com.ade.runtime.alpha`, `com.ade.runtime.beta`). `ADE_RUNTIME_SERVICE_NAME` overrides the label outright. On Windows the label and current-user identity produce a channel/user-qualified Run-value name, launcher, advisory supervisor/runtime PID record, and named pipe. The Run value starts a hidden PowerShell supervisor; a successful initialized IPC response is the separate readiness record. Scheduled Tasks are legacy state that install/uninstall clean up, never the current service registration. macOS writes `launchd.{out,err}.log` under `ADE_HOME/runtime/`.
+
+### Windows: how the always-on guarantee is actually obtained
+
+launchd and systemd own the process they start, so on macOS and Linux "installed" and
+"survives this session" are the same fact. Windows has no unelevated equivalent, and the two
+halves have to be built separately.
+
+**Login persistence** is the HKCU `Run` key. An ONLOGON scheduled task would be the closer
+analogue but requires elevation — both `schtasks /Create /SC ONLOGON` and
+`Register-ScheduledTask -AtLogOn` fail with *Access is denied* for a standard user.
+
+**Session survival** is the harder half. [Job
+objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects): "by default
+any child processes it creates using `CreateProcess` are also associated with the job", job
+membership cannot be broken once assigned, and `CREATE_BREAKAWAY_FROM_JOB` fails with
+`ERROR_ACCESS_DENIED` unless the job opted in with `JOB_OBJECT_LIMIT_BREAKAWAY_OK` — which the
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` jobs used by terminals, editors, CI agents and Electron do
+not. So a supervisor started as an ordinary child of `ade brain start` is terminated with the
+session that started it. The fix is to have something else create the process:
+
+1. **A transient one-shot scheduled task.** The Task Scheduler service spawns the action itself,
+   so the supervisor is parented to `svchost.exe` and belongs to none of our jobs. Registering a
+   one-shot task does not require elevation. The task is unregistered as soon as it has started.
+2. **`Win32_Process.Create` over WMI**, if task registration is unavailable or denied by policy.
+   The same Microsoft page states it explicitly: "Child processes created using
+   `Win32_Process.Create` are not associated with the job." The process is created by the WMI
+   provider host `WmiPrvSE.exe` and ends up in no job at all. This is second rather than first
+   because WMI process creation is the more commonly blocked of the two — it is a known
+   lateral-movement technique and endpoint-protection rules disable it. The two failure modes are
+   largely independent, which is why both are worth having.
+3. **An in-session launch**, if a machine refuses both. The brain still comes up, but it is bound
+   to the lifetime of the session that started it.
+
+At sign-in none of this is needed: `explorer.exe` runs the `Run` entry and is itself job-free.
+
+**The limitation, stated plainly.** On a machine that denies both handovers, ADE's always-on
+guarantee does not hold — the brain dies when your terminal, editor or agent exits, and returns
+only at your next sign-in. ADE does not hide this. The supervisor probes its own job on startup
+(`QueryInformationJobObject(NULL, JobObjectExtendedLimitInformation)`, checking for
+`JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`) and publishes the answer as `sessionBound` in its PID
+record; `ade brain start` and `ade brain status` both say so in full. That is measured about the
+running supervisor rather than inferred from which launch route the installer used, so a brain
+that was session-bound today stops being reported that way once `explorer.exe` starts it
+job-free at the next sign-in. `null` means the probe could not run and is never reported as a
+guarantee either way.
 
 Manage the service from the CLI:
 
@@ -119,7 +172,7 @@ ade brain pin set 123456
 ade brain pin clear
 ```
 
-The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade`, which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
+The service manager builds the launch command from the current `ade` binary path so the installed service launches the same ADE channel that ran the install. Release installs use `$ADE_HOME/bin/ade` (`ade.exe` on Windows), which lets `ade brain update` stage the next release under `$ADE_HOME/runtime/updates/`, verify downloaded assets against `SHA256SUMS`, atomically promote the binary/native deps, and restart the login service without the desktop app being open. On Windows, update stops the existing process before replacing the executable, restores the previous executable, native tree, and service if promotion fails, and delegates staging cleanup until the running helper exits so Windows file locks do not retain update payloads. Failed compensation reports and preserves the exact recovery files instead of silently discarding the rollback error. After a packaged desktop update, ADE also refreshes this service so the brain re-execs the updated bundled CLI instead of leaving clients attached to an older build hash.
 
 ## Internal process command
 

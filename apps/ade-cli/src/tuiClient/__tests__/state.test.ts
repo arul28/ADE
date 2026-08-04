@@ -17,25 +17,27 @@ afterEach(() => {
 
 describe("ade code persisted state", () => {
   it("prefers project-scoped lane and chat state over legacy global fallback", () => {
+    const repoA = path.resolve("/repo-a");
+    const repoB = path.resolve("/repo-b");
     const state = normalizeAdeCodeState({
       lastChatByLane: { main: "legacy-chat" },
       lastLaneId: "legacy-lane",
       lastChatByProjectLane: {
-        "/repo-a": { main: "repo-a-chat" },
-        "/repo-b": { main: "repo-b-chat" },
+        [repoA]: { main: "repo-a-chat" },
+        [repoB]: { main: "repo-b-chat" },
       },
       lastLaneByProject: {
-        "/repo-a": "repo-a-lane",
-        "/repo-b": "repo-b-lane",
+        [repoA]: "repo-a-lane",
+        [repoB]: "repo-b-lane",
       },
       draftKind: "chat",
       draftKindByProject: {
-        "/repo-a": "chat",
-        "/repo-b": "cli",
+        [repoA]: "chat",
+        [repoB]: "cli",
       },
     });
 
-    expect(scopedAdeCodeState(state, "/repo-b")).toEqual({
+    expect(scopedAdeCodeState(state, repoB)).toEqual({
       lastChatByLane: { main: "repo-b-chat" },
       lastLaneId: "repo-b-lane",
       draftKind: "cli",

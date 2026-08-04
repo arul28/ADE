@@ -651,7 +651,7 @@ export function selectOtherMachineBranchStates(
     }
   }
   // A lane outside the active binding compares against the active binding too;
-  // `state.lanes` is not necessarily This Mac.
+  // `state.lanes` is not necessarily This computer.
   if (subjectMachineId !== activeMachineId) {
     for (const lane of state.lanes) {
       if (normalizeBranchRef(lane.branchRef) !== subjectBranch) continue;
@@ -684,7 +684,7 @@ export type CrossMachineLaneScope = {
   repoDisplayName: string | null;
   /** Verified local origin URL; null means this repo has no usable origin. */
   repoOriginUrl: string | null;
-  /** Target id the tab is bound to; null when the tab is on this Mac. */
+  /** Target id the tab is bound to; null when the tab is on this computer. */
   boundTargetId: string | null;
   /** Project id on the bound machine, when the tab is bound to a remote one. */
   boundProjectId: string | null;
@@ -1133,7 +1133,7 @@ async function readThisMachine(
         binding,
       ),
       MACHINE_READ_TIMEOUT_MS,
-      "lane.list on This Mac",
+      "lane.list on This computer",
     );
     return includeStatus ? lanes : withPreservedLaneStatus(THIS_MACHINE_ID, lanes);
   };
@@ -1165,7 +1165,7 @@ async function readThisMachine(
           binding,
         ),
         MACHINE_READ_TIMEOUT_MS,
-        "session.list on This Mac",
+        "session.list on This computer",
       ),
       lanesDue ? readPrs() : null,
     ]);
@@ -1317,7 +1317,7 @@ function scheduleRefresh(depth: LaneReadDepth = "identity"): void {
 
 /**
  * The machines that can contribute rows for the current scope: connected AND
- * still hosting this repository, excluding This Mac and the tab's own binding
+ * still hosting this repository, excluding This computer and the tab's own binding
  * (both of which the primary list already owns).
  *
  * Reachability and the read list share this one definition on purpose. When they
@@ -1476,7 +1476,7 @@ function applyReachability(): void {
   ]);
   for (const machineId of scopedMachineIds) {
     const entry = store.crossMachineLanesByMachineId[machineId] ?? null;
-    // This Mac is not a connection target and is always reachable; holding a
+    // This computer is not a connection target and is always reachable; holding a
     // drop record for it would leak a map entry nothing can ever clear.
     if (machineId === THIS_MACHINE_ID) continue;
     const machine = connectivity.get(machineId);

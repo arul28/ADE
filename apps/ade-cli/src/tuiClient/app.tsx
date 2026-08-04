@@ -3,6 +3,7 @@ import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 import { Box, Text, useApp, useInput } from "ink";
 import {
   getModelById,
@@ -1733,10 +1734,10 @@ function readClipboardText(): string | null {
   const candidates = process.platform === "darwin"
     ? [["pbpaste"]]
     : process.platform === "win32"
-      ? [["powershell", "-NoProfile", "-Command", "Get-Clipboard"]]
+      ? [[resolveTrustedWindowsTool("powershell"), "-NoProfile", "-Command", "Get-Clipboard"]]
       : [["wl-paste", "--no-newline"], ["xclip", "-selection", "clipboard", "-o"]];
   for (const [command, ...args] of candidates) {
-    if (!commandAvailable(command)) continue;
+    if (process.platform !== "win32" && !commandAvailable(command)) continue;
     const result = spawnSync(command, args, { encoding: "utf8", maxBuffer: 1024 * 1024 });
     if (result.status === 0 && result.stdout.trim()) return result.stdout.trim();
   }
@@ -12657,7 +12658,12 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
       return true;
     }
     if (!attachment) {
-      addNotice("No clipboard image was found. On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste.", "error");
+      const clipboardHint = process.platform === "win32"
+        ? "On Windows, copy an image or image file path; ADE Code reads the system clipboard through PowerShell."
+        : process.platform === "darwin"
+          ? "On macOS, copy an image or image file path; ADE Code checks pngpaste and pbpaste."
+          : "Copy an image or image file path; ADE Code checks wl-paste and xclip when available.";
+      addNotice(`No clipboard image was found. ${clipboardHint}`, "error");
       return true;
     }
     if (activePaneRef.current !== "chat") {
@@ -16736,7 +16742,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
     : EMPTY_TERMINAL_CHUNKS;
 
   if (error && !connection) {
-    const remoteLabel = project.remoteLabel?.trim() || "the remote Mac";
+    const remoteLabel = project.remoteLabel?.trim() || "the remote computer";
     return (
       <Box flexDirection="column">
         <Text color="red">
@@ -16747,7 +16753,7 @@ export function AdeCodeApp({ project, forceEmbedded, requireSocket, socketPath, 
         <Text>{error}</Text>
         {remoteLaunch ? (
           <Text color={theme.color.mutedFg} dimColor>
-            The remote Mac may be restarting; every retry re-evaluates its saved connection paths.
+            The remote computer may be restarting; every retry re-evaluates its saved connection paths.
           </Text>
         ) : null}
         <Text color={theme.color.mutedFg} dimColor>

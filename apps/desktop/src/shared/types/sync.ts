@@ -482,6 +482,8 @@ export type SyncRoleSnapshot = {
   routeHealth: SyncRouteHealth;
   client: SyncClientStatus;
   transferReadiness: SyncTransferReadiness;
+  /** Absent on older runtimes; false means phone/CRDT sync must not be offered. */
+  crdtSyncAvailable?: boolean;
   survivableStateText: string;
   blockingStateText: string;
 };
@@ -1568,6 +1570,11 @@ export type SyncRemoteCommandAction =
   | "lanes.dismissAutoRebaseStatus"
   | "lanes.listTemplates"
   | "lanes.getDefaultTemplate"
+  | "lanes.saveTemplate"
+  | "lanes.deleteTemplate"
+  | "lanes.setDefaultTemplate"
+  | "lanes.getDeleteRisk"
+  | "lanes.getReclaimRisk"
   | "lanes.initEnv"
   | "lanes.getEnvStatus"
   | "lanes.applyTemplate"
@@ -1613,6 +1620,8 @@ export type SyncRemoteCommandAction =
   | "chat.saveTempAttachment"
   | "chat.warmupModel"
   | "chat.launch"
+  | "chat.launchCli"
+  | "chat.generateAutoLaneIdentity"
   | "chat.getImageDataUrl"
   | "chat.listSessions"
   | "chat.getSummary"
@@ -1726,6 +1735,8 @@ export type SyncRemoteCommandAction =
   | "projectConfig.get"
   | "projectConfig.save"
   | "ai.getStatus"
+  | "ai.updateConfig"
+  | "ai.deleteApiKey"
   | "orchestration.runCreate"
   | "prs.list"
   | "prs.listOpenForRepo"

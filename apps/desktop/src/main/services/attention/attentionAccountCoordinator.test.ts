@@ -180,7 +180,7 @@ describe("AttentionAccountCoordinator", () => {
 
     expect(result.machines).toEqual(legacy.machines);
     expect(result.items[0]?.machine).toEqual(legacy.items[0]?.machine);
-    expect(result.availability?.hostName).toBe("this Mac");
+    expect(result.availability?.hostName).toBe("this computer");
     vi.useRealTimers();
   });
 

@@ -65,7 +65,7 @@ import { WorkspacePicker } from "./WorkspacePicker";
 import { CreatePromptModal, SearchOverlay } from "./overlays";
 import { setPendingReveal } from "./pendingReveals";
 import { COLORS } from "../../lanes/laneDesignTokens";
-import { modifierKeyLabel } from "../../../lib/platform";
+import { modifierKeyLabel, revealLabel } from "../../../lib/platform";
 import type { EditorThemeMode } from "./viewers/types";
 import { joinDisplayPath } from "./pathDisplay";
 
@@ -1301,7 +1301,7 @@ export function FilesWorkbench({
     items.push({ type: "item", label: "Copy Name", icon: <Copy size={14} />, onClick: () => void window.ade.app.writeClipboardText?.(name) });
     items.push({
       type: "item",
-      label: "Reveal in Finder",
+      label: revealLabel,
       icon: <ArrowSquareOut size={14} />,
       onClick: () => void window.ade.app.openPathInEditor?.({ rootPath, relativePath: path, target: "finder" }).catch(() => {}),
       disabled: !canRevealInFinder,

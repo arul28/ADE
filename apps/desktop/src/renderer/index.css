@@ -121,7 +121,7 @@
 
   /* App shell primitives (shared contract for TopBar + sidebar) */
   --shell-header-height: 32px;
-  --shell-header-padding-start: 80px;
+  --shell-header-padding-start: 14px;
   --shell-header-padding-end: 14px;
   --shell-header-bg: rgba(12, 11, 16, 0.82);
   --shell-header-fg: var(--color-fg);
@@ -138,6 +138,7 @@
   --shell-sidebar-item-hover-bg: rgba(255, 255, 255, 0.05);
   --shell-sidebar-item-active-fg: var(--color-accent);
   --shell-sidebar-item-active-bg: rgba(167, 139, 250, 0.1);
+
   --shell-sidebar-item-active-rail: var(--color-accent);
   --shell-sidebar-separator: rgba(255, 255, 255, 0.04);
 
@@ -196,6 +197,36 @@
   --work-popover-shadow: 0 12px 40px -12px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(255, 255, 255, 0.06);
   --work-popover-item-hover: rgba(255, 255, 255, 0.06);
   --work-popover-item-active: rgba(255, 255, 255, 0.08);
+}
+
+/* ═══════════════════════════════════════════════════════════
+   Native title-bar insets (platform chrome clearance)
+   ═══════════════════════════════════════════════════════════
+
+   The OS draws its own window controls on top of the title bar: the traffic
+   lights at the start on macOS, the caption buttons at the end on Windows. The
+   shell header has to leave room for whichever applies.
+
+   These deliberately do NOT live in the theme token block above. `data-theme`
+   is set on <html>, <body>, AND the shell wrapper (see App.tsx), so every one
+   of those elements re-declares the `--shell-header-padding-*` defaults — which
+   would shadow a platform value inherited from <html> long before it reached
+   the header. Only <html> carries `data-ade-platform`, so a dedicated property
+   name declared here survives all the way down.
+
+   Both values are only the pre-paint fallback. `applyShellHeaderInset()`
+   (renderer/lib/zoom.ts) and `trackWindowsCaptionInset()`
+   (renderer/lib/windowControlsOverlay.ts) overwrite them with live geometry,
+   because the native controls are a fixed physical size that does not follow
+   the renderer's zoom factor. */
+
+:root[data-ade-platform="darwin"] {
+  --shell-header-inset-start: 80px;
+}
+
+:root[data-ade-platform="win32"] {
+  /* Three 46 DIP caption buttons plus an 8px gutter. */
+  --shell-header-inset-end: 146px;
 }
 
 /* ═══════════════════════════════════════════════════════════
@@ -435,8 +466,8 @@ h6 {
 
 .ade-shell-header {
   height: var(--shell-header-height);
-  padding-left: var(--shell-header-padding-start);
-  padding-right: var(--shell-header-padding-end);
+  padding-left: var(--shell-header-inset-start, var(--shell-header-padding-start));
+  padding-right: var(--shell-header-inset-end, var(--shell-header-padding-end));
   color: var(--shell-header-fg);
   background: var(--shell-header-bg);
   backdrop-filter: blur(20px);
@@ -662,7 +693,19 @@ h6 {
    Collapsible Sidebar
    ═══════════════════════════════════════════════════════════ */
 
-/* Outer clip container — only width changes, icons never reflow */
+/* Outer clip container — the rail animates its own width in normal flow, so
+   the shell's main row genuinely reflows and content is pushed aside as the
+   rail grows. That is the macOS behaviour and it is the behaviour we keep.
+   Only the icons never reflow, because the inner .ade-sidebar is always at the
+   expanded width and this box clips it.
+
+   Layout every frame is not what made this expensive on Windows — the
+   ResizeObserver storm it triggered inside <main> was. See
+   renderer/lib/layoutSettle.ts: AppShell holds ResizeObserver delivery inside
+   <main> for the length of this transition and flushes once on transitionend,
+   so react-resizable-panels stops doing a forced synchronous layout plus a
+   full re-render of every pane on every one of the ~48 frames a 240 Hz display
+   packs into 200ms. */
 .ade-sidebar-clip {
   width: var(--shell-sidebar-collapsed-width);
   overflow: hidden;

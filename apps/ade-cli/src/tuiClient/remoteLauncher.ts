@@ -252,10 +252,10 @@ export function parseRemoteAdeCodeArgs(argv: string[]): RemoteCliOptions {
 function printRemoteHelp(): void {
   process.stdout.write(`ade code remote
 
-Connect ADE Code to a Mac already saved in ADE Connections.
+Connect ADE Code to a computer already saved in ADE Connections.
 
 Local network and Tailscale connections work without an ADE account. ADE Relay
-requires both Macs to be signed in to the same account. Advanced SSH is used
+requires both computers to be signed in to the same account. Advanced SSH is used
 only when you explicitly save an SSH connection.
 
 Usage:
@@ -1072,8 +1072,8 @@ export async function listRemoteSessions(client: RemoteRpcClientLike, projectId:
 async function selectTarget(targets: RemoteRuntimeTarget[], query: string | null): Promise<RemoteRuntimeTarget> {
   if (!targets.length) {
     throw new Error(
-      "No saved Macs yet. In ADE desktop, open Connections and choose Add machine. " +
-        "You can sign in to find your Macs, pair directly, scan your network, or use advanced SSH setup.",
+      "No saved computers yet. In ADE desktop, open Connections and choose Add machine. " +
+        "You can sign in to find your computers, pair directly, scan your network, or use advanced SSH setup.",
     );
   }
   if (query) {
@@ -1087,10 +1087,10 @@ async function selectTarget(targets: RemoteRuntimeTarget[], query: string | null
   const selectionMode = machineSelectionMode(targets.length, canPrompt());
   if (selectionMode === "auto") return targets[0]!;
   if (selectionMode === "flag-required") {
-    throw new Error("Choose a Mac: pass --target <id|name|host> non-interactively.");
+    throw new Error("Choose a computer: pass --target <id|name|host> non-interactively.");
   }
   return await promptInteractiveChoice(
-    "Choose a Mac",
+    "Choose a computer",
     targets,
     remoteTargetChoiceLabel,
   );
@@ -1408,7 +1408,7 @@ export async function runAdeCodeRemote(
     );
     if (target.transport !== "paired" && options.routePreference !== "auto") {
       throw new Error(
-        `--route ${options.routePreference} applies only to paired Macs. ` +
+        `--route ${options.routePreference} applies only to paired computers. ` +
           `${target.name} is configured for advanced SSH.`,
       );
     }

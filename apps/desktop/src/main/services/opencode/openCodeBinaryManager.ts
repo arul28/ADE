@@ -34,7 +34,15 @@ const OPENCODE_PLATFORM_PACKAGES: Partial<Record<NodeJS.Platform, Partial<Record
   },
   win32: {
     arm64: "opencode-windows-arm64",
-    x64: "opencode-windows-x64",
+    // Windows x64 ships the `-baseline` build only. `opencode-windows-x64`
+    // requires AVX2 and dies with an illegal instruction on older/VM x64 CPUs,
+    // while `-baseline` targets the lower instruction set and therefore runs
+    // everywhere. The two binaries are byte-for-byte the same size, and the
+    // baseline build shows no measurable throughput cost for how ADE drives
+    // OpenCode (a local HTTP server), so shipping baseline alone replaces the
+    // AVX2 build rather than adding to the installer. Keep this in sync with
+    // `asarUnpack` in apps/desktop/package.json.
+    x64: "opencode-windows-x64-baseline",
   },
 };
 

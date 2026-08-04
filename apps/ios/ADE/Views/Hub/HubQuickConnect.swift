@@ -15,7 +15,7 @@ func hubSavedMachineIsRecentlyReachable(
 
 /// One-tap connect cards shown on the no-machine home for account and saved
 /// machines. Directory/discovery presence is only a hint; saved secure records
-/// remain attemptable without claiming the Mac is currently reachable.
+/// remain attemptable without claiming the computer is currently reachable.
 struct HubQuickConnectSection: View {
   @EnvironmentObject private var syncService: SyncService
   @ObservedObject private var account = AccountService.shared
@@ -49,7 +49,7 @@ struct HubQuickConnectSection: View {
 
   /// Account and saved records can describe the same Mac. Prefer the account
   /// card when both stable IDs match, while retaining a live saved card when
-  /// the account directory currently considers that Mac offline.
+  /// the account directory currently considers that computer offline.
   private var targets: [Target] {
     let accountTargets = accountMachines.map(Target.account)
     let accountIdentities = Set(accountMachines.compactMap { normalizedIdentity($0.deviceId) })
@@ -195,7 +195,7 @@ struct HubQuickConnectSection: View {
     errorText = nil
     Task { @MainActor in
       guard let authorization = AccountService.shared.currentPairingAuthorization else {
-        errorText = "Your account session ended. Sign in again, then choose your Mac."
+        errorText = "Your account session ended. Sign in again, then choose your computer."
         connectingId = nil
         return
       }
@@ -209,7 +209,7 @@ struct HubQuickConnectSection: View {
         onConnectSuccess()
       } else {
         ADEHaptics.error()
-        errorText = syncService.lastError ?? "ADE could not connect to that Mac. Try again."
+        errorText = syncService.lastError ?? "ADE could not connect to that computer. Try again."
       }
     }
   }

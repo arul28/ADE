@@ -9,8 +9,8 @@ export type SyncConnections = ReturnType<typeof useSyncConnections>;
 
 /** Display name for a machine snapshot, preferring its per-runtime name. */
 function machineDisplayName(status: SyncRoleSnapshot | null): string {
-  if (!status) return "This Mac";
-  return status.runtimeName?.trim() || status.localDevice.name || "This Mac";
+  if (!status) return "This computer";
+  return status.runtimeName?.trim() || status.localDevice.name || "This computer";
 }
 
 function isRemoteBinding(
@@ -110,7 +110,7 @@ export function useSyncConnections() {
   }, [refresh]);
 
   // When remote-bound, routed listDevices() describes that remote machine.
-  // Derive this Mac's connected devices from the local snapshot's live peers;
+  // Derive this computer's connected devices from the local snapshot's live peers;
   // offline-but-paired rows are not available until a local-scoped IPC exists.
   const isRemoteBound = isRemoteBinding(status, routedStatus);
   const boundMachineName = isRemoteBound ? machineDisplayName(routedStatus) : null;
@@ -189,7 +189,7 @@ export function useSyncConnections() {
     boundMachineName,
     /** Display name of this physical Mac (from the local snapshot). */
     localMachineName,
-    /** Whether device/pairing mutations are known to land on this Mac. */
+    /** Whether device/pairing mutations are known to land on this computer. */
     canManageDevices: status !== null && !isRemoteBound,
     setPinValue,
     generatePin,

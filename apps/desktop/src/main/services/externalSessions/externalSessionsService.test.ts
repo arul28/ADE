@@ -11,6 +11,7 @@ import type {
   TerminalSessionSummary,
 } from "../../../shared/types";
 import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
+import { droidProjectSlugForCwd } from "./discoverDroid";
 import { createExternalSessionsService } from "./externalSessionsService";
 import { createImportedSessionStore, importedSessionsPath } from "./importedSessionStore";
 import { transplantClaudeSession } from "./claudeSessionTransplant";
@@ -39,7 +40,10 @@ function writeJsonl(filePath: string, rows: unknown[]): void {
 
 /** Droid names a session directory after its slash-escaped cwd. */
 function droidSessionDir(cwd: string): string {
-  return cwd.replace(/\//gu, "-");
+  // Must match what the droid CLI actually writes. A forward-slash-only swap
+  // leaves a Windows path intact, so the fixture tries to mkdir a name
+  // containing "C:" and NTFS rejects it.
+  return droidProjectSlugForCwd(cwd);
 }
 
 function makeLogger() {
@@ -716,7 +720,10 @@ describe("externalSessionsService", () => {
     const projectRoot = path.join(root, "repo");
     const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
     const binDir = path.join(root, "bin");
-    const openCodePath = path.join(binDir, "opencode");
+    // Windows cannot execute an extension-less file, and `resolveFromDirs`
+    // resolves through PATHEXT only there — an `opencode` with no extension is
+    // a macOS-shaped fixture that no Windows install would ever produce.
+    const openCodePath = path.join(binDir, process.platform === "win32" ? "opencode.cmd" : "opencode");
     const id = "open-missing-cwd";
     fs.mkdirSync(laneCwd, { recursive: true });
     fs.mkdirSync(binDir, { recursive: true });

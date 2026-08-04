@@ -338,7 +338,10 @@ export function createTranscriptionService({
   ): Promise<string> => {
     return await new Promise<string>((resolve, reject) => {
       const args = buildWhisperArgs(modelPath, wavPath);
-      const child = spawn(binaryPath, args, { stdio: ["ignore", "pipe", "pipe"] });
+      const child = spawn(binaryPath, args, {
+        stdio: ["ignore", "pipe", "pipe"],
+        windowsHide: true,
+      });
       activeChildren.add(child);
 
       const whisperTimeoutMs = resolveWhisperProcessTimeoutMs();

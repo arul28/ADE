@@ -1,0 +1,31 @@
+{
+  "$comment": "Known platform-gate violations, tolerated by scripts/validate-platform-gates.mjs. This file is a ratchet: it may shrink, never grow. Every entry is a test assertion that no CI runner executes, or a vacuous `return` that reports green while asserting nothing. Re-record after burning one down with: node scripts/validate-platform-gates.mjs --update-baseline",
+  "$tracking": {
+    "uncovered-gate, requires darwin": "There is no macOS unit-test job in ci.yml at all, so every darwin-gated assertion in the repo runs nowhere. Adding one is its own lane; until it lands these entries cannot be burned down.",
+    "uncovered-gate, requires win32": "The file is not in any windows-latest job. Fix by adding it to `windows-foundation` in .github/workflows/ci.yml once it is verified green on a native Windows host, or -- for a deliberate exception -- by annotating the gate with `// WINDOWS-GATE: <reason>` and dropping the entry here.",
+    "vacuous-return": "`if (process.platform === ...) return;` inside a test body reports as a GREEN PASS while asserting nothing. Fix by converting the test to `it.skipIf(<same condition>)(...)` so the skip is reported. Owned by the lanes that own each file."
+  },
+  "violations": [
+    {
+      "file": "apps/ade-cli/src/cli.test.ts",
+      "kind": "uncovered-gate",
+      "form": "alias-declaration",
+      "requires": "darwin",
+      "count": 1
+    },
+    {
+      "file": "apps/ade-cli/src/cli.test.ts",
+      "kind": "uncovered-gate",
+      "form": "alias-use",
+      "requires": "darwin",
+      "count": 1
+    },
+    {
+      "file": "apps/ade-cli/src/services/sync/syncLoopbackCollision.test.ts",
+      "kind": "uncovered-gate",
+      "form": "it.runIf",
+      "requires": "darwin",
+      "count": 3
+    }
+  ]
+}

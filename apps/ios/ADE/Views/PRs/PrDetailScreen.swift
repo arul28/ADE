@@ -591,7 +591,7 @@ struct PrDetailView: View {
           title: "Pull request unavailable",
           message: isLive
             ? "ADE could not find \(unavailablePrLabel). Refresh the PR list and try again."
-            : "Reconnect to your Mac to load \(unavailablePrLabel).",
+            : "Reconnect to your computer to load \(unavailablePrLabel).",
           icon: "arrow.triangle.merge",
           tint: ADEColor.warning,
           actionTitle: "Retry",

@@ -19,6 +19,7 @@ import {
 import type { Logger } from "../logging/logger";
 import { resolveBuiltInBrowserActorCapability } from "./builtInBrowserActorCapabilities";
 import type { BuiltInBrowserService } from "./builtInBrowserService";
+import { localIpcListenOptions } from "../../../../../ade-cli/src/services/runtime/localIpcListenOptions";
 
 /**
  * Side-channel JSON-RPC server that exposes the desktop's
@@ -111,7 +112,7 @@ export function startBuiltInBrowserDesktopBridgeServer(args: {
   });
 
   try {
-    server.listen(socketPath, () => {
+    server.listen(localIpcListenOptions(socketPath), () => {
       if (!isNamedPipe) {
         try {
           fs.chmodSync(socketPath, 0o600);

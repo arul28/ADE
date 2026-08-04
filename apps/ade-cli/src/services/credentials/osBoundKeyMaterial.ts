@@ -1,14 +1,28 @@
 import crypto from "node:crypto";
 import { execFile, spawnSync } from "node:child_process";
+import {
+  invalidateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterial,
+  readOrCreateWindowsDpapiMaterialAsync,
+} from "./windowsDpapiMaterial";
 
 /**
  * OS-bound credential key material.
  *
  * The encrypted file store derives its key from a machine-local secret held by
- * the OS keychain. This module owns everything about obtaining that secret —
- * the `security` invocations, the create race, the process-wide cache, and the
- * negative-cache backoff — so the credential store itself only deals with
- * ciphertext.
+ * the OS. This module owns everything about obtaining that secret — the
+ * platform dispatch, the `security` invocations, the create race, the
+ * process-wide cache, and the negative-cache backoff — so the credential store
+ * itself only deals with ciphertext.
+ *
+ * The two supported bindings are shaped differently, and the difference is why
+ * every entry point takes a `secretsDir`:
+ *   - macOS holds ONE global keychain item for the machine, so `secretsDir` is
+ *     ignored there.
+ *   - Windows holds a DPAPI-protected key file PER secrets directory
+ *     (`<secretsDir>/.credential-key.dpapi`), so the directory selects which
+ *     key is being asked for. Sharing a single slot across directories would
+ *     hand one store another store's key.
  */
 
 const MACOS_KEYCHAIN_SERVICE = "com.ade.runtime.credentials.file-store-key.v1";
@@ -63,16 +77,52 @@ export function readCredentialPassphraseFromEnv(): Buffer | null {
 }
 
 /** Explicit opt-out, or a test process that must never touch the real keychain. */
-function osBindingDisabledByEnv(): boolean {
-  if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return true;
-  return process.env.VITEST === "true" || process.env.NODE_ENV === "test";
+function osBindingDisabledByEnv(env: NodeJS.ProcessEnv): boolean {
+  if (env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return true;
+  return env.VITEST === "true" || env.NODE_ENV === "test";
 }
 
-/** Is macOS keychain material expected to back this process's credential key? */
+/** Where this process's credential key material comes from. */
+export type OsBoundKeyMaterialBinding =
+  /** `ADE_CREDENTIAL_STORE_PASSPHRASE` overrides every OS binding. */
+  | "env_passphrase"
+  /** Explicit opt-out, or a test process that must not touch the real OS store. */
+  | "disabled"
+  /** `<secretsDir>/.credential-key.dpapi`, protected per directory. */
+  | "windows_dpapi"
+  /** One global `security` generic-password item per machine. */
+  | "macos_keychain"
+  /** The platform has no OS binding; the bare machine key is used. */
+  | "none";
+
+/**
+ * The single decision every entry point below dispatches on.
+ *
+ * Read, read-async, invalidate and "is material expected?" MUST agree: an
+ * invalidation that dropped the macOS resolver's cache on Windows would leave
+ * the credential store's self-heal retrying against the same stale DPAPI
+ * material, and an `expectsOsBoundKeyMaterial()` that still said "darwin only"
+ * would misreport a Windows key failure as an ordinary decrypt failure.
+ * Deriving all four from one pure function is what keeps them in step.
+ *
+ * The env-gate applies on BOTH platforms: a test process, or an explicit
+ * opt-out, must never reach `security` or `powershell.exe`.
+ */
+export function resolveOsBoundKeyMaterialBinding(
+  platform: NodeJS.Platform = process.platform,
+  env: NodeJS.ProcessEnv = process.env,
+): OsBoundKeyMaterialBinding {
+  if (env.ADE_CREDENTIAL_STORE_PASSPHRASE?.trim()) return "env_passphrase";
+  if (osBindingDisabledByEnv(env)) return "disabled";
+  if (platform === "win32") return "windows_dpapi";
+  if (platform === "darwin") return "macos_keychain";
+  return "none";
+}
+
+/** Is OS-held material expected to back this process's credential key? */
 export function expectsOsBoundKeyMaterial(): boolean {
-  if (process.platform !== "darwin") return false;
-  if (readCredentialPassphraseFromEnv()) return false;
-  return !osBindingDisabledByEnv();
+  const binding = resolveOsBoundKeyMaterialBinding();
+  return binding === "windows_dpapi" || binding === "macos_keychain";
 }
 
 function decodeMacKeychainSecret(raw: string): Buffer {
@@ -300,24 +350,63 @@ const defaultOsBoundKeyMaterialResolver = createOsBoundKeyMaterialResolver({
 });
 
 /**
- * Drops the process-wide keychain-material cache so the next read re-asks the
- * keychain. Used when a decrypt fails with cached material: the other process
- * may have won the create race after this one cached its own copy.
+ * Drops the process-wide OS-material cache so the next read re-asks the OS.
+ * Used when a decrypt fails with cached material: the other process may have
+ * won the create race after this one cached its own copy.
+ *
+ * Dispatches exactly like the readers, so the cache that actually backs
+ * `readDefaultOsBoundKeyMaterial` on this platform is the one that gets
+ * dropped: a Windows invalidation that only cleared the macOS resolver would
+ * leave the self-heal retry re-reading the same stale DPAPI material.
  */
-export function invalidateDefaultOsBoundKeyMaterialCache(): void {
-  defaultOsBoundKeyMaterialResolver.invalidate();
+export function invalidateDefaultOsBoundKeyMaterialCache(secretsDir: string): void {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "windows_dpapi":
+      invalidateWindowsDpapiMaterial(secretsDir);
+      return;
+    case "macos_keychain":
+      defaultOsBoundKeyMaterialResolver.invalidate();
+      return;
+    default:
+      // Nothing is cached when no OS binding is in play.
+      return;
+  }
 }
 
-export function readDefaultOsBoundKeyMaterial(): Buffer | null {
-  const envMaterial = readCredentialPassphraseFromEnv();
-  if (envMaterial) return envMaterial;
-  if (osBindingDisabledByEnv()) return null;
-  return defaultOsBoundKeyMaterialResolver.read();
+/**
+ * Creating resolution for the platform's OS binding.
+ *
+ * DPAPI failures propagate rather than degrading to `null`. `null` means "no OS
+ * binding", which derives the bare machine key — so swallowing a transient
+ * PowerShell timeout would read a DPAPI-bound store as empty and, on the write
+ * path, silently re-seal it unbound.
+ */
+export function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "env_passphrase":
+      return readCredentialPassphraseFromEnv();
+    // Windows keeps its own per-directory cache and create race inside
+    // `windowsDpapiMaterial`, so it does not go through the macOS resolver.
+    case "windows_dpapi":
+      return readOrCreateWindowsDpapiMaterial(secretsDir);
+    case "macos_keychain":
+      return defaultOsBoundKeyMaterialResolver.read();
+    default:
+      return null;
+  }
 }
 
-export async function readDefaultOsBoundKeyMaterialAsync(): Promise<Buffer | null> {
-  const envMaterial = readCredentialPassphraseFromEnv();
-  if (envMaterial) return envMaterial;
-  if (osBindingDisabledByEnv()) return null;
-  return await defaultOsBoundKeyMaterialResolver.readAsync();
+export async function readDefaultOsBoundKeyMaterialAsync(
+  secretsDir: string,
+): Promise<Buffer | null> {
+  switch (resolveOsBoundKeyMaterialBinding()) {
+    case "env_passphrase":
+      return readCredentialPassphraseFromEnv();
+    case "windows_dpapi":
+      return await readOrCreateWindowsDpapiMaterialAsync(secretsDir);
+    case "macos_keychain":
+      return await defaultOsBoundKeyMaterialResolver.readAsync();
+    default:
+      return null;
+  }
 }

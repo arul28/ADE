@@ -3,16 +3,17 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ProjectlessSidebar } from "./ProjectlessSidebar";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 
 afterEach(cleanup);
 
 function renderSidebar(overrides: Partial<Parameters<typeof ProjectlessSidebar>[0]> = {}) {
   const props: Parameters<typeof ProjectlessSidebar>[0] = {
     standalone: false,
-    machineLabel: "This Mac",
+    machineLabel: THIS_MACHINE_NAME,
     machineId: "local",
     machineOptions: [
-      { id: "local", name: "This Mac" },
+      { id: "local", name: THIS_MACHINE_NAME },
       { id: "target-1", name: "MacBook Pro (97)" },
     ],
     onSelectMachine: vi.fn(),
@@ -50,7 +51,9 @@ describe("ProjectlessSidebar machine picker", () => {
     const props = renderSidebar();
 
     fireEvent.click(
-      screen.getByRole("button", { name: "Chats run on This Mac. Choose a machine." }),
+      screen.getByRole("button", {
+        name: `Chats run on ${THIS_MACHINE_NAME}. Choose a machine.`,
+      }),
     );
     fireEvent.click(screen.getByRole("menuitem", { name: /MacBook Pro \(97\)/ }));
 

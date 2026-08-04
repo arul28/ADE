@@ -25,6 +25,12 @@ function createFakeChild(pid = 12_345): FakeChild {
   return child;
 }
 
+function createUnixProcessMetricRowsCollector(
+  options: Parameters<typeof createProcessMetricRowsCollector>[0] = {},
+) {
+  return createProcessMetricRowsCollector({ ...options, platform: "linux" });
+}
+
 function row(pid: number, ppid: number, cpuPercent: number, rssKB: number): ProcessMetricRow {
   return { pid, ppid, cpuPercent, rssKB };
 }
@@ -61,10 +67,26 @@ describe("parseProcessMetricRows", () => {
 });
 
 describe("createProcessMetricRowsCollector", () => {
+  it("does not attempt the Unix process sampler on Windows", async () => {
+    const spawnImpl = vi.fn(() => createFakeChild());
+    const sample = await createProcessMetricRowsCollector({
+      spawnImpl,
+      platform: "win32",
+    }).collect();
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(sample).toMatchObject({
+      rows: null,
+      status: "unavailable",
+      reason: "unsupported-platform",
+      durationMs: 0,
+    });
+  });
+
   it("parses chunked stdout after a successful exit", async () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({ spawnImpl });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl });
 
     const samplePromise = collector.collect();
     child.stdout.emit("data", "201 1 1.5 1024\n202 ");
@@ -73,6 +95,14 @@ describe("createProcessMetricRowsCollector", () => {
     const sample = await samplePromise;
 
     expect(spawnImpl).toHaveBeenCalledTimes(1);
+    expect(spawnImpl).toHaveBeenCalledWith(
+      "ps",
+      ["-axo", "pid=,ppid=,pcpu=,rss="],
+      {
+        stdio: ["ignore", "pipe", "ignore"],
+        windowsHide: true,
+      },
+    );
     expect(sample.status).toBe("ok");
     expect(sample.reason).toBeNull();
     expect(sample.rows).toEqual([
@@ -85,7 +115,7 @@ describe("createProcessMetricRowsCollector", () => {
   it("returns unavailable for a nonzero exit", async () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({ spawnImpl });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl });
 
     const samplePromise = collector.collect();
     child.stdout.emit("data", "201 1 1.5 1024\n");
@@ -102,13 +132,13 @@ describe("createProcessMetricRowsCollector", () => {
     const throwingSpawn = vi.fn(() => {
       throw new Error("spawn failed");
     });
-    const thrownSample = await createProcessMetricRowsCollector({
+    const thrownSample = await createUnixProcessMetricRowsCollector({
       spawnImpl: throwingSpawn,
     }).collect();
 
     const child = createFakeChild();
     const emittingSpawn = vi.fn(() => child);
-    const emittedPromise = createProcessMetricRowsCollector({
+    const emittedPromise = createUnixProcessMetricRowsCollector({
       spawnImpl: emittingSpawn,
     }).collect();
     child.emit("error", new Error("child failed"));
@@ -132,7 +162,7 @@ describe("createProcessMetricRowsCollector", () => {
     vi.useFakeTimers();
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({ spawnImpl, timeoutMs: 50 });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl, timeoutMs: 50 });
 
     const samplePromise = collector.collect();
     vi.advanceTimersByTime(50);
@@ -148,7 +178,7 @@ describe("createProcessMetricRowsCollector", () => {
   it("kills and resolves a child whose stdout exceeds the configured bound", async () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({
+    const collector = createUnixProcessMetricRowsCollector({
       spawnImpl,
       maxStdoutBytes: 64,
     });
@@ -171,7 +201,7 @@ describe("createProcessMetricRowsCollector", () => {
     const spawnImpl = vi.fn()
       .mockReturnValueOnce(firstChild)
       .mockReturnValueOnce(secondChild);
-    const collector = createProcessMetricRowsCollector({ spawnImpl, timeoutMs: 25 });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl, timeoutMs: 25 });
 
     const firstPromise = collector.collect();
     vi.advanceTimersByTime(25);
@@ -196,7 +226,7 @@ describe("createProcessMetricRowsCollector", () => {
     const spawnImpl = vi.fn()
       .mockReturnValueOnce(firstChild)
       .mockReturnValueOnce(secondChild);
-    const collector = createProcessMetricRowsCollector({ spawnImpl });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl });
 
     const first = collector.collect();
     const coalesced = collector.collect();
@@ -218,7 +248,7 @@ describe("createProcessMetricRowsCollector", () => {
     vi.useFakeTimers();
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({ spawnImpl, timeoutMs: 500 });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl, timeoutMs: 500 });
     let settled = false;
     let microtaskRan = false;
     const unrelatedTimer = vi.fn();
@@ -246,7 +276,7 @@ describe("createProcessMetricRowsCollector", () => {
   it("kills an in-flight child and refuses to spawn after disposal", async () => {
     const child = createFakeChild();
     const spawnImpl = vi.fn(() => child);
-    const collector = createProcessMetricRowsCollector({ spawnImpl });
+    const collector = createUnixProcessMetricRowsCollector({ spawnImpl });
 
     const inFlight = collector.collect();
     collector.dispose();

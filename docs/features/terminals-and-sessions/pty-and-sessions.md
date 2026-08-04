@@ -207,8 +207,8 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      `/bin/bash`, `/bin/sh`, or Windows equivalents), retrying across
      candidates if the first spawn fails. Plain interactive shell
      sessions (`toolType === "shell"` with no direct command and no
-     startup command) opt into the **clean shell** candidate set:
-     `resolveShellCandidates({ clean: true })` returns the same shell
+     startup command) use login configuration. Command-backed and provider
+     fallback shells use `resolveShellCandidates("clean")`, which returns the same shell
      binaries but pinned to `args` + `env` overlays that skip user
      init files (zsh `-f` with `ZDOTDIR=/var/empty`, bash
      `--noprofile --norc` with `BASH_ENV=""`, fish `--no-config`,
@@ -216,6 +216,14 @@ Each live PTY has an entry in the `ptys` map keyed by `ptyId` with:
      applied per candidate so an `args.env` from the caller is
      overlaid first, then the clean-shell `env` block, before
      `ptyLib.spawn`.
+   - Windows tracked-provider continuation prefers
+     `buildTrackedCliResumeLaunchCommand`'s structured
+     `command` / `args` / `env` fields. The persisted
+     `resume_command` remains a display/legacy compatibility string; it is not
+     typed into PowerShell when structured metadata is available. OpenCode
+     replay uses the same rule, and Droid uses an explicit no-profile
+     PowerShell descriptor because its temporary settings-file lifecycle
+     genuinely requires shell statements.
 10. If the spawn ended up in a shell (no direct launch, or direct
     launch fell back), type `args.startupCommand` into the PTY so the
     shell executes the CLI. Direct launches that succeeded skip this —
@@ -362,12 +370,14 @@ known groups and sends `SIGKILL` to anything still reachable. If that final
 scan cannot complete, ADE force-kills the known PTY/root groups and initial
 members rather than treating scan failure as proof that the tree exited.
 
-Windows first uses node-pty's normal kill path and, if the root still exists
-after the same grace period, uses bounded `taskkill /T /F` as the tree fallback.
-This keeps termination off the main thread's former synchronous recursive
-`pgrep` path while ensuring a `SIGTERM` on a tracked agent CLI also reaches
-language servers, dev servers, and other child processes instead of leaving
-them orphaned.
+Windows snapshots and terminates the ConPTY tree with bounded
+`taskkill /PID <root> /T` while the leader still exists, then invokes
+node-pty's normal kill path. After the grace period it always attempts
+`taskkill /PID <root> /T /F`; checking only the leader at that point would miss
+descendants orphaned when the leader exited. An isolated PTY-host crash uses
+the same forced tree cleanup against every provider PID owned by that worker.
+This ensures a `SIGTERM`, cancellation, or worker crash also reaches language
+servers, dev servers, and other child processes.
 
 ### Live session row resync
 
@@ -541,14 +551,16 @@ write paths into one call:
    resume-target backfill used by `ensureResumeTargets`; Codex can scan
    rollout storage during this resume-launch path before ADE reports a
    missing target.
-3. Rebuild the resume command via
-   `buildTrackedCliResumeCommand(metadata, overrides)` — runtime
+3. Rebuild the resume launch via
+   `buildTrackedCliResumeLaunchCommand(metadata, overrides)` — runtime
    `model` / `reasoningEffort` / `permissionMode` overrides flow into
-   the command line so the continuation honours the user's current
+   the invocation so the continuation honours the user's current
    model picker. For the first ended-session continuation with
    structured `resumeMetadata`, `text` is also passed as the provider
    prompt argument, except for Cursor where ADE waits for the interactive
-   prompt and writes the text through PTY input.
+   prompt and writes the text through PTY input. Windows consumes direct
+   argv/env (or Droid's explicit PowerShell descriptor); POSIX retains the
+   established shell-string compatibility launch.
 4. De-duplicate concurrent sends through `resumeRuntimeFlights` (one
    in-flight continuation per session id) so rapid sends do not spawn
    parallel PTYs against the same row.

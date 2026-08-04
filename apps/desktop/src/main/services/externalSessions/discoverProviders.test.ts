@@ -5,13 +5,14 @@ import os from "node:os";
 import path from "node:path";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 import { clearOpenCodeBinaryCache } from "../opencode/openCodeBinaryManager";
 import { discoverClaudeSessions } from "./discoverClaude";
 import { discoverCodexSessions } from "./discoverCodex";
 import { discoverCursorSessions } from "./discoverCursor";
-import { discoverDroidSessions } from "./discoverDroid";
+import { discoverDroidSessions, droidProjectSlugForCwd } from "./discoverDroid";
 import { discoverOpenCodeSessions } from "./discoverOpenCode";
-import { claudeProjectSlugForCwd, slashEscapedCwd } from "./discoveryUtils";
+import { claudeProjectSlugForCwd } from "./discoveryUtils";
 import { createExternalSessionsService } from "./externalSessionsService";
 
 type DatabaseSyncConstructor = new (dbPath: string) => DatabaseSyncType;
@@ -1013,7 +1014,8 @@ describe("external session provider discovery", () => {
     // Use a writable temp dir (CI can't mkdir under /private/tmp) and derive the slug from it.
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "adecursorcwd")));
     expect(cwd.includes("-"), "temp cwd must be dash-free for the cursor slug round-trip").toBe(false);
-    const slug = cwd.replace(/^\/+/u, "").replace(/\//gu, "-");
+    // Cursor's own slug rule, reimplemented in shared/cursorProjectSlug.
+    const slug = cursorProjectSlug(cwd);
     const agentId = "33333333-3333-4333-8333-333333333333";
     const sdkAgentId = "agent-44444444-4444-4444-8444-444444444444";
     writeJsonl(path.join(homeDir, ".cursor", "projects", slug, "agent-transcripts", agentId, `${agentId}.jsonl`), [
@@ -1080,7 +1082,7 @@ describe("external session provider discovery", () => {
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "droid-repo");
     const id = "44444444-4444-4444-8444-444444444444";
-    writeJsonl(path.join(homeDir, ".factory", "sessions", slashEscapedCwd(cwd), `${id}.jsonl`), [
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${id}.jsonl`), [
       { type: "session_start", id, title: "New Session", cwd },
       { type: "message", message: { role: "assistant", content: "untimestamped setup" } },
       { type: "message", timestamp: "2026-07-06T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "Factory task title" }] } },
@@ -1105,12 +1107,12 @@ describe("external session provider discovery", () => {
     const cwd = path.join(root, "droid-dupe-repo");
     const nestedCwd = path.join(cwd, "apps");
     const id = "77777777-7777-4777-8777-777777777777";
-    writeJsonl(path.join(homeDir, ".factory", "sessions", slashEscapedCwd(cwd), `${id}.jsonl`), [
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${id}.jsonl`), [
       { type: "session_start", id, title: "Droid duplicate", cwd },
       { type: "message", timestamp: "2026-07-06T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "First prompt" }] } },
       { type: "message", timestamp: "2026-07-06T10:01:00.000Z", message: { role: "user", content: [{ type: "text", text: "Second prompt" }] } },
     ]);
-    writeJsonl(path.join(homeDir, ".factory", "sessions", slashEscapedCwd(nestedCwd), `${id}.jsonl`), [
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(nestedCwd), `${id}.jsonl`), [
       { type: "session_start", id, title: "Droid duplicate", cwd: nestedCwd },
     ]);
 
@@ -1125,7 +1127,7 @@ describe("external session provider discovery", () => {
     const cwd = path.join(root, "droid-scoped-repo");
     const elsewhere = path.join(root, "droid-elsewhere");
     const inProjectId = "88888888-8888-4888-8888-888888888888";
-    const inProjectPath = path.join(homeDir, ".factory", "sessions", slashEscapedCwd(cwd), `${inProjectId}.jsonl`);
+    const inProjectPath = path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${inProjectId}.jsonl`);
     writeJsonl(inProjectPath, [
       { type: "session_start", id: inProjectId, title: "In project", cwd },
       { type: "message", timestamp: "2026-07-01T10:00:00.000Z", message: { role: "user", content: [{ type: "text", text: "In project prompt" }] } },
@@ -1134,7 +1136,7 @@ describe("external session provider discovery", () => {
     // Newer sessions elsewhere: one batch under an escaped path that scope rules
     // out outright, one under a name that only the session's own cwd can place.
     for (let index = 0; index < 3; index += 1) {
-      for (const directory of [slashEscapedCwd(elsewhere), "relative-elsewhere"]) {
+      for (const directory of [droidProjectSlugForCwd(elsewhere), "relative-elsewhere"]) {
         const id = `9999999${directory.length % 10}-9999-4999-8999-99999999999${index}`;
         const filePath = path.join(homeDir, ".factory", "sessions", directory, `${id}.jsonl`);
         writeJsonl(filePath, [
@@ -1154,7 +1156,9 @@ describe("external session provider discovery", () => {
     const homeDir = path.join(root, "home");
     const cwd = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "adecursordupe")));
     expect(cwd.includes("-"), "temp cwd must be dash-free for the cursor slug round-trip").toBe(false);
-    const slug = cwd.replace(/^\/+/u, "").replace(/\//gu, "-");
+    // Cursor's own slug rule. A hand-rolled POSIX swap leaves the drive letter
+    // and backslashes intact on Windows, so the bucket never matches.
+    const slug = cursorProjectSlug(cwd);
     const olderId = "aaaaaaaa-1111-4111-8111-111111111111";
     const newerId = "bbbbbbbb-2222-4222-8222-222222222222";
 
@@ -1248,7 +1252,7 @@ describe("external session provider discovery", () => {
     const homeDir = path.join(root, "home");
     const repoRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "adecursorscope")));
     expect(repoRoot.includes("-"), "temp cwd must be dash-free for the cursor slug round-trip").toBe(false);
-    const slug = repoRoot.replace(/^\/+/u, "").replace(/\//gu, "-");
+    const slug = cursorProjectSlug(repoRoot);
     const inProjectId = "ffffffff-6666-4666-8666-666666666666";
     writeJsonl(cursorTranscriptPath(homeDir, slug, inProjectId), [
       { cwd: repoRoot, role: "user", message: { content: [{ type: "text", text: "In project prompt" }] } },
@@ -1271,7 +1275,27 @@ describe("external session provider discovery", () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
+  it("keeps Droid sessions in scope when the project directory uses the CLI's own slug", async () => {
+    // droid names the per-project directory with sanitizePathToDirectoryName(),
+    // which drops the drive colon on Windows ("-C-Users-dev-ADE"). A plain
+    // separator swap produced "C:-Users-dev-ADE" and filtered every directory
+    // out before any session was read.
+    const homeDir = path.join(root, "home-scoped");
+    const cwd = path.join(root, "droid-scoped-repo");
+    fs.mkdirSync(cwd, { recursive: true });
+    const id = "55555555-5555-4555-8555-555555555555";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidProjectSlugForCwd(cwd), `${id}.jsonl`), [
+      { type: "session_start", id, cwd, timestamp: "2026-07-06T10:00:00.000Z" },
+      { type: "message", timestamp: "2026-07-06T10:00:01.000Z", message: { role: "user", content: "scoped droid task" } },
+    ]);
+
+    const sessions = await discoverDroidSessions({ homeDir, scopeRoots: [cwd], limit: 10 });
+
+    expect(sessions.map((session) => session.id)).toEqual([id]);
+  });
+
   it("uses the OpenCode CLI list command and reports an uninstalled CLI", async () => {
+
     const homeDir = path.join(root, "home");
     const cwd = path.join(root, "opencode-repo");
     fs.mkdirSync(cwd, { recursive: true });
@@ -1286,13 +1310,28 @@ describe("external session provider discovery", () => {
 
     const binDir = path.join(root, "bin");
     fs.mkdirSync(binDir, { recursive: true });
-    const scriptPath = path.join(binDir, "opencode");
-    fs.writeFileSync(
-      scriptPath,
-      `#!/bin/sh\nprintf '%s\\n' '[{"id":"open-1","directory":"${cwd}","title":"OpenCode task","created":1783332000000,"updated":1783332060000},{"id":"open-2","directory":"${cwd}","title":"New session - 2026-05-01T17:02:11.923Z","created":1783331000000,"updated":1783331060000},{"id":"open-3","title":"Missing cwd","created":1783330000000,"updated":1783330060000}]'\n`,
-      "utf8",
-    );
-    fs.chmodSync(scriptPath, 0o755);
+    // JSON.stringify rather than interpolation: a Windows cwd carries
+    // backslashes, which are escape sequences inside a JSON string literal.
+    const listPayload = JSON.stringify([
+      { id: "open-1", directory: cwd, title: "OpenCode task", created: 1783332000000, updated: 1783332060000 },
+      { id: "open-2", directory: cwd, title: "New session - 2026-05-01T17:02:11.923Z", created: 1783331000000, updated: 1783331060000 },
+      { id: "open-3", title: "Missing cwd", created: 1783330000000, updated: 1783330060000 },
+    ]);
+    // Route the payload through node so one file serves both platforms and only
+    // the shim differs. An extension-less #!/bin/sh file is never executable on
+    // Windows -- PATHEXT decides that, and chmod is a no-op there -- so a real
+    // `npm i -g` install always leaves a .cmd shim instead.
+    const payloadPath = path.join(binDir, "opencode-payload.cjs");
+    fs.writeFileSync(payloadPath, `process.stdout.write(${JSON.stringify(listPayload)} + "\\n");\n`, "utf8");
+    const scriptPath = process.platform === "win32"
+      ? path.join(binDir, "opencode.cmd")
+      : path.join(binDir, "opencode");
+    if (process.platform === "win32") {
+      fs.writeFileSync(scriptPath, `@echo off\r\nnode "%~dp0opencode-payload.cjs"\r\n`, "utf8");
+    } else {
+      fs.writeFileSync(scriptPath, `#!/bin/sh\nexec node "$(dirname "$0")/opencode-payload.cjs"\n`, "utf8");
+      fs.chmodSync(scriptPath, 0o755);
+    }
     process.env.PATH = `${binDir}${path.delimiter}${previousPath ?? ""}`;
     clearOpenCodeBinaryCache();
 

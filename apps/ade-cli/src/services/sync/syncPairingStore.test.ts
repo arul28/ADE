@@ -67,7 +67,11 @@ describe("sync SSH pairing trust", () => {
       dpopPublicKey: VALID_DPOP_PUBLIC_KEY,
       runtimeHostGranted: false,
     });
-    expect(fs.statSync(filePath).mode & 0o777).toBe(0o600);
+    const stat = fs.statSync(filePath);
+    expect(stat.isFile()).toBe(true);
+    if (process.platform !== "win32") {
+      expect(stat.mode & 0o777).toBe(0o600);
+    }
     expect(fs.readFileSync(filePath, "utf8")).not.toContain(paired.secret);
   });
 

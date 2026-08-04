@@ -10,7 +10,7 @@
  * branch is on "another" machine by comparing these ids
  * (`laneDivergence.detectPushDivergence`). The moment one producer supplies
  * `"local"` and the consumer expects `"this-mac"`, the self-filter stops
- * matching and ADE warns you that This Mac has diverged from itself.
+ * matching and ADE warns you that This computer has diverged from itself.
  *
  * Machines are named absolutely. The word "remote" is never a machine name:
  * once the machine a tab is bound to can change, "remote" has no fixed
@@ -22,7 +22,7 @@
 export const THIS_MACHINE_ID = "this-mac";
 
 /** Absolute display name for the machine ADE itself is running on. */
-export const THIS_MACHINE_NAME = "This Mac";
+export const THIS_MACHINE_NAME = "This computer";
 
 /** True when an id refers to the machine ADE is running on. */
 export function isThisMachineId(machineId: string | null | undefined): boolean {

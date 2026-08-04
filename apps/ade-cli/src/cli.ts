@@ -32,6 +32,7 @@ export { readInstalledDesktopVersion } from "./commands/doctor";
 import { buildDeeplink, type DeeplinkEnvelope } from "../../desktop/src/shared/deeplinks";
 import { buildPairingQrPayload } from "../../desktop/src/shared/pairingQr";
 import { buildWebClientPairUrl } from "../../desktop/src/shared/webClientUrl";
+import { CURSOR_CLI_EXECUTABLES } from "../../desktop/src/shared/providerCliExecutables";
 import {
   accountMachineDisplayName,
   accountMachineConnectionState,
@@ -56,7 +57,7 @@ import type {
   ListMyGitHubReposInput,
   ProjectBrowseInput,
 } from "../../desktop/src/shared/types/core";
-import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
+import { resolveMachineAdeDir, resolveMachineAdeLayout } from "./services/projects/machineLayout";
 import { markActiveHostProjectOpen } from "./services/projects/projectCatalog";
 import { resolveRemoteProjectIcon } from "./services/projects/projectIconResolver";
 import type { ProjectRecord } from "./services/projects/projectRegistry";
@@ -85,6 +86,7 @@ import {
   withRpcAuthParam,
 } from "./rpcAuth";
 import { isAdeRuntimeNamedPipePath } from "../../desktop/src/shared/adeRuntimeIpc";
+import { localIpcListenOptions } from "./services/runtime/localIpcListenOptions";
 import { headlessMobileProjectSummary } from "./services/sync/headlessMobileProjectSummary";
 import { headlessProjectLaneCount } from "./services/sync/headlessProjectLaneCount";
 import {
@@ -132,7 +134,10 @@ import {
   syncAccountAnalyticsIdentity,
 } from "./services/account/accountAuthService";
 import { getSharedAccountAuthService } from "./services/account/sharedAccountAuthService";
-import { DEFAULT_SYNC_HOST_PORT } from "./services/sync/syncProtocol";
+import {
+  DEFAULT_SYNC_HOST_PORT,
+  SYNC_HOST_MAX_PORT,
+} from "./services/sync/syncProtocol";
 import {
   runAdeCodeRemote,
   takeAdeCodeRemoteArgs,
@@ -539,6 +544,7 @@ function maybeRunBuiltCliFallback(
       cwd: CLI_PACKAGE_ROOT,
       env: process.env,
       encoding: "utf8",
+      windowsHide: true,
     });
     if (buildResult.error || buildResult.status !== 0 || !isBuiltCliFresh()) {
       error.details.nextAction =
@@ -558,6 +564,7 @@ function maybeRunBuiltCliFallback(
       [SOURCE_FALLBACK_ENV]: "1",
     },
     encoding: "utf8",
+    windowsHide: true,
   });
   if (rerun.error) {
     error.details.nextAction =
@@ -1127,7 +1134,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
   and explicit remote addresses continue to work while signed out.
 
     $ ade machines list --text
-    $ ade machines rename <machine-key> "Build Mac"
+    $ ade machines rename <machine-key> "Build workstation"
     $ ade machines rename <machine-key> --clear
     $ ade machines connect <machine-key>
     $ ade machines connect <device-id> --project <project-id|name|path>
@@ -1197,7 +1204,7 @@ const HELP_BY_COMMAND: Record<string, string> = {
     $ ade desktop open
 
   Flags:
-    --app-name <name>       macOS app name to open. Defaults to ADE, ADE Beta,
+    --app-name <name>       Installed app name to open. Defaults to ADE, ADE Beta,
                             or ADE Alpha based on the installed CLI wrapper.
 `,
   github: `${ADE_BANNER}
@@ -2865,6 +2872,7 @@ function detectUnmergedLaneCreateNudge(
     cwd,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   }),
 ): string | null {
   const cwd = args.cwd ?? process.cwd();
@@ -12549,6 +12557,7 @@ function findProjectRoots(startDir: string): {
     cwd: startDir,
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   const gitRoot = git.status === 0 ? git.stdout.trim() : "";
   const fallback = gitRoot ? path.resolve(gitRoot) : path.resolve(startDir);
@@ -12585,6 +12594,7 @@ function commandExists(command: string): boolean {
   const result = spawnSync(lookupCommand, [command], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "ignore"],
+    windowsHide: true,
   });
   return result.status === 0 && result.stdout.trim().length > 0;
 }
@@ -12723,6 +12733,7 @@ function runLocalCommand(
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5000,
+    windowsHide: true,
   });
   return {
     ok: result.status === 0,
@@ -12886,7 +12897,7 @@ function checkProviderReadiness(value: unknown): ReadinessCheck {
     claude: commandExists("claude"),
     codex: commandExists("codex"),
     opencode: commandExists("opencode"),
-    cursor: commandExists("agent") || commandExists("cursor-agent"),
+    cursor: CURSOR_CLI_EXECUTABLES.launchCandidates.some((command) => commandExists(command)),
     droid: commandExists("droid"),
   };
   const apiKeyProviders = Object.keys(apiKeys).filter((key) =>
@@ -13309,17 +13320,58 @@ function createSocketConnection(socketPath: string): net.Socket {
 async function assertBrainSocketUnowned(socketPath: string): Promise<void> {
   const liveness = await probeLocalSocketForLiveness(socketPath);
   if (liveness !== "live" && liveness !== "unknown") return;
-  throw Object.assign(new CliExecutionError("ADE brain socket is already in use.", {
-    socketPath,
-    cause: liveness === "live"
-      ? "Another ADE brain is accepting connections on this socket."
-      : "ADE could not prove the existing socket is stale.",
-    nextAction: "Stop the existing ADE brain or choose a different --socket path.",
-  }), { code: "socket_owned_by_other" as const });
+  throw Object.assign(
+    new CliExecutionError("ADE brain socket is already in use.", {
+      socketPath,
+      cause: brainSocketOwnedCause(socketPath, liveness),
+      nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+    }),
+    { code: "socket_owned_by_other" as const },
+  );
 }
 
+/**
+ * Why the endpoint is unavailable, in the terms of the platform it runs on.
+ *
+ * On Windows an unavailable pipe name always has a live owner holding a
+ * handle, so there is no "maybe it is stale" branch to hedge about — telling a
+ * Windows user we "could not prove the socket is stale" describes a failure
+ * mode their OS does not have, and points them at a cleanup that cannot help.
+ */
+function brainSocketOwnedCause(
+  socketPath: string,
+  liveness: "live" | "unknown",
+): string {
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    return liveness === "live"
+      ? "Another ADE brain is accepting connections on this named pipe."
+      : "Another process holds this named pipe. Windows releases a pipe name as "
+        + "soon as its owner exits, so the name being taken means an ADE brain "
+        + "(or another build of ADE) is still running.";
+  }
+  return liveness === "live"
+    ? "Another ADE brain is accepting connections on this socket."
+    : "ADE could not prove the existing socket is stale.";
+}
+
+/**
+ * Windows named pipes are probeable, and more decisively than a unix socket.
+ *
+ * This used to bail out with `"unknown"` for any `\\.\pipe\...` address, which
+ * inherited a POSIX assumption that does not hold: a unix socket leaves a file
+ * behind after its owner dies, so "the path exists" says nothing about
+ * liveness and the probe is the only way to tell. A named pipe has no
+ * filesystem corpse at all — the name lives exactly as long as some process
+ * holds a handle to it, and the kernel releases it the moment the last handle
+ * closes (verified: SIGKILL the owner and the very next `listen()` succeeds).
+ *
+ * So dialing a pipe answers the question outright: `ENOENT` means nobody owns
+ * this name, and a completed connect means a live brain does. Refusing to dial
+ * threw that signal away and left every Windows caller with `"unknown"`, which
+ * is the *most* alarming verdict the callers act on.
+ */
 async function probeLocalSocketForLiveness(socketPath: string): Promise<"live" | "stale" | "unknown"> {
-  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
+  if (socketPath.startsWith("tcp://")) {
     return "unknown";
   }
   return await new Promise((resolve) => {
@@ -13645,12 +13697,14 @@ async function startHeadlessRpcSocketServer(args: {
   createHandler: () => JsonRpcHandler & { dispose?: () => void };
 }): Promise<(() => void) | null> {
   if (
-    isAdeRuntimeNamedPipePath(args.socketPath) ||
-    fs.existsSync(args.socketPath)
+    !isAdeRuntimeNamedPipePath(args.socketPath)
+    && fs.existsSync(args.socketPath)
   ) {
     return null;
   }
-  fs.mkdirSync(path.dirname(args.socketPath), { recursive: true, mode: 0o700 });
+  if (!isAdeRuntimeNamedPipePath(args.socketPath)) {
+    fs.mkdirSync(path.dirname(args.socketPath), { recursive: true, mode: 0o700 });
+  }
   const serverState = createHeadlessRpcServer(args.createHandler);
   const { server } = serverState;
 
@@ -13665,7 +13719,7 @@ async function startHeadlessRpcSocketServer(args: {
     };
     server.once("listening", handleListening);
     server.once("error", handleError);
-    server.listen(args.socketPath);
+    server.listen(localIpcListenOptions(args.socketPath));
   });
 
   if (!isAdeRuntimeNamedPipePath(args.socketPath)) {
@@ -14641,21 +14695,69 @@ function normalizeRuntimeSocketPath(rawSocketPath: string): string {
     : path.resolve(rawSocketPath);
 }
 
-function isEphemeralRuntimeSocketPath(socketPath: string): boolean {
-  if (socketPath.startsWith("tcp://") || isAdeRuntimeNamedPipePath(socketPath)) {
-    return false;
-  }
-  const normalizedSocketPath = path.resolve(socketPath);
+/**
+ * The `ade-<kind>-XXXXXX` naming convention every throwaway ADE brain already
+ * follows for its scratch directory under the system temp dir.
+ */
+const EPHEMERAL_RUNTIME_SCRATCH_PATTERN =
+  /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/;
+
+function isEphemeralRuntimeScratchPath(candidate: string): boolean {
+  const normalizedPath = path.resolve(candidate);
   const tmpDirs = Array.from(new Set(
     [os.tmpdir(), realpathSyncSafe(os.tmpdir()), "/tmp", realpathSyncSafe("/tmp")]
       .map((dir) => path.resolve(dir)),
   ));
   for (const tmpDir of tmpDirs) {
-    const relativeToTmp = path.relative(tmpDir, normalizedSocketPath);
+    const relativeToTmp = path.relative(tmpDir, normalizedPath);
     if (relativeToTmp.startsWith("..") || path.isAbsolute(relativeToTmp)) continue;
-    return /(^|[/\\])ade-(stdio-rpc|code|local-runtime)[^/\\]*/.test(relativeToTmp);
+    return EPHEMERAL_RUNTIME_SCRATCH_PATTERN.test(relativeToTmp);
   }
   return false;
+}
+
+/**
+ * Whether this endpoint belongs to a throwaway brain rather than the machine's
+ * real one. An ephemeral brain is spawned with `--no-sync` and an idle-exit
+ * budget, and is excluded from runtime-service repair.
+ *
+ * On macOS/Linux the endpoint is `<ADE_HOME>/sock/ade.sock`, so inspecting the
+ * socket path answers the question directly.
+ *
+ * Windows has no filesystem socket to inspect: the machine endpoint is a named
+ * pipe whose name is a hash of ADE_HOME, so there is no path to match and this
+ * used to return `false` for every pipe. What the POSIX branch is really asking
+ * is "does this brain belong to a scratch ADE_HOME under the temp dir", since
+ * the socket always lives inside that home — so on Windows we ask that question
+ * of the home itself, and confirm the endpoint is the pipe that home derives.
+ *
+ * Without it every Windows scratch brain was misread as the real,
+ * service-managed machine brain: it was spawned WITH mobile sync and so lost
+ * the singleton race against the user's actual brain (which the sync loop
+ * treats as fatal before the RPC socket is ever bound), it never idle-exited,
+ * and under a packaged Electron CLI it was eligible to trigger repair of the
+ * installed runtime service.
+ */
+function isEphemeralRuntimeSocketPath(socketPath: string): boolean {
+  if (socketPath.startsWith("tcp://")) return false;
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    if (!isEphemeralRuntimeScratchPath(resolveMachineAdeDir())) return false;
+    return namedPipeComparisonKey(resolveMachineAdeLayout().socketPath)
+      === namedPipeComparisonKey(socketPath);
+  }
+  return isEphemeralRuntimeScratchPath(socketPath);
+}
+
+/**
+ * Collapse the equivalent spellings of one Windows named pipe onto a single
+ * comparison key: Win32 accepts `/` and `\` interchangeably in a pipe path and
+ * matches pipe names case-insensitively. Mirrors the identically named helper
+ * in the desktop local runtime pool.
+ *
+ * This is a comparison key ONLY — never an address to connect to or listen on.
+ */
+function namedPipeComparisonKey(socketPath: string): string {
+  return socketPath.trim().replace(/\//g, "\\").toLowerCase();
 }
 
 function realpathSyncSafe(filePath: string): string {
@@ -14844,6 +14946,7 @@ function shouldAllowRuntimeSelfShutdown(env: NodeJS.ProcessEnv = process.env): b
 }
 
 class RuntimeSelfShutdownBlockedError extends Error {}
+class RuntimeServiceRecoveryOwnedError extends Error {}
 
 function isLocalRuntimeSocketPath(socketPath: string): boolean {
   return !socketPath.startsWith("tcp://");
@@ -14910,8 +15013,11 @@ function shouldRepairMachineRuntimeServiceBeforeSpawn(
   return !socketPathOverride?.trim()
     && process.env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL !== "1"
     && isPackagedElectronCliRuntime()
-    && !socketPath.startsWith("tcp://")
-    && !isAdeRuntimeNamedPipePath(socketPath)
+    && isServiceManagedMachineRuntimeSocket(socketPath);
+}
+
+function isServiceManagedMachineRuntimeSocket(socketPath: string): boolean {
+  return !socketPath.startsWith("tcp://")
     && !isEphemeralRuntimeSocketPath(socketPath);
 }
 
@@ -14920,9 +15026,7 @@ export function shouldBlockManualMachineRuntimeSpawn(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   return env.ADE_DISABLE_RUNTIME_SERVICE_INSTALL === "1"
-    && !socketPath.startsWith("tcp://")
-    && !isAdeRuntimeNamedPipePath(socketPath)
-    && !isEphemeralRuntimeSocketPath(socketPath);
+    && isServiceManagedMachineRuntimeSocket(socketPath);
 }
 
 function manualMachineRuntimeSpawnBlockedError(socketPath: string): Error {
@@ -14939,12 +15043,25 @@ async function repairMachineRuntimeServiceConnection(args: {
 }): Promise<SocketJsonRpcClient | null> {
   let client: SocketJsonRpcClient | null = null;
   try {
-    const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
+    const [
+      { installRuntimeService, uninstallRuntimeService },
+      { serviceManagerOwnsRuntimeRecovery },
+    ] = await Promise.all([
+      import("./serviceManager"),
+      import("./serviceManager/common"),
+    ]);
     const result = await withAdeDefaultRole(
       args.options.role,
       () => installRuntimeService(),
     );
-    if (!result.ok) return null;
+    if (!result.ok) {
+      if (serviceManagerOwnsRuntimeRecovery(result)) {
+        throw new RuntimeServiceRecoveryOwnedError(
+          `${result.message} The registered service still owns recovery for this endpoint, so ADE did not start a competing manual brain.`,
+        );
+      }
+      return null;
+    }
     client = await SocketJsonRpcClient.connect(
       args.socketPath,
       args.options.timeoutMs,
@@ -14973,7 +15090,10 @@ async function repairMachineRuntimeServiceConnection(args: {
     client = null;
     return repaired;
   } catch (error) {
-    if (error instanceof RuntimeSelfShutdownBlockedError) throw error;
+    if (
+      error instanceof RuntimeSelfShutdownBlockedError
+      || error instanceof RuntimeServiceRecoveryOwnedError
+    ) throw error;
     return null;
   } finally {
     try {
@@ -15043,6 +15163,7 @@ async function spawnMachineRuntimeDaemon(
       detached: true,
       stdio: "ignore",
       env,
+      windowsHide: true,
     });
     child.once("error", () => {});
     if (child.pid != null) recordRuntimeSpawn(socketPath, child.pid);
@@ -15469,6 +15590,99 @@ async function runBrainCommand(
   );
 }
 
+export function resolveWindowsDesktopExecutable(args: {
+  appName: string;
+  env?: NodeJS.ProcessEnv;
+  execPath?: string;
+  entryPath?: string | null;
+}): string | null {
+  const env = args.env ?? process.env;
+  const execPath = args.execPath ?? process.execPath;
+  const entryPath = args.entryPath ?? process.argv[1] ?? null;
+  const requestedName = path.basename(args.appName.trim()) || "ADE";
+  const appBaseName = requestedName.toLowerCase().endsWith(".exe")
+    ? requestedName.slice(0, -4)
+    : requestedName;
+  const executableName = `${appBaseName}.exe`;
+  const execBaseName = path.basename(execPath);
+  const currentExecutableMatchesRequest =
+    execBaseName.toLowerCase() === executableName.toLowerCase();
+  const candidates: Array<string | null> = [
+    env.ADE_DESKTOP_APP_PATH?.trim() || null,
+    currentExecutableMatchesRequest
+      ? execPath
+      : null,
+    entryPath
+      ? path.resolve(path.dirname(entryPath), "..", "..", executableName)
+      : null,
+    env.LOCALAPPDATA
+      ? path.join(env.LOCALAPPDATA, "Programs", appBaseName, executableName)
+      : null,
+    env.PROGRAMFILES
+      ? path.join(env.PROGRAMFILES, appBaseName, executableName)
+      : null,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const resolved = path.resolve(candidate);
+    if (fs.existsSync(resolved)) return resolved;
+  }
+  return null;
+}
+
+async function launchWindowsDesktopApp(
+  executablePath: string,
+  appName: string,
+): Promise<Record<string, unknown>> {
+  const env = { ...process.env };
+  // The installed CLI wrapper runs ADE.exe as Node. Carrying this flag into
+  // the child would launch another CLI process instead of the desktop UI.
+  delete env.ELECTRON_RUN_AS_NODE;
+  return await new Promise((resolve) => {
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(executablePath, [], {
+        detached: true,
+        stdio: "ignore",
+        env,
+        windowsHide: true,
+      });
+    } catch (error) {
+      resolve({
+        ok: false,
+        platform: process.platform,
+        appName,
+        path: executablePath,
+        message: error instanceof Error ? error.message : String(error),
+      });
+      return;
+    }
+    let settled = false;
+    const finish = (result: Record<string, unknown>): void => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
+    };
+    child.once("error", (error) => finish({
+      ok: false,
+      platform: process.platform,
+      appName,
+      path: executablePath,
+      message: error.message,
+    }));
+    child.once("spawn", () => {
+      child.unref();
+      finish({
+        ok: true,
+        platform: process.platform,
+        appName,
+        path: executablePath,
+        message: `Opened ${appName}.`,
+      });
+    });
+  });
+}
+
 async function runDesktopCommand(rest: string[]): Promise<unknown> {
   const args = [...rest];
   const sub = firstPositional(args) ?? "open";
@@ -15494,12 +15708,26 @@ async function runDesktopCommand(rest: string[]): Promise<unknown> {
     };
   }
 
+  if (process.platform === "win32") {
+    const executablePath = resolveWindowsDesktopExecutable({ appName });
+    if (!executablePath) {
+      return {
+        ok: false,
+        platform: process.platform,
+        appName,
+        message:
+          `Unable to find the installed ${appName} executable. Reinstall ADE or set ADE_DESKTOP_APP_PATH.`,
+      };
+    }
+    return await launchWindowsDesktopApp(executablePath, appName);
+  }
+
   return {
     ok: false,
     platform: process.platform,
     appName,
     message:
-      "Launching ADE desktop from the CLI is currently supported on macOS.",
+      "Launching ADE desktop from the CLI is currently supported on macOS and Windows.",
   };
 }
 
@@ -15600,7 +15828,9 @@ async function runServe(
     const { getRuntimeServiceStatus } = await import("./serviceManager");
     return getRuntimeServiceStatus();
   }
-  boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  if (process.platform === "darwin") {
+    boundLaunchdLogs(path.dirname(lastFailurePathForMachine()));
+  }
   const previousFailure = readLastFailure({ kind: "machine" });
   const startupBackoffMs = computeStartupBackoffMs(previousFailure, Date.now());
   if (startupBackoffMs > 0 && previousFailure) {
@@ -16147,7 +16377,12 @@ async function runServe(
       // brain out.
       const { acquireSyncHostSingleton } = await import("./services/sync/syncHostSingleton");
       brainSyncHostLease ??= acquireSyncHostSingleton({ projectRoot: null });
-      const listenerPort = await sharedSyncListener.ensureListening([DEFAULT_SYNC_HOST_PORT]);
+      const listenerPort = await sharedSyncListener.ensureListening(
+        Array.from(
+          { length: SYNC_HOST_MAX_PORT - DEFAULT_SYNC_HOST_PORT + 1 },
+          (_, index) => DEFAULT_SYNC_HOST_PORT + index,
+        ),
+      );
       brainSyncHostLease.updatePort(listenerPort);
     } else if (activeScope && brainSyncHostLease) {
       // A scope took over hosting and holds its own lease; drop the
@@ -16223,7 +16458,7 @@ async function runServe(
       server.once("listening", handleListening);
       server.once("error", handleError);
       if (typeof target === "string") {
-        server.listen(target);
+        server.listen(localIpcListenOptions(target));
       } else {
         server.listen(target.port, target.host);
       }
@@ -16236,7 +16471,11 @@ async function runServe(
   // the bind check below and simply lived on as a zombie — we found 18 of them
   // stacked up on one dev socket, all of them still dialing the relay. A brain
   // that cannot own its socket has no reason to exist, so fail fast.
-  if (!isAdeRuntimeNamedPipePath(socketPath) && fs.existsSync(socketPath)) {
+  //
+  // A named pipe never shows up as a file to `existsSync` once its owner is
+  // gone, and dialing it is itself the existence check (`ENOENT` when free), so
+  // Windows skips straight to the probe instead of gating on the filesystem.
+  if (isAdeRuntimeNamedPipePath(socketPath) || fs.existsSync(socketPath)) {
     try {
       await assertBrainSocketUnowned(socketPath);
     } catch (error) {
@@ -16263,7 +16502,7 @@ async function runServe(
         // provably live owner so a probe hiccup can't make a brain quit on
         // itself.
         abortIf: async () => {
-          if (isAdeRuntimeNamedPipePath(socketPath) || !fs.existsSync(socketPath)) return false;
+          if (!isAdeRuntimeNamedPipePath(socketPath) && !fs.existsSync(socketPath)) return false;
           return await probeLocalSocketForLiveness(socketPath) === "live";
         },
       });
@@ -16299,7 +16538,14 @@ async function runServe(
   }
 
   fs.mkdirSync(layout.adeDir, { recursive: true, mode: 0o700 });
-  if (!isAdeRuntimeNamedPipePath(socketPath)) {
+  if (isAdeRuntimeNamedPipePath(socketPath)) {
+    // No directory to create and nothing to unlink: a pipe name is a kernel
+    // object, not a file. The ownership check still applies though — this used
+    // to be skipped wholesale on Windows, which sent the brain straight into a
+    // bare `listen()` and turned an "another brain owns this" conflict into an
+    // unclassified crash.
+    await assertBrainSocketUnowned(socketPath);
+  } else {
     fs.mkdirSync(path.dirname(socketPath), { recursive: true, mode: 0o700 });
     if (fs.existsSync(socketPath)) {
       await assertBrainSocketUnowned(socketPath);
@@ -16311,7 +16557,29 @@ async function runServe(
 
   const socketState = createHeadlessRpcServer(createHandler);
   states.push(socketState);
-  await listen(socketState.server, socketPath);
+  try {
+    await listen(socketState.server, socketPath);
+  } catch (error) {
+    // The ownership check above is a check, not a lock: two brains that both
+    // probe a free endpoint race to bind it and the loser lands here. Without
+    // this, `EADDRINUSE` escaped as Node's raw text, which the recovery
+    // classifier below could not match, so the failure was filed as `unknown`
+    // with "ADE's background service could not start." and no next action —
+    // exactly the shape of the startup failure we found recorded on Windows.
+    // Give the loser the same coded error the pre-bind path already raises.
+    if ((error as NodeJS.ErrnoException)?.code === "EADDRINUSE") {
+      await disposeServeResources();
+      throw Object.assign(
+        new CliExecutionError("ADE brain socket is already in use.", {
+          socketPath,
+          cause: brainSocketOwnedCause(socketPath, "live"),
+          nextAction: "Stop the existing ADE brain or choose a different --socket path.",
+        }),
+        { code: "socket_owned_by_other" as const },
+      );
+    }
+    throw error;
+  }
   if (!isAdeRuntimeNamedPipePath(socketPath)) {
     try {
       fs.chmodSync(socketPath, 0o600);

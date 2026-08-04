@@ -126,7 +126,7 @@ type ProjectLocation =
 const LOCAL_PROJECT_LOCATION: ProjectLocation = {
   kind: "local",
   id: "local",
-  name: "This Mac",
+  name: "This computer",
 };
 
 function stripTrailingSeparator(input: string): string {
@@ -634,7 +634,7 @@ export function CommandPalette({
       {
         id: "project-remote",
         title: "Connect to another machine",
-        hint: "Add a Mac over SSH and list its ADE projects",
+        hint: "Add a computer over SSH and list its ADE projects",
         group: "Projects",
         closeOnRun: false,
         run: startProjectRemote,
@@ -2577,7 +2577,7 @@ function ProjectLocationChooser({
               <span className="mt-1 block truncate font-mono text-[11px] text-[var(--color-muted-fg)]">
                 {isRemote
                   ? `${status?.target.hostname ?? location.name}${status?.version ? ` · ADE ${status.version}` : ""}`
-                  : "Projects on this Mac"}
+                  : "Projects on this computer"}
               </span>
               {isRemote ? (
                 <span className="mt-2 inline-flex rounded-full border border-[#F59E0B66] bg-[#F59E0B1A] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-[#FBBF24]">

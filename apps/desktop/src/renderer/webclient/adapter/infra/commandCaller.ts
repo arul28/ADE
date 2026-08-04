@@ -34,6 +34,22 @@ const TRANSPORT_FAILURE_CODES = new Set([
 
 const READ_CACHE_TTL_MS = 3_000;
 
+/**
+ * Raised when a mutation names an action the connected ADE runtime does not
+ * serve. Carries the action so a surface can say which capability is missing
+ * instead of failing anonymously.
+ */
+export class UnsupportedRemoteCommandError extends Error {
+  readonly code = "unsupported_action";
+
+  constructor(readonly action: string) {
+    // Matches the phrasing the explicit `callRequired` fallbacks already use,
+    // so every "the host can't do this" failure reads the same way.
+    super(`Action '${action}' is unavailable on the connected ADE host. Update ADE on that Mac to use it.`);
+    this.name = "UnsupportedRemoteCommandError";
+  }
+}
+
 type CommandResult<T> = {
   value: T;
   cacheable: boolean;
@@ -42,6 +58,8 @@ type CommandResult<T> = {
 export class CommandCaller {
   private readonly readCache = createCoalescingReadCache(READ_CACHE_TTL_MS);
   private readonly lastSuccessfulReads = new Map<string, unknown>();
+  private descriptorSource: readonly SyncRemoteCommandDescriptor[] | null = null;
+  private descriptorIndex = new Map<string, SyncRemoteCommandDescriptor>();
 
   constructor(
     private readonly client: AdeSyncClient,
@@ -67,7 +85,17 @@ export class CommandCaller {
   }
 
   getDescriptor(action: string): SyncRemoteCommandDescriptor | null {
-    return this.client.getCommandDescriptors().find((descriptor) => descriptor.action === action) ?? null;
+    const descriptors = this.client.getCommandDescriptors();
+    // A linear scan per call was fine while only a handful of call sites asked;
+    // capability checks ask far more often. Identity alone is NOT a sufficient
+    // cache key — a caller that appends to the array it already handed us would
+    // keep a stale index and report a served action as unsupported — so the
+    // entry count is checked too.
+    if (descriptors !== this.descriptorSource || descriptors.length !== this.descriptorIndex.size) {
+      this.descriptorSource = descriptors;
+      this.descriptorIndex = new Map(descriptors.map((descriptor) => [descriptor.action, descriptor]));
+    }
+    return this.descriptorIndex.get(action) ?? null;
   }
 
   hasAction(action: string): boolean {
@@ -80,7 +108,17 @@ export class CommandCaller {
     options: CommandCallOptions<T>
   ): Promise<T> {
     const descriptor = this.getDescriptor(action);
-    if (!descriptor) return await resolveFallback(options.fallback);
+    if (!descriptor) {
+      // A read the host cannot serve legitimately degrades to its fallback —
+      // an empty list, a null summary. A WRITE must not: no request was sent,
+      // so resolving the fallback reports a mutation that never happened.
+      // (The `idempotent: false` guard below only covers failures AFTER
+      // dispatch; this is the case where nothing is dispatched at all.)
+      if (options.idempotent === false) {
+        throw new UnsupportedRemoteCommandError(action);
+      }
+      return await resolveFallback(options.fallback);
+    }
 
     const requireProject = options.requireProject ?? descriptor.scope === "project";
     const projectId = descriptor.scope === "project" ? this.projectState.getProjectId() : null;

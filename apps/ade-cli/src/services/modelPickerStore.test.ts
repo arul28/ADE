@@ -1,9 +1,20 @@
 import fs from "node:fs";
+import { spawnSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../desktop/src/main/services/state/kvDb";
 import { createModelPickerStore, MODEL_PICKER_MAX_RECENTS } from "./modelPickerStore";
+import { removeTestTree } from "../test/filesystem";
+
+vi.mock("../../../desktop/src/main/services/state/crsqliteExtension", async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import("../../../desktop/src/main/services/state/crsqliteExtension")
+  >();
+  return process.platform === "win32"
+    ? { ...original, resolveCrsqliteExtensionPath: () => null }
+    : original;
+});
 
 function createLogger() {
   return {
@@ -18,19 +29,18 @@ describe("modelPickerStore (db-backed)", () => {
   const cleanupRoots: string[] = [];
   const openDbs: AdeDb[] = [];
 
-  afterEach(() => {
+  // Closing SQLite handles and unlinking the db trees is IO-bound, and the
+  // default 10s hook budget was exhausted on a loaded Windows CI runner,
+  // reporting "Hook timed out in 10000ms" on top of the real failure.
+  afterEach(async () => {
     vi.useRealTimers();
     for (const db of openDbs.splice(0)) {
-      try {
-        db.close();
-      } catch {
-        // best-effort teardown
-      }
+      db.close();
     }
     for (const root of cleanupRoots.splice(0)) {
-      fs.rmSync(root, { recursive: true, force: true });
+      await removeTestTree(root);
     }
-  });
+  }, 60_000);
 
   async function makeDb(): Promise<{ db: AdeDb; root: string }> {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-model-picker-db-"));
@@ -45,6 +55,40 @@ describe("modelPickerStore (db-backed)", () => {
   function noMigration(root: string): string {
     return path.join(root, "no-such-legacy.json");
   }
+
+  it.skipIf(process.platform !== "win32")(
+    "runs model-picker CRR mutations in an isolated Windows brain-lifetime process",
+    async () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-model-picker-crr-worker-"));
+      cleanupRoots.push(root);
+      const workerPath = path.resolve(process.cwd(), "src", "test", "crrModelPickerWorker.ts");
+      const tsxPath = path.resolve(process.cwd(), "node_modules", "tsx", "dist", "cli.mjs");
+      // tsx has to transform the worker and load the crsqlite native extension
+      // in a cold child process; 15s is not enough headroom on a loaded Windows
+      // CI runner, where the kill left status null and the message below empty.
+      const result = spawnSync(process.execPath, [tsxPath, workerPath, path.join(root, "ade.db")], {
+        encoding: "utf8",
+        env: process.env,
+        timeout: 60_000,
+        windowsHide: true,
+      });
+
+      // A timeout kill reports status null with no output, so name that case
+      // explicitly rather than failing with a bare "expected null to be 0".
+      const failure = result.error
+        ? `spawn failed: ${result.error.message}`
+        : result.signal
+          ? `worker killed by ${result.signal} (timed out?)`
+          : result.stderr || result.stdout;
+      expect(result.status, failure).toBe(0);
+      expect(JSON.parse(result.stdout.trim())).toEqual({
+        crsqliteAvailable: true,
+        favorites: ["gpt-5"],
+        recents: ["claude-sonnet-5"],
+      });
+    },
+    90_000,
+  );
 
   it("starts empty on a fresh db", async () => {
     const { db, root } = await makeDb();

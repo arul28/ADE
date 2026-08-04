@@ -11,7 +11,7 @@
  * a machine doesn't report free-disk headroom we render the row without a size
  * rather than fetching one.
  *
- * Naming rule: machines are named absolutely ("This Mac", "MacBook Pro (97)").
+ * Naming rule: machines are named absolutely ("This computer", "MacBook Pro (97)").
  * The word "remote" is never user-visible here — inside the create-lane dialog
  * it already means the git base-branch source ("Use fetched upstream").
  */
@@ -21,7 +21,7 @@ import type { RecentProjectSummary, RemoteRuntimeConnectionStatus } from "../../
 
 // Machine identity is shared, not per-module: five copies of these constants
 // with two different id values is what made the divergence guard able to warn
-// that This Mac diverged from itself. Re-exported here for existing callers.
+// that This computer diverged from itself. Re-exported here for existing callers.
 import { THIS_MACHINE_ID, THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 export { THIS_MACHINE_ID, THIS_MACHINE_NAME };
 
@@ -54,7 +54,7 @@ export type LaneMachineProjectRef = {
 export type LaneMachineOption = {
   /** `THIS_MACHINE_ID`, or the remote-runtime target id. */
   id: string;
-  /** Absolute machine name, e.g. "This Mac" or "MacBook Pro (97)". */
+  /** Absolute machine name, e.g. "This computer" or "MacBook Pro (97)". */
   name: string;
   /** Remote-runtime target id; null for the machine ADE runs on. */
   targetId: string | null;
@@ -73,7 +73,7 @@ export type LaneMachineOption = {
 export type LaneMachineDerivationInput = {
   /** Connections from the remote-runtime snapshot; only `connected` are listed. */
   connections: readonly RemoteRuntimeConnectionStatus[];
-  /** Target id of the machine the active project is bound to; null = this Mac. */
+  /** Target id of the machine the active project is bound to; null = this computer. */
   boundTargetId: string | null;
   /** The bound machine's checkout of this repo, from the active project binding. */
   boundProject?: LaneMachineProjectRef | null;
@@ -85,11 +85,11 @@ export type LaneMachineDerivationInput = {
   localProjectRoots?: readonly string[];
   /**
    * Known local projects, including unopened recents. Their git origins let a
-   * remote-bound tab address the matching checkout on This Mac without forcing
+   * remote-bound tab address the matching checkout on This computer without forcing
    * the user to open it once just to establish identity.
    */
   localProjects?: readonly RecentProjectSummary[];
-  /** Free disk headroom on this Mac, when a caller already has it. */
+  /** Free disk headroom on this computer, when a caller already has it. */
   thisMachineFreeBytes?: number | null;
 };
 
@@ -203,7 +203,7 @@ function repoMatchFor(
 }
 
 /**
- * This Mac. Its checkout can't be matched by git origin — local projects aren't
+ * This computer. Its checkout can't be matched by git origin — local projects aren't
  * in the connection snapshot — so it matches on the repo folder name against
  * the project tabs already open in this window.
  */
@@ -247,7 +247,7 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
       };
     }
   }
-  // We can only claim the repo is absent from this Mac when we know what we're
+  // We can only claim the repo is absent from this computer when we know what we're
   // looking for and have the local project list to look in.
   const canProveAbsence = !isBound && (
     repoIdentity
@@ -272,7 +272,7 @@ function thisMachineOption(input: LaneMachineDerivationInput): LaneMachineOption
 }
 
 /**
- * Connected machines a lane can be created on, this Mac first. Machines that
+ * Connected machines a lane can be created on, this computer first. Machines that
  * are pairing, erroring, or idle are omitted entirely — you can only create a
  * lane on a machine ADE is talking to right now.
  */

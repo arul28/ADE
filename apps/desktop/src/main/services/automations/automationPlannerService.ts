@@ -452,7 +452,15 @@ async function runCodexExec(args: {
     }
   }
 
-  cliArgs.push(args.prompt);
+  // `-` makes Codex read the prompt from stdin. Never put it on the command
+  // line: when the resolved launcher is a `.cmd`/extensionless npm shim, ADE
+  // has to route the spawn through `cmd.exe /d /s /c "…"`, and cmd mangles the
+  // prompt in three separate ways that execve on macOS does not — `%` is
+  // doubled and environment references are expanded, newlines collapse to
+  // spaces, and anything past ~8191 characters fails outright with "The command
+  // line is too long." Planner prompts routinely carry lane branch lists and
+  // multi-line user intent, so all three are reachable.
+  cliArgs.push("-");
 
   let codexExecutable: string;
   try {
@@ -480,8 +488,9 @@ async function runCodexExec(args: {
   const child = spawn(invocation.command, invocation.args, {
     cwd: args.cwd,
     env,
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    windowsHide: true,
   });
 
   let stderr = "";
@@ -492,7 +501,15 @@ async function runCodexExec(args: {
 
   const exitCode = await new Promise<number | null>((resolve, reject) => {
     child.on("error", reject);
-    child.on("exit", (code) => resolve(code));
+    // `close` rather than `exit`: on Windows the stdio pipes drain after the
+    // process is reaped, so settling on `exit` truncates the stderr that ends
+    // up in the "Codex exited with code N" message.
+    child.on("close", (code) => resolve(code));
+    child.stdin?.on("error", () => {
+      // Codex can exit before the prompt is fully written; the exit code and
+      // stderr are the authoritative failure signal.
+    });
+    child.stdin?.end(args.prompt);
   });
 
   try {
@@ -565,6 +582,7 @@ async function runClaudeHeadless(args: {
     env,
     stdio: ["ignore", "pipe", "pipe"],
     windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+    windowsHide: true,
   });
 
   let stdout = "";

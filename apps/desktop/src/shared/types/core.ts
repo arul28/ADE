@@ -134,7 +134,14 @@ export type AppResourceRoleUsage = {
 export type AppResourceProcessSampleInfo = {
   /** "skipped" means nothing was active so no process sample was taken. */
   status: "ok" | "unavailable" | "skipped";
-  reason: "timeout" | "spawn-error" | "exit-code" | "oversized-output" | "idle" | null;
+  reason:
+    | "timeout"
+    | "spawn-error"
+    | "exit-code"
+    | "oversized-output"
+    | "unsupported-platform"
+    | "idle"
+    | null;
   sampledAt: string | null;
   durationMs: number | null;
 };

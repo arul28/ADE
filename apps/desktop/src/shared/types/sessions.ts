@@ -8,6 +8,7 @@ import type {
   AgentChatCodexApprovalPolicy,
   AgentChatCodexConfigSource,
   AgentChatCodexSandbox,
+  AgentChatCliLaunchProvider,
   AgentChatSpawnKind,
 } from "./chat";
 import type { LaneLinearIssue } from "./lanes";
@@ -290,6 +291,8 @@ export type ClaudeSessionPointer = {
   updatedAt: string;
 };
 
+export type WindowsShellKind = "powershell" | "cmd" | "git-bash";
+
 export type PtyCreateArgs = {
   sessionId?: string;
   /** Allow callers to pre-assign a new session id instead of only resuming an existing tracked session. */
@@ -308,6 +311,12 @@ export type PtyCreateArgs = {
   tracked?: boolean;
   toolType?: TerminalToolType | null;
   startupCommand?: string;
+  /**
+   * Shell-specific variants of startupCommand. On Windows the PTY selects the
+   * entry only after a native shell has spawned, so fallback shell selection
+   * cannot accidentally receive another shell's syntax.
+   */
+  windowsStartupCommands?: Partial<Record<WindowsShellKind, string>>;
   startupDelayMs?: number;
   /** Optional input to send to the PTY after the process starts. */
   initialInput?: string;
@@ -318,6 +327,21 @@ export type PtyCreateArgs = {
   command?: string;
   args?: string[];
   env?: Record<string, string>;
+  /**
+   * Fresh provider-launch intent that must be materialized by the runtime
+   * which owns the lane. This keeps shell choice, skill roots, home paths, and
+   * path-list delimiters native to a pinned remote host.
+   */
+  runtimeCliLaunch?: {
+    provider: AgentChatCliLaunchProvider;
+    permissionMode: AgentChatPermissionMode;
+    orchestrationRole?: OrchestrationRole | null;
+    sessionId?: string;
+    model?: string | null;
+    reasoningEffort?: string | null;
+    fastMode?: boolean | null;
+    initialPrompt?: string | null;
+  };
   /** Optional provider continuation metadata to persist for externally imported sessions. */
   resumeMetadata?: TerminalResumeMetadata | null;
   /**

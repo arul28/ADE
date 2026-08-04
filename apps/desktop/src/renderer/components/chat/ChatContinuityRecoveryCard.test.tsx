@@ -102,7 +102,7 @@ describe("ChatContinuityRecoveryCard", () => {
     // Nothing runs until the user confirms.
     expect(recoverContinuity).not.toHaveBeenCalled();
     expect(screen.getByText(/ADE will start a fresh AI session/i)).toBeTruthy();
-    expect(screen.getByText(/stays saved on this Mac/i)).toBeTruthy();
+    expect(screen.getByText(/stays saved on this computer/i)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /confirm recover/i }));
 

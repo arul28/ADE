@@ -1,7 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   buildPtyContinuationLaunchFields,
+  buildOpenCodeReplayResumeLaunchCommand,
   buildTrackedCliLaunchCommand,
+  buildTrackedCliResumeLaunchCommand,
   buildTrackedCliResumeCommand,
   buildTrackedCliStartupCommand,
   buildOpenCodeReplayResumeCommand,
@@ -19,13 +21,22 @@ import type { AgentChatPermissionMode, TerminalSessionSummary } from "../../../s
 const originalPlatform = process.platform;
 
 function withProcessPlatform<T>(platform: NodeJS.Platform, fn: () => T): T {
+  const previousPlatform = process.platform;
   Object.defineProperty(process, "platform", { value: platform, configurable: true });
   try {
     return fn();
   } finally {
-    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+    Object.defineProperty(process, "platform", { value: previousPlatform, configurable: true });
   }
 }
+
+beforeEach(() => {
+  Object.defineProperty(process, "platform", { value: "linux", configurable: true });
+});
+
+afterEach(() => {
+  Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+});
 
 describe("buildPtyContinuationLaunchFields", () => {
   it("forwards trimmed continuation controls and preserves explicit false fast mode", () => {
@@ -340,6 +351,56 @@ describe("resolveCleanShellLaunchFields", () => {
       command: "powershell.exe",
       args: ["-NoLogo", "-NoProfile"],
     });
+  });
+
+  it("honors native PowerShell 7, cmd, and Git Bash shell selections", () => {
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+    })).toEqual({
+      command: "C:\\Program Files\\PowerShell\\7\\pwsh.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "cmd.exe" })).toEqual({
+      command: "cmd.exe",
+      args: ["/d"],
+    });
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: '"C:\\Program Files\\Git\\bin\\bash.exe"',
+    })).toEqual({
+      command: "C:\\Program Files\\Git\\bin\\bash.exe",
+      args: ["--noprofile", "--norc"],
+      env: { BASH_ENV: "" },
+    });
+    expect(resolveCleanShellLaunchFields({
+      platform: "win32",
+      shell: "D:\\PortableGit\\usr\\bin\\bash.exe",
+    })).toEqual({
+      command: "D:\\PortableGit\\usr\\bin\\bash.exe",
+      args: ["--noprofile", "--norc"],
+      env: { BASH_ENV: "" },
+    });
+  });
+
+  it("does not treat WSL or an ambiguous bash alias as a native Windows shell", () => {
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "wsl.exe" })).toEqual({
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    expect(resolveCleanShellLaunchFields({ platform: "win32", shell: "bash.exe" })).toEqual({
+      command: "powershell.exe",
+      args: ["-NoLogo", "-NoProfile"],
+    });
+    for (const shell of [
+      "\\\\wsl$\\Ubuntu\\usr\\bin\\bash.exe",
+      "\\\\wsl.localhost\\Ubuntu\\usr\\bin\\bash.exe",
+    ]) {
+      expect(resolveCleanShellLaunchFields({ platform: "win32", shell })).toEqual({
+        command: "powershell.exe",
+        args: ["-NoLogo", "-NoProfile"],
+      });
+    }
   });
 });
 
@@ -817,6 +878,13 @@ describe("buildTrackedCliStartupCommand", () => {
         expect(launch.command).toBe("powershell.exe");
         expect(launch.args).toEqual(["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", launch.startupCommand]);
         expect(launch.startupCommand).toContain("$env:ADE_DROID_SETTINGS");
+        expect(launch.startupCommand).toContain(
+          "[System.IO.File]::WriteAllText($env:ADE_DROID_SETTINGS",
+        );
+        expect(launch.startupCommand).toContain(
+          "[System.Text.UTF8Encoding]::new($false)",
+        );
+        expect(launch.startupCommand).not.toContain("Set-Content");
         expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
         expect(launch.startupCommand).toContain("Run the Droid path.");
         expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-5\"");
@@ -957,6 +1025,78 @@ describe("buildTrackedCliStartupCommand", () => {
 });
 
 describe("tracked CLI resume helpers", () => {
+  it("builds Windows resumes as direct argv and env instead of POSIX shell commands", () => {
+    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
+    const openCode = buildTrackedCliResumeLaunchCommand({
+      provider: "opencode",
+      targetKind: "session",
+      targetId: "ses_99",
+      launch: { permissionMode: "plan", model: "opencode/openai/gpt-5.4" },
+    }, { prompt }, { platform: "win32" });
+
+    expect(openCode).toMatchObject({
+      command: "opencode",
+      args: [
+        "--agent",
+        "plan",
+        "--model",
+        "openai/gpt-5.4",
+        "--session",
+        "ses_99",
+        "--prompt",
+        prompt,
+      ],
+      env: {
+        OPENCODE_CONFIG_CONTENT: JSON.stringify({
+          permission: { "*": "ask", edit: "deny", bash: "deny", question: "allow" },
+        }),
+      },
+    });
+    expect(openCode.args).not.toContain(expect.stringContaining("OPENCODE_CONFIG_CONTENT="));
+
+    const replay = buildOpenCodeReplayResumeLaunchCommand({
+      permissionMode: "plan",
+      model: "opencode/openai/gpt-5.4",
+      resumeTarget: "ses_99",
+      prompt,
+    });
+    expect(replay.command).toBe("opencode");
+    expect(replay.args).toEqual(expect.arrayContaining([
+      "--session",
+      "ses_99",
+      "--replay",
+      "--",
+      prompt,
+    ]));
+    expect(replay.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
+  });
+
+  it("quotes Windows Droid resume values through PowerShell without interpolation", () => {
+    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
+    const launch = buildTrackedCliResumeLaunchCommand({
+      provider: "droid",
+      targetKind: "session",
+      targetId: "droid-session-1",
+      launch: { permissionMode: "edit", model: "droid/claude-sonnet-5" },
+    }, { prompt }, { platform: "win32" });
+
+    expect(launch.command).toBe("powershell.exe");
+    expect(launch.args.slice(0, 5)).toEqual([
+      "-NoLogo",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-Command",
+    ]);
+    expect(launch.startupCommand).toContain(
+      "'Continue in C:\\Program Files\\ADE''s $lane %TEMP% & café'",
+    );
+    expect(launch.startupCommand).toContain("[System.Text.UTF8Encoding]::new($false)");
+    expect(launch.startupCommand).not.toContain("Set-Content");
+    expect(launch.startupCommand).not.toContain("$(mktemp");
+    expect(launch.startupCommand).not.toContain("ADE_DROID_SETTINGS=\"");
+  });
+
   it("rebuilds permission-aware resume commands from metadata", () => {
     expect(buildTrackedCliResumeCommand({
       provider: "claude",

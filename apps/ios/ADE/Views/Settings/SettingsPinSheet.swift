@@ -59,7 +59,7 @@ struct SettingsPinSheet: View {
 
         if noPairingCode {
           noPairingCodeCard
-          // Escape hatch: a PIN may have been set on that Mac *after* its QR was
+          // Escape hatch: a PIN may have been set on that computer *after* its QR was
           // scanned (or after discovery reported no code). Let the user flip back
           // to the keypad and try a code anyway instead of dead-ending here.
           Button {
@@ -73,7 +73,7 @@ struct SettingsPinSheet: View {
               .contentShape(Rectangle())
           }
           .buttonStyle(.plain)
-          .accessibilityHint("Shows the keypad in case a pairing code was set after this Mac was scanned.")
+          .accessibilityHint("Shows the keypad in case a pairing code was set after this computer was scanned.")
         } else {
           pinEntry
         }
@@ -101,7 +101,7 @@ struct SettingsPinSheet: View {
       .onAppear {
         // Proactive: if the machine already told us (via discovery or the
         // scanned payload) that it has no pairing code, skip the keypad and
-        // show the "set one on that Mac" message — no point asking for a code
+        // show the "set one on that computer" message — no point asking for a code
         // that can't exist.
         if presetSaysNoPairingCode { noPairingCode = true }
       }
@@ -125,7 +125,7 @@ struct SettingsPinSheet: View {
     .accessibilityLabel("Pairing PIN")
     .accessibilityValue(pin.isEmpty ? "No digits entered" : "\(pin.count) of 6 digits entered")
 
-    Text("You haven't connected to this Mac before. Enter the pairing code shown in ADE on that Mac.")
+    Text("You haven't connected to this computer before. Enter the pairing code shown in ADE on that computer.")
       .font(.footnote)
       .foregroundStyle(ADEColor.textSecondary)
 
@@ -146,7 +146,7 @@ struct SettingsPinSheet: View {
         .foregroundStyle(ADEColor.warning)
         .frame(width: 30, height: 30)
         .background(ADEColor.warning.opacity(0.14), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-      Text("That Mac has no pairing code set — set one in ADE on that Mac.")
+      Text("That computer has no pairing code set — set one in ADE on that computer.")
         .font(.subheadline)
         .foregroundStyle(ADEColor.textPrimary)
         .fixedSize(horizontal: false, vertical: true)
@@ -289,7 +289,7 @@ struct SettingsPinSheet: View {
       } else if syncService.lastPairingFailure == .pinNotSet
                   || syncService.lastPairingErrorCode == SyncService.pairingPinNotSetCode {
         // The host has no pairing code — swap the keypad for the friendly
-        // "set one on that Mac" message (M10) rather than a dead-end red error.
+        // "set one on that computer" message (M10) rather than a dead-end red error.
         ADEHaptics.warning()
         isSubmitting = false
         pin = ""
@@ -298,7 +298,7 @@ struct SettingsPinSheet: View {
         // Wrong code: shake the boxes and say where the real one lives.
         ADEHaptics.error()
         isSubmitting = false
-        localError = "That code didn't match — it's shown in ADE on that Mac."
+        localError = "That code didn't match — it's shown in ADE on that computer."
         pin = ""
         withAnimation(.default) { shakeTrigger += 1 }
       } else {

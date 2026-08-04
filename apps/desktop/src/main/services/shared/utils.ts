@@ -113,7 +113,10 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
         taskkillArgs.push("/F");
       }
       try {
-        const result = spawnSync("taskkill", taskkillArgs, { stdio: "ignore" });
+        const result = spawnSync("taskkill", taskkillArgs, {
+          stdio: "ignore",
+          windowsHide: true,
+        });
         if (result.status === 0) return true;
       } catch {
         // fall through to direct child signaling
@@ -180,6 +183,7 @@ export function spawnAsync(
         stdio: ["ignore", "pipe", "pipe"],
         detached: process.platform !== "win32",
         windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+        windowsHide: true,
       });
       let stdout = "";
       let stderr = "";
@@ -223,7 +227,10 @@ export function spawnAsync(
 export async function whichCommand(command: string): Promise<string | null> {
   try {
     if (process.platform === "win32") {
-      const res = await spawnAsync("where", [command]);
+      // ".exe" matters: spawnAsync wraps any extension-less command in
+      // `cmd.exe /d /s /c`, and that wrapper costs ~15ms of pure overhead per
+      // lookup on top of the ~58ms the lookup itself takes.
+      const res = await spawnAsync("where.exe", [command]);
       if (res.status !== 0) return null;
       const line = firstLine(res.stdout ?? "");
       return line.length ? line : null;

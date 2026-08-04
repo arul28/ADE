@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { resolveMachineAdeLayout } from "./services/projects/machineLayout";
 
 type JsonRpcResponse = {
   id?: number;
@@ -29,6 +30,35 @@ function withTsxNodeOptions(value: string | undefined): string {
 function fileSha256(filePath: string): string {
   return createHash("sha256").update(fs.readFileSync(filePath)).digest("hex");
 }
+
+/**
+ * Resolve the machine runtime endpoint for a temp `ADE_HOME` exactly the way
+ * production does (`resolveMachineRuntimeSocketPath` in cli.ts falls through to
+ * this same layout), so daemon-backed tests exercise the real per-platform
+ * transport: a Unix domain socket at `<ADE_HOME>/sock/ade.sock` on macOS and
+ * Linux, and a per-user named pipe on Windows.
+ *
+ * Hardcoding `<adeHome>/sock/ade.sock` is not portable. Windows has no Unix
+ * domain sockets, so `net` treats a path-style endpoint as a named pipe name
+ * there; a filesystem path is not a connectable address and every such test
+ * died with `connect ENOENT`. Deriving the endpoint keeps the POSIX value
+ * byte-identical — `resolveMachineAdeLayout` returns exactly
+ * `path.join(adeHome, "sock", "ade.sock")` off win32 — while giving Windows the
+ * address the runtime actually listens on.
+ */
+function machineRuntimeSocketPath(adeHome: string): string {
+  return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
+}
+
+/**
+ * Mirrors `LOCAL_RUNTIME_STARTUP_TIMEOUT_MS` in the desktop local runtime pool:
+ * a cold Windows daemon start (process spawn + tsx transform + SQLite init) is
+ * genuinely slower than on macOS/Linux, so production already waits 30s there
+ * against 10s elsewhere. This is a ceiling, not a sleep — a healthy daemon is
+ * reachable in a few seconds on every platform — so widening it on Windows only
+ * removes a false failure under load.
+ */
+const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
 
 async function getFreeTcpPort(): Promise<number> {
   const server = net.createServer();
@@ -55,7 +85,7 @@ async function getFreeTcpPort(): Promise<number> {
 async function waitForConnection(
   label: string,
   connect: () => net.Socket,
-  timeoutMs = 10_000,
+  timeoutMs = RUNTIME_SOCKET_READY_TIMEOUT_MS,
 ): Promise<void> {
   const startedAt = Date.now();
   let lastError: Error | null = null;
@@ -87,11 +117,17 @@ async function waitForConnection(
   throw lastError ?? new Error(`ADE runtime socket did not become available: ${label}`);
 }
 
-async function waitForSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
+async function waitForSocket(
+  socketPath: string,
+  timeoutMs = RUNTIME_SOCKET_READY_TIMEOUT_MS,
+): Promise<void> {
   await waitForConnection(socketPath, () => net.createConnection(socketPath), timeoutMs);
 }
 
-async function waitForTcpUrl(tcpUrl: string, timeoutMs = 10_000): Promise<void> {
+async function waitForTcpUrl(
+  tcpUrl: string,
+  timeoutMs = RUNTIME_SOCKET_READY_TIMEOUT_MS,
+): Promise<void> {
   const parsed = new URL(tcpUrl);
   const port = Number.parseInt(parsed.port, 10);
   const host = parsed.hostname;
@@ -225,10 +261,8 @@ class StdioRpcProcess {
   }
 }
 
-const itUnix = process.platform === "win32" ? it.skip : it;
-
 describe("ade rpc --stdio daemon bridge", () => {
-  itUnix("keeps the machine runtime alive after the stdio client exits", async () => {
+  it("keeps the machine runtime alive after the stdio client exits", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-"));
@@ -236,7 +270,7 @@ describe("ade rpc --stdio daemon bridge", () => {
       fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-project-")),
     );
     const expectedProjectRoot = projectRoot;
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const env = {
       ...process.env,
       ADE_HOME: adeHome,
@@ -290,11 +324,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("restarts a stale daemon before bridging stdio requests", async () => {
+  it("restarts a stale daemon before bridging stdio requests", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-version-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
       ...process.env,
       ADE_HOME: adeHome,
@@ -345,11 +379,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("restarts a same-version daemon when its build hash is stale", async () => {
+  it("restarts a same-version daemon when its build hash is stale", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-build-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
       ...process.env,
       ADE_HOME: adeHome,
@@ -404,11 +438,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("accepts a compatible TCP daemon and computes a build hash when none is advertised", async () => {
+  it("accepts a compatible TCP daemon and computes a build hash when none is advertised", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-tcp-build-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const tcpPort = await getFreeTcpPort();
     const tcpUrl = `tcp://127.0.0.1:${tcpPort}`;
     const baseEnv = {
@@ -466,11 +500,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("keeps a compatible cto daemon when the proxy requests an agent role", async () => {
+  it("keeps a compatible cto daemon when the proxy requests an agent role", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-role-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
       ...process.env,
       ADE_HOME: adeHome,
@@ -525,11 +559,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("does not replace a real daemon when the bridging CLI has only the placeholder version", async () => {
+  it("does not replace a real daemon when the bridging CLI has only the placeholder version", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-version-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
       ...process.env,
       ADE_HOME: adeHome,
@@ -579,11 +613,11 @@ describe("ade rpc --stdio daemon bridge", () => {
     }
   }, 45_000);
 
-  itUnix("restarts an incompatible-role daemon even when the proxy has only the placeholder version", async () => {
+  it("restarts an incompatible-role daemon even when the proxy has only the placeholder version", async () => {
     const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
     const cliPath = path.join(packageRoot, "src", "cli.ts");
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-stdio-rpc-placeholder-role-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const baseEnv = {
       ...process.env,
       ADE_HOME: adeHome,

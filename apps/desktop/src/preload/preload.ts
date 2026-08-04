@@ -3479,6 +3479,11 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.analyticsSetEnabled, enabled),
   },
   app: {
+    // Synchronous so renderer platform gates (renderer/lib/platform.ts) can run
+    // at module scope. navigator.platform cannot report the CPU architecture —
+    // Chromium reports "Win32" on Windows on ARM too — and app.getInfo() only
+    // answers after an IPC round trip.
+    runtimeTarget: { platform: process.platform, arch: process.arch },
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),

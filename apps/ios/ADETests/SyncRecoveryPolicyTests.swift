@@ -393,7 +393,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
   }
 
   func testApplicationCloseCodeTableKeepsPrimaryCopyRouteNeutral() {
-    let interrupted = "Can’t reach this Mac right now. Reconnecting now."
+    let interrupted = "Can’t reach this computer right now. Reconnecting now."
     let cases: [(code: Int, reason: String, expected: String)] = [
       (4000, "partner closed", interrupted),
       (4001, "heartbeat timed out", interrupted),
@@ -403,7 +403,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       (4008, "inbound connection stale", interrupted),
       (4501, "host offline", interrupted),
       (4502, "relay idle", interrupted),
-      (4503, "relay capacity", "This Mac is handling too many connections. Try again shortly."),
+      (4503, "relay capacity", "This computer is handling too many connections. Try again shortly."),
       (4505, "replaced by newer host", interrupted),
       (4506, "pre-pipe buffer overflow", interrupted),
       (4507, "bridge rejected", interrupted),
@@ -1746,7 +1746,7 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     ])
     service.setActiveProjectForTesting(projectId: "project-a", rootPath: "/tmp/a")
 
-    // This iPhone's clock runs two minutes AHEAD of the Mac it is paired to.
+    // This iPhone's clock runs two minutes AHEAD of the computer it is paired to.
     let phoneNow = Date(timeIntervalSince1970: 1_780_000_000)
     let hostNow = phoneNow.addingTimeInterval(-120)
     // The machine's own baseline from an earlier snooze of the same row.

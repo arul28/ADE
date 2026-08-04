@@ -8,6 +8,7 @@ import {
   type GlobalVoiceRecorderError,
 } from "../../services/globalVoiceRecorder";
 import { RecordingPill } from "../voice/RecordingPill";
+import { microphonePermissionGuidance } from "./microphonePermissionGuidance";
 
 /**
  * Voice-to-text dictation control for chat composers (desktop).
@@ -27,7 +28,7 @@ import { RecordingPill } from "../voice/RecordingPill";
 function messageForError(error: GlobalVoiceRecorderError): string {
   switch (error) {
     case "mic_denied":
-      return "Microphone access is off for ADE. Turn it on in System Settings → Privacy & Security → Microphone, then try again.";
+      return microphonePermissionGuidance();
     case "mic_unavailable":
       return "Could not start the microphone.";
     case "no_audio":

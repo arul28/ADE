@@ -13,6 +13,7 @@ import {
   resetActivityStoreForTests,
 } from "../../state/activityStore";
 import { ATTENTION_CONTRACT_VERSION } from "../../../shared/types";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { publishAccountStatus, SIGNED_OUT_ACCOUNT } from "../../lib/account";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import {
@@ -23,9 +24,16 @@ import {
 const PROJECT_TAB_ROOT_MIME = "application/x-ade-project-root";
 const PROJECT_TAB_WINDOW_MIME = "application/x-ade-window-id";
 
+// The machine menu appends a lane count ("This computer 3 lanes"), so the
+// accessible name has to be matched as a substring. Built from
+// THIS_MACHINE_NAME rather than a literal: this label was macOS-only copy
+// ("This Mac") until ADE shipped on Windows, and re-pinning the string here is
+// exactly what made the rename break these tests. The helper owns the name.
+const THIS_MACHINE_NAME_PATTERN = new RegExp(THIS_MACHINE_NAME);
+
 vi.mock("../settings/SyncDevicesSection", () => ({
   useSyncConnections: () => ({ loading: false, status: null, devices: [], busy: false }),
-  ThisMacCard: () => <div data-testid="this-mac-card">This Mac</div>,
+  ThisMacCard: () => <div data-testid="this-mac-card">This computer</div>,
   PhoneConnectionsTab: () => (
     <section data-testid="sync-devices-section" data-variant="phone">
       Phone connections
@@ -840,12 +848,12 @@ describe("TopBar", () => {
 
     const tab = await screen.findByTitle("/Users/arul/ADE");
     // A single-machine group spends no tab width naming the machine.
-    expect(tab.textContent).not.toContain("This Mac");
+    expect(tab.textContent).not.toContain(THIS_MACHINE_NAME);
 
     const caret = screen.getByLabelText("Machines for ADE");
     fireEvent.mouseDown(caret);
     fireEvent.click(caret);
-    expect(screen.getByRole("menuitemradio", { name: /This Mac/ })).toBeTruthy();
+    expect(screen.getByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeTruthy();
     const connectItem = screen.getByRole("menuitem", { name: /Connect another machine/ });
     expect(connectItem).toBeTruthy();
     fireEvent.keyDown(window, { key: "ArrowUp" });
@@ -853,7 +861,7 @@ describe("TopBar", () => {
 
     fireEvent.mouseDown(caret);
     fireEvent.click(caret);
-    expect(screen.queryByRole("menuitemradio", { name: /This Mac/ })).toBeNull();
+    expect(screen.queryByRole("menuitemradio", { name: THIS_MACHINE_NAME_PATTERN })).toBeNull();
   });
 
   it("routes \"Connect another machine\" to the hosted connections chip in web mode", async () => {

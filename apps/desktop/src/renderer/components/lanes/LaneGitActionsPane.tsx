@@ -240,7 +240,7 @@ function useLaneGitActionRuntimeState(scopeKey: string | null): LaneGitActionRun
 // without a translation step. Machines are named absolutely — never "remote".
 // Imported, not re-typed. The previous hardcoded literals were kept in sync
 // with laneMachines.ts by a comment; the guard compares machine ids, so a drift
-// here makes it warn that This Mac diverged from itself.
+// here makes it warn that This computer diverged from itself.
 import {
   THIS_MACHINE_ID as THIS_MACHINE_GUARD_ID,
   THIS_MACHINE_NAME as THIS_MACHINE_GUARD_NAME,

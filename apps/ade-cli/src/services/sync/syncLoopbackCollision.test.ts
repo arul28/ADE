@@ -12,6 +12,16 @@ import { createSyncService, type SyncService } from "./syncService";
 import { probeAdeLoopbackListener, type SyncLoopbackProbeResult } from "./syncLoopbackProbe";
 import type { SyncTunnelClientStatus } from "./syncTunnelClientService";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import { removeTestTree } from "../../test/filesystem";
+
+vi.mock("../../../../desktop/src/main/services/state/crsqliteExtension", async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import("../../../../desktop/src/main/services/state/crsqliteExtension")
+  >();
+  return process.platform === "win32"
+    ? { ...original, resolveCrsqliteExtensionPath: () => null }
+    : original;
+});
 
 const ORIGINAL_BIND_HOST = vi.hoisted(() => process.env.ADE_SYNC_BIND_HOST);
 vi.hoisted(() => {
@@ -213,7 +223,7 @@ describe("sync loopback collision recovery", () => {
       if (!holder.killed && holder.exitCode == null) holder.kill("SIGKILL");
       if (previousAdeHome === undefined) delete process.env.ADE_HOME;
       else process.env.ADE_HOME = previousAdeHome;
-      fs.rmSync(adeHome, { recursive: true, force: true });
+      await removeTestTree(adeHome);
     }
   });
 
@@ -282,7 +292,7 @@ describe("sync loopback collision recovery", () => {
         await listener.close();
         db.close();
         await close(foreign.server);
-        fs.rmSync(projectRoot, { recursive: true, force: true });
+        await removeTestTree(projectRoot);
         if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
         else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
       }
@@ -345,7 +355,7 @@ describe("sync loopback collision recovery", () => {
       await service.dispose();
       await listener.close();
       db.close();
-      fs.rmSync(projectRoot, { recursive: true, force: true });
+      await removeTestTree(projectRoot);
       if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
       else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
     }
@@ -415,7 +425,7 @@ describe("sync loopback collision recovery", () => {
         await service.dispose();
         await listener.close();
         db.close();
-        fs.rmSync(projectRoot, { recursive: true, force: true });
+        await removeTestTree(projectRoot);
         if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
         else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
       }
@@ -492,7 +502,7 @@ describe("sync loopback collision recovery", () => {
         await service.dispose();
         await listener.close();
         db.close();
-        fs.rmSync(projectRoot, { recursive: true, force: true });
+        await removeTestTree(projectRoot);
         if (previousLockPath === undefined) delete process.env.ADE_SYNC_HOST_LOCK_PATH;
         else process.env.ADE_SYNC_HOST_LOCK_PATH = previousLockPath;
       }

@@ -11,7 +11,6 @@ import {
   firstUserTextFromRecords,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
-  slashEscapedCwd,
 } from "./discoveryUtils";
 
 describe("firstUserTextFromRecords", () => {
@@ -88,7 +87,6 @@ describe("external session user text", () => {
     )).toBe("Create <Button variant=\"primary\" /> and explain the literal label User request: in the docs.");
     expect(cleanSessionTitle("\u001b[31mFix import\u001b[0m")).toBe("Fix import");
     expect(cleanSessionTitle("New Agent")).toBeNull();
-    expect(slashEscapedCwd("C:\\Users\\dev\\ADE")).toBe("C:-Users-dev-ADE");
   });
 
   it("strips known transport wrappers, including truncated ones", () => {
@@ -215,7 +213,13 @@ describe("resolveCursorCwdFromSlug", () => {
     const cwd = path.join(root, "Projects", "my-cool.app", ".ade", "worktrees", "lane-with-hyphen");
     fs.mkdirSync(cwd, { recursive: true });
     try {
-      const slug = cwd.replace(/^\/+/u, "").replace(/[/.]/gu, "-");
+      // Cursor's rule, verbatim from @cursor/sdk 1.0.23: every non-alphanumeric
+      // character becomes `-`, runs collapse, ends are trimmed. The previous
+      // fixture only replaced `/` and `.`, so on Windows it built a slug
+      // containing `C:\…` — a string Cursor could never write, which made this
+      // assert an inversion of the wrong input. Same rule as
+      // `cursorProjectSlug()` in apps/desktop/src/shared/cursorProjectSlug.ts.
+      const slug = cwd.replace(/[^a-zA-Z0-9]/gu, "-").replace(/-+/gu, "-").replace(/^-+|-+$/gu, "");
       expect(resolveCursorCwdFromSlug(slug)).toBe(fs.realpathSync(cwd));
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

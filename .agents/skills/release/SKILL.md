@@ -11,9 +11,10 @@ ship a TestFlight build.
 
 This is a **GitHub desktop + local ASC iOS release flow**. Desktop releases
 must use the repository GitHub Actions release workflow so macOS updater assets
-are produced reproducibly as per-arch ZIP/DMG artifacts. This Mac may still run
-checks, create release docs/tags, monitor and recover the workflow, and build
-and upload iOS/TestFlight releases through ASC.
+are produced reproducibly as per-arch ZIP/DMG artifacts, and so the signed
+Windows installer is produced on a Windows runner this Mac cannot provide. This
+Mac may still run checks, create release docs/tags, monitor and recover the
+workflow, and build and upload iOS/TestFlight releases through ASC.
 
 A **preflight** is a cheap check that runs before expensive build/upload work.
 Use preflights to catch release blockers while fixes can still be committed
@@ -42,7 +43,13 @@ without burning a notarization, TestFlight upload, or build number.
   crash Squirrel.Mac during in-app update.
 - **Do not publish broken updater metadata.** Before making a desktop release
   public/latest, verify `latest-mac.yml` references assets that exist and that
-  the expected arm64/x64 DMGs and ZIPs are present.
+  the expected arm64/x64 DMGs and ZIPs are present. When Windows is enabled,
+  apply the same rule to `latest.yml` and the Windows installer.
+- **Do not publish a half-platform release.** The Windows gate and the Windows
+  assets must agree. If `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1` the draft
+  must carry Windows assets; if it is not `1` the draft must carry none. Either
+  mismatch means the workflow did not do what you think it did, so keep the
+  release draft/private and investigate before publishing.
 - **Do not discover obvious release blockers after upload.** Preflight iOS App
   Clip packaging metadata before starting the expensive mobile phase.
 - **Do not wait forever.** If GitHub notarization or TestFlight processing
@@ -55,12 +62,23 @@ This release lane runs on an Apple Silicon Mac (`arm64`), but desktop release
 artifacts are produced remotely by GitHub Actions. Treat local desktop packaging
 scripts as diagnostic/recovery tools only.
 
-Desktop updater correctness requires:
+Desktop updater correctness requires, on macOS:
 
 - `latest-mac.yml`
 - one arm64 ZIP and one x64 ZIP referenced by that file
 - one arm64 DMG and one x64 DMG
 - no universal ZIP in the updater feed
+
+and, when `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` is `1`, additionally on Windows:
+
+- `latest.yml`
+- one `ADE-<VERSION>-win-x64.exe` installer referenced by that file
+- the matching `ADE-<VERSION>-win-x64.exe.blockmap`
+
+Windows builds fresh on the tag alongside macOS. There is one repository
+variable, `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED`; it decides whether the release
+carries Windows at all. Read it before verifying assets, because it determines
+which of the two asset matrices below is correct.
 
 ## State and Locking
 
@@ -80,7 +98,7 @@ Track:
 
 ```json
 {
-  "desktop": { "needed": false, "version": null, "tag": null, "lastTag": null },
+  "desktop": { "needed": false, "version": null, "tag": null, "lastTag": null, "platforms": null },
   "ios": { "needed": false, "marketingVersion": null, "buildNumber": null, "lastTag": null },
   "phase": "detect|docs|desktop|ios|verify|done|blocked",
   "notes": []
@@ -124,6 +142,7 @@ relevant preflights pass.
    ```bash
    test -f .github/workflows/release.yml
    test -f .github/workflows/release-core.yml
+   test -f .github/workflows/release-publish.yml
    gh workflow view release.yml --repo arul28/ADE
    ```
 
@@ -132,12 +151,31 @@ relevant preflights pass.
 
    - `.github/workflows/release-core.yml` builds `dist:mac:arm64:signed`.
    - `.github/workflows/release-core.yml` builds `dist:mac:x64:signed`.
+   - `.github/workflows/release-core.yml` builds `dist:win:signed` in
+     `build-win-release`.
    - The publish job merges per-arch manifests into one `latest-mac.yml`.
+   - The publish job attaches the Windows installer, its `.blockmap`, and
+     `latest.yml` when the Windows gate is on.
 
    If the workflow has been changed to publish universal updater ZIPs, stop and
    fix the workflow before releasing.
 
-7. For iOS releases, preflight App Clip packaging metadata before archiving:
+7. For desktop releases, resolve the expected platform matrix before tagging.
+   This decides what the draft must contain in Phase 4:
+
+   ```bash
+   gh variable get ADE_WINDOWS_PUBLIC_RELEASE_ENABLED --repo arul28/ADE 2>/dev/null || echo "unset"
+   ```
+
+   - `1` means the release must carry macOS **and** Windows assets. Record
+     `platforms=mac,win`.
+   - Anything else, including unset, means macOS only. Record `platforms=mac`.
+
+   Windows signing is fail-closed: if the gate is `1` and the signing secrets
+   are missing, the `verify` job stops the run in about a minute. Do not
+   "fix" that by clearing the gate mid-release; fix the secrets or stop.
+
+8. For iOS releases, preflight App Clip packaging metadata before archiving:
 
    ```bash
    xcodebuild -showBuildSettings \
@@ -333,8 +371,17 @@ Expected shape:
 
 - runtime/resource jobs run first
 - `arm64 mac release` and `x64 mac release` build/sign/notarize independently
-- `publish-release` merges the per-arch updater manifests and creates the draft
+- `build-win-release` builds/signs/validates Windows independently, in parallel
+  with the mac jobs, when `platforms` includes `win`. With the gate off it is
+  skipped, and a skipped Windows job does not block the mac release.
+- `publish-release` (in `release-publish.yml`, called by `release.yml` after
+  `run-release` succeeds) merges the per-arch updater manifests and creates the
+  draft
 - `update-brew-tap` runs after publication
+
+If `platforms=mac,win` and `build-win-release` did not run, stop. The gate and
+the run disagree, and publishing would ship a macOS-only release under a
+version that is supposed to carry Windows.
 
 ### Retry policy
 
@@ -376,13 +423,51 @@ gh release download "v<VERSION>" --repo arul28/ADE \
 cat ".ade/tmp/release-v<VERSION>-verify/latest-mac.yml"
 ```
 
-Required assets:
+When `platforms` includes `win`, also pull the Windows updater feed:
+
+```bash
+gh release download "v<VERSION>" --repo arul28/ADE \
+  --pattern latest.yml \
+  --dir ".ade/tmp/release-v<VERSION>-verify" \
+  --clobber
+cat ".ade/tmp/release-v<VERSION>-verify/latest.yml"
+```
+
+Required assets, always:
 
 - `ADE-<VERSION>-arm64.dmg`
 - `ADE-<VERSION>-arm64.zip`
 - `ADE-<VERSION>-x64.dmg`
 - `ADE-<VERSION>-x64.zip`
 - `latest-mac.yml`
+- `install.sh`
+- `SHA256SUMS`
+- `ade-darwin-arm64`, `ade-darwin-x64`, `ade-linux-arm64`, `ade-linux-x64`, and
+  the matching `.native.tar.gz` for each
+
+Required additionally when `platforms` includes `win`:
+
+- `ADE-<VERSION>-win-x64.exe`
+- `ADE-<VERSION>-win-x64.exe.blockmap`
+- `latest.yml`
+- `install.ps1`
+- `ade-win32-x64.exe`
+- `ade-win32-x64.native.tar.gz`
+
+Gate/asset agreement is a hard check, in both directions:
+
+```bash
+WINDOWS_GATE="$(gh variable get ADE_WINDOWS_PUBLIC_RELEASE_ENABLED --repo arul28/ADE 2>/dev/null || echo unset)"
+WINDOWS_ASSETS="$(gh release view "v<VERSION>" --repo arul28/ADE --json assets \
+  --jq '[.assets[].name | select(test("win-x64|win32-x64|^latest\\.yml$|^install\\.ps1$"))] | length')"
+echo "gate=$WINDOWS_GATE windows_assets=$WINDOWS_ASSETS"
+```
+
+- `gate=1` and `windows_assets=0` means the Windows build silently did not
+  contribute. Stop; keep the release draft/private.
+- `gate` not `1` and `windows_assets` greater than `0` means Windows assets
+  reached a release that was not supposed to carry them. Stop; keep the release
+  draft/private.
 
 Also verify:
 
@@ -391,6 +476,12 @@ Also verify:
 - no updater ZIP is suspiciously huge; a ZIP over about 900 MB needs human
   review because Squirrel.Mac can crash while handling oversized updater ZIPs.
 - every `latest-mac.yml` referenced ZIP exists in the release assets.
+- when Windows is in scope, `latest.yml` references the uploaded
+  `ADE-<VERSION>-win-x64.exe`, and that installer and its `.blockmap` both
+  exist in the release assets.
+- `SHA256SUMS` lists every published standalone runtime asset, including the
+  `ade-win32-x64` entries when Windows is in scope, and lists nothing that is
+  not published.
 
 ### Publish public/latest
 
@@ -597,6 +688,15 @@ Desktop:
   until fixed.
 - If `latest-mac.yml` references a universal ZIP, keep the release draft/private
   and fix the GitHub workflow. Do not publish the release.
+- If `latest.yml` is missing, or references an installer that is not in the
+  release assets, keep the release draft/private. Windows in-app update reads
+  that file; a broken feed strands installed Windows users.
+- If the Windows build fails, the draft is not created at all while the gate is
+  on, by design. Fix the failure and rerun; do not clear
+  `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` to force a macOS-only draft under a
+  version that was announced as carrying Windows.
+- If the Windows gate and the published Windows assets disagree in either
+  direction, keep the release draft/private and reconcile before publishing.
 
 iOS:
 
@@ -613,8 +713,12 @@ iOS:
 Report:
 
 - desktop scope decision and tag
+- the resolved desktop platform matrix (`mac` or `mac,win`) and the
+  `ADE_WINDOWS_PUBLIC_RELEASE_ENABLED` value it came from
 - GitHub Release URL and asset count
 - whether `latest-mac.yml` references only present assets
+- when Windows is in scope, whether `latest.yml` references only present assets
+  and whether the gate and the published Windows assets agreed
 - iOS marketing/build number
 - TestFlight build ID
 - group membership verification

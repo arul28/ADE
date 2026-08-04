@@ -471,10 +471,10 @@ export const SessionCard = React.memo(function SessionCard({
      bug, not a style choice. */
   /* Two different facts, and they must not be conflated:
      - `machineName` is WHICH machine, for the hover card. Any row that knows its
-       runtime can answer it, including one on this very Mac.
+       runtime can answer it, including one on this very computer.
      - `machineMarker` is whether that machine is ELSEWHERE. Only the union
        resolver decides that, and it is the sole gate on the glyph below.
-     Deriving the glyph from `machineName` would badge this Mac's own lanes
+     Deriving the glyph from `machineName` would badge this computer's own lanes
      whenever the tab was bound elsewhere — they carry a local `runtimePin` and
      are perfectly named, they are just not somewhere else. */
   const machineName = machineMarker?.machineName

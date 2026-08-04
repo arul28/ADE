@@ -393,6 +393,40 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     }));
   });
 
+  it("routes provider launch intent for the runtime host to materialize", async () => {
+    const { result } = renderHook(() => useWorkSessions());
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 10));
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "lane-1",
+        profile: "droid",
+        runtimeCliLaunch: {
+          provider: "droid",
+          permissionMode: "full-auto",
+          initialPrompt: "Inspect the remote lane.",
+          model: "droid/model-a",
+        },
+      });
+    });
+
+    expect((window as any).ade.pty.create).toHaveBeenCalledWith(expect.objectContaining({
+      laneId: "lane-1",
+      toolType: "droid",
+      runtimeCliLaunch: expect.objectContaining({
+        provider: "droid",
+        initialPrompt: "Inspect the remote lane.",
+      }),
+    }));
+    const createArgs = (window as any).ade.pty.create.mock.calls.at(-1)?.[0];
+    expect(createArgs).not.toHaveProperty("command");
+    expect(createArgs).not.toHaveProperty("startupCommand");
+    expect(createArgs).not.toHaveProperty("env");
+  });
+
   it("does not retry lane recovery on every session refresh after a failure", async () => {
     fakeAppStoreState = {
       ...fakeAppStoreState,

@@ -7,13 +7,20 @@ import {
   REMOTE_ICON_MAX_DATA_URL_BYTES,
   resolveRemoteProjectIcon,
 } from "./projectIconResolver";
+import { createTestDirectoryLink, removeTestTree } from "../../test/filesystem";
 
 const tempRoots = new Set<string>();
 
 function makeTempRoot(prefix = "ade-project-icon-"): string {
-  // realpath collapses the macOS /var -> /private/var tmpdir symlink so the
-  // resolver's within-root containment checks compare like-for-like paths.
-  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+  // Canonicalize with the *same* realpath the resolver uses
+  // (`fs.realpathSync.native`, via the desktop shared path helpers), not the
+  // JS `fs.realpathSync`. Both collapse the macOS /var -> /private/var tmpdir
+  // symlink, but only the native one expands Windows 8.3 short names: on a box
+  // whose account name exceeds eight characters `os.tmpdir()` is reported as
+  // `C:\Users\RUNNER~1\AppData\Local\Temp`, the resolver returns the long
+  // `C:\Users\runneradmin\...` spelling of the same directory, and every
+  // `path.join(root, …)` expectation below compares two spellings of one path.
+  const root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
   tempRoots.add(root);
   return root;
 }
@@ -29,9 +36,9 @@ function decodeDataUrl(dataUrl: string): { mime: string; bytes: Buffer } {
   return { mime: match[1], bytes: Buffer.from(match[2], "base64") };
 }
 
-afterEach(() => {
+afterEach(async () => {
   for (const root of tempRoots) {
-    fs.rmSync(root, { recursive: true, force: true });
+    await removeTestTree(root);
   }
   tempRoots.clear();
 });
@@ -142,7 +149,7 @@ describe("resolveRemoteProjectIcon", () => {
     fs.writeFileSync(path.join(outsideDir, "favicon.png"), Buffer.from([0xca, 0xfe]));
     // `public` is a symlink escaping the root; the public/favicon.png candidate
     // must not be read.
-    fs.symlinkSync(outsideDir, path.join(root, "public"));
+    createTestDirectoryLink(outsideDir, path.join(root, "public"));
 
     const icon = resolveRemoteProjectIcon(root);
 
@@ -162,6 +169,24 @@ describe("resolveRemoteProjectIcon", () => {
     expect(icon.dataUrl).toBeNull();
     expect(icon.mimeType).toBe("image/png");
     expect(icon.sourcePath).toBe(path.join(root, "logo.png"));
+  });
+
+  it("reports the icon in the filesystem's spelling when the root is spelled otherwise", () => {
+    const realRoot = makeTempRoot();
+    writeFileEnsuringDir(path.join(realRoot, "logo.png"), Buffer.from([1, 2, 3]));
+    // A directory link reproduces, on every platform, the divergence a Windows
+    // 8.3 short root creates: two spellings of one directory. `sourcePath` is
+    // always the canonical one, which is the contract `makeTempRoot` above has
+    // to honor for the `path.join(root, …)` expectations in this file to hold.
+    const linkRoot = path.join(path.dirname(realRoot), `link-${path.basename(realRoot)}`);
+    createTestDirectoryLink(realRoot, linkRoot);
+    tempRoots.add(linkRoot);
+    expect(fs.realpathSync.native(linkRoot)).toBe(realRoot);
+
+    const icon = resolveRemoteProjectIcon(linkRoot);
+
+    expect(icon.sourcePath).toBe(path.join(realRoot, "logo.png"));
+    expect(icon.sourcePath).not.toBe(path.join(linkRoot, "logo.png"));
   });
 
   it("returns an all-null icon for an empty or whitespace root path", () => {

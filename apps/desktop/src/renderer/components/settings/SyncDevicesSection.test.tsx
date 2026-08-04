@@ -11,6 +11,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { parsePairingQrUrl } from "../../../shared/pairingQr";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import type {
   SyncDeviceRuntimeState,
   SyncPeerConnectionState,
@@ -179,8 +180,24 @@ describe("ThisMacCard", () => {
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
     expect(screen.getByText(
-      "Signed in, but this Mac is not published · The ADE brain is signed out of the ADE account.",
+      "Signed in, but this computer is not published · The ADE brain is signed out of the ADE account.",
     )).toBeTruthy();
+  });
+
+  it("surfaces a missing Windows CR-SQLite runtime before pairing is attempted", () => {
+    const status = makeStatus({
+      crdtSyncAvailable: false,
+      blockingStateText: "Phone sync is unavailable in this ADE installation.",
+    });
+
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+
+    expect(screen.getByRole("alert").textContent).toContain(
+      "Phone sync is unavailable in this ADE installation.",
+    );
+    expect(screen.getByText("Phone sync is unavailable")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /Generate code/i })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
   });
 
   it("restarts the brain and re-reads health when repairing an unreadable session", async () => {
@@ -292,7 +309,7 @@ describe("ThisMacCard", () => {
     expect(clearPin).toHaveBeenCalledTimes(1);
   });
 
-  it("labels this Mac with a chip and lists reachable routes plus the build line", async () => {
+  it("labels this computer with a chip and lists reachable routes plus the build line", async () => {
     (globalThis.window as any).ade = {
       app: { getInfo: vi.fn(async () => ({ appVersion: "1.2.28", platform: "darwin" })) },
     };
@@ -306,7 +323,10 @@ describe("ThisMacCard", () => {
     });
     render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
 
-    expect(screen.getByText("This Mac")).toBeTruthy();
+    // Composed from THIS_MACHINE_NAME, never spelled out: this badge was
+    // macOS-only copy ("This Mac") until ADE shipped on Windows, and pinning the
+    // literal here is what let Settings and Account miss the rename.
+    expect(screen.getByText(THIS_MACHINE_NAME)).toBeTruthy();
     expect(screen.getByText("Reachable via Wi-Fi · Tailscale · Relay")).toBeTruthy();
     expect(await screen.findByText("ADE 1.2.28 · macOS")).toBeTruthy();
   });
@@ -334,7 +354,7 @@ describe("ThisMacCard", () => {
     expect(screen.queryByText("Scan to pair")).toBeNull();
   });
 
-  it("shows this Mac's own name even while the window is remote-bound", () => {
+  it("shows this computer's own name even while the window is remote-bound", () => {
     render(
       <ThisMacCard
         sync={makeSync({ isRemoteBound: true, boundMachineName: "Mac Studio", localMachineName: "Studio" })}
@@ -359,7 +379,7 @@ describe("ThisMacCard", () => {
         accountSignedIn
       />,
     );
-    expect(screen.getByText("This Mac's pairing code is 123456.")).toBeTruthy();
+    expect(screen.getByText(`${THIS_MACHINE_NAME}'s pairing code is 123456.`)).toBeTruthy();
     expect(
       screen.getByText(/Pairing changes aren.t available while this window is connected to/),
     ).toBeTruthy();
@@ -400,7 +420,7 @@ describe("PhoneConnectionsTab", () => {
     );
     expect(screen.getByText("Arul iPhone")).toBeTruthy();
     expect(
-      screen.getByText("Sign in to ADE on your iPhone — this Mac appears automatically."),
+      screen.getByText("Sign in to ADE on your iPhone — this computer appears automatically."),
     ).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Revoke" }));
@@ -421,7 +441,7 @@ describe("PhoneConnectionsTab", () => {
     expect(forgetDevice).not.toHaveBeenCalled();
   });
 
-  it("scopes the list to this Mac and hides revoke when remote-bound", () => {
+  it("scopes the list to this computer and hides revoke when remote-bound", () => {
     render(
       <PhoneConnectionsTab
         sync={makeSync({
@@ -435,7 +455,7 @@ describe("PhoneConnectionsTab", () => {
       />,
     );
     expect(screen.getByText("Arul iPhone")).toBeTruthy();
-    // Labeled as this Mac's phones — never the remote machine's.
+    // Labeled as this computer's phones — never the remote machine's.
     expect(screen.getByText("on Studio")).toBeTruthy();
     // Revoke would route to the bound machine, so it is withheld.
     expect(screen.queryByRole("button", { name: "Revoke" })).toBeNull();
@@ -485,7 +505,7 @@ describe("WebConnectionsTab", () => {
     await waitFor(() => expect(forgetDevice).toHaveBeenCalled());
   });
 
-  it("scopes connected browsers to this Mac and hides revoke when remote-bound", () => {
+  it("scopes connected browsers to this computer and hides revoke when remote-bound", () => {
     render(
       <WebConnectionsTab
         sync={makeSync({
@@ -702,13 +722,13 @@ describe("accountDirectorySummary", () => {
       withState("token_unreadable", "The ADE brain could not read the stored account session."),
     ).toEqual({
       label:
-        "Signed in, but this Mac is not published · The ADE brain could not read the stored account session.",
+        "Signed in, but this computer is not published · The ADE brain could not read the stored account session.",
       healthy: false,
     });
 
     // No reason from the brain: the state itself is spelled out, not snake_case.
     expect(withState("http_error", null).label).toBe(
-      "Signed in, but this Mac is not published · http error",
+      "Signed in, but this computer is not published · http error",
     );
   });
 });

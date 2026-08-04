@@ -125,6 +125,28 @@ rejected for non-linear history; the fallback is a local admin-bypass push. This
 isn't a code finding but flag any automation that assumes a plain merge will
 succeed.
 
+## 10. Windows foundation parity
+
+**Check:** When a lane touches path construction, process launch, executable
+lookup, local IPC, SQLite/native artifacts, service lifecycle, or Computer Use:
+
+- Windows service health means the channel runtime answers on the expected
+  per-user pipe with the recorded PID; a live supervisor alone is not health.
+  Verify bounded restart backoff, stale/reused PID diagnostics, and Stable/Beta
+  identity after packaged channel defaults are applied.
+- Named pipes must be scoped by canonical ADE home, channel/service, and current
+  user identity and retain intended-user listen restrictions. `.exe` resolution
+  and structured argv must not be replaced with shell-string parsing.
+- Native Windows CI must load the actual CR-SQLite DLL and exercise a CRR
+  mutation when packaging/native paths change. Preserve the macOS dylib, Linux
+  graceful-degrade, launchd/systemd, and Unix socket contracts.
+- Gate exact capabilities: Windows can block native screenshot/video/OS GUI
+  control while App Control and proof ingestion remain available. Do not widen
+  a native Computer Use limitation into a product-wide platform block.
+- Treat clean-host Stable/Beta coexistence, second-account pipe denial,
+  reboot/restart, installed updates, and GUI artifacts as external proof. Code
+  or mocked tests cannot close those gates.
+
 ---
 
 ## Output

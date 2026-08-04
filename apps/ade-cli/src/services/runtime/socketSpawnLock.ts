@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 /**
  * Cross-process mutual exclusion for "spawn a brain for this socket".
@@ -64,6 +66,19 @@ function processExists(pid: number): boolean {
   }
 }
 
+// A contended `open(..., "wx")` reports EEXIST on POSIX, but Windows keeps a
+// deleted name in the directory until the last handle closes. Between the
+// holder's unlink and that final drop, a contending open hits the
+// delete-pending name and Node surfaces EPERM, EACCES or EBUSY instead. Those
+// are contention, not failure, so the caller must wait rather than abort --
+// this is the brain-spawn path, where burst contention is the normal case.
+function isSocketSpawnLockContention(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code;
+  if (code === "EEXIST") return true;
+  if (process.platform !== "win32") return false;
+  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+}
+
 function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {
   try {
     const stat = fs.statSync(lockPath);
@@ -88,9 +103,40 @@ function unlinkSocketSpawnLockIfOwner(lockPath: string, ownerId: string | null):
   }
 }
 
+function isWindowsNamedPipePath(socketPath: string): boolean {
+  return socketPath
+    .trim()
+    .replace(/\//g, "\\")
+    .toLowerCase()
+    .startsWith("\\\\.\\pipe\\");
+}
+
+export function socketSpawnLockPath(socketPath: string): string {
+  if (isWindowsNamedPipePath(socketPath)) {
+    // A named pipe is a kernel namespace, not a filesystem directory. Trying
+    // to create `\\.\pipe\<name>.spawn.lock` fails with ENOENT before a cold
+    // Windows runtime can be spawned. Keep the advisory lock in ADE's
+    // per-user runtime directory and hash the case-insensitive pipe identity.
+    const normalizedPipe = socketPath.trim().replace(/\//g, "\\").toLowerCase();
+    const key = createHash("sha256")
+      .update(normalizedPipe)
+      .digest("hex")
+      .slice(0, 32);
+    return path.join(
+      resolveMachineAdeLayout().runtimeDir,
+      "spawn-locks",
+      `${key}.lock`,
+    );
+  }
+  return path.join(
+    path.dirname(socketPath),
+    `${path.basename(socketPath)}.spawn.lock`,
+  );
+}
+
 export async function withSocketSpawnLock<T>(socketPath: string, task: () => Promise<T>): Promise<T> {
   if (socketPath.startsWith("tcp://")) return await task();
-  const lockPath = path.join(path.dirname(socketPath), `${path.basename(socketPath)}.spawn.lock`);
+  const lockPath = socketSpawnLockPath(socketPath);
   fs.mkdirSync(path.dirname(lockPath), { recursive: true, mode: 0o700 });
   const deadline = Date.now() + 10_000;
   const owner = createSocketSpawnLockOwner();
@@ -101,11 +147,10 @@ export async function withSocketSpawnLock<T>(socketPath: string, task: () => Pro
       fs.writeFileSync(fd, serializeSocketSpawnLockOwner(owner), "utf8");
       break;
     } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code;
-      if (code !== "EEXIST") throw error;
+      if (!isSocketSpawnLockContention(error)) throw error;
       if (unlinkSocketSpawnLockIfStale(lockPath)) continue;
       if (Date.now() >= deadline) {
-        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`);
+        throw new Error(`Timed out waiting for ADE socket spawn lock at ${lockPath}.`, { cause: error });
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
     }

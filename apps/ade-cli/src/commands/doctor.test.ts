@@ -3,6 +3,7 @@ import {
   compareDoctorVersions,
   doctorRuntimeStatusFromInitialize,
   evaluateDoctorRows,
+  parseWindowsDesktopInstallProbe,
   probeDoctorBrain,
   type DoctorInput,
 } from "./doctor";
@@ -60,6 +61,19 @@ function healthyInput(): DoctorInput {
 }
 
 describe("doctor row evaluation", () => {
+  it("parses Windows installed-product discovery without accepting partial records", () => {
+    expect(parseWindowsDesktopInstallProbe(
+      '{"version":"1.2.35","path":"C:\\\\Users\\\\dev\\\\AppData\\\\Local\\\\Programs\\\\ADE\\\\ADE.exe"}',
+    )).toEqual({
+      version: "1.2.35",
+      path: "C:\\Users\\dev\\AppData\\Local\\Programs\\ADE\\ADE.exe",
+    });
+    expect(parseWindowsDesktopInstallProbe('{"version":"1.2.35"}'))
+      .toEqual({ version: null, path: null });
+    expect(parseWindowsDesktopInstallProbe("not-json"))
+      .toEqual({ version: null, path: null });
+  });
+
   it("keeps an initialized brain reachable when later health reads time out", async () => {
     vi.useFakeTimers();
     const never = new Promise<unknown>(() => {});

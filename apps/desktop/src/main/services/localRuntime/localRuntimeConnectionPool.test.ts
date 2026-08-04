@@ -3,7 +3,11 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { pathToFileURL } from "node:url";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { signalChildProcessTree } from "../shared/utils";
+import { resolveMachineAdeLayout } from "../../../../../ade-cli/src/services/projects/machineLayout";
+import { realpathIfExists } from "../../../../../ade-cli/src/services/projects/projectRoots";
 import { recordLastFailure } from "../runtime/lastFailureStore";
 
 vi.mock("electron", () => ({
@@ -119,12 +123,69 @@ class RawRuntimeSocketClient {
   }
 }
 
-function withTsxNodeOptions(value: string | undefined, loaderPath: string): string {
-  const existing = value?.trim();
-  return existing ? `${existing} --import ${loaderPath}` : `--import ${loaderPath}`;
+/**
+ * Resolve the machine runtime endpoint for a temp `ADE_HOME` exactly the way
+ * production does, so daemon-backed tests exercise the real per-platform
+ * transport: a Unix domain socket at `<ADE_HOME>/sock/ade.sock` on macOS and
+ * Linux, and a per-user named pipe on Windows.
+ *
+ * Hardcoding `<adeHome>/sock/ade.sock` is not portable. Node's `net` maps a
+ * path-style endpoint onto a named pipe on Windows, so a filesystem path is
+ * not a connectable address there and every such test dies with
+ * `connect ENOENT`. Deriving the endpoint keeps the POSIX expectation
+ * byte-identical while giving Windows the address the runtime actually listens
+ * on.
+ */
+function machineRuntimeSocketPath(adeHome: string): string {
+  return resolveMachineAdeLayout({ ...process.env, ADE_HOME: adeHome }).socketPath;
 }
 
-async function waitForRuntimeSocket(socketPath: string, timeoutMs = 10_000): Promise<void> {
+/**
+ * Canonicalize a temp project root with the *same* helper the runtime applies
+ * to every root it registers: `normalizeProjectRootPath` delegates to
+ * `realpathIfExists`, so `rootPath` always comes back off the wire in the
+ * spelling `fs.realpathSync.native` produces.
+ *
+ * The JS `fs.realpathSync` is not that helper. Both resolve symlinks — which is
+ * all these assertions used to need, to collapse the macOS `/var` ->
+ * `/private/var` tmpdir link — but only the native one expands Windows 8.3
+ * short names. Whenever the account name exceeds eight characters
+ * (`Administrator`, most `First Last` accounts, and GitHub's own
+ * `runneradmin`), `os.tmpdir()` is reported as
+ * `C:\Users\RUNNER~1\AppData\Local\Temp`, and a root built from it stays in
+ * that spelling under the JS realpath while the registered root comes back as
+ * `C:\Users\runneradmin\...`. Comparing the two then fails on two spellings of
+ * one directory rather than on any behavior.
+ */
+function canonicalProjectRoot(rootPath: string): string {
+  return realpathIfExists(rootPath);
+}
+
+function withTsxNodeOptions(value: string | undefined, loaderPath: string): string {
+  // `--import` must be given a file:// URL, not a bare absolute path. Node's
+  // ESM loader rejects a Windows absolute path outright
+  // (ERR_UNSUPPORTED_ESM_URL_SCHEME: "Received protocol 'c:'"), which kills the
+  // spawned daemon before it can listen and surfaces here only as a downstream
+  // connect ENOENT. A file URL is equally valid on macOS/Linux and also
+  // percent-encodes spaces, which keeps NODE_OPTIONS parseable either way.
+  const loaderUrl = pathToFileURL(loaderPath).href;
+  const existing = value?.trim();
+  return existing ? `${existing} --import ${loaderUrl}` : `--import ${loaderUrl}`;
+}
+
+// Mirrors LOCAL_RUNTIME_STARTUP_TIMEOUT_MS in the pool itself: a cold Windows
+// runtime start (process spawn + tsx transform + SQLite init) is genuinely
+// slower than on macOS/Linux, so production already waits 30s there against 10s
+// elsewhere. The readiness budget below is a ceiling, not a sleep — a healthy
+// daemon is reachable in a few seconds on every platform — so widening it on
+// Windows only removes a false failure under load without slowing the suite or
+// relaxing a single assertion.
+const RUNTIME_SOCKET_READY_TIMEOUT_MS = process.platform === "win32" ? 30_000 : 10_000;
+
+async function waitForRuntimeSocket(
+  socketPath: string,
+  timeoutMs = RUNTIME_SOCKET_READY_TIMEOUT_MS,
+): Promise<void> {
   await vi.waitFor(async () => {
     let client: RawRuntimeSocketClient | null = null;
     try {
@@ -140,17 +201,47 @@ async function waitForRuntimeSocket(socketPath: string, timeoutMs = 10_000): Pro
   }, { timeout: timeoutMs, interval: 100 });
 }
 
+/**
+ * Every real `ade serve` daemon this suite starts, so teardown can reap them
+ * even when a test throws before reaching its own `finally`.
+ *
+ * Per-test cleanup alone is not enough on Windows: a daemon is not a leaf
+ * process (it spawns `node` children of its own), and an unreaped tree keeps
+ * holding the runtime named pipe, so the next test -- or the next CI job --
+ * inherits a live listener it did not start.
+ */
+const spawnedDaemons = new Set<ChildProcess>();
+
+/** Kill a daemon and everything it started. `taskkill /T` on Windows, process group on POSIX. */
+function reapDaemonTree(child: ChildProcess): void {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+  try {
+    signalChildProcessTree(child, "SIGKILL");
+  } catch {
+    // Best effort: the tree may already be gone.
+  }
+}
+
+afterEach(() => {
+  for (const child of spawnedDaemons) reapDaemonTree(child);
+  spawnedDaemons.clear();
+});
+
 function startServeProcess(args: {
   cliPath: string;
   cwd: string;
   env: NodeJS.ProcessEnv;
   socketPath: string;
 }): ChildProcess {
-  return spawn(process.execPath, [args.cliPath, "serve", "--socket", args.socketPath, "--no-sync"], {
+  const child = spawn(process.execPath, [args.cliPath, "serve", "--socket", args.socketPath, "--no-sync"], {
     cwd: args.cwd,
     env: args.env,
     stdio: ["ignore", "ignore", "ignore"],
+    detached: process.platform !== "win32",
   });
+  spawnedDaemons.add(child);
+  child.once("exit", () => spawnedDaemons.delete(child));
+  return child;
 }
 
 function runningTestServiceStatus() {
@@ -296,18 +387,24 @@ describe("local runtime connection pool", () => {
   });
 
   it("builds packaged runtime NODE_PATH for macOS universal app layouts", () => {
+    const resourcesPath = "/Applications/ADE.app/Contents/Resources";
     const nodePath = buildLocalRuntimeNodePath({
-      resourcesPath: "/Applications/ADE.app/Contents/Resources",
+      resourcesPath,
       platform: "darwin",
       arch: "arm64",
       existingNodePath: "/custom/node_modules",
     });
 
+    // The helper joins with the *host* path module, which is correct: it builds
+    // NODE_PATH for a runtime spawned on this machine. Only the app *layout*
+    // is macOS-specific, so join the expectation the same way rather than
+    // hardcoding separators. On macOS/Linux these are the same strings as
+    // before; on Windows they are the same segments with `\`.
     expect(nodePath?.split(path.delimiter)).toEqual([
-      "/Applications/ADE.app/Contents/Resources/app-arm64.asar.unpacked/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app.asar.unpacked/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app-arm64.asar/node_modules",
-      "/Applications/ADE.app/Contents/Resources/app.asar/node_modules",
+      path.join(resourcesPath, "app-arm64.asar.unpacked", "node_modules"),
+      path.join(resourcesPath, "app.asar.unpacked", "node_modules"),
+      path.join(resourcesPath, "app-arm64.asar", "node_modules"),
+      path.join(resourcesPath, "app.asar", "node_modules"),
       "/custom/node_modules",
     ]);
   });
@@ -342,8 +439,16 @@ describe("local runtime connection pool", () => {
   });
 
   it("does not auto-install channel services from local release build output paths", () => {
-    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
-    const installedCliPath = "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    // `localReleaseBuildOutputRuntimeBlock` reports the *resolved* CLI path, so
+    // resolve the fixtures the same way. A bare POSIX literal is a no-op here
+    // on macOS/Linux but picks up a drive letter and `\` separators on Windows,
+    // which the raw literal would then fail to match.
+    const releaseCliPath = path.resolve(
+      "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
+    const installedCliPath = path.resolve(
+      "/Applications/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
     const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
 
     try {
@@ -368,7 +473,11 @@ describe("local runtime connection pool", () => {
   });
 
   it("records skipped service install status for local release build output paths", async () => {
-    const releaseCliPath = "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs";
+    // Resolved for the same reason as the sibling test above: the reported
+    // `serviceInstall.path` is the resolved CLI path, not the raw literal.
+    const releaseCliPath = path.resolve(
+      "/Users/admin/Projects/ADE/apps/desktop/release-beta/mac-arm64/ADE Beta.app/Contents/Resources/ade-cli/cli.cjs",
+    );
     const originalCliJs = process.env.ADE_CLI_JS;
     const originalAllow = process.env.ADE_ALLOW_LOCAL_RELEASE_SERVICE_INSTALL;
     const logger = {
@@ -501,7 +610,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-skip-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -567,7 +676,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -942,7 +1051,7 @@ describe("local runtime connection pool", () => {
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(0);
       expect(client.close).toHaveBeenCalledTimes(1);
     } finally {
-      if (child && !child.killed) child.kill();
+      if (child) reapDaemonTree(child);
       if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalAdeCliJs;
       removeTempDir(tempDir);
@@ -1002,11 +1111,54 @@ describe("local runtime connection pool", () => {
       expect((pool as unknown as { projectsByRoot: Map<string, unknown> }).projectsByRoot.size).toBe(1);
       expect(replacementClient.close).not.toHaveBeenCalled();
     } finally {
-      if (oldChild && !oldChild.killed) oldChild.kill();
-      if (replacementChild && !replacementChild.killed) replacementChild.kill();
+      if (oldChild) reapDaemonTree(oldChild);
+      if (replacementChild) reapDaemonTree(replacementChild);
       if (originalAdeCliJs === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalAdeCliJs;
       removeTempDir(tempDir);
+    }
+  });
+
+  it("keeps a spawned runtime alive while a stale socket owner drains", async () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, { disableSync: true });
+    const client = { close: vi.fn() };
+    const connectClient = vi.fn()
+      .mockRejectedValueOnce(new Error("ADE service socket is still owned by runtime PID 111."))
+      .mockResolvedValueOnce(client);
+    const internals = pool as unknown as {
+      connectClient: typeof connectClient;
+      connectSpawnedRuntime: (
+        socketPath: string,
+        child: ChildProcess,
+      ) => Promise<typeof client>;
+    };
+    internals.connectClient = connectClient;
+    const child = {
+      pid: 222,
+      exitCode: null,
+      signalCode: null,
+    } as unknown as ChildProcess;
+
+    try {
+      await expect(internals.connectSpawnedRuntime("\\\\.\\pipe\\ade-runtime-test", child))
+        .resolves.toBe(client);
+      expect(connectClient).toHaveBeenCalledTimes(2);
+      expect(connectClient).toHaveBeenLastCalledWith(
+        "\\\\.\\pipe\\ade-runtime-test",
+        expect.objectContaining({
+          expectedPid: 222,
+          connectTimeoutMs: expect.any(Number),
+          initializeTimeoutMs: expect.any(Number),
+        }),
+      );
+    } finally {
+      pool.dispose();
     }
   });
 
@@ -2071,8 +2223,8 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-project-"));
-    const expectedProjectRoot = fs.realpathSync.native(projectRoot);
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const expectedProjectRoot = canonicalProjectRoot(projectRoot);
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2132,7 +2284,7 @@ describe("local runtime connection pool", () => {
       firstPool?.dispose();
       secondPool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2156,7 +2308,7 @@ describe("local runtime connection pool", () => {
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
     const secondProjectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-version-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2198,7 +2350,7 @@ describe("local runtime connection pool", () => {
 
       pool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.version_mismatch_detected", expect.objectContaining({
         runtimeVersion: "1.0.0",
@@ -2256,7 +2408,7 @@ describe("local runtime connection pool", () => {
 
       secondPool = new LocalRuntimeConnectionPool("2.0.0", logger as never, { disableSync: true });
       const secondRegistered = await secondPool.ensureProject(secondProjectRoot);
-      expect(fs.realpathSync(secondRegistered.rootPath)).toBe(fs.realpathSync(secondProjectRoot));
+      expect(canonicalProjectRoot(secondRegistered.rootPath)).toBe(canonicalProjectRoot(secondProjectRoot));
       const secondConnection = await (secondPool as unknown as { connection: Promise<{ socketPath: string; child: unknown }> }).connection;
       expect(secondConnection.socketPath).toBe(connection.socketPath);
       expect(secondConnection.child).toBeNull();
@@ -2264,9 +2416,7 @@ describe("local runtime connection pool", () => {
       secondPool?.dispose();
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2289,7 +2439,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-newer-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2358,7 +2508,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2379,7 +2529,7 @@ describe("local runtime connection pool", () => {
     expect(fs.existsSync(tsxLoaderPath)).toBe(true);
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-eq-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2437,7 +2587,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!daemon.killed) daemon.kill("SIGKILL");
+      reapDaemonTree(daemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2459,7 +2609,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-dev-version-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
     const originalEnv = {
@@ -2503,7 +2653,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0-beta.1", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
 
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
       expect(logger.info).not.toHaveBeenCalledWith(
         "local_runtime.version_mismatch_detected",
         expect.anything(),
@@ -2515,7 +2665,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!devDaemon.killed) devDaemon.kill();
+      reapDaemonTree(devDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2538,7 +2688,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-build-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const originalEnv = {
       ADE_CLI_JS: process.env.ADE_CLI_JS,
       ADE_HOME: process.env.ADE_HOME,
@@ -2582,7 +2732,7 @@ describe("local runtime connection pool", () => {
       expect(expectedBuildHash).toBeTruthy();
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.build_mismatch_detected", expect.objectContaining({
         runtimeBuildHash: "old-build",
@@ -2634,9 +2784,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -2659,7 +2807,7 @@ describe("local runtime connection pool", () => {
 
     const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-"));
     const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-local-runtime-role-project-"));
-    const socketPath = path.join(adeHome, "sock", "ade.sock");
+    const socketPath = machineRuntimeSocketPath(adeHome);
     const expectedBuildHash = computeLocalRuntimeBuildHash(cliPath);
     expect(expectedBuildHash).toBeTruthy();
     const originalEnv = {
@@ -2704,7 +2852,7 @@ describe("local runtime connection pool", () => {
 
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, { disableSync: true });
       const registered = await pool.ensureProject(projectRoot);
-      expect(fs.realpathSync(registered.rootPath)).toBe(fs.realpathSync(projectRoot));
+      expect(canonicalProjectRoot(registered.rootPath)).toBe(canonicalProjectRoot(projectRoot));
 
       expect(logger.info).toHaveBeenCalledWith("local_runtime.role_mismatch_detected", expect.objectContaining({
         runtimeDefaultRole: "agent",
@@ -2758,9 +2906,7 @@ describe("local runtime connection pool", () => {
     } finally {
       pool?.dispose();
       await shutdownRuntime(socketPath);
-      if (!oldDaemon.killed) {
-        try { oldDaemon.kill("SIGKILL"); } catch {}
-      }
+      reapDaemonTree(oldDaemon);
       if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
       else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
       if (originalEnv.ADE_HOME === undefined) delete process.env.ADE_HOME;
@@ -3224,13 +3370,13 @@ describe("local runtime connection pool", () => {
         /refusing to spawn an app-owned brain on a primary channel socket/i,
       );
 
-      expect(tryConnect).toHaveBeenCalledWith(path.join(adeHome, "sock", "ade.sock"));
+      expect(tryConnect).toHaveBeenCalledWith(machineRuntimeSocketPath(adeHome));
       expect(tryRepair).toHaveBeenCalled();
       expect(spawnRuntime).not.toHaveBeenCalled();
       expect(logger.warn).toHaveBeenCalledWith(
         "local_runtime.primary_runtime_spawn_blocked",
         expect.objectContaining({
-          socketPath: path.join(adeHome, "sock", "ade.sock"),
+          socketPath: machineRuntimeSocketPath(adeHome),
           preferServiceRepair: false,
         }),
       );
@@ -3242,6 +3388,172 @@ describe("local runtime connection pool", () => {
       removeTempDir(adeHome);
     }
   });
+
+  /**
+   * Drive `createConnection` through the primary-endpoint guard with the
+   * service-connect and repair paths stubbed out, and report the guard's
+   * decision. `spawnRuntime` is stubbed to throw rather than actually launch a
+   * daemon, so a guard that wrongly lets the spawn through fails loudly instead
+   * of leaking a process.
+   *
+   * `requestedSocketPath` is resolved *after* the environment is in place, so
+   * the address under test and the layout the pool derives internally always
+   * agree on channel and ADE_HOME.
+   */
+  async function runPrimaryEndpointGuard(args: {
+    adeHome: string;
+    packageChannel?: string;
+    requestedSocketPath: (layoutSocketPath: string) => string;
+  }): Promise<{ blocked: boolean; spawnAttempted: boolean; requested: string; layout: string }> {
+    const originalEnv = {
+      ADE_HOME: process.env.ADE_HOME,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+      ADE_PACKAGE_CHANNEL: process.env.ADE_PACKAGE_CHANNEL,
+      ADE_RUNTIME_SERVICE_NAME: process.env.ADE_RUNTIME_SERVICE_NAME,
+    };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", {
+      debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
+    } as never);
+    const internals = pool as unknown as {
+      createConnection: () => Promise<unknown>;
+      tryConnect: (socketPath: string) => Promise<unknown>;
+      tryRepairServiceConnection: (socketPath: string, reason: "missing") => Promise<unknown>;
+      spawnRuntime: (socketPath: string) => ChildProcess;
+    };
+    vi.spyOn(internals, "tryConnect").mockResolvedValue(null);
+    vi.spyOn(internals, "tryRepairServiceConnection").mockResolvedValue(null);
+    const spawnRuntime = vi.spyOn(internals, "spawnRuntime").mockImplementation(() => {
+      throw new Error("primary-endpoint guard let the spawn through");
+    });
+
+    try {
+      process.env.ADE_HOME = args.adeHome;
+      delete process.env.ADE_RUNTIME_SERVICE_NAME;
+      if (args.packageChannel === undefined) delete process.env.ADE_PACKAGE_CHANNEL;
+      else process.env.ADE_PACKAGE_CHANNEL = args.packageChannel;
+
+      const layout = resolveMachineAdeLayout().socketPath;
+      const requested = args.requestedSocketPath(layout);
+      process.env.ADE_RUNTIME_SOCKET_PATH = requested;
+
+      const error = await internals.createConnection().catch((caught) => caught) as Error;
+      return {
+        blocked: /refusing to spawn an app-owned brain on a primary channel socket/i.test(error.message),
+        spawnAttempted: spawnRuntime.mock.calls.length > 0,
+        requested,
+        layout,
+      };
+    } finally {
+      pool.dispose();
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  }
+
+  /**
+   * Name a sibling channel's runtime endpoint the way a real install of that
+   * channel would compute it: the channel is inferred from the home directory
+   * name, so this process's own ADE_PACKAGE_CHANNEL / ADE_RUNTIME_SERVICE_NAME
+   * must not bleed into the derivation.
+   */
+  function channelRuntimeSocketPath(homeName: string): string {
+    const {
+      ADE_RUNTIME_SERVICE_NAME: _ignoredServiceName,
+      ADE_PACKAGE_CHANNEL: _ignoredPackageChannel,
+      ...channelEnv
+    } = process.env;
+    return resolveMachineAdeLayout({
+      ...channelEnv,
+      ADE_HOME: path.join(os.homedir(), homeName),
+    }).socketPath;
+  }
+
+  it.runIf(process.platform === "win32")(
+    "treats a forward-slash named pipe spelling as the same primary endpoint",
+    async () => {
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-slash-alias-"));
+      try {
+        // Win32 accepts `/` and `\` interchangeably, so this addresses the very
+        // pipe the layout resolves to. Comparing the raw strings would miss it
+        // and let a second app-owned brain onto the machine's primary endpoint.
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => layout.replace(/\\/g, "/"),
+        });
+
+        expect(outcome.layout.startsWith("\\\\.\\pipe\\")).toBe(true);
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome.requested.startsWith("//./pipe/")).toBe(true);
+        expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
+  it.runIf(process.platform === "win32")(
+    "treats a differently-cased named pipe as the same primary endpoint",
+    async () => {
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-case-alias-"));
+      try {
+        // Windows pipe names are case-insensitive: this connects to the same
+        // pipe object as the layout address.
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => layout.toUpperCase(),
+        });
+
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
+
+  it("blocks a spawn onto a sibling channel's runtime endpoint", async () => {
+    // A Stable desktop must not spawn an app-owned brain onto the Beta
+    // channel's endpoint. ADE_HOME points somewhere unrelated, so the layout
+    // comparison cannot match and only the cross-channel set can catch this.
+    // On Windows that set was hardcoded to `~/.ade*/sock/ade.sock` — addresses
+    // that never exist there — so this protection silently did not apply.
+    const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cross-channel-"));
+    try {
+      const outcome = await runPrimaryEndpointGuard({
+        adeHome,
+        packageChannel: "stable",
+        requestedSocketPath: () => channelRuntimeSocketPath(".ade-beta"),
+      });
+
+      expect(outcome.requested).not.toBe(outcome.layout);
+      expect(outcome).toMatchObject({ blocked: true, spawnAttempted: false });
+    } finally {
+      removeTempDir(adeHome);
+    }
+  });
+
+  it.runIf(process.platform !== "win32")(
+    "keeps POSIX socket paths case-sensitive when matching the primary endpoint",
+    async () => {
+      // The named-pipe canonicalization must not bleed onto filesystem sockets:
+      // `/tmp/.../ADE.sock` and `/tmp/.../ade.sock` are genuinely different
+      // files on a case-sensitive filesystem.
+      const adeHome = fs.mkdtempSync(path.join(os.tmpdir(), "ade-posix-case-"));
+      try {
+        const outcome = await runPrimaryEndpointGuard({
+          adeHome,
+          requestedSocketPath: (layout) => path.join(path.dirname(layout), "ADE.sock"),
+        });
+
+        expect(outcome.requested).not.toBe(outcome.layout);
+        expect(outcome).toMatchObject({ blocked: false, spawnAttempted: true });
+      } finally {
+        removeTempDir(adeHome);
+      }
+    },
+  );
 
   it("routes local sync calls through the project-scoped runtime RPC", async () => {
     const call = vi.fn().mockResolvedValue({

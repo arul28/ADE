@@ -61,7 +61,7 @@ function installAdeMock(): void {
   remoteRuntimeMock.getLocalPairingInfo.mockResolvedValue({
     url: "https://ade-app.dev/pair#payload",
     pin: "123456",
-    machineName: "This Mac",
+    machineName: "This computer",
     relayAvailable: false,
   });
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
@@ -110,7 +110,7 @@ function getAccountRow(name: string): HTMLElement {
   return row;
 }
 
-function openAddMode(label: "Find nearby Macs" | "Add over SSH"): void {
+function openAddMode(label: "Find nearby computers" | "Add over SSH"): void {
   fireEvent.click(screen.getByRole("button", { name: "Add machine" }));
   fireEvent.click(screen.getByRole("button", { name: new RegExp(`^${label}`) }));
 }
@@ -230,7 +230,7 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    openAddMode("Find nearby Macs");
+    openAddMode("Find nearby computers");
 
     await waitFor(() => expect(screen.getByText("Studio")).toBeTruthy());
     expect(screen.getByText("Found nearby")).toBeTruthy();
@@ -246,7 +246,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() => expect(remoteRuntimeMock.pairWithMachine).toHaveBeenCalledWith({
       input: expect.stringMatching(/^https:\/\/ade-app\.dev\/pair#/),
       pin: "654321",
-      deviceName: "This Mac",
+      deviceName: "This computer",
     }));
     await waitFor(() => expect(remoteRuntimeMock.connect).toHaveBeenCalledWith("target-1"));
     expect(remoteRuntimeMock.saveTarget).not.toHaveBeenCalled();
@@ -281,9 +281,9 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    openAddMode("Find nearby Macs");
+    openAddMode("Find nearby computers");
 
-    await screen.findByText(/No Macs found/);
+    await screen.findByText(/No computers found/);
     expect(screen.queryByText("Linux box")).toBeNull();
     expect(screen.queryByText(/SSH/i)).toBeNull();
   });
@@ -1025,8 +1025,8 @@ describe("RemoteTargetList", () => {
     expect(screen.getByText("CONNECTED")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Disconnect" })).toBeTruthy();
 
-    openAddMode("Find nearby Macs");
-    expect(screen.getByText(/No Macs found/)).toBeTruthy();
+    openAddMode("Find nearby computers");
+    expect(screen.getByText(/No computers found/)).toBeTruthy();
     expect(screen.queryByText("Windows PC")).toBeNull();
     expect(screen.queryByText("Windows — not supported yet")).toBeNull();
   });
@@ -1182,7 +1182,7 @@ describe("RemoteTargetList", () => {
     );
     // Not having optional software installed must not wear the warning glyph.
     expect(note.querySelector("svg")).toBeNull();
-    expect(screen.getByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
+    expect(screen.getByText("No computers yet. Choose Add machine to connect one.")).toBeTruthy();
   });
 
   it("surfaces Tailscale discovery warnings separately from empty results", async () => {
@@ -1207,7 +1207,7 @@ describe("RemoteTargetList", () => {
       screen.getByText("Tailscale discovery failed; LAN discovery still ran."),
     );
     expect(warning.querySelector("svg")).not.toBeNull();
-    expect(screen.getByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
+    expect(screen.getByText("No computers yet. Choose Add machine to connect one.")).toBeTruthy();
   });
 
   it("adopts a desktop account machine as paired-only instead of saving a broken SSH target", async () => {
@@ -1552,7 +1552,7 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText("Connected via Tailscale · 12ms")).toBeNull();
   });
 
-  it("never lists this Mac as its own remote target (self-filter by machineKey or deviceId)", async () => {
+  it("never lists this computer as its own remote target (self-filter by machineKey or deviceId)", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
     installAdeMock();
@@ -1571,7 +1571,7 @@ describe("RemoteTargetList", () => {
       {
         machineKey: "reinstalled-mk",
         deviceId: "local-dev", // matches getLocalMachineIdentity().deviceId (pre-reinstall row)
-        name: "This Mac Before Reinstall",
+        name: "This computer Before Reinstall",
         platform: "darwin",
         deviceType: "desktop",
         reachableEndpoints: [],
@@ -1601,7 +1601,7 @@ describe("RemoteTargetList", () => {
     await waitFor(() => expect(screen.getByText("Other Studio")).toBeTruthy());
     expect(accountMock.getLocalMachineIdentity).toHaveBeenCalled();
     expect(screen.queryByText("This Very Mac")).toBeNull();
-    expect(screen.queryByText("This Mac Before Reinstall")).toBeNull();
+    expect(screen.queryByText("This computer Before Reinstall")).toBeNull();
   });
 
   it("explains how to finish setup when an online account Mac has no ready route", () => {
@@ -1643,7 +1643,7 @@ describe("RemoteTargetList", () => {
         onConnect={vi.fn()}
       />,
     );
-    expect(screen.getByText("Finish setup on the other Mac")).toBeTruthy();
+    expect(screen.getByText("Finish setup on the other computer")).toBeTruthy();
     expect(screen.getByText(/it appears here automatically/i)).toBeTruthy();
   });
 

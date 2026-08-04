@@ -66,7 +66,7 @@ struct SSHBootstrapResponse: Decodable, Equatable {
     guard ok else {
       throw SSHBootstrapError.remote(
         code: error?.code ?? "pairing_failed",
-        message: error?.message ?? "The Mac could not complete setup."
+        message: error?.message ?? "The computer could not complete setup."
       )
     }
     guard let machine, let pairing, let sync,
@@ -138,20 +138,20 @@ enum SSHBootstrapError: LocalizedError, Equatable {
 
   var errorDescription: String? {
     switch self {
-    case .invalidHost: "Enter a Mac address."
+    case .invalidHost: "Enter a computer address."
     case .invalidPort: "Enter an SSH port from 1 to 65535."
-    case .invalidUsername: "Enter the macOS username used for SSH."
+    case .invalidUsername: "Enter the macOS or Linux username used for SSH."
     case .invalidPrivateKey: "Paste or import a supported private key."
     case .unsupportedKey(let detail): detail
     case .passphraseRequired: "This private key needs its passphrase."
     case .incorrectPassphrase: "The private-key passphrase is incorrect."
-    case .hostKeyNotConfirmed: "Compare the Mac's SSH fingerprint, then confirm that it matches."
+    case .hostKeyNotConfirmed: "Compare the computer's SSH fingerprint, then confirm that it matches."
     case .hostKeyChanged(let expected, let received):
-      "This Mac's SSH fingerprint changed. Expected \(expected), but received \(received). Check the fingerprint on the Mac before trying again."
-    case .cliUnavailable: "ADE is not installed for this user on the Mac. Install ADE, then try again."
-    case .invalidResponse: "The Mac returned an unexpected response. Update ADE on the Mac, then try again."
-    case .responseTooLarge: "The Mac returned an unexpectedly large response. Update ADE on the Mac, then try again."
-    case .timedOut: "The Mac took too long to finish setup. Make sure ADE is open on the Mac, then try again."
+      "This computer's SSH fingerprint changed. Expected \(expected), but received \(received). Check the fingerprint on the computer before trying again."
+    case .cliUnavailable: "ADE is not installed for this user on the computer. Install ADE, then try again."
+    case .invalidResponse: "The computer returned an unexpected response. Update ADE on the computer, then try again."
+    case .responseTooLarge: "The computer returned an unexpectedly large response. Update ADE on the computer, then try again."
+    case .timedOut: "The computer took too long to finish setup. Make sure ADE is open on the computer, then try again."
     case .remote(_, let message): message
     }
   }

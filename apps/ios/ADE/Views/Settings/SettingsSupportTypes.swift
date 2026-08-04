@@ -91,7 +91,7 @@ enum SettingsConnectionPresentation {
     case .connecting:
       return "Reconnecting"
     case .unreachable:
-      return "Can't reach this Mac"
+      return "Can't reach this computer"
     case .disconnected:
       return "Not connected"
     }

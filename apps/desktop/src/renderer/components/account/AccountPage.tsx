@@ -21,6 +21,7 @@ import type {
   GitHubStatus,
 } from "../../../shared/types";
 import { accountMachineDisplayName } from "../../../shared/accountDirectory";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   COLORS,
   RADII,
@@ -61,6 +62,10 @@ type AccountBridge = {
   listMachines: () => Promise<AdeAccountMachinesResult>;
   getLocalMachineIdentity: () => Promise<AdeAccountLocalMachineIdentity>;
   removeMachine: (machineKey: string) => Promise<AdeAccountMachineRemovalResult>;
+  renameMachine: (
+    machineKey: string,
+    customName: string | null,
+  ) => Promise<AdeAccountMachine>;
   signOut: () => Promise<AdeAccountStatus>;
 };
 
@@ -385,7 +390,7 @@ export function SignInCard({
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: Your Macs — the account directory, this Mac pinned first.
+// Signed-in: Your computers — the account directory, this computer pinned first.
 // ---------------------------------------------------------------------------
 
 function YourMacsCard() {
@@ -398,6 +403,10 @@ function YourMacsCard() {
   const [pendingRemoval, setPendingRemoval] = useState<AdeAccountMachine | null>(null);
   const [removing, setRemoving] = useState(false);
   const [removeError, setRemoveError] = useState<string | null>(null);
+  const [renamingKey, setRenamingKey] = useState<string | null>(null);
+  const [renameValue, setRenameValue] = useState("");
+  const [renameBusy, setRenameBusy] = useState(false);
+  const [renameError, setRenameError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const api = accountBridge();
@@ -415,7 +424,7 @@ function YourMacsCard() {
     }
   }, []);
 
-  // Identify this Mac once so it can be pinned and shielded from removal.
+  // Identify this computer once so it can be pinned and shielded from removal.
   useEffect(() => {
     let cancelled = false;
     const api = accountBridge();
@@ -453,7 +462,7 @@ function YourMacsCard() {
 
   const machines = useMemo(() => {
     const list = [...(result?.machines ?? [])];
-    // Pin this Mac first; keep directory order otherwise.
+    // Pin this computer first; keep directory order otherwise.
     return list.sort((a, b) => (isThisMac(b) ? 1 : 0) - (isThisMac(a) ? 1 : 0));
   }, [result?.machines, isThisMac]);
 
@@ -486,17 +495,56 @@ function YourMacsCard() {
     if (openMenuKey) menuItemRef.current?.focus();
   }, [openMenuKey]);
 
+  const startRename = useCallback((machine: AdeAccountMachine) => {
+    setRenameError(null);
+    setRenameValue(accountMachineDisplayName(machine) ?? "");
+    setRenamingKey(machine.machineKey);
+  }, []);
+
+  const cancelRename = useCallback(() => {
+    setRenamingKey(null);
+    setRenameError(null);
+  }, []);
+
+  /**
+   * `customName === null` clears the override and falls back to the hostname —
+   * the same contract the Connections panel's rename uses, so a machine renamed
+   * here and a machine renamed there cannot end up in different states.
+   */
+  const saveRename = useCallback(
+    async (machine: AdeAccountMachine, customName?: string | null) => {
+      const api = accountBridge();
+      if (!api?.renameMachine) return;
+      const nextName = customName === undefined ? renameValue.trim() : customName;
+      if (nextName !== null && !nextName) return;
+      setRenameBusy(true);
+      setRenameError(null);
+      try {
+        await api.renameMachine(machine.machineKey, nextName);
+        setRenamingKey(null);
+        await load();
+      } catch (err) {
+        setRenameError(
+          err instanceof Error ? err.message : "Couldn't rename this computer.",
+        );
+      } finally {
+        setRenameBusy(false);
+      }
+    },
+    [renameValue, load],
+  );
+
   let summary: string;
-  if (loading && !result) summary = "Checking your Macs…";
+  if (loading && !result) summary = "Checking your computers…";
   else if (result?.state === "ok") {
     summary =
       machines.length === 0
-        ? "No Macs connected yet"
+        ? "No computers connected yet"
         : `${onlineCount} online · ${machines.length} connected`;
   } else if (result?.state === "not_configured") {
     summary = "The account directory isn't set up yet";
   } else if (result?.state === "signed_out") {
-    summary = "Sign in to see your Macs";
+    summary = "Sign in to see your computers";
   } else {
     summary = "Can't reach the account directory";
   }
@@ -515,7 +563,7 @@ function YourMacsCard() {
       setPendingRemoval(null);
       await load();
     } catch (err) {
-      setRemoveError(err instanceof Error ? err.message : "Couldn't remove that Mac from your account.");
+      setRemoveError(err instanceof Error ? err.message : "Couldn't remove that computer from your account.");
     } finally {
       setRemoving(false);
     }
@@ -542,7 +590,7 @@ function YourMacsCard() {
           </span>
           <div style={{ minWidth: 0 }}>
             <div style={{ fontFamily: SANS_FONT, fontSize: 13, fontWeight: 600, color: COLORS.textPrimary }}>
-              Your Macs
+              Your computers
             </div>
             <div style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted }}>{summary}</div>
           </div>
@@ -564,6 +612,7 @@ function YourMacsCard() {
           {machines.map((machine) => {
             const thisMac = isThisMac(machine);
             const menuOpen = openMenuKey === machine.machineKey;
+            const renaming = renamingKey === machine.machineKey;
             const rightText = thisMac
               ? null
               : machine.online
@@ -594,24 +643,89 @@ function YourMacsCard() {
                   }}
                 />
                 <Laptop size={15} weight="regular" color={COLORS.textMuted} style={{ flexShrink: 0 }} />
-                <span
-                  style={{
-                    fontFamily: SANS_FONT,
-                    fontSize: 13,
-                    color: COLORS.textPrimary,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {accountMachineDisplayName(machine) ?? "Unnamed Mac"}
-                </span>
-                {thisMac ? (
-                  <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
-                    This Mac
-                  </span>
-                ) : null}
+                {renaming ? (
+                  <form
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      void saveRename(machine);
+                    }}
+                    style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0, flex: 1 }}
+                  >
+                    <input
+                      aria-label={`Name for ${accountMachineDisplayName(machine) ?? "this computer"}`}
+                      autoFocus
+                      maxLength={80}
+                      value={renameValue}
+                      disabled={renameBusy}
+                      onChange={(event) => setRenameValue(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          event.preventDefault();
+                          cancelRename();
+                        }
+                      }}
+                      style={{
+                        minWidth: 0,
+                        flex: 1,
+                        height: 28,
+                        borderRadius: RADII.sm,
+                        border: `1px solid ${COLORS.borderMuted}`,
+                        background: COLORS.recessedBg,
+                        color: COLORS.textPrimary,
+                        fontFamily: SANS_FONT,
+                        fontSize: 12.5,
+                        padding: "0 9px",
+                        outline: "none",
+                      }}
+                    />
+                    <button
+                      type="submit"
+                      disabled={renameBusy || !renameValue.trim()}
+                      style={primaryButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                    >
+                      {renameBusy ? "Saving…" : "Save"}
+                    </button>
+                    {machine.customName ? (
+                      <button
+                        type="button"
+                        disabled={renameBusy}
+                        onClick={() => void saveRename(machine, null)}
+                        style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                      >
+                        Use hostname
+                      </button>
+                    ) : null}
+                    <button
+                      type="button"
+                      disabled={renameBusy}
+                      onClick={cancelRename}
+                      style={outlineButton({ height: 28, fontSize: 11, padding: "0 10px" })}
+                    >
+                      Cancel
+                    </button>
+                  </form>
+                ) : (
+                  <>
+                    <span
+                      style={{
+                        fontFamily: SANS_FONT,
+                        fontSize: 13,
+                        color: COLORS.textPrimary,
+                        minWidth: 0,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {accountMachineDisplayName(machine) ?? "Unnamed computer"}
+                    </span>
+                    {thisMac ? (
+                      <span style={inlineBadge(COLORS.accent, { fontSize: 10, padding: "2px 7px", flexShrink: 0 })}>
+                        {THIS_MACHINE_NAME}
+                      </span>
+                    ) : null}
+                  </>
+                )}
                 <span style={{ flex: 1 }} />
                 {rightText ? (
                   <span
@@ -626,12 +740,15 @@ function YourMacsCard() {
                     {rightText}
                   </span>
                 ) : null}
-                {thisMac ? (
+                {renaming ? (
                   <span style={{ width: 26, flexShrink: 0 }} />
                 ) : (
                   <button
                     type="button"
-                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "this Mac"}`}
+                    // Every row gets this button now, including the local one:
+                    // this list is the only place the local machine is shown,
+                    // so it is the only place its name can be changed.
+                    aria-label={`Options for ${accountMachineDisplayName(machine) ?? "Unnamed computer"}`}
                     aria-haspopup="menu"
                     aria-expanded={menuOpen}
                     onClick={(event) =>
@@ -651,6 +768,22 @@ function YourMacsCard() {
               </div>
             );
           })}
+        </div>
+      ) : null}
+
+      {renameError ? (
+        <div
+          role="alert"
+          style={{
+            borderTop: `1px solid ${COLORS.borderMuted}`,
+            padding: "10px 18px",
+            fontFamily: SANS_FONT,
+            fontSize: 12,
+            color: COLORS.danger,
+            lineHeight: 1.5,
+          }}
+        >
+          {renameError}
         </div>
       ) : null}
 
@@ -682,10 +815,10 @@ function YourMacsCard() {
         >
           <span style={{ fontFamily: SANS_FONT, fontSize: 12, color: COLORS.textMuted, lineHeight: 1.5 }}>
             {webMode
-              ? "Use the machine menu above to switch Macs."
+              ? "Use the machine menu above to switch computers."
               : result.state === "not_configured"
-              ? "Your Macs still connect from Connections — the shared directory just isn't live yet."
-              : "Your Macs still connect from Connections while the directory reconnects."}
+              ? "Your computers still connect from Connections — the shared directory just isn't live yet."
+              : "Your computers still connect from Connections while the directory reconnects."}
           </span>
           {result.state === "unavailable" ? (
             <button
@@ -736,8 +869,7 @@ function YourMacsCard() {
                   onClick={() => {
                     const machine = openMenuMachine;
                     closeMenu();
-                    setRemoveError(null);
-                    setPendingRemoval(machine);
+                    startRename(machine);
                   }}
                   style={{
                     display: "flex",
@@ -747,25 +879,66 @@ function YourMacsCard() {
                     borderRadius: RADII.sm,
                     border: "none",
                     background: "transparent",
-                    color: COLORS.danger,
+                    color: COLORS.textPrimary,
                     fontFamily: SANS_FONT,
                     fontSize: 12.5,
                     textAlign: "left",
                     cursor: "pointer",
                   }}
                 >
-                  Remove from account…
+                  Rename…
                 </button>
+                {/*
+                  Removal stays withheld for the local machine. Signing this
+                  computer out of the account from this computer is what the
+                  sign-out card is for; "remove" here means "evict some other
+                  machine", and pointing it at yourself would be a different
+                  and far more destructive action wearing the same label.
+                */}
+                {!isThisMac(openMenuMachine) ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      const machine = openMenuMachine;
+                      closeMenu();
+                      setRemoveError(null);
+                      setPendingRemoval(machine);
+                    }}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      width: "100%",
+                      padding: "8px 10px",
+                      borderRadius: RADII.sm,
+                      border: "none",
+                      background: "transparent",
+                      color: COLORS.danger,
+                      fontFamily: SANS_FONT,
+                      fontSize: 12.5,
+                      textAlign: "left",
+                      cursor: "pointer",
+                    }}
+                  >
+                    Remove from account…
+                  </button>
+                ) : null}
               </div>
             </>,
             document.body,
           )
         : null}
 
+      {/*
+        Removal is only reachable from a row's options menu, and that menu is
+        withheld for the local machine — so this sheet always names some OTHER
+        machine. It must never borrow THIS_MACHINE_NAME, and it can't assume the
+        machine on the far end runs macOS.
+      */}
       {pendingRemoval ? (
         <ConfirmSheet
-          title="Remove this Mac from your account?"
-          body={`${accountMachineDisplayName(pendingRemoval) ?? "This Mac"} will no longer connect through your account. You can add it back by signing in to ADE on that Mac.`}
+          title={`Remove ${accountMachineDisplayName(pendingRemoval) ?? "Unnamed computer"} from your account?`}
+          body="It will no longer connect through your account. You can add it back by signing in to ADE on that computer."
           confirmLabel="Remove"
           danger
           busy={removing}
@@ -780,7 +953,7 @@ function YourMacsCard() {
 }
 
 // ---------------------------------------------------------------------------
-// Signed-in: sign-out card (honest single-Mac scope, behind a confirmation).
+// Signed-in: sign-out card (honest single-machine scope, behind a confirmation).
 // ---------------------------------------------------------------------------
 
 function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signingOut: boolean }) {
@@ -801,7 +974,7 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
       >
         <Laptop size={16} weight="regular" color={COLORS.textSecondary} style={{ flexShrink: 0 }} />
         <div style={{ minWidth: 0, flex: 1 }}>
-          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this Mac</div>
+          <div style={{ fontFamily: SANS_FONT, fontSize: 13, color: COLORS.textPrimary }}>Signed in on this computer</div>
         </div>
         <button
           type="button"
@@ -822,7 +995,7 @@ function SignOutCard({ onSignOut, signingOut }: { onSignOut: () => void; signing
       {confirming ? (
         <ConfirmSheet
           title="Sign out of ADE?"
-          body="Signing out removes this Mac's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
+          body="Signing out removes this computer's access to your account and its account-connected machines. Devices paired directly with a code stay connected."
           confirmLabel="Sign out"
           danger
           busy={signingOut}

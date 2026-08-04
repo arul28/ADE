@@ -10,6 +10,7 @@ import {
   resolveCursorSdkPolicy,
   summarizeCursorHook,
 } from "./cursorSdkPolicy";
+import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
 
 describe("Cursor SDK policy", () => {
   it("maps Cursor modes to ADE permission policies", () => {
@@ -158,6 +159,37 @@ describe("Cursor SDK policy", () => {
     expect(request.reason).toContain("/etc");
   });
 
+  // The guard deliberately leaves backslash tokens alone on POSIX, where `\` is
+  // a legal filename character, so these escape shapes have no POSIX analogue.
+  // WINDOWS-GATE: Windows-only shell path syntax; verified green on a native Windows host.
+  it.runIf(process.platform === "win32")("denies Windows-shell lane escapes written with backslashes or %VAR% expansion", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+    const laneRoot = path.join(path.parse(path.resolve("/")).root, "Users", "admin", "lane");
+    const userHomeDir = path.join(path.parse(path.resolve("/")).root, "Users", "admin");
+    const cases: Array<[string, string]> = [
+      ["type ..\\..\\..\\.ssh\\id_rsa", "outside the active lane"],
+      ["type .\\..\\..\\secret.txt", "outside the active lane"],
+      ["type %USERPROFILE%\\.ssh\\id_rsa", "outside the active lane"],
+      ["Get-Content $env:USERPROFILE\\.aws\\credentials", "outside the active lane"],
+      ["type .ade\\secrets\\token", "protected by ADE"],
+    ];
+    for (const [command, reason] of cases) {
+      const request = summarizeCursorHook({ toolName: "shell", toolInput: { command } }, laneRoot);
+      expect(evaluateCursorSdkHook({ request, policy, laneRoot, userHomeDir })).toBe("deny");
+      expect(request.reason).toContain(reason);
+    }
+  });
+
+  it("keeps POSIX-style backslash filenames out of the Windows path heuristics", () => {
+    const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
+    const laneRoot = path.join(path.parse(path.resolve("/")).root, "tmp", "ade-lane");
+    const request = summarizeCursorHook({
+      toolName: "shell",
+      toolInput: { command: "echo hello" },
+    }, laneRoot);
+    expect(evaluateCursorSdkHook({ request, policy, laneRoot })).toBe("allow");
+  });
+
   it("denies shell cwd escapes even when the command text is otherwise safe", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
     const laneRoot = "/tmp/ade-lane";
@@ -170,10 +202,18 @@ describe("Cursor SDK policy", () => {
 
   it("allows Cursor SDK transcript and terminal reads for the active lane only", () => {
     const policy = resolveCursorSdkPolicy({ cursorModeId: "full-auto" });
-    const laneRoot = "/Users/admin/Projects/Versic/.ade/worktrees/private-sharing-5d14c47a";
-    const userHomeDir = "/Users/admin";
+    // Build the lane root from the platform's own filesystem root: on Windows
+    // `path.resolve` prefixes the current drive, so a hard-coded POSIX path
+    // yields a different (drive-prefixed) slug there.
+    const fsRoot = path.parse(path.resolve("/")).root;
+    const userHomeDir = path.join(fsRoot, "Users", "admin");
+    const laneRoot = path.join(userHomeDir, "Projects", "Versic", ".ade", "worktrees", "private-sharing-5d14c47a");
     const slug = cursorProjectSlugForPath(laneRoot);
-    expect(slug).toBe("Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a");
+    // Cursor's own rule: every non-alphanumeric character becomes a dash, runs
+    // collapse, leading/trailing dashes are trimmed. The Windows drive letter
+    // therefore survives as a leading `C-` segment.
+    expect(slug).toBe(cursorProjectSlug(path.resolve(laneRoot)));
+    expect(slug).toMatch(/Users-admin-Projects-Versic-ade-worktrees-private-sharing-5d14c47a$/u);
 
     const transcript = summarizeCursorHook({
       toolName: "read",
@@ -201,8 +241,7 @@ describe("Cursor SDK policy", () => {
     expect(evaluateCursorSdkHook({ request: writeTranscript, policy, laneRoot, userHomeDir })).toBe("deny");
   });
 
-  it("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("denies Cursor support reads when the active project support root is symlinked outside Cursor projects", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-support-"));
     const home = path.join(root, "home");
     const laneRoot = path.join(root, "repo", ".ade", "worktrees", "lane");
@@ -232,8 +271,7 @@ describe("Cursor SDK policy", () => {
     }
   });
 
-  it("denies symlink escapes through paths that appear to be inside the lane", () => {
-    if (process.platform === "win32") return;
+  it.skipIf(process.platform === "win32")("denies symlink escapes through paths that appear to be inside the lane", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-policy-"));
     const laneRoot = path.join(root, "lane");
     const outside = path.join(root, "outside");

@@ -116,7 +116,7 @@ Desktop ⌘K command palette:
   (chat/terminal/pr/lane/commit/branch/file/linear/artifact → the matching tab,
   relying on the deep-link navigate listener to focus the target). Thread entries
   always retain their owner machine name for matching; results show an amber
-  name marker only when that owner is not This Mac, including threads from the
+  name marker only when that owner is not This computer, including threads from the
   remote-bound active tab.
 
 `ade search` CLI + agent skill:

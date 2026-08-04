@@ -688,7 +688,7 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
         return;
       }
       if (nextMachineId === LOCAL_MACHINE_ID) {
-        // The machine is a dimension of THIS repo's tab, so "This Mac" must
+        // The machine is a dimension of THIS repo's tab, so "This computer" must
         // resolve to this repo's local checkout — never to whichever local tab
         // happens to be first.
         void switchToThisMachineProject({

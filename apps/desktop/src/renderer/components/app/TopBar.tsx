@@ -2249,7 +2249,7 @@ export function TopBar({
               const machineMenuOpen = machineMenu?.groupId === group.id;
               // The machine is a dimension inside the repo's tab, so it only
               // earns inline space when it is ambiguous: more than one machine
-              // in the group, or a checkout that is not on This Mac.
+              // in the group, or a checkout that is not on This computer.
               const machineLabel =
                 multiMachine || !machine.isLocal ? (
                   <span
@@ -2751,31 +2751,39 @@ export function TopBar({
         </div>
       ) : null}
 
-      {/* Trailing controls: activity · status · updates · utility cluster */}
-      <div className="flex shrink-0 items-center gap-2">
-        {/* Account-wide Activity — the one place every machine's work surfaces,
-            reachable from every tab and project without a nav detour. */}
-        <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
+      {/* Trailing controls: activity · status · updates · utility cluster.
+          The group must be able to shrink: the header reserves room for the
+          native window controls (macOS traffic lights at the start, Windows
+          caption buttons at the end) with padding, and a shrink-0 group would
+          simply overflow that padding at narrow widths and slide back under
+          them. The status/update strip therefore clips first so the utility
+          cluster — feedback, help, zoom — always stays inside the reservation. */}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="flex min-w-0 items-center gap-2 overflow-hidden">
+          {/* Account-wide Activity — the one place every machine's work surfaces,
+              reachable from every tab and project without a nav detour. */}
+          <HeaderActivityControl onOpenPane={handleOpenActivityPane} />
 
-        {/* App-global voice capture — visible from any tab while recording. */}
-        <GlobalVoiceCaptureIndicator />
+          {/* App-global voice capture — visible from any tab while recording. */}
+          <GlobalVoiceCaptureIndicator />
 
-        <ResourcePressureIndicator usage={resourceUsage} />
-        <StoragePressureIndicator enabled={workspaceProjectOpen} />
+          <ResourcePressureIndicator usage={resourceUsage} />
+          <StoragePressureIndicator enabled={workspaceProjectOpen} />
 
-        <div className="hidden md:flex items-center gap-1.5">
-          {renderHeaderStatusControls()}
+          <div className="hidden md:flex items-center gap-1.5">
+            {renderHeaderStatusControls()}
+          </div>
+
+          <HeaderStatusMenu
+            remoteConnected={remoteConnected}
+            syncConnected={syncConnected || (!webMode && webConnected)}
+            showSyncControl={showSyncControl}
+          >
+            {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
+          </HeaderStatusMenu>
+
+          {!webMode ? <AutoUpdateControl /> : null}
         </div>
-
-        <HeaderStatusMenu
-          remoteConnected={remoteConnected}
-          syncConnected={syncConnected || (!webMode && webConnected)}
-          showSyncControl={showSyncControl}
-        >
-          {(closeMenu) => renderHeaderStatusControls({ menuLayout: true, onActivate: closeMenu })}
-        </HeaderStatusMenu>
-
-        {!webMode ? <AutoUpdateControl /> : null}
 
         <div
           className="ade-shell-header-utility-cluster inline-flex shrink-0 items-center gap-px rounded-md border border-white/[0.08] bg-white/[0.03] p-px"

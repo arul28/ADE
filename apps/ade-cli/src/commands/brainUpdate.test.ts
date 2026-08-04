@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   brainUpdateAssetUrl,
   detectRuntimeTarget,
@@ -17,11 +18,32 @@ function sha256(value: string): string {
 }
 
 function checksumFileFor(target: string, binaryContent: string, archiveContent = "archive"): string {
+  const binaryName = `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
   return [
-    `${sha256(binaryContent)}  ade-${target}`,
+    `${sha256(binaryContent)}  ${binaryName}`,
     `${sha256(archiveContent)}  ade-${target}.native.tar.gz`,
     "",
   ].join("\n");
+}
+
+function downloadRuntimeFixture(target: string, version = "v1.2.13") {
+  const binaryName = `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
+  const binaryUrl = brainUpdateAssetUrl("arul28/ADE", version, binaryName);
+  return async (url: string, outPath: string) => {
+    if (url.endsWith("/SHA256SUMS")) {
+      fs.writeFileSync(outPath, checksumFileFor(target, binaryUrl));
+    } else {
+      fs.writeFileSync(outPath, url.endsWith(".tar.gz") ? "archive" : url);
+    }
+  };
+}
+
+function extractRuntimeFixture(command: string, args: string[]) {
+  if (command === "tar") {
+    const targetDir = args[args.indexOf("-C") + 1];
+    fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
+  }
+  return { status: 0, stdout: "", stderr: "" };
 }
 
 function tempRoot(): string {
@@ -31,6 +53,7 @@ function tempRoot(): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
@@ -42,7 +65,8 @@ describe("brain update command", () => {
     expect(detectRuntimeTarget("darwin", "x86_64")).toBe("darwin-x64");
     expect(detectRuntimeTarget("linux", "aarch64")).toBe("linux-arm64");
     expect(detectRuntimeTarget("linux", "amd64")).toBe("linux-x64");
-    expect(() => detectRuntimeTarget("win32", "x64")).toThrow(/only supported/);
+    expect(detectRuntimeTarget("win32", "x64")).toBe("win32-x64");
+    expect(() => detectRuntimeTarget("win32", "arm64")).toThrow(/unsupported/i);
   });
 
   it("builds latest and tagged release asset URLs", () => {
@@ -222,6 +246,197 @@ describe("brain update command", () => {
     expect(fs.existsSync(tmp)).toBe(false);
   });
 
+  it.each([
+    {
+      label: "and reinstalls it afterward",
+      updateArgs: ["update", "--version", "v1.2.13", "--foreground"],
+      serviceWasInstalled: true,
+      failInstall: false,
+      ok: true,
+      restarted: true,
+      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
+    },
+    {
+      label: "without restoring a service that was not previously installed",
+      updateArgs: ["update", "--version", "v1.2.13", "--foreground"],
+      serviceWasInstalled: false,
+      failInstall: true,
+      ok: false,
+      restarted: false,
+      expectedServiceArgs: [["serve", "--uninstall-service"], ["serve", "--install-service"]],
+    },
+  ])("stops a Windows brain before replacing its executable $label", async ({
+    updateArgs,
+    serviceWasInstalled,
+    failInstall,
+    ok,
+    restarted,
+    expectedServiceArgs,
+  }) => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const installedBinary = path.join(root, "bin", "ade.exe");
+    fs.mkdirSync(path.dirname(installedBinary), { recursive: true });
+    fs.writeFileSync(installedBinary, "old-binary");
+    fs.mkdirSync(tmp, { recursive: true });
+    const serviceCalls: string[][] = [];
+
+    const result = await runBrainUpdateCommand(
+      updateArgs,
+      {
+        env: { ADE_HOME: root },
+        platform: "win32",
+        arch: "x64",
+        tmpDir: async () => tmp,
+        downloadFile: async (url, outPath) => {
+          if (url.endsWith("/SHA256SUMS")) {
+            fs.writeFileSync(
+              outPath,
+              checksumFileFor(
+                "win32-x64",
+                "https://github.com/arul28/ADE/releases/download/v1.2.13/ade-win32-x64.exe",
+              ),
+            );
+          } else {
+            fs.writeFileSync(outPath, url.endsWith(".tar.gz") ? "archive" : url);
+          }
+        },
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: (command, args) => {
+          if (command === "tar") {
+            const targetDir = args[args.indexOf("-C") + 1];
+            fs.mkdirSync(path.join(targetDir, "node_modules"), { recursive: true });
+          } else if (args.includes("--service-status")) {
+            return {
+              status: 0,
+              stdout: JSON.stringify({ installed: serviceWasInstalled, running: serviceWasInstalled }),
+              stderr: "",
+            };
+          } else {
+            serviceCalls.push([command, ...args]);
+            if (failInstall && args.includes("--install-service")) {
+              return { status: 1, stdout: "", stderr: "service start failed" };
+            }
+          }
+          return { status: 0, stdout: "", stderr: "" };
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok, applied: ok, restarted, target: "win32-x64" });
+    expect(serviceCalls).toEqual(expectedServiceArgs.map((args) => [installedBinary, ...args]));
+    if (ok) {
+      expect(fs.readFileSync(installedBinary, "utf8")).toContain("ade-win32-x64.exe");
+    } else {
+      expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
+    }
+    expect(fs.existsSync(path.join(root, "runtime", "win32-x64", "node_modules"))).toBe(ok);
+  });
+
+  it("rejects --no-restart on Windows before downloading or removing startup registration", async () => {
+    const downloadFile = vi.fn(async () => undefined);
+    const runCommand = vi.fn(() => ({ status: 0, stdout: "", stderr: "" }));
+
+    await expect(runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground", "--no-restart"],
+      {
+        env: { ADE_HOME: tempRoot() },
+        platform: "win32",
+        arch: "x64",
+        downloadFile,
+        runCommand,
+      },
+    )).rejects.toThrow(/--no-restart is not supported on Windows/);
+    expect(downloadFile).not.toHaveBeenCalled();
+    expect(runCommand).not.toHaveBeenCalled();
+  });
+
+  it("defers Windows staging cleanup until the staged helper executable exits", async () => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    fs.mkdirSync(tmp, { recursive: true });
+    const cleanupSpawns: Array<{ command: string; args: string[]; env?: NodeJS.ProcessEnv }> = [];
+
+    const result = await runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground"],
+      {
+        env: { ADE_HOME: root },
+        platform: "win32",
+        arch: "x64",
+        execPath: path.join(tmp, "ade.exe"),
+        tmpDir: async () => tmp,
+        downloadFile: downloadRuntimeFixture("win32-x64"),
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: extractRuntimeFixture,
+        spawnDetached: (command, args, options) => {
+          cleanupSpawns.push({ command, args, env: options.env });
+        },
+      },
+    );
+
+    expect(result).toMatchObject({ ok: true, applied: true, restarted: true });
+    expect(fs.existsSync(tmp)).toBe(true);
+    expect(cleanupSpawns).toHaveLength(1);
+    expect(cleanupSpawns[0]).toMatchObject({
+      command: "powershell.exe",
+      args: expect.arrayContaining(["-NonInteractive", "-Command"]),
+      env: expect.objectContaining({
+        ADE_BRAIN_UPDATE_CLEANUP_DIR: tmp,
+        ADE_BRAIN_UPDATE_CLEANUP_PARENT_PID: String(process.pid),
+      }),
+    });
+    expect(cleanupSpawns[0]?.args.join(" ")).toContain("Wait-Process");
+    expect(cleanupSpawns[0]?.args.join(" ")).toContain("Remove-Item");
+    if (process.platform === "win32") {
+      const cleanupScript = cleanupSpawns[0]?.args.at(-1) ?? "";
+      const parsed = spawnSync(
+        "powershell.exe",
+        ["-NoProfile", "-NonInteractive", "-Command", "[void][scriptblock]::Create($env:ADE_TEST_CLEANUP_SCRIPT)"],
+        {
+          encoding: "utf8",
+          env: { ...process.env, ADE_TEST_CLEANUP_SCRIPT: cleanupScript },
+        },
+      );
+      expect(parsed.status, parsed.stderr).toBe(0);
+    }
+  });
+
+  it("keeps a completed update applied when deferred staging cleanup cannot launch", async () => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    fs.mkdirSync(tmp, { recursive: true });
+
+    const result = await runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground"],
+      {
+        env: { ADE_HOME: root },
+        platform: "win32",
+        arch: "x64",
+        execPath: path.join(tmp, "ade.exe"),
+        tmpDir: async () => tmp,
+        downloadFile: downloadRuntimeFixture("win32-x64"),
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: extractRuntimeFixture,
+        spawnDetached: () => {
+          throw new Error("cleanup launch denied");
+        },
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: true,
+      applied: true,
+      restarted: true,
+      message: expect.stringContaining("Staging cleanup could not complete: cleanup launch denied"),
+    });
+    expect(String(result.message)).toContain(`Remove ${tmp} manually.`);
+    expect(readBrainUpdateStatus({ ADE_HOME: root })).toMatchObject({
+      state: "succeeded",
+      message: expect.stringContaining("Staging cleanup could not complete"),
+    });
+    expect(fs.existsSync(tmp)).toBe(true);
+  });
+
   it("rolls back promoted assets when the service restart fails", async () => {
     const root = tempRoot();
     const tmp = path.join(root, "tmp");
@@ -278,6 +493,103 @@ describe("brain update command", () => {
       state: "failed",
       error: "restart failed Update was rolled back.",
     });
+  });
+
+  it("reports and preserves recovery files when native promotion compensation fails", async () => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const installedBinary = path.join(root, "bin", "ade");
+    const runtimeTarget = path.join(root, "runtime", "linux-x64");
+    const stagedRuntime = path.join(tmp, "runtime", "linux-x64");
+    const nativeBackup = path.join(root, "runtime", `.linux-x64.previous-${process.pid}`);
+    fs.mkdirSync(path.dirname(installedBinary), { recursive: true });
+    fs.mkdirSync(path.join(runtimeTarget, "node_modules"), { recursive: true });
+    fs.writeFileSync(installedBinary, "old-binary");
+    fs.mkdirSync(tmp, { recursive: true });
+
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    vi.spyOn(fs.promises, "rename").mockImplementation(async (source, destination) => {
+      const from = String(source);
+      const to = String(destination);
+      if (from === stagedRuntime && to === runtimeTarget) {
+        throw new Error("native promotion denied");
+      }
+      if (from === nativeBackup && to === runtimeTarget) {
+        throw new Error("native restore denied");
+      }
+      return originalRename(source, destination);
+    });
+
+    const result = await runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground", "--no-restart"],
+      {
+        env: { ADE_HOME: root },
+        platform: "linux",
+        arch: "x64",
+        tmpDir: async () => tmp,
+        downloadFile: downloadRuntimeFixture("linux-x64"),
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: extractRuntimeFixture,
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      applied: false,
+      message: expect.stringContaining("native promotion denied"),
+    });
+    expect(String(result.message)).toContain("restoring the previous runtime also failed: native restore denied");
+    expect(String(result.message)).toContain(`Recovery files remain at ${nativeBackup}`);
+    expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
+    expect(fs.existsSync(nativeBackup)).toBe(true);
+  });
+
+  it("continues every rollback leg and reports failed asset compensation", async () => {
+    const root = tempRoot();
+    const tmp = path.join(root, "tmp");
+    const installedBinary = path.join(root, "bin", "ade");
+    const runtimeTarget = path.join(root, "runtime", "linux-x64");
+    const nativeBackup = path.join(root, "runtime", `.linux-x64.previous-${process.pid}`);
+    fs.mkdirSync(path.dirname(installedBinary), { recursive: true });
+    fs.mkdirSync(path.join(runtimeTarget, "node_modules"), { recursive: true });
+    fs.writeFileSync(installedBinary, "old-binary");
+    fs.mkdirSync(tmp, { recursive: true });
+
+    const originalRename = fs.promises.rename.bind(fs.promises);
+    vi.spyOn(fs.promises, "rename").mockImplementation(async (source, destination) => {
+      const from = String(source);
+      const to = String(destination);
+      if (from.includes(`.ade.updating-${process.pid}`) && to === installedBinary) {
+        throw new Error("binary promotion denied");
+      }
+      if (from === nativeBackup && to === runtimeTarget) {
+        throw new Error("native rollback denied");
+      }
+      return originalRename(source, destination);
+    });
+
+    const result = await runBrainUpdateCommand(
+      ["update", "--version", "v1.2.13", "--foreground", "--no-restart"],
+      {
+        env: { ADE_HOME: root },
+        platform: "linux",
+        arch: "x64",
+        tmpDir: async () => tmp,
+        downloadFile: downloadRuntimeFixture("linux-x64"),
+        execFile: async () => ({ stdout: "ade 1.2.13\n", stderr: "" }),
+        runCommand: extractRuntimeFixture,
+      },
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      applied: false,
+      message: expect.stringContaining("ADE runtime asset promotion failed (binary promotion denied)"),
+    });
+    expect(String(result.message)).toContain("previous native runtime restoration: native rollback denied");
+    expect(String(result.message)).toContain("Recovery files were retained");
+    expect(fs.readFileSync(installedBinary, "utf8")).toBe("old-binary");
+    expect(fs.existsSync(nativeBackup)).toBe(true);
   });
 
   it("keeps the installed binary when staged native dependencies are incomplete", async () => {

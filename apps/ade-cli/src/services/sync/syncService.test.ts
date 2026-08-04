@@ -5,6 +5,16 @@ import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { openKvDb, type AdeDb } from "../../../../desktop/src/main/services/state/kvDb";
 import { createSyncService, type SyncService } from "./syncService";
+import { removeTestTree } from "../../test/filesystem";
+
+vi.mock("../../../../desktop/src/main/services/state/crsqliteExtension", async (importOriginal) => {
+  const original = await importOriginal<
+    typeof import("../../../../desktop/src/main/services/state/crsqliteExtension")
+  >();
+  return process.platform === "win32"
+    ? { ...original, resolveCrsqliteExtensionPath: () => null }
+    : original;
+});
 
 function createLogger() {
   return {
@@ -69,9 +79,9 @@ function createService(
 describe("createSyncService", () => {
   const cleanupRoots: string[] = [];
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const root of cleanupRoots.splice(0)) {
-      fs.rmSync(root, { recursive: true, force: true });
+      await removeTestTree(root);
     }
   });
 

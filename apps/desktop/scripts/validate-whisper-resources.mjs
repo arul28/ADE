@@ -116,6 +116,12 @@ async function main() {
   // A whisper.cpp CLI binary for the host platform must be present + executable.
   const binary = await firstExistingBinary();
   if (!binary) {
+    if (process.platform === "win32" && process.env.ADE_WINDOWS_TEST_BUILD === "1") {
+      console.warn(
+        "[whisper-resources] Local Windows test build: Whisper CLI is not bundled; voice transcription will be unavailable.",
+      );
+      return;
+    }
     fail(
       `No whisper.cpp CLI binary found in ${whisperRoot} (looked for ${whisperBinaryNamesForHost().join(", ")}).`,
     );

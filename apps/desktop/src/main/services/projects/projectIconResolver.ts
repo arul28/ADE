@@ -126,6 +126,32 @@ function realpathExisting(filePath: string): string {
     : fs.realpathSync(filePath);
 }
 
+/**
+ * Canonicalize a project root the same way every path this module hands back is
+ * canonicalized: `resolvePathWithinRoot` realpaths each existing segment, so an
+ * icon path is always spelled the way the filesystem spells it.
+ *
+ * `path.resolve` alone does not get the root there. On Windows a root can
+ * arrive as an 8.3 short name (`C:\Users\RUNNER~1\...` whenever the account
+ * name exceeds eight characters — `Administrator`, most `First Last` accounts,
+ * and GitHub's own `runneradmin`), and on every platform it can arrive through
+ * a junction or symlink. The root and the resolved icon then name the same file
+ * with different strings, and `path.relative` between them yields a `..`
+ * traversal instead of a project-relative path — which `setProjectIconOverride`
+ * would persist into the shared `.ade/ade.yaml` as the project's `iconPath`.
+ *
+ * Falls back to the lexical resolve when the root does not exist, so callers
+ * that probe a stale project directory still get "no icon" rather than a throw.
+ */
+function canonicalProjectRoot(projectRoot: string): string {
+  const resolved = path.resolve(projectRoot);
+  try {
+    return realpathExisting(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 function toProjectRelative(projectRoot: string, filePath: string): string {
   const relative = path.relative(projectRoot, filePath).split(path.sep).join("/");
   return relative || ".";
@@ -264,7 +290,7 @@ function setProjectIconPathCache(key: string, entry: ProjectIconPathCacheEntry):
 }
 
 function clearProjectIconResultCache(projectRoot: string): void {
-  const root = path.resolve(projectRoot);
+  const root = canonicalProjectRoot(projectRoot);
   for (const key of projectIconResultCache.keys()) {
     if (key === root || key.startsWith(`${root}\0`)) {
       projectIconResultCache.delete(key);
@@ -558,7 +584,7 @@ export function resolveProjectIconPath(
   projectRoot: string,
   options: { iconPathOverride?: string | null } = {},
 ): string | null {
-  const root = path.resolve(projectRoot);
+  const root = canonicalProjectRoot(projectRoot);
   const cacheKey = projectIconResultCacheKey(root, options);
   const rootMtimeMs = dirMtimeMs(root);
   const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));
@@ -690,7 +716,7 @@ function writeProjectIconPathOverride(projectRoot: string, iconPath: string | nu
 }
 
 export function setProjectIconOverride(projectRoot: string, iconPath: string): ProjectIcon {
-  const root = path.resolve(projectRoot);
+  const root = canonicalProjectRoot(projectRoot);
   const resolvedIconPath = resolvePathWithinRoot(root, iconPath, { allowMissing: false });
   assertUsableProjectIconFile(resolvedIconPath);
 
@@ -725,12 +751,13 @@ function importedProjectIconRelativePath(sourcePath: string, data: Buffer): stri
 }
 
 export function setProjectIconOverrideFromSelection(projectRoot: string, iconPath: string): ProjectIcon {
-  const root = path.resolve(projectRoot);
+  // Both sides are canonicalized with the same realpath, so the containment
+  // check below compares like-for-like spellings.
+  const root = canonicalProjectRoot(projectRoot);
   const selectedPath = realpathExisting(path.resolve(iconPath));
   assertUsableProjectIconFile(selectedPath);
 
-  const rootReal = realpathExisting(root);
-  if (isWithinDir(rootReal, selectedPath)) {
+  if (isWithinDir(root, selectedPath)) {
     return setProjectIconOverride(root, selectedPath);
   }
 
@@ -756,7 +783,7 @@ export function setProjectIconOverrideFromSelection(projectRoot: string, iconPat
 }
 
 export function removeProjectIconOverride(projectRoot: string): ProjectIcon {
-  const root = path.resolve(projectRoot);
+  const root = canonicalProjectRoot(projectRoot);
   writeProjectIconPathOverride(root, null);
   clearProjectIconResultCache(root);
   return resolveProjectIcon(root, { iconPathOverride: null });
@@ -766,7 +793,7 @@ export function resolveProjectIcon(
   projectRoot: string,
   options: { iconPathOverride?: string | null } = {},
 ): ProjectIcon {
-  const root = path.resolve(projectRoot);
+  const root = canonicalProjectRoot(projectRoot);
   const cacheKey = projectIconResultCacheKey(root, options);
   const rootMtimeMs = dirMtimeMs(root);
   const appsMtimeMs = dirMtimeMs(path.join(root, "apps"));

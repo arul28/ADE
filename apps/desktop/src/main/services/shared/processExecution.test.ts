@@ -33,7 +33,11 @@ describe("processExecution", () => {
   it("quotes cmd arguments consistently", () => {
     expect(quoteWindowsCmdArg("C:\\Program Files\\tool.cmd")).toBe('"C:\\Program Files\\tool.cmd"');
     expect(quoteWindowsCmdArg("C:\\Program Files\\")).toBe('"C:\\Program Files\\\\"');
-    expect(quoteWindowsCmdArg("100% done")).toBe('"100%% done"');
+    // `%` is left alone: `%%` is a batch-file escape that survives literally on
+    // a command line, so doubling corrupted the argument (`100% done` reached
+    // the callee as `100%% done`) without preventing expansion.
+    expect(quoteWindowsCmdArg("100% done")).toBe('"100% done"');
+    expect(quoteWindowsCmdArg("%USERPROFILE%")).toBe('"%USERPROFILE%"');
     expect(quoteWindowsCmdArg('say "hi"')).toBe('"say ""hi"""');
     expect(quoteWindowsCmdArg('C:\\path\\"quoted"')).toBe('"C:\\path\\\\\"\"quoted\"\"\"');
     expect(quoteWindowsCmdArg("line one\r\nline two")).toBe('"line one  line two"');
@@ -116,7 +120,7 @@ describe("killWindowsProcessTree", () => {
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     const [command, args, options] = spawnSyncMock.mock.calls[0]!;
     expect(command).toBe("taskkill.exe");
-    expect(args).toEqual(["/T", "/F", "/PID", "4321"]);
+    expect(args).toEqual(["/PID", "4321", "/T", "/F"]);
     expect(options).toMatchObject({ windowsHide: true });
   });
 
@@ -222,7 +226,7 @@ describe("terminateProcessTree", () => {
 
     expect(terminateProcessTree(child)).toBe(true);
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
-    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/T", "/F", "/PID", "4321"]);
+    expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/PID", "4321", "/T", "/F"]);
     expect(child.kill).not.toHaveBeenCalled();
   });
 

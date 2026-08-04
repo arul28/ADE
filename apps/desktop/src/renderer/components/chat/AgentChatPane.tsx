@@ -83,6 +83,7 @@ import {
   deriveDeterministicLaneTitleFromPrompt,
 } from "../../../shared/laneNameFallback";
 import { isRuntimeTransportTimeoutError } from "../../../shared/runtimeErrors";
+import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import {
   LOCAL_PROVIDER_LABELS,
   MODEL_REGISTRY,
@@ -233,7 +234,6 @@ import {
   useDraftAttachmentTransfer,
 } from "./draftAttachmentTransfer";
 import {
-  buildTrackedCliLaunchCommand,
   LAUNCH_PROFILE_TITLE,
   type CliProvider,
   type WorkPtyLaunchArgs,
@@ -8412,6 +8412,13 @@ export function AgentChatPane({
       const created = options.pin
         ? await window.ade.agentChat.create(createArgs, options.pin)
         : await window.ade.agentChat.create(createArgs);
+      // Name the failure here rather than letting it travel. A runtime that
+      // answers with a session carrying no id (a contract drift, an
+      // unreachable host resolving to a fallback) used to surface three calls
+      // later as the host rejecting `chat.send` for a missing sessionId.
+      if (!created?.id) {
+        throw new Error("The chat was not created: this ADE runtime returned a session with no id.");
+      }
       invalidateAgentChatSessionListCache({ laneId: targetLaneId });
       // Follow-up: allocate the orchestration bundle. We do this immediately
       // so the bundle path is persisted alongside the new chat (workers will
@@ -9097,25 +9104,6 @@ export function AgentChatPane({
     });
     if (!cliPrompt.trim().length) throw new Error("Enter a prompt or attach context before launching a CLI session.");
     const cliSessionId = provider === "claude" ? createClaudeSessionIdForCliLaunch() : undefined;
-    const launch = buildTrackedCliLaunchCommand({
-      provider,
-      permissionMode,
-      ...(cliSessionId ? { sessionId: cliSessionId } : {}),
-      model: launchModel,
-      reasoningEffort: prepared.reasoningEffort,
-      ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
-        ? { fastMode: launchFastMode }
-        : {}),
-      initialPrompt: cliPrompt,
-      laneWorktreePath: targetLane.worktreePath ?? projectRoot,
-    });
-    const codexUsesPromptArg = provider === "codex" && runtimeModel === "gpt-5.3-codex";
-    const initialInput = launch.initialInput ?? (
-      provider === "codex" && !codexUsesPromptArg ? cliPrompt : undefined
-    );
-    const initialInputDelayMs = launch.initialInputDelayMs ?? (
-      initialInput && provider === "codex" && !codexUsesPromptArg ? 750 : undefined
-    );
     // Final checkpoint before the PTY/session is spawned: abort if the launch
     // timed out while building the launch command.
     assertActive?.();
@@ -9123,13 +9111,18 @@ export function AgentChatPane({
       laneId: targetLane.laneId,
       profile: provider,
       title: workCliTitleFromPrompt(prepared.text || prepared.finalDisplayText || prepared.finalText, LAUNCH_PROFILE_TITLE[provider]),
-      startupCommand: launch.startupCommand,
       startupDelayMs: workCliStartupDelayMs,
-      ...(launch.command !== undefined ? { command: launch.command } : {}),
-      ...(launch.args !== undefined ? { args: launch.args } : {}),
-      ...(initialInput !== undefined ? { initialInput } : {}),
-      ...(initialInputDelayMs !== undefined ? { initialInputDelayMs } : {}),
-      ...(launch.env ? { env: launch.env } : {}),
+      runtimeCliLaunch: {
+        provider,
+        permissionMode,
+        ...(cliSessionId ? { sessionId: cliSessionId } : {}),
+        model: launchModel,
+        reasoningEffort: prepared.reasoningEffort,
+        ...((provider === "codex" || provider === "claude" || provider === "opencode") && launchFastMode !== undefined
+          ? { fastMode: launchFastMode }
+          : {}),
+        initialPrompt: cliPrompt,
+      },
       tracked: true,
       disposition: mode,
       pin,
@@ -10890,7 +10883,7 @@ export function AgentChatPane({
   const draftAttachmentMachine = useMemo(() => ({
     id: selectedDraftMachineId,
     name: selectedDraftMachine?.name ?? (
-      selectedDraftMachineId === boundLaneMachineId ? "This Mac" : selectedDraftMachineId
+      selectedDraftMachineId === boundLaneMachineId ? THIS_MACHINE_NAME : selectedDraftMachineId
     ),
     binding: draftExecutionBinding,
   }), [
@@ -10952,7 +10945,7 @@ export function AgentChatPane({
       ? `Switch this project tab to ${
           activeComposerRuntimeBinding.kind === "remote"
             ? activeComposerRuntimeBinding.runtimeName
-            : "This Mac"
+            : THIS_MACHINE_NAME
         } before using this tool. Chat and attachments remain pinned to that machine.`
       : null;
 

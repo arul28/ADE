@@ -1,4 +1,4 @@
-import { fork, spawn, type ChildProcess } from "node:child_process";
+import { fork, spawn, type ChildProcess, type ForkOptions } from "node:child_process";
 import { EventEmitter } from "node:events";
 import fs from "node:fs";
 import path from "node:path";
@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import type { IPty, IWindowsPtyForkOptions } from "node-pty";
 import type * as ptyNs from "node-pty";
 import type { Logger } from "../logging/logger";
+import { killWindowsProcessTree } from "../shared/processExecution";
 
 type SpawnRequest = {
   type: "spawn";
@@ -412,17 +413,21 @@ class SupervisedPtyHost {
       ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: "1" } : {}),
       ADE_PTY_HOST: "1",
     };
+    // fork() forwards its options to spawn(), which supports windowsHide, but
+    // the installed @types/node ForkOptions declaration omits that property.
     const child = workerCommand
       ? spawn(workerCommand, [INTERNAL_PTY_HOST_WORKER_ARG], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           env: workerEnv,
+          windowsHide: true,
         })
       : fork(this.workerPath, [], {
           stdio: ["ignore", "pipe", "pipe", "ipc"],
           execArgv: [],
           ...(workerNodePath ? { execPath: workerNodePath } : {}),
           env: workerEnv,
-        });
+          windowsHide: true,
+        } as ForkOptions & { windowsHide: boolean });
     const childState: HostChildState = {
       child,
       ptyIds: new Set([ptyId]),
@@ -551,6 +556,17 @@ class SupervisedPtyHost {
       this.clearKillTimer(ptyId);
       const remote = this.ptys.get(ptyId);
       this.ptys.delete(ptyId);
+      if (process.platform === "win32" && remote && remote.pid > 0) {
+        killWindowsProcessTree(remote.pid, (detail) => {
+          this.logger.warn("pty.host_orphan_tree_cleanup_failed", {
+            ptyId,
+            pid: detail.pid,
+            status: detail.status,
+            stderr: detail.stderr,
+            error: detail.error instanceof Error ? detail.error.message : String(detail.error ?? ""),
+          });
+        });
+      }
       remote?.markHostExited(exitCode);
     }
     childState.ptyIds.clear();

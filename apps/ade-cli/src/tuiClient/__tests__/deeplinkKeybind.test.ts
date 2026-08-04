@@ -117,16 +117,16 @@ describe("copy ADE deeplink keybinding", () => {
 
 describe("clipboard helper dispatches the right OS command", () => {
   it("uses pbcopy on darwin with the deeplink as stdin", () => {
-    const calls: Array<{ cmd: string; args: string[]; input: string }> = [];
+    const calls: Array<{ cmd: string; args: string[]; input: string; windowsHide: boolean | undefined }> = [];
     const ok = copyToClipboard("ade://lane/abc", {
       platform: "darwin",
       spawn: (cmd, args, opts) => {
-        calls.push({ cmd, args, input: opts.input });
+        calls.push({ cmd, args, input: opts.input, windowsHide: opts.windowsHide });
         return { status: 0 };
       },
     });
     expect(ok).toBe(true);
-    expect(calls).toEqual([{ cmd: "pbcopy", args: [], input: "ade://lane/abc" }]);
+    expect(calls).toEqual([{ cmd: "pbcopy", args: [], input: "ade://lane/abc", windowsHide: true }]);
   });
 
   it("uses clip on win32", () => {

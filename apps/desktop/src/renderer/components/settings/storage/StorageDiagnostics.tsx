@@ -160,7 +160,7 @@ export function DiagnosticsStrip({
             Health & diagnostics
           </h3>
           <div style={{ fontFamily: SANS_FONT, fontSize: 11.5, color: COLORS.textMuted, marginTop: 3 }}>
-            How the background service is doing on this Mac.
+            How the background service is doing on this computer.
           </div>
         </div>
         {usageReady && hasPressureSignal ? (

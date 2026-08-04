@@ -25,6 +25,7 @@ import {
   terminatePidGracefullyAsync,
 } from "../../serviceManager/common";
 import { getRuntimeServiceMainPid } from "../../serviceManager";
+import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 
 // Bind the sync host on all interfaces by default so phones on the same
@@ -210,11 +211,26 @@ type ParkedEntry = {
   expireTimer: ReturnType<typeof setTimeout>;
 };
 
-function execFileText(command: string, args: string[]): Promise<string | null> {
+// `lsof`/`ps` answer in a few milliseconds. PowerShell needs to start a
+// runtime and load a CIM module first, so the POSIX budget would kill every
+// Windows query before it produced a holder.
+const PORT_INSPECT_TIMEOUT_MS = 200;
+const WINDOWS_PORT_INSPECT_TIMEOUT_MS = 5_000;
+
+function execFileText(
+  command: string,
+  args: string[],
+  timeoutMs: number = PORT_INSPECT_TIMEOUT_MS,
+): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile(command, args, { encoding: "utf8", timeout: 200 }, (error, stdout) => {
-      resolve(error ? null : String(stdout ?? ""));
-    });
+    execFile(
+      command,
+      args,
+      { encoding: "utf8", timeout: timeoutMs, maxBuffer: 1024 * 1024, windowsHide: true },
+      (error, stdout) => {
+        resolve(error ? null : String(stdout ?? ""));
+      },
+    );
   });
 }
 
@@ -849,8 +865,85 @@ export function createSharedSyncListener(options: {
   };
 }
 
-export async function inspectSyncListenerPort(port: number): Promise<SyncListenerPortDiagnosis> {
-  const lsof = await execFileText(
+/**
+ * PowerShell that reports every listening owner of `port` as JSON.
+ *
+ * `Get-NetTCPConnection` is the supported replacement for parsing `netstat`
+ * output, and pairing it with `Get-CimInstance Win32_Process` gets the command
+ * line and creation time in the SAME invocation — one process spawn instead of
+ * the 1 + 2N that the POSIX `lsof`/`ps` path needs.
+ */
+export function buildWindowsPortHolderQueryArgs(port: number): string[] {
+  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
+    throw new Error(`Invalid port for the Windows port-holder query: ${String(port)}`);
+  }
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    `$owners = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue`
+      + " | Select-Object -ExpandProperty OwningProcess | Sort-Object -Unique)",
+    "$holders = @(foreach ($owner in $owners) {",
+    "  $target = Get-CimInstance Win32_Process -Filter \"ProcessId = $owner\" -ErrorAction SilentlyContinue",
+    "  if ($null -eq $target) { continue }",
+    "  $startTime = ''",
+    "  try { $startTime = ([datetime]$target.CreationDate).ToUniversalTime().ToString('o') } catch { $startTime = '' }",
+    "  [ordered]@{ pid = [int]$target.ProcessId; command = [string]$target.CommandLine; startTime = [string]$startTime }",
+    "})",
+    "[Console]::Out.Write((ConvertTo-Json -InputObject @($holders) -Compress -Depth 3))",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+export function parseWindowsPortHolders(raw: string | null): SyncListenerPortDiagnosis["holders"] {
+  const text = raw?.trim();
+  // PowerShell emits nothing for an empty collection, which is a legitimate
+  // "no holders" answer rather than a parse failure.
+  if (!text) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return [];
+  }
+  const entries = Array.isArray(parsed) ? parsed : [parsed];
+  const holders: SyncListenerPortDiagnosis["holders"] = [];
+  const seen = new Set<number>();
+  for (const entry of entries) {
+    if (typeof entry !== "object" || entry == null) continue;
+    const record = entry as { pid?: unknown; command?: unknown; startTime?: unknown };
+    const pid = Number(record.pid);
+    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
+    seen.add(pid);
+    // A holder owned by another user yields a null CommandLine without
+    // elevation. Keep the pid: it still proves the port is genuinely occupied,
+    // and `findStaleHolder` already refuses to reap a holder it cannot identify.
+    const command = typeof record.command === "string" ? record.command.trim() : "";
+    const startTime = typeof record.startTime === "string" ? record.startTime.trim() : "";
+    holders.push({ pid, command: command || null, startTime: startTime || null });
+  }
+  return holders;
+}
+
+async function inspectWindowsSyncListenerPort(
+  port: number,
+  exec: typeof execFileText,
+): Promise<SyncListenerPortDiagnosis> {
+  let powershell: string;
+  let args: string[];
+  try {
+    powershell = resolveTrustedWindowsTool("powershell");
+    args = buildWindowsPortHolderQueryArgs(port);
+  } catch {
+    return { port, holders: [] };
+  }
+  const raw = await exec(powershell, args, WINDOWS_PORT_INSPECT_TIMEOUT_MS);
+  return { port, holders: parseWindowsPortHolders(raw) };
+}
+
+async function inspectPosixSyncListenerPort(
+  port: number,
+  exec: typeof execFileText,
+): Promise<SyncListenerPortDiagnosis> {
+  const lsof = await exec(
     "lsof",
     ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-Fp"],
   );
@@ -866,8 +959,8 @@ export async function inspectSyncListenerPort(port: number): Promise<SyncListene
     port,
     holders: await Promise.all(pids.map(async (pid) => {
       const [commandResult, startResult] = await Promise.all([
-        execFileText("ps", ["-p", String(pid), "-o", "command="]),
-        execFileText("ps", ["-p", String(pid), "-o", "lstart="]),
+        exec("ps", ["-p", String(pid), "-o", "command="]),
+        exec("ps", ["-p", String(pid), "-o", "lstart="]),
       ]);
       const command = commandResult?.trim() ?? "";
       const startTime = startResult?.trim() ?? "";
@@ -878,4 +971,27 @@ export async function inspectSyncListenerPort(port: number): Promise<SyncListene
       };
     })),
   };
+}
+
+/**
+ * Processes listening on `port`, dispatched per platform.
+ *
+ * Both consumers degrade badly when this silently answers "nothing": the
+ * stale-port reclaim in `createSharedSyncListener` cannot recognise a wedged
+ * same-channel sibling and permanently drifts mobile sync onto a fallback port,
+ * and `ade doctor` reports "no holders visible to this user" with advice that
+ * only makes sense on macOS.
+ */
+export async function inspectSyncListenerPort(
+  port: number,
+  deps: {
+    platform?: NodeJS.Platform;
+    exec?: typeof execFileText;
+  } = {},
+): Promise<SyncListenerPortDiagnosis> {
+  const platform = deps.platform ?? process.platform;
+  const exec = deps.exec ?? execFileText;
+  return platform === "win32"
+    ? inspectWindowsSyncListenerPort(port, exec)
+    : inspectPosixSyncListenerPort(port, exec);
 }

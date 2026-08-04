@@ -14,6 +14,15 @@ import {
 const originalPlatform = process.platform;
 const originalPathDelimiter = path.delimiter;
 
+/**
+ * Windows cannot execute an extension-less file, so a fixture that stands in
+ * for an installed CLI has to carry a PATHEXT extension there — the same shape
+ * `npm i -g` produces (`codex.cmd` next to the `#!/bin/sh` `codex`).
+ */
+function executableFileName(command: string): string {
+  return process.platform === "win32" ? `${command}.cmd` : command;
+}
+
 function makeExecutable(filePath: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, "#!/bin/sh\nexit 0\n", "utf8");
@@ -55,7 +64,7 @@ describe("cliExecutableResolver", () => {
     tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cli-path-"));
     const homeDir = path.join(tempRoot, "home");
     const prefixDir = path.join(homeDir, ".npm-global");
-    makeExecutable(path.join(prefixDir, "bin", "codex"));
+    makeExecutable(path.join(prefixDir, "bin", executableFileName("codex")));
     fs.mkdirSync(homeDir, { recursive: true });
     fs.writeFileSync(path.join(homeDir, ".npmrc"), "prefix=~/.npm-global\n", "utf8");
 
@@ -79,7 +88,7 @@ describe("cliExecutableResolver", () => {
     };
 
     expect(resolveExecutableFromKnownLocations("codex", env)).toEqual({
-      path: path.join(prefixDir, "bin", "codex"),
+      path: path.join(prefixDir, "bin", executableFileName("codex")),
       source: "known-dir",
     });
   });
@@ -99,6 +108,10 @@ describe("cliExecutableResolver", () => {
   });
 
   it("keeps both Intel and Apple Silicon Homebrew bins on PATH", () => {
+    // Homebrew is a macOS layout claim, and PATH parsing is delimiter-sensitive,
+    // so pin the platform instead of inheriting the host's.
+    setPlatform("darwin");
+    setPathDelimiter(":");
     const nextPath = augmentPathWithKnownCliDirs("/usr/local/bin:/usr/bin:/bin", {
       HOME: "/tmp/ade-home",
       PATH: "/usr/local/bin:/usr/bin:/bin",
@@ -115,9 +128,9 @@ describe("cliExecutableResolver", () => {
     const firstBin = path.join(tempRoot, "first");
     const secondBin = path.join(tempRoot, "second");
     const knownBin = path.join(homeDir, ".local", "bin");
-    makeExecutable(path.join(firstBin, "git"));
-    makeExecutable(path.join(secondBin, "git"));
-    makeExecutable(path.join(knownBin, "git"));
+    makeExecutable(path.join(firstBin, executableFileName("git")));
+    makeExecutable(path.join(secondBin, executableFileName("git")));
+    makeExecutable(path.join(knownBin, executableFileName("git")));
 
     const realStatSync = fs.statSync;
     vi.spyOn(fs, "statSync").mockImplementation(((p: fs.PathLike, opts?: any) => {
@@ -136,9 +149,9 @@ describe("cliExecutableResolver", () => {
     });
 
     expect(candidates.slice(0, 3)).toEqual([
-      { path: path.join(firstBin, "git"), source: "path" },
-      { path: path.join(secondBin, "git"), source: "path" },
-      { path: path.join(knownBin, "git"), source: "known-dir" },
+      { path: path.join(firstBin, executableFileName("git")), source: "path" },
+      { path: path.join(secondBin, executableFileName("git")), source: "path" },
+      { path: path.join(knownBin, executableFileName("git")), source: "known-dir" },
     ]);
   });
 
@@ -234,7 +247,9 @@ describe("cliExecutableResolver", () => {
       USERPROFILE: userProfile,
       PATH: "C:\\Windows\\System32",
     })).toEqual({
-      path: path.join(scoopShims, "codex.CMD"),
+      // statSync is stubbed and the directory does not exist, so the resolver
+      // cannot read the real on-disk spelling and reports the probed name.
+      path: path.join(scoopShims, "codex.cmd"),
       source: "known-dir",
     });
   });

@@ -29,7 +29,7 @@ struct SendToMacTarget: Equatable, Identifiable {
 
   /// Best-effort parse of ADE's custom scheme and HTTPS mirror. Unknown
   /// shapes fall back to `.other` so the card can still render a generic
-  /// "Open this on your Mac" message rather than refusing to display.
+  /// "Open this on your computer" message rather than refusing to display.
   init(url: URL) {
     self.url = url
     self.envelope = SendToMacTarget.parseEnvelope(url)
@@ -181,7 +181,7 @@ struct SendToMacTarget: Equatable, Identifiable {
     case .repoBranch(_, _, _): return "Branch shared with you"
     case .pr: return "Pull request shared with you"
     case .linearIssue: return "Linear issue shared with you"
-    case .other: return "Shared from your Mac"
+    case .other: return "Shared from your computer"
     }
   }
 
@@ -295,12 +295,12 @@ struct SendToMacCard: View {
         .foregroundStyle(ADEColor.accent)
         .padding(.bottom, 4)
 
-      Text("Open on your Mac")
+      Text("Open on your computer")
         .font(.system(.title3, design: .rounded).weight(.semibold))
         .foregroundStyle(ADEColor.textPrimary)
         .multilineTextAlignment(.center)
 
-      Text("This link works best on the desktop app. Send it to your paired Mac and it'll open there.")
+      Text("This link works best on the desktop app. Send it to your paired computer and it'll open there.")
         .font(.system(.footnote, design: .rounded))
         .foregroundStyle(ADEColor.textSecondary)
         .multilineTextAlignment(.center)
@@ -378,7 +378,7 @@ struct SendToMacCard: View {
     .background(ADEColor.recessedBackground, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
   }
 
-  /// Display name for the paired Mac. Prefers the live `hostName` published
+  /// Display name for the paired computer. Prefers the live `hostName` published
   /// by `SyncService`, falls back to a placeholder when no machine is
   /// attached so the card still reads correctly. The user can still try to
   /// send; the queueing path inside `SyncService` will surface the offline
@@ -391,7 +391,7 @@ struct SendToMacCard: View {
     // TODO: thread the paired-device record through here once SyncService
     // exposes a richer "last paired" identity; today `hostName` is the only
     // stable display string we have.
-    return "Your Mac"
+    return "Your computer"
   }
 
   private var machineSecondaryLabel: String? {
@@ -526,18 +526,18 @@ struct SendToMacCard: View {
        let branch = target.envelope?.branch,
        !repo.isEmpty,
        !branch.isEmpty {
-      return "Send to Mac to create a lane from \(branch)"
+      return "Send to computer to create a lane from \(branch)"
     }
-    return "Send to Mac"
+    return "Send to computer"
   }
 
   private var sendStatusMessage: String? {
     guard let sendOutcome else { return nil }
     switch sendOutcome {
     case .dispatched:
-      return "Sent to your Mac."
+      return "Sent to your computer."
     case .queued:
-      return "Queued for when your Mac reconnects."
+      return "Queued for when your computer reconnects."
     case .dropped(let message):
       return message.isEmpty ? "This command could not be sent." : message
     }

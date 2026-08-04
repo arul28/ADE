@@ -1322,7 +1322,7 @@ describe("browser sync connection and client", () => {
     script.sockets[0]?.close(4501, "host offline");
 
     await expect(outcome).resolves.toMatchObject({
-      message: expect.stringContaining("Can't reach this Mac"),
+      message: expect.stringContaining("Can't reach this computer"),
     });
     expect(script.sockets[0]?.sent).toEqual([]);
     expect(connection.getStatus().state).toBe("reconnecting");
@@ -2257,9 +2257,9 @@ describe("browser sync connection and client", () => {
   });
 
   it.each([
-    { code: 4501, expected: "Can't reach this Mac. Retrying…" },
-    { code: 4507, expected: "Your Mac couldn't accept the connection. Retrying…" },
-    { code: 4503, expected: "Too many active connections to this Mac" },
+    { code: 4501, expected: "Can't reach this computer. Retrying…" },
+    { code: 4507, expected: "Your computer couldn't accept the connection. Retrying…" },
+    { code: 4503, expected: "Too many active connections to this computer" },
     { code: 4502, expected: "Connection lost. Reconnecting." },
     { code: 4000, expected: "Connection lost. Reconnecting." },
     { code: 4505, expected: "Connection lost. Reconnecting." },

@@ -4086,7 +4086,7 @@ describe("sync host account authentication", () => {
       );
       expect(signedOutRejected.payload).toMatchObject({
         code: "auth_failed",
-        message: expect.stringMatching(/not signed in.*Sign in on the Mac/i),
+        message: expect.stringMatching(/not signed in.*Sign in on this computer/i),
       });
 
       const pinClient = await openAccountClient(port);

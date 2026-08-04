@@ -26,7 +26,19 @@ export type AdeAccountStatus = {
    * unavailable. Lets the UI explain "not configured" instead of failing hard.
    */
   configured?: boolean;
+  /**
+   * Why `signedIn` is false. "missing" is a real signed-out machine;
+   * "unreadable" means the stored session could not be decrypted on this read
+   * (on Windows the OS-bound key comes from a PowerShell/DPAPI helper that can
+   * transiently time out) and says NOTHING about whether the user is signed in.
+   * The brain's directory publisher has always split these two — the desktop
+   * dropped the distinction and rendered every failed read as a sign-out.
+   */
+  sessionReadState?: AdeAccountSessionReadState;
 };
+
+/** Mirrors the daemon's `AccountSessionReadState`. */
+export type AdeAccountSessionReadState = "available" | "missing" | "unreadable";
 
 export type AdeAccountLoginStart = {
   sessionId: string;
@@ -76,7 +88,7 @@ export type AdeAccountMachinesResult = {
   message: string | null;
 };
 
-/** Stable identities used to recognize this Mac in the account directory. */
+/** Stable identities used to recognize this computer in the account directory. */
 export type AdeAccountLocalMachineIdentity = {
   machineKey: string;
   deviceId: string;

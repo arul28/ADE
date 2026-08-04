@@ -15,7 +15,7 @@ import {
  *
  * Deliberately does NOT reuse the dialog's "Remote"/"Local" vocabulary: that
  * pair already means the git base-branch source a few rows below. Machines are
- * named absolutely instead ("This Mac", "MacBook Pro (97)").
+ * named absolutely instead ("This computer", "MacBook Pro (97)").
  */
 export function LaneMachineSelector({
   machines,

@@ -350,7 +350,7 @@ describe("App Work route keep-alive", () => {
   it("does not show the recovery takeover for a coded error without a project root", async () => {
     appStoreState.projectTransitionError = {
       code: "disk_full",
-      message: "Your Mac ran out of storage.",
+      message: "Your computer ran out of storage.",
     };
     const { App } = await import("./App");
 

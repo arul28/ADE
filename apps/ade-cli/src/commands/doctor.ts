@@ -322,10 +322,10 @@ export async function probeDoctorBrain<Options extends DoctorCommandOptions>(
   }
 }
 
-export function resolveDefaultDesktopAppName(): string {
-  const explicit = process.env.ADE_DESKTOP_APP_NAME?.trim();
+export function resolveDefaultDesktopAppName(env: NodeJS.ProcessEnv = process.env): string {
+  const explicit = env.ADE_DESKTOP_APP_NAME?.trim();
   if (explicit) return explicit;
-  const channel = process.env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
+  const channel = env.ADE_PACKAGE_CHANNEL?.trim().toLowerCase();
   if (channel === "alpha") return "ADE Alpha";
   if (channel === "beta") return "ADE Beta";
   return "ADE";
@@ -334,6 +334,9 @@ export function resolveDefaultDesktopAppName(): string {
 export function readInstalledDesktopVersion(
   appPaths?: string[],
 ): { version: string | null; path: string | null } {
+  if (process.platform === "win32" && !appPaths) {
+    return readInstalledWindowsDesktopVersion();
+  }
   if (process.platform !== "darwin" && !appPaths) {
     return { version: null, path: null };
   }
@@ -369,6 +372,62 @@ export function readInstalledDesktopVersion(
     }
   }
   return { version: null, path: null };
+}
+
+export function parseWindowsDesktopInstallProbe(
+  output: string | Buffer | null | undefined,
+): { version: string | null; path: string | null } {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8").trim() : String(output ?? "").trim();
+  if (!text) return { version: null, path: null };
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const version = asString(parsed.version);
+    const executablePath = asString(parsed.path);
+    return version && executablePath
+      ? { version, path: executablePath }
+      : { version: null, path: null };
+  } catch {
+    return { version: null, path: null };
+  }
+}
+
+export function readInstalledWindowsDesktopVersion(args: {
+  env?: NodeJS.ProcessEnv;
+  run?: typeof spawnSync;
+} = {}): { version: string | null; path: string | null } {
+  const env = args.env ?? process.env;
+  const run = args.run ?? spawnSync;
+  const preferredName = resolveDefaultDesktopAppName(env);
+  const script = [
+    "$ErrorActionPreference='Stop'",
+    "$preferred=$env:ADE_DOCTOR_DESKTOP_NAME",
+    "$explicit=$env:ADE_DOCTOR_DESKTOP_PATH",
+    "$names=@($preferred,'ADE','ADE Beta','ADE Alpha') | Select-Object -Unique",
+    "$entries=@(Get-ItemProperty 'HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\*' -ErrorAction SilentlyContinue | Where-Object { $names -contains $_.DisplayName })",
+    "$entry=$entries | Sort-Object @{Expression={if ($_.DisplayName -eq $preferred) {0} else {1}}},DisplayName | Select-Object -First 1",
+    "$candidate=$null",
+    "if ($entry -and $entry.InstallLocation) { $candidate=Join-Path ([string]$entry.InstallLocation) (([string]$entry.DisplayName)+'.exe') }",
+    "if (-not $candidate -and $explicit) { $candidate=$explicit }",
+    "if (-not $candidate -and $env:LOCALAPPDATA) { $candidate=Join-Path $env:LOCALAPPDATA ('Programs\\'+$preferred+'\\'+$preferred+'.exe') }",
+    "$version=if ($entry -and $entry.DisplayVersion) {[string]$entry.DisplayVersion} elseif ($candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) {(Get-Item -LiteralPath $candidate).VersionInfo.ProductVersion} else {$null}",
+    "if ($version -and $candidate -and (Test-Path -LiteralPath $candidate -PathType Leaf)) { @{version=$version;path=[IO.Path]::GetFullPath($candidate)} | ConvertTo-Json -Compress }",
+  ].join("; ");
+  const result = run(
+    "powershell.exe",
+    ["-NoProfile", "-NonInteractive", "-Command", script],
+    {
+      encoding: "utf8",
+      timeout: 5_000,
+      windowsHide: true,
+      env: {
+        ...env,
+        ADE_DOCTOR_DESKTOP_NAME: preferredName,
+        ADE_DOCTOR_DESKTOP_PATH: env.ADE_DESKTOP_APP_PATH?.trim() ?? "",
+      },
+    },
+  );
+  if (result.status !== 0) return { version: null, path: null };
+  return parseWindowsDesktopInstallProbe(result.stdout);
 }
 
 async function readLatestDesktopVersionOnline(): Promise<string | null> {
