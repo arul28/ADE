@@ -42,6 +42,7 @@ import { RuntimeRpcClient, type RuntimeRpcTransport } from "../remoteRuntime/run
 import { coerceProjects } from "../remoteRuntime/remoteBootstrap";
 import type { Logger } from "../logging/logger";
 import { getRuntimeServiceStatus, type ServiceManagerStatusResult } from "../../../../../ade-cli/src/serviceManager";
+import { ADE_RUNTIME_SERVICE_NAME as RUNTIME_SERVICE_NAME } from "../../../../../ade-cli/src/serviceManager/common";
 import { buildPackagedRuntimeNodePath, type PackagedRuntimeNodePathOptions } from "../runtime/packagedNodePath";
 import { readLastFailure } from "../runtime/lastFailureStore";
 import type { AdeRecoveryErrorCode } from "../../../shared/types/recovery";
@@ -90,6 +91,12 @@ type LocalRuntimeConnectionPoolOptions = {
   preferServiceRepair?: boolean;
   desktopBridgeAuthToken?: string | null;
   queryServiceStatus?: () => ServiceManagerStatusResult;
+  /**
+   * Off-main-thread service-status probe. Defaults to
+   * {@link defaultQueryServiceStatusAsync}. Tests that inject the synchronous
+   * `queryServiceStatus` keep their existing behaviour: it takes precedence.
+   */
+  queryServiceStatusAsync?: () => Promise<ServiceManagerStatusResult>;
   onRuntimeStatusChange?: (status: LocalRuntimeStatus) => void;
   /**
    * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
@@ -102,6 +109,9 @@ type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
+// The Windows service probe itself costs ~2.1s (two PowerShell spawns), so the
+// off-thread child needs generous headroom before it is treated as unanswerable.
+const LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS = 15_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
 const LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS = 16_000;
@@ -382,6 +392,102 @@ function resolveCliScriptPath(): string {
       return false;
     }
   }) ?? path.resolve(process.cwd(), "..", "ade-cli", "dist", "cli.cjs");
+}
+
+/**
+ * Shapes a `runtime service-status --json` payload back into the typed result
+ * the in-process probe returns. Anything unparseable is rejected by the caller
+ * rather than coerced, so a broken child never invents a "not installed" state.
+ */
+export function parseRuntimeServiceStatusJson(stdout: string): ServiceManagerStatusResult | null {
+  const start = stdout.indexOf("{");
+  const end = stdout.lastIndexOf("}");
+  if (start < 0 || end <= start) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout.slice(start, end + 1));
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  const record = parsed as Record<string, unknown>;
+  if (typeof record.ok !== "boolean" || record.action !== "status") return null;
+  const nullableBool = (value: unknown): boolean | null =>
+    typeof value === "boolean" ? value : null;
+  const nullableString = (value: unknown): string | null =>
+    typeof value === "string" ? value : null;
+  return {
+    ok: record.ok,
+    serviceName: typeof record.serviceName === "string" ? record.serviceName : RUNTIME_SERVICE_NAME,
+    action: "status",
+    installed: nullableBool(record.installed),
+    running: nullableBool(record.running),
+    path: nullableString(record.path),
+    message: typeof record.message === "string" ? record.message : "",
+  } as ServiceManagerStatusResult;
+}
+
+/**
+ * Service-health probe that never blocks the Electron main thread.
+ *
+ * On macOS and Linux the in-process probe is a single `launchctl`/`systemctl`
+ * call (tens of milliseconds), so it stays exactly as it was — same code, same
+ * timing, no extra process. On Windows the same probe costs two
+ * `powershell.exe -Command Get-ScheduledTask` spawns; measured on a Windows 11
+ * host that is 1,045-1,089 ms each, and `spawnSync` blocks the main thread —
+ * which stalls the window message pump, so window drags and unrelated clicks
+ * visibly freeze. There it runs in the CLI child process instead, which
+ * executes the identical `getRuntimeServiceStatus()` code path.
+ */
+export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerStatusResult> {
+  if (process.platform !== "win32") return getRuntimeServiceStatus();
+  const cliPath = resolveCliScriptPath();
+  const stdout = await new Promise<string | null>((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(process.execPath, [cliPath, "runtime", "service-status", "--json"], {
+        env: buildLocalRuntimeNodeEnv(process.env.ADE_CLI_VERSION ?? PLACEHOLDER_RUNTIME_VERSION),
+        stdio: ["ignore", "pipe", "ignore"],
+        detached: false,
+        windowsHide: true,
+      });
+    } catch {
+      resolve(null);
+      return;
+    }
+    let out = "";
+    let settled = false;
+    const finish = (value: string | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const timer = setTimeout(() => {
+      try { child.kill("SIGKILL"); } catch { /* already gone */ }
+      finish(null);
+    }, LOCAL_RUNTIME_SERVICE_STATUS_TIMEOUT_MS);
+    timer.unref?.();
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (out.length < LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS) out += chunk.toString("utf8");
+    });
+    child.once("error", () => finish(null));
+    child.once("close", (code) => finish(code === 0 ? out : null));
+  });
+  const parsed = stdout ? parseRuntimeServiceStatusJson(stdout) : null;
+  if (parsed) return parsed;
+  // The child could not answer (missing CLI, timeout, unparseable output).
+  // Report that honestly instead of falling back to a blocking in-process
+  // probe: an "unknown" service health is already a state the callers handle.
+  return {
+    ok: false,
+    serviceName: RUNTIME_SERVICE_NAME,
+    action: "status",
+    installed: null,
+    running: null,
+    path: null,
+    message: "ADE background service status could not be read in this session.",
+  } as ServiceManagerStatusResult;
 }
 
 export function isLocalChannelBuildOutputPath(targetPath: string): boolean {
@@ -867,6 +973,7 @@ export class LocalRuntimeConnectionPool {
   };
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
+  private serviceHealthRefreshPromise: Promise<void> | null = null;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
@@ -883,7 +990,10 @@ export class LocalRuntimeConnectionPool {
   }
 
   getStatus(): LocalRuntimeStatus {
-    this.refreshServiceHealthIfStale();
+    // Read-only status must never wait on (or block for) the service probe:
+    // this runs on every `app.getInfo`/status poll and the Windows probe costs
+    // ~2.1s. Kick a background refresh and answer from cache.
+    void this.refreshServiceHealth();
     return this.statusSnapshot();
   }
 
@@ -1012,11 +1122,22 @@ export class LocalRuntimeConnectionPool {
     };
   }
 
-  private refreshServiceHealthIfStale(maxAgeMs = 2_000): void {
-    if (Date.now() - this.serviceHealthCheckedAtMs < maxAgeMs) return;
+  /**
+   * Refresh the cached service-health snapshot when it is older than
+   * `maxAgeMs`. Concurrent callers share one probe: without that, a status poll
+   * and a failing connect would each start their own child.
+   *
+   * Staleness contract: callers that only *read* health (`getStatus`) accept a
+   * snapshot up to one refresh interval old and never wait; callers that need a
+   * fresh answer to choose a recovery code await this with `maxAgeMs: 0`. The
+   * cache is only ever invalidated by time — service install/uninstall runs
+   * through this pool and the next `maxAgeMs: 0` refresh observes it.
+   */
+  private refreshServiceHealth(maxAgeMs = 2_000): Promise<void> {
+    if (Date.now() - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
+    if (this.serviceHealthRefreshPromise) return this.serviceHealthRefreshPromise;
     this.serviceHealthCheckedAtMs = Date.now();
-    try {
-      const status = (this.options.queryServiceStatus ?? getRuntimeServiceStatus)();
+    const applyStatus = (status: ServiceManagerStatusResult) => {
       this.serviceHealthStatus = {
         state: serviceHealthState(status),
         installed: status.installed,
@@ -1025,7 +1146,8 @@ export class LocalRuntimeConnectionPool {
         message: status.message,
         checkedAt: new Date().toISOString(),
       };
-    } catch (error) {
+    };
+    const applyError = (error: unknown) => {
       this.serviceHealthStatus = {
         state: "error",
         installed: null,
@@ -1037,7 +1159,28 @@ export class LocalRuntimeConnectionPool {
       this.logger.warn("local_runtime.service_status_failed", {
         error: this.serviceHealthStatus.message,
       });
+    };
+    // An injected synchronous probe stays synchronous: existing callers and
+    // tests that set `queryServiceStatus` keep the exact behaviour they had.
+    const syncProbe = this.options.queryServiceStatus;
+    if (syncProbe) {
+      try {
+        applyStatus(syncProbe());
+      } catch (error) {
+        applyError(error);
+      }
+      return Promise.resolve();
     }
+    const refresh = (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
+      .then(applyStatus, applyError)
+      .finally(() => {
+        // Time the cache from when the answer landed, not from when the probe
+        // started, so a slow probe cannot immediately re-arm itself.
+        this.serviceHealthCheckedAtMs = Date.now();
+        if (this.serviceHealthRefreshPromise === refresh) this.serviceHealthRefreshPromise = null;
+      });
+    this.serviceHealthRefreshPromise = refresh;
+    return refresh;
   }
 
   async installServiceBestEffort(options: { forceRestart?: boolean } = {}): Promise<void> {
@@ -1955,7 +2098,10 @@ export class LocalRuntimeConnectionPool {
         preferServiceRepair: this.options.preferServiceRepair === true,
       });
       const lastFailure = readLastFailure({ kind: "machine" });
-      this.refreshServiceHealthIfStale(0);
+      // This one does need a fresh answer — it picks the recovery code the user
+      // is shown — but it is already on an async path, so await it instead of
+      // blocking the main thread for it.
+      await this.refreshServiceHealth(0);
       const recordedDbCodes = new Set<AdeRecoveryErrorCode>([
         "disk_full",
         "insufficient_headroom",

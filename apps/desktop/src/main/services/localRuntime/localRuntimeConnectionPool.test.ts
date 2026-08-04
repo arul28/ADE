@@ -29,6 +29,7 @@ import {
   localReleaseBuildOutputRuntimeBlock,
   LocalRuntimeConnectionPool,
   parseRuntimeServiceManagerOutput,
+  parseRuntimeServiceStatusJson,
   readLocalRuntimeInfo,
   shouldAutoInstallRuntimeServiceFromPath,
 } from "./localRuntimeConnectionPool";
@@ -3749,5 +3750,143 @@ describe("local runtime action retry classification", () => {
     // Prefix must respect a camelCase boundary, not arbitrary substrings.
     expect(isRetryableReadAction("lane", "getaway")).toBe(false);
     expect(isRetryableReadAction("lane", "listenStop")).toBe(false);
+  });
+});
+
+describe("service health probe never blocks the main thread", () => {
+  const asyncTestServiceStatus = () => ({
+    ok: true,
+    serviceName: "com.ade.runtime",
+    action: "status" as const,
+    installed: true,
+    running: true,
+    path: "/test/com.ade.runtime",
+    message: "ADE test service is running.",
+  });
+
+  const silentLogger = () => ({
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  });
+
+  it("answers getStatus() from cache and refreshes in the background", async () => {
+    let resolveProbe: (() => void) | null = null;
+    let calls = 0;
+    const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+      queryServiceStatusAsync: () => {
+        calls += 1;
+        return new Promise((resolve) => {
+          resolveProbe = () => resolve(asyncTestServiceStatus());
+        });
+      },
+    });
+
+    // The probe is still in flight, so the caller must get the seed snapshot
+    // rather than wait for it.
+    const first = pool.getStatus();
+    expect(calls).toBe(1);
+    expect(first.serviceHealth.state).toBe("unknown");
+    expect(first.serviceHealth.checkedAt).toBeNull();
+
+    // Concurrent readers share the one in-flight probe.
+    pool.getStatus();
+    pool.getStatus();
+    expect(calls).toBe(1);
+
+    resolveProbe!();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    const settled = pool.getStatus();
+    expect(settled.serviceHealth.state).toBe("running");
+    expect(settled.serviceHealth.installed).toBe(true);
+    expect(settled.serviceHealth.checkedAt).not.toBeNull();
+  });
+
+  it("does not re-probe until the cached snapshot goes stale", async () => {
+    let calls = 0;
+    const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+      queryServiceStatusAsync: async () => {
+        calls += 1;
+        return asyncTestServiceStatus();
+      },
+    });
+
+    pool.getStatus();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toBe(1);
+
+    for (let index = 0; index < 20; index += 1) pool.getStatus();
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(calls).toBe(1);
+  });
+
+  it("records a probe failure as an error snapshot instead of throwing", async () => {
+    const logger = silentLogger();
+    const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
+      queryServiceStatusAsync: async () => {
+        throw new Error("probe child exited");
+      },
+    });
+
+    pool.getStatus();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pool.getStatus().serviceHealth).toMatchObject({
+      state: "error",
+      message: "probe child exited",
+    });
+    expect(logger.warn).toHaveBeenCalledWith(
+      "local_runtime.service_status_failed",
+      expect.objectContaining({ error: "probe child exited" }),
+    );
+  });
+
+  it("keeps an injected synchronous probe synchronous", () => {
+    let calls = 0;
+    const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+      queryServiceStatus: () => {
+        calls += 1;
+        return asyncTestServiceStatus();
+      },
+    });
+
+    // No await: the sync seam existing tests rely on must still settle inline.
+    expect(pool.getStatus().serviceHealth.state).toBe("running");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("parseRuntimeServiceStatusJson", () => {
+  it("reads a `runtime service-status --json` payload", () => {
+    const parsed = parseRuntimeServiceStatusJson(
+      'ExperimentalWarning: SQLite\n{"ok":true,"serviceName":"com.ade.runtime","action":"status",'
+      + '"installed":false,"running":false,"path":"ADE Runtime (stable)","message":"not installed."}\n',
+    );
+    expect(parsed).toEqual({
+      ok: true,
+      serviceName: "com.ade.runtime",
+      action: "status",
+      installed: false,
+      running: false,
+      path: "ADE Runtime (stable)",
+      message: "not installed.",
+    });
+  });
+
+  it("rejects output that is not a status result rather than inventing one", () => {
+    expect(parseRuntimeServiceStatusJson("")).toBeNull();
+    expect(parseRuntimeServiceStatusJson("not json at all")).toBeNull();
+    expect(parseRuntimeServiceStatusJson("{ broken")).toBeNull();
+    expect(parseRuntimeServiceStatusJson('{"ok":true,"action":"install"}')).toBeNull();
+    expect(parseRuntimeServiceStatusJson('{"action":"status"}')).toBeNull();
+  });
+
+  it("keeps unknown installed/running as null instead of coercing to false", () => {
+    const parsed = parseRuntimeServiceStatusJson(
+      '{"ok":false,"action":"status","installed":null,"running":null,"path":null,"message":"unreadable"}',
+    );
+    expect(parsed).toMatchObject({ installed: null, running: null, path: null });
   });
 });

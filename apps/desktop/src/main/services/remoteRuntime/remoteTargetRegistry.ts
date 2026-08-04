@@ -310,21 +310,55 @@ export class RemoteTargetRegistry {
     return removed;
   }
 
+  /**
+   * Last parsed registry keyed by the file identity it was parsed from.
+   *
+   * Every remote RPC reads this registry at least three times (target lookup,
+   * implicit-reconnect check, and the status snapshot broadcast), and the event
+   * pump polls at up to 20 Hz while a turn streams — so an uncached
+   * `readFileSync` + `JSON.parse` per read lands on the Electron main thread
+   * hundreds of times a second. The cache key is the file's own mtime/size/ino,
+   * so an edit made by any process (another ADE window, the CLI) invalidates it
+   * on the next read; `write()` clears it outright for this process.
+   */
+  private cache: { key: string; file: RegistryFile } | null = null;
+
+  private cacheKey(): string | null {
+    try {
+      const stat = fs.statSync(this.path);
+      return `${stat.mtimeMs}:${stat.size}:${stat.ino}`;
+    } catch {
+      return null;
+    }
+  }
+
   private read(): RegistryFile {
+    const key = this.cacheKey();
+    // Hand back a fresh envelope every time: `save`/`update` mutate the value
+    // they get back, and the cached parse must stay the file's own contents.
+    if (key && this.cache?.key === key) {
+      return { version: this.cache.file.version, targets: [...this.cache.file.targets] };
+    }
     try {
       const raw = fs.readFileSync(this.path, "utf8");
       const parsed = JSON.parse(raw) as unknown;
       const targets = parsed && typeof parsed === "object" && !Array.isArray(parsed) && Array.isArray((parsed as { targets?: unknown }).targets)
         ? (parsed as { targets: unknown[] }).targets.map(coerceTarget).filter((target): target is RemoteRuntimeTarget => target != null)
         : [];
+      if (key) this.cache = { key, file: { version: 1, targets: [...targets] } };
       return { version: 1, targets };
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { version: 1, targets: [] };
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        this.cache = null;
+        return { version: 1, targets: [] };
+      }
+      this.cache = null;
       throw error;
     }
   }
 
   private write(file: RegistryFile): void {
+    this.cache = null;
     fs.mkdirSync(path.dirname(this.path), { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.${process.pid}.${Date.now()}.tmp`;
     fs.writeFileSync(tmp, `${JSON.stringify(file, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
