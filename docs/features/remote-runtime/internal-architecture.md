@@ -78,7 +78,7 @@ A remote target stores a primary `hostname` plus an optional `routes` array (`Re
 
 ### Discovery diagnostics
 
-`discoverLanRuntimes` runs Bonjour and `tailscale status --json` in parallel and now returns a `RemoteRuntimeDiscoveryResult` with `{ machines, diagnostics }`. Each diagnostic carries `{ source: "bonjour" | "tailscale", code, message, detail }`. Codes today: `bonjour-discovery-failed`, `tailscale-unavailable` (CLI not installed), `tailscale-timeout`, `tailscale-status-failed`. The form surfaces these warnings inline so a missing or hung Tailscale CLI does not look like "no machines found" — the LAN side still ran.
+`discoverLanRuntimes` runs Bonjour and `tailscale status --json` in parallel and now returns a `RemoteRuntimeDiscoveryResult` with `{ machines, diagnostics }`. Each diagnostic carries `{ source: "bonjour" | "tailscale", severity, code, message, detail }`. Codes today: `bonjour-discovery-failed`, `tailscale-unavailable` (CLI not installed), `tailscale-timeout`, `tailscale-status-failed`. `severity` is `"warning"` when discovery is degraded in a way the user may want to look at, and `"info"` for a normal, non-actionable observation about the environment. `tailscale-unavailable` is `info` — Tailscale is optional software, so not having it installed is a fact about the machine rather than a problem with discovery — while the timeout and failure codes stay `warning`. The form surfaces warnings inline so a hung or broken Tailscale CLI does not look like "no machines found" (the LAN side still ran), and renders info diagnostics as muted secondary text with no warning glyph.
 
 ## Bootstrap sequence
 

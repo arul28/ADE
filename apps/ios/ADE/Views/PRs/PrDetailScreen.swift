@@ -132,7 +132,7 @@ struct PrDetailView: View {
   }
 
   private var isLive: Bool {
-    prsStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+    prsStatus.phase == .ready && syncService.connectionState == .connected
   }
 
   private var canRunPrActions: Bool {

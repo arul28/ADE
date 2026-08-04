@@ -122,7 +122,13 @@ type BrainPeerState = {
 };
 
 const WS_OPEN = 1;
-const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
+/**
+ * Exported so the credential store's migration-exclusion list can be asserted
+ * against the real key instead of a bare literal: this token is read by the
+ * brain straight from the shared file store, and a silent rename would move it
+ * into the Electron-only safeStorage file.
+ */
+export const BOOTSTRAP_TOKEN_KEY = "sync.bootstrapToken.v1";
 const BRAIN_SYNC_AUTH_TIMEOUT_MS = 15_000;
 const brainPeerCompressionBySocket = new WeakMap<WebSocket, SyncApplicationCompressionCodec>();
 

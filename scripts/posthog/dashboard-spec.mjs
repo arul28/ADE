@@ -23,6 +23,7 @@ export const EVENTS = Object.freeze({
   BRAIN_RECOVERED: "ade_brain_recovered",
   PUBLISH_FAILING: "ade_publish_failing",
   RELAY_SUPPRESSED: "ade_relay_suppressed",
+  ACCOUNT_SESSION_UNREADABLE: "ade_account_session_unreadable",
   MARKETING_APP_OPENED: "ade_marketing_app_opened",
   MARKETING_SCREEN_VIEWED: "ade_marketing_screen_viewed",
   MARKETING_CTA_CLICKED: "ade_marketing_cta_clicked",
@@ -530,12 +531,13 @@ export const dashboardSpec = Object.freeze({
         insight(
           "reliability-incidents",
           "Reliability incidents",
-          "Brain wedge recoveries, sustained route-publish failures, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
+          "Brain wedge recoveries, sustained route-publish failures, unreadable brain account sessions, relay suppression by a rival process, and update-flow aborts/escalations. Coarse counts only; command names are closed action slugs and no payload content is ever attached.",
           trends({
             series: [
               eventNode(EVENTS.BRAIN_RECOVERED, "Brain recovered from wedge"),
               eventNode(EVENTS.PUBLISH_FAILING, "Route publish failing"),
               eventNode(EVENTS.RELAY_SUPPRESSED, "Relay suppressed by rival process"),
+              eventNode(EVENTS.ACCOUNT_SESSION_UNREADABLE, "Brain account session unreadable"),
               eventNode(EVENTS.UPDATE_INSTALL_ABORTED, "Update install aborted"),
               eventNode(EVENTS.UPDATE_QUIT_ESCALATED, "Update quit escalated"),
               eventNode(EVENTS.UPDATE_INSTALL_DID_NOT_LAND, "Update did not land"),

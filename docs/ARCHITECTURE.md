@@ -673,7 +673,7 @@ Related feature docs: [Chat](./features/chat/README.md), [Agents](./features/age
 `apps/desktop/src/shared/ipc.ts` defines the single `IPC` const with ~550 named channel strings in a `ade.<domain>.<action>` namespace:
 
 ```
-ade.app.*                    # app lifecycle, clipboard text and image (writeClipboardText, writeClipboardImage, saveClipboardImageAttachment), paths, image data-URL preview (getImageDataUrl), the deeplink navigation push channel ade.app.navigate (AppNavigationRequest payloads from the ade:// protocol handler, the ade code app/navigate JSON-RPC, and the iOS deeplinks.open sync command — see features/deeplinks/README.md), the one-way zoom push channel ade.app.zoomCommand (AppZoomCommand "in"/"out"/"reset" sent from the native View menu to the renderer's window.ade.zoom.onCommand so menu/keyboard zoom shares the in-app zoom path — display %, persistence, and the macOS traffic-light inset), and the resource-pressure snapshot ade.app.getResourceUsage (async, coalesced `AppResourceUsageSnapshot` backing the TopBar pressure indicator: one bounded/timeout-guarded `ps` sample shared across windows behind a 900 ms cache + in-flight coalescing, with disjoint per-role attribution built in `services/pty/resourceUsageSampling.ts` — see features/terminals-and-sessions/pty-and-sessions.md), and the machine-level daemon-health snapshot ade.app.getRuntimeHealth (async `RuntimeHealthSnapshot` — a rolling 24 h count + p95 of slow/errored local-runtime action calls, read directly off `localRuntimeConnectionPool` with no action-domain routing, feeding the Storage > Diagnostics "slow responses" tile)
+ade.app.*                    # app lifecycle, clipboard text and image (writeClipboardText, writeClipboardImage, saveClipboardImageAttachment), paths, image data-URL preview (getImageDataUrl), the deeplink navigation push channel ade.app.navigate (AppNavigationRequest payloads from the ade:// protocol handler, the ade code app/navigate JSON-RPC, and the iOS deeplinks.open sync command — see features/deeplinks/README.md), the one-way zoom push channel ade.app.zoomCommand (AppZoomCommand "in"/"out"/"reset" sent from the native View menu to the renderer's window.ade.zoom.onCommand so menu/keyboard zoom shares the in-app zoom path — display %, persistence, and the macOS traffic-light inset), and the resource-pressure snapshot ade.app.getResourceUsage (async, coalesced `AppResourceUsageSnapshot` backing the TopBar pressure indicator: one bounded/timeout-guarded `ps` sample shared across windows behind a 900 ms cache + in-flight coalescing, with disjoint per-role attribution built in `services/pty/resourceUsageSampling.ts` — see features/terminals-and-sessions/pty-and-sessions.md), the machine-level daemon-health snapshot ade.app.getRuntimeHealth (async `RuntimeHealthSnapshot` — a rolling 24 h count + p95 of slow/errored local-runtime action calls, read directly off `localRuntimeConnectionPool` with no action-domain routing, feeding the Storage > Diagnostics "slow responses" tile), and ade.app.restartBackgroundService (the Connections "Repair" control: restarts this machine's `com.ade.runtime` launch agent through `ProjectRecoveryService.restartBrain()` and resolves only after the replacement answers a ping, throwing otherwise. Direct IPC on purpose — the pool lives in Electron main and the daemon being restarted cannot route its own restart, so there is no action-domain routing and no null-service risk. It is optional in the preload surface: the hosted-web adapter and browser mock cannot touch a launch agent, so callers feature-detect. Each click records one `ade_feature_used` with `feature: "connections"`, `action: "brain_repair"`, and a coarse `outcome`)
 ade.project.*                # project open/close/switch/state, unified local+remote recents (listRecent, key-based forget/reorder, setRecentPinned), in-app directory browser (browseDirectories, getDetail), git path inspection (inspectPath — ProjectPathInspection behind the renderer's worktree-open gate; promise-cached in services/projects/projectPathInspector.ts with a `fresh` bypass and invalidated on lane attach/adopt from both the in-process handler and the runtime-bridge action path), favicon resolver/override (resolveIcon, chooseIcon, removeIcon) with local-only filesystem allowlists. openRepo/switchToPath surface AdeRecoveryErrorCode-coded failures (via surfaceCodedError) so the renderer can route a failed open into the recovery screen
 ade.recovery.*               # brain-independent project-open recovery: diagnose / repair
                              # (projectRecoveryService against projectRecoveryConnectionPool).
@@ -1032,6 +1032,8 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 | GitHub PAT | `.ade/secrets/github/*.bin` | `safeStorage.encryptString` (OS-backed) |
 | API provider keys | `.ade/secrets/api-keys.json` | Plaintext `0600` |
 | ADE project secrets | `.ade/secrets/project-secrets.v1.enc` | AES-GCM encrypted file store, OS-bound on supported hosts |
+| Machine credential store (shared) | `.ade/secrets/credentials.json.enc` + `.machine-key` | AES-GCM file store; key HKDF-derived from the machine key and a macOS-keychain secret. Read by the brain, the `ade` CLI, and desktop |
+| Machine credential store (Electron) | `.ade/secrets/credentials.safe.enc` | `safeStorage.encryptString`; readable only by Electron |
 | Claude OAuth creds | Claude's own store | Inherited |
 | Codex auth tokens | Codex's own store | Inherited |
 | macOS Keychain entries | OS Keychain | OS-backed |
@@ -1039,6 +1041,24 @@ Related UI docs: [Terminals UI surfaces](./features/terminals-and-sessions/ui-su
 | Sync device ID | `.ade/secrets/sync-device-id` | Plaintext, never syncs |
 | Sync bootstrap token | `.ade/secrets/sync-bootstrap-token` | Plaintext, never syncs |
 | External-ADE CLI secrets | `.ade/local.secret.yaml` | Plaintext, never syncs |
+
+The two machine credential stores are not interchangeable. Only the AES file
+store is shared across processes; a `safeStorage` file is Electron-only, so the
+account session (`account.session.v1`) and the sync bootstrap token
+(`sync.bootstrapToken.v1`) are pinned to the file store and the safeStorage
+migration retains them there — copying everything else across, pruning the
+migrated duplicates out of the file store, and deleting the legacy files only
+when nothing is retained. Writing either key through the safeStorage store
+throws rather than silently signing the brain out of a machine whose app is
+signed in, and a legacy store that cannot be decrypted aborts the migration
+instead of being replaced with an empty one. Keychain material is resolved
+race-safely (`osBoundKeyMaterial.ts`): the create is non-clobbering, an
+inconclusive `security` result fails closed rather than minting a replacement
+secret, and a decrypt failure against cached material re-reads the keychain once
+before the store is declared unreadable. A brain that still cannot read it
+publishes nothing to the account directory; that state is user-repairable from
+Connections and reported once per episode as `ade_account_session_unreadable`
+(see [logging](./logging.md)).
 
 ADE project-secret dotenv imports are explicit transfers, not background
 sync: the desktop reads a user-selected local file (1 MB cap) and sends its

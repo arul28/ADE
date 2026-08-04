@@ -211,8 +211,8 @@ struct LanesTabView: View {
       }
       .onChange(of: syncService.connectionState) { oldValue, newValue in
         guard isActive else { return }
-        let wasOnline = oldValue == .connected || oldValue == .syncing
-        let nowOnline = newValue == .connected || newValue == .syncing
+        let wasOnline = oldValue == .connected
+        let nowOnline = newValue == .connected
         if wasOnline && !nowOnline {
           ADEHaptics.warning()
         }

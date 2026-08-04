@@ -1,7 +1,6 @@
 import fs from "node:fs";
 import net from "node:net";
 import path from "node:path";
-import type { LocalRuntimeStatus } from "../../../shared/types";
 import type {
   AdeLastFailureReport,
   AdeRecoveryErrorCode,
@@ -22,11 +21,15 @@ import {
   runQuickCheck,
 } from "../state/kvDb";
 import { readVolumeSpace } from "../storage/volume";
+import { isLocalReleaseBuildOutputError } from "../../../shared/runtimeErrors";
 import { clearLastFailure, readLastFailure } from "./lastFailureStore";
 
 const MIB = 1024 * 1024;
 const GIB = 1024 * MIB;
 const FRESH_FAILURE_MS = 5 * 60 * 1_000;
+// How long a restarted brain gets to rebind the machine endpoint, shared by
+// `repair()`'s restart_service step and `restartBrain()`.
+const BRAIN_RESTART_TIMEOUT_MS = 20_000;
 
 const STEP_LABELS: Record<RepairStepId, string> = {
   check_space: "Checking storage space",
@@ -57,6 +60,27 @@ const RECOMMENDED_FREE_BYTES = (dbSize: number): number => REPAIR_MIN_FREE_BYTES
 type SpaceStats = { bavail: number | bigint; bsize: number | bigint };
 type QuickCheckResult = { healthy: boolean | null; detail: string };
 type ChatCounts = { total: number; needingAttention: number };
+
+/**
+ * Which stage of the shared brain-restart sequence lost, if any. The sequence
+ * reports the stage rather than the copy, because its two callers say
+ * different things about the same stage: `repair()` speaks in repair steps and
+ * `restartBrain()` throws.
+ */
+type BrainRestartOutcome =
+  | { ok: true }
+  /** The endpoint never came back inside the restart budget. */
+  | { ok: false; reason: "unreachable" }
+  | {
+    ok: false;
+    /**
+     * "install_skipped" is its own reason because the installer declined on
+     * purpose — nothing restarted and nothing is broken — so it needs copy of
+     * its own rather than the installer's log line.
+     */
+    reason: "restart_error" | "install_skipped" | "ping_error";
+    detail: string;
+  };
 
 export type ProjectRecoveryConnectionPool = Pick<
   LocalRuntimeConnectionPool,
@@ -194,6 +218,21 @@ function humanGb(bytes: number): string {
   return `${gb} GB`;
 }
 
+/**
+ * User-facing copy for a restart the installer deliberately declined to run.
+ *
+ * The skips exist to protect a newer, protocol-compatible brain that is
+ * already running — forcing past them would downgrade it — so the honest
+ * remedy is to relaunch ADE, not to retry. The installer's own message is a
+ * log line ("Skipped ADE service install because…") and never becomes the
+ * sentence a person reads; the release-build block is the exception, since it
+ * is already written as instructions.
+ */
+function skippedRestartCopy(installerMessage: string): string {
+  if (isLocalReleaseBuildOutputError(installerMessage)) return installerMessage;
+  return "A newer ADE runtime is already running — quit and reopen ADE instead.";
+}
+
 function socketConnectOptions(socketPath: string): net.NetConnectOpts {
   if (!socketPath.startsWith("tcp://")) return { path: socketPath };
   const url = new URL(socketPath);
@@ -326,6 +365,16 @@ export class ProjectRecoveryService {
   private readonly readChatCounts: (projectRoot: string) => Promise<ChatCounts>;
   private readonly socketExists: (socketPath: string) => boolean;
   private readonly now: () => number;
+  /** Set for the whole of `repair()`; see `restartBrain()` for why. */
+  private repairInFlight = false;
+  /**
+   * Settled-either-way handle on an in-flight `restartBrain()`. The flag above
+   * only closes one direction (a restart started after repair began); a repair
+   * started *during* a restart must wait for the install to finish, or that
+   * install can bind a replacement brain to the socket while repair owns the
+   * database.
+   */
+  private restartInFlight: Promise<void> | null = null;
 
   constructor(private readonly deps: ProjectRecoveryServiceDeps) {
     this.socketPath = deps.socketPath ?? resolveMachineAdeLayout({ ...process.env, ADE_HOME: deps.adeHome }).socketPath;
@@ -365,6 +414,82 @@ export class ProjectRecoveryService {
       this.databaseSize(dbPath),
     ]);
     return { free: Math.min(freeBytes(projectStats), freeBytes(homeStats)), dbSize };
+  }
+
+  /**
+   * Install the service, wait for the machine endpoint to come back, then ping
+   * it — the one verified brain-restart sequence, shared by `repair()`'s
+   * restart_service/verify_endpoint steps and by `restartBrain()`.
+   *
+   * `force` is more than the install flag. A forced restart is the only caller
+   * that actually asked for a restart, so an install that resolves having
+   * skipped is a failure for it; `repair()` tolerates a skip, because a
+   * protocol-compatible brain that is already running satisfies its step.
+   */
+  private async restartServiceAndWait(force: boolean): Promise<BrainRestartOutcome> {
+    try {
+      await this.deps.connectionPool.installServiceBestEffort(force ? { forceRestart: true } : {});
+      if (force) {
+        // `installServiceBestEffort` never rejects and can resolve having
+        // skipped the install entirely, hence the status check.
+        const install = this.deps.connectionPool.getStatus().serviceInstall;
+        if (install.state !== "installed") {
+          return {
+            ok: false,
+            reason: install.state === "skipped" ? "install_skipped" : "restart_error",
+            detail: install.message?.trim() ?? "",
+          };
+        }
+      }
+      if (!await this.waitForSocketState(this.socketPath, true, BRAIN_RESTART_TIMEOUT_MS)) {
+        return { ok: false, reason: "unreachable" };
+      }
+    } catch (error) {
+      return { ok: false, reason: "restart_error", detail: errorMessage(error) };
+    }
+    try {
+      // Bound the ping: RuntimeRpcClient's default is 10 minutes, and a brain
+      // that binds the socket but never answers would otherwise park both this
+      // call and any `repair()` waiting on it for that whole window.
+      await this.deps.connectionPool.callSync("ping", {}, { timeoutMs: BRAIN_RESTART_TIMEOUT_MS });
+    } catch (error) {
+      return { ok: false, reason: "ping_error", detail: errorMessage(error) };
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Machine-scoped brain restart for the "Repair" button. Only the main
+   * process can observe when the replacement brain is actually answering, so
+   * the renderer awaits this instead of sleeping and hoping.
+   *
+   * Throws so the caller's error path fires, and rejects outright while a
+   * `repair()` is running: repair stops the service and then does exclusive
+   * database work, and reinstalling the brain underneath it would put a writer
+   * back on the database mid-check (see the invariant on
+   * `uninstallServiceBestEffort`). Repair wins; the button can be pressed again
+   * after it finishes.
+   */
+  async restartBrain(): Promise<void> {
+    if (this.repairInFlight) throw new Error("Recovery is already running.");
+    const restart = this.restartServiceAndWait(true);
+    // Never-rejecting handle so `repair()` can await it without inheriting a
+    // restart failure; the real outcome is still thrown to this caller below.
+    const settled = restart.then(() => undefined, () => undefined);
+    this.restartInFlight = settled;
+    void settled.then(() => {
+      if (this.restartInFlight === settled) this.restartInFlight = null;
+    });
+    const outcome = await restart;
+    if (outcome.ok) return;
+    switch (outcome.reason) {
+      case "install_skipped":
+        throw new Error(skippedRestartCopy(outcome.detail));
+      case "unreachable":
+        throw new Error("The background service did not come back after the restart.");
+      default:
+        throw new Error(outcome.detail.trim() || "ADE could not restart its background service.");
+    }
   }
 
   async diagnose(projectRoot: string): Promise<ProjectRecoveryDiagnosis> {
@@ -444,6 +569,32 @@ export class ProjectRecoveryService {
   async repair(
     projectRoot: string,
     opts: { onStep?: (step: RepairStepResult) => void } = {},
+  ): Promise<ProjectRepairReport> {
+    // Held across the whole run so a renderer-triggered `restartBrain()`
+    // cannot reinstall the brain while the steps below own the database.
+    this.repairInFlight = true;
+    try {
+      // A restart that started before the flag was set is not covered by it:
+      // let its install finish before repair stops the service and takes the
+      // database. Never fails repair — this is the user's last resort, so the
+      // wait is bounded and repair proceeds regardless of how the restart ends.
+      // Repair's own stop_service step is what actually guarantees exclusivity;
+      // this wait only avoids racing an install that is already underway.
+      if (this.restartInFlight) {
+        await Promise.race([
+          this.restartInFlight,
+          new Promise<void>((resolve) => setTimeout(resolve, BRAIN_RESTART_TIMEOUT_MS)),
+        ]);
+      }
+      return await this.runRepair(projectRoot, opts);
+    } finally {
+      this.repairInFlight = false;
+    }
+  }
+
+  private async runRepair(
+    projectRoot: string,
+    opts: { onStep?: (step: RepairStepResult) => void },
   ): Promise<ProjectRepairReport> {
     const normalizedRoot = path.resolve(projectRoot);
     const dbPath = path.join(normalizedRoot, ".ade", "ade.db");
@@ -570,29 +721,23 @@ export class ProjectRecoveryService {
       return fail("resolve_migrations", failureCode, nextAction, errorMessage(error));
     }
 
-    let restarted = false;
-    try {
-      await this.deps.connectionPool.installServiceBestEffort();
-      restarted = await this.waitForSocketState(this.socketPath, true, 20_000);
-    } catch (error) {
-      return fail("restart_service", "brain_not_installed", "Restart ADE, then run repair again.", errorMessage(error));
-    }
-    if (!restarted) {
-      return fail(
-        "restart_service",
-        "brain_crash_looping",
-        "Restart ADE, then run repair again. If the service still stops, contact support.",
-        "The background service did not become reachable within 20 seconds.",
-      );
+    const restart = await this.restartServiceAndWait(false);
+    if (!restart.ok && restart.reason !== "ping_error") {
+      return restart.reason === "unreachable"
+        ? fail(
+          "restart_service",
+          "brain_crash_looping",
+          "Restart ADE, then run repair again. If the service still stops, contact support.",
+          `The background service did not become reachable within ${Math.round(BRAIN_RESTART_TIMEOUT_MS / 1_000)} seconds.`,
+        )
+        : fail("restart_service", "brain_not_installed", "Restart ADE, then run repair again.", restart.detail);
     }
     addStep("restart_service", "ok", "The background service restarted.");
 
-    try {
-      await this.deps.connectionPool.callSync("ping", {});
-      addStep("verify_endpoint", "ok", "The background service answered.");
-    } catch (error) {
-      return fail("verify_endpoint", "brain_crash_looping", "Restart ADE, then run repair again.", errorMessage(error));
+    if (!restart.ok) {
+      return fail("verify_endpoint", "brain_crash_looping", "Restart ADE, then run repair again.", restart.detail);
     }
+    addStep("verify_endpoint", "ok", "The background service answered.");
 
     try {
       await this.deps.connectionPool.ensureProject(normalizedRoot);

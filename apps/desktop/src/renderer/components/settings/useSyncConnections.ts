@@ -197,5 +197,7 @@ export function useSyncConnections() {
     saveRuntimeName,
     forgetDevice,
     retryInitialLoad,
+    /** One-shot re-read of the snapshots, without the initial-load spinner. */
+    refresh,
   };
 }

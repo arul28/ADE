@@ -21,6 +21,7 @@ export const PRODUCT_ANALYTICS_EVENTS = [
   "ade_brain_recovered",
   "ade_publish_failing",
   "ade_relay_suppressed",
+  "ade_account_session_unreadable",
 ] as const;
 
 export type ProductAnalyticsEventName = (typeof PRODUCT_ANALYTICS_EVENTS)[number];

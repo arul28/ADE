@@ -20,6 +20,7 @@ export const INTERNAL_ONLY_EVENTS = new Set<ProductAnalyticsEventName>([
   "ade_update_auto_applied",
   "ade_update_auto_apply_cancelled",
   "ade_brain_recovered", "ade_publish_failing", "ade_relay_suppressed",
+  "ade_account_session_unreadable",
 ]);
 
 export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -43,6 +44,7 @@ export const EVENT_DAILY_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_brain_recovered: 10,
   ade_publish_failing: 10,
   ade_relay_suppressed: 10,
+  ade_account_session_unreadable: 10,
 };
 
 export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
@@ -66,6 +68,7 @@ export const EVENT_MINUTE_BUDGETS: Record<ProductAnalyticsEventName, number> = {
   ade_brain_recovered: 3,
   ade_publish_failing: 3,
   ade_relay_suppressed: 3,
+  ade_account_session_unreadable: 3,
 };
 
 const STRING_PROPERTIES = new Set([
@@ -94,6 +97,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "maintenance_run",
   "header_opened",
   "preferences_changed",
+  "brain_repair",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {
@@ -130,6 +134,7 @@ const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>
   ade_brain_recovered: new Set(["blocked_ms", "last_command"]),
   ade_publish_failing: new Set(["failing_minutes", "leg", "code"]),
   ade_relay_suppressed: new Set(["attempt", "code"]),
+  ade_account_session_unreadable: new Set(["code"]),
 };
 
 const SLUG_VALUE = /^[a-z0-9][a-z0-9._+-]*$/i;
@@ -143,7 +148,7 @@ const SAFE_STRING_VALUES: Partial<Record<string, ReadonlySet<string>>> = {
   ]),
   feature: new Set([
     "chat", "cli", "work", "lanes", "files", "git", "orchestration", "prs",
-    "automations", "command_palette", "storage_doctor", "attention", "updates",
+    "automations", "command_palette", "storage_doctor", "attention", "updates", "connections",
   ]),
   outcome: new Set([
     "success", "started", "completed", "failure", "timeout", "opened", "cancelled", "approved", "denied",

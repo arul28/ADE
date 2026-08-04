@@ -3500,6 +3500,8 @@ contextBridge.exposeInMainWorld("ade", {
       ipcRenderer.invoke(IPC.appGetResourceUsage),
     getRuntimeHealth: async (): Promise<RuntimeHealthSnapshot> =>
       ipcRenderer.invoke(IPC.appGetRuntimeHealth),
+    restartBackgroundService: async (): Promise<void> =>
+      ipcRenderer.invoke(IPC.appRestartBackgroundService),
     getLatestRelease: async (): Promise<LatestReleaseInfo | null> =>
       ipcRenderer.invoke(IPC.appGetLatestRelease),
     getProject: async (): Promise<ProjectInfo | null> =>

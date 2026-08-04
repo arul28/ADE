@@ -810,7 +810,7 @@ describe("brain project actions fallback handler", () => {
     fs.mkdirSync(secretsDir, { recursive: true });
     const credentials = new EncryptedFileCredentialStore({
       secretsDir,
-      keyMaterialProvider: () => null,
+      keyMaterial: { read: () => null },
     });
     credentials.setSync("test.bootstrap", "bootstrap-token");
     const projects = Array.from({ length: 30 }, (_, index) => createDiscoveryProject({
@@ -904,7 +904,7 @@ describe("brain project actions fallback handler", () => {
         },
         bootstrapCredentialStore: new EncryptedFileCredentialStore({
           secretsDir,
-          keyMaterialProvider: () => null,
+          keyMaterial: { read: () => null },
         }),
         pairingSecretsPath: pairing.pairingSecretsPath,
         pinPath: pairing.pinPath,
@@ -978,7 +978,7 @@ describe("brain project actions fallback handler", () => {
     const { projectRoot, cleanup } = createTempProjectRoot();
     const secretsDir = path.join(projectRoot, "secrets");
     fs.mkdirSync(secretsDir, { recursive: true });
-    const credentials = new EncryptedFileCredentialStore({ secretsDir, keyMaterialProvider: () => null });
+    const credentials = new EncryptedFileCredentialStore({ secretsDir, keyMaterial: { read: () => null } });
     credentials.setSync("test.bootstrap", "bootstrap-token");
     let resolveCatalog!: () => void;
     const catalogGate = new Promise<void>((resolve) => { resolveCatalog = resolve; });
@@ -1042,7 +1042,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: new EncryptedFileCredentialStore({
         secretsDir,
-        keyMaterialProvider: () => null,
+        keyMaterial: { read: () => null },
       }),
       pairingSecretsPath: pairing.pairingSecretsPath,
       pinPath: pairing.pinPath,
@@ -1121,7 +1121,7 @@ describe("brain project actions fallback handler", () => {
     fs.writeFileSync(transcriptPath, "");
     const credentialStore = new EncryptedFileCredentialStore({
       secretsDir,
-      keyMaterialProvider: () => null,
+      keyMaterial: { read: () => null },
     });
     credentialStore.setSync("test.bootstrap", "bootstrap-token");
     const logger = createDiscoveryLogger();
@@ -1326,7 +1326,7 @@ describe("brain project actions fallback handler", () => {
     fs.mkdirSync(secretsDir, { recursive: true });
     const credentialStore = new EncryptedFileCredentialStore({
       secretsDir,
-      keyMaterialProvider: () => null,
+      keyMaterial: { read: () => null },
     });
     credentialStore.setSync("test.bootstrap", "bootstrap-token");
 
@@ -1429,7 +1429,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: new EncryptedFileCredentialStore({
         secretsDir,
-        keyMaterialProvider: () => null,
+        keyMaterial: { read: () => null },
       }),
       pairingSecretsPath: pairing.pairingSecretsPath,
       pinPath: pairing.pinPath,
@@ -1490,7 +1490,7 @@ describe("brain project actions fallback handler", () => {
       },
       bootstrapCredentialStore: new EncryptedFileCredentialStore({
         secretsDir,
-        keyMaterialProvider: () => null,
+        keyMaterial: { read: () => null },
       }),
       pairingSecretsPath: path.join(secretsDir, "sync-paired-devices.json"),
       pinPath,

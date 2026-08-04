@@ -301,7 +301,7 @@ private struct SettingsConnectionQuickAction: View {
 
   var body: some View {
     switch connectionState {
-    case .connected, .syncing:
+    case .connected:
       ADEGlassActionButton(
         title: "Disconnect",
         symbol: "power",

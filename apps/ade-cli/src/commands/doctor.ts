@@ -6,6 +6,7 @@ import {
   parseRuntimePublishHealth,
   type RuntimePublishHealth,
 } from "../../../desktop/src/shared/adeRuntimeProtocol";
+import { isBrainAccountSessionFailure } from "../../../desktop/src/shared/types/sync";
 import type {
   SyncAccountDirectoryHealth,
   SyncRouteHealth,
@@ -647,12 +648,20 @@ function publishRow(
   const failingForMs = health.failingSinceMs == null
     ? null
     : Math.max(0, nowMs - health.failingSinceMs);
+  // The Connections panel offers a "Repair" (brain restart) button for exactly
+  // the states `isBrainAccountSessionFailure` covers, because a replacement
+  // brain re-reads the account session from scratch. `ade brain restart` is the
+  // CLI's equivalent, so name it here rather than leaving an agent holding a
+  // bare `token_unreadable` with no next step.
+  const remedy = isBrainAccountSessionFailure(health.state)
+    ? " · run `ade brain restart` so the brain re-reads the account session"
+    : "";
   if (failingForMs != null && failingForMs >= PUBLISH_FAILURE_RED_MS) {
     return {
       key: "publish",
       label: "Publish health",
       status: "fail",
-      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}`,
+      detail: `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
     };
   }
   if (health.state === "published") {
@@ -673,8 +682,8 @@ function publishRow(
     label: "Publish health",
     status: "warn",
     detail: failingForMs == null
-      ? `${health.state}${health.skipReason ? ` · ${health.skipReason}` : ""}`
-      : `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}`,
+      ? `${health.state}${health.skipReason ? ` · ${health.skipReason}` : ""}${remedy}`
+      : `failing for ${compactDuration(failingForMs)} · ${health.state}${publishLegDetail(health)}${remedy}`,
   };
 }
 

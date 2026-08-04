@@ -811,7 +811,7 @@ struct WorkSessionDestinationView: View {
   }
 
   var hostReachable: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   /// Live polling/load gates require BOTH the parent's "session is live" flag

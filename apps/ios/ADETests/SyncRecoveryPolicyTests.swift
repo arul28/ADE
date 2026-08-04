@@ -1245,8 +1245,13 @@ final class SyncRecoveryPolicyTests: XCTestCase {
     XCTAssertEqual(service.nextReconnectDelayForTesting(), 1_000_000_000)
   }
 
+  /// `hello_ok` is the attachment barrier: `.connected` must be published as
+  /// soon as the payload is applied, and must still hold once post-hello work
+  /// is scheduled — not only after its network round trip. Holding it back
+  /// parked the app in a non-attached state for seconds, which the PIN sheet
+  /// reported as "Incorrect PIN." on a pair that had actually succeeded.
   @MainActor
-  func testSuccessfulPostHelloRestorationPublishesConnectedOnlyAfterCompletion() async throws {
+  func testSuccessfulPostHelloRestorationPublishesConnectedBeforeRestorationCompletes() async throws {
     let baseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
@@ -1264,23 +1269,30 @@ final class SyncRecoveryPolicyTests: XCTestCase {
       "brain": ["deviceId": "ready-host", "deviceName": "Mac Studio"],
       "features": [:],
     ])
-    XCTAssertEqual(service.connectionState, .syncing)
+    // Applying the payload is itself the attachment moment.
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertTrue(service.isAttached)
 
     let postHello = Task { @MainActor in
       await service.performPostHelloRestorationForTesting {
         await restoration.wait()
       }
     }
-    while !restoration.isWaiting { await Task.yield() }
-    XCTAssertEqual(service.connectionState, .syncing)
+    await restoration.waitUntilWaiting()
+    XCTAssertEqual(service.connectionState, .connected)
+    XCTAssertTrue(service.isAttached)
 
     restoration.resume()
-    await postHello.value
+    let completed = await postHello.value
+    XCTAssertTrue(completed)
     XCTAssertEqual(service.connectionState, .connected)
   }
 
+  /// The staleness guard still matters for the generation-scoped completion:
+  /// a socket torn down mid-restoration must not run the post-hello completion
+  /// (in production, the reconnect-backoff stability reset) for a dead socket.
   @MainActor
-  func testStalePostHelloRestorationCannotRepublishConnected() async throws {
+  func testStalePostHelloRestorationCannotRunCompletion() async throws {
     let baseURL = FileManager.default.temporaryDirectory
       .appendingPathComponent(UUID().uuidString, isDirectory: true)
     try FileManager.default.createDirectory(at: baseURL, withIntermediateDirectories: true)
@@ -1299,12 +1311,12 @@ final class SyncRecoveryPolicyTests: XCTestCase {
         await restoration.wait()
       }
     }
-    while !restoration.isWaiting { await Task.yield() }
+    await restoration.waitUntilWaiting()
     service.teardownSocketForTesting()
     restoration.resume()
-    await postHello.value
+    let completed = await postHello.value
 
-    XCTAssertNotEqual(service.connectionState, .connected)
+    XCTAssertFalse(completed)
   }
 
   func testTerminalInputQueuePreservesOrderAckAndReconnectIds() throws {
@@ -2008,6 +2020,28 @@ private final class DeferredRecoveryWork {
   private var continuation: CheckedContinuation<Void, Never>?
 
   var isWaiting: Bool { continuation != nil }
+
+  /// Bounded readiness wait. If the continuation is never installed (the work
+  /// body did not run), spinning on `isWaiting` would hang the whole test
+  /// runner; fail loudly instead.
+  func waitUntilWaiting(
+    timeout: TimeInterval = 5,
+    file: StaticString = #filePath,
+    line: UInt = #line
+  ) async {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !isWaiting {
+      if Date() >= deadline {
+        XCTFail(
+          "Deferred recovery work never installed its continuation within \(timeout)s.",
+          file: file,
+          line: line
+        )
+        return
+      }
+      await Task.yield()
+    }
+  }
 
   func wait() async {
     await withCheckedContinuation { continuation in

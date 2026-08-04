@@ -91,7 +91,7 @@ struct TerminalSessionScreen: View {
   }
 
   private func handleConnectionState(_ state: RemoteConnectionState) {
-    controller.handleConnectionChange(isConnected: state == .connected || state == .syncing)
+    controller.handleConnectionChange(isConnected: state == .connected)
   }
 
   private func handleKeyboardWillShow() {
@@ -172,7 +172,7 @@ struct TerminalSessionScreen: View {
       return ADEColor.textMuted
     }
     switch syncService.connectionState {
-    case .connected, .syncing:
+    case .connected:
       return controller.isSubscribed ? ADEColor.success : ADEColor.warning
     case .connecting:
       return ADEColor.warning

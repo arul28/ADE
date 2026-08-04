@@ -3937,6 +3937,38 @@ export function registerIpc({
     );
   });
 
+  // Restart this machine's ADE brain (the com.ade.runtime launch agent) through
+  // the same `serve --install-service` boundary the launcher uses, which does a
+  // verified unload → reap → load handover. Direct IPC on purpose: the pool
+  // lives in Electron main and the daemon being restarted cannot route its own
+  // restart, so there is no action-domain routing and no null-service risk.
+  // Resolves only once the replacement brain answers a ping, and throws when it
+  // does not — the renderer cannot observe brain readiness itself.
+  ipcMain.handle(IPC.appRestartBackgroundService, async (): Promise<void> => {
+    if (!projectRecoveryService) {
+      throw new Error("This window does not manage the ADE background service.");
+    }
+    // One coarse fact per Repair click, captured where the outcome is known.
+    // The 1 h dedupe bounds a frustrated click-loop to ≤24 accepted events/day.
+    const captureRepairOutcome = (outcome: "completed" | "failed") => {
+      productAnalyticsService?.capture({
+        event: "ade_feature_used",
+        surface: "desktop",
+        properties: { feature: "connections", action: "brain_repair", outcome },
+        projectId: null,
+        dedupeKey: `brain_repair:${outcome}`,
+        minimumIntervalMs: 60 * 60 * 1_000,
+      });
+    };
+    try {
+      await projectRecoveryService.restartBrain();
+    } catch (error) {
+      captureRepairOutcome("failed");
+      throw error;
+    }
+    captureRepairOutcome("completed");
+  });
+
   ipcMain.handle(IPC.storageGetPressure, async (): Promise<DiskPressureSnapshot> => {
     const monitor = requireAppContextValue(getCtx(), "diskPressureMonitor");
     return monitor.getSnapshot({ maxAgeMs: 1_000 });

@@ -102,6 +102,17 @@ describe("ipcInvokeTimeoutMs", () => {
     expect(ipcInvokeTimeoutMs(IPC.projectSwitchToPath)).toBe(285_000);
   });
 
+  it("outlasts a brain restart's service install plus readiness wait", () => {
+    // The handler resolves only once the replacement brain answers a ping. The
+    // worst case is a forced install queued behind an in-flight one (60s + 60s,
+    // localRuntimeConnectionPool), then the socket wait and the ping, each
+    // bounded by BRAIN_RESTART_TIMEOUT_MS (20s, projectRecoveryService).
+    // Spelled out rather than imported because both budgets are module-private;
+    // if either grows, this expectation is the thing that should be revisited.
+    const WORST_CASE_MS = 60_000 + 60_000 + 20_000 + 20_000;
+    expect(ipcInvokeTimeoutMs(IPC.appRestartBackgroundService)).toBeGreaterThanOrEqual(WORST_CASE_MS);
+  });
+
   it("gives retryable remote runtime actions enough time to reconnect", () => {
     expect(ipcInvokeTimeoutMs(IPC.remoteRuntimeCallAction, [{
       id: "target-1",
