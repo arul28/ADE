@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
-import { createAuthenticodeProbe } from "./windows-authenticode.mjs";
+import { AUTHENTICODE_PROBE_ERROR_STATUS, createAuthenticodeProbe } from "./windows-authenticode.mjs";
 import {
   isGithubSafeAssetName,
   resolveWindowsPackageIdentity,
@@ -922,20 +922,41 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
   // Passing filePath as a trailing argv value therefore turns it into source
   // code instead of $args[0]. Carry it in the child environment so paths with
   // spaces and PowerShell metacharacters remain data.
+  //
+  // Retried because the failure the probe reports as AdeProbeError is
+  // environmental, not a verdict about the artifact: the first signed release
+  // run died here on a file that existed and had just been signed, with the
+  // cmdlet throwing rather than answering — the shape of a scanner holding a
+  // just-written multi-GB installer. A real bad signature answers immediately
+  // ("NotSigned", "HashMismatch") and is never retried.
   const probe = createAuthenticodeProbe(filePath);
-  const { stdout } = await runCommand(probe.command, probe.args, { env: probe.env });
-
   let payload;
-  try {
-    payload = JSON.parse(stdout.trim());
-  } catch {
-    fail(`Unable to parse Authenticode signature status for ${description}: ${stdout.trim() || "empty output"}`);
+  let lastStderr = "";
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const { stdout, stderr } = await runCommand(probe.command, probe.args, { env: probe.env });
+    lastStderr = stderr.trim();
+    try {
+      payload = JSON.parse(stdout.trim());
+    } catch {
+      fail(
+        `Unable to parse Authenticode signature status for ${description}: ${stdout.trim() || "empty output"}` +
+          (lastStderr ? `\nprobe stderr: ${lastStderr}` : ""),
+      );
+    }
+    const retryable = payload?.Status === AUTHENTICODE_PROBE_ERROR_STATUS || !payload?.Status;
+    if (!retryable || attempt === 3) break;
+    console.log(
+      `[validate-win-artifacts] Signature probe for ${description} failed transiently ` +
+        `(${payload?.StatusMessage || lastStderr || "no detail"}); retrying in ${attempt * 10}s.`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, attempt * 10_000));
   }
 
   if (payload?.Status !== "Valid") {
     fail(
       `${description} is not Authenticode signed with a valid signature: ` +
-        `${payload?.Status ?? "unknown"} ${payload?.StatusMessage ?? ""}`.trim(),
+        `${payload?.Status || "unknown"} ${payload?.StatusMessage ?? ""}`.trim() +
+        (lastStderr ? `\nprobe stderr: ${lastStderr}` : ""),
     );
   }
   if (!payload?.TimestampSubject) {
