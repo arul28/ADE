@@ -135,21 +135,17 @@ export function SiteHeader() {
               GitHub
             </a>
 
-            {/* Points at the download page rather than straight at the macOS
-                release: ADE ships on more than one platform now, and a visitor
-                on Windows had no route to their own build from anywhere in the
-                site chrome. The page is where per-platform state — including
-                the Windows download gate — is expressed. It is a page view,
-                not a platform download, so it reports as a feature rather than
-                a download CTA. */}
-            <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm" className="ml-2">
-              Download
+            {/* Downloads live in the home hero, one button per platform, so
+                the chrome carries no download entry. This sends a visitor back
+                to the page that has them. */}
+            <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm" className="ml-2">
+              Get ADE
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm">
-              Download
+            <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm">
+              Get ADE
             </LinkButton>
             <button
               type="button"

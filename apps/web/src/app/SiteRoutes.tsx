@@ -2,7 +2,6 @@ import { useEffect } from "react";
 import { Route, Routes, useLocation } from "react-router-dom";
 import { AnimatePresence } from "framer-motion";
 import { HomePage } from "./pages/HomePage";
-import { DownloadPage } from "./pages/DownloadPage";
 import { OpenPage } from "./pages/OpenPage";
 import { PairPage } from "./pages/PairPage";
 import { PrivacyPage } from "./pages/PrivacyPage";
@@ -42,7 +41,6 @@ export function SiteRoutes() {
       <Routes location={location} key={location.pathname}>
         <Route path="/" element={<HomePage />} />
         <Route path="/_og" element={<OgImage />} />
-        <Route path="/download" element={<DownloadPage />} />
         <Route path="/open" element={<OpenPage />} />
         <Route path="/pair" element={<PairPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />

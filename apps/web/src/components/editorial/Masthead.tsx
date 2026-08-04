@@ -4,7 +4,7 @@ import {
   MARKETING_CTA_POSITIONS,
   MARKETING_FEATURES,
 } from "../../lib/marketingAnalytics";
-import { ArrowUpRight, BookOpen, Download, Github, Smartphone } from "lucide-react";
+import { ArrowUpRight, BookOpen, Github } from "lucide-react";
 
 /**
  * Magazine masthead — top bar on the dark cover.
@@ -55,28 +55,8 @@ export function Masthead() {
           >
             <Github className="h-3.5 w-3.5" /> GitHub
           </a>
-          <a
-            href={LINKS.testflight}
-            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_IOS}
-            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_IOS}
-            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-[2px] border border-[color:var(--color-violet-bright)] bg-[color:var(--color-violet-bright)]/10 px-3 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-violet-bright)] transition-all duration-200 hover:-translate-y-px hover:bg-[color:var(--color-violet-bright)]/20"
-          >
-            <Smartphone className="h-3.5 w-3.5" /> iOS
-          </a>
-          <a
-            href={LINKS.releasesLatest}
-            data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_MAC}
-            data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_MAC}
-            data-ade-analytics-position={MARKETING_CTA_POSITIONS.NAVBAR}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex items-center gap-1.5 rounded-[2px] border border-[color:var(--color-violet-bright)] bg-[color:var(--color-violet-bright)]/10 px-3 py-[7px] text-[12px] font-medium normal-case tracking-normal text-[color:var(--color-violet-bright)] transition-all duration-200 hover:-translate-y-px hover:bg-[color:var(--color-violet-bright)]/20"
-          >
-            <Download className="h-3.5 w-3.5" /> Mac
-          </a>
+          {/* No download entry in the chrome: the hero carries one button per
+              platform, which is where a visitor is already looking. */}
           <a
             href={LINKS.webClient}
             data-ade-analytics-feature={MARKETING_FEATURES.OPEN_WEB_CLIENT}

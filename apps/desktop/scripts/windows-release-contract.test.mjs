@@ -22,7 +22,9 @@ const releasePublishWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "w
 const prepareWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "prepare-release.yml"), "utf8").replace(/\r\n/g, "\n");
 const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "ci.yml"), "utf8").replace(/\r\n/g, "\n");
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
-const downloadPage = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "app", "pages", "DownloadPage.tsx"), "utf8");
+// Downloads moved out of a dedicated page and into the home hero, one button
+// per platform. The gate disclosure moved with them, so this reads the hero.
+const downloadPage = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "editorial", "Lede.tsx"), "utf8");
 const winArtifactValidator = fs.readFileSync(
   path.join(desktopRoot, "scripts", "validate-win-artifacts.mjs"),
   "utf8",
@@ -666,15 +668,16 @@ test("Windows package smoke requires every bundled provider runtime", () => {
   assert.match(winArtifactValidator, /droidSdkCreateSession/);
 });
 
-test("download page gates the Windows release and enables dedicated analytics", () => {
+test("the site gates the Windows release and enables dedicated analytics", () => {
   assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
   assert.match(downloadPage, /=== "1"/);
-  // The page must tell a visitor, in the ungated state, that the installer is
-  // not published and what has to happen first. The exact wording is free to
-  // change; what this pins is that the disclosure exists at all, so nobody can
-  // quietly ship a download card that implies an artifact is available.
+  // Ungated, the Windows CTA must not read as an available download, and must
+  // say what has to happen first. Wording is free to change; what this pins is
+  // that the disclosure exists at all, so nobody can quietly ship a Windows
+  // button implying an artifact is there. The label itself is checked because
+  // it is the only thing most visitors read.
   assert.match(downloadPage, /signed installer ships once the Windows release proof passes/);
-  assert.match(downloadPage, /not published yet/);
+  assert.match(downloadPage, /Windows \(beta\)/);
   assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
   assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
 });
