@@ -1215,20 +1215,41 @@ export const SessionListPane = React.memo(function SessionListPane({
   const handoffTimeBuckets = useMemo(() => bucketHandoffJobsByTime(filteredHandoffJobs), [filteredHandoffJobs]);
   const selectedCount = selectedSessionIds?.size ?? 0;
   const selectedSessions = useMemo(
-    () => allSessions.filter((session) => selectedSessionIds?.has(session.id)),
-    [allSessions, selectedSessionIds],
+    () => {
+      if (!selectedSessionIds?.size) return [];
+      const selected = allSessions.filter((session) => selectedSessionIds.has(session.id));
+      // Foreign rows are selectable exactly like local ones, so the bulk button
+      // counts have to see them too. Reading only `allSessions` (the active
+      // binding's roster) made a selection of another machine's rows report
+      // zero deletable sessions, so the header offered no Delete button at all.
+      const seen = new Set(selected.map((session) => session.id));
+      for (const row of foreignRows) {
+        for (const session of row.sessions) {
+          if (selectedSessionIds.has(session.id) && !seen.has(session.id)) {
+            seen.add(session.id);
+            selected.push(session);
+          }
+        }
+      }
+      return selected;
+    },
+    [allSessions, foreignRows, selectedSessionIds],
   );
   const selectedRunningCount = selectedSessions.filter(canBulkStopSession).length;
   const selectedDeletableCount = selectedSessions.filter(canBulkDeleteSession).length;
   // Bulk settle targets at-rest rows only — actively working sessions are not
   // "done" merely because they lack a settled marker.
-  const selectedSettleableSessions = useMemo(
-    () => selectedSessions.filter((session) =>
-      !session.settledAt
+  const selectedSettleableSessions = useMemo(() => {
+    // Bulk settle still goes through the unpinned `sessions.settleMany`, which
+    // only reaches the bound machine — so it stays scoped to the active
+    // roster's rows. Delete is the action that now carries per-row pins.
+    const localIds = new Set(allSessions.map((session) => session.id));
+    return selectedSessions.filter((session) =>
+      localIds.has(session.id)
+      && !session.settledAt
       && sessionStatusBucket(canonicalInputFromSummary(session)) !== "running"
-      && !sessionNeedsYou(canonicalInputFromSummary(session))),
-    [selectedSessions],
-  );
+      && !sessionNeedsYou(canonicalInputFromSummary(session)));
+  }, [allSessions, selectedSessions]);
   const quietlyAwaitingSessions = useMemo(
     () => awaitingInputFiltered.filter(
       (session) => !sessionNeedsYou(canonicalInputFromSummary(session)),

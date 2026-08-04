@@ -16,6 +16,35 @@ export function isChatToolType(toolType: string | null | undefined): boolean {
   );
 }
 
+/**
+ * Turns a runtime rejection into copy a person can act on.
+ *
+ * Every runtime call the Work rows make crosses `ipcRenderer.invoke`, which
+ * wraps the real message in `Error invoking remote method '<channel>': Error:
+ * …`. That prefix names an IPC channel the user has no relationship with, and
+ * it is the first thing they read in a red banner. Strip it, then translate the
+ * two failures a person can actually do something about — an ownership mismatch
+ * and an offline machine — into what is blocked and what to do next.
+ */
+export function formatSessionActionError(error: unknown, action: string): string {
+  const raw = (error instanceof Error ? error.message : String(error ?? "")).trim();
+  const message = raw
+    .replace(/^Error invoking remote method '[^']+':\s*/i, "")
+    .replace(/^Error:\s*/i, "")
+    .trim();
+  if (!message) return `${action} failed. Try again.`;
+  if (/(?:session|chat) '[^']*' was not found\.?$/i.test(message)) {
+    // The session belongs to a different machine than the one the call reached,
+    // or it is already gone. Both are fixed the same way, and neither is worth
+    // showing the raw id for.
+    return `${action} failed: that session is no longer on the machine this tab is connected to. Refresh the list, or switch to the machine that owns it and try again.`;
+  }
+  if (/is still owned by another ADE runtime/i.test(message)) {
+    return `${action} failed: another ADE runtime still owns this session. Stop it from that machine first.`;
+  }
+  return `${action} failed: ${message}`;
+}
+
 export function canBulkStopSession(session: Pick<TerminalSessionSummary, "status" | "toolType">): boolean {
   return session.status === "running" && !isChatToolType(session.toolType);
 }

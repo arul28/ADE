@@ -32,7 +32,13 @@ export function deleteTerminalSessionWithRuntimeCleanup({
 
   const session = sessionService.get(trimmedSessionId);
   if (!session) {
-    throw new Error(`Session '${trimmedSessionId}' was not found.`);
+    // Delete is idempotent: "the session is not here" IS the goal state, so it
+    // is a no-op, not a failure. The renderer routinely asks a runtime to
+    // delete a row it no longer has — an optimistic placeholder that never
+    // persisted, a row already deleted from another window or machine, or a
+    // stale row filed under the wrong roster. Throwing there put a red banner
+    // over a list that was already correct.
+    return false;
   }
   if (isTerminalChatToolType(session.toolType)) {
     throw new Error(`Session '${trimmedSessionId}' is an agent chat session. Use the chat delete flow instead.`);

@@ -1822,4 +1822,161 @@ describe("TerminalsPage chat session activation", () => {
       expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-running");
     });
   });
+
+  const studioBindingForDelete: OpenProjectBinding = {
+    kind: "remote",
+    key: "remote:target-studio:project-a",
+    targetId: "target-studio",
+    runtimeName: "Mac Studio",
+    projectId: "project-a",
+    rootPath: "/remote/repo-a",
+    displayName: "repo-a",
+  };
+
+  const mountForeignMachine = (sessions: TerminalSessionSummary[]) => {
+    workMocks.openRemoteProjectTabs = [studioBindingForDelete];
+    workMocks.crossMachineLanesByMachineId = {
+      "target-studio": {
+        machineId: "target-studio",
+        machineName: "Mac Studio",
+        targetId: "target-studio",
+        projectId: "project-a",
+        binding: studioBindingForDelete,
+        lanes: [{ ...workMocks.baseWork.lanes[1] as LaneSummary, id: "lane-foreign" }],
+        sessions,
+        online: true,
+      },
+    };
+  };
+
+  it("routes a delete to the machine that owns the session, not the bound one", async () => {
+    // The row carries no binding — exactly what the info popover passes, and what
+    // a stale row sitting in the active roster looks like. Ownership still has to
+    // come from the session→machine router, or the call lands on the bound
+    // machine and comes back "Session '…' was not found."
+    const foreignChat = workMocks.makeTerminalSession("chat-foreign-delete", "lane-foreign", "codex-chat", {
+      ptyId: null,
+    });
+    const agentChatDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mountForeignMachine([foreignChat]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: vi.fn() },
+      },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const event = { shiftKey: false, metaKey: false, ctrlKey: false } as React.MouseEvent;
+    act(() => {
+      sessionListPaneProps.latest?.onContextMenu(foreignChat, event);
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "context delete chat chat-foreign-delete" }));
+
+    await waitFor(() => {
+      expect(agentChatDelete).toHaveBeenCalledWith(
+        { sessionId: "chat-foreign-delete" },
+        expect.objectContaining({ key: studioBindingForDelete.key }),
+      );
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("mass-deletes selected rows that live on another machine", async () => {
+    // Bulk selection used to be resolved against the active binding's roster
+    // alone, so a selection of foreign rows produced an empty deletable set and
+    // the header's Delete button did nothing at all.
+    const foreignShell = workMocks.makeTerminalSession("shell-foreign-bulk", "lane-foreign", "shell", {
+      status: "completed",
+      runtimeState: "exited",
+    });
+    const sessionDelete = vi.fn().mockResolvedValue(undefined);
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    mountForeignMachine([foreignShell]);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: vi.fn() },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: sessionDelete },
+      },
+    });
+
+    render(<TerminalsPage />);
+    await screen.findByTestId("session-list-pane");
+
+    const event = { shiftKey: false, metaKey: true, ctrlKey: false } as React.MouseEvent;
+    act(() => {
+      sessionListPaneProps.latest?.onSelectForeignRuntimeSession?.(
+        foreignShell,
+        studioBindingForDelete,
+        event,
+        [foreignShell.id],
+      );
+    });
+    fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+
+    await waitFor(() => {
+      expect(sessionDelete).toHaveBeenCalledWith(
+        { sessionId: "shell-foreign-bulk" },
+        expect.objectContaining({ key: studioBindingForDelete.key }),
+      );
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("shell-foreign-bulk");
+    });
+    confirmSpy.mockRestore();
+  });
+
+  it("finishes a bulk delete past a row that fails, and never shows the IPC channel", async () => {
+    const failing = workMocks.makeTerminalSession("chat-stale", "lane-primary", "codex-chat", { ptyId: null });
+    const healthy = workMocks.makeTerminalSession("chat-live", "lane-primary", "codex-chat", { ptyId: null });
+    const agentChatDelete = vi.fn(async ({ sessionId }: { sessionId: string }) => {
+      if (sessionId === "chat-stale") {
+        throw new Error(
+          "Error invoking remote method 'ade.localRuntime.callAction': Error: Session 'chat-stale' was not found.",
+        );
+      }
+    });
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+    Object.defineProperty(window, "ade", {
+      configurable: true,
+      value: {
+        agentChat: { delete: agentChatDelete },
+        builtInBrowser: { onEvent: vi.fn(() => vi.fn()) },
+        sessions: { delete: vi.fn() },
+      },
+    });
+    workMocks.currentWork = {
+      ...workMocks.baseWork,
+      sessions: [failing, healthy],
+      visibleSessions: [failing, healthy],
+      runningFiltered: [failing, healthy],
+      runningSessions: [failing, healthy],
+      filtered: [failing, healthy],
+      sessionsGroupedByLane: new Map([["lane-primary", [failing, healthy]]]),
+      closingPtyIds: new Set<string>(),
+    };
+
+    render(<TerminalsPage />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-stale" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "select chat-live" }), { metaKey: true });
+    fireEvent.click(await screen.findByRole("button", { name: "bulk delete" }));
+
+    await waitFor(() => {
+      // One bad row must not abort the batch.
+      expect(agentChatDelete).toHaveBeenCalledTimes(2);
+      expect(workMocks.currentWork.removeSessionFromList).toHaveBeenCalledWith("chat-live");
+    });
+    expect(workMocks.currentWork.removeSessionFromList).not.toHaveBeenCalledWith("chat-stale");
+    const banner = await screen.findByRole("status");
+    expect(banner.textContent).toContain("1 of 2 deleted");
+    expect(banner.textContent).not.toContain("Error invoking remote method");
+    expect(banner.textContent).toContain("Refresh the list");
+    confirmSpy.mockRestore();
+  });
 });

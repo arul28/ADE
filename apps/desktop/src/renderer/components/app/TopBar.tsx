@@ -1629,15 +1629,23 @@ export function TopBar({
     onNavigate?.(route, { replace: true });
   }, [accountRouteActive, hubRouteActive, onNavigate, personalChatsRouteActive, project?.rootPath, remoteBinding]);
 
+  // Resolves when the switch has settled, so a caller that has to reconcile tab
+  // state afterwards (the machine switcher, below) runs against the new binding
+  // rather than racing the in-flight transition.
   const handleSwitchProject = useCallback(
-    (rootPath: string) => {
-      if (isProjectBusy) return;
+    (rootPath: string, opts?: { skipWorktreeGate?: boolean }): Promise<void> => {
+      if (isProjectBusy) return Promise.resolve();
       leaveMachineRoute();
       if (!remoteBinding && project?.rootPath === rootPath) {
         cancelNewTab();
-        return;
+        return Promise.resolve();
       }
-      switchProjectToPath(rootPath).catch(() => {});
+      // Called without the options argument at all when there is nothing to
+      // pass, so the store action keeps its single-argument call shape.
+      const switching = opts
+        ? switchProjectToPath(rootPath, opts)
+        : switchProjectToPath(rootPath);
+      return switching.then(() => {}).catch(() => {});
     },
     [
       cancelNewTab,
@@ -1650,14 +1658,14 @@ export function TopBar({
   );
 
   const handleSwitchRemoteProject = useCallback(
-    (binding: RemoteProjectTab) => {
-      if (isProjectBusy) return;
+    (binding: RemoteProjectTab): Promise<void> => {
+      if (isProjectBusy) return Promise.resolve();
       leaveMachineRoute();
       if (remoteBinding?.key === binding.key && !hubRouteActive) {
         cancelNewTab();
-        return;
+        return Promise.resolve();
       }
-      switchRemoteProject(binding.targetId, binding.projectId).catch(() => {});
+      return switchRemoteProject(binding.targetId, binding.projectId).then(() => {}).catch(() => {});
     },
     [
       cancelNewTab,
@@ -1681,8 +1689,33 @@ export function TopBar({
           [group.id]: machine.bindingKey,
         }));
       }
+      // Switching a tab's machine REBINDS THIS TAB — it is not a request to open
+      // a second one. Both switch paths only ever ADD the destination to the
+      // open-tab lists, and `groupProjectTabs` deliberately refuses to merge two
+      // OPEN checkouts that share an origin, so leaving the outgoing checkout
+      // open split the group in two and pushed a second tab onto the end of the
+      // strip. Releasing the machine we just left keeps the group — and the tab
+      // — singular. Platform-neutral: nothing here branches on the OS.
+      const outgoing = group?.machines.find(
+        (entry) => entry.bindingKey === activeTabBindingKey,
+      ) ?? null;
+      const releaseOutgoing = () => {
+        if (!outgoing || outgoing.bindingKey === machine.bindingKey) return;
+        if (outgoing.isLocal) {
+          setOpenProjectTabRoots((prev) =>
+            prev.filter((rootPath) => rootPath !== outgoing.rootPath));
+        } else {
+          setOpenRemoteProjectTabs((prev) =>
+            prev.filter((entry) => entry.key !== outgoing.bindingKey));
+        }
+      };
       if (machine.isLocal) {
-        handleSwitchProject(machine.rootPath);
+        // The gate exists to catch opening an unknown path that turns out to be
+        // a linked worktree. A machine in this group is a checkout the tab has
+        // already been bound to, so re-gating it on the way back would prompt
+        // about a decision the user already made.
+        void handleSwitchProject(machine.rootPath, { skipWorktreeGate: true })
+          .then(releaseOutgoing);
         return;
       }
       const binding = machine.binding?.kind === "remote"
@@ -1690,9 +1723,16 @@ export function TopBar({
         : openRemoteProjectTabsRef.current.find(
           (entry) => entry.key === machine.bindingKey,
         );
-      if (binding) handleSwitchRemoteProject(binding);
+      if (binding) void handleSwitchRemoteProject(binding).then(releaseOutgoing);
     },
-    [handleSwitchProject, handleSwitchRemoteProject, tabGroups],
+    [
+      activeTabBindingKey,
+      handleSwitchProject,
+      handleSwitchRemoteProject,
+      setOpenProjectTabRoots,
+      setOpenRemoteProjectTabs,
+      tabGroups,
+    ],
   );
 
   const handleRemoveTab = useCallback(

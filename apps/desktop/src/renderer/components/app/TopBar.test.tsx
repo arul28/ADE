@@ -843,6 +843,91 @@ describe("TopBar", () => {
     );
   });
 
+  it("rebinds the current tab when the machine is switched, instead of opening a second one", async () => {
+    // Both switch paths only ADD the destination to the open-tab lists, and two
+    // OPEN checkouts of one origin are deliberately kept as separate tabs — so
+    // leaving the outgoing checkout open turned a machine switch into a new tab
+    // at the end of the strip. Nothing here is platform-specific.
+    const remoteBinding = {
+      kind: "remote" as const,
+      key: "remote:studio:project-1",
+      targetId: "studio",
+      runtimeName: "Mac Studio",
+      projectId: "project-1",
+      rootPath: "/srv/ade/ADE",
+      displayName: "ADE",
+    };
+    (globalThis.window.ade.project.listRecent as any).mockResolvedValue([
+      {
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+        exists: true,
+        lastOpenedAt: "2026-04-22T00:00:00.000Z",
+        kind: "local",
+        laneCount: 3,
+        gitOriginUrl: "git@github.com:arul28/ADE.git",
+      },
+    ]);
+    (globalThis.window.ade.remoteRuntime.getConnectionSnapshot as any).mockResolvedValue(
+      makeRemoteConnectionSnapshot("studio", "Mac Studio", {
+        projects: [
+          {
+            projectId: "project-1",
+            rootPath: "/srv/ade/ADE",
+            displayName: "ADE",
+            addedAt: 0,
+            lastOpenedAt: 0,
+            gitOriginUrl: "https://github.com/arul28/ADE",
+          },
+        ],
+      }),
+    );
+    // Stands in for the real action, which binds the tab and records the tab entry.
+    const switchRemoteProject = vi.fn(async () => {
+      act(() => {
+        useAppStore.setState({
+          project: { rootPath: remoteBinding.rootPath, displayName: "ADE", baseRef: "main" },
+          projectBinding: remoteBinding,
+          openRemoteProjectTabs: [remoteBinding],
+        } as any);
+      });
+      return remoteBinding;
+    });
+    useAppStore.setState({
+      project: { rootPath: "/Users/arul/ADE", displayName: "ADE", baseRef: "main" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/Users/arul/ADE",
+        rootPath: "/Users/arul/ADE",
+        displayName: "ADE",
+      },
+      openRemoteProjectTabs: [],
+      openProjectTabRoots: ["/Users/arul/ADE"],
+      projectHydrated: true,
+      showWelcome: false,
+      switchRemoteProject,
+    } as any);
+
+    render(<TopBar />);
+    await screen.findByTitle("/Users/arul/ADE");
+
+    const caret = screen.getByLabelText("Machines for ADE");
+    fireEvent.mouseDown(caret);
+    fireEvent.click(caret);
+    fireEvent.click(await screen.findByRole("menuitemradio", { name: /Mac Studio/ }));
+
+    await waitFor(() => {
+      expect(switchRemoteProject).toHaveBeenCalledWith("studio", "project-1");
+      // The checkout we switched AWAY from stops being an open tab: the group
+      // stays one tab whose machine changed.
+      expect(useAppStore.getState().openProjectTabRoots).not.toContain("/Users/arul/ADE");
+    });
+    await waitFor(() => {
+      expect(screen.queryByTitle("/Users/arul/ADE")).toBeNull();
+    });
+    expect(screen.getByTitle("Mac Studio: /srv/ade/ADE (Connected)")).toBeTruthy();
+  });
+
   it("offers to add a machine from a repo tab that only has one", async () => {
     render(<TopBar />);
 

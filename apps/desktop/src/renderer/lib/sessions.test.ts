@@ -3,6 +3,7 @@ import type { TerminalSessionSummary } from "../../shared/types";
 import {
   canBulkDeleteSession,
   canBulkStopSession,
+  formatSessionActionError,
   getStaleRunningCliSessionAgeHours,
   isChatToolType,
   normalizeSessionLabel,
@@ -169,5 +170,41 @@ describe("getStaleRunningCliSessionAgeHours", () => {
     const idle = new Date(NOW - 50 * HOUR).toISOString();
     expect(getStaleRunningCliSessionAgeHours(session({ toolType: "claude-chat", lastActivityAt: idle }), NOW)).toBeNull();
     expect(getStaleRunningCliSessionAgeHours(session({ status: "detached", lastActivityAt: idle }), NOW)).toBeNull();
+  });
+});
+
+describe("formatSessionActionError", () => {
+  const IPC_PREFIX = "Error invoking remote method 'ade.localRuntime.callAction': Error: ";
+
+  it("never leaks the IPC channel name into user-facing copy", () => {
+    const message = formatSessionActionError(
+      new Error(`${IPC_PREFIX}Something specific went wrong.`),
+      "Delete",
+    );
+    expect(message).toBe("Delete failed: Something specific went wrong.");
+    expect(message).not.toContain("ade.localRuntime.callAction");
+  });
+
+  it("says what is blocked and what to do next when the runtime has no such session", () => {
+    const message = formatSessionActionError(
+      new Error(`${IPC_PREFIX}Session 'a5cc9bd3-be7c-494c-bc7b-9c45251dc7b1' was not found.`),
+      "Delete",
+    );
+    expect(message).toContain("no longer on the machine this tab is connected to");
+    expect(message).toContain("Refresh the list");
+    // The raw id is an implementation detail the user cannot act on.
+    expect(message).not.toContain("a5cc9bd3");
+  });
+
+  it("names the fix for a session another runtime still owns", () => {
+    const message = formatSessionActionError(
+      new Error(`${IPC_PREFIX}Session 'x' is still owned by another ADE runtime. Stop it from that runtime before deleting it.`),
+      "Delete",
+    );
+    expect(message).toContain("Stop it from that machine first.");
+  });
+
+  it("falls back to a plain sentence when there is no message at all", () => {
+    expect(formatSessionActionError(null, "Delete")).toBe("Delete failed. Try again.");
   });
 });
