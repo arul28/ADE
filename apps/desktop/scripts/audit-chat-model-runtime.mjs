@@ -920,11 +920,16 @@ function spawnDevApp(options) {
     ADE_PROJECT_ROOT: options.projectRoot,
     NO_DEVTOOLS: "1",
   };
-  const child = cp.spawn("npm", ["run", "dev"], {
+  // Windows npm is a `.cmd` shim: Node cannot spawn it by bare name (ENOENT)
+  // and refuses `.cmd` outright without a shell (EINVAL, CVE-2024-27980). The
+  // arguments here are fixed literals, so nothing needs quoting.
+  const isWindows = process.platform === "win32";
+  const child = cp.spawn(isWindows ? "npm.cmd" : "npm", ["run", "dev"], {
     cwd: desktopRoot,
     env,
-    detached: process.platform !== "win32",
+    detached: !isWindows,
     stdio: ["ignore", "pipe", "pipe"],
+    ...(isWindows ? { shell: true, windowsHide: true } : {}),
   });
   const logs = [];
   const append = (chunk) => {
