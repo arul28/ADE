@@ -227,6 +227,23 @@ describe("resolveChatMentionDetails", () => {
     });
   });
 
+  // A trailing unanswered user message must not read as an answered exchange:
+  // the earlier assistant reply renders before it, in transcript order.
+  it("keeps transcript order when the newest message is an unanswered user turn", async () => {
+    const { service } = makeService({
+      readChatTranscript: async () => ({
+        entries: [
+          { role: "assistant", text: "the redirect never settles", timestamp: "2026-08-01T00:01:00.000Z" },
+          { role: "user", text: "ok now fix the cookie path too", timestamp: "2026-08-01T00:02:00.000Z" },
+        ],
+      }),
+    });
+    const detail = (await service.resolveChatMentionDetails([{ kind: "chat", id: "s-new" }])).get("chat:s-new");
+    expect(detail?.preview).toBe(
+      "assistant: the redirect never settles\nuser: ok now fix the cookie path too",
+    );
+  });
+
   it("survives a failing transcript read by dropping only the preview", async () => {
     const { service } = makeService({
       readChatTranscript: async () => {

@@ -5036,7 +5036,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
             lastActivityAt: epoch(row.createdAt),
           }));
         const terminals: ChatMentionSuggestion[] = MOCK_SESSIONS
-          .filter((row) => row.ptyId && !String(row.toolType ?? "").includes("chat"))
+          .filter((row) => !row.archivedAt && row.ptyId && !String(row.toolType ?? "").includes("chat"))
           .map((row) => ({
             kind: "terminal" as const,
             id: String(row.id),

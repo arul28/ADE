@@ -272,11 +272,24 @@ final class WorkComposerSuggestionController: ObservableObject {
   var laneId: String? {
     didSet {
       // The cached workspace belongs to the previous lane; a stale entry
-      // would make @ quick-open search the wrong worktree.
+      // would make @ quick-open search the wrong worktree. The generation
+      // bump plus cancel also invalidates the in-flight fetch, whose
+      // post-await writes could otherwise restore the old lane's workspace
+      // id, re-populate the cache, and publish old-lane rows.
       if oldValue != laneId {
+        laneGeneration += 1
+        fetchTask?.cancel()
+        fetchTask = nil
         cachedWorkspaceId = nil
         fileCache.removeAll()
         fileCacheOrder.removeAll()
+        if let match = activeMatch, match.kind == .at {
+          // An @ trigger typed against the previous lane re-fetches against
+          // the new one instead of keeping the superseded results.
+          scheduleFileFetch(query: match.query)
+        } else if isLoading {
+          isLoading = false
+        }
       }
     }
   }
@@ -288,6 +301,9 @@ final class WorkComposerSuggestionController: ObservableObject {
 
   private var fetchTask: Task<Void, Never>?
   private var cachedWorkspaceId: String?
+  /// Bumped on every lane change; every post-await write in a fetch compares
+  /// its captured value so a superseded task cannot touch the new lane's state.
+  private var laneGeneration = 0
 
   /// Per-lane quick-open results keyed by lowercased query (`""` is the browse
   /// list). Backspacing through a path is the common case on mobile and every
@@ -368,6 +384,7 @@ final class WorkComposerSuggestionController: ObservableObject {
     isLoading = true
     let laneId = laneId
     let sync = syncService
+    let generation = laneGeneration
     fetchTask = Task { [weak self] in
       // Small debounce so rapid typing doesn't spawn a fetch per keystroke.
       try? await Task.sleep(nanoseconds: 40_000_000)
@@ -377,9 +394,16 @@ final class WorkComposerSuggestionController: ObservableObject {
         return
       }
       do {
-        let workspaceId = try await self.resolveWorkspaceId(laneId: laneId, sync: sync)
-        guard !Task.isCancelled, let workspaceId else {
-          await MainActor.run { self.finishFiles([]) }
+        let workspaceId = try await self.resolveWorkspaceId(
+          laneId: laneId,
+          sync: sync,
+          generation: generation
+        )
+        guard !Task.isCancelled, self.laneGeneration == generation, let workspaceId else {
+          await MainActor.run {
+            guard self.laneGeneration == generation else { return }
+            self.finishFiles([])
+          }
           return
         }
         let items = try await sync.quickOpen(
@@ -388,7 +412,7 @@ final class WorkComposerSuggestionController: ObservableObject {
           limit: 20,
           includeIgnored: true
         )
-        guard !Task.isCancelled else { return }
+        guard !Task.isCancelled, self.laneGeneration == generation else { return }
         let mapped = items.map { item -> WorkComposerSuggestion in
           let name = (item.path as NSString).lastPathComponent
           let dir = (item.path as NSString).deletingLastPathComponent
@@ -401,6 +425,7 @@ final class WorkComposerSuggestionController: ObservableObject {
           )
         }
         await MainActor.run {
+          guard self.laneGeneration == generation else { return }
           // Only successful fetches are cached — caching the `[]` from a failed
           // round-trip would pin an empty list for the whole TTL.
           self.rememberFiles(cacheKey, mapped)
@@ -408,7 +433,10 @@ final class WorkComposerSuggestionController: ObservableObject {
         }
       } catch {
         guard !Task.isCancelled else { return }
-        await MainActor.run { self.finishFiles([]) }
+        await MainActor.run {
+          guard self.laneGeneration == generation else { return }
+          self.finishFiles([])
+        }
       }
     }
   }
@@ -421,11 +449,17 @@ final class WorkComposerSuggestionController: ObservableObject {
     suggestions = items
   }
 
-  private func resolveWorkspaceId(laneId: String, sync: SyncService) async throws -> String? {
+  private func resolveWorkspaceId(
+    laneId: String,
+    sync: SyncService,
+    generation: Int
+  ) async throws -> String? {
     if let cachedWorkspaceId { return cachedWorkspaceId }
     let workspaces = try await sync.listWorkspaces()
     let resolved = workFilesWorkspace(for: laneId, in: workspaces)?.id
-    if let resolved { cachedWorkspaceId = resolved }
+    // A lane change during the await means this id belongs to the old lane:
+    // return it un-cached so the new lane's fetch resolves its own workspace.
+    if let resolved, laneGeneration == generation { cachedWorkspaceId = resolved }
     return resolved
   }
 }

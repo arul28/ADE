@@ -288,13 +288,17 @@ export function createChatMentionService(deps: ChatMentionServiceDeps) {
         maxChars: CHAT_PREVIEW_MAX_CHARS,
       });
       const entries = transcript.entries ?? [];
+      // Keep transcript order: the preview is labeled "most recent exchange",
+      // so a trailing unanswered user message must render AFTER the earlier
+      // assistant reply (or alone) — never as if it had been answered.
       const lastUser = [...entries].reverse().find((entry) => entry.role === "user");
       const lastAssistant = [...entries].reverse().find((entry) => entry.role === "assistant");
-      const lines: string[] = [];
-      if (lastUser) lines.push(`user: ${(lastUser.displayText || lastUser.text || "").trim()}`);
-      if (lastAssistant) {
-        lines.push(`assistant: ${(lastAssistant.displayText || lastAssistant.text || "").trim()}`);
-      }
+      const picked = [lastUser, lastAssistant]
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+        .sort((a, b) => entries.indexOf(a) - entries.indexOf(b));
+      const lines = picked.map(
+        (entry) => `${entry.role}: ${(entry.displayText || entry.text || "").trim()}`,
+      );
       // Truncation is renderChatMentionBlock's job (it is the single owner of
       // the cap and of CRLF normalization); this path only bounds the read.
       const joined = lines.join("\n").trim();

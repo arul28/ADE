@@ -2695,10 +2695,13 @@ export function AgentChatComposer({
     chip.dataset.composerChip = kind;
     chip.dataset.composerChipText = text;
     chip.className = "mx-0.5 inline-flex max-w-[280px] translate-y-[1px] items-center rounded-md border border-violet-300/22 bg-violet-500/12 px-1.5 py-0.5 font-sans text-[length:calc(var(--chat-font-size)*12/14)] leading-5 text-violet-100/88 align-baseline";
-    chip.title = displayLabel && displayLabel !== text ? `${displayLabel} — ${text}` : text;
+    // An untitled entity can produce an empty displayLabel; fall back to the
+    // serialized token so a chip is never visually blank.
+    const chipLabel = displayLabel?.trim() || null;
+    chip.title = chipLabel && chipLabel !== text ? `${chipLabel} — ${text}` : text;
     const label = document.createElement("span");
     label.className = "truncate";
-    label.textContent = displayLabel ?? text;
+    label.textContent = chipLabel ?? text;
     chip.appendChild(label);
     return chip;
   }, []);

@@ -227,7 +227,11 @@ export function appendChatMentionBlocks(text: string, blocks: string[]): string 
 export function carryChatMentionBlocks(source: string, target: string): string {
   const index = source.indexOf(CHAT_MENTION_BLOCK_MARKER);
   if (index < 0) return target;
-  if (target.includes(CHAT_MENTION_BLOCK_HEADER)) return target;
+  // Guard on the rendered tag, not the prose header sentence: a template whose
+  // markdown happens to contain the header must still receive the blocks,
+  // while a template that interpolated $ARGUMENTS already carries real
+  // <ade-mention> tags (previews are neutralized, so the tag is unambiguous).
+  if (target.includes("<ade-mention")) return target;
   return `${target.trimEnd()}${source.slice(index)}`;
 }
 

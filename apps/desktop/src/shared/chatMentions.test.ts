@@ -183,6 +183,14 @@ describe("chat mention expansion format", () => {
     expect(carryChatMentionBlocks(source, carried)).toBe(carried);
     // Nothing to carry is a no-op.
     expect(carryChatMentionBlocks("plain @lane:l1", "expanded")).toBe("expanded");
+    // The dedupe guard keys on the rendered <ade-mention tag, not the prose
+    // header sentence — a template whose markdown quotes the header still
+    // gets the blocks.
+    const proseTarget =
+      "Referenced ADE entities (pointers, not attachments — read more with the commands below): is a header ADE emits.";
+    expect(carryChatMentionBlocks(source, proseTarget)).toContain(
+      '<ade-mention kind="lane" id="l1">',
+    );
   });
 
   // Preview bodies are attacker-influenceable (a terminal can print anything).

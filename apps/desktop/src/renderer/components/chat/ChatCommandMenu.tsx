@@ -434,7 +434,15 @@ export const ChatCommandMenu = forwardRef<ChatCommandMenuHandle, ChatCommandMenu
       : isAtTrigger && !canSearchAt
         ? "Search unavailable for this session"
         : !query.length
-          ? (isAtTrigger ? (items.length === 0 ? "Type to search files" : null) : "Type to search commands")
+          ? (isAtTrigger
+              // Empty @ is a real browse now; an empty result means the
+              // workspace genuinely had nothing to list, not "type first".
+              ? (items.length === 0
+                  ? (onMentionSearch
+                      ? "No files, chats, lanes, or terminals to browse — type to search"
+                      : "No files to browse — type to search")
+                  : null)
+              : "Type to search commands")
           : items.length === 0
             ? (isAtTrigger ? `No matches for "${query}"` : `No commands match "${query}"`)
             : null;
