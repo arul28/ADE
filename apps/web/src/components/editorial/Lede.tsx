@@ -7,10 +7,10 @@ import {
   MARKETING_FEATURES,
 } from "../../lib/marketingAnalytics";
 
-// Windows downloads stay gated until the signed release proof passes. This is
-// the only switch the site reads; ADE_WINDOWS_PUBLIC_RELEASE_ENABLED is the CI
-// variable that actually produces the assets.
-const WINDOWS_DOWNLOAD_ENABLED = import.meta.env.VITE_ADE_WINDOWS_DOWNLOAD_ENABLED === "1";
+// The Windows download is permanently on: v1.2.52 shipped the first signed
+// Windows installer, so the VITE_ADE_WINDOWS_DOWNLOAD_ENABLED gate this
+// constant used to read is retired. ADE_WINDOWS_PUBLIC_RELEASE_ENABLED remains
+// the CI-side switch that produces the assets.
 
 /**
  * Real platform marks. lucide dropped brand logos over trademark concerns, so
@@ -99,28 +99,21 @@ export function Lede() {
           >
             <AppleMark className="h-4 w-4" /> Download for Mac
           </a>
-          {/* Windows sits beside macOS rather than behind a download page, but
-              the installer is not published until the release proof passes.
-              Until the gate flips this links to the releases list and says
-              "beta" rather than promising a file that 404s. The wording is
-              pinned by the Windows release contract test, which used to pin
-              the download page. */}
+          {/* Windows sits beside macOS rather than behind a download page.
+              The wording is pinned by the Windows release contract test, which
+              used to pin the download page. */}
           <a
-            href={WINDOWS_DOWNLOAD_ENABLED ? LINKS.releasesLatest : LINKS.releases}
+            href={LINKS.releasesLatest}
             data-ade-analytics-feature={MARKETING_FEATURES.DOWNLOAD_WINDOWS}
             data-ade-analytics-cta={MARKETING_CTA_LABELS.DOWNLOAD_WINDOWS}
             data-ade-analytics-position={MARKETING_CTA_POSITIONS.HERO}
             target="_blank"
             rel="noreferrer"
-            title={
-              WINDOWS_DOWNLOAD_ENABLED
-                ? "Windows 10/11 x64. Per-user installer, no administrator rights."
-                : "Windows 10/11 x64. The signed installer ships once the Windows release proof passes."
-            }
+            title="Windows 10/11 x64. Per-user installer, no administrator rights."
             className="inline-flex items-center gap-2 rounded-[2px] border border-[color:var(--color-hairline-strong)] px-5 py-3 text-[14px] font-medium text-[color:var(--color-cream)] transition-colors hover:border-[color:var(--color-cream)] hover:bg-white/[0.04]"
           >
             <WindowsMark className="h-[15px] w-[15px]" />
-            {WINDOWS_DOWNLOAD_ENABLED ? "Download for Windows" : "Windows (beta)"}
+            Download for Windows
           </a>
           <a
             href={LINKS.testflight}
