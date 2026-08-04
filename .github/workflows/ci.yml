@@ -587,13 +587,21 @@ jobs:
 
   package-win:
     needs: [changes, build-runtime-binaries]
-    # Never skipped on main or on a dispatch: release-core.yml's verify job
+    # Never runs on a pull request. Building the NSIS installer takes ~40
+    # minutes, which is not a reasonable price for review feedback, and a PR
+    # cannot ship anything on its own.
+    #
+    # It still runs on every push to main and on dispatch, and that is
+    # load-bearing rather than belt-and-braces: release-core.yml's verify job
     # requires a ci-pass check run on the exact SHA it builds, so every SHA
-    # that could be released must have had its installer actually built.
+    # that could be released must have had its installer really built. The
+    # paths filter still applies there, so a docs-only commit on main skips it
+    # too.
     if: >-
-      needs.changes.outputs.package-win == 'true'
-      || github.event_name == 'workflow_dispatch'
-      || github.ref == 'refs/heads/main'
+      github.event_name != 'pull_request'
+      && (needs.changes.outputs.package-win == 'true'
+        || github.event_name == 'workflow_dispatch'
+        || github.ref == 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -723,6 +731,7 @@ jobs:
         env:
           PACKAGE_WIN_RESULT: ${{ needs.package-win.result }}
           PACKAGE_WIN_CHANGED: ${{ needs.changes.outputs.package-win }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
           if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
@@ -762,7 +771,11 @@ jobs:
             fi
           done
           if [[ "$PACKAGE_WIN_RESULT" == "skipped" ]]; then
-            if [[ "$PACKAGE_WIN_CHANGED" == "true" ]]; then
+            # Two legitimate skips: a pull request never builds the installer,
+            # and a push where the filter proved no packaging input changed.
+            # Anything else is a skip nobody asked for and must fail, so a
+            # future conditional job cannot start passing green while dead.
+            if [[ "$IS_PULL_REQUEST" != "true" && "$PACKAGE_WIN_CHANGED" == "true" ]]; then
               echo "::error::package-win was skipped although packaging inputs changed"
               exit 1
             fi
