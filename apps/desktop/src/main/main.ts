@@ -373,18 +373,23 @@ configureDesktopUserDataPath();
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
+  // Per channel. Stable keeps the bare name so an existing install's staged
+  // download is not orphaned; a channel build gets its own directory so two
+  // channels cannot stage different versions over each other.
+  const channel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const cacheDirName = channel ? `${AUTO_UPDATER_CACHE_DIR_NAME}-${channel}` : AUTO_UPDATER_CACHE_DIR_NAME;
   if (process.platform === "win32") {
     return path.join(
       process.env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local"),
-      AUTO_UPDATER_CACHE_DIR_NAME,
+      cacheDirName,
     );
   }
   if (process.platform === "darwin") {
-    return path.join(homeDir, "Library", "Caches", AUTO_UPDATER_CACHE_DIR_NAME);
+    return path.join(homeDir, "Library", "Caches", cacheDirName);
   }
   return path.join(
     process.env.XDG_CACHE_HOME || path.join(homeDir, ".cache"),
-    AUTO_UPDATER_CACHE_DIR_NAME,
+    cacheDirName,
   );
 }
 
@@ -2287,7 +2292,13 @@ app.whenReady().then(async () => {
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     installTargetPath: process.execPath,
-    autoCheckEnabled: app.isPackaged,
+    // Channel builds do not check for updates. There is no per-channel publish
+    // feed yet, so a Beta would poll Stable's `latest.yml` and offer to
+    // "update" itself into a Stable installer — a different appId, a different
+    // ADE home, and an install that would land beside itself rather than over
+    // itself. Rebuild a channel to move it forward until a real per-channel
+    // feed exists.
+    autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),
