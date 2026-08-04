@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createLaneService } from "./laneService";
+import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
 
 vi.mock("../git/git", () => ({
   getHeadSha: vi.fn(),
@@ -6639,5 +6639,44 @@ describe("laneService branch drift", () => {
       service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
     ).rejects.toThrow(/already on its recorded branch/i);
     expect(await service.getBranchDrift({ laneId: "lane-child" })).toBeNull();
+  });
+});
+
+
+describe("parseGitWorktreePorcelain", () => {
+  // The parser resolves each recorded path, so expectations are built the same
+  // way rather than pinned to a posix spelling Windows would rewrite.
+  const repo = path.resolve("/repo");
+  const lane = path.resolve("/repo/.ade/worktrees/lane-a");
+  const LF = [
+    "worktree /repo",
+    "HEAD abc",
+    "branch refs/heads/main",
+    "",
+    "worktree /repo/.ade/worktrees/lane-a",
+    "HEAD def",
+    "branch refs/heads/ade/lane-a",
+    "",
+  ].join("\n");
+
+  it("parses the LF stream git for Windows emits today", () => {
+    const parsed = parseGitWorktreePorcelain(LF);
+    expect(parsed.map((wt) => wt.path)).toEqual([repo, lane]);
+    expect(parsed[1]?.branch).toBe("ade/lane-a");
+  });
+
+  it("parses a CRLF stream into the same worktrees", () => {
+    // The block separator was /\n\n+/ while the line split one line below was
+    // already CRLF-aware. A CRLF stream matched no separator at all, collapsed
+    // the whole listing into a single block, and returned exactly one worktree
+    // — silently disabling worktree reconcile rather than failing.
+    const parsed = parseGitWorktreePorcelain(LF.split("\n").join("\r\n"));
+    expect(parsed.map((wt) => wt.path)).toEqual([repo, lane]);
+    expect(parsed[1]?.branch).toBe("ade/lane-a");
+  });
+
+  it("still parses a bare worktree entry out of a CRLF stream", () => {
+    const parsed = parseGitWorktreePorcelain(["worktree /repo.git", "bare", ""].join("\r\n"));
+    expect(parsed).toEqual([expect.objectContaining({ path: path.resolve("/repo.git"), isBare: true })]);
   });
 });

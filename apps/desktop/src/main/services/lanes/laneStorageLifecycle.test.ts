@@ -124,7 +124,19 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
-  while (roots.length > 0) fs.rmSync(roots.pop()!, { recursive: true, force: true });
+  // Best effort: on Windows a fixture root can be undeletable (`rmSync` raises
+  // EPERM on a directory symlink the test could not create in the first place
+  // without Developer Mode). Throwing here popped the failure onto whichever
+  // test ran next — and, because the loop aborted, re-raised it on every test
+  // after that too. Cleanup noise must not masquerade as an assertion failure.
+  while (roots.length > 0) {
+    const root = roots.pop()!;
+    try {
+      fs.rmSync(root, { recursive: true, force: true });
+    } catch {
+      // leave it to the OS temp sweeper
+    }
+  }
 });
 
 describe("lane storage lifecycle", () => {
@@ -613,5 +625,60 @@ describe("lane storage lifecycle", () => {
     expect(db.get("select lane_id from local_lane_storage_state where lane_id = ?", ["12345678-lane"])).toBeNull();
     expect(db.get("select id from lanes where id = ?", ["12345678-lane"])).toBeNull();
     db.close();
+  });
+});
+
+/**
+ * `worktreesDir` reaches the service through `path.resolve` only, while a lane
+ * adopted from git holds `fs.realpathSync.native` output. On Windows those two
+ * disagree without a symlink anywhere in sight — measured: `path.resolve`
+ * preserves an 8.3 short name and a lowercase drive letter that
+ * `realpathSync.native` expands and normalizes. Reclaim compared the row's
+ * parent against one spelling with `===`, so lanes ADE itself created reported
+ * `worktree_outside_managed_root` and "Archive & Reclaim" hard-failed.
+ *
+ * Modelled here as a case difference, which is the same class of divergence and
+ * the one a case-insensitive filesystem can reproduce; on Linux the two
+ * spellings really are different directories, so the case runs only where the
+ * platform agrees they are not.
+ */
+const itOnCaseInsensitiveFs = it.runIf(process.platform === "win32" || process.platform === "darwin");
+
+describe("reclaim accepts either spelling of the managed worktrees folder", () => {
+  async function caseDivergentFixture() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-lane-storage-case-"));
+    roots.push(root);
+    const db = await openKvDb(path.join(root, ".ade", "ade.db"), logger as any);
+    const seeded = seed(db, root);
+    fs.mkdirSync(seeded.worktreePath, { recursive: true });
+    // The service is handed a differently-cased spelling of the very folder the
+    // lane row sits in — the same directory, written another way.
+    const flipped = seeded.worktreesDir.replace(`${path.sep}.ade${path.sep}`, `${path.sep}.ADE${path.sep}`);
+    expect(flipped).not.toBe(seeded.worktreesDir);
+    const service = createLaneService({
+      db,
+      projectRoot: root,
+      projectId: seeded.projectId,
+      defaultBaseRef: "main",
+      worktreesDir: flipped,
+      logger: logger as any,
+    });
+    return { db, service, ...seeded };
+  }
+
+  itOnCaseInsensitiveFs("does not report worktree_outside_managed_root", async () => {
+    const { service } = await caseDivergentFixture();
+    installGitStub();
+    const risk = await service.getReclaimRisk("12345678-lane");
+    expect(risk.blockedReasons.map((reason) => reason.code)).not.toContain("worktree_outside_managed_root");
+  });
+
+  itOnCaseInsensitiveFs("does not reject the lane folder as unmanaged", async () => {
+    const { service } = await caseDivergentFixture();
+    installGitStub();
+    await expect(service.archiveAndReclaim({
+      laneId: "12345678-lane",
+      confirmation: "RECLAIM",
+    })).resolves.not.toThrow(/outside ADE's managed worktree folder/i);
   });
 });

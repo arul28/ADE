@@ -9,9 +9,59 @@ import {
   canonicalCodexRecords,
   countExternalSessionUserMessages,
   firstUserTextFromRecords,
+  cwdIsInScope,
+  isPathInside,
+  normalizeProviderCwd,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
 } from "./discoveryUtils";
+
+describe("normalizeProviderCwd", () => {
+  it("keeps a missing cwd missing", () => {
+    // "no cwd recorded" is not the same as "cwd is empty": an unscoped listing
+    // still shows the former.
+    expect(normalizeProviderCwd(null)).toBeNull();
+    expect(normalizeProviderCwd("")).toBeNull();
+  });
+
+  it("leaves a plain path untouched on every platform", () => {
+    const plain = process.platform === "win32" ? "C:\\Users\\arul\\ADE" : "/Users/arul/ADE";
+    expect(normalizeProviderCwd(plain)).toBe(plain);
+  });
+
+  // The `\\?\` transform itself is platform-injectable and covered exhaustively
+  // in shared/pathCompare.test.ts; these two pin the wiring, which is not.
+  it.runIf(process.platform === "win32")("strips the extended-length prefix Codex records", () => {
+    expect(normalizeProviderCwd("\\\\?\\C:\\Users\\arul\\ADE")).toBe("C:\\Users\\arul\\ADE");
+  });
+
+  it.runIf(process.platform !== "win32")("never rewrites a posix path containing backslashes", () => {
+    expect(normalizeProviderCwd("\\\\?\\weird")).toBe("\\\\?\\weird");
+  });
+});
+
+describe("scope containment", () => {
+  const root = process.platform === "win32" ? "C:\\Users\\arul\\ADE" : "/Users/arul/ADE";
+  const child = path.join(root, "apps", "desktop");
+
+  it("accepts a descendant and rejects a name-prefix sibling", () => {
+    expect(isPathInside(root, child)).toBe(true);
+    expect(isPathInside(root, `${root}-old`)).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32")("accepts a cwd whose casing differs from the scope root", () => {
+    // PowerShell preserves whatever the user typed after `cd`, and
+    // fs.realpathSync does not canonicalize case on Windows, so the two
+    // spellings reach this check verbatim.
+    expect(cwdIsInScope("c:\\users\\arul\\ade\\apps", [root])).toBe(true);
+  });
+
+  it.runIf(process.platform === "win32")("accepts an extended-length cwd against a plain scope root", () => {
+    // Bug 1 end to end: `path.relative` reads `\\?\C:\` as a UNC root, so before
+    // the strip every Codex session tested as out of scope.
+    expect(cwdIsInScope(`\\\\?\\${child}`, [root])).toBe(true);
+  });
+});
 
 describe("firstUserTextFromRecords", () => {
   it("skips message records with explicit assistant role", () => {

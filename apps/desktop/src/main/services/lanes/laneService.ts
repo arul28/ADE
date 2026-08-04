@@ -7,6 +7,7 @@ import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { detachPullRequestRowsByIds, detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
+import { pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -449,8 +450,13 @@ function worktreeStdout(value: unknown): string {
   return "";
 }
 
-function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
-  const blocks = stdout.split(/\n\n+/).filter(Boolean);
+export function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
+  // Blank-line separated records, and the separator has to tolerate CRLF for the
+  // same reason the line split one line below does. Git for Windows emits LF
+  // here today, but a `\r\n\r\n` stream would match nothing, collapse the whole
+  // listing into a single block, and yield exactly one worktree — silently
+  // disabling worktree reconcile rather than failing.
+  const blocks = stdout.split(/(?:\r?\n){2,}/).filter(Boolean);
   const worktrees: GitWorktreeInfo[] = [];
 
   for (const block of blocks) {
@@ -1998,6 +2004,31 @@ export function createLaneService({
     canonicalWorktreesDir,
     canonicalPrimaryWorktreePath,
   ]);
+
+  /**
+   * Whether a lane folder sits directly inside ADE's managed worktrees folder,
+   * under either spelling of that folder.
+   *
+   * `worktreesDir` reaches this service through `path.resolve` only, while a
+   * lane adopted from git holds `fs.realpathSync.native` output — and on Windows
+   * those two disagree in ways that have nothing to do with symlinks. Measured
+   * on this machine: `path.resolve` preserves an 8.3 short name
+   * (`C:\Users\me\DOCUME~1\...`) that `realpathSync.native` expands, and it
+   * preserves a lowercase drive letter that `realpathSync.native` normalizes to
+   * `C:`. OneDrive Known Folder Move makes it certain rather than incidental,
+   * because Documents becomes a junction.
+   *
+   * Both spellings name the same directory, so accepting either only ever
+   * re-admits ADE's own worktrees. `pathsEqual` on top of that covers the drive
+   * letter and any other case difference. This is the same "either spelling"
+   * rule the restore path and the residual-cleanup rails already apply; reclaim
+   * comparing against one spelling alone is what made "Archive & Reclaim"
+   * unreachable for lanes ADE itself created.
+   */
+  const isDirectlyInsideManagedWorktreesDir = (normalizedWorktreePath: string): boolean => {
+    const parent = path.dirname(normalizedWorktreePath);
+    return pathsEqual(parent, normalizedWorktreesDir) || pathsEqual(parent, canonicalWorktreesDir);
+  };
 
   // Worktree paths / branch refs with an in-flight `git worktree add`. A new
   // worktree is visible to `git worktree list` before its lane row is
@@ -5992,7 +6023,7 @@ export function createLaneService({
       // Reclaim only ever removes folders ADE created. That is a property of the
       // path, not of the lane type — a lane pointing anywhere else is blocked
       // below with `worktree_outside_managed_root`.
-      const managedPath = row.lane_type !== "primary" && path.dirname(normalizedWorktree) === normalizedRoot;
+      const managedPath = row.lane_type !== "primary" && isDirectlyInsideManagedWorktreesDir(normalizedWorktree);
       const worktreeExists = managedPath && fs.existsSync(normalizedWorktree);
       const symlinkPath = managedPath
         ? await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)
@@ -6113,7 +6144,7 @@ export function createLaneService({
       if (row.lane_type === "primary") throw new Error("The primary lane cannot be reclaimed.");
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
-      if (path.dirname(normalizedWorktree) !== normalizedRoot) {
+      if (!isDirectlyInsideManagedWorktreesDir(normalizedWorktree)) {
         throw new Error("The lane folder is outside ADE's managed worktree folder.");
       }
       if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
@@ -6357,8 +6388,7 @@ export function createLaneService({
       // Either spelling of the worktrees folder counts as managed: a row adopted
       // from git holds the resolved one, and reading that as unmanaged would
       // relocate ADE's own worktree to a freshly named path on restore.
-      const savedPathParent = path.dirname(savedPath);
-      const savedPathIsManaged = savedPathParent === normalizedRoot || savedPathParent === canonicalWorktreesDir;
+      const savedPathIsManaged = isDirectlyInsideManagedWorktreesDir(savedPath);
       const savedPathExists = fs.existsSync(savedPath);
       // Recreation only ever happens inside `.ade/worktrees`. A lane whose
       // folder still exists elsewhere on disk (a worktree the user made) is

@@ -10,6 +10,7 @@ import type {
 } from "../../../shared/types/externalSessions";
 import type { TerminalResumeLaunchConfig } from "../../../shared/types/sessions";
 import { cursorProjectSlug } from "../../../shared/cursorProjectSlug";
+import { isPathInside as sharedIsPathInside, stripExtendedLengthPrefix } from "../shared/pathCompare";
 import {
   commandArrayToLine as sharedCommandArrayToLine,
   resolveCanonicalCommandLineLaunch,
@@ -994,16 +995,51 @@ export function resolveCursorCwdFromSlug(slug: string): string | null {
   return null;
 }
 
-export function isPathInside(parent: string, candidate: string): boolean {
-  const relative = path.relative(parent, candidate);
-  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+/**
+ * Normalize a working directory as a provider recorded it, at the point it
+ * first enters ADE.
+ *
+ * Today this only strips Windows' `\\?\` extended-length prefix — a CLI that
+ * opens the workspace through a long-path-safe handle stores the prefixed
+ * spelling, which Node's path parser reads as a UNC root. Null-preserving,
+ * because "no cwd recorded" is meaningfully different from "cwd is empty":
+ * an unscoped listing still shows a session with no cwd.
+ */
+export function normalizeProviderCwd(cwd: string | null | undefined): string | null {
+  if (!cwd) return null;
+  const clean = stripExtendedLengthPrefix(cwd);
+  return clean || null;
 }
 
+/**
+ * Containment test, `parent` first (the reverse of the shared helper's order,
+ * which is why this wrapper exists rather than the call sites importing it).
+ *
+ * Delegates so the platform's case rules apply: `path.relative` compares
+ * case-sensitively on every platform, but Windows and macOS resolve paths
+ * case-insensitively, and CLIs record whatever casing the user typed after `cd`
+ * — PowerShell preserves it verbatim. A lane at `...\ADE` and a recorded cwd of
+ * `...\ade` are the same folder and must test as contained.
+ */
+export function isPathInside(parent: string, candidate: string): boolean {
+  return sharedIsPathInside(candidate, parent);
+}
+
+/**
+ * Best-effort realpath, used to compare a provider-recorded path against one of
+ * ADE's own.
+ *
+ * The `\\?\` strip runs on both branches and before the realpath: Windows
+ * returns the extended-length prefix back verbatim from `realpathSync`, so the
+ * only place it can come off is here, at the boundary where a provider's
+ * recorded string first enters ADE. See `stripExtendedLengthPrefix`.
+ */
 export function realishPath(filePath: string): string {
+  const plain = stripExtendedLengthPrefix(filePath);
   try {
-    return fs.realpathSync(filePath);
+    return stripExtendedLengthPrefix(fs.realpathSync(plain));
   } catch {
-    return path.resolve(filePath);
+    return path.resolve(plain);
   }
 }
 

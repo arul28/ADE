@@ -12,6 +12,7 @@ import {
   cwdIsInScope,
   MAX_EXTERNAL_SESSION_LIMIT,
   normalizeExternalSessionLimit,
+  normalizeProviderCwd,
   recordWithFile,
   resolveHomeDir,
   sortDiscoveryRecords,
@@ -106,7 +107,7 @@ export async function discoverOpenCodeSessions(
     const record = asRecord(row);
     const id = asString(record?.id) ?? asString(record?.sessionID) ?? asString(record?.sessionId);
     if (!record || !id || (lookupId && id !== lookupId)) continue;
-    const rowCwd = asString(record.directory) ?? asString(record.cwd) ?? scopedCwdFallback;
+    const rowCwd = normalizeProviderCwd(asString(record.directory) ?? asString(record.cwd)) ?? scopedCwdFallback;
     if (!cwdIsInScope(rowCwd, args.scopeRoots)) continue;
     const title = cleanSessionTitle(asString(record.title)) ?? cleanSessionTitle(asString(record.name));
     const preview = clipExternalSessionText(

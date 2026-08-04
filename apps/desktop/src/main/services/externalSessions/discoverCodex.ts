@@ -14,6 +14,7 @@ import {
   firstUserTextFromRecords,
   isCanonicalCodexUserRecord,
   normalizeExternalSessionLimit,
+  normalizeProviderCwd,
   openExternalSessionDb,
   readFileSuffix,
   readJsonlRecords,
@@ -170,7 +171,10 @@ function readCodexSessionMeta(
   if (!id) return null;
   return {
     id,
-    cwd: asString(payload.cwd),
+    // The rollout's own `session_meta.cwd` is normally the clean spelling, but
+    // it comes from the same CLI that writes `\\?\` into the state DB — strip
+    // on both paths so the fallback file scan cannot reintroduce the prefix.
+    cwd: normalizeProviderCwd(asString(payload.cwd)),
     createdAt: asEpochMs(payload.timestamp) ?? asEpochMs(first.timestamp),
     title: titleFromCodexPayload(payload, undefined),
     source: payload.source,
@@ -548,7 +552,12 @@ function codexThreadRow(value: unknown): CodexThreadRow | null {
   return {
     id,
     rolloutPath,
-    cwd: asString(record.cwd),
+    // Codex opens the workspace through an extended-length path and stores the
+    // string it was handed: 116 of the 117 cwd-bearing rows in a real
+    // `state_5.sqlite` read `\\?\C:\...`. Node's path parser mistakes that for a
+    // UNC root, so scope containment answers "outside" for every one of them
+    // unless the prefix comes off here, at the read boundary.
+    cwd: normalizeProviderCwd(asString(record.cwd)),
     source: record.source,
     agentRole: asString(record.agentRole),
     name: asString(record.name),

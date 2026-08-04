@@ -41,6 +41,8 @@ import {
   type ExternalSessionDiscoveryArgs,
   type ExternalSessionDiscoveryRecord,
 } from "./discoveryUtils";
+import { pathsEqual } from "../shared/pathCompare";
+import { resolveCliSpawnInvocation } from "../shared/processExecution";
 
 export interface ExternalChatImporter {
   importExternalChatSession(args: {
@@ -208,10 +210,20 @@ function resolveLaneCwd(laneService: LaneServiceLike, laneId: string): string {
   return realishPath(worktreePath);
 }
 
+/**
+ * Whether a session's recorded cwd names the same folder as the requested lane.
+ *
+ * Compared with `pathsEqual`, not `===`: `fs.realpathSync` does not canonicalize
+ * case on Windows — it hands `C:\...\ADE` and `c:\...\ade` straight back
+ * unchanged — and PowerShell keeps whatever casing the user typed after `cd`, so
+ * a CLI run in the lane folder routinely records a different spelling than the
+ * one ADE stores. An `===` here reads that as "different folder" and drops the
+ * "belongs to this lane" badge on a session that plainly does belong.
+ */
 function cwdMatches(cwd: string | null, requestedCwd: string | null): boolean | null {
   if (!requestedCwd) return null;
   if (!cwd) return null;
-  return realishPath(cwd) === realishPath(requestedCwd);
+  return pathsEqual(realishPath(cwd), realishPath(requestedCwd));
 }
 
 function refRank(ref: ImportedSessionRef | null): number {
@@ -463,18 +475,49 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
   // Factory's docs describe `droid --fork`, but installed CLIs predating it only
   // expose `--resume`; offering fork against such a binary launches a failing command.
   let droidForkProbe: boolean | null = typeof args.droidForkSupported === "boolean" ? args.droidForkSupported : null;
-  let droidForkProbePromise: Promise<boolean> | null = null;
-  const startDroidForkProbe = (): Promise<boolean> => {
+  // `null` means the probe did not answer — see the no-output branch below.
+  let droidForkProbePromise: Promise<boolean | null> | null = null;
+  const startDroidForkProbe = (): Promise<boolean | null> => {
     if (droidForkProbe !== null) return Promise.resolve(droidForkProbe);
     if (droidForkProbePromise) return droidForkProbePromise;
     droidForkProbePromise = new Promise((resolve) => {
-      execFile("droid", ["--help"], {
+      const env = args.env ?? process.env;
+      // `npm i -g @factory-ai/factory` installs `%APPDATA%\npm\droid.cmd` on
+      // Windows, and Node has refused to spawn a `.cmd`/`.bat` without a shell
+      // since CVE-2024-27980 — a bare `execFile("droid", …)` throws
+      // `spawn EINVAL` before the CLI ever runs. Same install is a directly
+      // executable script on macOS, so this only breaks on Windows. Routed
+      // through the shared helper, which shims those targets through cmd.exe
+      // and leaves a real `.exe` alone (discoverOpenCode does the same).
+      const invocation = resolveCliSpawnInvocation(
+        "droid",
+        ["--help"],
+        env,
+      );
+      execFile(invocation.command, invocation.args, {
         timeout: 1500,
         encoding: "utf8",
-        env: args.env ?? process.env,
+        env,
         windowsHide: true,
-      }, (_error, stdout, stderr) => {
-        droidForkProbe = /(^|\s)--fork\b/u.test(`${stdout ?? ""}\n${stderr ?? ""}`);
+        windowsVerbatimArguments: invocation.windowsVerbatimArguments,
+      }, (error, stdout, stderr) => {
+        const help = `${stdout ?? ""}\n${stderr ?? ""}`;
+        // A probe that printed nothing did not answer the question — the binary
+        // failed to launch, or was killed by the timeout. Caching `false` for
+        // that is what permanently disabled fork import on a perfectly good
+        // droid: the negative sticks for the lifetime of the service and every
+        // later import reports "does not support forking". Leave the answer
+        // unknown instead, and let the next caller re-probe.
+        if (!help.trim()) {
+          args.logger?.warn?.("external_sessions.droid_fork_probe_failed", {
+            command: invocation.command,
+            error: error instanceof Error ? error.message : error ? String(error) : "no output",
+          });
+          droidForkProbePromise = null;
+          resolve(null);
+          return;
+        }
+        droidForkProbe = /(^|\s)--fork\b/u.test(help);
         resolve(droidForkProbe);
       });
     });
@@ -485,9 +528,18 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     void startDroidForkProbe();
     return false;
   };
+  /**
+   * Blocking answer, used on the import path where being wrong costs the user
+   * the whole operation. An inconclusive probe is retried once — the eager
+   * startup probe can lose a race with a slow shim or a cold binary, and
+   * refusing the import on that is exactly the failure this guard is meant to
+   * prevent. A second silent probe is treated as a genuine "no".
+   */
   const resolveDroidForkAvailable = async (): Promise<boolean> => {
     if (droidForkProbe !== null) return droidForkProbe;
-    return startDroidForkProbe();
+    const first = await startDroidForkProbe();
+    if (first !== null) return first;
+    return (await startDroidForkProbe()) ?? false;
   };
   void startDroidForkProbe();
   const capabilitiesFor = (
@@ -802,7 +854,12 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
       }
       if (provider === "claude") {
         if (!sourceCwd) throw new Error("Claude fork import requires the source session cwd.");
-        if (realishPath(sourceCwd) !== realishPath(laneCwd)) {
+        // Same folder under a different spelling must take the cheap in-place
+        // `--fork-session`, not the transplant: transplanting duplicates the
+        // whole transcript under a fresh uuid, and a case-sensitive `===` would
+        // trigger that on Windows any time the CLI recorded `c:\...` for a lane
+        // ADE spells `C:\...`.
+        if (!pathsEqual(realishPath(sourceCwd), realishPath(laneCwd))) {
           const transplant = await transplantClaudeSession({
             sessionId,
             sourceCwd,
@@ -823,7 +880,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
         runCwd = laneCwd;
       } else if (provider === "opencode") {
         if (!sourceCwd) throw new Error("OpenCode fork import requires the source session cwd.");
-        if (realishPath(sourceCwd) !== realishPath(laneCwd)) {
+        if (!pathsEqual(realishPath(sourceCwd), realishPath(laneCwd))) {
           throw new Error("OpenCode sessions cannot be copied into a different lane folder.");
         }
         metadataTargetId = null;
@@ -905,7 +962,10 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const ptyArgs: PtyCreateArgs = {
       laneId,
       cwd: runCwd,
-      allowExternalCwd: realishPath(runCwd) !== realishPath(laneCwd),
+      // Only a genuinely different folder is "external". A spelling difference
+      // is not one, and claiming otherwise loosens a lane containment guard for
+      // no reason.
+      allowExternalCwd: !pathsEqual(realishPath(runCwd), realishPath(laneCwd)),
       cols: 120,
       rows: 36,
       title: summary?.title ?? `${provider} ${importArgs.mode} ${sessionId.slice(0, 8)}`,

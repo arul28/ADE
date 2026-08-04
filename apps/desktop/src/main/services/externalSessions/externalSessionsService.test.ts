@@ -1076,6 +1076,188 @@ describe("externalSessionsService", () => {
   });
 });
 
+/**
+ * Windows and macOS resolve paths case-insensitively, `fs.realpathSync` does
+ * NOT canonicalize case on Windows (it hands both spellings back unchanged),
+ * and PowerShell preserves whatever the user typed after `cd`. So a CLI run in
+ * the lane folder routinely records a spelling ADE never wrote. Comparing those
+ * with `===` reads the lane's own session as belonging somewhere else.
+ *
+ * On Linux the two spellings really are two directories, so the cases run only
+ * where the platform agrees they are one.
+ */
+const itOnCaseInsensitiveFs = it.runIf(process.platform === "win32" || process.platform === "darwin");
+
+describe("externalSessionsService cwd matching ignores path case", () => {
+  itOnCaseInsensitiveFs("still marks a case-different session as belonging to the lane", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    // The same folder as `laneCwd`, spelled the way a shell might have echoed it.
+    const recordedCwd = path.join(projectRoot, ".ade", "worktrees", "LANE-1");
+    const id = "66666666-6666-4666-8666-666666666666";
+    const filePath = path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(recordedCwd), `${id}.jsonl`);
+    writeJsonl(filePath, [
+      {
+        type: "message",
+        sessionId: id,
+        cwd: recordedCwd,
+        timestamp: "2026-07-06T10:00:00.000Z",
+        message: { role: "user", content: "same folder, other casing" },
+      },
+    ]);
+
+    const service = createExternalSessionsService({
+      droidForkSupported: true,
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    const sessions = await service.list({ providers: ["claude"], laneId: "lane-1", scope: "project", limit: 5 });
+
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ id, cwdMatchesRequestedLane: true });
+    // A same-folder resume must stay resumable in place rather than demanding a copy.
+    expect(sessions[0]!.capabilities).toMatchObject({ resumeInPlace: true });
+  });
+
+  itOnCaseInsensitiveFs("forks a case-different Claude session in place instead of transplanting it", async () => {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const recordedCwd = path.join(projectRoot, ".ade", "worktrees", "LANE-1");
+    const id = "77777777-7777-4777-8777-777777777777";
+    writeJsonl(
+      path.join(homeDir, ".claude", "projects", claudeProjectSlugForCwd(recordedCwd), `${id}.jsonl`),
+      [
+        {
+          type: "message",
+          sessionId: id,
+          cwd: recordedCwd,
+          timestamp: "2026-07-06T10:00:00.000Z",
+          message: { role: "user", content: "fork me in place" },
+        },
+      ],
+    );
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({
+      sessionId: "terminal-claude",
+      ptyId: "pty-claude",
+      pid: 42,
+    }));
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: makeLogger(),
+    });
+
+    await service.importExternalSession({
+      provider: "claude",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+    });
+
+    const ptyArgs = create.mock.calls[0]![0];
+    // A transplant would duplicate the whole transcript under a fresh uuid and
+    // launch that id instead; the cheap in-place fork keeps the original.
+    expect(ptyArgs.startupCommand).toContain(id);
+    expect(ptyArgs.allowExternalCwd).toBe(false);
+  });
+});
+
+describe("droid fork probe", () => {
+  function droidFixture() {
+    const homeDir = path.join(root, "home");
+    const projectRoot = path.join(root, "repo");
+    const laneCwd = path.join(projectRoot, ".ade", "worktrees", "lane-1");
+    fs.mkdirSync(laneCwd, { recursive: true });
+    const id = "droid-probe-session";
+    writeJsonl(path.join(homeDir, ".factory", "sessions", droidSessionDir(laneCwd), `${id}.jsonl`), [
+      { type: "session_start", id, cwd: laneCwd, timestamp: "2026-07-06T10:00:00.000Z" },
+    ]);
+    return { homeDir, projectRoot, laneCwd, id };
+  }
+
+  it("does not cache a negative answer when the probe never ran", async () => {
+    // Node has refused to spawn a `.cmd`/`.bat` without a shell since
+    // CVE-2024-27980, so a probe against an npm shim used to come back
+    // `spawn EINVAL` with the error discarded — caching "no --fork" for the
+    // service's whole lifetime and permanently disabling fork import.
+    const { homeDir, projectRoot, laneCwd, id } = droidFixture();
+    const warn = vi.fn();
+    let call = 0;
+    execFileMock.mockImplementation((...callArgs: any[]) => {
+      const callback = callArgs[3] as (error: Error | null, stdout: string, stderr: string) => void;
+      call += 1;
+      const failed = call === 1;
+      setTimeout(() => (failed
+        ? callback(Object.assign(new Error("spawn EINVAL"), { code: "EINVAL" }), "", "")
+        : callback(null, "usage: droid --resume --fork", "")), 0);
+      return { pid: 123 } as ReturnType<typeof execFile>;
+    });
+    const create = vi.fn(async (_args: PtyCreateArgs) => ({
+      sessionId: "terminal-droid",
+      ptyId: "pty-droid",
+      pid: 7,
+    }));
+    const service = createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create },
+      logger: { warn, info: vi.fn() },
+    });
+
+    await expect(service.importExternalSession({
+      provider: "droid",
+      sessionId: id,
+      laneId: "lane-1",
+      target: "cli",
+      mode: "fork",
+    })).resolves.toMatchObject({ kind: "cli" });
+
+    expect(warn).toHaveBeenCalledWith(
+      "external_sessions.droid_fork_probe_failed",
+      expect.objectContaining({ error: expect.stringContaining("EINVAL") }),
+    );
+    expect(create.mock.calls[0]![0].startupCommand).toBe(`droid --fork ${id}`);
+  });
+
+  it.runIf(process.platform === "win32")("probes droid through cmd.exe rather than spawning the shim directly", async () => {
+    const { homeDir, projectRoot, laneCwd } = droidFixture();
+    execFileMock.mockImplementation((...callArgs: any[]) => {
+      const callback = callArgs[3] as (error: Error | null, stdout: string, stderr: string) => void;
+      setTimeout(() => callback(null, "usage: droid --resume --fork", ""), 0);
+      return { pid: 123 } as ReturnType<typeof execFile>;
+    });
+    createExternalSessionsService({
+      projectRoot,
+      homeDir,
+      laneService: { getLaneWorktreePath: () => laneCwd },
+      sessionService: { list: () => [], listClaudeSessionPointers: () => [] },
+      ptyService: { create: vi.fn() },
+      logger: makeLogger(),
+    });
+
+    expect(execFileMock).toHaveBeenCalled();
+    const [command, spawnArgs] = execFileMock.mock.calls[0]! as unknown as [string, string[]];
+    expect(command.toLowerCase()).toContain("cmd");
+    expect(spawnArgs.join(" ")).toContain("droid");
+    expect(spawnArgs.join(" ")).toContain("--help");
+  });
+});
+
 describe("transplantClaudeSession", () => {
   it("forks a Claude JSONL into the target cwd under a fresh session id", async () => {
     const configDir = path.join(root, "claude");
