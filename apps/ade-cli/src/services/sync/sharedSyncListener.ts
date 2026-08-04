@@ -27,6 +27,19 @@ import {
 import { getRuntimeServiceMainPid } from "../../serviceManager";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
+import {
+  buildWindowsPortHolderQueryArgs,
+  parseWindowsPortHolders,
+  type WindowsPortHolder,
+} from "./windowsPortHolders";
+
+// Re-exported so existing importers (and `ade doctor`) keep their entry point.
+export {
+  buildWindowsListeningPortHolderQueryArgs,
+  buildWindowsPortHolderQueryArgs,
+  parseWindowsPortHolders,
+  type WindowsPortHolder,
+} from "./windowsPortHolders";
 
 // Bind the sync host on all interfaces by default so phones on the same
 // wifi/LAN can reach it without Tailscale. 0.0.0.0 is a superset of loopback,
@@ -79,12 +92,7 @@ type SharedSyncListenerLogger = {
 
 export type SyncListenerPortDiagnosis = {
   port: number;
-  holders: Array<{
-    pid: number;
-    command: string | null;
-    /** Stable process birth identity used to guard against PID reuse. */
-    startTime: string | null;
-  }>;
+  holders: WindowsPortHolder[];
 };
 
 export type SharedSyncListenerConnection = {
@@ -314,12 +322,18 @@ export function createSharedSyncListener(options: {
   const loopbackProbe = options.loopbackProbe ?? probeAdeLoopbackListener;
   const inspectPort = options.inspectPort ?? inspectSyncListenerPort;
   const activeServicePid = options.activeServicePid ?? getRuntimeServiceMainPid;
-  const terminatePid = options.terminatePid ?? ((pid) => terminatePidGracefullyAsync(pid));
   const serviceCommand = resolveAdeServeCommand();
   const staleServeMatch = {
     cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
     primarySocketPath: resolveMachineAdeLayout().socketPath,
   };
+  // Every holder `findStaleHolder` matches is, by construction, a brain serving
+  // THIS channel's primary endpoint -- so that endpoint is exactly where a
+  // cooperative shutdown request has to go. Windows has no catchable SIGTERM,
+  // so without this the reap was a `TerminateProcess` of a brain mid-write.
+  const terminatePid = options.terminatePid ?? ((pid) => terminatePidGracefullyAsync(pid, {
+    runtimeSocketPath: staleServeMatch.primarySocketPath,
+  }));
   const findStaleHolder = (
     diagnosis: SyncListenerPortDiagnosis,
   ): SyncListenerPortDiagnosis["holders"][number] | null => {
@@ -863,64 +877,6 @@ export function createSharedSyncListener(options: {
       });
     },
   };
-}
-
-/**
- * PowerShell that reports every listening owner of `port` as JSON.
- *
- * `Get-NetTCPConnection` is the supported replacement for parsing `netstat`
- * output, and pairing it with `Get-CimInstance Win32_Process` gets the command
- * line and creation time in the SAME invocation — one process spawn instead of
- * the 1 + 2N that the POSIX `lsof`/`ps` path needs.
- */
-export function buildWindowsPortHolderQueryArgs(port: number): string[] {
-  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-    throw new Error(`Invalid port for the Windows port-holder query: ${String(port)}`);
-  }
-  const query = [
-    "$ErrorActionPreference = 'Stop'",
-    `$owners = @(Get-NetTCPConnection -LocalPort ${port} -State Listen -ErrorAction SilentlyContinue`
-      + " | Select-Object -ExpandProperty OwningProcess | Sort-Object -Unique)",
-    "$holders = @(foreach ($owner in $owners) {",
-    "  $target = Get-CimInstance Win32_Process -Filter \"ProcessId = $owner\" -ErrorAction SilentlyContinue",
-    "  if ($null -eq $target) { continue }",
-    "  $startTime = ''",
-    "  try { $startTime = ([datetime]$target.CreationDate).ToUniversalTime().ToString('o') } catch { $startTime = '' }",
-    "  [ordered]@{ pid = [int]$target.ProcessId; command = [string]$target.CommandLine; startTime = [string]$startTime }",
-    "})",
-    "[Console]::Out.Write((ConvertTo-Json -InputObject @($holders) -Compress -Depth 3))",
-  ].join("; ");
-  return ["-NoProfile", "-NonInteractive", "-Command", query];
-}
-
-export function parseWindowsPortHolders(raw: string | null): SyncListenerPortDiagnosis["holders"] {
-  const text = raw?.trim();
-  // PowerShell emits nothing for an empty collection, which is a legitimate
-  // "no holders" answer rather than a parse failure.
-  if (!text) return [];
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(text);
-  } catch {
-    return [];
-  }
-  const entries = Array.isArray(parsed) ? parsed : [parsed];
-  const holders: SyncListenerPortDiagnosis["holders"] = [];
-  const seen = new Set<number>();
-  for (const entry of entries) {
-    if (typeof entry !== "object" || entry == null) continue;
-    const record = entry as { pid?: unknown; command?: unknown; startTime?: unknown };
-    const pid = Number(record.pid);
-    if (!Number.isInteger(pid) || pid <= 0 || seen.has(pid)) continue;
-    seen.add(pid);
-    // A holder owned by another user yields a null CommandLine without
-    // elevation. Keep the pid: it still proves the port is genuinely occupied,
-    // and `findStaleHolder` already refuses to reap a holder it cannot identify.
-    const command = typeof record.command === "string" ? record.command.trim() : "";
-    const startTime = typeof record.startTime === "string" ? record.startTime.trim() : "";
-    holders.push({ pid, command: command || null, startTime: startTime || null });
-  }
-  return holders;
 }
 
 async function inspectWindowsSyncListenerPort(

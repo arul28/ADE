@@ -9,9 +9,11 @@ import {
   formatSyncHostSingletonConflictMessage,
   holdsSyncHostSingleton,
   isSameChannelSyncHostOwner,
+  looksLikeAdeWindowsSyncHostProcess,
   onSyncHostSingletonAuthorityChanged,
   type SyncHostSingletonOwner,
 } from "./syncHostSingleton";
+import { buildWindowsListeningPortHolderQueryArgs } from "./windowsPortHolders";
 
 const originalTestMode = process.env.ADE_SYNC_HOST_SINGLETON_TEST_MODE;
 const originalLockPath = process.env.ADE_SYNC_HOST_LOCK_PATH;
@@ -346,5 +348,80 @@ describe("buildQuitCommand (launch-gate stop command)", () => {
     });
     expect(command).toContain("launchctl bootout gui/$(id -u)/com.ade.runtime.alpha");
     expect(command).not.toContain("/Applications/");
+  });
+});
+
+// `scanNativeSyncHostListeners` returned [] on every non-darwin host, so on
+// Windows `detectSyncHostSingletonConflict` had NO listener-scan fallback at
+// all: only the lock file protected the singleton, and a hard-killed brain is
+// precisely the case that leaves that lock behind unreleased.
+describe("Windows sync-host listener scan", () => {
+  const beforeEachEnv = process.env.ADE_SYNC_HOST_LEGACY_SCAN;
+
+  beforeEach(() => {
+    process.env.ADE_SYNC_HOST_LEGACY_SCAN = "1";
+  });
+
+  afterEach(() => {
+    if (beforeEachEnv == null) delete process.env.ADE_SYNC_HOST_LEGACY_SCAN;
+    else process.env.ADE_SYNC_HOST_LEGACY_SCAN = beforeEachEnv;
+  });
+
+  it("recognises ADE brains in Windows-quoted command lines", () => {
+    expect(looksLikeAdeWindowsSyncHostProcess(
+      String.raw`"C:\Program Files\ADE\ade.exe" "C:\Program Files\ADE\resources\ade-cli\cli.cjs" "serve"`,
+    )).toBe(true);
+    expect(looksLikeAdeWindowsSyncHostProcess(
+      String.raw`"C:\Program Files\ADE Beta\ADE Beta.exe" "C:\x\cli.cjs" "serve" "--socket" "\\.\pipe\ade-runtime-beta-1"`,
+    )).toBe(true);
+    expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\Windows\explorer.exe"`)).toBe(false);
+    expect(looksLikeAdeWindowsSyncHostProcess(String.raw`"C:\node.exe" "C:\x\cli.cjs" "doctor"`)).toBe(false);
+  });
+
+  it("finds a listening Windows brain through Get-NetTCPConnection, not lsof", () => {
+    const commands: string[] = [];
+    const conflict = detectSyncHostSingletonConflict({
+      lockPath: tempLockPath(),
+      platform: "win32",
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      scanListenersReadText: (command, args) => {
+        commands.push(command);
+        expect(args).toEqual(buildWindowsListeningPortHolderQueryArgs(8787, 8999));
+        return JSON.stringify([
+          {
+            pid: 4242,
+            port: 8790,
+            command: String.raw`"C:\Program Files\ADE\ade.exe" "C:\ADE\cli.cjs" "serve"`,
+            startTime: "2026-08-01T04:00:00.0000000Z",
+          },
+          // Another user's process: no readable command line, so it must never
+          // be named as an ADE sync host the user is told to quit.
+          { pid: 4243, port: 8791, command: "", startTime: "" },
+        ]);
+      },
+    });
+    expect(commands.some((command) => /powershell\.exe$/i.test(command))).toBe(true);
+    expect(commands).not.toContain("lsof");
+    expect(conflict?.reason).toBe("listener");
+    expect(conflict?.owner.pid).toBe(4242);
+    expect(conflict?.owner.port).toBe(8790);
+    // The Windows recovery command, not a launchctl invocation.
+    expect(conflict?.owner.quitCommand).toContain("Stop-Process -Id 4242");
+  });
+
+  it("still shells out to lsof on darwin", () => {
+    const commands: string[] = [];
+    detectSyncHostSingletonConflict({
+      lockPath: tempLockPath(),
+      platform: "darwin",
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      scanListenersReadText: (command) => {
+        commands.push(command);
+        return "";
+      },
+    });
+    expect(commands).toEqual(["lsof"]);
   });
 });

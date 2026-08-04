@@ -8,7 +8,25 @@ import {
   type ServiceManagerSpawnSync,
 } from "./common";
 
-export const WINDOWS_POWERSHELL_COMMAND = resolveTrustedWindowsTool("powershell");
+/**
+ * Trusted `powershell.exe`, resolved on first use and then memoized.
+ *
+ * This used to be a module-scope `const`. `resolveTrustedWindowsTool` throws on
+ * win32 when `\\?\GLOBALROOT\SystemRoot\System32` cannot be resolved (hardened
+ * System32 ACLs, Server Core, EDR blocking GLOBALROOT), and this module is
+ * pulled in transitively from the brain's startup path
+ * (`sharedSyncListener` -> `serviceManager/index` -> `installWindows`), so that
+ * throw killed the ENTIRE CLI at module load -- including commands that never
+ * touch the service manager. Resolving lazily confines the failure to the code
+ * paths that actually need the tool, where it is reported as a
+ * `ServiceManagerResult` instead of an unhandled throw.
+ */
+let windowsPowerShellCommandCache: string | null = null;
+
+export function windowsPowerShellCommand(): string {
+  windowsPowerShellCommandCache ??= resolveTrustedWindowsTool("powershell");
+  return windowsPowerShellCommandCache;
+}
 
 export type WindowsServicePidRecord = {
   supervisorPid: number;
@@ -177,7 +195,14 @@ export function renderWindowsServiceLauncher(
     "    lastLaunchError = $lastLaunchError",
     "    sessionBound = $sessionBound",
     "  }",
-    "  [IO.File]::WriteAllText($pidPath, ($record | ConvertTo-Json -Compress), [Text.Encoding]::ASCII)",
+    // UTF8, not ASCII: `lastLaunchError` carries a .NET exception message, which
+    // Windows localizes. Under ASCII every non-ASCII character became `?`, so
+    // the one diagnostic a non-English user most needs was the one thing that
+    // arrived unreadable. `readWindowsServicePidRecord` already reads utf8, and
+    // the JSON stayed valid either way -- this only affects legibility.
+    // No BOM: [Text.Encoding]::UTF8 here is the parameterless property, so
+    // PowerShell 5.1 would prefix one; UTF8Encoding($false) keeps JSON.parse happy.
+    "  [IO.File]::WriteAllText($pidPath, ($record | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false)))",
     "}",
     "Write-SupervisorLog \"supervisor started sessionBound=$sessionBound\"",
     "if ($sessionBound -eq $true) { Write-SupervisorLog 'WARNING: this supervisor is inside a kill-on-job-close job object; Windows will terminate it with the session that started it.' }",
@@ -316,19 +341,45 @@ export function buildWindowsRuntimeQueryArgs(pid: number, command: AdeServiceCom
   return ["-NoProfile", "-NonInteractive", "-Command", query];
 }
 
-function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): string[] {
+function runtimeSubcommandArgs(
+  command: AdeServiceCommand,
+  subcommand: string,
+  socketPath: string,
+  timeoutMs: number,
+): string[] {
   const args = [...command.args];
   const serveIndex = args.lastIndexOf("serve");
-  if (serveIndex >= 0) args.splice(serveIndex, 1, "runtime", "status");
-  else args.push("runtime", "status");
-  args.push("--socket", socketPath, "--timeout", "1500", "--json");
+  if (serveIndex >= 0) args.splice(serveIndex, 1, "runtime", subcommand);
+  else args.push("runtime", subcommand);
+  args.push("--socket", socketPath, "--timeout", String(Math.floor(timeoutMs)), "--json");
   return args;
+}
+
+function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): string[] {
+  return runtimeSubcommandArgs(command, "status", socketPath, 1_500);
+}
+
+/**
+ * `ade runtime stop --socket <endpoint>`: the packaged CLI's own cooperative
+ * shutdown, which sends the JSON-RPC `shutdown` method the brain answers by
+ * running the SAME `finish()` its macOS SIGTERM handler runs.
+ *
+ * Reached through the packaged CLI rather than an in-process socket client
+ * because the Windows installer paths that need it are synchronous, and this is
+ * exactly how `defaultWindowsRuntimeReadiness` already reaches the runtime.
+ */
+export function buildWindowsRuntimeStopArgs(
+  command: AdeServiceCommand,
+  socketPath: string,
+  timeoutMs = 5_000,
+): string[] {
+  return runtimeSubcommandArgs(command, "stop", socketPath, timeoutMs);
 }
 
 export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (args) => {
   const { pidRecord, spawnSync: run } = args;
   const supervisor = run(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsSupervisorQueryArgs(pidRecord.supervisorPid, args.launcherPath),
     { encoding: "utf8", windowsHide: true },
   );
@@ -349,7 +400,7 @@ export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (arg
     };
   }
   const runtime = run(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsRuntimeQueryArgs(pidRecord.runtimePid, args.command),
     { encoding: "utf8", windowsHide: true },
   );
@@ -417,7 +468,7 @@ export function queryWindowsSupervisor(args: {
     };
   }
   const result = args.spawnSync(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsSupervisorQueryArgs(record.supervisorPid, args.launcherPath),
     { encoding: "utf8", windowsHide: true },
   );

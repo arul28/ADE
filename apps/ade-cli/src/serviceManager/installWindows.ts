@@ -3,10 +3,15 @@ import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import {
+  resolveTrustedWindowsTool,
+  TrustedWindowsToolError,
+  type TrustedWindowsTool,
+} from "../lib/trustedWindowsTools";
 import {
   type AdeServiceCommand,
   cmdQuote,
+  listStaleChannelServePids,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
@@ -18,12 +23,13 @@ import {
 } from "./common";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import {
+  buildWindowsRuntimeStopArgs,
   defaultWindowsRuntimeReadiness,
   queryWindowsSupervisor,
   readWindowsServicePidRecord as readWindowsSupervisorPidRecord,
   renderWindowsServiceLauncher,
   waitForWindowsRuntimeReadiness,
-  WINDOWS_POWERSHELL_COMMAND,
+  windowsPowerShellCommand,
   type WindowsRuntimeReadinessProbe,
   type WindowsServicePidRecord,
 } from "./windowsSupervisor";
@@ -32,7 +38,7 @@ export {
   buildWindowsRuntimeQueryArgs,
   buildWindowsSupervisorQueryArgs,
   renderWindowsServiceLauncher,
-  WINDOWS_POWERSHELL_COMMAND,
+  windowsPowerShellCommand,
   type WindowsServicePidRecord,
 } from "./windowsSupervisor";
 
@@ -40,9 +46,59 @@ export const TASK_NAME = "ADE Runtime";
 export const WINDOWS_RUN_KEY = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
 const TASK_NOT_FOUND_EXIT_CODE = 3;
 const REGISTRY_VALUE_NOT_FOUND_EXIT_CODE = 1;
-export const WINDOWS_REG_COMMAND = resolveTrustedWindowsTool("reg");
-export const WINDOWS_SCHTASKS_COMMAND = resolveTrustedWindowsTool("schtasks");
-export const WINDOWS_TASKKILL_COMMAND = resolveTrustedWindowsTool("taskkill");
+
+/**
+ * `reg.exe` / `schtasks.exe` / `taskkill.exe`, resolved on first use and then
+ * memoized -- see the note on `windowsPowerShellCommand`.
+ *
+ * These were module-scope `const`s, so a host where the GLOBALROOT lookup fails
+ * took the whole CLI down at import time: `serviceManager/index` pulls this
+ * module in, and the brain's own startup path pulls that in via
+ * `sharedSyncListener`. Now only the commands that actually shell out to a tool
+ * can fail, and they fail with a `ServiceManagerResult`.
+ */
+const trustedToolCache = new Map<TrustedWindowsTool, string>();
+
+function trustedTool(tool: TrustedWindowsTool): string {
+  const cached = trustedToolCache.get(tool);
+  if (cached) return cached;
+  const resolved = resolveTrustedWindowsTool(tool);
+  trustedToolCache.set(tool, resolved);
+  return resolved;
+}
+
+export function windowsRegCommand(): string {
+  return trustedTool("reg");
+}
+
+export function windowsSchtasksCommand(): string {
+  return trustedTool("schtasks");
+}
+
+export function windowsTaskkillCommand(): string {
+  return trustedTool("taskkill");
+}
+
+/**
+ * Converts a trusted-tool resolution failure into the typed refusal every
+ * service-manager entry point already returns, instead of an unhandled throw.
+ */
+function isTrustedWindowsToolError(error: unknown): boolean {
+  return error instanceof TrustedWindowsToolError;
+}
+
+function windowsToolFailureResult<T extends { ok: false; message: string }>(
+  error: unknown,
+  base: Omit<T, "ok" | "message">,
+): T {
+  return {
+    ...base,
+    ok: false,
+    message: error instanceof Error
+      ? `Unable to reach the Windows tools this operation needs: ${error.message}`
+      : "Unable to reach the Windows tools this operation needs.",
+  } as T;
+}
 
 type WindowsServiceManagerDeps = {
   command?: AdeServiceCommand;
@@ -333,7 +389,7 @@ export function buildWindowsStartTaskArgs(
   const nameLiteral = powerShellSingleQuotedLiteral(startTaskName);
   const script = [
     "$ErrorActionPreference = 'Stop'",
-    `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
+    `$action = New-ScheduledTaskAction -Execute ${powerShellSingleQuotedLiteral(windowsPowerShellCommand())} -Argument ${powerShellSingleQuotedLiteral(launcherArguments)}`,
     // Far-future one-shot trigger: the task only ever runs because we start it.
     "$trigger = New-ScheduledTaskTrigger -Once -At ([DateTime]::Now.AddDays(3650))",
     "$settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit ([TimeSpan]::Zero)",
@@ -413,7 +469,7 @@ function startWindowsSupervisorDetached(
   taskName: string,
 ): string | null {
   const viaTask = run(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
     { encoding: "utf8", windowsHide: true },
   );
@@ -421,7 +477,7 @@ function startWindowsSupervisorDetached(
   // Task Scheduler is unavailable or denied by policy. WMI is a second,
   // independently documented escape: `Win32_Process.Create` children are not
   // associated with the caller's job.
-  const viaWmi = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsWmiStartArgs(launcherPath), {
+  const viaWmi = run(windowsPowerShellCommand(), buildWindowsWmiStartArgs(launcherPath), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -430,7 +486,7 @@ function startWindowsSupervisorDetached(
   // but it is bound to the lifetime of the session that started it. The
   // supervisor detects that about itself and records it, so `brain status`
   // says so out loud instead of reporting a healthy always-on brain.
-  const start = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsStartLauncherArgs(launcherPath), {
+  const start = run(windowsPowerShellCommand(), buildWindowsStartLauncherArgs(launcherPath), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -452,7 +508,7 @@ export function buildWindowsStartLauncherArgs(launcherPath: string): string[] {
   const childCommandLine = childArgs.map(cmdQuote).join(" ");
   const command = [
     "$startInfo = New-Object System.Diagnostics.ProcessStartInfo",
-    `$startInfo.FileName = ${powerShellSingleQuotedLiteral(WINDOWS_POWERSHELL_COMMAND)}`,
+    `$startInfo.FileName = ${powerShellSingleQuotedLiteral(windowsPowerShellCommand())}`,
     `$startInfo.Arguments = ${powerShellSingleQuotedLiteral(childCommandLine)}`,
     "$startInfo.UseShellExecute = $true",
     "$startInfo.WindowStyle = [System.Diagnostics.ProcessWindowStyle]::Hidden",
@@ -485,7 +541,7 @@ function removeWindowsTaskIfPresent(
   ownedBy?: AdeServiceCommand,
 ): WindowsTaskRemovalResult {
   const query = run(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsQueryTaskArgs(taskName),
     { encoding: "utf8", windowsHide: true },
   );
@@ -500,7 +556,7 @@ function removeWindowsTaskIfPresent(
   }
   if (ownedBy) {
     const action = run(
-      WINDOWS_POWERSHELL_COMMAND,
+      windowsPowerShellCommand(),
       buildWindowsQueryTaskActionArgs(taskName),
       { encoding: "utf8", windowsHide: true },
     );
@@ -520,7 +576,7 @@ function removeWindowsTaskIfPresent(
     }
   }
   if (isWindowsTaskStateRunning(query.stdout)) {
-    const end = run(WINDOWS_SCHTASKS_COMMAND, buildWindowsEndTaskArgs(taskName), {
+    const end = run(windowsSchtasksCommand(), buildWindowsEndTaskArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -531,7 +587,7 @@ function removeWindowsTaskIfPresent(
       };
     }
   }
-  const remove = run(WINDOWS_SCHTASKS_COMMAND, buildWindowsDeleteTaskArgs(taskName), {
+  const remove = run(windowsSchtasksCommand(), buildWindowsDeleteTaskArgs(taskName), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -546,7 +602,7 @@ function removeWindowsTaskIfPresent(
 
 function windowsLauncherCommand(launcherPath: string): string {
   return renderWindowsCommand({
-    command: WINDOWS_POWERSHELL_COMMAND,
+    command: windowsPowerShellCommand(),
     args: [
       "-NoProfile",
       "-NonInteractive",
@@ -560,13 +616,81 @@ function windowsLauncherCommand(launcherPath: string): string {
   });
 }
 
+function windowsPidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means the pid exists but belongs to someone we may not signal.
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Stops the brain the supervisor was guarding, cooperatively first.
+ *
+ * The macOS counterpart of this path (`installLaunchd`) sends a real SIGTERM
+ * and the brain's handler flushes SQLite/CRDT state, tears down sockets and
+ * releases the sync-host lock before exiting. Windows has no catchable signal,
+ * and this path used to be a single `taskkill /PID <supervisor> /T /F` -- which
+ * takes the brain down with the supervisor tree, mid-write, on the very common
+ * `ade serve --install-service` / reinstall route. The next start then had to
+ * recover from a lock file its owner never got to release.
+ *
+ * So: ask over the RPC endpoint (same `finish()` macOS gets), wait out a grace
+ * window, and only force what is still standing. The supervisor must already be
+ * gone when this runs, or it would simply restart the brain we just stopped.
+ */
+function stopWindowsBrainGracefully(
+  run: ServiceManagerSpawnSync,
+  args: {
+    command: AdeServiceCommand;
+    socketPath: string;
+    runtimePid: number;
+    graceTimeoutMs?: number;
+  },
+): void {
+  run(args.command.command, buildWindowsRuntimeStopArgs(args.command, args.socketPath), {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      ...(args.command.env ?? {}),
+      // A repair command must never bootstrap a replacement service on its way
+      // through; the caller owns that decision.
+      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+    },
+    timeout: 6_000,
+    windowsHide: true,
+  });
+  const deadline = Date.now() + (args.graceTimeoutMs ?? 5_000);
+  while (Date.now() < deadline) {
+    if (!windowsPidAlive(args.runtimePid)) return;
+    sleepSync(50);
+  }
+  // Still standing after the grace window: it was too wedged to answer, which
+  // is the case `taskkill /F` exists for.
+  run(windowsTaskkillCommand(), ["/PID", String(args.runtimePid), "/F"], {
+    encoding: "utf8",
+    windowsHide: true,
+  });
+}
+
 function removeWindowsRunEntryIfPresent(
   run: ServiceManagerSpawnSync,
   valueName: string,
   launcherPath: string,
   pidPath: string,
+  /**
+   * Present whenever the caller can name the brain's endpoint. Without it there
+   * is no cooperative channel and the supervisor tree is force-killed as before.
+   */
+  brain?: { command: AdeServiceCommand; socketPath: string },
 ): WindowsTaskRemovalResult {
-  const query = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyQueryArgs(valueName), {
+  const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(valueName), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -581,10 +705,25 @@ function removeWindowsRunEntryIfPresent(
   const supervisor = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
   if (supervisor.error) return { ok: false, message: supervisor.error };
   if (supervisor.running && supervisor.pid) {
-    const stop = run(WINDOWS_TASKKILL_COMMAND, ["/PID", String(supervisor.pid), "/T", "/F"], {
-      encoding: "utf8",
-      windowsHide: true,
-    });
+    // The brain is the supervisor's child, so `/T` would kill it here. Take the
+    // supervisor alone first -- it is a stateless restart loop with nothing to
+    // flush -- and only then talk the brain down. Without this ordering the
+    // supervisor would relaunch the brain the moment it exited.
+    const runtimePid = brain ? supervisor.record?.runtimePid ?? null : null;
+    const stop = run(
+      windowsTaskkillCommand(),
+      runtimePid == null
+        ? ["/PID", String(supervisor.pid), "/T", "/F"]
+        : ["/PID", String(supervisor.pid), "/F"],
+      { encoding: "utf8", windowsHide: true },
+    );
+    if (runtimePid != null && brain && windowsPidAlive(runtimePid)) {
+      stopWindowsBrainGracefully(run, {
+        command: brain.command,
+        socketPath: brain.socketPath,
+        runtimePid,
+      });
+    }
     if (stop.status !== 0) {
       const recheck = queryWindowsSupervisor({ spawnSync: run, launcherPath, pidPath });
       if (recheck.running || recheck.error) {
@@ -597,7 +736,7 @@ function removeWindowsRunEntryIfPresent(
   }
 
   if (installed) {
-    const remove = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyDeleteArgs(valueName), {
+    const remove = run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(valueName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -613,6 +752,21 @@ function removeWindowsRunEntryIfPresent(
 }
 
 export async function installWindowsService(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
+  try {
+    return await installWindowsServiceImpl(deps);
+  } catch (error) {
+    if (!isTrustedWindowsToolError(error)) throw error;
+    return windowsToolFailureResult<ServiceManagerResult & { ok: false; message: string }>(error, {
+      serviceName: resolvedServiceName(deps),
+      action: "install",
+      path: null,
+    });
+  }
+}
+
+async function installWindowsServiceImpl(
   deps: WindowsServiceManagerDeps = {},
 ): Promise<ServiceManagerResult> {
   const run = deps.spawnSync ?? spawnSync;
@@ -688,6 +842,7 @@ export async function installWindowsService(
     taskName,
     launcherPath,
     pidPath,
+    { command: serviceCommand, socketPath },
   );
   if (!startupRemoval.ok) {
     return {
@@ -698,9 +853,25 @@ export async function installWindowsService(
       message: startupRemoval.message,
     };
   }
+  // launchd parity: the macOS install reaps stale same-channel serve processes
+  // before loading the replacement, because a brain that outlived its
+  // registration keeps the channel socket and the sync-host lock hostage. On
+  // Windows this scan used to shell out to `ps -axo`, which does not exist
+  // there, so it silently found nothing and the reap never happened.
+  const staleScan = listStaleChannelServePids(run, {
+    cliScriptPath: resolveAdeServeCliScriptPath(serviceCommand),
+    primarySocketPath: socketPath,
+  }, "win32");
+  for (const stalePid of staleScan.ok ? staleScan.pids : []) {
+    stopWindowsBrainGracefully(run, {
+      command: serviceCommand,
+      socketPath,
+      runtimePid: stalePid,
+    });
+  }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(
-    WINDOWS_REG_COMMAND,
+    windowsRegCommand(),
     buildWindowsRunKeyAddArgs(taskName, command),
     { encoding: "utf8", windowsHide: true },
   );
@@ -715,7 +886,7 @@ export async function installWindowsService(
   }
   const startFailure = startWindowsSupervisorDetached(run, launcherPath, taskName);
   if (startFailure) {
-    run(WINDOWS_REG_COMMAND, buildWindowsRunKeyDeleteArgs(taskName), {
+    run(windowsRegCommand(), buildWindowsRunKeyDeleteArgs(taskName), {
       encoding: "utf8",
       windowsHide: true,
     });
@@ -769,6 +940,19 @@ export async function installWindowsService(
 }
 
 export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
+  try {
+    return uninstallWindowsServiceImpl(deps);
+  } catch (error) {
+    if (!isTrustedWindowsToolError(error)) throw error;
+    return windowsToolFailureResult<ServiceManagerResult & { ok: false; message: string }>(error, {
+      serviceName: resolvedServiceName(deps),
+      action: "uninstall",
+      path: null,
+    });
+  }
+}
+
+function uninstallWindowsServiceImpl(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const serviceCommand = deps.command ?? resolveAdeServeCommand();
@@ -806,6 +990,10 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
     taskName,
     launcherPath,
     pidPath,
+    {
+      command: serviceCommand,
+      socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
+    },
   );
   const removalErrors = [currentRemoval, legacyRemoval, startupRemoval]
     .filter((result): result is Extract<WindowsTaskRemovalResult, { ok: false }> => !result.ok)
@@ -859,12 +1047,12 @@ function probeGlobalLegacyTask(
   run: ServiceManagerSpawnSync,
   command: AdeServiceCommand,
 ): WindowsLegacyTaskProbe {
-  const query = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsQueryTaskArgs(TASK_NAME), {
+  const query = run(windowsPowerShellCommand(), buildWindowsQueryTaskArgs(TASK_NAME), {
     encoding: "utf8",
     windowsHide: true,
   });
   if (query.status !== 0) return { present: false };
-  const action = run(WINDOWS_POWERSHELL_COMMAND, buildWindowsQueryTaskActionArgs(TASK_NAME), {
+  const action = run(windowsPowerShellCommand(), buildWindowsQueryTaskActionArgs(TASK_NAME), {
     encoding: "utf8",
     windowsHide: true,
   });
@@ -875,6 +1063,34 @@ function probeGlobalLegacyTask(
 }
 
 export function getWindowsServiceStatus(
+  deps: Pick<
+    WindowsServiceManagerDeps,
+    | "command"
+    | "env"
+    | "launcherPath"
+    | "pidPath"
+    | "readinessProbe"
+    | "readPidRecord"
+    | "serviceName"
+    | "spawnSync"
+    | "userName"
+  > = {},
+): ServiceManagerStatusResult {
+  try {
+    return getWindowsServiceStatusImpl(deps);
+  } catch (error) {
+    if (!isTrustedWindowsToolError(error)) throw error;
+    return windowsToolFailureResult<ServiceManagerStatusResult & { ok: false; message: string }>(error, {
+      serviceName: resolvedServiceName(deps),
+      action: "status",
+      installed: null,
+      running: null,
+      path: null,
+    });
+  }
+}
+
+function getWindowsServiceStatusImpl(
   deps: Pick<
     WindowsServiceManagerDeps,
     | "command"
@@ -911,7 +1127,7 @@ export function getWindowsServiceStatus(
   const launcherPath = deps.launcherPath ?? resolveWindowsServiceLauncherPath({ env: runtimeEnv, serviceName });
   const pidPath = deps.pidPath ?? `${launcherPath}.pid.json`;
   const taskResult = run(
-    WINDOWS_POWERSHELL_COMMAND,
+    windowsPowerShellCommand(),
     buildWindowsQueryTaskArgs(taskName),
     { encoding: "utf8", windowsHide: true },
   );
@@ -927,7 +1143,7 @@ export function getWindowsServiceStatus(
         "A legacy ADE scheduled task for this channel is installed, but runtime readiness cannot be verified. Run `ade brain start` to migrate it to the per-user startup supervisor.",
     };
   }
-  const startupResult = run(WINDOWS_REG_COMMAND, buildWindowsRunKeyQueryArgs(taskName), {
+  const startupResult = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(taskName), {
     encoding: "utf8",
     windowsHide: true,
   });

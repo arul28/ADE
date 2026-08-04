@@ -7,6 +7,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   ADE_RUNTIME_SERVICE_NAME,
   buildWindowsParentPidQueryArgs,
+  buildWindowsProcessCommandLineQueryArgs,
+  listStaleChannelServePids,
   isCurrentProcessDescendantOfPid,
   isStaleChannelServeCommandLine,
   PARENT_PID_UNKNOWN,
@@ -14,6 +16,7 @@ import {
   renderCommand,
   resolveAdeServeCommand,
   serviceManagerOwnsRuntimeRecovery,
+  terminatePidGracefullyAsync,
   type AdeServiceCommand,
   type ServiceManagerProcessResult,
   type ServiceManagerSpawnSync,
@@ -458,6 +461,172 @@ describe("isStaleChannelServeCommandLine", () => {
       "/Applications/ADE.app/Contents/Resources/ade-cli/cli.cjs serve",
       opts,
     )).toBe(false);
+  });
+});
+
+// Windows quotes EVERY spawned argument, so a live supervisor-launched brain's
+// command line is `"...\node.exe" "...\cli.cjs" "serve"`. Measured against a
+// real process read back through `Get-CimInstance Win32_Process`, the
+// whitespace-only spellings this predicate used to require made it ALWAYS false
+// on Windows, so `findStaleHolder` could never recognise a wedged same-channel
+// brain and mobile sync drifted onto a fallback port after every crash.
+describe("isStaleChannelServeCommandLine on Windows-quoted command lines", () => {
+  const node = "C:\\Program Files\\nodejs\\node.exe";
+  // A home directory with a space is the ordinary case, not an exotic one --
+  // and Node quotes those arguments too.
+  const cliScriptPath = "C:\\Users\\John Smith\\.ade\\runtime\\cli.cjs";
+  const primarySocketPath = "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef";
+  const opts = { cliScriptPath, primarySocketPath };
+  const live = `"${node}" "${cliScriptPath}" "serve"`;
+
+  it("matches the quoted command line a Windows supervisor actually produces", () => {
+    expect(isStaleChannelServeCommandLine(live, opts)).toBe(true);
+    expect(isStaleChannelServeCommandLine(`${live} "--socket" "${primarySocketPath}"`, opts)).toBe(true);
+  });
+
+  it("compares named pipes case-insensitively, because Windows does", () => {
+    expect(isStaleChannelServeCommandLine(
+      `${live} "--socket" "${primarySocketPath.toUpperCase()}"`,
+      opts,
+    )).toBe(true);
+  });
+
+  it("still ignores isolated, installer, and foreign-socket Windows runtimes", () => {
+    expect(isStaleChannelServeCommandLine(`${live} "--no-sync"`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(`${live} "--install-service"`, opts)).toBe(false);
+    expect(isStaleChannelServeCommandLine(
+      `${live} "--socket" "\\\\.\\pipe\\ade-runtime-beta-ffffffffffffffff"`,
+      opts,
+    )).toBe(false);
+    expect(isStaleChannelServeCommandLine(`"${node}" "${cliScriptPath}" "doctor"`, opts)).toBe(false);
+    // `serveless` must not be mistaken for the `serve` verb.
+    expect(isStaleChannelServeCommandLine(`"${node}" "${cliScriptPath}" "serveless"`, opts)).toBe(false);
+  });
+});
+
+describe("listStaleChannelServePids", () => {
+  const opts = {
+    cliScriptPath: "C:\\ADE\\resources\\ade-cli\\cli.cjs",
+    primarySocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+  };
+
+  it("enumerates Windows processes through Win32_Process, never `ps`", () => {
+    const calls: string[] = [];
+    const scan = listStaleChannelServePids(
+      (command, args) => {
+        calls.push(command);
+        expect(args).toEqual(buildWindowsProcessCommandLineQueryArgs());
+        return {
+          status: 0,
+          stdout: [
+            `4242\t"C:\\ADE\\ade.exe" "${opts.cliScriptPath}" "serve"`,
+            `4243\t"C:\\ADE\\ade.exe" "${opts.cliScriptPath}" "serve" "--no-sync"`,
+            "4244\t\"C:\\Windows\\explorer.exe\"",
+          ].join("\r\n"),
+          stderr: "",
+        };
+      },
+      opts,
+      "win32",
+    );
+    expect(calls.some((command) => /powershell\.exe$/i.test(command))).toBe(true);
+    expect(calls).not.toContain("ps");
+    expect(scan).toEqual({ ok: true, pids: [4242] });
+  });
+
+  it("keeps using `ps -axo` off win32", () => {
+    const calls: string[] = [];
+    const scan = listStaleChannelServePids(
+      (command) => {
+        calls.push(command);
+        return { status: 0, stdout: "  4242 /Applications/ADE.app/Contents/MacOS/ADE /a/ade-cli/cli.cjs serve\n", stderr: "" };
+      },
+      { cliScriptPath: "/a/ade-cli/cli.cjs", primarySocketPath: "/Users/x/.ade/sock/ade.sock" },
+      "darwin",
+    );
+    expect(calls).toEqual(["ps"]);
+    expect(scan).toEqual({ ok: true, pids: [4242] });
+  });
+
+  it("reports a failed scan explicitly instead of returning an empty list", () => {
+    // `status: null` is exactly what spawnSync returns when the executable does
+    // not exist -- which is how the Windows scan used to look like a clean bill
+    // of health while never having run at all.
+    const scan = listStaleChannelServePids(
+      () => ({ status: null, stdout: "", stderr: "" }),
+      opts,
+      "win32",
+    );
+    expect(scan.ok).toBe(false);
+    expect(scan).not.toEqual({ ok: true, pids: [] });
+  });
+});
+
+describe("terminatePidGracefullyAsync on win32", () => {
+  // `process.kill(pid, "SIGTERM")` is TerminateProcess on Windows: the target's
+  // SIGTERM handler never runs and it is gone in ~19ms (measured), so the whole
+  // grace loop was dead code and the brain was killed mid-write.
+  it("asks the runtime to shut down and never signals the pid", async () => {
+    const signals: Array<string | number> = [];
+    const forced: number[] = [];
+    let alive = true;
+    const requests: Array<{ pid: number; socketPath: string }> = [];
+    await terminatePidGracefullyAsync(4242, {
+      platform: "win32",
+      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      kill: (_pid, signal) => { signals.push(signal); },
+      forceKill: (pid) => { forced.push(pid); },
+      pidAlive: () => alive,
+      requestRuntimeShutdown: async ({ pid, socketPath }) => {
+        requests.push({ pid, socketPath });
+        alive = false;
+        return { requested: true };
+      },
+    });
+    expect(requests).toEqual([
+      { pid: 4242, socketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef" },
+    ]);
+    expect(signals).toEqual([]);
+    expect(forced).toEqual([]);
+  });
+
+  it("escalates to a forced kill when the runtime will not answer", async () => {
+    const forced: number[] = [];
+    await terminatePidGracefullyAsync(4242, {
+      platform: "win32",
+      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      forceKill: (pid) => { forced.push(pid); },
+      pidAlive: () => true,
+      requestRuntimeShutdown: async () => ({ requested: false, reason: "wedged" }),
+    });
+    expect(forced).toEqual([4242]);
+  });
+
+  it("escalates when a brain accepts the request but does not leave in time", async () => {
+    const forced: number[] = [];
+    await terminatePidGracefullyAsync(4242, {
+      platform: "win32",
+      graceTimeoutMs: 120,
+      runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+      forceKill: (pid) => { forced.push(pid); },
+      pidAlive: () => true,
+      requestRuntimeShutdown: async () => ({ requested: true }),
+    });
+    expect(forced).toEqual([4242]);
+  });
+
+  it("keeps the POSIX SIGTERM/SIGKILL sequence off win32", async () => {
+    const signals: Array<string | number> = [];
+    await terminatePidGracefullyAsync(4242, {
+      platform: "darwin",
+      graceTimeoutMs: 60,
+      kill: (_pid, signal) => { signals.push(signal); },
+      pidAlive: () => true,
+      requestRuntimeShutdown: async () => {
+        throw new Error("the POSIX path must never open an RPC channel");
+      },
+    });
+    expect(signals).toEqual(["SIGTERM", "SIGKILL"]);
   });
 });
 

@@ -66,17 +66,27 @@ function processExists(pid: number): boolean {
   }
 }
 
-// A contended `open(..., "wx")` reports EEXIST on POSIX, but Windows keeps a
-// deleted name in the directory until the last handle closes. Between the
-// holder's unlink and that final drop, a contending open hits the
-// delete-pending name and Node surfaces EPERM, EACCES or EBUSY instead. Those
-// are contention, not failure, so the caller must wait rather than abort --
-// this is the brain-spawn path, where burst contention is the normal case.
+// A contended `open(..., "wx")` reports EEXIST -- on Windows too.
+//
+// This branch used to also treat EPERM/EACCES as contention, on the theory that
+// Windows leaves a delete-pending name behind after the holder's unlink. That
+// is FALSE for this lock: libuv opens with FILE_SHARE_DELETE, so unlink-while-
+// open succeeds immediately and the next `open(..., "wx")` succeeds too. A
+// 10-process contention run on Windows 11 26200 produced ONLY EEXIST, zero
+// mutual-exclusion violations, and no leaked lock file.
+//
+// Keeping EPERM/EACCES in here had a real cost: a GENUINE permission denial on
+// %ADE_HOME%\runtime\spawn-locks (ACLs, EDR, a redirected profile) was retried
+// as if it were contention, so every `ade` command burned the full 10s deadline
+// and then reported "Timed out waiting for ADE socket spawn lock" instead of
+// the permission error the user could act on. EBUSY stays: it is what a
+// sharing-mode conflict from an antivirus scanner holding the file surfaces as,
+// and that one genuinely does resolve on its own.
 function isSocketSpawnLockContention(error: unknown): boolean {
   const code = (error as NodeJS.ErrnoException | null)?.code;
   if (code === "EEXIST") return true;
   if (process.platform !== "win32") return false;
-  return code === "EPERM" || code === "EACCES" || code === "EBUSY";
+  return code === "EBUSY";
 }
 
 function unlinkSocketSpawnLockIfStale(lockPath: string): boolean {

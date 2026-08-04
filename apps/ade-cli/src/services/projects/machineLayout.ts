@@ -77,6 +77,10 @@ function windowsChannelIdentity(adeDir: string, env: NodeJS.ProcessEnv): {
   };
 }
 
+/**
+ * The on-disk casing of `value`, for the components that exist. Components that
+ * do not exist yet can only be re-joined as they were given.
+ */
 function canonicalWindowsPath(value: string): string {
   const original = path.win32.resolve(value).replace(/\//g, "\\");
   const missingParts: string[] = [];
@@ -99,8 +103,17 @@ function windowsPipeIdentity(
 ): { channelLabel: string; hash: string } {
   const canonicalAdeDir = canonicalWindowsPath(adeDir);
   const channel = windowsChannelIdentity(canonicalAdeDir, env);
+  // Case-FOLD the path before hashing. `canonicalWindowsPath` returns the real
+  // on-disk casing for the components that exist and the caller's casing for
+  // the ones that do not, so the two disagree across the exact moment ADE_HOME
+  // is created: `ADE_HOME=C:\Users\x\.ADE` hashed the given ".ADE" before the
+  // directory existed and whatever the filesystem recorded afterwards. A daemon
+  // started inside that window listened on pipe A while every later CLI
+  // computed pipe B -- an orphaned, unreachable brain. Windows path components
+  // are case-insensitive, so folding loses nothing and is the only spelling
+  // that is stable on both sides of that moment.
   const hash = createHash("sha256")
-    .update(`${canonicalAdeDir}\0${channel.identity}\0${windowsUserIdentity(env)}`)
+    .update(`${canonicalAdeDir.toLowerCase()}\0${channel.identity}\0${windowsUserIdentity(env)}`)
     .digest("hex")
     .slice(0, 16);
   return { channelLabel: channel.label, hash };

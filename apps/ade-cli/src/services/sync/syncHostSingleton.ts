@@ -4,6 +4,10 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resolveTrustedWindowsTool } from "../../lib/trustedWindowsTools";
+import {
+  buildWindowsListeningPortHolderQueryArgs,
+  parseWindowsPortHolders,
+} from "./windowsPortHolders";
 import { DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT } from "./syncProtocol";
 const LOCK_VERSION = 1;
 
@@ -47,6 +51,8 @@ export type SyncHostSingletonDeps = {
   processMatchesOwner?: (owner: SyncHostSingletonOwner) => boolean | null;
   scanListeners?: () => SyncHostSingletonOwner[];
   platform?: NodeJS.Platform;
+  /** Injectable process runner for the native listener scan (lsof / PowerShell). */
+  scanListenersReadText?: (command: string, args: string[]) => string;
 };
 
 // Which leases THIS process currently holds. The lock file answers "who owns
@@ -459,25 +465,94 @@ function legacyOwner(pid: number, port: number, commandLine: string | null): Syn
   };
 }
 
-function scanNativeSyncHostListeners(): SyncHostSingletonOwner[] {
-  if (process.platform !== "darwin") return [];
-  if (isTestProcess() && process.env.ADE_SYNC_HOST_LEGACY_SCAN !== "1") return [];
-  let output = "";
+/**
+ * Windows spelling of `looksLikeAdeSyncHostProcess`.
+ *
+ * The POSIX matchers above require forward slashes and whitespace-delimited
+ * tokens; a Windows command line has neither, because every spawned argument is
+ * quoted (`... "…\ade-cli\cli.cjs" "serve"`). Applying them to a real Windows
+ * command line matches nothing at all.
+ */
+export function looksLikeAdeWindowsSyncHostProcess(commandLine: string): boolean {
+  const normalized = commandLine.replace(/"/g, " ").replace(/\//g, "\\");
+  // A bare `serve` verb somewhere in the arguments...
+  if (!/(?:^|[\s\\])serve(?:\s|$)/i.test(normalized)) return false;
+  // ...launched by something that is recognisably an ADE entry point.
+  return /[\\\s](?:cli\.cjs|ade\.exe|ade-beta\.exe|ade-alpha\.exe|ADE Beta\.exe|ADE Alpha\.exe)(?=\s)/i
+    .test(normalized);
+}
+
+type SyncHostListenerScanDeps = {
+  platform?: NodeJS.Platform;
+  /** Injectable process runner so both branches are testable off their host. */
+  readText?: (command: string, args: string[]) => string;
+};
+
+function defaultScanText(command: string, args: string[]): string {
   try {
-    output = execFileSync("lsof", [
-      "-nP",
-      `-iTCP:${DEFAULT_SYNC_HOST_PORT}-${SYNC_HOST_MAX_PORT}`,
-      "-sTCP:LISTEN",
-    ], {
+    return execFileSync(command, args, {
       encoding: "utf8",
-      timeout: 2_000,
+      // PowerShell needs to start a runtime and load Get-NetTCPConnection plus
+      // CIM before it answers; the 2s POSIX budget kills it every time.
+      timeout: command.toLowerCase().endsWith("powershell.exe") ? 15_000 : 2_000,
+      maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
     });
   } catch (error) {
-    output = typeof (error as { stdout?: unknown }).stdout === "string"
+    return typeof (error as { stdout?: unknown }).stdout === "string"
       ? (error as { stdout: string }).stdout
       : "";
   }
+}
+
+/**
+ * Windows listener scan: `Get-NetTCPConnection -State Listen` over the sync-host
+ * port band, joined to `Win32_Process` for the command line, reusing the exact
+ * query `sharedSyncListener` already builds for a single port.
+ *
+ * Before this existed, `detectSyncHostSingletonConflict` had NO listener-scan
+ * fallback on Windows -- the darwin guard returned an empty array that read as
+ * "no other sync host is running" -- so only the lock file protected the
+ * singleton, and a hard-killed brain is exactly the case that leaves that lock
+ * behind unreleased.
+ */
+function scanWindowsSyncHostListeners(
+  readText: (command: string, args: string[]) => string,
+): SyncHostSingletonOwner[] {
+  let powershell: string;
+  let args: string[];
+  try {
+    powershell = resolveTrustedWindowsTool("powershell");
+    args = buildWindowsListeningPortHolderQueryArgs(DEFAULT_SYNC_HOST_PORT, SYNC_HOST_MAX_PORT);
+  } catch {
+    return [];
+  }
+  const holders = parseWindowsPortHolders(readText(powershell, args));
+  const owners: SyncHostSingletonOwner[] = [];
+  for (const holder of holders) {
+    if (holder.pid === process.pid) continue;
+    // A holder owned by another user has no readable command line without
+    // elevation, and an unidentifiable listener must never be reported as an
+    // ADE sync host: the caller would tell the user to quit a stranger.
+    if (!holder.command || !looksLikeAdeWindowsSyncHostProcess(holder.command)) continue;
+    owners.push(legacyOwner(holder.pid, holder.port ?? DEFAULT_SYNC_HOST_PORT, holder.command));
+  }
+  return owners;
+}
+
+function scanNativeSyncHostListeners(
+  deps: SyncHostListenerScanDeps = {},
+): SyncHostSingletonOwner[] {
+  const platform = deps.platform ?? process.platform;
+  if (platform !== "darwin" && platform !== "win32") return [];
+  if (isTestProcess() && process.env.ADE_SYNC_HOST_LEGACY_SCAN !== "1") return [];
+  const readText = deps.readText ?? defaultScanText;
+  if (platform === "win32") return scanWindowsSyncHostListeners(readText);
+  const output = readText("lsof", [
+    "-nP",
+    `-iTCP:${DEFAULT_SYNC_HOST_PORT}-${SYNC_HOST_MAX_PORT}`,
+    "-sTCP:LISTEN",
+  ]);
   const listeners = parseLsofListeners(output)
     .filter((listener) => listener.pid !== process.pid);
   const commands = psCommandLines(listeners.map((listener) => listener.pid));
@@ -523,6 +598,7 @@ export function detectSyncHostSingletonConflict(
     || deps.pidAlive
     || deps.processMatchesOwner
     || deps.scanListeners
+    || deps.scanListenersReadText
     || deps.platform,
   );
   if (
@@ -543,7 +619,11 @@ export function detectSyncHostSingletonConflict(
     deps.platform,
   );
   if (lockConflict) return lockConflict;
-  const listener = (deps.scanListeners ?? scanNativeSyncHostListeners)()
+  const listener = (deps.scanListeners
+    ?? (() => scanNativeSyncHostListeners({
+      platform: deps.platform,
+      readText: deps.scanListenersReadText,
+    })))()
     .find((owner) => owner.pid !== process.pid && pidAlive(owner.pid));
   return listener ? { reason: "listener", owner: listener } : null;
 }

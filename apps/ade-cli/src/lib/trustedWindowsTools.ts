@@ -12,6 +12,21 @@ const TRUSTED_TOOL_RELATIVE_PATHS: Record<TrustedWindowsTool, string> = {
 
 export const TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT = String.raw`\\?\GLOBALROOT\SystemRoot\System32`;
 
+/**
+ * Typed failure so callers can convert "this host will not give me reg.exe"
+ * into their own refusal shape instead of letting it escape as an unhandled
+ * throw. Consumers must branch on this class, never on the message text.
+ */
+export class TrustedWindowsToolError extends Error {
+  readonly tool: TrustedWindowsTool;
+
+  constructor(tool: TrustedWindowsTool, message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "TrustedWindowsToolError";
+    this.tool = tool;
+  }
+}
+
 type TrustedWindowsToolResolverDeps = {
   platform?: NodeJS.Platform;
   realpathNative?: (filePath: string) => string;
@@ -56,7 +71,7 @@ export function resolveTrustedWindowsTool(
     canonicalRoot = realpathNative(TRUSTED_WINDOWS_SYSTEM32_KERNEL_ROOT);
     canonicalTool = realpathNative(kernelToolPath);
   } catch (error) {
-    throw new Error(`Unable to resolve trusted Windows ${tool} executable`, { cause: error });
+    throw new TrustedWindowsToolError(tool, `Unable to resolve trusted Windows ${tool} executable`, { cause: error });
   }
 
   const expectedTool = path.win32.join(canonicalRoot, TRUSTED_TOOL_RELATIVE_PATHS[tool]);
@@ -67,16 +82,16 @@ export function resolveTrustedWindowsTool(
     || escapesRoot
     || canonicalTool.toLowerCase() !== expectedTool.toLowerCase()
   ) {
-    throw new Error(`Refusing untrusted Windows ${tool} executable: ${canonicalTool}`);
+    throw new TrustedWindowsToolError(tool, `Refusing untrusted Windows ${tool} executable: ${canonicalTool}`);
   }
 
   let isFile = false;
   try {
     isFile = statSync(canonicalTool).isFile();
   } catch (error) {
-    throw new Error(`Unable to inspect trusted Windows ${tool} executable`, { cause: error });
+    throw new TrustedWindowsToolError(tool, `Unable to inspect trusted Windows ${tool} executable`, { cause: error });
   }
-  if (!isFile) throw new Error(`Trusted Windows ${tool} path is not a file: ${canonicalTool}`);
+  if (!isFile) throw new TrustedWindowsToolError(tool, `Trusted Windows ${tool} path is not a file: ${canonicalTool}`);
 
   if (useCache) trustedToolCache.set(tool, canonicalTool);
   return canonicalTool;

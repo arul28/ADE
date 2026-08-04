@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildWindowsRuntimeQueryArgs,
   readWindowsServicePidRecord,
-  WINDOWS_POWERSHELL_COMMAND,
+  windowsPowerShellCommand,
 } from "./installWindows";
 import {
   renderWindowsServiceLauncher,
@@ -126,7 +126,7 @@ describe("Windows runtime supervisor", () => {
         initialRestartDelayMs: 100,
         maxRestartDelayMs: 200,
       })}`, "utf8");
-      const supervisor = spawn(WINDOWS_POWERSHELL_COMMAND, [
+      const supervisor = spawn(windowsPowerShellCommand(), [
         "-NoProfile",
         "-NonInteractive",
         "-ExecutionPolicy",

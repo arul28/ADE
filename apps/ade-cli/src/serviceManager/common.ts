@@ -3,6 +3,8 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { spawnSync, type SpawnSyncOptions } from "node:child_process";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
+import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
+import { requestAdeRuntimeShutdown } from "./runtimeShutdownRequest";
 
 export type ServiceManagerResult = {
   ok: boolean;
@@ -69,6 +71,13 @@ export type ServiceManagerSpawnSync = (
 function processOutputText(result: ServiceManagerProcessResult): string {
   if (typeof result.stdout === "string") return result.stdout.trim();
   if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8").trim();
+  return "";
+}
+
+/** Untrimmed stdout, for line-oriented output whose first line matters. */
+function processOutputRaw(result: ServiceManagerProcessResult): string {
+  if (typeof result.stdout === "string") return result.stdout;
+  if (Buffer.isBuffer(result.stdout)) return result.stdout.toString("utf8");
   return "";
 }
 
@@ -310,10 +319,64 @@ export type TerminatePidDeps = {
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
   graceTimeoutMs?: number;
+  platform?: NodeJS.Platform;
+  /**
+   * The JSON-RPC endpoint the target brain serves. Windows has no signal that
+   * a target can handle, so this is the ONLY way to ask a brain to exit in an
+   * orderly fashion. Defaults to this channel's primary socket, which is what
+   * every process `isStaleChannelServeCommandLine` matches is serving.
+   */
+  runtimeSocketPath?: string | null;
+  /** Injectable cooperative-shutdown request (see runtimeShutdownRequest.ts). */
+  requestRuntimeShutdown?: (args: {
+    pid: number;
+    socketPath: string;
+    timeoutMs: number;
+  }) => Promise<{ requested: boolean; reason?: string }>;
+  /** Injectable last-resort kill; on win32 this is `taskkill /PID n /F`. */
+  forceKill?: (pid: number) => void;
 };
 
 function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
   process.kill(pid, signal);
+}
+
+/**
+ * How long a Windows brain is given AFTER it has accepted a cooperative
+ * shutdown request. The POSIX grace window is 1.5s, but there the brain's own
+ * SIGTERM handler arms a 10s force-exit as a second line of defence; on Windows
+ * this loop is the only line of defence, and the RPC round trip is charged
+ * against the same window, so a bare 1.5s would frequently escalate to
+ * `taskkill /F` on a brain that was midway through an orderly flush -- the
+ * exact corruption this whole path exists to avoid.
+ */
+const WINDOWS_COOPERATIVE_GRACE_MS = 5_000;
+
+/**
+ * `taskkill /PID n /F` -- the honest Windows equivalent of SIGKILL.
+ *
+ * `process.kill(pid, "SIGKILL")` would work too (libuv maps it to
+ * `TerminateProcess` like every other signal), but naming the tool makes the
+ * escalation legible in a process trace and matches how the rest of the Windows
+ * service manager reaches for system tools. Resolution is lazy so a host where
+ * the trusted-tool lookup fails still gets the libuv fallback rather than a
+ * throw.
+ */
+function defaultWindowsForceKill(pid: number): void {
+  try {
+    spawnSync(resolveTrustedWindowsTool("taskkill"), ["/PID", String(pid), "/F"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    return;
+  } catch {
+    // fall through to libuv's TerminateProcess
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // best effort
+  }
 }
 
 function defaultPidAlive(pid: number): boolean {
@@ -329,10 +392,24 @@ function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
+/**
+ * Synchronous SIGTERM-then-SIGKILL teardown. POSIX only.
+ *
+ * The cooperative Windows path needs a socket round trip, which cannot be done
+ * synchronously from this process, so a win32 caller MUST use
+ * `terminatePidGracefullyAsync`. Reaching here on win32 means there is no grace
+ * available at all, so say so rather than pretending: `kill(pid, "SIGTERM")`
+ * would be `TerminateProcess` and the loop below would never observe a
+ * handler-driven exit.
+ */
 export function terminatePidGracefully(pid: number | null, deps: TerminatePidDeps = {}): void {
   if (!pid || pid <= 0 || pid === process.pid) return;
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  if ((deps.platform ?? process.platform) === "win32") {
+    (deps.forceKill ?? defaultWindowsForceKill)(pid);
+    return;
+  }
   try {
     kill(pid, "SIGTERM");
   } catch {
@@ -350,11 +427,74 @@ export function terminatePidGracefully(pid: number | null, deps: TerminatePidDep
   }
 }
 
+function sleepAsync(ms: number): Promise<void> {
+  // This timer is awaited: it must stay referenced, or a standalone CLI
+  // (e.g. `ade serve --install-service` repairing a wedged brain) can run
+  // out of referenced work and exit before the escalation and the
+  // subsequent `launchctl load` ever happen.
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * Windows counterpart of the SIGTERM/SIGKILL sequence below.
+ *
+ * There is no Windows signal a Node process can handle, so "graceful" has to
+ * mean something else here: ask the brain over its own JSON-RPC endpoint (the
+ * `shutdown` method runs the exact `finish()` the macOS SIGTERM handler runs),
+ * wait out the grace window, and only then force it. Before this existed every
+ * Windows teardown was `TerminateProcess` -- the grace loop, the `pidAlive`
+ * poll and the SIGKILL escalation were all dead code, and the brain was killed
+ * mid-write with no SQLite/CRDT flush and no lock-file release.
+ */
+async function terminateWindowsPidGracefullyAsync(
+  pid: number,
+  deps: TerminatePidDeps,
+): Promise<void> {
+  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const forceKill = deps.forceKill ?? defaultWindowsForceKill;
+  const requestShutdown = deps.requestRuntimeShutdown ?? requestAdeRuntimeShutdown;
+  let socketPath = deps.runtimeSocketPath ?? null;
+  if (socketPath === null) {
+    try {
+      socketPath = resolveMachineAdeLayout().socketPath;
+    } catch {
+      socketPath = null;
+    }
+  }
+  let cooperative = false;
+  if (socketPath) {
+    const requestTimeoutMs = Math.max(250, Math.floor(deps.graceTimeoutMs ?? 2_000));
+    try {
+      cooperative = (await requestShutdown({ pid, socketPath, timeoutMs: requestTimeoutMs })).requested;
+    } catch {
+      cooperative = false;
+    }
+  }
+  if (!cooperative) {
+    // Nothing answered for this pid on this endpoint: either it is not an ADE
+    // brain, or it is too wedged to answer. Neither can be talked down.
+    forceKill(pid);
+    return;
+  }
+  const deadline = Date.now() + (deps.graceTimeoutMs ?? WINDOWS_COOPERATIVE_GRACE_MS);
+  while (Date.now() < deadline) {
+    if (!pidAlive(pid)) return;
+    await sleepAsync(50);
+  }
+  forceKill(pid);
+}
+
 export async function terminatePidGracefullyAsync(
   pid: number | null,
   deps: TerminatePidDeps = {},
 ): Promise<void> {
   if (!pid || pid <= 0 || pid === process.pid) return;
+  if ((deps.platform ?? process.platform) === "win32") {
+    await terminateWindowsPidGracefullyAsync(pid, deps);
+    return;
+  }
   const kill = deps.kill ?? defaultKill;
   const pidAlive = deps.pidAlive ?? defaultPidAlive;
   try {
@@ -365,13 +505,7 @@ export async function terminatePidGracefullyAsync(
   const deadline = Date.now() + (deps.graceTimeoutMs ?? 1_500);
   while (Date.now() < deadline) {
     if (!pidAlive(pid)) return;
-    // This timer is awaited: it must stay referenced, or a standalone CLI
-    // (e.g. `ade serve --install-service` repairing a wedged brain) can run
-    // out of referenced work and exit before the SIGKILL escalation and the
-    // subsequent `launchctl load` ever happen.
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 50);
-    });
+    await sleepAsync(50);
   }
   try {
     kill(pid, "SIGKILL");
@@ -386,30 +520,62 @@ export function resolveAdeServeCliScriptPath(command: AdeServiceCommand): string
   return command.command;
 }
 
-// A ps command line counts as a stale channel brain when it runs this
+function isWindowsNamedPipePath(value: string): boolean {
+  return /^\\\\[.?]\\pipe\\/i.test(value.trim().replace(/\//g, "\\"));
+}
+
+/**
+ * Whether two `--socket` values name the same endpoint.
+ *
+ * A Windows brain's endpoint is a named pipe, and both halves of that name are
+ * case-insensitive: the kernel's pipe namespace is, and so is the filesystem
+ * whose paths ADE hashes into the name. `===` on the resolved strings therefore
+ * rejects genuine matches on Windows. POSIX socket paths ARE case-sensitive, so
+ * that branch keeps the exact comparison it has always had.
+ */
+function isSameServeSocketPath(left: string, right: string): boolean {
+  if (isWindowsNamedPipePath(left) || isWindowsNamedPipePath(right)) {
+    const normalize = (value: string): string =>
+      value.trim().replace(/\//g, "\\").toLowerCase();
+    return normalize(left) === normalize(right);
+  }
+  return path.resolve(left) === path.resolve(right);
+}
+
+// A ps/CIM command line counts as a stale channel brain when it runs this
 // channel's packaged CLI in `serve` mode against the channel's primary
 // socket. Isolated (--no-sync), installer, and foreign-socket runtimes are
 // other lifecycles and must not be reaped by a service install.
+//
+// Every token boundary below tolerates a `"`: Windows quotes EVERY spawned
+// argument (`renderWindowsCommand` -> `cmdQuote`), so a live supervisor-launched
+// brain reads `"...\node.exe" "...\cli.cjs" "serve"` and the tail after the CLI
+// path starts `" "serve"`, not ` serve`. Measured against a real
+// supervisor-launched process read back through `Get-CimInstance Win32_Process`,
+// the whitespace-only spellings made this predicate always false on Windows --
+// including for every user whose home path contains a space, because Node quotes
+// those arguments too. `windowsSupervisor.buildWindowsRuntimeQueryArgs` carries
+// the same fix for its own predicate.
 export function isStaleChannelServeCommandLine(
   commandLine: string,
   opts: { cliScriptPath: string; primarySocketPath: string },
 ): boolean {
   const line = commandLine.trim();
   if (!line || !opts.cliScriptPath) return false;
-  const socketMatch = line.match(/--socket(?:=|\s+)(\S+)/);
+  const socketMatch = line.match(/--socket"?(?:=|\s+)"?([^"\s]+)/);
   const explicitPrimarySocket = socketMatch
-    ? path.resolve(socketMatch[1]) === path.resolve(opts.primarySocketPath)
+    ? isSameServeSocketPath(socketMatch[1], opts.primarySocketPath)
     : false;
   const cliIndex = line.indexOf(opts.cliScriptPath);
   const alternateCliMatch = line.match(
-    /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?=\s+serve(?:\s|$))/,
+    /\b(?:ade-cli[\\/](?:bin[\\/]ade|cli\.cjs)|apps[\\/]ade-cli[\\/]dist[\\/]cli\.cjs|cli\.cjs)(?="?\s+"?serve"?(?:\s|$))/,
   );
   const tail = cliIndex >= 0
     ? line.slice(cliIndex + opts.cliScriptPath.length)
     : alternateCliMatch?.index != null
       ? line.slice(alternateCliMatch.index + alternateCliMatch[0].length)
       : "";
-  if (!/^\s+serve(?:\s|$)/.test(tail)) return false;
+  if (!/^"?\s+"?serve"?(?:\s|$)/.test(tail)) return false;
   if (/--(?:install-service|uninstall-service|service-status|no-sync)\b/.test(tail)) return false;
   if (socketMatch && !explicitPrimarySocket) {
     return false;
@@ -418,27 +584,103 @@ export function isStaleChannelServeCommandLine(
   return true;
 }
 
-export function listStaleChannelServePids(
-  run: ServiceManagerSpawnSync,
+/**
+ * Result of a stale-brain scan.
+ *
+ * `{ ok: false }` is NOT `{ ok: true, pids: [] }`: the first means the scan
+ * mechanism could not answer at all, the second means it answered "none". The
+ * two used to be the same value, which is how the Windows scan came to look
+ * like a clean bill of health -- `ps -axo` does not exist there, `spawnSync`
+ * returned `status: null`, and the `!== 0` guard turned that into an empty
+ * list indistinguishable from a real answer.
+ */
+export type StaleChannelServeScan =
+  | { ok: true; pids: number[] }
+  | { ok: false; reason: string };
+
+/**
+ * PowerShell that prints `<pid>\t<command line>` for every process on the
+ * machine, as the win32 equivalent of `ps -axo pid=,command=`.
+ *
+ * `Get-CimInstance Win32_Process` for the same reason as everywhere else in
+ * this directory: `wmic` is deprecated and is being removed from Windows. A tab
+ * delimiter rather than a space because Windows command lines start with a
+ * quoted, space-bearing executable path.
+ */
+export function buildWindowsProcessCommandLineQueryArgs(): string[] {
+  const query = [
+    "$ErrorActionPreference = 'Stop'",
+    "$rows = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue"
+      + " | Where-Object { $_.CommandLine } "
+      + "| ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" })",
+    "[Console]::Out.Write(($rows -join \"`n\"))",
+  ].join("; ");
+  return ["-NoProfile", "-NonInteractive", "-Command", query];
+}
+
+function parseStaleChannelServePids(
+  output: string,
+  separator: RegExp,
   opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
 ): number[] {
-  const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
-  if (result.status !== 0) return [];
-  const output = typeof result.stdout === "string"
-    ? result.stdout
-    : Buffer.isBuffer(result.stdout)
-      ? result.stdout.toString("utf8")
-      : "";
   const exclude = new Set([process.pid, ...(opts.excludePids ?? [])]);
   const pids: number[] = [];
   for (const line of output.split(/\r?\n/)) {
-    const match = line.trim().match(/^(\d+)\s+(.+)$/);
+    const match = line.trim().match(separator);
     if (!match) continue;
     const pid = Number(match[1]);
     if (!Number.isFinite(pid) || pid <= 0 || exclude.has(pid)) continue;
-    if (isStaleChannelServeCommandLine(match[2], opts)) pids.push(pid);
+    if (isStaleChannelServeCommandLine(match[2]!, opts)) pids.push(pid);
   }
   return pids;
+}
+
+export function listStaleChannelServePids(
+  run: ServiceManagerSpawnSync,
+  opts: { cliScriptPath: string; primarySocketPath: string; excludePids?: number[] },
+  platform: NodeJS.Platform = process.platform,
+): StaleChannelServeScan {
+  if (platform === "win32") {
+    let result: ServiceManagerProcessResult;
+    try {
+      result = run(
+        resolveTrustedWindowsTool("powershell"),
+        buildWindowsProcessCommandLineQueryArgs(),
+        // Same budget as the other CIM lookups here: powershell.exe cold start
+        // plus the first CIM call in a session routinely exceeds 5s on a
+        // contended host, and a timeout is indistinguishable from a real answer.
+        { encoding: "utf8", timeout: 15_000, windowsHide: true },
+      );
+    } catch (error) {
+      return {
+        ok: false,
+        reason: error instanceof Error ? error.message : String(error),
+      };
+    }
+    if (result.status !== 0) {
+      return {
+        ok: false,
+        reason: serviceManagerResultText(result)
+          || `the Windows process query exited with status ${String(result.status)}`,
+      };
+    }
+    return {
+      ok: true,
+      pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\t(.+)$/, opts),
+    };
+  }
+  const result = run("ps", ["-axo", "pid=,command="], { encoding: "utf8" });
+  if (result.status !== 0) {
+    return {
+      ok: false,
+      reason: serviceManagerResultText(result)
+        || `\`ps -axo\` exited with status ${String(result.status)}`,
+    };
+  }
+  return {
+    ok: true,
+    pids: parseStaleChannelServePids(processOutputRaw(result), /^(\d+)\s+(.+)$/, opts),
+  };
 }
 
 export function shellQuote(value: string): string {
