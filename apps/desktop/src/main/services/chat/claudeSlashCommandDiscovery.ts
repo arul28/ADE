@@ -55,7 +55,37 @@ function skillRootsByPrecedence(cwd: string): string[] {
   return roots;
 }
 
+/**
+ * Discovery walks every `commands` and skill root above `cwd` and reads each
+ * markdown file. Measured on a real project: 2,760 files, 22.7MB, 579-1119ms
+ * per call — and it is called several times per turn (dispatchable commands,
+ * the palette list, project commands) with no caching at all. On Windows that
+ * lands on the single-threaded runtime that also owns the sync socket, so it
+ * delays phone-originated messages, not just the local UI.
+ *
+ * A short TTL rather than mtime checking: detecting a change means walking the
+ * tree, which is the expensive part. The window is small enough that a command
+ * file someone just edited shows up on the next turn.
+ */
+const DISCOVERY_TTL_MS = 5_000;
+const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlashCommand[] }>();
+
+/** Drop the memo — for tests, and for callers that just wrote a command file. */
+export function invalidateClaudeSlashCommandCache(): void {
+  discoveryCache.clear();
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
+  const cached = discoveryCache.get(cwd);
+  if (cached && Date.now() - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
+  const value = discoverClaudeSlashCommandsUncached(cwd);
+  discoveryCache.set(cwd, { at: Date.now(), value });
+  // Callers mutate the array (filter/map chains are fine, but nothing stops a
+  // sort in place), so never hand out the cached instance itself.
+  return value.slice();
+}
+
+function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
   for (const root of claudeRootsByPrecedence(cwd)) {

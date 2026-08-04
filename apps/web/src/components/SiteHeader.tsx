@@ -60,6 +60,9 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
+      // Same order as the home page masthead: reference links first, then the
+      // web client, then the single download entry point.
+      { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
       {
         label: "Web client",
         to: LINKS.webClient,
@@ -67,7 +70,6 @@ export function SiteHeader() {
         analyticsFeature: MARKETING_FEATURES.OPEN_WEB_CLIENT,
         analyticsCta: MARKETING_CTA_LABELS.OPEN_WEB_CLIENT,
       },
-      { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
     ],
     []
   );
@@ -133,14 +135,21 @@ export function SiteHeader() {
               GitHub
             </a>
 
-            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.NAVBAR} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
-              Download for Mac
+            {/* Points at the download page rather than straight at the macOS
+                release: ADE ships on more than one platform now, and a visitor
+                on Windows had no route to their own build from anywhere in the
+                site chrome. The page is where per-platform state — including
+                the Windows download gate — is expressed. It is a page view,
+                not a platform download, so it reports as a feature rather than
+                a download CTA. */}
+            <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm" className="ml-2">
+              Download
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.NAVBAR} variant="primary" size="sm" target="_blank" rel="noreferrer">
-              Mac
+            <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm">
+              Download
             </LinkButton>
             <button
               type="button"

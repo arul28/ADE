@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useLocation } from "react-router-dom";
 import { Apple, ArrowUpRight, Cpu, Download, Github, Laptop, Monitor, Smartphone, Terminal } from "lucide-react";
 import { Badge } from "../../components/Badge";
 import { Card } from "../../components/Card";
@@ -11,6 +12,7 @@ import { SectionHeading } from "../../components/SectionHeading";
 import { cn } from "../../lib/cn";
 import { LINKS } from "../../lib/links";
 import { useDocumentTitle } from "../../lib/useDocumentTitle";
+import { detectPlatform, type PlatformHint } from "../../lib/platform";
 import {
   MARKETING_CTA_LABELS,
   MARKETING_CTA_POSITIONS,
@@ -18,21 +20,10 @@ import {
   type MarketingFeature,
 } from "../../lib/marketingAnalytics";
 
-type PlatformHint = "mac" | "windows" | "linux" | "ios" | "unknown";
-
+// Mirrors lib/platform.ts. The Windows release contract test pins this literal
+// read — and the disclosure copy below it — to this file so no download card
+// can imply an installer exists before the release proof passes.
 const WINDOWS_DOWNLOAD_ENABLED = import.meta.env.VITE_ADE_WINDOWS_DOWNLOAD_ENABLED === "1";
-
-function detectPlatform(): PlatformHint {
-  const ua = typeof navigator !== "undefined" ? navigator.userAgent.toLowerCase() : "";
-  // navigator.platform is deprecated; used only as an iPad-spoof fallback.
-  const navigatorPlatform = typeof navigator !== "undefined" ? (navigator.platform ?? "").toLowerCase() : "";
-  const maxTouchPoints = typeof navigator !== "undefined" ? navigator.maxTouchPoints : 0;
-  if (/(iphone|ipad|ipod)/.test(ua) || (navigatorPlatform === "macintel" && maxTouchPoints > 1)) return "ios";
-  if (ua.includes("mac os") || ua.includes("macintosh")) return "mac";
-  if (ua.includes("windows")) return "windows";
-  if (ua.includes("linux")) return "linux";
-  return "unknown";
-}
 
 function downloadCtaForFeature(feature: MarketingFeature) {
   if (feature === MARKETING_FEATURES.DOWNLOAD_MAC) return MARKETING_CTA_LABELS.DOWNLOAD_MAC;
@@ -45,9 +36,23 @@ export function DownloadPage() {
   useDocumentTitle("Download ADE");
   const [platform, setPlatform] = useState<PlatformHint>("unknown");
 
+  const { hash } = useLocation();
+
   useEffect(() => {
     setPlatform(detectPlatform());
   }, []);
+
+  // The landing page links straight at a platform (/download#windows). A client
+  // route change does not scroll for us, so resolve the hash here.
+  useEffect(() => {
+    if (!hash) return;
+    const target = document.getElementById(hash.slice(1));
+    if (!target) return;
+    target.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "center",
+    });
+  }, [hash]);
 
   const sourceCmd = useMemo(
     () =>
@@ -159,8 +164,9 @@ export function DownloadPage() {
             return (
               <Reveal key={c.key} delay={idx * 0.03}>
                 <Card
+                  id={c.key}
                   className={cn(
-                    "p-6 transition-all duration-300 [transition-timing-function:var(--ease-out)]",
+                    "scroll-mt-24 p-6 transition-all duration-300 [transition-timing-function:var(--ease-out)]",
                     "hover:-translate-y-0.5 hover:border-border hover:bg-card/70 hover:shadow-glass-md",
                     recommended ? "border-accent/45 ring-1 ring-accent/25 shadow-glass-md" : undefined
                   )}
