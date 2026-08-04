@@ -424,4 +424,25 @@ describe("Windows sync-host listener scan", () => {
     });
     expect(commands).toEqual(["lsof"]);
   });
+
+  // The desktop launch gate runs before first paint, so on Windows it answers
+  // from the lock file alone rather than paying a full-machine PowerShell
+  // listener query on every launch. The scan must not run at all -- not "run
+  // with a shorter timeout" -- or the spawn cost is still charged pre-paint.
+  it("skips the listener scan entirely when the caller asks for a lock-only answer", () => {
+    const commands: string[] = [];
+    const conflict = detectSyncHostSingletonConflict({
+      lockPath: tempLockPath(),
+      platform: "win32",
+      skipListenerScan: true,
+      pidAlive: () => true,
+      processMatchesOwner: () => true,
+      scanListenersReadText: (command) => {
+        commands.push(command);
+        return "[]";
+      },
+    });
+    expect(commands).toEqual([]);
+    expect(conflict).toBeNull();
+  });
 });

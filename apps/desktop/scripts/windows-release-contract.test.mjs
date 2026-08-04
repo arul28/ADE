@@ -24,7 +24,7 @@ const ciWorkflow = fs.readFileSync(path.join(repoRoot, ".github", "workflows", "
 const appUpdate = parseYaml(fs.readFileSync(path.join(desktopRoot, "resources", "app-update.yml"), "utf8"));
 // Downloads moved out of a dedicated page and into the home hero, one button
 // per platform. The gate disclosure moved with them, so this reads the hero.
-const downloadPage = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "editorial", "Lede.tsx"), "utf8");
+const heroDownloads = fs.readFileSync(path.join(repoRoot, "apps", "web", "src", "components", "editorial", "Lede.tsx"), "utf8");
 const winArtifactValidator = fs.readFileSync(
   path.join(desktopRoot, "scripts", "validate-win-artifacts.mjs"),
   "utf8",
@@ -633,8 +633,23 @@ test("one repository variable decides whether a release carries Windows", () => 
   assert.deepEqual([...windowsVariables], ["ADE_WINDOWS_PUBLIC_RELEASE_ENABLED"]);
 });
 
-test("pull requests build and smoke an unsigned Windows installer", () => {
+test("pushes to main build and smoke an unsigned Windows installer", () => {
   const packageJob = jobBlock(ciWorkflow, "package-win", "validate-docs");
+  // Read the gate out of the `if:` expression, not the whole job: the comment
+  // above it quotes both conditions verbatim, so a job-wide match would pass on
+  // the prose alone after someone deleted the condition itself.
+  const conditionStart = packageJob.indexOf("\n    if:");
+  assert.notEqual(conditionStart, -1, "package-win must carry an if: gate");
+  const packageJobCondition = packageJob.slice(
+    conditionStart,
+    packageJob.indexOf("\n    runs-on:", conditionStart),
+  );
+  assert.match(packageJobCondition, /github\.event_name != 'pull_request'/);
+  // The main-ref disjunct bypasses the paths filter on purpose, and
+  // release-core.yml's verify job depends on it: verify requires a ci-pass
+  // check run on the exact SHA it builds, so a releasable SHA must never be one
+  // whose installer the paths filter skipped.
+  assert.match(packageJobCondition, /github\.ref == 'refs\/heads\/main'/);
   assert.match(packageJob, /runs-on: windows-latest/);
   assert.match(packageJob, /npm run dist:win/);
   assert.match(packageJob, /ADE_PACKAGE_CHANNEL: beta/);
@@ -669,15 +684,15 @@ test("Windows package smoke requires every bundled provider runtime", () => {
 });
 
 test("the site gates the Windows release and enables dedicated analytics", () => {
-  assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
-  assert.match(downloadPage, /=== "1"/);
+  assert.match(heroDownloads, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
+  assert.match(heroDownloads, /=== "1"/);
   // Ungated, the Windows CTA must not read as an available download, and must
   // say what has to happen first. Wording is free to change; what this pins is
   // that the disclosure exists at all, so nobody can quietly ship a Windows
   // button implying an artifact is there. The label itself is checked because
   // it is the only thing most visitors read.
-  assert.match(downloadPage, /signed installer ships once the Windows release proof passes/);
-  assert.match(downloadPage, /Windows \(beta\)/);
-  assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
-  assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
+  assert.match(heroDownloads, /signed installer ships once the Windows release proof passes/);
+  assert.match(heroDownloads, /Windows \(beta\)/);
+  assert.match(heroDownloads, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
+  assert.match(heroDownloads, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
 });

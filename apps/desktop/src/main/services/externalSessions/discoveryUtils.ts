@@ -1012,8 +1012,11 @@ export function normalizeProviderCwd(cwd: string | null | undefined): string | n
 }
 
 /**
- * Containment test, `parent` first (the reverse of the shared helper's order,
- * which is why this wrapper exists rather than the call sites importing it).
+ * Containment test, `parent` first — the reverse of `pathCompare`'s
+ * `isPathInside(candidate, parent)`, which is why the name says `contains`
+ * rather than repeating the shared helper's name with the arguments swapped.
+ * Two same-named exports with opposite orders compile cleanly when confused and
+ * silently invert every containment test that hits the wrong one.
  *
  * Delegates so the platform's case rules apply: `path.relative` compares
  * case-sensitively on every platform, but Windows and macOS resolve paths
@@ -1021,7 +1024,7 @@ export function normalizeProviderCwd(cwd: string | null | undefined): string | n
  * — PowerShell preserves it verbatim. A lane at `...\ADE` and a recorded cwd of
  * `...\ade` are the same folder and must test as contained.
  */
-export function isPathInside(parent: string, candidate: string): boolean {
+export function pathContains(parent: string, candidate: string): boolean {
   return sharedIsPathInside(candidate, parent);
 }
 
@@ -1101,7 +1104,7 @@ export function cwdIsInScope(cwd: string | null | undefined, scopeRoots: readonl
     if (index.resolvedCwds.size >= SCOPE_CWD_MEMO_LIMIT) index.resolvedCwds.clear();
     index.resolvedCwds.set(clean, resolved);
   }
-  return index.roots.some((root) => isPathInside(root, resolved));
+  return index.roots.some((root) => pathContains(root, resolved));
 }
 
 export function cwdCandidatesIncludeScope(

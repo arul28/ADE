@@ -11,19 +11,20 @@ import {
 import {
   type AdeServiceCommand,
   cmdQuote,
+  isPidAlive,
   listStaleChannelServePids,
   renderWindowsCommand,
   resolveAdeServeCliScriptPath,
   resolveAdeServeCommand,
   resolveRuntimeServiceName,
   serviceManagerResultText,
+  terminatePidGracefullyAsync,
   type ServiceManagerResult,
   type ServiceManagerSpawnSync,
   type ServiceManagerStatusResult,
 } from "./common";
 import { resolveMachineAdeDir, resolveMachineAdeLayout } from "../services/projects/machineLayout";
 import {
-  buildWindowsRuntimeStopArgs,
   defaultWindowsRuntimeReadiness,
   queryWindowsSupervisor,
   readWindowsServicePidRecord as readWindowsSupervisorPidRecord,
@@ -616,20 +617,6 @@ function windowsLauncherCommand(launcherPath: string): string {
   });
 }
 
-function windowsPidAlive(pid: number): boolean {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    // EPERM means the pid exists but belongs to someone we may not signal.
-    return (error as NodeJS.ErrnoException).code === "EPERM";
-  }
-}
-
-function sleepSync(ms: number): void {
-  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-}
-
 /**
  * Stops the brain the supervisor was guarding, cooperatively first.
  *
@@ -641,45 +628,35 @@ function sleepSync(ms: number): void {
  * `ade serve --install-service` / reinstall route. The next start then had to
  * recover from a lock file its owner never got to release.
  *
- * So: ask over the RPC endpoint (same `finish()` macOS gets), wait out a grace
- * window, and only force what is still standing. The supervisor must already be
- * gone when this runs, or it would simply restart the brain we just stopped.
+ * The sequence itself lives in `common.terminatePidGracefullyAsync`: it asks
+ * over the RPC endpoint (same `finish()` macOS gets), waits out the grace
+ * window, and forces only what is still standing. Crucially it verifies the pid
+ * over `runtime/info` before asking anything to exit, so a recycled pid from a
+ * stale supervisor record cannot talk down an unrelated brain. This wrapper only
+ * supplies the Windows tools: `taskkill` through the same injected `spawnSync`
+ * and memoized trusted-tool lookup the rest of this file uses, so tests observe
+ * the escalation instead of really killing a pid.
+ *
+ * The supervisor must already be gone when this runs, or it would simply
+ * restart the brain we just stopped.
  */
-function stopWindowsBrainGracefully(
+async function stopWindowsBrainGracefully(
   run: ServiceManagerSpawnSync,
-  args: {
-    command: AdeServiceCommand;
-    socketPath: string;
-    runtimePid: number;
-    graceTimeoutMs?: number;
-  },
-): void {
-  run(args.command.command, buildWindowsRuntimeStopArgs(args.command, args.socketPath), {
-    encoding: "utf8",
-    env: {
-      ...process.env,
-      ...(args.command.env ?? {}),
-      // A repair command must never bootstrap a replacement service on its way
-      // through; the caller owns that decision.
-      ADE_DISABLE_RUNTIME_SERVICE_INSTALL: "1",
+  args: { socketPath: string; runtimePid: number },
+): Promise<void> {
+  await terminatePidGracefullyAsync(args.runtimePid, {
+    platform: "win32",
+    runtimeSocketPath: args.socketPath,
+    forceKill: (pid) => {
+      run(windowsTaskkillCommand(), ["/PID", String(pid), "/F"], {
+        encoding: "utf8",
+        windowsHide: true,
+      });
     },
-    timeout: 6_000,
-    windowsHide: true,
-  });
-  const deadline = Date.now() + (args.graceTimeoutMs ?? 5_000);
-  while (Date.now() < deadline) {
-    if (!windowsPidAlive(args.runtimePid)) return;
-    sleepSync(50);
-  }
-  // Still standing after the grace window: it was too wedged to answer, which
-  // is the case `taskkill /F` exists for.
-  run(windowsTaskkillCommand(), ["/PID", String(args.runtimePid), "/F"], {
-    encoding: "utf8",
-    windowsHide: true,
   });
 }
 
-function removeWindowsRunEntryIfPresent(
+async function removeWindowsRunEntryIfPresent(
   run: ServiceManagerSpawnSync,
   valueName: string,
   launcherPath: string,
@@ -688,8 +665,8 @@ function removeWindowsRunEntryIfPresent(
    * Present whenever the caller can name the brain's endpoint. Without it there
    * is no cooperative channel and the supervisor tree is force-killed as before.
    */
-  brain?: { command: AdeServiceCommand; socketPath: string },
-): WindowsTaskRemovalResult {
+  brain?: { socketPath: string },
+): Promise<WindowsTaskRemovalResult> {
   const query = run(windowsRegCommand(), buildWindowsRunKeyQueryArgs(valueName), {
     encoding: "utf8",
     windowsHide: true,
@@ -717,9 +694,8 @@ function removeWindowsRunEntryIfPresent(
         : ["/PID", String(supervisor.pid), "/F"],
       { encoding: "utf8", windowsHide: true },
     );
-    if (runtimePid != null && brain && windowsPidAlive(runtimePid)) {
-      stopWindowsBrainGracefully(run, {
-        command: brain.command,
+    if (runtimePid != null && brain && isPidAlive(runtimePid)) {
+      await stopWindowsBrainGracefully(run, {
         socketPath: brain.socketPath,
         runtimePid,
       });
@@ -837,12 +813,12 @@ async function installWindowsServiceImpl(
       message: currentRemoval.message,
     };
   }
-  const startupRemoval = removeWindowsRunEntryIfPresent(
+  const startupRemoval = await removeWindowsRunEntryIfPresent(
     run,
     taskName,
     launcherPath,
     pidPath,
-    { command: serviceCommand, socketPath },
+    { socketPath },
   );
   if (!startupRemoval.ok) {
     return {
@@ -863,11 +839,7 @@ async function installWindowsServiceImpl(
     primarySocketPath: socketPath,
   }, "win32");
   for (const stalePid of staleScan.ok ? staleScan.pids : []) {
-    stopWindowsBrainGracefully(run, {
-      command: serviceCommand,
-      socketPath,
-      runtimePid: stalePid,
-    });
+    await stopWindowsBrainGracefully(run, { socketPath, runtimePid: stalePid });
   }
   const command = windowsLauncherCommand(launcherPath);
   const registration = run(
@@ -939,9 +911,17 @@ async function installWindowsServiceImpl(
   };
 }
 
-export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
+/**
+ * Async because the cooperative brain shutdown it performs is a socket round
+ * trip. The synchronous spelling this replaced shelled out to `ade runtime stop`
+ * purely to stay sync -- a full CLI cold start per teardown, and one that could
+ * not verify the target pid before asking a brain to exit.
+ */
+export async function uninstallWindowsService(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
   try {
-    return uninstallWindowsServiceImpl(deps);
+    return await uninstallWindowsServiceImpl(deps);
   } catch (error) {
     if (!isTrustedWindowsToolError(error)) throw error;
     return windowsToolFailureResult<ServiceManagerResult & { ok: false; message: string }>(error, {
@@ -952,7 +932,9 @@ export function uninstallWindowsService(deps: WindowsServiceManagerDeps = {}): S
   }
 }
 
-function uninstallWindowsServiceImpl(deps: WindowsServiceManagerDeps = {}): ServiceManagerResult {
+async function uninstallWindowsServiceImpl(
+  deps: WindowsServiceManagerDeps = {},
+): Promise<ServiceManagerResult> {
   const run = deps.spawnSync ?? spawnSync;
   const env = deps.env ?? process.env;
   const serviceCommand = deps.command ?? resolveAdeServeCommand();
@@ -985,13 +967,12 @@ function uninstallWindowsServiceImpl(deps: WindowsServiceManagerDeps = {}): Serv
       "legacy ADE Runtime scheduled task",
       serviceCommand,
     );
-  const startupRemoval = removeWindowsRunEntryIfPresent(
+  const startupRemoval = await removeWindowsRunEntryIfPresent(
     run,
     taskName,
     launcherPath,
     pidPath,
     {
-      command: serviceCommand,
       socketPath: resolveMachineAdeLayout({ ...env, ...(serviceCommand.env ?? {}) }, "win32").socketPath,
     },
   );

@@ -359,22 +359,11 @@ function runtimeStatusArgs(command: AdeServiceCommand, socketPath: string): stri
   return runtimeSubcommandArgs(command, "status", socketPath, 1_500);
 }
 
-/**
- * `ade runtime stop --socket <endpoint>`: the packaged CLI's own cooperative
- * shutdown, which sends the JSON-RPC `shutdown` method the brain answers by
- * running the SAME `finish()` its macOS SIGTERM handler runs.
- *
- * Reached through the packaged CLI rather than an in-process socket client
- * because the Windows installer paths that need it are synchronous, and this is
- * exactly how `defaultWindowsRuntimeReadiness` already reaches the runtime.
- */
-export function buildWindowsRuntimeStopArgs(
-  command: AdeServiceCommand,
-  socketPath: string,
-  timeoutMs = 5_000,
-): string[] {
-  return runtimeSubcommandArgs(command, "stop", socketPath, timeoutMs);
-}
+// Cooperative brain shutdown does NOT go through a packaged-CLI `runtime stop`
+// subprocess. `common.terminatePidGracefullyAsync` speaks the same JSON-RPC
+// `shutdown` method in-process, and unlike a subprocess it can verify over
+// `runtime/info` that the endpoint is served by the pid it is about to stop --
+// which a `--socket`-addressed subprocess cannot do at all.
 
 export const defaultWindowsRuntimeReadiness: WindowsRuntimeReadinessProbe = (args) => {
   const { pidRecord, spawnSync: run } = args;

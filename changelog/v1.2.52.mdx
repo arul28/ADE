@@ -1,0 +1,37 @@
+---
+title: "v1.2.52"
+description: "Release notes for ADE v1.2.52 - August 4, 2026"
+---
+
+ADE runs on Windows. This release is the Windows port: a signed installer, a background brain that survives logoff, and the long tail of platform-specific bugs between "it launches" and "it works". macOS gets the performance and correctness fixes that came out of the same audit.
+
+Windows support is a **beta**. The app says so on every launch, and the gaps are written down rather than papered over — see [ADE on Windows](/getting-started/windows) for the exact list of what is degraded, blocked, or unavailable, and why.
+
+Thanks to [@nsxdavid](https://github.com/nsxdavid) for [#999](https://github.com/arul28/ADE/pull/999), which did a lot of the groundwork for getting the Windows build out.
+
+---
+
+## Windows
+
+- **Signed installer and channel builds.** `package:alpha` and `package:beta` build on Windows, installers are branded per channel, and a packaged Beta no longer behaves as — or chases updates from — Stable.
+- **The background brain is a real per-user service.** No-admin startup registration, uninstall cleanup, and a graceful shutdown path: Windows has no deliverable `SIGTERM`, so ADE asks the brain to exit over its own RPC channel and force-terminates only after a grace window.
+- **`ade code` runs.** It was launching on a runtime with no TTY, then failing to resolve its own dependencies out of the app archive. Both fixed.
+- **Agent prompts are no longer lost.** Claude and Droid prompts were being passed on the Windows command line, where they were dropped; they now go through the terminal as input. Claude's readiness marker never matched on Windows at all, so the first prompt of every session silently vanished.
+- **Codex sessions are visible again**, and Archive & Reclaim is unblocked — extended-length (`\\?\`) paths were making ADE misread its own session directory. One machine went from 1 visible session to 65.
+
+## Fixes that also affect macOS
+
+- **The credential store no longer deletes your account session.** Migrating to the OS-backed store could destroy the logged-in session, signing you out with no way back. Sessions are now owned by one store, and migrated keys are pruned rather than left behind in both.
+- **Session deletes route to the machine that owns the session**, instead of failing and then appearing to succeed two minutes later. Switching machines rebinds the current tab rather than opening a second one.
+- **A CLI or shell launch pinned to another machine is filed under that machine**, not the local one.
+
+## Performance
+
+- **The main process no longer blocks for ~2s on every status poll.** A synchronous probe ran on Electron's main thread every two seconds, which is why window drags and button presses stuttered.
+- **Listing lanes no longer spawns 7 git processes per lane, serially.** Measured at 21 seconds per call on a 58-lane machine; now bounded-concurrency with single-flight and a short-lived cache.
+- **Slash-command discovery is memoized.** Each call was reading 2,760 files.
+
+## Elsewhere
+
+- The site hero now offers macOS, Windows, and iOS directly; the separate download page is gone.
+- Pull requests no longer build a Windows installer — a ~40-minute job that could not ship anything on its own. Pushes to `main` still build it, because every releasable commit must have a real installer behind it.

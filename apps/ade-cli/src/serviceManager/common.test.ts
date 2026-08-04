@@ -615,6 +615,58 @@ describe("terminatePidGracefullyAsync on win32", () => {
     expect(forced).toEqual([4242]);
   });
 
+  // The 5s default exists because this loop is the ONLY thing standing between
+  // a mid-flush brain and `taskkill /F`. It used to be exercised by nothing:
+  // `graceTimeoutMs` fed both the RPC request timeout and this deadline, so
+  // every test that wanted a fast handshake also collapsed the grace window.
+  it("gives an accepted shutdown the documented default grace budget", async () => {
+    vi.useFakeTimers();
+    try {
+      const forced: number[] = [];
+      const settled = terminatePidGracefullyAsync(4242, {
+        platform: "win32",
+        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+        forceKill: (pid) => { forced.push(pid); },
+        pidAlive: () => true,
+        requestRuntimeShutdown: async () => ({ requested: true }),
+      });
+      await vi.advanceTimersByTimeAsync(4_800);
+      expect(forced).toEqual([]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(forced).toEqual([4242]);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not let a short handshake budget shorten the grace window", async () => {
+    vi.useFakeTimers();
+    try {
+      const timeouts: number[] = [];
+      const forced: number[] = [];
+      const settled = terminatePidGracefullyAsync(4242, {
+        platform: "win32",
+        shutdownRequestTimeoutMs: 300,
+        runtimeSocketPath: "\\\\.\\pipe\\ade-runtime-stable-0123456789abcdef",
+        forceKill: (pid) => { forced.push(pid); },
+        pidAlive: () => true,
+        requestRuntimeShutdown: async ({ timeoutMs }) => {
+          timeouts.push(timeoutMs);
+          return { requested: true };
+        },
+      });
+      await vi.advanceTimersByTimeAsync(4_800);
+      expect(timeouts).toEqual([300]);
+      expect(forced).toEqual([]);
+      await vi.advanceTimersByTimeAsync(400);
+      expect(forced).toEqual([4242]);
+      await settled;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("keeps the POSIX SIGTERM/SIGKILL sequence off win32", async () => {
     const signals: Array<string | number> = [];
     await terminatePidGracefullyAsync(4242, {

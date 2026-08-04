@@ -2647,6 +2647,48 @@ describe("ptyService", () => {
       }
     });
 
+    // Regression: the readiness check used to be `/╭─+.*╮/s && /╰─+.*╯/s`.
+    // Readiness is evaluated against the visible rows, so the two corners do
+    // have to share a screen — but not a *box*. When a finished box is still on
+    // screen above a box that is only half painted, the old pair matched the
+    // new top border against the old bottom one and read as ready. That is the
+    // dangerous direction: a false ready types the user's prompt into whatever
+    // is actually focused, which here is a dialog that has not finished drawing.
+    it("does not pair a closed Claude box above with a half-drawn box below", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_SPLIT_BORDER_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // The previous box's closing border, then a new box that stops after
+        // its opening border. No complete box is on screen.
+        mockPty._emitter.emit("data", [
+          "╰────────────────────────────────────────╯\r\n",
+          "\r\n",
+          "╭────────────────────────────────────────╮\r\n",
+          "│ Do you trust the files in this folder?\r\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).not.toContain("ADE_CLAUDE_SPLIT_BORDER_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("delivers preserved Codex initialInput when the composer appears after a readiness timeout", async () => {
       vi.useFakeTimers();
       try {

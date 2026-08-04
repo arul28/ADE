@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import readline from "node:readline";
 import { randomUUID } from "node:crypto";
-import { claudeProjectSlugForCwd, isPathInside } from "./discoveryUtils";
+import { claudeProjectSlugForCwd, pathContains } from "./discoveryUtils";
 
 function defaultClaudeConfigDir(): string {
   const configured = process.env.CLAUDE_CONFIG_DIR?.trim();
@@ -14,7 +14,7 @@ function defaultClaudeConfigDir(): string {
 function ensureInside(root: string, target: string, label: string): string {
   const resolvedRoot = path.resolve(root);
   const resolvedTarget = path.resolve(target);
-  if (!isPathInside(resolvedRoot, resolvedTarget)) {
+  if (!pathContains(resolvedRoot, resolvedTarget)) {
     throw new Error(`${label} escapes Claude projects storage.`);
   }
   return resolvedTarget;

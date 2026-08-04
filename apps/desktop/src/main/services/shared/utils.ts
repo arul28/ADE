@@ -72,7 +72,16 @@ export function firstLine(text: string): string {
   return text.split(/\r?\n/)[0]?.trim() ?? "";
 }
 
-type KillableChildProcess = Pick<ChildProcess, "pid" | "kill" | "stdin" | "stdout" | "stderr">;
+/**
+ * `exitCode`/`signalCode` are part of the contract, not incidental: they are the
+ * PID-reuse guard in `signalChildProcessTree`. A caller that hands over an
+ * object without them would defeat that guard silently, so the type demands
+ * them.
+ */
+type KillableChildProcess = Pick<
+  ChildProcess,
+  "pid" | "kill" | "stdin" | "stdout" | "stderr" | "exitCode" | "signalCode"
+>;
 
 function isValidPid(pid: number | null | undefined): pid is number {
   return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
@@ -121,8 +130,17 @@ export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "st
  * forever. Nothing is lost by forcing immediately, because the leader never had
  * a graceful path on Windows to begin with. This matches `terminateProcessTree`
  * in ./processExecution, which always forces for the same reason.
+ *
+ * An already-exited child is refused outright. This is the PID-reuse guard, not
+ * an optimization: once Node reports `exitCode`/`signalCode` the pid has been
+ * reaped and Windows recycles pids aggressively, so `taskkill /PID <pid> /T /F`
+ * would force-kill whatever process now holds that number — and its whole tree.
+ * The guard is unconditional rather than win32-only because `process.kill(-pid)`
+ * against a recycled process group is the same hazard on POSIX; there is nothing
+ * left to signal on either platform.
  */
 export function signalChildProcessTree(child: KillableChildProcess, signal: NodeJS.Signals): boolean {
+  if (child.exitCode !== null || child.signalCode !== null) return false;
   const pid = child.pid ?? null;
 
   if (process.platform === "win32") {
@@ -175,6 +193,16 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
   return false;
 }
 
+/**
+ * SIGTERM now, SIGKILL after `killAfterMs` if the child is still there.
+ *
+ * The delayed kill is safe against pid reuse because it re-reads the LIVE
+ * `child` object: `signalChildProcessTree` refuses an exited child, so a child
+ * that went away inside the grace window is never force-killed by pid — which
+ * matters because 1.5s is ample time for Windows to hand that pid to someone
+ * else. Callers that keep the returned timer should clear it on exit anyway, so
+ * the timer does not hold the event loop open.
+ */
 export function terminateChildProcessTree(
   child: KillableChildProcess,
   previousKillTimer: NodeJS.Timeout | null = null,

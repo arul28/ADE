@@ -60,12 +60,16 @@ PIDs fast, so a late `taskkill /T /F` can hit an unrelated process.
 **Do instead.** Route every long-lived child through `terminateProcessTree` /
 `killWindowsProcessTree` in
 `apps/desktop/src/main/services/shared/processExecution.ts`, or
-`signalChildProcessTree` in `services/shared/utils.ts`. Both run `taskkill /T
-/F` **and** `child.kill()`, and both skip entirely when `exitCode !== null ||
-signalCode !== null` — that check is the PID-reuse guard, not an optimization.
-For ConPTY, kill the tree *before* node-pty kills the leader
-(`services/pty/ptyService.ts`); afterwards `taskkill /PID <leader> /T` can no
-longer discover the orphans.
+`signalChildProcessTree` / `terminateChildProcessTree` in
+`services/shared/utils.ts`. On Windows both run `taskkill /T /F` **and**
+`child.kill()`, and both refuse a child that already reported `exitCode !== null
+|| signalCode !== null` — that check is the PID-reuse guard, not an
+optimization, so the child object you pass must carry those live fields (a
+`{ pid }` snapshot defeats it). `signalChildProcessTree` applies the guard on
+every platform; `terminateProcessTree` applies it on the win32 branch, where the
+`taskkill` hazard lives. For ConPTY, kill the tree *before* node-pty kills the
+leader (`services/pty/ptyService.ts`); afterwards `taskkill /PID <leader> /T`
+can no longer discover the orphans.
 
 Related: pass `windowsHide: true` on **every** `spawn` / `spawnSync` /
 `execFile`, including short status polls. Omitting it caused the host-loss

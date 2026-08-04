@@ -27,20 +27,6 @@ function currentTarget() {
   return `${platform}-${arch}`;
 }
 
-/**
- * Windows npm is a `.cmd` shim, and naming it `npm.cmd` is not enough: Node has
- * refused to spawn `.cmd`/`.bat` without a shell since CVE-2024-27980, so
- * `execFile` fails with EINVAL either way. Both measured.
- *
- * `resolveNpmInvocation` sidesteps the shim entirely by running npm's own
- * JavaScript entry point under this process's `node`. No shell means no
- * command-line re-parsing, so a checkout under "C:\Users\First Last\..." needs
- * no quoting to survive.
- */
-function npmInvocation(args) {
-  return resolveNpmInvocation(args);
-}
-
 function artifactNamesForTarget(target) {
   return [target === "win32-x64" ? `ade-${target}.exe` : `ade-${target}`, `ade-${target}.native.tar.gz`];
 }
@@ -333,7 +319,14 @@ async function buildHostArtifactsIfNeeded() {
   let stdout = "";
   let stderr = "";
   try {
-    const npm = npmInvocation([
+    // Windows npm is a `.cmd` shim, and naming it `npm.cmd` is not enough: Node
+    // has refused to spawn `.cmd`/`.bat` without a shell since CVE-2024-27980,
+    // so `execFile` fails with EINVAL either way. Both measured.
+    // `resolveNpmInvocation` sidesteps the shim by running npm's own JavaScript
+    // entry point under this process's `node` — no shell, so no command-line
+    // re-parsing, and a checkout under "C:\Users\First Last\..." survives
+    // unquoted.
+    const npm = resolveNpmInvocation([
       "--prefix",
       cliRoot,
       "run",

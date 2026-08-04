@@ -318,7 +318,21 @@ function withRuntimeBuildHash(command: AdeServiceCommand): AdeServiceCommand {
 export type TerminatePidDeps = {
   kill?: (pid: number, signal: NodeJS.Signals | number) => void;
   pidAlive?: (pid: number) => boolean;
+  /**
+   * How long the target is given to EXIT once it has accepted the shutdown
+   * request (win32) or been sent SIGTERM (POSIX). Deliberately separate from
+   * `shutdownRequestTimeoutMs`: a caller that wants a snappy handshake must not
+   * thereby shorten the flush window -- see `WINDOWS_COOPERATIVE_GRACE_MS`.
+   */
   graceTimeoutMs?: number;
+  /**
+   * win32 only: how long to wait for the brain to ACKNOWLEDGE the JSON-RPC
+   * shutdown request. Spent before the grace window starts, and answering is
+   * cheap, so this is short. No answer means nothing on that endpoint claims
+   * this pid, and the caller escalates immediately rather than waiting out a
+   * grace window for a brain that never agreed to leave.
+   */
+  shutdownRequestTimeoutMs?: number;
   platform?: NodeJS.Platform;
   /**
    * The JSON-RPC endpoint the target brain serves. Windows has no signal that
@@ -345,12 +359,24 @@ function defaultKill(pid: number, signal: NodeJS.Signals | number): void {
  * How long a Windows brain is given AFTER it has accepted a cooperative
  * shutdown request. The POSIX grace window is 1.5s, but there the brain's own
  * SIGTERM handler arms a 10s force-exit as a second line of defence; on Windows
- * this loop is the only line of defence, and the RPC round trip is charged
- * against the same window, so a bare 1.5s would frequently escalate to
- * `taskkill /F` on a brain that was midway through an orderly flush -- the
- * exact corruption this whole path exists to avoid.
+ * this loop is the only line of defence, so a bare 1.5s would frequently
+ * escalate to `taskkill /F` on a brain that was midway through an orderly flush
+ * -- the exact corruption this whole path exists to avoid.
+ *
+ * The window is measured from the moment the brain ACCEPTS the request, so the
+ * RPC round trip is not charged against it; that budget is
+ * `shutdownRequestTimeoutMs`. One knob used to feed both, which meant a caller
+ * asking for a snappier handshake silently bought a shorter flush window too.
  */
 const WINDOWS_COOPERATIVE_GRACE_MS = 5_000;
+
+/**
+ * Default budget for the `runtime/info` + `shutdown` round trip. Both are
+ * in-memory answers on an already-listening endpoint, so a brain healthy enough
+ * to flush answers well inside this; one that does not is wedged, and waiting
+ * longer only delays the escalation.
+ */
+const WINDOWS_SHUTDOWN_REQUEST_TIMEOUT_MS = 2_000;
 
 /**
  * `taskkill /PID n /F` -- the honest Windows equivalent of SIGKILL.
@@ -379,12 +405,21 @@ function defaultWindowsForceKill(pid: number): void {
   }
 }
 
-function defaultPidAlive(pid: number): boolean {
+/**
+ * Whether `pid` still names a live process.
+ *
+ * Signal 0 is the one "signal" libuv does not map onto `TerminateProcess`, so
+ * this is a pure existence probe on Windows as well as POSIX. `EPERM` means the
+ * pid exists but belongs to a process we may not signal -- alive, not absent.
+ * Reporting it as absent would end a grace loop early and leave a brain running
+ * that the caller believes it stopped.
+ */
+export function isPidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
   }
 }
 
@@ -405,7 +440,7 @@ function sleepSync(ms: number): void {
 export function terminatePidGracefully(pid: number | null, deps: TerminatePidDeps = {}): void {
   if (!pid || pid <= 0 || pid === process.pid) return;
   const kill = deps.kill ?? defaultKill;
-  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const pidAlive = deps.pidAlive ?? isPidAlive;
   if ((deps.platform ?? process.platform) === "win32") {
     (deps.forceKill ?? defaultWindowsForceKill)(pid);
     return;
@@ -452,7 +487,7 @@ async function terminateWindowsPidGracefullyAsync(
   pid: number,
   deps: TerminatePidDeps,
 ): Promise<void> {
-  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const pidAlive = deps.pidAlive ?? isPidAlive;
   const forceKill = deps.forceKill ?? defaultWindowsForceKill;
   const requestShutdown = deps.requestRuntimeShutdown ?? requestAdeRuntimeShutdown;
   let socketPath = deps.runtimeSocketPath ?? null;
@@ -465,7 +500,10 @@ async function terminateWindowsPidGracefullyAsync(
   }
   let cooperative = false;
   if (socketPath) {
-    const requestTimeoutMs = Math.max(250, Math.floor(deps.graceTimeoutMs ?? 2_000));
+    const requestTimeoutMs = Math.max(
+      250,
+      Math.floor(deps.shutdownRequestTimeoutMs ?? WINDOWS_SHUTDOWN_REQUEST_TIMEOUT_MS),
+    );
     try {
       cooperative = (await requestShutdown({ pid, socketPath, timeoutMs: requestTimeoutMs })).requested;
     } catch {
@@ -496,7 +534,7 @@ export async function terminatePidGracefullyAsync(
     return;
   }
   const kill = deps.kill ?? defaultKill;
-  const pidAlive = deps.pidAlive ?? defaultPidAlive;
+  const pidAlive = deps.pidAlive ?? isPidAlive;
   try {
     kill(pid, "SIGTERM");
   } catch {

@@ -15094,7 +15094,7 @@ async function repairMachineRuntimeServiceConnection(args: {
         localRuntime: isLocalRuntimeSocketPath(args.socketPath),
       });
       if (selfShutdownBlock) throw selfShutdownBlock;
-      uninstallRuntimeService();
+      await uninstallRuntimeService();
       client.close();
       return null;
     }
@@ -15561,7 +15561,7 @@ async function runBrainCommand(
 
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
-    const stopped = uninstallRuntimeService();
+    const stopped = await uninstallRuntimeService();
     if (isRuntimeSelfShutdownBlockedResult(stopped)) {
       return {
         ok: false,

@@ -54,7 +54,7 @@ export function ChannelBadge({
   if (!isPrerelease) return null;
   const shownVersion = version !== undefined ? version : fetchedVersion;
   const label = packageChannelLabel(channel);
-  const opensNotice = platform === undefined ? isWindowsPlatform() : isWindowsPlatform(platform);
+  const opensNotice = isWindowsPlatform(platform);
   const body = (
     <>
       <span>{label}</span>

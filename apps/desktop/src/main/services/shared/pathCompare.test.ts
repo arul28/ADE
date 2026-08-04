@@ -31,6 +31,25 @@ describe("pathCompare", () => {
     it("collapses . and .. segments", () => {
       expect(pathsEqual("C:\\Users\\arul\\..\\arul\\ADE", "C:\\Users\\arul\\ADE", "win32")).toBe(true);
     });
+
+    it("keeps the trailing separator on a root, and only on a root", () => {
+      expect(pathKey("C:\\", "win32")).toBe("c:\\");
+      expect(pathKey("C:\\Users\\arul\\", "win32")).toBe("c:\\users\\arul");
+    });
+
+    /**
+     * A bare share and a share with its trailing separator name the same root.
+     * `path.win32.normalize` appends the separator to the bare spelling, so both
+     * arrive at the root-keeping branch — the two must not diverge there.
+     */
+    it("keys both spellings of a bare UNC share the same", () => {
+      expect(pathKey("\\\\server\\share", "win32")).toBe(pathKey("\\\\server\\share\\", "win32"));
+      expect(pathsEqual("\\\\server\\share", "\\\\server\\share\\", "win32")).toBe(true);
+    });
+
+    it("still trims the trailing separator below a UNC root", () => {
+      expect(pathsEqual("\\\\server\\share\\repo\\", "\\\\server\\share\\repo", "win32")).toBe(true);
+    });
   });
 
   describe("linux stays case-sensitive", () => {

@@ -600,7 +600,7 @@ describe("Windows background service helpers", () => {
       .toBe(false);
   });
 
-  it("leaves another channel's legacy scheduled task running when Beta uninstalls", () => {
+  it("leaves another channel's legacy scheduled task running when Beta uninstalls", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
@@ -614,7 +614,7 @@ describe("Windows background service helpers", () => {
     );
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       command: serviceCommand,
       launcherPath,
       serviceName,
@@ -799,7 +799,7 @@ describe("Windows background service helpers", () => {
     ]);
   });
 
-  it("removes legacy tasks and the per-user startup entry", () => {
+  it("removes legacy tasks and the per-user startup entry", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
@@ -814,7 +814,7 @@ describe("Windows background service helpers", () => {
     const launcherPath = path.join(makeTempHome("ade-windows-service-remove-"), "brain-service.ps1");
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       command: serviceCommand,
       launcherPath,
       serviceName,
@@ -842,7 +842,7 @@ describe("Windows background service helpers", () => {
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
 
-  it("surfaces scheduled task removal failures", () => {
+  it("surfaces scheduled task removal failures", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
@@ -851,7 +851,7 @@ describe("Windows background service helpers", () => {
       { status: 1, stdout: "", stderr: "" },
     ]);
 
-    const result = uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
+    const result = await uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
@@ -863,7 +863,7 @@ describe("Windows background service helpers", () => {
     ]);
   });
 
-  it("fails uninstall when the scheduled task launcher cannot be removed", () => {
+  it("fails uninstall when the scheduled task launcher cannot be removed", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
@@ -872,7 +872,7 @@ describe("Windows background service helpers", () => {
     ]);
     const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       launcherPath,
       serviceName,
       spawnSync,

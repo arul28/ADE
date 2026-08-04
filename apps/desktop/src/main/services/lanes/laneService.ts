@@ -1589,17 +1589,32 @@ export function createLaneService({
    * started its own build. Several hundred concurrent `git` processes then
    * starved the runtime that also drives sync. Sharing one in-flight build is
    * observationally identical to two builds that ran back to back.
+   *
+   * Each entry carries the invalidation epoch its build read lane rows at, so a
+   * caller that arrives after a mutation starts its own build instead of
+   * joining one that predates it.
    */
-  const laneListInFlight = new Map<string, Promise<LaneSummary[]>>();
+  const laneListInFlight = new Map<string, { epoch: { value: number }; rows: Promise<LaneSummary[]> }>();
+  /**
+   * Bumped by every invalidation. A full build routinely outlives the cache
+   * TTL, so "which invalidation was this data read at?" is the only thing that
+   * separates a publishable result from a pre-mutation one.
+   */
+  let laneListEpoch = 0;
   const rebaseRuns = new Map<string, RebaseRun>();
   const autoLaneIdentityInFlight = new Set<string>();
 
   const invalidateLaneListCache = (): void => {
     laneListCache.clear();
-    // Builds already running were started against pre-invalidation state, so
-    // stop offering them to new callers. They still complete and serve the
-    // callers that were already waiting.
-    laneListInFlight.clear();
+    // Bump the epoch rather than dropping in-flight builds. A build that has
+    // already read its lane rows must not publish them, so `buildLaneList`
+    // compares the epoch it read at against this one and skips its terminal
+    // `laneListCache.set`; joiners make the same comparison and start their own
+    // build. Clearing the map instead evicted a build's own entry every time
+    // one of its opening repairs invalidated, and every concurrent `listLanes`
+    // then started a second full build — a second worktree recovery, reap, and
+    // residual cleanup racing over the same rows.
+    laneListEpoch += 1;
   };
 
   /**
@@ -2852,10 +2867,10 @@ export function createLaneService({
     return { resolveWorktreeAvailable, resolveStatus };
   };
 
-  const buildLaneList = async ({
-    includeArchived = false,
-    includeStatus = true
-  }: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+  const buildLaneList = async (
+    { includeArchived = false, includeStatus = true }: ListLanesArgs = {},
+    readEpoch?: { value: number },
+  ): Promise<LaneSummary[]> => {
     // Best-effort primary lane bootstrap -- failures should not block listing.
     try {
       await ensurePrimaryLane();
@@ -2903,6 +2918,14 @@ export function createLaneService({
     } catch (err) {
       logger.warn("laneService.backfillLaneBranchProfiles_failed", { error: err instanceof Error ? err.message : String(err) });
     }
+
+    // Every repair above mutates lane state and invalidates as it goes, and
+    // nothing below it has read a lane row yet — so this, not entry into the
+    // function, is the epoch this build's data belongs to. Re-stamping the
+    // in-flight entry keeps joiners on this build rather than starting a second
+    // one over a change this build has already absorbed.
+    const buildEpoch = laneListEpoch;
+    if (readEpoch) readEpoch.value = buildEpoch;
 
     const cacheKey = `arch:${includeArchived ? 1 : 0}|status:${includeStatus ? 1 : 0}`;
     const cached = laneListCache.get(cacheKey);
@@ -3069,26 +3092,35 @@ export function createLaneService({
         logger.warn("laneService.build_summary_failed", { laneId: row.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    laneListCache.set(cacheKey, {
-      expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
-      rows: out.map(cloneLaneSummary)
-    });
+    // Publish only if nothing invalidated while the build ran. The rows above
+    // were read before any such mutation, so caching them would hand back
+    // pre-mutation state — a just-deleted lane, still listed — for a full TTL,
+    // including to the rebuild the mutation itself kicked off.
+    if (laneListEpoch === buildEpoch) {
+      laneListCache.set(cacheKey, {
+        expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
+        rows: out.map(cloneLaneSummary)
+      });
+    }
     return out;
   };
 
   const listLanes = async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
     const shapeKey = `arch:${args.includeArchived ?? false ? 1 : 0}|status:${args.includeStatus ?? true ? 1 : 0}`;
     const joined = laneListInFlight.get(shapeKey);
-    // Only join a build that started after the most recent invalidation —
-    // `invalidateLaneListCache` drops the entry, so anything still present is
-    // describing the same state this call would have read.
-    if (joined) return (await joined).map(cloneLaneSummary);
-    const build = buildLaneList(args);
-    laneListInFlight.set(shapeKey, build);
+    // Join only a build whose rows are as fresh as this call's would be. The
+    // epoch travels with the build instead of the entry being dropped, so the
+    // build's own repairs cannot evict it, while an unrelated mutation still
+    // forces this caller onto a fresh build.
+    if (joined && joined.epoch.value === laneListEpoch) return (await joined.rows).map(cloneLaneSummary);
+    const epoch = { value: laneListEpoch };
+    const rows = buildLaneList(args, epoch);
+    const entry = { epoch, rows };
+    laneListInFlight.set(shapeKey, entry);
     try {
-      return (await build).map(cloneLaneSummary);
+      return (await rows).map(cloneLaneSummary);
     } finally {
-      if (laneListInFlight.get(shapeKey) === build) laneListInFlight.delete(shapeKey);
+      if (laneListInFlight.get(shapeKey) === entry) laneListInFlight.delete(shapeKey);
     }
   };
 

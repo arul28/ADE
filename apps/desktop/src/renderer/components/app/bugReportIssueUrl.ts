@@ -102,6 +102,14 @@ export function buildBugReportIssueUrl(input: BugReportIssueUrlInput): string {
   return withBody(trimmed);
 }
 
+/** Chromium reports Windows 11 as `platformVersion` major >= 13. */
+function windowsMarketingName(major: number): string | null {
+  if (!Number.isFinite(major)) return null;
+  if (major >= 13) return "Windows 11";
+  if (major > 0) return "Windows 10";
+  return null;
+}
+
 /**
  * Best-effort OS version for the report. `navigator.userAgentData` is the only
  * renderer-side source of the Windows build number, and it is async and
@@ -126,16 +134,9 @@ export async function detectOsRelease(): Promise<string | null> {
       const platform = values.platform ?? uaData.platform ?? "";
       const version = values.platformVersion ?? "";
       if (version) {
-        // Chromium reports Windows 11 as platformVersion major >= 13.
         if (/windows/i.test(platform)) {
           const major = Number.parseInt(version.split(".")[0] ?? "", 10);
-          const marketing = Number.isFinite(major)
-            ? major >= 13
-              ? "Windows 11"
-              : major > 0
-                ? "Windows 10"
-                : null
-            : null;
+          const marketing = windowsMarketingName(major);
           return marketing ? `${marketing} (platformVersion ${version})` : `Windows ${version}`;
         }
         return `${platform || "unknown"} ${version}`.trim();

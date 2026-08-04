@@ -4,7 +4,7 @@ import {
   SHELL_HEADER_INSET_END_BASE_PX,
   WINDOWS_CAPTION_FALLBACK_PX,
   WINDOWS_CAPTION_GUTTER_PX,
-  syncWindowsTitleBarOverlay,
+  createTitleBarOverlaySync,
   windowsCaptionInsetPx,
 } from "./windowControlsOverlay";
 
@@ -44,9 +44,10 @@ describe("windowsCaptionInsetPx", () => {
   });
 });
 
-describe("syncWindowsTitleBarOverlay", () => {
+describe("createTitleBarOverlaySync", () => {
   const originalPlatform = navigator.platform;
   let setTitleBarOverlay: ReturnType<typeof vi.fn>;
+  let syncWindowsTitleBarOverlay: ReturnType<typeof createTitleBarOverlaySync>;
 
   const setPlatform = (value: string) => {
     Object.defineProperty(navigator, "platform", { configurable: true, value });
@@ -55,13 +56,13 @@ describe("syncWindowsTitleBarOverlay", () => {
   beforeEach(() => {
     setTitleBarOverlay = vi.fn().mockResolvedValue({ applied: true });
     (window as unknown as { ade: unknown }).ade = { zoom: { setTitleBarOverlay } };
+    // A syncer per test, so nothing has to undo the previous test's values.
+    syncWindowsTitleBarOverlay = createTitleBarOverlaySync();
   });
 
   afterEach(() => {
     setPlatform(originalPlatform);
     delete (window as unknown as { ade?: unknown }).ade;
-    // Module state is shared; put it back on the creation-time defaults.
-    syncWindowsTitleBarOverlay({ theme: "dark", displayZoom: 100 });
   });
 
   it("does nothing on macOS, where the OS owns the traffic lights", () => {

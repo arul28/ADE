@@ -53,6 +53,17 @@ export type SyncHostSingletonDeps = {
   platform?: NodeJS.Platform;
   /** Injectable process runner for the native listener scan (lsof / PowerShell). */
   scanListenersReadText?: (command: string, args: string[]) => string;
+  /**
+   * Answer from the lock file alone and skip the native listener scan.
+   *
+   * The scan is the fallback for a brain that was hard-killed and left its lock
+   * behind, so it only pays off in the rare case -- but it costs a process spawn
+   * in EVERY case, because the lock check short-circuits only when it already
+   * found a conflict. On Windows that spawn is a full-machine
+   * `Get-NetTCPConnection` + `Get-CimInstance` query, which is far too expensive
+   * for a caller sitting in front of first paint. See the desktop launch gate.
+   */
+  skipListenerScan?: boolean;
 };
 
 // Which leases THIS process currently holds. The lock file answers "who owns
@@ -430,7 +441,16 @@ function looksLikeAdeProcessName(processName: string): boolean {
     || /^ade(?:-beta|-alpha)?$/i.test(processName);
 }
 
-function legacyOwner(pid: number, port: number, commandLine: string | null): SyncHostSingletonOwner {
+function legacyOwner(
+  pid: number,
+  port: number,
+  commandLine: string | null,
+  // The scan that produced this row already knows which platform it scanned.
+  // Defaulting to `process.platform` here would hand a macOS `launchctl bootout`
+  // recovery command to a caller that scanned Windows listeners (and vice versa)
+  // whenever the scanned platform is injected rather than the host's.
+  platform: NodeJS.Platform = process.platform,
+): SyncHostSingletonOwner {
   const channel = commandLine && /ADE Beta\.app|ade-beta|\bADE Beta\b/i.test(commandLine)
     ? "beta"
     : commandLine && /ADE Alpha\.app|ade-alpha|\bADE Alpha\b/i.test(commandLine)
@@ -459,7 +479,7 @@ function legacyOwner(pid: number, port: number, commandLine: string | null): Syn
     projectRoot: null,
     commandLine,
     processStartedAt: null,
-    quitCommand: buildQuitCommand({ pid, commandLine, appName, packageChannel: channel, adeHome }),
+    quitCommand: buildQuitCommand({ pid, commandLine, appName, packageChannel: channel, adeHome, platform }),
     createdAt: now,
     updatedAt: now,
   };
@@ -535,7 +555,7 @@ function scanWindowsSyncHostListeners(
     // elevation, and an unidentifiable listener must never be reported as an
     // ADE sync host: the caller would tell the user to quit a stranger.
     if (!holder.command || !looksLikeAdeWindowsSyncHostProcess(holder.command)) continue;
-    owners.push(legacyOwner(holder.pid, holder.port ?? DEFAULT_SYNC_HOST_PORT, holder.command));
+    owners.push(legacyOwner(holder.pid, holder.port ?? DEFAULT_SYNC_HOST_PORT, holder.command, "win32"));
   }
   return owners;
 }
@@ -561,6 +581,7 @@ function scanNativeSyncHostListeners(
       listener.pid,
       listener.port,
       commands.get(listener.pid) ?? null,
+      "darwin",
     ))
     .filter((owner, index) => {
       if (owner.commandLine != null) return looksLikeAdeSyncHostProcess(owner.commandLine);
@@ -619,6 +640,7 @@ export function detectSyncHostSingletonConflict(
     deps.platform,
   );
   if (lockConflict) return lockConflict;
+  if (deps.skipListenerScan) return null;
   const listener = (deps.scanListeners
     ?? (() => scanNativeSyncHostListeners({
       platform: deps.platform,

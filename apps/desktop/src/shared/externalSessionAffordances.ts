@@ -39,8 +39,16 @@ const COPY_CLI_DESCRIPTION =
 /**
  * Collapse the user's home directory to `~`, in the absence of an injected
  * abbreviator. `HOME` is not set on Windows — `USERPROFILE` is — and the two
- * sides of the comparison can disagree on separator, so both are normalized
- * before matching and the original separators are kept in the answer.
+ * sides of the comparison can disagree on separator AND on case (a cwd recorded
+ * as `c:\users\me\dev\ade` against `USERPROFILE=C:\Users\me`), so both are
+ * normalized and folded before matching. The slice runs against the ORIGINAL
+ * string so the answer keeps the real casing.
+ *
+ * Folded unconditionally rather than per-platform like `pathComparisonKey`:
+ * this module is shared with the sandboxed renderer, where `process.platform`
+ * is not readable. The Linux cost is a cwd that differs from `$HOME` only by
+ * case being abbreviated anyway — two such directories would have to both
+ * exist, and the only consequence is a cosmetically wrong label in a row.
  */
 function defaultAbbreviateHome(value: string): string {
   const rawHome =
@@ -49,10 +57,11 @@ function defaultAbbreviateHome(value: string): string {
     || (globalThis as { __ADE_HOME__?: string }).__ADE_HOME__
     || "";
   if (!rawHome) return value;
-  const home = rawHome.replace(/[\\/]+$/, "").replace(/\\/g, "/");
-  const normalized = value.replace(/\\/g, "/");
+  const trimmedHome = rawHome.replace(/[\\/]+$/, "");
+  const home = trimmedHome.replace(/\\/g, "/").toLowerCase();
+  const normalized = value.replace(/\\/g, "/").toLowerCase();
   if (normalized !== home && !normalized.startsWith(`${home}/`)) return value;
-  return `~${value.slice(rawHome.replace(/[\\/]+$/, "").length)}`;
+  return `~${value.slice(trimmedHome.length)}`;
 }
 
 export type ShortenExternalSessionCwdOptions = {
@@ -77,12 +86,11 @@ export type ShortenExternalSessionCwdOptions = {
  */
 export function shortenExternalSessionCwd(
   cwd: string | null | undefined,
-  options: number | ShortenExternalSessionCwdOptions = {},
+  options: ShortenExternalSessionCwdOptions = {},
 ): string {
   if (!cwd) return "its original folder";
-  const opts = typeof options === "number" ? { maxSegments: options } : options;
-  const maxSegments = opts.maxSegments ?? 3;
-  const abbreviate = opts.abbreviateHome ?? defaultAbbreviateHome;
+  const maxSegments = options.maxSegments ?? 3;
+  const abbreviate = options.abbreviateHome ?? defaultAbbreviateHome;
 
   const displayPath = abbreviate(cwd);
   // Read the separator off the original: `abbreviateHome` normalizes to "/"

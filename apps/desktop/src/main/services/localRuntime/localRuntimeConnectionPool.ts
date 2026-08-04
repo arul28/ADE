@@ -105,11 +105,10 @@ type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
   desktopBridgeAuthToken?: string | null;
-  queryServiceStatus?: () => ServiceManagerStatusResult;
   /**
    * Off-main-thread service-status probe. Defaults to
-   * {@link defaultQueryServiceStatusAsync}. Tests that inject the synchronous
-   * `queryServiceStatus` keep their existing behaviour: it takes precedence.
+   * {@link defaultQueryServiceStatusAsync}. This is the only probe seam: the
+   * status probe is never allowed to run synchronously on the main thread.
    */
   queryServiceStatusAsync?: () => Promise<ServiceManagerStatusResult>;
   /** Test seam: bound on `serve --install-service`. Defaults to the module constant. */
@@ -493,7 +492,15 @@ export async function defaultQueryServiceStatusAsync(): Promise<ServiceManagerSt
       if (out.length < LOCAL_RUNTIME_OUTPUT_BUFFER_MAX_CHARS) out += chunk.toString("utf8");
     });
     child.once("error", () => finish(null));
-    child.once("close", (code) => finish(code === 0 ? out : null));
+    // The exit code is not the answer — the payload is. `ade runtime
+    // service-status --json` exits 1 for every `ok: false` status (supervisor
+    // query failure, unreadable scheduled task or Run key), and those carry the
+    // diagnostic the About panel needs; some even report `installed: true`.
+    // Discarding them here reported "unsupported" for a service that is
+    // installed but unreadable. `parseRuntimeServiceStatusJson` is the gate: it
+    // rejects anything that is not a status payload, so a child that died
+    // without printing one still falls through to the synthesised result.
+    child.once("close", () => finish(out));
   });
   const parsed = stdout ? parseRuntimeServiceStatusJson(stdout) : null;
   if (parsed) return parsed;
@@ -995,6 +1002,9 @@ export class LocalRuntimeConnectionPool {
   private serviceHealthCheckedAtMs = 0;
   private serviceInstallPromise: Promise<void> | null = null;
   private serviceHealthRefreshPromise: Promise<void> | null = null;
+  // Wall clock at which the in-flight probe started. A caller can only join
+  // that probe when it began recently enough to satisfy its own `maxAgeMs`.
+  private serviceHealthRefreshStartedAtMs = 0;
   private runtimeStatusRefreshPromise: Promise<void> | null = null;
   // Rolling 24 h aggregate of slow (>500 ms) or errored daemon action calls.
   // Feeds the machine-level runtime-health diagnostic surfaced in Settings.
@@ -1151,13 +1161,21 @@ export class LocalRuntimeConnectionPool {
    * Staleness contract: callers that only *read* health (`getStatus`) accept a
    * snapshot up to one refresh interval old and never wait; callers that need a
    * fresh answer to choose a recovery code await this with `maxAgeMs: 0`. The
-   * cache is only ever invalidated by time — service install/uninstall runs
-   * through this pool and the next `maxAgeMs: 0` refresh observes it.
+   * cache is only ever invalidated by time, so "fresh" is enforced on the probe
+   * itself: a caller only joins an in-flight probe that *started* within its
+   * `maxAgeMs`. A `maxAgeMs: 0` caller therefore never adopts a probe that
+   * began before the install/repair it is asking about — it queues its own
+   * behind the running one.
    */
   private refreshServiceHealth(maxAgeMs = 2_000): Promise<void> {
-    if (Date.now() - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
-    if (this.serviceHealthRefreshPromise) return this.serviceHealthRefreshPromise;
-    this.serviceHealthCheckedAtMs = Date.now();
+    const requestedAtMs = Date.now();
+    if (requestedAtMs - this.serviceHealthCheckedAtMs < maxAgeMs) return Promise.resolve();
+    const inFlight = this.serviceHealthRefreshPromise;
+    // Strictly greater: `Date.now()` has millisecond granularity, so a probe
+    // that started in the same tick as a `maxAgeMs: 0` call may still have
+    // asked before the install it is being questioned about. At any other
+    // `maxAgeMs` this only moves the boundary by a millisecond.
+    if (inFlight && this.serviceHealthRefreshStartedAtMs > requestedAtMs - maxAgeMs) return inFlight;
     const applyStatus = (status: ServiceManagerStatusResult) => {
       this.serviceHealthStatus = {
         state: serviceHealthState(status),
@@ -1181,19 +1199,21 @@ export class LocalRuntimeConnectionPool {
         error: this.serviceHealthStatus.message,
       });
     };
-    // An injected synchronous probe stays synchronous: existing callers and
-    // tests that set `queryServiceStatus` keep the exact behaviour they had.
-    const syncProbe = this.options.queryServiceStatus;
-    if (syncProbe) {
-      try {
-        applyStatus(syncProbe());
-      } catch (error) {
-        applyError(error);
-      }
-      return Promise.resolve();
-    }
-    const refresh = (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
-      .then(applyStatus, applyError)
+    const runProbe = () => {
+      // Stamped when the probe actually starts — not when it was queued — so a
+      // later caller judges it by the state it can really observe. Holding the
+      // cache timestamp here too keeps a probe in flight from being re-armed by
+      // the age check while it runs.
+      this.serviceHealthRefreshStartedAtMs = Date.now();
+      this.serviceHealthCheckedAtMs = this.serviceHealthRefreshStartedAtMs;
+      return (this.options.queryServiceStatusAsync ?? defaultQueryServiceStatusAsync)()
+        .then(applyStatus, applyError);
+    };
+    // An in-flight probe that started too early for this caller cannot answer
+    // it, but running both at once would mean two probe children: queue behind
+    // it instead. Its outcome is its own caller's to observe, so a rejection
+    // there must not skip this probe.
+    const refresh: Promise<void> = (inFlight ? inFlight.catch(() => {}).then(runProbe) : runProbe())
       .finally(() => {
         // Time the cache from when the answer landed, not from when the probe
         // started, so a slow probe cannot immediately re-arm itself.

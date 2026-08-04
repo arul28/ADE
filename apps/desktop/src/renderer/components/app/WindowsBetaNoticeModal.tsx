@@ -316,7 +316,7 @@ export function WindowsBetaNoticeHost({
   platform?: string;
   channel?: AppPackageChannel;
 } = {}): React.ReactElement | null {
-  const isWindows = platform === undefined ? isWindowsPlatform() : isWindowsPlatform(platform);
+  const isWindows = isWindowsPlatform(platform);
   const [open, setOpen] = React.useState(isWindows);
 
   React.useEffect(() => {

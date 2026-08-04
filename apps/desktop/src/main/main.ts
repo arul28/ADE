@@ -2275,7 +2275,7 @@ app.whenReady().then(async () => {
       });
       return;
     }
-    const result = uninstallRuntimeService();
+    const result = await uninstallRuntimeService();
     const payload = {
       ok: result.ok,
       serviceName: result.serviceName,

@@ -4211,6 +4211,34 @@ export function createPtyService({
     return needles.reduce((latest, needle) => Math.max(latest, text.lastIndexOf(needle)), -1);
   };
 
+  // The composed Claude input box, matched as a *pair of border lines belonging
+  // to the same box*. Scanning the whole capture with `/╭─+.*╮/s && /╰─+.*╯/s`
+  // instead would pair any top border ever seen with any bottom border ever
+  // seen -- a banner's opening corner plus an unrelated later box's closing one
+  // satisfies it, permanently, from anywhere in the buffer. That matters more
+  // than a missed marker: a false ready delivers the user's prompt into
+  // whatever dialog happens to be on screen, including a credential prompt.
+  const CLAUDE_INPUT_BOX_MAX_LINE_SPAN = 40;
+  const CLAUDE_READY_REGION_CHARS = 8_000;
+
+  const claudeInputBoxVisible = (text: string): boolean => {
+    const lines = text.slice(-CLAUDE_READY_REGION_CHARS).split(/\r?\n/);
+    let openedAt = -1;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? "";
+      // Whole-line borders: `.` must not cross newlines here, or the two
+      // corners stop being evidence that a box was actually drawn.
+      if (/╭─[^╮\n]*╮/.test(line)) openedAt = index;
+      if (openedAt >= 0
+        && index > openedAt
+        && index - openedAt <= CLAUDE_INPUT_BOX_MAX_LINE_SPAN
+        && /╰─[^╯\n]*╯/.test(line)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
     const normalized = text.toLowerCase();
     if (provider === "codex") {
@@ -4252,7 +4280,7 @@ export function createPtyService({
       // cannot read as ready. The first-run "do you trust this folder?" gate
       // draws no box, so it correctly does not match.
       if (text.includes("❯")) return true;
-      return /╭─+.*╮/s.test(text) && /╰─+.*╯/s.test(text);
+      return claudeInputBoxVisible(text);
     }
     if (provider === "cursor") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [

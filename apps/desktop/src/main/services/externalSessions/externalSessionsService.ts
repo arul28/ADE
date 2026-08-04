@@ -34,8 +34,8 @@ import {
   commandArrayToLine,
   cwdIsInScope,
   directShellLaunchForCommandLine,
-  isPathInside,
   normalizeExternalSessionLimit,
+  pathContains,
   realishPath,
   sortDiscoveryRecords,
   type ExternalSessionDiscoveryArgs,
@@ -768,7 +768,7 @@ export function createExternalSessionsService(args: ExternalSessionsServiceArgs)
     const enforceLaneScopeCwd = importArgs.enforceLaneScopeCwd?.trim();
     if (enforceLaneScopeCwd) {
       const scopeRoot = realishPath(enforceLaneScopeCwd);
-      if (!sourceCwd || !isPathInside(scopeRoot, realishPath(sourceCwd))) {
+      if (!sourceCwd || !pathContains(scopeRoot, realishPath(sourceCwd))) {
         throw new Error("External session import is not permitted for this lane.");
       }
     }

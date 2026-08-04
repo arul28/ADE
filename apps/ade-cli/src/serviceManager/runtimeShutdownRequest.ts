@@ -90,10 +90,17 @@ export async function requestAdeRuntimeShutdown(args: {
       finish({ requested: false, reason: error.message });
     });
     socket.on("close", () => {
-      finish({
-        requested: false,
-        reason: "the runtime endpoint closed before acknowledging the shutdown request",
-      });
+      // Once the request is out, a close IS the acknowledgement: `finish()` on
+      // the brain's side tears down its listening socket, and that teardown
+      // races the JSON-RPC response back to us. Reading it as a refusal sends
+      // the caller straight to `taskkill /F` and cuts short the very flush this
+      // path exists to allow. Before the request goes out it means the opposite
+      // -- the endpoint hung up without ever being asked.
+      finish(
+        stage === "stopping"
+          ? { requested: true }
+          : { requested: false, reason: "the runtime endpoint closed before it could be asked to stop" },
+      );
     });
     socket.on("connect", () => {
       send(RUNTIME_INFO_ID, "runtime/info");

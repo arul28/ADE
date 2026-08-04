@@ -73,8 +73,11 @@ export function pathKey(input: string, platform: NodeJS.Platform = process.platf
   // root, which is precisely the miss this key exists to prevent.
   const unified = platform === "win32" ? stripExtendedLengthPrefix(input, platform).replace(/\//g, "\\") : input;
   let resolved = api.normalize(unified);
-  // Keep a trailing separator only when it is the root itself ("C:\" or "/").
-  if (resolved.length > 1 && resolved.endsWith(api.sep) && !api.parse(resolved).root.endsWith(resolved)) {
+  // Keep a trailing separator only when the path IS its own root ("C:\", "/",
+  // "\\server\share\"). Compared with `===` rather than `endsWith` because the
+  // question is identity, not suffix — a UNC root is several characters longer
+  // than a drive root and the suffix reading invites a false match.
+  if (resolved.length > 1 && resolved.endsWith(api.sep) && api.parse(resolved).root !== resolved) {
     resolved = resolved.slice(0, -1);
   }
   return isCaseInsensitivePlatform(platform) ? resolved.toLowerCase() : resolved;

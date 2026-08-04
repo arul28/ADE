@@ -23,6 +23,7 @@ import {
   compareRuntimeVersionStrings,
   computeLocalRuntimeBuildHash,
   createLocalRuntimeOutputLogger,
+  defaultQueryServiceStatusAsync,
   isLocalChannelBuildOutputPath,
   isLocalRuntimeConnectionDropped,
   isRetryableReadAction,
@@ -642,7 +643,7 @@ describe("local runtime connection pool", () => {
       error: vi.fn(),
     };
     const pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
-      queryServiceStatus: runningTestServiceStatus,
+      queryServiceStatusAsync: async () => runningTestServiceStatus(),
     });
 
     try {
@@ -746,14 +747,14 @@ describe("local runtime connection pool", () => {
     });
   });
 
-  it("reports local ADE service install and connection status", () => {
+  it("reports local ADE service install and connection status", async () => {
     const pool = new LocalRuntimeConnectionPool("1.2.3", {
       debug: vi.fn(),
       info: vi.fn(),
       warn: vi.fn(),
       error: vi.fn(),
     } as never, {
-      queryServiceStatus: () => ({
+      queryServiceStatusAsync: async () => ({
         ok: true,
         serviceName: "com.ade.runtime",
         action: "status",
@@ -763,6 +764,11 @@ describe("local runtime connection pool", () => {
         message: "ADE service is running.",
       }),
     });
+
+    // `getStatus` never waits on the probe, so let the background refresh it
+    // kicks off land before asserting on the health snapshot.
+    pool.getStatus();
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(pool.getStatus()).toMatchObject({
       connectionState: "idle",
@@ -885,7 +891,7 @@ describe("local runtime connection pool", () => {
       warn: vi.fn(),
       error: vi.fn(),
     } as never, {
-      queryServiceStatus: runningTestServiceStatus,
+      queryServiceStatusAsync: async () => runningTestServiceStatus(),
       onRuntimeStatusChange,
     });
     (pool as unknown as { activeClient: unknown }).activeClient = { call };
@@ -2482,7 +2488,7 @@ describe("local runtime connection pool", () => {
       pool = new LocalRuntimeConnectionPool("1.0.0", logger as never, {
         disableSync: true,
         preferServiceRepair: true,
-        queryServiceStatus: runningTestServiceStatus,
+        queryServiceStatusAsync: async () => runningTestServiceStatus(),
       });
       const internals = pool as unknown as {
         tryConnect: (socketPath: string) => Promise<{ socketPath: string } | null>;
@@ -3313,7 +3319,7 @@ describe("local runtime connection pool", () => {
       const pool = new LocalRuntimeConnectionPool("1.2.3", {
         debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(),
       } as never, {
-        queryServiceStatus: () => ({
+        queryServiceStatusAsync: async () => ({
           ok: true,
           serviceName: "com.ade.runtime",
           action: "status",
@@ -3931,18 +3937,77 @@ describe("service health probe never blocks the main thread", () => {
     );
   });
 
-  it("keeps an injected synchronous probe synchronous", () => {
+  it("does not join an in-flight probe that started before a maxAgeMs: 0 caller", async () => {
+    const answers: Array<() => void> = [];
     let calls = 0;
+    let installed = false;
     const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
-      queryServiceStatus: () => {
+      queryServiceStatusAsync: () => {
         calls += 1;
-        return asyncTestServiceStatus();
+        // Snapshot the state at probe start: a probe cannot report an install
+        // that happens after it has already asked.
+        const observed = installed;
+        return new Promise((resolve) => {
+          answers.push(() => resolve({
+            ...asyncTestServiceStatus(),
+            installed: observed,
+            running: observed,
+            message: observed ? "ADE test service is running." : "ADE test service is not installed.",
+          }));
+        });
       },
     });
+    const internals = pool as unknown as {
+      refreshServiceHealth: (maxAgeMs?: number) => Promise<void>;
+    };
 
-    // No await: the sync seam existing tests rely on must still settle inline.
-    expect(pool.getStatus().serviceHealth.state).toBe("running");
+    // A background poll starts a probe while the service is still absent.
+    pool.getStatus();
     expect(calls).toBe(1);
+
+    // The service is installed, and only now does the recovery path ask for a
+    // fresh answer. It must not adopt the probe that is already running.
+    installed = true;
+    const fresh = internals.refreshServiceHealth(0);
+    expect(calls).toBe(1);
+
+    answers.shift()!();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // The second probe runs only after the first settles: one child at a time.
+    expect(calls).toBe(2);
+    answers.shift()!();
+    await fresh;
+
+    expect(pool.getStatus().serviceHealth).toMatchObject({
+      state: "running",
+      installed: true,
+    });
+  });
+
+  it("surfaces an ok:false status as an error state, not unsupported", async () => {
+    const pool = new LocalRuntimeConnectionPool("1.0.0", silentLogger() as never, {
+      // What `getWindowsServiceStatus` returns when the startup entry is
+      // present but the supervisor cannot be queried: the CLI exits 1 for it.
+      queryServiceStatusAsync: async () => ({
+        ok: false,
+        serviceName: "com.ade.runtime",
+        action: "status" as const,
+        installed: true,
+        running: null,
+        path: "ADE Runtime (stable)",
+        message: "Unable to query the ADE supervisor process.",
+      }),
+    });
+
+    pool.getStatus();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(pool.getStatus().serviceHealth).toMatchObject({
+      state: "error",
+      installed: true,
+      message: "Unable to query the ADE supervisor process.",
+    });
   });
 });
 
@@ -3976,5 +4041,41 @@ describe("parseRuntimeServiceStatusJson", () => {
       '{"ok":false,"action":"status","installed":null,"running":null,"path":null,"message":"unreadable"}',
     );
     expect(parsed).toMatchObject({ installed: null, running: null, path: null });
+  });
+});
+
+describe("defaultQueryServiceStatusAsync", () => {
+  // Only Windows runs the probe in a child process; elsewhere it is the cheap
+  // in-process call and there is no exit code to interpret.
+  it.skipIf(process.platform !== "win32")("keeps an ok:false payload the CLI exits 1 for", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-service-status-exit-1-"));
+    const stub = path.join(dir, "cli.cjs");
+    const payload = {
+      ok: false,
+      serviceName: "com.ade.runtime",
+      action: "status",
+      installed: true,
+      running: null,
+      path: "ADE Runtime (stable)",
+      message: "Unable to query the ADE supervisor process.",
+    };
+    // `ade runtime service-status --json` exits 1 for every `ok: false` result,
+    // including ones that know the service is installed. `process.exitCode`
+    // rather than `process.exit` so the payload is not truncated on the way out.
+    fs.writeFileSync(
+      stub,
+      `process.stdout.write(${JSON.stringify(JSON.stringify(payload))});\nprocess.exitCode = 1;\n`,
+    );
+    const originalCliJs = process.env.ADE_CLI_JS;
+    process.env.ADE_CLI_JS = stub;
+    try {
+      // The diagnostic survives, instead of being replaced by the synthesised
+      // "could not be read in this session" result with `installed: null`.
+      await expect(defaultQueryServiceStatusAsync()).resolves.toMatchObject(payload);
+    } finally {
+      if (originalCliJs === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalCliJs;
+      removeTempDir(dir);
+    }
   });
 });

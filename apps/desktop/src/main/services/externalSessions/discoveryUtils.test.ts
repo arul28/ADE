@@ -10,8 +10,8 @@ import {
   countExternalSessionUserMessages,
   firstUserTextFromRecords,
   cwdIsInScope,
-  isPathInside,
   normalizeProviderCwd,
+  pathContains,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
 } from "./discoveryUtils";
@@ -45,8 +45,15 @@ describe("scope containment", () => {
   const child = path.join(root, "apps", "desktop");
 
   it("accepts a descendant and rejects a name-prefix sibling", () => {
-    expect(isPathInside(root, child)).toBe(true);
-    expect(isPathInside(root, `${root}-old`)).toBe(false);
+    expect(pathContains(root, child)).toBe(true);
+    expect(pathContains(root, `${root}-old`)).toBe(false);
+  });
+
+  it("reads parent-first, the opposite of pathCompare's isPathInside", () => {
+    // The two helpers used to share a name with swapped arguments, so a wrong
+    // import compiled cleanly and inverted the answer. Pin the order here.
+    expect(pathContains(root, child)).toBe(true);
+    expect(pathContains(child, root)).toBe(false);
   });
 
   it.runIf(process.platform === "win32")("accepts a cwd whose casing differs from the scope root", () => {
@@ -259,7 +266,14 @@ describe("external session user text", () => {
 
 describe("resolveCursorCwdFromSlug", () => {
   it("uses the filesystem to recover hyphenated and dotted path segments", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-slug-"));
+    // `.native` matters on Windows: GitHub's runners report `os.tmpdir()` as
+    // `C:\Users\RUNNER~1\...`, an 8.3 short name. The slug is built from the
+    // path, so `~` becomes `-` and the resolver is asked to recover `RUNNER-1`
+    // by reading `C:\Users` -- which lists the long name (`runneradmin`) and
+    // never the alias, so it correctly returns null and the test failed on CI
+    // while passing on any machine with a long TEMP path. Only `.native`
+    // expands 8.3 aliases; plain `realpathSync` preserves them.
+    const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "ade-cursor-slug-"));
     const cwd = path.join(root, "Projects", "my-cool.app", ".ade", "worktrees", "lane-with-hyphen");
     fs.mkdirSync(cwd, { recursive: true });
     try {

@@ -594,9 +594,10 @@ jobs:
     # It still runs on every push to main and on dispatch, and that is
     # load-bearing rather than belt-and-braces: release-core.yml's verify job
     # requires a ci-pass check run on the exact SHA it builds, so every SHA
-    # that could be released must have had its installer really built. The
-    # paths filter still applies there, so a docs-only commit on main skips it
-    # too.
+    # that could be released must have had its installer really built. That is
+    # why `github.ref == 'refs/heads/main'` is its own disjunct: on main the
+    # paths filter is deliberately bypassed, so even a docs-only commit builds
+    # the installer. Releasable SHAs are never sampled.
     if: >-
       github.event_name != 'pull_request'
       && (needs.changes.outputs.package-win == 'true'
@@ -729,59 +730,52 @@ jobs:
     steps:
       - name: Check all jobs passed
         env:
-          PACKAGE_WIN_RESULT: ${{ needs.package-win.result }}
+          # `toJSON(needs)` IS the `needs:` list above -- one source of truth.
+          # This used to re-enumerate all 21 job names in a bash loop, which
+          # inverted the failure it was meant to prevent: a job added to
+          # `needs:` and forgotten in the loop was never skip-checked, silently
+          # and forever. Deriving the list means it cannot drift.
+          NEEDS_JSON: ${{ toJSON(needs) }}
           PACKAGE_WIN_CHANGED: ${{ needs.changes.outputs.package-win }}
           IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
-             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::One or more required jobs failed or were cancelled"
+          # Read the results ONCE into a variable rather than streaming jq
+          # straight into the loop. Under process substitution a jq that fails
+          # or is missing feeds the loop zero lines and the step exits 0 --
+          # fail-open, which is the one outcome a gate must never have. As a
+          # command substitution under `set -e`, jq failing kills the step, and
+          # the emptiness check below catches a well-formed but empty answer.
+          results="$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"')"
+          if [[ -z "$results" ]]; then
+            echo "::error::ci-pass could not read any job results from needs"
             exit 1
           fi
-          # 'skipped' still means failure for every job EXCEPT package-win, and
-          # package-win may only skip when the filter proved nothing relevant
-          # changed. Enumerated rather than checking needs.* so that adding a
-          # conditional job later cannot start silently passing while skipped.
-          for result in \
-            "changes=${{ needs.changes.result }}" \
-            "install=${{ needs.install.result }}" \
-            "secret-scan=${{ needs.secret-scan.result }}" \
-            "typecheck-desktop=${{ needs.typecheck-desktop.result }}" \
-            "typecheck-ade-cli=${{ needs.typecheck-ade-cli.result }}" \
-            "typecheck-web=${{ needs.typecheck-web.result }}" \
-            "typecheck-webhook-relay=${{ needs.typecheck-webhook-relay.result }}" \
-            "typecheck-push-relay=${{ needs.typecheck-push-relay.result }}" \
-            "typecheck-tunnel-relay=${{ needs.typecheck-tunnel-relay.result }}" \
-            "typecheck-account-directory=${{ needs.typecheck-account-directory.result }}" \
-            "lint-desktop=${{ needs.lint-desktop.result }}" \
-            "test-desktop=${{ needs.test-desktop.result }}" \
-            "test-ade-cli=${{ needs.test-ade-cli.result }}" \
-            "test-webhook-relay=${{ needs.test-webhook-relay.result }}" \
-            "test-push-relay=${{ needs.test-push-relay.result }}" \
-            "test-tunnel-relay=${{ needs.test-tunnel-relay.result }}" \
-            "test-account-directory=${{ needs.test-account-directory.result }}" \
-            "build=${{ needs.build.result }}" \
-            "build-runtime-binaries=${{ needs.build-runtime-binaries.result }}" \
-            "windows-foundation=${{ needs.windows-foundation.result }}" \
-            "validate-docs=${{ needs.validate-docs.result }}"; do
-            if [[ "${result#*=}" != "success" ]]; then
-              echo "::error::${result%%=*} did not succeed (${result#*=})"
-              exit 1
-            fi
-          done
-          if [[ "$PACKAGE_WIN_RESULT" == "skipped" ]]; then
-            # Two legitimate skips: a pull request never builds the installer,
-            # and a push where the filter proved no packaging input changed.
-            # Anything else is a skip nobody asked for and must fail, so a
-            # future conditional job cannot start passing green while dead.
-            if [[ "$IS_PULL_REQUEST" != "true" && "$PACKAGE_WIN_CHANGED" == "true" ]]; then
-              echo "::error::package-win was skipped although packaging inputs changed"
-              exit 1
-            fi
-            echo "package-win skipped: no packaging-relevant paths changed"
-          elif [[ "$PACKAGE_WIN_RESULT" != "success" ]]; then
-            echo "::error::package-win did not succeed ($PACKAGE_WIN_RESULT)"
-            exit 1
-          fi
+          failed=0
+          while IFS='=' read -r job result; do
+            case "$result" in
+              success) ;;
+              skipped)
+                # 'skipped' means failure for every job EXCEPT package-win, so a
+                # conditional job added later cannot start passing green while
+                # dead. package-win has exactly two legitimate skips: a pull
+                # request never builds the installer, and a push where the paths
+                # filter proved no packaging input changed.
+                if [[ "$job" != "package-win" ]]; then
+                  echo "::error::${job} was skipped"
+                  failed=1
+                elif [[ "$IS_PULL_REQUEST" != "true" && "$PACKAGE_WIN_CHANGED" == "true" ]]; then
+                  echo "::error::package-win was skipped although packaging inputs changed"
+                  failed=1
+                else
+                  echo "package-win skipped: pull request, or no packaging-relevant paths changed"
+                fi
+                ;;
+              *)
+                echo "::error::${job} did not succeed (${result})"
+                failed=1
+                ;;
+            esac
+          done <<< "$results"
+          if [[ "$failed" != "0" ]]; then exit 1; fi
           echo "All required CI jobs passed"

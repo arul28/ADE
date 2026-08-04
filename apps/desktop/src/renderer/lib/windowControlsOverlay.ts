@@ -127,27 +127,47 @@ export function windowsCaptionInsetPx(args: CaptionInsetArgs): number | null {
  */
 export type TitleBarOverlayTheme = "dark" | "light";
 
-let overlayTheme: TitleBarOverlayTheme = "dark";
-let overlayDisplayZoom = DEFAULT_ZOOM;
+export type TitleBarOverlaySync = (
+  next?: { theme?: TitleBarOverlayTheme; displayZoom?: number },
+) => void;
 
-export function syncWindowsTitleBarOverlay(
-  next: { theme?: TitleBarOverlayTheme; displayZoom?: number } = {},
-): void {
-  if (next.theme) overlayTheme = next.theme;
-  if (typeof next.displayZoom === "number" && Number.isFinite(next.displayZoom)) {
-    overlayDisplayZoom = next.displayZoom;
-  }
-  if (rendererPlatformAttribute() !== "win32") return;
-  if (typeof window === "undefined") return;
-  const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
-  if (typeof setOverlay !== "function") return;
-  void Promise.resolve(
-    setOverlay({
-      theme: overlayTheme,
-      zoomFactor: zoomFactorForDisplay(overlayDisplayZoom),
-    }),
-  ).catch(() => {});
+/**
+ * Build a syncer over its own pair of last-known values.
+ *
+ * A factory rather than two module-scope `let`s: the state is genuinely
+ * long-lived, but bare module state is shared with every test in the file, so
+ * each one has to undo the previous one's writes by hand and the suite quietly
+ * depends on its own ordering. A test builds a fresh syncer instead.
+ */
+export function createTitleBarOverlaySync(): TitleBarOverlaySync {
+  let overlayTheme: TitleBarOverlayTheme = "dark";
+  let overlayDisplayZoom = DEFAULT_ZOOM;
+
+  return (next = {}) => {
+    if (next.theme) overlayTheme = next.theme;
+    if (typeof next.displayZoom === "number" && Number.isFinite(next.displayZoom)) {
+      overlayDisplayZoom = next.displayZoom;
+    }
+    if (rendererPlatformAttribute() !== "win32") return;
+    if (typeof window === "undefined") return;
+    const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
+    if (typeof setOverlay !== "function") return;
+    void Promise.resolve(
+      setOverlay({
+        theme: overlayTheme,
+        zoomFactor: zoomFactorForDisplay(overlayDisplayZoom),
+      }),
+    ).catch(() => {});
+  };
 }
+
+/**
+ * The app's one syncer. Deliberately a single shared instance: the theme comes
+ * from `App`'s `data-theme` effect and the zoom from `AppShell`/`TopBar`, and
+ * they have to accumulate into the same pair of values or each push would reset
+ * the other's input to a default it never had.
+ */
+export const syncWindowsTitleBarOverlay: TitleBarOverlaySync = createTitleBarOverlaySync();
 
 function readOverlay(): WindowControlsOverlayLike | null {
   if (typeof navigator === "undefined") return null;
