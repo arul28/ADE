@@ -40048,7 +40048,10 @@ export function createAgentChatService(args: {
     }
     const existing = sessionService.get(trimmedSessionId);
     if (!existing) {
-      throw new Error(`Chat session '${trimmedSessionId}' was not found.`);
+      // Idempotent, for the same reason the mid-flight `if (!current) return`
+      // below already is: a chat this runtime does not have is a delete that
+      // has nothing left to do, not a failure the user has to act on.
+      return;
     }
     if (!isChatToolType(existing.toolType)) {
       throw new Error(`Session '${trimmedSessionId}' is not an agent chat session.`);

@@ -164,6 +164,14 @@ type SessionLinearIssueLinkRow = {
 
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
+/**
+ * How many lanes' git status probes may be in flight at once while building a
+ * lane list. Each lane costs ~6 short-lived `git` processes; running them one
+ * lane at a time made the build scale linearly with lane count (~350 ms/lane
+ * on Windows). Bounded fan-out keeps the process count well under what a
+ * `git worktree list` already implies while removing the serialization.
+ */
+const LANE_STATUS_PREWARM_CONCURRENCY = 8;
 
 /**
  * Proof artifacts a lane owns, so deleting the lane can delete them.
@@ -706,8 +714,16 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
   return fallback;
 }
 
-async function computeLaneStatus(worktreePath: string, baseRef: string, branchRef: string): Promise<LaneStatus> {
-  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
+async function computeLaneStatus(
+  worktreePath: string,
+  baseRef: string,
+  branchRef: string,
+  options: { worktreeRootVerified?: boolean } = {},
+): Promise<LaneStatus> {
+  // Callers that just proved the worktree root pass `worktreeRootVerified` so
+  // the same `rev-parse --show-toplevel` is not spawned twice per lane. Every
+  // other caller keeps the guard.
+  if (options.worktreeRootVerified !== true && !(await isExpectedGitWorktreeRoot(worktreePath))) {
     return cloneLaneStatus(DEFAULT_LANE_STATUS);
   }
 
@@ -1565,11 +1581,25 @@ export function createLaneService({
     );
 
   const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
+  /**
+   * Coalesces overlapping `listLanes` calls with the same shape. A full build
+   * can take longer than `LANE_LIST_CACHE_TTL_MS`, so on a project with many
+   * lanes the TTL cache never served a hit and every caller — the desktop's
+   * lane list, a phone pull-to-refresh, the periodic snapshot refresh —
+   * started its own build. Several hundred concurrent `git` processes then
+   * starved the runtime that also drives sync. Sharing one in-flight build is
+   * observationally identical to two builds that ran back to back.
+   */
+  const laneListInFlight = new Map<string, Promise<LaneSummary[]>>();
   const rebaseRuns = new Map<string, RebaseRun>();
   const autoLaneIdentityInFlight = new Set<string>();
 
   const invalidateLaneListCache = (): void => {
     laneListCache.clear();
+    // Builds already running were started against pre-invalidation state, so
+    // stop offering them to new callers. They still complete and serve the
+    // callers that were already waiting.
+    laneListInFlight.clear();
   };
 
   /**
@@ -2739,17 +2769,31 @@ export function createLaneService({
   }> => {
     const statusCache = new Map<string, LaneStatus>();
     const worktreeAvailabilityCache = new Map<string, boolean>();
+    // In-flight maps make the resolver safe to drive concurrently: without
+    // them two overlapping calls for the same lane both miss the value cache
+    // and both spawn the same git probes. Every caller still observes exactly
+    // the value the single underlying probe produced.
+    const worktreeAvailabilityInFlight = new Map<string, Promise<boolean>>();
+    const statusInFlight = new Map<string, Promise<LaneStatus>>();
     const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
       const cached = worktreeAvailabilityCache.get(row.id);
       if (cached != null) return cached;
-      const available = await isExpectedGitWorktreeRoot(row.worktree_path);
-      worktreeAvailabilityCache.set(row.id, available);
-      return available;
+      const inFlight = worktreeAvailabilityInFlight.get(row.id);
+      if (inFlight) return await inFlight;
+      const probe = (async () => {
+        const available = await isExpectedGitWorktreeRoot(row.worktree_path);
+        worktreeAvailabilityCache.set(row.id, available);
+        return available;
+      })();
+      worktreeAvailabilityInFlight.set(row.id, probe);
+      try {
+        return await probe;
+      } finally {
+        worktreeAvailabilityInFlight.delete(row.id);
+      }
     };
 
-    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
-      const cached = statusCache.get(laneId);
-      if (cached) return cached;
+    const computeResolvedStatus = async (laneId: string): Promise<LaneStatus> => {
       const row = args.rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
       const worktreeAvailable = await resolveWorktreeAvailable(row);
@@ -2781,15 +2825,34 @@ export function createLaneService({
         }
       }
 
-      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
+      // `resolveWorktreeAvailable` above already ran the identical
+      // `rev-parse --show-toplevel` probe for this worktree and returned true,
+      // so computeLaneStatus must not spawn it a second time.
+      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
+        worktreeRootVerified: true,
+      });
       statusCache.set(laneId, status);
       return status;
+    };
+
+    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
+      const cached = statusCache.get(laneId);
+      if (cached) return cached;
+      const inFlight = statusInFlight.get(laneId);
+      if (inFlight) return await inFlight;
+      const compute = computeResolvedStatus(laneId);
+      statusInFlight.set(laneId, compute);
+      try {
+        return await compute;
+      } finally {
+        statusInFlight.delete(laneId);
+      }
     };
 
     return { resolveWorktreeAvailable, resolveStatus };
   };
 
-  const listLanes = async ({
+  const buildLaneList = async ({
     includeArchived = false,
     includeStatus = true
   }: ListLanesArgs = {}): Promise<LaneSummary[]> => {
@@ -2915,6 +2978,36 @@ export function createLaneService({
       logContext: "lane_list",
     });
 
+    // Warm the resolver's caches with bounded concurrency before the ordered
+    // build below. Every lane's status is an independent read-only git probe,
+    // so resolving them one-at-a-time only serialized process startup: on
+    // Windows each `git.exe` launch costs ~35-100 ms and a project with dozens
+    // of lanes spent 20+ s here, on the same event loop that drives phone
+    // sync. The serial loop that follows is unchanged — it now finds every
+    // value already cached and issues no git of its own, so ordering, error
+    // handling, snapshot writes, and results are identical.
+    if (includeStatus && rows.length > 0) {
+      const queue = rows.slice();
+      const workerCount = Math.min(LANE_STATUS_PREWARM_CONCURRENCY, queue.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          for (;;) {
+            const row = queue.shift();
+            if (!row) return;
+            try {
+              if (await resolveWorktreeAvailable(row)) {
+                await resolveStatus(row.id);
+              }
+              if (row.parent_lane_id) await resolveStatus(row.parent_lane_id);
+            } catch {
+              // Prewarm is best-effort. The ordered loop below re-requests the
+              // same value and keeps the existing per-lane error handling.
+            }
+          }
+        }),
+      );
+    }
+
     const out: LaneSummary[] = [];
     for (const row of rows) {
       try {
@@ -2981,6 +3074,22 @@ export function createLaneService({
       rows: out.map(cloneLaneSummary)
     });
     return out;
+  };
+
+  const listLanes = async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+    const shapeKey = `arch:${args.includeArchived ?? false ? 1 : 0}|status:${args.includeStatus ?? true ? 1 : 0}`;
+    const joined = laneListInFlight.get(shapeKey);
+    // Only join a build that started after the most recent invalidation —
+    // `invalidateLaneListCache` drops the entry, so anything still present is
+    // describing the same state this call would have read.
+    if (joined) return (await joined).map(cloneLaneSummary);
+    const build = buildLaneList(args);
+    laneListInFlight.set(shapeKey, build);
+    try {
+      return (await build).map(cloneLaneSummary);
+    } finally {
+      if (laneListInFlight.get(shapeKey) === build) laneListInFlight.delete(shapeKey);
+    }
   };
 
   const createWorktreeLane = async (args: {
