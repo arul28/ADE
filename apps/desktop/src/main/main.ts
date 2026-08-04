@@ -560,10 +560,6 @@ function createDesktopCredentialStore(secretsDir: string): SyncCredentialStore {
         secretsDir,
         safeStorage,
         legacyStore,
-        // The ADE account session stays in the file store: it is shared with the
-        // CLI daemon, which cannot reach Electron's safeStorage. This store must
-        // neither adopt it nor delete the file it lives in.
-        sharedLegacyKeys: [ACCOUNT_SESSION_CREDENTIAL_KEY],
       });
     }
   } catch {

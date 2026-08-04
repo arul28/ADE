@@ -588,7 +588,6 @@ struct ConnectionHealthPresentation {
 
   init(
     health: SyncConnectionHealth,
-    connectionState: RemoteConnectionState,
     hostName: String?
   ) {
     let truncated = Self.truncate(hostName: hostName)
@@ -597,7 +596,6 @@ struct ConnectionHealthPresentation {
     self.truncatedHostName = truncated
     self.accessibilityLabel = Self.computeAccessibilityLabel(
       health: health,
-      connectionState: connectionState,
       truncatedHostName: truncated
     )
   }
@@ -628,7 +626,6 @@ struct ConnectionHealthPresentation {
 
   private static func computeAccessibilityLabel(
     health: SyncConnectionHealth,
-    connectionState: RemoteConnectionState,
     truncatedHostName: String?
   ) -> String {
     let errorSuffix: String = {
@@ -649,16 +646,10 @@ struct ConnectionHealthPresentation {
         if health.load == .strained {
           return "Connected to \(name). Machine is responding slowly"
         }
-        if connectionState == .syncing {
-          return "Connected to \(name). Syncing changes"
-        }
         return "Connected to \(name)"
       }
       if health.load == .strained {
         return "Connected. Machine is responding slowly"
-      }
-      if connectionState == .syncing {
-        return "Connected. Syncing changes"
       }
       return "Connected"
     case .connecting:
@@ -677,7 +668,6 @@ struct ADEConnectionDot: View {
   private var presentation: ConnectionHealthPresentation {
     ConnectionHealthPresentation(
       health: syncService.connectionHealth,
-      connectionState: syncService.connectionState,
       hostName: syncService.hostName
     )
   }

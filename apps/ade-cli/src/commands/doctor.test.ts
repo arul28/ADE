@@ -225,6 +225,35 @@ describe("doctor row evaluation", () => {
       status: "fail",
       detail: expect.stringMatching(/failing for 5m .* slow leg: http \(9\.2s\)/),
     }));
+    // Only the brain-session states get the restart remedy; a slow HTTP leg is
+    // not fixed by restarting.
+    expect(rows.find((row) => row.key === "publish")?.detail).not.toContain("ade brain restart");
+  });
+
+  it("points an unreadable account session at `ade brain restart`", () => {
+    // Desktop's Connections panel shows a Repair (brain restart) button for
+    // this state; the CLI has to name the same remedy or an agent is stuck.
+    const warning = healthyInput();
+    warning.publishHealth = createSyncAccountDirectoryHealth("token_unreadable", null, {
+      failingSinceMs: NOW - 30_000,
+    });
+    const failing = healthyInput();
+    failing.publishHealth = createSyncAccountDirectoryHealth("token_unreadable", null, {
+      failingSinceMs: NOW - 5 * 60_000,
+    });
+
+    expect(evaluateDoctorRows(warning).find((row) => row.key === "publish")).toEqual(
+      expect.objectContaining({
+        status: "warn",
+        detail: expect.stringContaining("ade brain restart"),
+      }),
+    );
+    expect(evaluateDoctorRows(failing).find((row) => row.key === "publish")).toEqual(
+      expect.objectContaining({
+        status: "fail",
+        detail: expect.stringContaining("ade brain restart"),
+      }),
+    );
   });
 
   it("fails only the brain while dependent checks degrade when the socket is dead", () => {

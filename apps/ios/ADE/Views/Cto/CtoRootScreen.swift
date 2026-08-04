@@ -153,7 +153,7 @@ struct CtoRootScreen: View {
   private var ctoLiveReloadKey: String? {
     guard isTabActive else { return nil }
     switch syncService.connectionState {
-    case .connected, .syncing:
+    case .connected:
       return "live-\(syncService.localStateRevision)"
     case .connecting, .disconnected, .error:
       return nil

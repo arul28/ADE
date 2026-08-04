@@ -599,8 +599,9 @@ func workChatStatusSortRank(_ status: String) -> Int {
 
 /// Tone for the coarse four-value chat status string, for the surfaces that only
 /// ever hold that string (the hub roster, personal chats, the session settings
-/// sheet). Rows that hold a real session use `workSessionRowTone` instead, which
-/// reads the canonical phase.
+/// sheet). Rows that hold a real session read
+/// `workSessionRowPresentation(...).tone` instead, which derives from the
+/// canonical phase.
 ///
 /// Both route through `ActivityTone`, which is what enforces the one-hue rule:
 /// amber is "your move" and nothing else. That rule moved two colours here — an

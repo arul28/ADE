@@ -18,6 +18,7 @@ import {
 import {
   getSignedInAccountAccessToken,
   type AccountAuthStatus,
+  type AccountSessionReadFailureReason,
   type AccountSessionReadState,
 } from "./accountAuthService";
 import {
@@ -28,6 +29,7 @@ import {
   createMachineIdentitySigningStore,
   MACHINE_IDENTITY_SIGNING_FILE_NAME,
 } from "../sync/machineIdentitySigningStore";
+import { createEpisodeAnalytics } from "./episodeAnalytics";
 
 export const ACCOUNT_MACHINE_HEARTBEAT_MS = 30_000;
 export const ACCOUNT_MACHINE_RELAY_STATE_POLL_MS = 2_000;
@@ -121,6 +123,8 @@ export type AccountMachineRegistrationSnapshot = Pick<
 type PublisherAccountStatus = Pick<AccountAuthStatus, "signedIn" | "source"> &
   Partial<Pick<AccountAuthStatus, "userId">> & {
     sessionReadState: AccountSessionReadState;
+    /** Which read path produced an unreadable session (analytics only). */
+    sessionReadFailureReason?: AccountSessionReadFailureReason | null;
   };
 
 type PublishedRelayEndpoint = Extract<AdeAccountMachineEndpoint, { kind: "relay" }>;
@@ -330,12 +334,23 @@ export function createAccountMachinePublisherService(options: {
   let lastWarning: string | null = null;
   let transientFailureCount = 0;
   let successfulPublishCount = 0;
-  let publishFailureAnalyticsEmitted = false;
   let unsubscribeSignIn: (() => void) | null = null;
   let health = createSyncAccountDirectoryHealth(
     "sync_disabled",
     "Account-directory publishing has not started.",
   );
+
+  const captureAnalytics = () => options.captureAnalytics;
+  const publishFailureAnalytics = createEpisodeAnalytics({
+    event: "ade_publish_failing",
+    dedupePrefix: "publish-failing",
+    capture: captureAnalytics,
+  });
+  const sessionUnreadableAnalytics = createEpisodeAnalytics({
+    event: "ade_account_session_unreadable",
+    dedupePrefix: "account-session-unreadable",
+    capture: captureAnalytics,
+  });
 
   const readSigningPublicKey = (): string | null => {
     try {
@@ -449,25 +464,35 @@ export function createAccountMachinePublisherService(options: {
           : null,
     };
     if (health.failingSinceMs == null) {
-      publishFailureAnalyticsEmitted = false;
-    } else if (
-      !publishFailureAnalyticsEmitted
-      && args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS
-    ) {
-      publishFailureAnalyticsEmitted = true;
-      const leg = failureLegForState(state);
-      options.captureAnalytics?.({
-        event: "ade_publish_failing",
-        surface: "api",
+      publishFailureAnalytics.end();
+    } else if (args.attemptAt - health.failingSinceMs >= PUBLISH_FAILURE_ANALYTICS_THRESHOLD_MS) {
+      publishFailureAnalytics.report({
+        dedupeValue: health.failingSinceMs,
         properties: {
           failing_minutes: Math.max(2, Math.floor((args.attemptAt - health.failingSinceMs) / 60_000)),
-          leg,
+          leg: failureLegForState(state),
           code: state,
         },
-        dedupeKey: `publish-failing:${health.failingSinceMs}`,
-        minimumIntervalMs: 24 * 60 * 60 * 1_000,
       });
     }
+  };
+
+  /**
+   * Reports the "app signed in, brain cannot read the session" failure once per
+   * episode, tagged with the read path that produced it.
+   */
+  const observeSessionReadFailure = (
+    code: AccountSessionReadFailureReason | "unknown",
+  ): void => {
+    sessionUnreadableAnalytics.report({ dedupeValue: code, properties: { code } });
+  };
+
+  const observeSessionReadState = (status: PublisherAccountStatus | null): void => {
+    if (!status || status.sessionReadState !== "unreadable") {
+      sessionUnreadableAnalytics.end();
+      return;
+    }
+    observeSessionReadFailure(status.sessionReadFailureReason ?? "unknown");
   };
 
   const publish = async (): Promise<void> => {
@@ -711,6 +736,10 @@ export function createAccountMachinePublisherService(options: {
     try {
       accountStatus = options.getAccountStatus?.() ?? null;
     } catch {
+      // A throwing status read is the same user-visible failure as an
+      // "unreadable" one — the brain cannot obtain the session — so it belongs
+      // to the same episode and reports the documented `read_error` code.
+      observeSessionReadFailure("read_error");
       outcome("token_unreadable", {
         attemptAt,
         skipReason: "The ADE brain could not read account status.",
@@ -719,6 +748,7 @@ export function createAccountMachinePublisherService(options: {
       });
       return;
     }
+    observeSessionReadState(accountStatus);
     if (isPublisherSignedOut(accountStatus)) {
       clearRetainedRelayState();
       const unreadable = accountStatus?.sessionReadState === "unreadable";
@@ -1132,6 +1162,7 @@ export function createBrainAccountMachinePublisherService(options: {
         userId: status.userId,
         source: status.source ?? null,
         sessionReadState: accountAuthService.getSessionReadState(),
+        sessionReadFailureReason: accountAuthService.getSessionReadFailureReason(),
       };
     },
     isSyncEnabled: options.isSyncEnabled,

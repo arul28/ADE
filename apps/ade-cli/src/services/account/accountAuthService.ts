@@ -10,7 +10,10 @@ import {
   shouldIgnoreDevelopmentClerkConfiguration,
   warnDevelopmentClerkIgnored,
 } from "../../../../desktop/src/shared/accountDirectory";
-import type { SyncCredentialStore } from "../credentials/credentialStore";
+import type {
+  CredentialStoreReadFailureReason,
+  SyncCredentialStore,
+} from "../credentials/credentialStore";
 import { runWithAbortSignal } from "../sync/abortSignal";
 
 export const ACCOUNT_SESSION_CREDENTIAL_KEY = "account.session.v1";
@@ -105,6 +108,18 @@ export type AccountAuthStatus = {
 
 export type AccountSessionReadState = "available" | "missing" | "unreadable";
 
+/**
+ * Which read path produced an "unreadable" session. Coarse and closed so it can
+ * be reported as a product-analytics property.
+ */
+export type AccountSessionReadFailureReason =
+  /** Everything the credential store itself can report (decrypt/key-material/format). */
+  | CredentialStoreReadFailureReason
+  /** The credential decrypted but the stored session record did not parse. */
+  | "session_parse"
+  /** The credential store threw while being read. */
+  | "read_error";
+
 export type AccountLoginStartResult = {
   sessionId: string;
   authorizeUrl: string;
@@ -193,6 +208,8 @@ export type AccountAuthService = {
   getStatus(): AccountAuthStatus;
   /** Last persisted-session read result, refreshed by getStatus/getAccessToken. */
   getSessionReadState(): AccountSessionReadState;
+  /** Why the last read was unreadable, or null when it was not. */
+  getSessionReadFailureReason(): AccountSessionReadFailureReason | null;
   getAccessToken(options?: AccountAccessTokenOptions): Promise<string>;
   createToken(): Promise<AccountTokenCreateResult>;
   cancelLogin(sessionId: string): void;
@@ -793,6 +810,14 @@ export function createAccountAuthService(args: {
   let envCredentialEpoch = 0;
   let authEpoch = 0;
   let sessionReadState: AccountSessionReadState = "missing";
+  let sessionReadFailureReason: AccountSessionReadFailureReason | null = null;
+  const setSessionReadState = (
+    state: AccountSessionReadState,
+    reason: AccountSessionReadFailureReason | null = null,
+  ): void => {
+    sessionReadState = state;
+    sessionReadFailureReason = state === "unreadable" ? reason : null;
+  };
   let lastObservedSignedIn: boolean | null = null;
   let locallyRejectedSessionRaw: string | null = null;
   const signedInListeners = new Set<() => void>();
@@ -895,7 +920,7 @@ export function createAccountAuthService(args: {
     // rejected on every read instead of being erased.
     authEpoch += 1;
     lastObservedSignedIn = false;
-    sessionReadState = "missing";
+    setSessionReadState("missing");
     warnDevelopmentClerkIgnored();
   };
 
@@ -915,15 +940,19 @@ export function createAccountAuthService(args: {
         const session = locallyRejected
           ? null
           : parseStoredSession(stored);
-        sessionReadState = locallyRejected
-          ? "missing"
-          : stored == null
-          ? args.credentialStore.getLastReadState?.() === "unreadable"
-            ? "unreadable"
-            : "missing"
-          : session
-            ? "available"
-            : "unreadable";
+        if (locallyRejected) {
+          setSessionReadState("missing");
+        } else if (stored == null) {
+          const storeUnreadable = args.credentialStore.getLastReadState?.() === "unreadable";
+          setSessionReadState(
+            storeUnreadable ? "unreadable" : "missing",
+            storeUnreadable
+              ? args.credentialStore.getLastReadFailureReason?.() ?? null
+              : null,
+          );
+        } else {
+          setSessionReadState(session ? "available" : "unreadable", "session_parse");
+        }
         return { raw: stored, session };
       };
 
@@ -945,12 +974,12 @@ export function createAccountAuthService(args: {
         accessToken: retry.session.accessToken,
         oauthConfig: retry.session.oauthConfig,
       })) {
-        sessionReadState = "missing";
+        setSessionReadState("missing");
         return { raw: retry.raw, session: null };
       }
       return retry;
     } catch (error) {
-      sessionReadState = "unreadable";
+      setSessionReadState("unreadable", "read_error");
       logger.warn("account.session_read_failed", {
         error: error instanceof Error ? error.message : String(error),
       });
@@ -969,7 +998,7 @@ export function createAccountAuthService(args: {
       // peer may be rotating the credential.
       authEpoch += 1;
       lastObservedSignedIn = false;
-      sessionReadState = "missing";
+      setSessionReadState("missing");
       return false;
     }
     let deleted = false;
@@ -982,7 +1011,7 @@ export function createAccountAuthService(args: {
     if (deleted) {
       authEpoch += 1;
       lastObservedSignedIn = false;
-      sessionReadState = "missing";
+      setSessionReadState("missing");
     }
     return deleted;
   };
@@ -2139,6 +2168,7 @@ export function createAccountAuthService(args: {
     pollDeviceLogin,
     getStatus,
     getSessionReadState: () => sessionReadState,
+    getSessionReadFailureReason: () => sessionReadFailureReason,
     getAccessToken,
     createToken,
     cancelLogin,

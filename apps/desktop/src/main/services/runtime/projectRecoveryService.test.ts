@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectNoJargon } from "../../../test/jargonGuard";
+import { LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE } from "../../../shared/runtimeErrors";
 import type { AdeLastFailureReport, AdeRecoveryErrorCode } from "../../../shared/types/recovery";
 import type { Logger } from "../logging/logger";
 import {
@@ -303,5 +304,184 @@ describe("ProjectRecoveryService.repair", () => {
     expect(report.steps[3]).toMatchObject({ id: "resolve_migrations", status: "failed" });
     expect(report.steps.slice(4).every((step) => step.status === "skipped")).toBe(true);
     expect(report.nextAction).toContain("nothing has been deleted");
+  });
+});
+
+describe("ProjectRecoveryService.restartBrain", () => {
+  const installedPool = () =>
+    pool(status({
+      serviceInstall: {
+        state: "installed",
+        attempted: true,
+        path: "com.ade.runtime",
+        message: "ADE service login item is installed.",
+        exitCode: 0,
+        updatedAt: null,
+      },
+    }));
+
+  it("forces the service install and resolves once the brain answers a ping", async () => {
+    const connectionPool = installedPool();
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).resolves.toBeUndefined();
+
+    expect(connectionPool.installServiceBestEffort).toHaveBeenCalledWith({ forceRestart: true });
+    // The ping is explicitly bounded: the RPC client's default is 10 minutes,
+    // which would park this call — and any repair waiting on it — on a brain
+    // that binds the socket but never answers.
+    expect(connectionPool.callSync).toHaveBeenCalledWith("ping", {}, { timeoutMs: 20_000 });
+  });
+
+  const installStatusPool = (
+    state: "skipped" | "failed",
+    message: string,
+  ): ProjectRecoveryConnectionPool =>
+    // installServiceBestEffort never rejects and can resolve having done
+    // nothing, so a silent no-op has to be caught from the status.
+    pool(status({
+      serviceInstall: {
+        state,
+        attempted: state === "failed",
+        path: null,
+        message,
+        exitCode: null,
+        updatedAt: null,
+      },
+    }));
+
+  it("throws the installer's own message when the install fails", async () => {
+    const connectionPool = installStatusPool("failed", "launchctl bootstrap failed");
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).rejects.toThrow("launchctl bootstrap failed");
+    expect(connectionPool.callSync).not.toHaveBeenCalled();
+  });
+
+  it("explains a deliberate skip in user copy instead of the installer's log line", async () => {
+    // Forcing past the skip would downgrade a newer running brain, so the
+    // remedy is to relaunch ADE — and the log line never becomes the sentence.
+    const connectionPool = installStatusPool(
+      "skipped",
+      "Skipped ADE service install because a newer ADE brain is already running.",
+    );
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    const rejection = await service.restartBrain().then(
+      () => new Error("restartBrain resolved instead of rejecting."),
+      (reason: unknown) => reason as Error,
+    );
+
+    expect(rejection.message).toBe(
+      "A newer ADE runtime is already running — quit and reopen ADE instead.",
+    );
+    expect(connectionPool.callSync).not.toHaveBeenCalled();
+  });
+
+  it("keeps the release-build block's own instructions, which already read as copy", async () => {
+    const connectionPool = installStatusPool("skipped", LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).rejects.toThrow(LOCAL_RELEASE_BUILD_OUTPUT_RUNTIME_MESSAGE);
+  });
+
+  it("throws when the replacement brain never rebinds the socket", async () => {
+    const connectionPool = installedPool();
+    const service = createProjectRecoveryService(deps({
+      connectionPool,
+      waitForSocketState: vi.fn(async () => false),
+    }));
+
+    await expect(service.restartBrain()).rejects.toThrow("did not come back");
+    expect(connectionPool.callSync).not.toHaveBeenCalled();
+  });
+
+  it("throws when the restarted brain does not answer the ping", async () => {
+    const connectionPool = installedPool();
+    vi.mocked(connectionPool.callSync).mockRejectedValue(new Error("socket closed"));
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    await expect(service.restartBrain()).rejects.toThrow("socket closed");
+  });
+
+  it("refuses to reinstall the brain while a repair owns the database, and works again after", async () => {
+    // repair() stops the service and then does exclusive database work; a
+    // renderer-triggered restart landing mid-window would put a writer back.
+    const connectionPool = installedPool();
+    let reachedDatabaseWork = (): void => {};
+    let releaseDatabaseWork = (): void => {};
+    const databaseWorkStarted = new Promise<void>((resolve) => { reachedDatabaseWork = resolve; });
+    const databaseWorkBlocked = new Promise<void>((resolve) => { releaseDatabaseWork = resolve; });
+    const service = createProjectRecoveryService(deps({
+      connectionPool,
+      quickCheck: vi.fn(async () => {
+        reachedDatabaseWork();
+        await databaseWorkBlocked;
+        return { healthy: true, detail: "ok" };
+      }),
+    }));
+
+    const repair = service.repair(tempRoot());
+    await databaseWorkStarted;
+
+    await expect(service.restartBrain()).rejects.toThrow("Recovery is already running.");
+    expect(connectionPool.installServiceBestEffort).not.toHaveBeenCalled();
+
+    releaseDatabaseWork();
+    await expect(repair).resolves.toMatchObject({ ok: true });
+    await expect(service.restartBrain()).resolves.toBeUndefined();
+    expect(connectionPool.installServiceBestEffort).toHaveBeenCalledWith({ forceRestart: true });
+  });
+
+  it("waits for an in-flight restart before repair takes the database", async () => {
+    // The other direction of the same invariant: a restart that began before
+    // repair() was called must finish its install before repair stops the
+    // service, or the queued install rebinds a brain during exclusive DB work.
+    const connectionPool = installedPool();
+    let releaseInstall = (): void => {};
+    let installStarted = (): void => {};
+    const installBlocked = new Promise<void>((resolve) => { releaseInstall = resolve; });
+    const installRunning = new Promise<void>((resolve) => { installStarted = resolve; });
+    vi.mocked(connectionPool.installServiceBestEffort).mockImplementation(async () => {
+      installStarted();
+      await installBlocked;
+    });
+    const quickCheck = vi.fn(async () => ({ healthy: true, detail: "ok" }));
+    const service = createProjectRecoveryService(deps({ connectionPool, quickCheck }));
+
+    const restart = service.restartBrain();
+    await installRunning;
+    const repair = service.repair(tempRoot());
+    // Repair must be parked on the restart, not already owning the database.
+    for (let i = 0; i < 10; i += 1) await Promise.resolve();
+    expect(quickCheck).not.toHaveBeenCalled();
+
+    releaseInstall();
+    await expect(restart).resolves.toBeUndefined();
+    await expect(repair).resolves.toMatchObject({ ok: true });
+    expect(quickCheck).toHaveBeenCalled();
+  });
+
+  it("still runs repair when the in-flight restart it waited on failed", async () => {
+    // Recovery is the user's last resort: a rejected restart must not take the
+    // repair run down with it.
+    const connectionPool = installStatusPool("failed", "launchctl bootstrap failed");
+    let releaseInstall = (): void => {};
+    let installStarted = (): void => {};
+    const installBlocked = new Promise<void>((resolve) => { releaseInstall = resolve; });
+    const installRunning = new Promise<void>((resolve) => { installStarted = resolve; });
+    vi.mocked(connectionPool.installServiceBestEffort).mockImplementation(async () => {
+      installStarted();
+      await installBlocked;
+    });
+    const service = createProjectRecoveryService(deps({ connectionPool }));
+
+    const restart = service.restartBrain();
+    await installRunning;
+    const repair = service.repair(tempRoot());
+    releaseInstall();
+
+    await expect(restart).rejects.toThrow("launchctl bootstrap failed");
+    await expect(repair).resolves.toMatchObject({ ok: true });
   });
 });

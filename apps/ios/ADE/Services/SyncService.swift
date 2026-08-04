@@ -22,11 +22,14 @@ enum WidgetReloadBridge {
 private let syncConnectLog = Logger(subsystem: "com.ade.sync", category: "connect")
 private let syncChatLog = Logger(subsystem: "com.ade.ios", category: "WorkChatSync")
 
+/// Transport-level attachment to a machine. There is deliberately no separate
+/// "hydrating"/"syncing" state: attachment is a fact the moment `hello_ok` is
+/// applied, and per-domain hydration progress is carried by `SyncDomainStatus`
+/// (`.syncingInitialData`, `.hydrating`) rather than by this enum.
 enum RemoteConnectionState: String {
   case disconnected
   case connecting
   case connected
-  case syncing
   case error
 
   /// True when the host is not reachable — either we never connected
@@ -83,7 +86,7 @@ func syncConnectionHealth(
       return .disconnected
     case .connecting:
       return .connecting
-    case .connected, .syncing:
+    case .connected:
       return .connected
     case .error:
       return .unreachable
@@ -2643,11 +2646,11 @@ func syncAccountMachineNavigationIsCurrent(
   activeHostIdentity: String?,
   connectionState: RemoteConnectionState
 ) -> Bool {
-  // `.syncing` is attached — it is what every connect path settles into before
-  // it reaches `.connected`. Demanding `.connected` exactly meant a link tapped
-  // mid-hydration decided we were on the wrong machine and re-paired to the
-  // machine we were already talking to, tearing down a healthy connection.
-  guard connectionState == .connected || connectionState == .syncing,
+  // Attachment — not hydration progress — decides whether a tapped link is
+  // already pointed at the machine we are talking to. `hello_ok` publishes
+  // `.connected` immediately, so a link tapped mid-hydration must not decide we
+  // are on the wrong machine and re-pair to the machine we already have.
+  guard connectionState == .connected,
         let targetDeviceId = targetDeviceId?
           .trimmingCharacters(in: .whitespacesAndNewlines),
         !targetDeviceId.isEmpty,
@@ -3289,12 +3292,13 @@ final class SyncService: ObservableObject {
   }
   @Published private(set) var hostName: String?
 
-  /// Attached to a machine. `.syncing` counts: it is what every connect path
-  /// settles into before `.connected`, and treating it as "not attached" is
-  /// what made a link tapped mid-hydration re-pair to the machine we were
-  /// already talking to.
+  /// Attached to a machine — the single named success/attachment predicate for
+  /// the whole app. Every surface that asks "did we get on the machine?" must
+  /// go through this rather than re-deriving its own comparison, so that the
+  /// definition of attachment stays in one place if the state machine grows
+  /// again. Hydration progress is `SyncDomainStatus`, not this.
   var isAttached: Bool {
-    connectionState == .connected || connectionState == .syncing
+    connectionState == .connected
   }
 
   /// Human-facing name of the connected machine, or a neutral "your computer"
@@ -4073,7 +4077,7 @@ final class SyncService: ObservableObject {
       return
     }
 
-    guard connectionState != .connected && connectionState != .syncing else {
+    guard connectionState != .connected else {
       lastError = "This machine connection does not support project switching. Reconnect to a current ADE machine before opening another project."
       setDomainStatus(SyncDomain.allCases, phase: .failed, error: lastError)
       return
@@ -4084,7 +4088,7 @@ final class SyncService: ObservableObject {
     localStateRevision += 1
     refreshActiveSessionsAndSnapshot()
     scheduleWorkspaceSnapshotWrite()
-    if connectionState == .connected || connectionState == .syncing {
+    if connectionState == .connected {
       startInitialHydrationTask(for: connectionGeneration)
     }
   }
@@ -4657,7 +4661,7 @@ final class SyncService: ObservableObject {
       // Clear stale failure state from the prior project so the reconnect gap
       // shows active handoff progress instead of a leftover failure banner.
       lastError = nil
-      let hadLiveSocket = connectionState == .connected || connectionState == .syncing
+      let hadLiveSocket = connectionState == .connected
       if hadLiveSocket {
         teardownSocket(reason: "Switching project.")
       }
@@ -8998,11 +9002,27 @@ final class SyncService: ObservableObject {
   }
 
   /// Declared settle. Stamps `settled_at` locally to match what the host writes.
-  func settleSession(sessionId: String) async throws {
+  ///
+  /// `dismissPendingInput` is the needs-you variant — desktop's "Dismiss &
+  /// settle" — and it must ONLY be passed for a row that genuinely has a pending
+  /// prompt: the host throws "Resolve the terminal input before settling this
+  /// session." when the flag arrives for a row with nothing pending, which would
+  /// roll back the optimistic write and surface an error on an ordinary settle.
+  ///
+  /// It rides on the SAME plural action the plain settle uses. The singular
+  /// `session.settleSession` also accepts the flag but is not in the mobile
+  /// compatibility lists, so routing there would break against older hosts. The
+  /// argument itself is optional host-side and defaults to today's behaviour, so
+  /// a host that predates it simply settles the row and leaves the prompt.
+  func settleSession(sessionId: String, dismissPendingInput: Bool = false) async throws {
+    var args: [String: Any] = ["sessionIds": [sessionId]]
+    if dismissPendingInput {
+      args["dismissPendingInput"] = true
+    }
     try await sendSessionLifecycleCommand(
       sessionId: sessionId,
       action: "session.settleSessions",
-      args: ["sessionIds": [sessionId]],
+      args: args,
       // The bulk action answers with the ids it CHANGED, so an absent id means
       // the machine settled nothing. Mirrors the desktop `settleMany`.
       resultShape: .changedIdList,
@@ -9283,7 +9303,7 @@ final class SyncService: ObservableObject {
   /// no-op when the transport is down, and never throws — a missing GitHub
   /// snapshot just leaves the ADE-mapped fallback in place.
   func refreshLaneGithubPrItems(force: Bool = false, minInterval: TimeInterval = 20) async {
-    guard connectionState == .connected || connectionState == .syncing else { return }
+    guard connectionState == .connected else { return }
     if !force, let fetchedAt = laneGithubPrItemsFetchedAt,
       Date().timeIntervalSince(fetchedAt) < minInterval
     {
@@ -9297,7 +9317,7 @@ final class SyncService: ObservableObject {
     let requestedProjectId = activeProjectId
     do {
       let snapshot = try await fetchGitHubPullRequestSnapshot(force: force)
-      guard connectionState == .connected || connectionState == .syncing,
+      guard connectionState == .connected,
         activeProjectId == requestedProjectId
       else { return }
       laneGithubPrItems = snapshot.repoPullRequests.filter { $0.scope == "repo" }
@@ -10720,6 +10740,48 @@ final class SyncService: ObservableObject {
     _ = try await sendCommand(
       action: "work.stopRuntime",
       args: ["sessionId": sessionId],
+      targetProjectId: scope.projectId,
+      targetProjectRootPath: scope.rootPath
+    )
+  }
+
+  /// Whether this host advertises `work.deleteSession` — the delete path for a
+  /// CLI or shell row, which chats never used (`chat.delete` owns those). The
+  /// command is queueable, so this stays true while offline and the delete is
+  /// replayed on reconnect.
+  var supportsWorkSessionDeletion: Bool {
+    canInvokeRemoteAction("work.deleteSession")
+  }
+
+  /// Delete a non-chat session. The host handler is
+  /// `deleteTerminalSessionWithRuntimeCleanup`, so this ALREADY stops a live
+  /// runtime before deleting — "Stop & delete" and "Delete session" are the same
+  /// command with different labels, not two code paths.
+  ///
+  /// Advertise-checked rather than fired hopefully: an older host would answer
+  /// with an opaque method-not-found, and a delete that silently does nothing is
+  /// worse than one that says why.
+  ///
+  /// The guard reuses `supportsWorkSessionDeletion` so the condition that SHOWS
+  /// the affordance and the condition that THROWS cannot drift apart. The
+  /// message stays custom rather than routing through
+  /// `requireInvokableRemoteAction` because an out-of-date host is the only way
+  /// this fails in practice — the command is viewer-allowed and queueable, so
+  /// neither the viewer nor the offline branch of the shared helper can trip —
+  /// and "update the desktop app" is more actionable than the generic copy.
+  func deleteWorkSession(sessionId: String) async throws {
+    let trimmed = sessionId.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    guard supportsWorkSessionDeletion else {
+      throw NSError(domain: "ADE", code: 27, userInfo: [
+        NSLocalizedDescriptionKey:
+          "This machine's ADE is too old to delete sessions from a phone. Update the desktop app and try again.",
+      ])
+    }
+    let scope = chatCommandScope(for: trimmed)
+    _ = try await sendCommand(
+      action: "work.deleteSession",
+      args: ["sessionId": trimmed],
       targetProjectId: scope.projectId,
       targetProjectRootPath: scope.rootPath
     )
@@ -15251,33 +15313,66 @@ final class SyncService: ObservableObject {
   /// already running from `applyHelloPayload`; these two network refreshes can
   /// interleave with it on the main actor while their awaits are in flight.
   private func schedulePostHelloWork(for generation: UInt64) {
-    guard let expectedSocket = socket else { return }
-    let expectedConnectionGeneration = connectionGeneration
-    let isCurrent = {
-      self.isCurrentConnectAttempt(generation)
-        && self.connectionGeneration == expectedConnectionGeneration
-        && self.socket === expectedSocket
-        && self.canSendLiveRequests()
-    }
+    guard let attachment = beginPostHelloAttachment(for: generation) else { return }
     Task { @MainActor [weak self] in
       guard let self else { return }
       await performGenerationScopedPostHelloWork(
-        isCurrent: isCurrent,
+        isCurrent: attachment.isCurrent,
         restore: {
           async let lanePresence: Void = self.restoreTrackedOpenLanesAfterReconnect()
           async let projectCatalog: Void = self.refreshRemoteProjectCatalog()
           _ = await (lanePresence, projectCatalog)
         },
         complete: {
-          self.connectionState = .connected
           self.logProjectSwitchPhase("post_hello_ready", completed: true)
           self.scheduleReconnectStabilityReset(
-            generation: expectedConnectionGeneration,
-            socket: expectedSocket
+            generation: attachment.connectionGeneration,
+            socket: attachment.socket
           )
         }
       )
     }
+  }
+
+  /// The socket/generation that carried `hello_ok`, plus the staleness
+  /// predicate the deferred post-hello completion has to re-check.
+  private struct PostHelloAttachment {
+    let socket: URLSessionWebSocketTask
+    let connectionGeneration: UInt64
+    let isCurrent: () -> Bool
+  }
+
+  /// Shared prologue for post-hello restoration — used by `schedulePostHelloWork`
+  /// and by the DEBUG test hook, so tests exercise the production logic.
+  ///
+  /// Attachment is a fact the moment `hello_ok` is applied, so publish
+  /// `.connected` here rather than at the end of the restoration that follows.
+  /// Deferring it left the app unattached for the length of a network round
+  /// trip on every connect — and permanently whenever the generation guard
+  /// rejected the completion — which every surface gated on `isAttached` read
+  /// as "not connected yet". This republish is idempotent: `applyHelloPayload`
+  /// already set `.connected`, and this keeps the prologue's contract standing
+  /// on its own for the DEBUG test hook and any future caller. The
+  /// reconnect-backoff reset stays behind the guarded completion: that, not
+  /// `connectionState`, is what must wait for a proven-usable socket.
+  ///
+  /// Returns `nil` when there is no socket to attach to.
+  private func beginPostHelloAttachment(
+    for connectAttemptGeneration: UInt64
+  ) -> PostHelloAttachment? {
+    guard let expectedSocket = socket else { return nil }
+    let expectedConnectionGeneration = connectionGeneration
+    connectionState = .connected
+    return PostHelloAttachment(
+      socket: expectedSocket,
+      connectionGeneration: expectedConnectionGeneration,
+      isCurrent: {
+        self.isCurrentConnectAttempt(connectAttemptGeneration)
+          && self.connectionGeneration == expectedConnectionGeneration
+          && self.socket === expectedSocket
+          && self.canSendLiveRequests()
+      }
+    )
   }
 
   private func scheduleReconnectStabilityReset(
@@ -16020,23 +16115,27 @@ final class SyncService: ObservableObject {
     await scheduledTask?.value
   }
 
+  /// Drives the same `beginPostHelloAttachment` prologue as
+  /// `schedulePostHelloWork`: attachment is published up front, and the
+  /// generation-scoped completion (reconnect-stability reset in production)
+  /// only runs when the socket that carried `hello_ok` is still current.
+  /// Returns whether that completion ran.
+  @discardableResult
   func performPostHelloRestorationForTesting(
     restore: () async -> Void
-  ) async {
-    guard let expectedSocket = socket else { return }
-    let expectedConnectionGeneration = connectionGeneration
-    connectionState = .syncing
+  ) async -> Bool {
+    guard let attachment = beginPostHelloAttachment(
+      for: connectAttemptGeneration
+    ) else { return false }
+    var completed = false
     await performGenerationScopedPostHelloWork(
-      isCurrent: {
-        self.connectionGeneration == expectedConnectionGeneration
-          && self.socket === expectedSocket
-          && self.canSendLiveRequests()
-      },
+      isCurrent: attachment.isCurrent,
       restore: restore,
       complete: {
-        self.connectionState = .connected
+        completed = true
       }
     )
+    return completed
   }
 
   func completeTransportProbeForTesting(
@@ -16306,7 +16405,11 @@ final class SyncService: ObservableObject {
     // changeset_batch. Setting it prematurely causes the desktop to skip
     // the full initial sync on reconnect (it thinks we already have the data).
     hostName = remoteHostName ?? activeHostProfile?.hostName
-    connectionState = .syncing
+    // Attachment is a fact at `hello_ok`. Every production call path runs
+    // `schedulePostHelloWork` immediately after this, which republishes
+    // `.connected` idempotently; publishing here means no path can leave the
+    // app in a transient non-attached state while hydration catches up.
+    connectionState = .connected
     publishConnectTimingMetrics(
       connectedHost: connectedHost,
       hostTransport: payload["connectionTransport"] as? String,
@@ -16443,7 +16546,7 @@ final class SyncService: ObservableObject {
   }
 
   private func canSendLiveRequests() -> Bool {
-    socket != nil && (connectionState == .connected || connectionState == .syncing)
+    socket != nil && (connectionState == .connected)
   }
 
   private func receiveLoop(for task: URLSessionWebSocketTask) {
@@ -18647,7 +18750,7 @@ final class SyncService: ObservableObject {
 
   private func performInitialHydration(for connectionGeneration: UInt64) async {
     guard isCurrentConnectionGeneration(connectionGeneration),
-          connectionState == .connected || connectionState == .syncing
+          connectionState == .connected
     else { return }
 
     if activeProjectId == nil {
@@ -19385,8 +19488,11 @@ extension SyncService {
 
     let connection: String
     switch connectionState {
+    // Widget wire vocabulary — `ADELockScreenWidget` matches these strings.
+    // "syncing" stays in the vocabulary for `.connecting`; it is not a new
+    // value and the widget's syncing tile remains reachable.
     case .connected: connection = "connected"
-    case .syncing, .connecting: connection = "syncing"
+    case .connecting: connection = "syncing"
     default: connection = "disconnected"
     }
 

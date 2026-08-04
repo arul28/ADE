@@ -97,6 +97,7 @@ function makeAccountAuthServiceMock() {
       expiresAt: null,
     })),
     getSessionReadState: vi.fn(() => "missing" as const),
+    getSessionReadFailureReason: vi.fn(() => null),
     getAccessToken: vi.fn(async () => "test-access-token"),
     createToken: vi.fn(async () => ({
       token: "test-refresh-token",
@@ -579,6 +580,7 @@ describe("multi-project RPC server", () => {
         expiresAt: null,
       })),
       getSessionReadState: vi.fn(() => "missing" as const),
+      getSessionReadFailureReason: vi.fn(() => null),
       getAccessToken: vi.fn(),
       createToken: vi.fn(),
       cancelLogin: vi.fn(),

@@ -1,9 +1,14 @@
 import type { SyncRoleSnapshot } from "../../../shared/types";
 
+export type AccountDirectorySummary = {
+  label: string;
+  healthy: boolean;
+};
+
 export function accountDirectorySummary(
   status: SyncRoleSnapshot,
   accountSignedIn: boolean,
-): { label: string; healthy: boolean } {
+): AccountDirectorySummary {
   if (!accountSignedIn) {
     return {
       label: status.pairingPinConfigured

@@ -742,6 +742,13 @@ declare global {
         ) => () => void;
         getResourceUsage: () => Promise<AppResourceUsageSnapshot>;
         getRuntimeHealth: () => Promise<RuntimeHealthSnapshot>;
+        /**
+         * Restarts this Mac's ADE brain (com.ade.runtime) and resolves once the
+         * replacement answers a ping; rejects when it does not come back.
+         * Native desktop only — the hosted-web adapter and browser mock cannot
+         * touch a launch agent, so callers must feature-detect before offering it.
+         */
+        restartBackgroundService?: () => Promise<void>;
         getLatestRelease: () => Promise<LatestReleaseInfo | null>;
         getProject: () => Promise<ProjectInfo | null>;
         getWindowSession: () => Promise<{

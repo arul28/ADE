@@ -515,6 +515,94 @@ describe("local runtime connection pool", () => {
     }
   });
 
+  it("runs a forcing install instead of coalescing onto an in-flight background install", async () => {
+    // A background install already running cannot satisfy a Repair click: it
+    // may skip, or may have spawned before the user asked. The forced call must
+    // queue behind it and then spawn its own forcing install.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-force-"));
+    const logPath = path.join(dir, "spawns.log");
+    const cliPath = path.join(dir, "fake-cli.cjs");
+    fs.writeFileSync(
+      cliPath,
+      [
+        "const fs = require('node:fs');",
+        `fs.appendFileSync(${JSON.stringify(logPath)}, (process.env.ADE_FORCE_RUNTIME_SERVICE_RESTART || 'unset') + '\\n');`,
+        "setTimeout(() => {",
+        "  process.stdout.write(JSON.stringify({ ok: true, path: 'com.ade.runtime', message: 'installed' }));",
+        "}, 150);",
+      ].join("\n"),
+    );
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+    };
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never);
+
+    try {
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+
+      const background = pool.installServiceBestEffort();
+      const forced = pool.installServiceBestEffort({ forceRestart: true });
+      expect(forced).not.toBe(background);
+      await Promise.all([background, forced]);
+
+      expect(fs.readFileSync(logPath, "utf8").trim().split("\n")).toEqual(["unset", "1"]);
+      expect(pool.getStatus().serviceInstall).toMatchObject({ state: "installed", attempted: true });
+    } finally {
+      pool.dispose();
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("settles a wedged service install as failed instead of hanging forever", async () => {
+    // Without the timeout a stuck installer pins serviceInstallPromise, so the
+    // Repair button spins forever and every later install is blocked too.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-install-wedge-"));
+    const cliPath = path.join(dir, "wedged-cli.cjs");
+    fs.writeFileSync(cliPath, "setInterval(() => {}, 1000);\n");
+    const originalEnv = {
+      ADE_CLI_JS: process.env.ADE_CLI_JS,
+      ADE_RUNTIME_SOCKET_PATH: process.env.ADE_RUNTIME_SOCKET_PATH,
+    };
+    const logger = { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+    const pool = new LocalRuntimeConnectionPool("1.2.3", logger as never, {
+      serviceInstallTimeoutMs: 250,
+    });
+
+    try {
+      process.env.ADE_CLI_JS = cliPath;
+      process.env.ADE_RUNTIME_SOCKET_PATH = path.join(dir, "missing.sock");
+
+      await pool.installServiceBestEffort();
+
+      expect(pool.getStatus().serviceInstall).toMatchObject({
+        state: "failed",
+        attempted: true,
+        message: "ADE service login item installation timed out.",
+      });
+      expect(logger.warn).toHaveBeenCalledWith(
+        "local_runtime.service_install_failed",
+        expect.objectContaining({ reason: "timeout" }),
+      );
+      // The stuck attempt released the coalescing latch, so a retry runs.
+      await pool.installServiceBestEffort();
+      expect(pool.getStatus().serviceInstall.state).toBe("failed");
+    } finally {
+      pool.dispose();
+      if (originalEnv.ADE_CLI_JS === undefined) delete process.env.ADE_CLI_JS;
+      else process.env.ADE_CLI_JS = originalEnv.ADE_CLI_JS;
+      if (originalEnv.ADE_RUNTIME_SOCKET_PATH === undefined) delete process.env.ADE_RUNTIME_SOCKET_PATH;
+      else process.env.ADE_RUNTIME_SOCKET_PATH = originalEnv.ADE_RUNTIME_SOCKET_PATH;
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("skips service install when a newer compatible brain is already running", async () => {
     const adeCliRoot = path.resolve(process.cwd(), "../ade-cli");
     const cliPath = path.join(adeCliRoot, "src", "cli.ts");

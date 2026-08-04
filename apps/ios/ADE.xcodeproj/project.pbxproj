@@ -85,6 +85,7 @@
 		E10000000000000000000022 /* WorkRootScreen.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000022 /* WorkRootScreen.swift */; };
 		E10000000000000000000023 /* WorkRootScreen+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000023 /* WorkRootScreen+Actions.swift */; };
 		E10000000000000000000024 /* WorkRootComponents.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000024 /* WorkRootComponents.swift */; };
+		E10000000000000000000F02 /* WorkSessionRowCard.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000F02 /* WorkSessionRowCard.swift */; };
 		E10000000000000000000025 /* WorkNewChatSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000025 /* WorkNewChatSheet.swift */; };
 		E10000000000000000000026 /* WorkSessionSettingsSheet.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000026 /* WorkSessionSettingsSheet.swift */; };
 		E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */ = {isa = PBXBuildFile; fileRef = D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */; };
@@ -366,6 +367,7 @@
 		D10000000000000000000022 /* WorkRootScreen.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootScreen.swift; path = ADE/Views/Work/WorkRootScreen.swift; sourceTree = "<group>"; };
 		D10000000000000000000023 /* WorkRootScreen+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkRootScreen+Actions.swift"; path = "ADE/Views/Work/WorkRootScreen+Actions.swift"; sourceTree = "<group>"; };
 		D10000000000000000000024 /* WorkRootComponents.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkRootComponents.swift; path = ADE/Views/Work/WorkRootComponents.swift; sourceTree = "<group>"; };
+		D10000000000000000000F02 /* WorkSessionRowCard.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionRowCard.swift; path = ADE/Views/Work/WorkSessionRowCard.swift; sourceTree = "<group>"; };
 		D10000000000000000000025 /* WorkNewChatSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkNewChatSheet.swift; path = ADE/Views/Work/WorkNewChatSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000026 /* WorkSessionSettingsSheet.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = WorkSessionSettingsSheet.swift; path = ADE/Views/Work/WorkSessionSettingsSheet.swift; sourceTree = "<group>"; };
 		D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = "WorkSessionSettingsSheet+Actions.swift"; path = "ADE/Views/Work/WorkSessionSettingsSheet+Actions.swift"; sourceTree = "<group>"; };
@@ -820,6 +822,7 @@
 				D10000000000000000000022 /* WorkRootScreen.swift */,
 				D10000000000000000000023 /* WorkRootScreen+Actions.swift */,
 				D10000000000000000000024 /* WorkRootComponents.swift */,
+				D10000000000000000000F02 /* WorkSessionRowCard.swift */,
 				D10000000000000000000025 /* WorkNewChatSheet.swift */,
 				D10000000000000000000026 /* WorkSessionSettingsSheet.swift */,
 				D10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift */,
@@ -1515,6 +1518,7 @@
 				E10000000000000000000022 /* WorkRootScreen.swift in Sources */,
 				E10000000000000000000023 /* WorkRootScreen+Actions.swift in Sources */,
 				E10000000000000000000024 /* WorkRootComponents.swift in Sources */,
+				E10000000000000000000F02 /* WorkSessionRowCard.swift in Sources */,
 				E10000000000000000000025 /* WorkNewChatSheet.swift in Sources */,
 				E10000000000000000000026 /* WorkSessionSettingsSheet.swift in Sources */,
 				E10000000000000000000027 /* WorkSessionSettingsSheet+Actions.swift in Sources */,

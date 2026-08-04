@@ -1,12 +1,13 @@
 import crypto from "node:crypto";
-import { execFile, execFileSync, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { resolveMachineAdeLayout } from "../projects/machineLayout";
 import {
-  readOrCreateWindowsDpapiMaterial,
-  readOrCreateWindowsDpapiMaterialAsync,
-} from "./windowsDpapiMaterial";
+  expectsOsBoundKeyMaterial,
+  invalidateDefaultOsBoundKeyMaterialCache,
+  readDefaultOsBoundKeyMaterial,
+  readDefaultOsBoundKeyMaterialAsync,
+} from "./osBoundKeyMaterial";
 
 export interface CredentialStore {
   get(key: string): Promise<string | null>;
@@ -15,6 +16,24 @@ export interface CredentialStore {
 }
 
 export type CredentialStoreReadState = "available" | "missing" | "unreadable";
+
+/**
+ * Why the last synchronous read could not produce values. Coarse by design: it
+ * is surfaced to product analytics so field incidence of the "brain cannot read
+ * the credential file the app just wrote" class becomes measurable.
+ */
+export type CredentialStoreReadFailureReason =
+  /** The ciphertext exists but no available key decrypts it. */
+  | "decrypt_failure"
+  /**
+   * OS-held key material was expected but the key was derived without it. On
+   * darwin that is an unreadable keychain item; on win32 a DPAPI failure throws
+   * out of the read instead of returning null, so it never lands here. The name
+   * stays platform-neutral because the condition it describes is.
+   */
+  | "no_os_key_material"
+  /** The file exists but is not a recognised credential envelope. */
+  | "store_format";
 
 export type SyncCredentialStore = CredentialStore & {
   getSync(key: string): string | null;
@@ -26,6 +45,8 @@ export type SyncCredentialStore = CredentialStore & {
   onDidChange?(listener: () => void): () => void;
   /** Result of the most recent synchronous credential-file read. */
   getLastReadState?(): CredentialStoreReadState;
+  /** Why the most recent read was unreadable, or null when it was not. */
+  getLastReadFailureReason?(): CredentialStoreReadFailureReason | null;
 };
 
 type StoredCredentialEnvelope = {
@@ -42,8 +63,27 @@ type SafeStorageLike = {
   decryptString(value: Buffer): string;
 };
 
+/**
+ * Every member is REQUIRED. An optional `getLastReadState()` would let a source
+ * that lacks it silently skip the unreadable-store check below and re-open the
+ * destroy-on-unreadable path; an optional `pruneForMigration()` would silently
+ * leave migrated duplicates at rest.
+ */
 type CredentialStoreMigrationSource = {
   readAllForMigration(): Record<string, string>;
+  /**
+   * Result of the read `readAllForMigration()` just performed. It returns `{}`
+   * rather than throwing for an undecryptable store, so without this the
+   * migration cannot tell "empty" from "unreadable" — and migrating an
+   * unreadable store deletes it.
+   */
+  getLastReadState(): CredentialStoreReadState;
+  /**
+   * Rewrites the legacy file to exactly `values` WITHOUT acquiring the store's
+   * lock: the migration already holds that same lock file, and the file lock is
+   * not reentrant.
+   */
+  pruneForMigration(values: Record<string, string>): void;
 };
 
 const DEFAULT_CREDENTIALS_FILE = "credentials.json.enc";
@@ -51,22 +91,41 @@ const DEFAULT_SAFE_STORAGE_CREDENTIALS_FILE = "credentials.safe.enc";
 const DEFAULT_MACHINE_KEY_FILE = ".machine-key";
 const STORE_AAD = Buffer.from("ade.credentials.v1");
 const OS_BOUND_KEY_INFO = Buffer.from("ade.credentials.file-store.v2");
-const MACOS_KEYCHAIN_SERVICE = "com.ade.runtime.credentials.file-store-key.v1";
-const MACOS_KEYCHAIN_ACCOUNT = "machine";
 const SAFE_STORAGE_FILE_MAGIC = Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n");
+/**
+ * Credentials that MUST stay in the shared `credentials.json.enc` file store.
+ *
+ * The Electron-only safeStorage file is unreadable by the ADE brain
+ * (com.ade.runtime) and by the `ade` CLI, so migrating these keys into it — and
+ * then deleting the file store — leaves the brain signed out on a machine whose
+ * app is signed in. Keep the literals in sync with:
+ *   - ACCOUNT_SESSION_CREDENTIAL_KEY (services/account/accountAuthService.ts)
+ *   - BOOTSTRAP_TOKEN_KEY (services/sync/brainProjectActionsSyncHandler.ts)
+ * They are duplicated here rather than imported to keep this module free of
+ * service-layer dependencies; credentialStore.test.ts asserts they match.
+ */
+const FILE_BACKED_CREDENTIAL_KEYS: readonly string[] = [
+  "account.session.v1",
+  "sync.bootstrapToken.v1",
+];
+
+export function isFileBackedCredentialKey(key: string): boolean {
+  return FILE_BACKED_CREDENTIAL_KEYS.includes(key);
+}
+
+function fileBackedCredentialWriteError(key: string): Error {
+  return new Error(
+    `${key} is file-backed; write it through the file credential store `
+    + "(credentials.json.enc), not the Electron-only safeStorage file the ADE "
+    + "brain cannot read.",
+  );
+}
 const LOCK_TIMEOUT_MS = 15_000;
 const LOCK_STALE_MS = 10_000;
 const LOCK_RETRY_MS = 25;
 const CREDENTIAL_CHANGE_POLL_INTERVAL_MS = 250;
-const MACOS_KEYCHAIN_READ_TIMEOUT_MS = 2_000;
-const MACOS_KEYCHAIN_NEGATIVE_CACHE_MS = 30_000;
-let cachedDefaultOsBoundKeyMaterial: Buffer | null = null;
-// Keyed by resolved secrets directory: DPAPI material is protected per
-// directory, so unlike the single macOS keychain item these cannot share a slot.
-const windowsDpapiMaterialCache = new Map<string, Buffer>();
-const windowsDpapiReadInFlight = new Map<string, Promise<Buffer | null>>();
-let defaultOsBoundKeyMaterialReadInFlight: Promise<Buffer | null> | null = null;
-let lastMissingDefaultOsBoundKeyMaterialAt = 0;
+/** Bounds OS key-material re-reads when a store keeps failing to decrypt. */
+const KEY_MATERIAL_SELF_HEAL_INTERVAL_MS = 30_000;
 
 type CredentialLockMetadata = {
   pid?: number;
@@ -528,211 +587,156 @@ async function readOrCreateMachineKeyAsync(machineKeyPath: string): Promise<Buff
   }
 }
 
-function readCredentialPassphraseFromEnv(): Buffer | null {
-  const passphrase = process.env.ADE_CREDENTIAL_STORE_PASSPHRASE?.trim();
-  return passphrase ? Buffer.from(passphrase, "utf8") : null;
-}
-
-function readOrCreateMacKeychainMaterial(): Buffer | null {
-  if (process.platform !== "darwin") return null;
-  try {
-    const raw = execFileSync("security", [
-      "find-generic-password",
-      "-a",
-      MACOS_KEYCHAIN_ACCOUNT,
-      "-s",
-      MACOS_KEYCHAIN_SERVICE,
-      "-w",
-    ], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-      timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
-    }).trim();
-    const decoded = Buffer.from(raw, "base64");
-    return decoded.length >= 32 ? decoded : Buffer.from(raw, "utf8");
-  } catch {
-    // Missing item or locked keychain; try to create once below.
-  }
-
-  const secret = crypto.randomBytes(32).toString("base64");
-  try {
-    const result = spawnSync("security", [
-      "add-generic-password",
-      "-a",
-      MACOS_KEYCHAIN_ACCOUNT,
-      "-s",
-      MACOS_KEYCHAIN_SERVICE,
-      "-U",
-      "-w",
-    ], {
-      input: `${secret}\n`,
-      stdio: ["pipe", "ignore", "ignore"],
-      timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
-    });
-    if (result.status !== 0) return null;
-    return Buffer.from(secret, "base64");
-  } catch {
-    return null;
-  }
-}
-
-async function readMacKeychainMaterialAsync(): Promise<Buffer | null> {
-  if (process.platform !== "darwin") return null;
-  return new Promise((resolve) => {
-    execFile(
-      "security",
-      [
-        "find-generic-password",
-        "-a",
-        MACOS_KEYCHAIN_ACCOUNT,
-        "-s",
-        MACOS_KEYCHAIN_SERVICE,
-        "-w",
-      ],
-      {
-        encoding: "utf8",
-        timeout: MACOS_KEYCHAIN_READ_TIMEOUT_MS,
-        maxBuffer: 64 * 1024,
-      },
-      (error, stdout) => {
-        if (error) {
-          resolve(null);
-          return;
-        }
-        const raw = stdout.trim();
-        const decoded = Buffer.from(raw, "base64");
-        resolve(decoded.length >= 32 ? decoded : Buffer.from(raw, "utf8"));
-      },
-    );
-  });
-}
-
-function readDefaultOsBoundKeyMaterial(secretsDir: string): Buffer | null {
-  const envMaterial = readCredentialPassphraseFromEnv();
-  if (envMaterial) return envMaterial;
-  if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
-  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
-  if (process.platform === "win32") {
-    // Windows re-spawned `powershell.exe` on every credential read, where macOS
-    // spawns `security` once and caches. That is a far worse trade than it
-    // looks: PowerShell 5.1 pays CLR load, System.Security from disk, and
-    // Defender's on-access scan each time.
-    //
-    // The cache must be keyed by directory, unlike macOS. Keychain material is
-    // one global item, but DPAPI material is protected per secrets directory
-    // (`<secretsDir>/.credential-key.dpapi`), so a single shared slot would
-    // hand one store another store's key.
-    const key = path.resolve(secretsDir);
-    const cached = windowsDpapiMaterialCache.get(key);
-    if (cached) return cached;
-    const material = readOrCreateWindowsDpapiMaterial(secretsDir);
-    if (material) windowsDpapiMaterialCache.set(key, material);
-    return material;
-  }
-  if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
-  const material = readOrCreateMacKeychainMaterial();
-  if (material) {
-    cachedDefaultOsBoundKeyMaterial = material;
-    lastMissingDefaultOsBoundKeyMaterialAt = 0;
-  }
-  return material;
-}
-
-async function readDefaultOsBoundKeyMaterialAsync(secretsDir: string): Promise<Buffer | null> {
-  const envMaterial = readCredentialPassphraseFromEnv();
-  if (envMaterial) return envMaterial;
-  if (process.env.ADE_CREDENTIAL_STORE_DISABLE_OS_BINDING === "1") return null;
-  if (process.env.VITEST === "true" || process.env.NODE_ENV === "test") return null;
-  if (process.platform === "win32") {
-    const key = path.resolve(secretsDir);
-    const cached = windowsDpapiMaterialCache.get(key);
-    if (cached) return cached;
-    // In-flight dedup matters more here than it ever did on macOS: without it,
-    // concurrent credential reads each spawn their own PowerShell, and that
-    // contention is what makes a cold start slow enough to hit the timeout.
-    // No negative cache -- a locked keychain is a durable state worth backing
-    // off from, but a DPAPI failure is usually a transient timeout, and
-    // suppressing retries would make one slow cold start look permanent.
-    const pending = windowsDpapiReadInFlight.get(key);
-    if (pending) return await pending;
-    const inFlight = readOrCreateWindowsDpapiMaterialAsync(secretsDir).then((material) => {
-      if (material) windowsDpapiMaterialCache.set(key, material);
-      return material;
-    });
-    windowsDpapiReadInFlight.set(key, inFlight);
-    try {
-      return await inFlight;
-    } finally {
-      if (windowsDpapiReadInFlight.get(key) === inFlight) {
-        windowsDpapiReadInFlight.delete(key);
-      }
-    }
-  }
-  if (cachedDefaultOsBoundKeyMaterial) return cachedDefaultOsBoundKeyMaterial;
-  if (
-    lastMissingDefaultOsBoundKeyMaterialAt > 0
-    && Date.now() - lastMissingDefaultOsBoundKeyMaterialAt < MACOS_KEYCHAIN_NEGATIVE_CACHE_MS
-  ) {
-    return null;
-  }
-  if (defaultOsBoundKeyMaterialReadInFlight) {
-    return await defaultOsBoundKeyMaterialReadInFlight;
-  }
-  const read = readMacKeychainMaterialAsync().then((material) => {
-    if (material) {
-      cachedDefaultOsBoundKeyMaterial = material;
-      lastMissingDefaultOsBoundKeyMaterialAt = 0;
-    } else {
-      lastMissingDefaultOsBoundKeyMaterialAt = Date.now();
-    }
-    return material;
-  });
-  defaultOsBoundKeyMaterialReadInFlight = read;
-  try {
-    return await read;
-  } finally {
-    if (defaultOsBoundKeyMaterialReadInFlight === read) {
-      defaultOsBoundKeyMaterialReadInFlight = null;
-    }
-  }
-}
-
 function deriveOsBoundCredentialKey(machineKey: Buffer, osMaterial: Buffer | null): Buffer {
   if (!osMaterial || osMaterial.length === 0) return machineKey;
   return Buffer.from(crypto.hkdfSync("sha256", osMaterial, machineKey, OS_BOUND_KEY_INFO, 32));
+}
+
+function isSameKeyMaterial(left: Buffer | null, right: Buffer | null): boolean {
+  if (!left || !right) return !left && !right;
+  return left.equals(right);
+}
+
+/**
+ * How a credential store obtains — and gives up on — OS-bound key material.
+ *
+ * The three members are correlated: `invalidate()` must drop whatever cache
+ * backs `read()`/`readAsync()`, or the self-heal retry re-reads the same stale
+ * material. Injecting the trio together makes that contract explicit; omitting
+ * the whole object takes the process-wide OS defaults.
+ *
+ * Every member receives `keyBindingDir` — the directory this store's machine key
+ * lives in, which is where the rest of its key derivation belongs too. macOS
+ * ignores it (one global keychain item per machine) but Windows DPAPI material
+ * is protected per directory, so without it a store with a custom
+ * `machineKeyPath` would be handed a different store's key. Sources that do not
+ * care may ignore the argument.
+ */
+export type CredentialKeyMaterialSource = {
+  read(keyBindingDir: string): Buffer | null;
+  /** Defaults to an asynchronous wrapper around `read()`. */
+  readAsync?(keyBindingDir: string): Promise<Buffer | null>;
+  /**
+   * Drops whatever cache backs the readers so a failed decrypt can be retried
+   * against freshly-read material. Omit to opt out of self-heal entirely.
+   */
+  invalidate?(keyBindingDir: string): void;
+};
+
+const DEFAULT_KEY_MATERIAL_SOURCE: Required<CredentialKeyMaterialSource> = {
+  read: readDefaultOsBoundKeyMaterial,
+  readAsync: readDefaultOsBoundKeyMaterialAsync,
+  invalidate: invalidateDefaultOsBoundKeyMaterialCache,
+};
+
+type CredentialDecodeAttempt =
+  | {
+    ok: true;
+    values: Record<string, string>;
+    /** The key the store SHOULD be sealed with, whichever one actually read it. */
+    key: Buffer;
+    rewriteWithCurrentKey: boolean;
+  }
+  | { ok: false; error: unknown; osBound: boolean; reason: CredentialStoreReadFailureReason };
+
+/**
+ * One decrypt attempt for a given piece of OS key material.
+ *
+ * The os-bound key is tried first; a failure there falls back to the bare
+ * machine key so genuine legacy ciphertext can be rewritten. If that fallback
+ * also fails the ciphertext is left untouched — a rotated/foreign key must
+ * never cause an empty store to be written over real credentials.
+ */
+function decodeCredentialStore(
+  raw: Record<string, unknown> | null,
+  machineKey: Buffer,
+  material: Buffer | null,
+): CredentialDecodeAttempt {
+  const formatIsUnsupported = raw != null
+    && Object.keys(raw).length > 0
+    && !isStoredCredentialEnvelope(raw);
+  const key = deriveOsBoundCredentialKey(machineKey, material);
+  const osBound = !key.equals(machineKey);
+  // The os-bound key first, then the bare machine key. Anything decrypted by a
+  // later candidate is genuine legacy ciphertext and may be rewritten.
+  const candidates = osBound ? [key, machineKey] : [machineKey];
+  let lastError: unknown;
+  for (const [index, candidate] of candidates.entries()) {
+    try {
+      return {
+        ok: true,
+        values: deserializeStore(raw, candidate, { emptyOnDecryptFailure: false }),
+        key,
+        rewriteWithCurrentKey: index > 0,
+      };
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  const reason: CredentialStoreReadFailureReason = formatIsUnsupported
+    ? "store_format"
+    : !osBound && expectsOsBoundKeyMaterial()
+      ? "no_os_key_material"
+      : "decrypt_failure";
+  return { ok: false, error: lastError, osBound, reason };
+}
+
+/**
+ * The one retry a failed decrypt gets, against freshly-read OS key material.
+ *
+ * Returns null when there is nothing to gain — the OS handed back the same
+ * material that just failed — or when the retry failed too, so the caller keeps
+ * the original (already fail-closed) attempt.
+ */
+function retryDecodeWithRefreshedKeyMaterial(args: {
+  raw: Record<string, unknown> | null;
+  machineKey: Buffer;
+  previous: Buffer | null;
+  refreshed: Buffer | null;
+}): CredentialDecodeAttempt | null {
+  if (isSameKeyMaterial(args.refreshed, args.previous)) return null;
+  const retried = decodeCredentialStore(args.raw, args.machineKey, args.refreshed);
+  return retried.ok ? retried : null;
 }
 
 export class EncryptedFileCredentialStore implements SyncCredentialStore {
   private readonly credentialsPath: string;
   private readonly machineKeyPath: string;
   private readonly lockPath: string;
-  private readonly keyMaterialProvider: () => Buffer | null;
-  private readonly keyMaterialProviderAsync: () => Promise<Buffer | null>;
+  private readonly readKeyMaterial: () => Buffer | null;
+  private readonly readKeyMaterialAsync: () => Promise<Buffer | null>;
   private readonly credentialChangePollIntervalMs: number | null;
   private readonly credentialFileWatchers = new Set<CredentialFileStatWatcher>();
+  private readonly invalidateKeyMaterial: (() => void) | null;
   private lastReadState: CredentialStoreReadState = "missing";
+  private lastReadFailureReason: CredentialStoreReadFailureReason | null = null;
+  private lastKeyMaterialSelfHealAt = 0;
 
   constructor(args: {
     secretsDir?: string;
     credentialsPath?: string;
     machineKeyPath?: string;
     lockPath?: string;
-    keyMaterialProvider?: () => Buffer | null;
-    keyMaterialProviderAsync?: () => Promise<Buffer | null>;
+    /** Omit to use the process-wide OS-bound keychain material. */
+    keyMaterial?: CredentialKeyMaterialSource;
     /** Set to null when tests drive checkForChangesNow() explicitly. */
     credentialChangePollIntervalMs?: number | null;
   } = {}) {
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
     this.credentialsPath = args.credentialsPath ?? path.join(secretsDir, DEFAULT_CREDENTIALS_FILE);
     this.machineKeyPath = args.machineKeyPath ?? path.join(secretsDir, DEFAULT_MACHINE_KEY_FILE);
-    const osBindingDir = path.dirname(this.machineKeyPath);
+    const keyBindingDir = path.dirname(this.machineKeyPath);
     this.lockPath = args.lockPath ?? defaultLockPath(this.credentialsPath);
-    this.keyMaterialProvider = args.keyMaterialProvider
-      ?? (() => readDefaultOsBoundKeyMaterial(osBindingDir));
-    this.keyMaterialProviderAsync = args.keyMaterialProviderAsync
-      ?? (args.keyMaterialProvider
-        ? async () => args.keyMaterialProvider?.() ?? null
-        : () => readDefaultOsBoundKeyMaterialAsync(osBindingDir));
+    const keyMaterial = args.keyMaterial ?? DEFAULT_KEY_MATERIAL_SOURCE;
+    this.readKeyMaterial = () => keyMaterial.read(keyBindingDir);
+    this.readKeyMaterialAsync = async () => (
+      keyMaterial.readAsync ? keyMaterial.readAsync(keyBindingDir) : keyMaterial.read(keyBindingDir)
+    );
+    // An injected source owns its own cache lifetime, so self-heal is available
+    // only when that source supplies the matching invalidation hook.
+    this.invalidateKeyMaterial = keyMaterial.invalidate
+      ? () => keyMaterial.invalidate?.(keyBindingDir)
+      : null;
     this.credentialChangePollIntervalMs = args.credentialChangePollIntervalMs === undefined
       ? CREDENTIAL_CHANGE_POLL_INTERVAL_MS
       : args.credentialChangePollIntervalMs;
@@ -759,6 +763,8 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getSync(key: string): string | null {
     const normalized = normalizeKey(key);
+    // Locked because the read may bind legacy ciphertext to the OS-bound key,
+    // and that rewrite has to exclude concurrent writers.
     return this.withLock(
       () => this.readAll({ allowRewrite: false, migrateLegacy: true })[normalized] ?? null,
     );
@@ -766,6 +772,11 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
 
   getLastReadState(): CredentialStoreReadState {
     return this.lastReadState;
+  }
+
+  getLastReadFailureReason(): CredentialStoreReadFailureReason | null {
+    // Every non-"unreadable" outcome clears this, so no state check is needed.
+    return this.lastReadFailureReason;
   }
 
   setSync(key: string, value: string): void {
@@ -828,99 +839,146 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     return this.readAll({ allowRewrite: false });
   }
 
-  private readAll(args: { allowRewrite: boolean; migrateLegacy?: boolean }): Record<string, string> {
+  /**
+   * Rewrites this file store to exactly `values` for a migration that already
+   * holds this store's lock file. The lock is a `wx` create, so re-acquiring it
+   * from inside the migration would deadlock until the lock timeout; the caller
+   * owns mutual exclusion here, exactly like the migration's direct unlinks.
+   */
+  pruneForMigration(values: Record<string, string>): void {
+    this.writeAll(values);
+  }
+
+  /**
+   * `migrateLegacy` binds pre-OS-bound ciphertext to the current key on a plain
+   * READ, not just on a write. Only callers that already hold this store's lock
+   * may pass it — the rewrite it performs is not itself locked.
+   */
+  private readAll(
+    args: { allowRewrite: boolean; migrateLegacy?: boolean },
+  ): Record<string, string> {
     const credentialsExist = fs.existsSync(this.credentialsPath);
     const raw = readJsonObject(this.credentialsPath);
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
-    if (!key.equals(machineKey)) {
-      try {
-        const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
-        this.lastReadState = credentialsExist ? "available" : "missing";
-        return values;
-      } catch {
-        // Only the genuine legacy machine-key ciphertext should trigger a rewrite.
-        // If the legacy decrypt ALSO fails (true key rotation/corruption), propagate
-        // the error so the ciphertext is preserved instead of being overwritten with
-        // an empty store.
-        let values: Record<string, string>;
-        try {
-          values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-        } catch (error) {
-          this.lastReadState = "unreadable";
-          throw error;
-        }
-        this.lastReadState = credentialsExist ? "available" : "missing";
-        if (args.allowRewrite || args.migrateLegacy) {
-          this.writeAllWithKey(values, key);
-        }
-        return values;
-      }
+    const material = this.readKeyMaterial();
+    let attempt = decodeCredentialStore(raw, machineKey, material);
+    if (
+      !attempt.ok
+      && attempt.reason !== "store_format"
+      && this.beginKeyMaterialSelfHeal()
+    ) {
+      // A decrypt failure with CACHED key material is often recoverable: the
+      // peer process may have won the keychain create race after this process
+      // cached its own copy. Re-read the keychain once and retry before
+      // declaring the store permanently unreadable. A malformed file is not a
+      // key problem, so it never spends a keychain read.
+      //
+      // Known cost, accepted: on Windows an uncached key-material read is a
+      // synchronous PowerShell spawn budgeted at 30 s, and one that has to
+      // create the key spawns twice (protect, then unprotect). This path can
+      // take up to two uncached reads — the failing one above plus the
+      // refreshed one below — while holding the credential file lock, whose
+      // peer timeout is 15 s, so a peer process can see "Timed out waiting for
+      // ADE credential store lock" during a recovery. The common case is
+      // cheaper: the failing read is usually served from cache, which is the
+      // premise of the self-heal. Accepted because the alternative is no
+      // self-heal at all; raising the lock timeout or moving key-material reads
+      // outside the lock is a separate change.
+      const retried = retryDecodeWithRefreshedKeyMaterial({
+        raw,
+        machineKey,
+        previous: material,
+        refreshed: this.readKeyMaterial(),
+      });
+      if (retried) attempt = retried;
     }
-    try {
-      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-      this.lastReadState = credentialsExist ? "available" : "missing";
-      return values;
-    } catch (error) {
+    if (!attempt.ok) {
       // Preserve the historical fail-closed empty read while exposing why the
       // account record could not be obtained to publisher health.
       this.lastReadState = "unreadable";
-      if (args.allowRewrite) throw error;
+      this.lastReadFailureReason = attempt.reason;
+      if (attempt.osBound || args.allowRewrite) throw attempt.error;
       return {};
     }
+    this.lastReadState = credentialsExist ? "available" : "missing";
+    this.lastReadFailureReason = null;
+    if (attempt.rewriteWithCurrentKey && (args.allowRewrite || args.migrateLegacy)) {
+      try {
+        // Seal with the key the attempt already derived, not a fresh material
+        // read: after a self-heal the freshly-read material is what decrypted
+        // this store, and re-asking the OS could disagree with it.
+        this.writeAllWithKey(attempt.values, attempt.key);
+      } catch {
+        // Preserve read compatibility if migration cannot rewrite right now.
+      }
+    }
+    return attempt.values;
+  }
+
+  /**
+   * Bounds how often a failing store may re-ask the OS for key material, and
+   * drops the cache behind the readers so the next read is a fresh one.
+   */
+  private beginKeyMaterialSelfHeal(): boolean {
+    if (!this.invalidateKeyMaterial) return false;
+    const now = Date.now();
+    if (
+      this.lastKeyMaterialSelfHealAt > 0
+      && now - this.lastKeyMaterialSelfHealAt < KEY_MATERIAL_SELF_HEAL_INTERVAL_MS
+    ) {
+      return false;
+    }
+    this.lastKeyMaterialSelfHealAt = now;
+    this.invalidateKeyMaterial();
+    return true;
   }
 
   private async readAllAsync(): Promise<Record<string, string>> {
     const { value: raw, exists: credentialsExist } = await readJsonObjectAsync(this.credentialsPath);
     if (!credentialsExist) {
       this.lastReadState = "missing";
+      this.lastReadFailureReason = null;
       return {};
     }
     if (!raw || Object.keys(raw).length === 0) {
       this.lastReadState = "unreadable";
+      this.lastReadFailureReason = "store_format";
       throw new Error("Unsupported ADE credential store format.");
     }
     const machineKey = await readOrCreateMachineKeyAsync(this.machineKeyPath);
-    const osMaterial = await this.keyMaterialProviderAsync();
-    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
-    if (!key.equals(machineKey)) {
-      try {
-        const values = deserializeStore(raw, key, { emptyOnDecryptFailure: false });
-        this.lastReadState = "available";
-        return values;
-      } catch {
-        try {
-          deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-        } catch (error) {
-          this.lastReadState = "unreadable";
-          throw error;
-        }
-        try {
-          if (!osMaterial || osMaterial.length === 0) {
-            throw new Error("OS-bound credential material is unavailable during migration.");
-          }
-          const values = this.withLock(() => this.migrateLegacyUnderLock(osMaterial));
-          this.lastReadState = "available";
-          return values;
-        } catch (error) {
-          this.lastReadState = "unreadable";
-          throw error;
-        }
-      }
+    const material = await this.readKeyMaterialAsync();
+    let attempt = decodeCredentialStore(raw, machineKey, material);
+    if (
+      !attempt.ok
+      && attempt.reason !== "store_format"
+      && this.beginKeyMaterialSelfHeal()
+    ) {
+      const retried = retryDecodeWithRefreshedKeyMaterial({
+        raw,
+        machineKey,
+        previous: material,
+        refreshed: await this.readKeyMaterialAsync(),
+      });
+      if (retried) attempt = retried;
     }
-    try {
-      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-      this.lastReadState = "available";
-      return values;
-    } catch {
+    if (!attempt.ok) {
       this.lastReadState = "unreadable";
+      this.lastReadFailureReason = attempt.reason;
+      if (attempt.osBound) throw attempt.error;
       return {};
     }
+    this.lastReadState = "available";
+    this.lastReadFailureReason = null;
+    // The asynchronous path binds legacy ciphertext too. It is the brain's read
+    // path, and on a machine whose only reader is the brain the store would
+    // otherwise stay machine-key-sealed forever.
+    if (attempt.rewriteWithCurrentKey) this.bindLegacyCiphertextUnderLock(attempt.key);
+    return attempt.values;
   }
 
   private writeAll(values: Record<string, string>): void {
     const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, this.keyMaterialProvider());
+    const key = deriveOsBoundCredentialKey(machineKey, this.readKeyMaterial());
     this.writeAllWithKey(values, key);
   }
 
@@ -928,16 +986,34 @@ export class EncryptedFileCredentialStore implements SyncCredentialStore {
     writeFileAtomic(this.credentialsPath, `${JSON.stringify(serializeStore(values, key), null, 2)}\n`);
   }
 
-  private migrateLegacyUnderLock(osMaterial: Buffer): Record<string, string> {
-    const raw = readJsonObject(this.credentialsPath);
-    const machineKey = readOrCreateMachineKey(this.machineKeyPath);
-    const key = deriveOsBoundCredentialKey(machineKey, osMaterial);
+  /**
+   * Re-seals machine-key ciphertext with the OS-bound key, under this store's
+   * lock, for a caller that does NOT already hold it.
+   *
+   * The re-read inside the lock is the point: a peer may have bound the file
+   * while this reader waited, and re-deriving from the stale `raw` would undo
+   * whatever the peer wrote. `key` is passed in rather than re-derived so the
+   * asynchronous caller never touches the synchronous key-material reader.
+   *
+   * Best effort: a failure here only leaves the ciphertext legacy, which still
+   * reads, so it must never fail the read that triggered it.
+   */
+  private bindLegacyCiphertextUnderLock(key: Buffer): void {
     try {
-      return deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+      this.withLock(() => {
+        const raw = readJsonObject(this.credentialsPath);
+        const machineKey = readOrCreateMachineKey(this.machineKeyPath);
+        try {
+          deserializeStore(raw, key, { emptyOnDecryptFailure: false });
+          return;
+        } catch {
+          // Still legacy: fall through and bind it.
+        }
+        const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
+        this.writeAllWithKey(values, key);
+      });
     } catch {
-      const values = deserializeStore(raw, machineKey, { emptyOnDecryptFailure: false });
-      this.writeAllWithKey(values, key);
-      return values;
+      // Preserve read compatibility if the binding cannot happen right now.
     }
   }
 
@@ -954,7 +1030,6 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   private readonly lockPath: string;
   private readonly legacyLockPath: string;
   private readonly legacyStore: CredentialStoreMigrationSource | null;
-  private readonly sharedLegacyKeys: ReadonlySet<string>;
 
   constructor(args: {
     safeStorage: SafeStorageLike;
@@ -965,15 +1040,7 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     lockPath?: string;
     legacyLockPath?: string;
     legacyStore?: CredentialStoreMigrationSource | null;
-    keyMaterialProvider?: () => Buffer | null;
-    /**
-     * Keys the sibling `EncryptedFileCredentialStore` still OWNS at runtime —
-     * the ADE account session above all, which the CLI daemon and the desktop
-     * main process both read from the shared file store. They are left in the
-     * legacy file and never copied here, so this store cannot end up holding a
-     * second, silently stale copy of a live credential.
-     */
-    sharedLegacyKeys?: readonly string[];
+    keyMaterial?: CredentialKeyMaterialSource;
   }) {
     this.safeStorage = args.safeStorage;
     const secretsDir = args.secretsDir ?? resolveMachineAdeLayout().secretsDir;
@@ -987,10 +1054,9 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
         credentialsPath: this.legacyCredentialsPath,
         machineKeyPath: this.legacyMachineKeyPath,
         lockPath: this.legacyLockPath,
-        keyMaterialProvider: args.keyMaterialProvider,
+        keyMaterial: args.keyMaterial,
       })
       : args.legacyStore;
-    this.sharedLegacyKeys = new Set(args.sharedLegacyKeys ?? []);
   }
 
   async get(key: string): Promise<string | null> {
@@ -1017,6 +1083,12 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
       this.deleteSync(normalized);
       return;
     }
+    // The migration deliberately keeps these keys out of the Electron-only
+    // file. A writer that puts one back in silently signs the brain and the CLI
+    // out of a machine whose app is signed in, so fail loudly instead.
+    if (isFileBackedCredentialKey(normalized)) {
+      throw fileBackedCredentialWriteError(normalized);
+    }
     this.withLock(() => {
       const values = this.readAll({ safeLockHeld: true });
       values[normalized] = nextValue;
@@ -1037,8 +1109,16 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
   updateSync(updater: (values: Record<string, string>) => boolean | void): void {
     this.withLock(() => {
       const values = this.readAll({ safeLockHeld: true });
+      const before = { ...values };
       const shouldWrite = updater(values);
-      if (shouldWrite !== false) this.writeAll(values);
+      if (shouldWrite === false) return;
+      // Same guard as setSync(), scoped to what the updater actually changed so
+      // a pre-existing legacy entry can still be read back and rewritten as-is.
+      for (const [key, value] of Object.entries(values)) {
+        if (!isFileBackedCredentialKey(key) || before[key] === value) continue;
+        throw fileBackedCredentialWriteError(key);
+      }
+      this.writeAll(values);
     });
   }
 
@@ -1092,39 +1172,61 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
     }
     if (!raw || Object.keys(raw).length === 0) return {};
     if (!isStoredCredentialEnvelope(raw)) return null;
-    return this.readLegacyAll();
-  }
-
-  private readLegacyAll(): Record<string, string> {
     const legacy = this.legacyStore;
-    if (legacy) return legacy.readAllForMigration();
-    throw new Error("Legacy credential store cannot be migrated.");
+    if (!legacy) throw new Error("Legacy credential store cannot be migrated.");
+    let values: Record<string, string>;
+    try {
+      values = legacy.readAllForMigration();
+    } catch {
+      // An undecryptable legacy store must abort the migration, never migrate
+      // an empty view of it.
+      return null;
+    }
+    // `readAllForMigration()` is a non-rewriting read, and that read returns
+    // `{}` instead of throwing when no available key decrypts the ciphertext.
+    // Migrating that empty view would write an empty safeStorage file and then
+    // delete credentials.json.enc AND .machine-key — destroying every
+    // credential on the machine. Abort instead: nothing written, nothing
+    // deleted, and the ciphertext stays recoverable.
+    if (legacy.getLastReadState() === "unreadable") return null;
+    return values;
   }
 
   private migrateLegacyStore(safeLockHeld: boolean): Record<string, string> | null {
     const migrate = () => withOptionalCredentialFileLock(this.legacyLockPath, this.lockPath, () => {
-      // A safeStorage-format file at the legacy path is this store's own older
-      // location: nothing else can read it, so moving it is a true move.
-      const legacySafeValues = this.readLegacySafeStorageFile();
-      if (legacySafeValues) {
-        this.writeAll(legacySafeValues);
+      const legacySafeStorageValues = this.readLegacySafeStorageFile();
+      const legacyValues = legacySafeStorageValues ?? this.readLegacyEncryptedFileStore();
+      if (!legacyValues) return null;
+      // Only the AES file store is shared with the ADE brain and the CLI. A
+      // legacy file that is ALREADY safeStorage-encrypted is Electron-only
+      // whether it moves or not, so it keeps the original move-and-delete path.
+      if (legacySafeStorageValues) {
+        this.writeAll(legacyValues);
         this.removeLegacyFileStore();
-        return legacySafeValues;
+        return legacyValues;
       }
-      // The encrypted-FILE store is a different matter: `credentials.json.enc`
-      // + `.machine-key` are where the shared account auth service keeps the
-      // ADE account session, for this process AND for the CLI daemon. Deleting
-      // them here (which this path used to do) destroyed a perfectly good
-      // session behind the user's back — the next `getStatus()` reported signed
-      // out, and the next account call failed with "Not signed in". Copy what
-      // this store owns and leave the file store intact.
-      const legacyFileValues = this.readLegacyEncryptedFileStore();
-      if (!legacyFileValues) return null;
+      // The account session (and the sync bootstrap token) are read by the brain
+      // and the CLI straight from the file store. They must not be moved into
+      // the Electron-only safeStorage file, and while any of them are still
+      // there the file store (and its machine key) must survive.
       const migrated: Record<string, string> = {};
-      for (const [key, value] of Object.entries(legacyFileValues)) {
-        if (!this.sharedLegacyKeys.has(key)) migrated[key] = value;
+      const retained: Record<string, string> = {};
+      for (const [key, value] of Object.entries(legacyValues)) {
+        if (isFileBackedCredentialKey(key)) retained[key] = value;
+        else migrated[key] = value;
       }
       this.writeAll(migrated);
+      if (Object.keys(retained).length === 0) {
+        this.removeLegacyFileStore();
+        return migrated;
+      }
+      // The file store survives for the retained keys, so every migrated key
+      // now exists in BOTH files. Leaving the duplicates behind means the brain
+      // and the CLI keep serving the stale file copy after the app rotates a
+      // token, and revoked secrets stay at rest forever. Prune the file store
+      // down to what it is still authoritative for. Nothing migrated means
+      // nothing is duplicated, so the file is left byte-identical.
+      if (Object.keys(migrated).length > 0) this.pruneLegacyFileStore(retained);
       return migrated;
     });
     if (safeLockHeld) return migrate();
@@ -1142,6 +1244,24 @@ export class ElectronSafeStorageCredentialStore implements SyncCredentialStore {
         this.safeStorage.encryptString(JSON.stringify(values)),
       ]),
     );
+  }
+
+  /**
+   * Rewrites the legacy file store to only the keys it stays authoritative for.
+   *
+   * The migration holds the legacy store's own lock file (or, on the shared
+   * path, the one lock covering both), and that lock is not reentrant — a plain
+   * `legacyStore.updateSync()` here would block until the lock timeout and
+   * throw. The prune therefore goes through the store's non-locking migration
+   * seam, the same way the sibling deletes go straight to `fs`.
+   */
+  private pruneLegacyFileStore(retained: Record<string, string>): void {
+    try {
+      this.legacyStore?.pruneForMigration(retained);
+    } catch {
+      // Best effort: failing to prune only leaves the pre-existing duplicates
+      // behind. It must never fail the read that triggered the migration.
+    }
   }
 
   private removeLegacyFileStore(): void {

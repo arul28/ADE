@@ -16,6 +16,7 @@ import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeDiscoverySeverity,
 } from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -414,25 +415,31 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
     // Each message has to say what is missing from the list, not just that a
     // step failed: the user sees this next to a machine list and needs to know
     // whether something is absent from it and what to do about that.
+    let severity: RemoteRuntimeDiscoverySeverity;
     if (timedOut) {
       code = "tailscale-timeout";
       summary =
         "Tailscale didn't answer in time, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — reopen this panel to try again.";
+      severity = "warning";
     } else if (notFound) {
+      // Tailscale is optional. Not having it installed is a fact about the
+      // machine, not a problem with discovery, so it must not read as a warning.
       code = "tailscale-unavailable";
       summary =
         "The Tailscale command wasn't found, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — install Tailscale, or set ADE_TAILSCALE_CLI to its path.";
+      severity = "info";
     } else {
       code = "tailscale-status-failed";
       summary =
         "Tailscale couldn't report its status, so Tailscale-only computers aren't listed. Computers on this Wi-Fi still are — check that Tailscale is running and signed in, then reopen this panel.";
+      severity = "warning";
     }
     return {
       machines: [],
       diagnostics: [
         {
           source: "tailscale",
-          severity: "warning",
+          severity,
           code,
           message: summary,
           detail: message || null,

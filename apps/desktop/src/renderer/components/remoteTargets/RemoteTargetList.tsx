@@ -9,6 +9,8 @@ import {
   WifiHigh,
 } from "@phosphor-icons/react";
 import { extractError } from "../../lib/format";
+import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { BrainRepairButton } from "../settings/BrainRepairButton";
 import {
   COLORS,
   MONO_FONT,
@@ -16,6 +18,7 @@ import {
   outlineButton,
   primaryButton,
 } from "../lanes/laneDesignTokens";
+import { isBrainAccountSessionFailure } from "../../../shared/types";
 import type {
   AdeAccountMachine,
   AdeAccountMachinesResult,
@@ -23,6 +26,8 @@ import type {
   RemoteRuntimeConnectionStatus,
   RemoteRuntimeConnectResult,
   RemoteRuntimeDiscoveredMachine,
+  RemoteRuntimeDiscoveryDiagnostic,
+  RemoteRuntimeDiscoverySeverity,
   RemoteRuntimeSshHostKeyTrustStatus,
   RemoteRuntimeTarget,
   RemoteRuntimeTargetInput,
@@ -130,6 +135,16 @@ function targetFormPrefill(
   };
 }
 
+function joinDiagnosticMessages(
+  diagnostics: readonly RemoteRuntimeDiscoveryDiagnostic[],
+  severity: RemoteRuntimeDiscoverySeverity,
+): string {
+  return diagnostics
+    .filter((entry) => entry.severity === severity)
+    .map((entry) => entry.message)
+    .join(" ");
+}
+
 const SECTION_LABELS: Record<MachineSection, string> = {
   connected: "CONNECTED",
   available: "AVAILABLE",
@@ -173,7 +188,14 @@ export function RemoteTargetList({
   const [formPrefill, setFormPrefill] =
     useState<RemoteTargetFormPrefill | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  // One source of truth for what discovery reported; the warning and info lines
+  // are derived, so they can never drift out of sync with each other.
+  const [discoveryDiagnostics, setDiscoveryDiagnostics] = useState<
+    readonly RemoteRuntimeDiscoveryDiagnostic[]
+  >([]);
+  // A failed `listDiscoveredMachines` call is not a diagnostic the discovery
+  // service produced, so it stays its own string rather than a synthetic entry.
+  const [discoveryFetchError, setDiscoveryFetchError] = useState<string | null>(null);
   const [hostKeyTrust, setHostKeyTrust] =
     useState<RemoteRuntimeSshHostKeyTrustStatus | null>(null);
   const [addMode, setAddMode] = useState<AddMode | null>(null);
@@ -379,17 +401,27 @@ export function RemoteTargetList({
     try {
       const next = await window.ade.remoteRuntime.listDiscoveredMachines();
       setDiscoveredMachines(next.machines);
-      setDiscoveryError(
-        next.diagnostics.length > 0
-          ? next.diagnostics.map((entry) => entry.message).join(" ")
-          : null,
-      );
+      setDiscoveryDiagnostics(next.diagnostics);
+      setDiscoveryFetchError(null);
     } catch (err) {
-      setDiscoveryError(extractError(err));
+      setDiscoveryDiagnostics([]);
+      setDiscoveryFetchError(extractError(err));
     } finally {
       setLoadingDiscovered(false);
     }
   }, []);
+
+  // Warnings mean discovery is degraded and get the warning treatment. Info
+  // diagnostics ("Tailscale isn't installed") are normal on a plain Mac, so they
+  // render as muted secondary text with no warning glyph.
+  const discoveryError = useMemo(
+    () => discoveryFetchError ?? (joinDiagnosticMessages(discoveryDiagnostics, "warning") || null),
+    [discoveryDiagnostics, discoveryFetchError],
+  );
+  const discoveryNote = useMemo(
+    () => joinDiagnosticMessages(discoveryDiagnostics, "info") || null,
+    [discoveryDiagnostics],
+  );
 
   useEffect(() => {
     void loadDiscoveredMachines();
@@ -429,36 +461,50 @@ export function RemoteTargetList({
   // This computer's route-publish health, refreshed periodically so a persisting
   // failure's "for N min" stays truthful while the panel is open. getInfo is a
   // cheap one-shot; there is no push event for the publisher's health.
+  const publishHealthMountedRef = useRef(true);
+  // The interval and the post-repair refresh can overlap; without a generation
+  // an older in-flight read can land last and restore the failing banner the
+  // newer read already cleared.
+  const publishHealthRequestRef = useRef(0);
+  const refreshPublishHealth = useCallback(() => {
+    const infoPromise = window.ade.app?.getInfo?.();
+    if (!infoPromise) return;
+    const requestId = ++publishHealthRequestRef.current;
+    void infoPromise
+      .then((info) => {
+        if (!publishHealthMountedRef.current) return;
+        if (requestId !== publishHealthRequestRef.current) return;
+        const health = info.localRuntime?.publishHealth ?? null;
+        setLocalPublishHealth(
+          health
+            ? { state: health.state, failingSinceMs: health.failingSinceMs }
+            : null,
+        );
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
-    let cancelled = false;
-    const refresh = () => {
-      const infoPromise = window.ade.app?.getInfo?.();
-      if (!infoPromise) return;
-      void infoPromise
-        .then((info) => {
-          if (cancelled) return;
-          const health = info.localRuntime?.publishHealth ?? null;
-          setLocalPublishHealth(
-            health
-              ? { state: health.state, failingSinceMs: health.failingSinceMs }
-              : null,
-          );
-        })
-        .catch(() => {});
-    };
-    refresh();
-    const timer = window.setInterval(refresh, 30_000);
+    publishHealthMountedRef.current = true;
+    refreshPublishHealth();
+    const timer = window.setInterval(refreshPublishHealth, 30_000);
     return () => {
-      cancelled = true;
+      publishHealthMountedRef.current = false;
       window.clearInterval(timer);
     };
-  }, []);
+  }, [refreshPublishHealth]);
 
   const publishHealthDisplay = useMemo(
     () => describePublishHealth(localPublishHealth),
     // Re-derive on each fetch; the 30s refresh advances the "for N min" count.
     [localPublishHealth],
   );
+  // Same brain-side unreadable-session failure the Connections card repairs;
+  // both surfaces read the one publisher health record and share the handler.
+  const repair = useBrainRepair(refreshPublishHealth);
+  const showRepair = publishHealthDisplay.kind === "failing"
+    && isBrainAccountSessionFailure(localPublishHealth?.state)
+    && repair.available;
 
   const openAddMachine = useCallback(() => {
     setSelectedId(null);
@@ -1106,6 +1152,7 @@ export function RemoteTargetList({
                   display: "flex",
                   alignItems: "center",
                   gap: 5,
+                  flexWrap: "wrap",
                   color: COLORS.warning,
                   fontFamily: SANS_FONT,
                   fontSize: 11,
@@ -1117,6 +1164,7 @@ export function RemoteTargetList({
                   Other devices may not reach this computer — route publish failing for{" "}
                   {publishHealthDisplay.minutes} min
                 </span>
+                {showRepair ? <BrainRepairButton repair={repair} height={22} /> : null}
               </div>
             ) : null}
           </div>
@@ -1258,6 +1306,8 @@ export function RemoteTargetList({
             {discoveryError}
           </div>
         ) : null}
+
+        {discoveryNote ? <div style={helperTextStyle}>{discoveryNote}</div> : null}
 
         {loading ? (
           <div

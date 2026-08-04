@@ -109,7 +109,7 @@ struct CtoSessionDestinationView: View {
   private var isLive: Bool {
     let workStatus = syncService.status(for: .work)
     return workStatus.phase == .ready
-      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+      && syncService.connectionState == .connected
   }
 
   /// Cancels any in-flight ensure and starts a fresh one. Without this guard,

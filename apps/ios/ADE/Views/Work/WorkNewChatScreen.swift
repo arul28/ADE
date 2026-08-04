@@ -706,7 +706,7 @@ struct WorkNewChatScreen: View {
 
   private var canUploadAttachments: Bool {
     attachmentsAvailable
-      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+      && syncService.connectionState == .connected
   }
 
   /// Fast mode only applies to in-app chat sessions on fast-tier models. The

@@ -1,0 +1,15 @@
+{
+  "branch": "ade/two-things-here-one-lot",
+  "prNumber": 1020,
+  "iteration": 0,
+  "lastPushSha": "b2550614feb7d1df1f1946ae76941612908e23a8",
+  "qualityValidatedSha": "b2550614feb7d1df1f1946ae76941612908e23a8",
+  "qualityValidatedTree": "1c75a2abbf1f84576191ddd03bcafcb3fbb1fb87",
+  "qualityValidatedBaseSha": "872807fc01425fc6a0014f6ee5f175e9fc399593",
+  "addressedCommentIds": [],
+  "status": "running",
+  "startedAt": "2026-08-04T03:52:00Z",
+  "lastPolledAt": null,
+  "exitReason": null,
+  "notes": "Windows CI jobs excluded from the CI-terminal wait per user instruction."
+}

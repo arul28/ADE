@@ -394,7 +394,18 @@ Runtime support files outside `services/sync/`:
   window. Failed publications retry after 1, 2, 5, 10, then 20 seconds so a
   short outage normally recovers within the lease, and a 401 forces one token
   refresh before the publication is classified as expired. These operational
-  retries and status polls are local logs, not product analytics.
+  retries and status polls are local logs, not product analytics. Two failure
+  *episodes* are the exception, and both go through
+  `apps/ade-cli/src/services/account/episodeAnalytics.ts` — a shared
+  edge-triggered helper that emits at most one event while a condition holds and
+  re-arms only once it clears, with a 24-hour deduplication window on top.
+  `ade_publish_failing` covers a publication that has been failing for at least
+  two minutes; `ade_account_session_unreadable` covers the brain being unable to
+  read the account session at all (`sessionReadState === "unreadable"`, or a
+  status read that threw), carrying only a coarse `code` for the read path
+  (`decrypt_failure`, `no_os_key_material`, `store_format`, `session_parse`,
+  `read_error`, `unknown`) that `accountAuthService.getSessionReadFailureReason()`
+  supplies. See [logging](../../logging.md).
   Successful account sign-in also requests an immediate publish; the brain
   observes both its local auth event and cross-process credential-file changes
   from desktop sign-in. Separately, a lightweight 2-second observer computes a
@@ -435,6 +446,44 @@ Runtime support files outside `services/sync/`:
   `ADE_ALLOW_DEVELOPMENT_CLERK=1` is the explicit controlled-testing escape
   hatch. Source-checkout runtimes and non-development custom issuers keep their
   existing override behavior.
+- `apps/ade-cli/src/services/credentials/credentialStore.ts` — the per-machine
+  credential store behind the account session. Two implementations share one
+  interface. `EncryptedFileCredentialStore` owns the AES-GCM
+  `.ade/secrets/credentials.json.enc` file that the brain, the `ade` CLI, and
+  the desktop app all read; `ElectronSafeStorageCredentialStore` owns the
+  Electron-only `credentials.safe.enc`. Because the brain cannot read a
+  safeStorage file, `FILE_BACKED_CREDENTIAL_KEYS` (`account.session.v1`,
+  `sync.bootstrapToken.v1`) are pinned to the file store: the safeStorage
+  migration copies everything *else* across, retains those keys in the file
+  store, prunes the now-duplicated migrated keys out of it, and keeps
+  `.machine-key` alive; only a legacy store with nothing retained is deleted.
+  `setSync`/`updateSync` on the safeStorage store throw if a caller tries to
+  write one of those keys back into the Electron-only file — otherwise a
+  machine whose app is signed in silently signs its brain out. A legacy store
+  that reads back `unreadable` aborts the migration outright rather than
+  migrating an empty view of it and then deleting the ciphertext and machine
+  key. Reads try the OS-bound key first and the bare machine key second (a
+  second-candidate hit is genuine legacy ciphertext and is rewritten); if
+  neither works, the store self-heals once per 30 s by dropping the cached OS
+  key material and retrying against a fresh read, then reports
+  `getLastReadState() === "unreadable"` with a coarse
+  `getLastReadFailureReason()` of `decrypt_failure`, `no_os_key_material`, or
+  `store_format`. It never writes an empty store over ciphertext it could not
+  decrypt.
+- `apps/ade-cli/src/services/credentials/osBoundKeyMaterial.ts` — everything
+  about obtaining the machine-local secret the file store's key is derived
+  from: the `security` invocations, the process-wide cache, the negative-cache
+  backoff, and the create race. Resolution is race-safe and non-destructive.
+  `add-generic-password` runs **without** `-U`, so a process that loses the
+  create race adopts the winner's item instead of clobbering it, and any
+  inconclusive `security` result (timeout, locked keychain, denied access) fails
+  closed rather than minting a replacement — two first-run processes each
+  minting their own secret is exactly what made one of them unable to decrypt
+  what the other wrote. The synchronous path may create the item; the
+  asynchronous path is read-only and never participates in the race. The two
+  paths use different backoffs: the read-only path backs off on any miss, while
+  the creating path backs off only when the keychain was *unavailable*, so a
+  `not_found` miss can never starve first-run item creation.
 - `apps/account-directory/src/directory.ts` — the Clerk-scoped machine
   register/list/delete Worker routes. Machine listing selects the owner's 500
   most recently seen rows before computing online-first order and exposes
@@ -526,7 +575,10 @@ Desktop connection UI:
   message under **Technical details**: missing project registration asks the
   user to open a project, a non-installed local release build asks for an
   Applications install/relaunch, and other sync-service failures ask for an ADE
-  restart. The local-brain-only
+  restart. When the account-directory state is the one failure a restart
+  actually clears — `isBrainAccountSessionFailure(...)` in
+  `shared/types/sync.ts`, currently exactly `token_unreadable` — the This Mac
+  card renders a **Repair** control next to the directory summary. The local-brain-only
   `window.ade.sync.getLocalStatus(...)` accessor is available for the card to
   consume so a window bound to another machine can still show the physical
   computer's identity, pairing code, and Phone/Web device lists.
@@ -547,6 +599,23 @@ Desktop connection UI:
   `connectedPeers` (via `peerToRuntimeDeviceState`) instead of the routed
   `listDevices()` result, which would describe the remote machine; offline-paired
   rows are unavailable in that mode until a local-scoped device IPC exists.
+  It also exposes `refresh()` — a one-shot re-read of both snapshots without the
+  initial-load spinner — which the Repair control uses to re-evaluate its banner
+  once a restart settles.
+- `apps/desktop/src/renderer/hooks/useBrainRepair.ts` and
+  `apps/desktop/src/renderer/components/settings/BrainRepairButton.tsx` — the
+  shared **Repair** affordance for a brain that cannot read the stored account
+  session. The hook calls `window.ade.app.restartBackgroundService()`
+  (`ade.app.restartBackgroundService`), which restarts this Mac's
+  `com.ade.runtime` launch agent and resolves only once the replacement answers
+  a ping — readiness is observable only in the main process, so the renderer
+  awaits it rather than sleeping and hoping. The IPC is optional in
+  `global.d.ts`: the hosted-web adapter and browser mock cannot touch a launch
+  agent, so `repair.available` feature-detects before any surface offers the
+  button. A rejected restart renders "Repair failed — quit and reopen ADE."
+  with the technical detail in the `title`; `onSettled` runs on both paths so the
+  caller's banner is re-derived either way. Both the This Mac card and the
+  Machines panel's route-publish row mount the same hook and button.
 - `apps/desktop/src/shared/runtimeErrors.ts` — canonical cross-process error
   messages and predicates shared by the local-runtime pool, main IPC fallback,
   preload routing, remote-runtime connection/timeout reconciliation, and the

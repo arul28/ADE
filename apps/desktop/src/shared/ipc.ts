@@ -5,6 +5,7 @@ export const IPC = {
   appRuntimeStatusChanged: "ade.app.runtimeStatusChanged",
   appGetResourceUsage: "ade.app.getResourceUsage",
   appGetRuntimeHealth: "ade.app.getRuntimeHealth",
+  appRestartBackgroundService: "ade.app.restartBackgroundService",
   storageGetPressure: "ade.storage.getPressure",
   storageGetSnapshot: "ade.storage.getSnapshot",
   storageCompressNow: "ade.storage.compressNow",

@@ -93,6 +93,7 @@ The public contract is `apps/desktop/src/shared/types/productAnalytics.ts`. The 
 - `ade_brain_recovered`
 - `ade_publish_failing`
 - `ade_relay_suppressed`
+- `ade_account_session_unreadable`
 
 The update and reliability events are low-frequency by construction: the five `ade_update_*` events fire at most once per install attempt or idle-apply cycle (daily caps 10–20, minute caps 3–6). `ade_update_install_did_not_land` is emitted once at startup when a requested install relaunched on the old version, so it is bounded by app launches that follow a failed handoff, and carries only a bounded `attempt` counter; `ade_brain_recovered` fires once per wedge recovery at brain startup; `ade_publish_failing` is edge-triggered once per sustained failure episode (first crossing of two minutes), never per attempt.
 
@@ -106,6 +107,25 @@ installation per UTC day, within the existing `ade_feature_used` and shared
 daily ceilings.
 
 `ade_relay_suppressed` is the same shape for the relay leg. The relay keeps one host control socket per machine and evicts the previous holder, so two ADE brains on one machine can evict each other in a loop until relay is unusable for both. When the tunnel client exhausts its eviction budget and stops dialing, it emits one event carrying only `attempt` (the bounded eviction count) and a coarse `code` (`control_replaced`). It is keyed to the suppression *episode*, not the eviction, so a whole war collapses into one accepted event, and a 24-hour deduplication window bounds it further; a recovered control socket ends the episode so a genuinely new one still reports. The relay URL, machineKey, and raw WebSocket close reason stay in local logs and never reach the payload. Properties are closed enums and bounded numbers — `reason` is allowlisted to the abort-reason constant, `escalation_reason` to `hard_deadline` / `post_staging`, `last_command` is a closed sync-action slug, and `leg`/`code` are the coarse publish classifications. Worst-case combined volume is a handful of events on a very bad day, inside the shared ceiling.
+
+`ade_account_session_unreadable` covers the credential-store half of the same
+failure: the desktop app is signed in, but the ADE brain cannot decrypt the
+shared `credentials.json.enc` and therefore never publishes the machine to the
+account directory. The account-directory publisher emits it once per unreadable
+*episode* (a readable status ends the episode) carrying only a coarse `code` for
+the read path — `decrypt_failure`, `no_os_key_material`, `store_format`,
+`session_parse`, `read_error`, or `unknown`. No paths, key material, ciphertext,
+or account identifiers reach the payload, and a 24-hour deduplication window per
+code bounds it further.
+
+Clicking "Repair" on the Connections pane's unreadable-session banner records
+the existing `ade_feature_used` event at the IPC owner boundary (where the
+restart outcome is known) with `feature: "connections"`,
+`action: "brain_repair"`, and a coarse `outcome` (`completed` or `failed`). It
+carries no error text, paths, or machine identifiers — the thrown error stays in
+the renderer. A per-outcome one-hour deduplication key bounds a click-loop to at
+most 24 accepted events per installation per UTC day, inside the existing
+`ade_feature_used` and shared ceilings.
 
 The default machine-wide ceiling is 200 accepted events per UTC day, shared across desktop, runtime, TUI, hosted web, and API-originated aggregates. Each event also has a tighter per-day and per-minute ceiling. Capture ingress is capped, noisy events use persisted deduplication windows, the in-memory transport queue is bounded, and the previous day's accepted/drop totals are summarized in at most two budget events per day.
 

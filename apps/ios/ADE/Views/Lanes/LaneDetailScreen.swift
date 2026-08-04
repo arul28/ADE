@@ -543,7 +543,7 @@ struct LaneDetailScreen: View {
 
   var liveActionDisabledSubtitle: String {
     let laneStatus = syncService.status(for: .lanes)
-    if syncService.connectionState == .connected || syncService.connectionState == .syncing {
+    if syncService.connectionState == .connected {
       return laneStatus.phase == .ready ? "Waiting for live lane actions." : "Waiting for lane sync."
     }
     return "Reconnect to run git actions."

@@ -3,7 +3,8 @@ import XCTest
 
 /// Table-driven coverage for the Work-tab canonical session vocabulary — the
 /// iOS mirror of desktop `sessionCanonicalState.ts`. Locks the precedence chain,
-/// the exact 3-hour stale boundary, and the no-badge-for-calm-states rule.
+/// the exact 3-hour stale boundary, and the single-derivation contract between
+/// `workSessionRowPresentation` and its wrappers.
 final class WorkSessionCanonicalStateTests: XCTestCase {
   private let now = Date(timeIntervalSince1970: 1_780_000_000)
 
@@ -16,6 +17,20 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   /// lastActivityAt for a session that has been silent for `seconds`.
   private func silentFor(_ seconds: TimeInterval) -> String {
     iso(now.addingTimeInterval(-seconds))
+  }
+
+  /// The attention third of the vocabulary: the phases something downstream may
+  /// reasonably treat as "act on this". `CanonicalSessionState` carries a phase
+  /// and nothing else, so "this state is calm" is asserted here rather than
+  /// against a presentation field riding along on the state value.
+  private func isAttentionPhase(_ phase: CanonicalSessionPhase) -> Bool {
+    phase == .needsYou || phase == .failed || phase == .stale
+  }
+
+  /// The capsule word a phase wears, read out of the exact table the row renders
+  /// from — so a reworded vocabulary entry fails here too.
+  private func phaseLabel(_ phase: CanonicalSessionPhase) -> String {
+    ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: phase)).label
   }
 
   // MARK: - Precedence
@@ -63,8 +78,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
         now: now
       )
       XCTAssertEqual(state.phase, .needsYou, c.name)
-      XCTAssertEqual(state.badge?.kind, .needsYou, c.name)
-      XCTAssertEqual(state.badge?.label, "Needs you", c.name)
+      XCTAssertTrue(isAttentionPhase(state.phase), c.name)
+      XCTAssertEqual(phaseLabel(state.phase), "Needs you", c.name)
     }
   }
 
@@ -94,18 +109,16 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   func testStoppedDisposedSessionsAreNotFailed() {
     let disposed = workCanonicalSessionState(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
     XCTAssertEqual(disposed.phase, .stopped)
-    XCTAssertNil(disposed.badge)
 
     let userStop = workCanonicalSessionState(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130, now: now)
     XCTAssertEqual(userStop.phase, .stopped)
-    XCTAssertNil(userStop.badge)
   }
 
   func testFailedOnlyForEndedNonCleanExitOrKilled() {
     // Non-zero exit on an ended session → failed.
     let failedExit = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 1, now: now)
     XCTAssertEqual(failedExit.phase, .failed)
-    XCTAssertEqual(failedExit.badge?.label, "Failed")
+    XCTAssertEqual(phaseLabel(failedExit.phase), "Failed")
 
     // Killed runtime → failed even with a nil exit code.
     let killed = workCanonicalSessionState(status: "ended", runtimeState: "killed", toolType: "codex", exitCode: nil, now: now)
@@ -114,13 +127,11 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     // Clean exit (0) → ended: process completion is not a lifecycle declaration.
     let clean = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0, now: now)
     XCTAssertEqual(clean.phase, .ended)
-    XCTAssertNil(clean.badge)
 
     // A non-zero exit while still running is ignored (failure is an ended-only
     // signal); the session stays running.
     let runningWithCode = workCanonicalSessionState(status: "running", runtimeState: "running", toolType: "codex", lastActivityAt: iso(now), exitCode: 5, now: now)
     XCTAssertEqual(runningWithCode.phase, .running)
-    XCTAssertNil(runningWithCode.badge)
   }
 
   func testStaleBoundaryIsExactlyThreeHours() {
@@ -133,7 +144,6 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(justUnder.phase, .running)
-    XCTAssertNil(justUnder.badge)
 
     // Exactly at the threshold → stale.
     let exactly = workCanonicalSessionState(
@@ -144,8 +154,8 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(exactly.phase, .stale)
-    XCTAssertEqual(exactly.badge?.kind, .stale)
-    XCTAssertEqual(exactly.badge?.label, "Stale")
+    XCTAssertTrue(isAttentionPhase(exactly.phase))
+    XCTAssertEqual(phaseLabel(exactly.phase), "Stale")
   }
 
   func testStaleBeatsRunningPreviewHeuristic() {
@@ -191,7 +201,6 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(state.phase, .ended)
-    XCTAssertNil(state.badge)
   }
 
   func testBenignPreviewLeavesRunningCalm() {
@@ -204,31 +213,26 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       now: now
     )
     XCTAssertEqual(state.phase, .running)
-    XCTAssertNil(state.badge)
   }
 
-  // MARK: - No badge for calm states
+  // MARK: - Calm states are not attention states
 
-  func testCalmStatesCarryNoBadge() {
+  func testCalmStatesCarryNoAttention() {
     // Fresh running CLI.
     let running = workCanonicalSessionState(status: "running", runtimeState: "running", toolType: "codex", lastActivityAt: iso(now), now: now)
     XCTAssertEqual(running.phase, .running)
-    XCTAssertNil(running.badge)
 
     // Idle chat rests between turns → ready.
     let idleChat = workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex-chat", lastActivityAt: iso(now), now: now)
     XCTAssertEqual(idleChat.phase, .ready)
-    XCTAssertNil(idleChat.badge)
 
     // Idle CLI → idle (calm, no deterministic ask).
     let idleCli = workCanonicalSessionState(status: "running", runtimeState: "idle", toolType: "codex", lastActivityAt: iso(now), now: now)
     XCTAssertEqual(idleCli.phase, .idle)
-    XCTAssertNil(idleCli.badge)
 
     // Ended chat rests, ready for input — never "ended".
     let endedChat = workCanonicalSessionState(status: "ended", runtimeState: "exited", toolType: "codex-chat", exitCode: 0, now: now)
     XCTAssertEqual(endedChat.phase, .ready)
-    XCTAssertNil(endedChat.badge)
   }
 
   // MARK: - Chat-tool predicate
@@ -244,10 +248,10 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
 
   // MARK: - Row wrapper (iOS field mapping)
 
-  func testCapsuleBadgeMapsChatAwaitingInputToNeedsYou() {
+  func testStatusBadgeMapsChatAwaitingInputToNeedsYou() {
     let session = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
     let summary = makeChatSummary(status: "active", awaitingInput: true)
-    let badge = workSessionCapsuleBadge(session: session, summary: summary, now: now)
+    let badge = workSessionRowPresentation(session: session, summary: summary, now: now).badge
     XCTAssertEqual(badge?.kind, .needsYou)
   }
 
@@ -273,30 +277,54 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
   }
 
-  func testCapsuleBadgeSurfacesFailedExit() {
+  func testStatusBadgeSurfacesFailedExit() {
     let session = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130)
-    let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
+    let badge = workSessionRowPresentation(session: session, summary: nil, now: now).badge
     XCTAssertEqual(badge?.kind, .failed)
   }
 
-  func testCapsuleBadgeNilForStoppedDisposedSession() {
+  func testStatusBadgeNilForStoppedDisposedSession() {
     let session = makeSession(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130)
-    let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
+    let badge = workSessionRowPresentation(session: session, summary: nil, now: now).badge
     XCTAssertNil(badge)
   }
 
-  func testCapsuleBadgeNilForFreshRunning() {
+  /// A fresh running session is calm but not silent: it wears the descriptive
+  /// "Working" capsule, never one of the three attention identities.
+  func testStatusBadgeIsWorkingNotAttentionForFreshRunning() {
     let session = makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now))
-    let badge = workSessionCapsuleBadge(session: session, summary: nil, now: now)
-    XCTAssertNil(badge)
+    let badge = workSessionRowPresentation(session: session, summary: nil, now: now).badge
+    XCTAssertEqual(badge?.kind, .working)
+  }
+
+  // MARK: - One derivation per row
+
+  /// The two states whose capsule and status slot deliberately disagree, which
+  /// is what proves the row derives four distinct answers from one pass rather
+  /// than echoing a single value into every field.
+  func testRowPresentationKeepsCapsuleAndSlotIndependent() {
+    let settled = workSessionRowPresentation(
+      session: makeSession(status: "running", runtimeState: "idle", toolType: "codex-chat", settledAt: iso(now)),
+      summary: nil,
+      now: now
+    )
+    XCTAssertEqual(settled.badge?.kind, .done, "a settled row still reads Done out of context")
+    XCTAssertNil(settled.status, "but its status slot belongs to the timestamp")
+
+    let snoozed = workSessionRowPresentation(
+      session: snoozedSession(untilOffset: 25 * 60, atOffset: -60),
+      summary: nil,
+      now: now
+    )
+    XCTAssertEqual(snoozed.badge?.kind, .working, "the capsule reports the state the row is actually in")
+    XCTAssertEqual(snoozed.status?.label, "wakes in 25m", "the slot carries the return ticket instead")
   }
 
   // MARK: - The full status vocabulary
   //
-  // `badge` stays the attention third — the three states something downstream
-  // may reasonably treat as "act on this". `workSessionStatusBadge` is the wider
-  // vocabulary the row renders, and every word and hue in it comes from the
-  // shared `ActivityPhaseVocabulary`, not from a second table here.
+  // The row's `badge` is the whole vocabulary it renders, not just the attention
+  // third, and every word and hue in it comes from the shared
+  // `ActivityPhaseVocabulary`, not from a second table here.
 
   func testStatusBadgeCoversTheDescriptiveStates() {
     struct Case {
@@ -374,29 +402,154 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
       if testCase.name == "stale" {
         summary?.lastActivityAt = silentFor(sessionStaleAfterSeconds + 60)
       }
-      let badge = workSessionStatusBadge(session: testCase.session, summary: summary, now: now)
-      XCTAssertEqual(badge?.kind, testCase.kind, testCase.name)
-      XCTAssertEqual(badge?.label, testCase.label, testCase.name)
-      XCTAssertEqual(badge?.tone, testCase.tone, testCase.name)
-      XCTAssertEqual(
-        workSessionRowTone(session: testCase.session, summary: summary, now: now),
-        testCase.tone,
-        testCase.name
-      )
+      let row = workSessionRowPresentation(session: testCase.session, summary: summary, now: now)
+      XCTAssertEqual(row.badge?.kind, testCase.kind, testCase.name)
+      XCTAssertEqual(row.badge?.label, testCase.label, testCase.name)
+      XCTAssertEqual(row.badge?.tone, testCase.tone, testCase.name)
+      // The dot reads the same derivation, so a capsule and a dot describing the
+      // same row cannot pick different hues.
+      XCTAssertEqual(row.tone, testCase.tone, testCase.name)
     }
   }
 
-  /// Resting states still earn no capsule: the row must not shift layout to say
-  /// that nothing is happening.
-  func testStatusBadgeStaysNilForRestingStates() {
-    let ready = makeSession(status: "ended", runtimeState: "exited", toolType: "codex-chat")
-    let idle = makeSession(status: "running", runtimeState: "idle", toolType: "codex")
+  /// Stopped and ended earn no capsule: the row must not shift layout to say
+  /// that nothing is happening. Ready and idle are NOT in that set — they are
+  /// finished outcomes nobody has looked at, so they read emerald "Done".
+  func testStatusBadgeStaysNilForStoppedAndEnded() {
     let stopped = makeSession(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130)
+    let ended = makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0)
 
-    for session in [ready, idle, stopped] {
-      XCTAssertNil(workSessionStatusBadge(session: session, summary: nil, now: now))
-      XCTAssertEqual(workSessionRowTone(session: session, summary: nil, now: now), .neutral)
+    for session in [stopped, ended] {
+      let row = workSessionRowPresentation(session: session, summary: nil, now: now)
+      XCTAssertNil(row.badge)
+      XCTAssertEqual(row.tone, .neutral)
     }
+  }
+
+  /// The ready/idle drift correction, at the badge level. Before this, both
+  /// resolved to a nil badge and a neutral dot, which left a finished session
+  /// indistinguishable from a dead one.
+  func testReadyAndIdleReadAsDone() {
+    let readyChat = makeSession(status: "ended", runtimeState: "exited", toolType: "codex-chat")
+    let idleCli = makeSession(status: "running", runtimeState: "idle", toolType: "codex")
+
+    for session in [readyChat, idleCli] {
+      let row = workSessionRowPresentation(session: session, summary: nil, now: now)
+      XCTAssertEqual(row.badge?.kind, .done)
+      XCTAssertEqual(row.badge?.label, "Done")
+      XCTAssertEqual(row.badge?.tone, .emerald)
+      XCTAssertEqual(row.tone, .emerald)
+    }
+  }
+
+  // MARK: - The status slot (`WorkSessionRowPresentation.status`)
+  //
+  // The row renders ONE status slot, and it needs the two fields `SessionBadge`
+  // drops: `showsElapsed` and `prominent`. Prominence drives the recede rule —
+  // non-prominent rows fade to 70% — so getting it wrong is what makes a list
+  // read as undifferentiated noise.
+
+  /// The states that pull the eye: something wants a human, or something
+  /// finished and nobody has looked.
+  func testProminentStatesAreTheOnesWantingAHuman() {
+    let prominent: [(String, TerminalSessionSummary)] = [
+      (
+        "needs you",
+        makeSession(status: "running", runtimeState: "running", toolType: "codex-chat", pendingInputItemId: "ask-1")
+      ),
+      ("failed", makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 130)),
+      ("ready", makeSession(status: "ended", runtimeState: "exited", toolType: "codex-chat")),
+      ("idle", makeSession(status: "running", runtimeState: "idle", toolType: "codex")),
+    ]
+
+    for (name, session) in prominent {
+      let status = workSessionRowPresentation(session: session, summary: nil, now: now).status
+      XCTAssertEqual(status?.prominent, true, name)
+    }
+  }
+
+  /// Work in flight is deliberately NOT prominent: an agent mid-turn is not yet
+  /// your problem, and a state that is true but not actionable makes no claim.
+  func testNonProminentStatesRecede() {
+    let stale = makeSession(status: "running", runtimeState: "running", toolType: "codex-chat")
+    var staleSummary = makeChatSummary(status: "active", awaitingInput: false)
+    staleSummary.lastActivityAt = silentFor(sessionStaleAfterSeconds + 60)
+
+    let notProminent: [(String, TerminalSessionSummary, AgentChatSessionSummary?)] = [
+      (
+        "running",
+        makeSession(status: "running", runtimeState: "running", toolType: "codex", startedAt: iso(now)),
+        nil
+      ),
+      ("stale", stale, staleSummary),
+      (
+        "stopped",
+        makeSession(status: "disposed", runtimeState: "killed", toolType: "codex", exitCode: 130),
+        nil
+      ),
+      ("ended", makeSession(status: "ended", runtimeState: "exited", toolType: "codex", exitCode: 0), nil),
+    ]
+
+    for (name, session, summary) in notProminent {
+      let status = workSessionRowPresentation(session: session, summary: summary, now: now).status
+      XCTAssertEqual(status?.prominent, false, name)
+    }
+    // `starting` has no constructible session — `workCanonicalSessionState`
+    // never returns it — so its prominence is asserted against the shared table
+    // the slot reads from.
+    XCTAssertFalse(ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: .starting)).prominent)
+  }
+
+  /// Settled is the deliberate hole in the vocabulary: desktop returns `null`
+  /// so the row's timestamp owns the slot, because in the collapsed tail the
+  /// section itself is already the status.
+  func testSettledHasNoStatusPresentation() {
+    let settled = makeSession(
+      status: "running",
+      runtimeState: "idle",
+      toolType: "codex-chat",
+      settledAt: iso(now.addingTimeInterval(-120))
+    )
+    let row = workSessionRowPresentation(session: settled, summary: nil, now: now)
+    XCTAssertNil(row.status)
+    // The out-of-context capsule is unaffected — only the slot goes quiet.
+    XCTAssertEqual(row.badge?.kind, .done)
+  }
+
+  /// Snooze is a visibility overlay and an overlay must YIELD to a raised hand,
+  /// matching `isSessionFiledAsSnoozed`. Otherwise an "until I'm asked" window
+  /// (~100 years) makes the row say "wakes when asked" while it is blocked on
+  /// the user right now.
+  func testSnoozeYieldsToNeedsYouInTheStatusSlot() {
+    var blocked = snoozedSession(
+      untilOffset: TimeInterval(workSnoozeIndefiniteDays) * 86_400,
+      atOffset: -60,
+      status: "running",
+      runtimeState: "waiting-input"
+    )
+    blocked.pendingInputItemId = "item-1"
+
+    let status = workSessionRowPresentation(session: blocked, summary: nil, now: now).status
+    XCTAssertEqual(status?.kind, .needsYou)
+    XCTAssertEqual(status?.label, "Needs you")
+    XCTAssertEqual(status?.tone, .amber)
+    XCTAssertEqual(status?.prominent, true)
+    // The raw column read is untouched — the overlay only lost the slot.
+    XCTAssertTrue(blocked.isSnoozed(now: now))
+  }
+
+  /// For every calm phase the return ticket IS the status, so the wake label
+  /// takes the slot and the row recedes.
+  func testSnoozedCalmRowShowsItsWakeLabel() {
+    let calm = snoozedSession(untilOffset: 1_800, atOffset: -60)
+
+    let status = workSessionRowPresentation(session: calm, summary: nil, now: now).status
+    XCTAssertEqual(status?.label, "wakes in 30m")
+    XCTAssertEqual(status?.tone, .neutral)
+    XCTAssertEqual(status?.prominent, false)
+    XCTAssertEqual(status?.showsElapsed, false)
+    // Snoozed is not a badge identity, so it carries no `SessionBadgeKind`.
+    XCTAssertNil(status?.kind)
   }
 
   /// Planning is a presentation fact derived from the chat's interaction mode,
@@ -406,7 +559,10 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
 
     XCTAssertEqual(workCanonicalSessionState(session: session, summary: summary, now: now).phase, .running)
-    XCTAssertEqual(workSessionStatusBadge(session: session, summary: summary, now: now)?.kind, .planning)
+    XCTAssertEqual(
+      workSessionRowPresentation(session: session, summary: summary, now: now).badge?.kind,
+      .planning
+    )
   }
 
   /// A blocked session is amber whatever mode it is in — planning must never
@@ -420,7 +576,10 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
     let summary = makeChatSummary(status: "active", awaitingInput: false, interactionMode: "plan")
 
-    XCTAssertEqual(workSessionStatusBadge(session: session, summary: summary, now: now)?.kind, .needsYou)
+    XCTAssertEqual(
+      workSessionRowPresentation(session: session, summary: summary, now: now).badge?.kind,
+      .needsYou
+    )
   }
 
   func testCanonicalPhasesMapOntoTheSharedVocabulary() {
@@ -430,8 +589,12 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertEqual(workActivityPhase(for: .failed), .failed)
     XCTAssertEqual(workActivityPhase(for: .stale), .stale)
     XCTAssertEqual(workActivityPhase(for: .settled), .completed)
-    XCTAssertEqual(workActivityPhase(for: .ready), .unrecognized("ready"))
-    XCTAssertEqual(workActivityPhase(for: .idle), .unrecognized("idle"))
+    // Ready and idle are emerald "Done", matching desktop's `PHASE_PRESENTATION`.
+    // They used to resolve to the neutral "Ready"/"Idle" entries, which is the
+    // drift this corrects: a finished-but-unlooked-at row is an outcome, and
+    // outcomes are emerald.
+    XCTAssertEqual(workActivityPhase(for: .ready), .completed)
+    XCTAssertEqual(workActivityPhase(for: .idle), .completed)
     XCTAssertEqual(workActivityPhase(for: .stopped), .unrecognized("stopped"))
     XCTAssertEqual(workActivityPhase(for: .ended), .unrecognized("ended"))
   }
@@ -461,21 +624,21 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     summary.lastOutputPreview = "\u{001B}[33mFresh provider output\u{001B}[0m"
 
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false)?.text,
       "Fresh provider output"
     )
 
     summary.lastOutputPreview = nil
     session.lastOutputPreview = nil
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false)?.text,
       "Older chat summary"
     )
 
     summary.summary = nil
     session.summary = nil
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false),
+      workSessionRowPreviewSource(session: session, chatSummary: summary, isSettled: false)?.text,
       "Older chat goal"
     )
   }
@@ -489,18 +652,18 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     )
     session.statusNote = "Running focused tests"
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: false),
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: false)?.text,
       "Running focused tests"
     )
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true),
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true)?.text,
       "Done: Running focused tests"
     )
 
     session.attentionRequestedAt = iso(now)
     session.attentionMessage = "Choose the release target"
     XCTAssertEqual(
-      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true),
+      workSessionRowPreviewSource(session: session, chatSummary: nil, isSettled: true)?.text,
       "Choose the release target"
     )
   }
@@ -866,7 +1029,6 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
   func testActiveOverrideKeepsCleanExitEnded() {
     let result = cleanExitState(settleOverride: "active")
     XCTAssertEqual(result.phase, .ended)
-    XCTAssertNil(result.badge)
   }
 
   func testActiveOverrideAlsoSuppressesDeclaredSettle() {
@@ -1182,23 +1344,48 @@ final class WorkSessionCanonicalStateTests: XCTestCase {
     XCTAssertFalse(groups[0].isQuiet)
   }
 
-  func testStatusAndTimeGroupsAreNeverQuiet() {
-    // Quiet is a lane-folder affordance; status/time sections span lanes and
-    // keep their normal headers.
+  func testOnlyTheTrailingShelvesAreQuietInStatusAndTimeGroups() {
+    // Quiet used to be a lane-folder affordance only, and this test used to
+    // assert that status/time modes produced no quiet group at all. The quiet
+    // zone changed that on purpose: those two modes now close with Snoozed and
+    // Settled shelves, which ARE quiet so they render the thin collapsed form.
+    //
+    // The invariant that survives — and the one worth pinning — is narrower:
+    // quietness is confined to those trailing shelves. An ordinary section
+    // ("Your move", "Working", a time bucket) must never fold itself away.
     var settled = makeSession(status: "completed", runtimeState: "idle", toolType: "claude-chat")
     settled.id = "s-settled"
     settled.settledAt = iso(now.addingTimeInterval(-120))
 
+    var running = makeSession(status: "running", runtimeState: "running", toolType: "claude-chat")
+    running.id = "s-running"
+
     for organization in [WorkSessionOrganization.byStatus, .byTime] {
       let groups = workSessionGroups(
         organization: organization,
-        sessions: [settled],
+        sessions: [settled, running],
         chatSummaries: [:],
         archivedSessionIds: [],
         orderedLanes: [makeLane(id: "lane-1", name: "Lane 1")],
         now: now
       )
-      XCTAssertFalse(groups.contains(where: \.isQuiet), "\(organization) produced a quiet group")
+
+      for group in groups where group.isQuiet {
+        XCTAssertTrue(
+          group.isShelf,
+          "\(organization) marked non-shelf section \(group.id) quiet"
+        )
+      }
+
+      // The settled row is lifted out of its ordinary section onto the shelf.
+      let settledShelf = groups.first { $0.isShelf && $0.sessions.contains { $0.id == settled.id } }
+      XCTAssertNotNil(settledShelf, "\(organization) did not file the settled row onto a shelf")
+      XCTAssertTrue(settledShelf?.isQuiet == true)
+
+      // …and the live row stays in a normal, non-quiet section.
+      let runningGroup = groups.first { $0.sessions.contains { $0.id == running.id } }
+      XCTAssertNotNil(runningGroup)
+      XCTAssertFalse(runningGroup?.isQuiet ?? true, "\(organization) folded a live row into a shelf")
     }
   }
 

@@ -24,6 +24,7 @@ import {
   useSyncConnections,
   type SyncConnections,
 } from "./SyncDevicesSection";
+import { accountDirectorySummary } from "./accountDirectorySummary";
 
 vi.mock("qrcode.react", () => ({
   QRCodeSVG: ({ value, title }: { value: string; title?: string }) => (
@@ -135,8 +136,20 @@ function makeSync(overrides: Partial<SyncConnections> = {}): SyncConnections {
     saveRuntimeName: vi.fn(),
     forgetDevice: vi.fn(),
     retryInitialLoad: vi.fn(),
+    refresh: vi.fn(async () => {}),
     ...overrides,
   } as SyncConnections;
+}
+
+function unreadableSessionStatus(): SyncRoleSnapshot {
+  const status = makeStatus();
+  status.routeHealth.accountDirectory = {
+    ...status.routeHealth.accountDirectory,
+    state: "token_unreadable",
+    skipReason: "The ADE brain could not read the stored account session.",
+    reachableEndpointCount: 0,
+  };
+  return status;
 }
 
 const autoConfirm = async () => true;
@@ -185,6 +198,67 @@ describe("ThisMacCard", () => {
     expect(screen.getByText("Phone sync is unavailable")).toBeTruthy();
     expect(screen.queryByRole("button", { name: /Generate code/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Remove/i })).toBeNull();
+  });
+
+  it("restarts the brain and re-reads health when repairing an unreadable session", async () => {
+    // The main process resolves only once the replacement brain answers, so the
+    // hook re-reads health the moment the call settles — no renderer-side sleep.
+    let releaseRestart = () => {};
+    const restartBackgroundService = vi.fn(
+      () => new Promise<void>((resolve) => {
+        releaseRestart = resolve;
+      }),
+    );
+    const refresh = vi.fn(async () => {});
+    (globalThis.window as any).ade = { app: { restartBackgroundService } };
+    render(
+      <ThisMacCard
+        sync={makeSync({ status: unreadableSessionStatus(), refresh })}
+        accountSignedIn
+      />,
+    );
+
+    const button = screen.getByRole("button", { name: "Repair" });
+    fireEvent.click(button);
+    // Re-entrancy: a second click while the restart is in flight is dropped.
+    fireEvent.click(button);
+    expect(screen.getByRole("button", { name: "Repairing…" })).toBeTruthy();
+    await act(async () => {});
+    expect(restartBackgroundService).toHaveBeenCalledTimes(1);
+    expect(refresh).not.toHaveBeenCalled();
+
+    await act(async () => {
+      releaseRestart();
+    });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    // Health still says unreadable, so the banner and its button stay put.
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+  });
+
+  it("shows a terse inline error and keeps Repair available when the restart fails", async () => {
+    const restartBackgroundService = vi.fn(async () => {
+      throw new Error("launchctl load failed.");
+    });
+    (globalThis.window as any).ade = { app: { restartBackgroundService } };
+    render(<ThisMacCard sync={makeSync({ status: unreadableSessionStatus() })} accountSignedIn />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Repair" }));
+    const failure = await screen.findByText("Repair failed — quit and reopen ADE.");
+    // Terse copy on screen; the technical detail rides along as the tooltip.
+    expect(failure.getAttribute("title")).toBe("launchctl load failed.");
+    expect(screen.getByRole("button", { name: "Repair" })).toBeTruthy();
+  });
+
+  it("offers no repair for failures a brain restart cannot fix", () => {
+    (globalThis.window as any).ade = { app: { restartBackgroundService: vi.fn() } };
+    const status = makeStatus();
+    status.routeHealth.accountDirectory = {
+      ...status.routeHealth.accountDirectory,
+      state: "http_error",
+      skipReason: "The account directory rejected the publish.",
+    };
+    render(<ThisMacCard sync={makeSync({ status })} accountSignedIn />);
+    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
   it("explains nearby fallback when signed out", () => {
@@ -612,5 +686,49 @@ describe("useSyncConnections local scoping", () => {
     expect(result.current.status).toBeNull();
     expect(result.current.devices).toEqual([]);
     expect(result.current.canManageDevices).toBe(false);
+  });
+});
+
+describe("accountDirectorySummary", () => {
+  it("reflects whether signed-out nearby pairing has a configured code", () => {
+    const status = { pairingPinConfigured: false } as SyncRoleSnapshot;
+
+    expect(accountDirectorySummary(status, false)).toEqual({
+      label: "Not signed in — set a pairing code so nearby devices can connect",
+      healthy: false,
+    });
+
+    status.pairingPinConfigured = true;
+    expect(accountDirectorySummary(status, false).label).toContain(
+      "nearby devices can still connect with the pairing code",
+    );
+  });
+
+  it("names the publish failure reason instead of a bare state", () => {
+    const withState = (
+      state: SyncRoleSnapshot["routeHealth"]["accountDirectory"]["state"],
+      skipReason: string | null,
+    ) =>
+      accountDirectorySummary(
+        {
+          routeHealth: {
+            accountDirectory: { state, skipReason, reachableEndpointCount: 0 },
+          },
+        } as SyncRoleSnapshot,
+        true,
+      );
+
+    expect(
+      withState("token_unreadable", "The ADE brain could not read the stored account session."),
+    ).toEqual({
+      label:
+        "Signed in, but this computer is not published · The ADE brain could not read the stored account session.",
+      healthy: false,
+    });
+
+    // No reason from the brain: the state itself is spelled out, not snake_case.
+    expect(withState("http_error", null).label).toBe(
+      "Signed in, but this computer is not published · http error",
+    );
   });
 });

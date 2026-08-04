@@ -396,7 +396,7 @@ struct SendToMacCard: View {
 
   private var machineSecondaryLabel: String? {
     switch syncService.connectionState {
-    case .connected, .syncing:
+    case .connected:
       return "Connected"
     case .connecting:
       return "Connecting…"
@@ -409,7 +409,7 @@ struct SendToMacCard: View {
 
   private var machineTint: Color {
     switch syncService.connectionState {
-    case .connected, .syncing: return ADEColor.success
+    case .connected: return ADEColor.success
     case .connecting: return ADEColor.warning
     case .error: return ADEColor.danger
     case .disconnected: return ADEColor.textMuted

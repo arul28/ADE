@@ -62,7 +62,7 @@ struct HubScreen: View {
   }
 
   private var canShowProjects: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   private var hubIsActive: Bool {
@@ -417,8 +417,8 @@ struct HubScreen: View {
           syncService.supportsPersonalChats,
           syncService.canInvokeRemoteAction("personalChats.list")
     else { return nil }
-    // Connected ↔ syncing is one live state for this purpose. Keeping a stable
-    // host key avoids redundant refreshes while normal sync batches flow.
+    // Keyed on the host, not on connection or hydration progress: a stable host
+    // key avoids redundant refreshes while normal sync batches flow.
     return hubCollapseDefaultsConnectionKey ?? "machine"
   }
 

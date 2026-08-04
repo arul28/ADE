@@ -1842,14 +1842,19 @@ final class ADETests: XCTestCase {
     )
   }
 
-  func testSyncConnectionHealthTreatsHydrationAsConnected() {
+  /// A retired `.syncing` state used to hold this row (hydration reported a
+  /// connected transport). `.connecting` is now the only transitional state
+  /// left, and it must stay distinct: it reports `connecting`, it must not
+  /// inherit load strain (strain is meaningless without a live transport), and
+  /// it must not surface a stale failure message.
+  func testSyncConnectionHealthKeepsConnectingDistinctFromConnected() {
     let health = syncConnectionHealth(
-      connectionState: .syncing,
-      prefersReducedSyncLoad: false,
+      connectionState: .connecting,
+      prefersReducedSyncLoad: true,
       lastError: "Transient sync work"
     )
 
-    XCTAssertEqual(health.transport, .connected)
+    XCTAssertEqual(health.transport, .connecting)
     XCTAssertEqual(health.load, .normal)
     XCTAssertNil(health.lastFailureMessage)
   }
@@ -6757,7 +6762,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(attemptedAddresses, ["192.168.1.10", "192.168.1.11"])
     XCTAssertEqual(winner, attempts[1])
     XCTAssertEqual(failedCandidateStates, [.connecting])
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
   }
 
   @MainActor
@@ -6792,7 +6797,7 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(attemptedAddresses, ["100.64.0.10", "100.64.0.11"])
     XCTAssertEqual(winner, attempts[1])
     XCTAssertEqual(failedCandidateStates, [.error])
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
   }
 
   @MainActor
@@ -6839,7 +6844,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["commandRouting"])
     XCTAssertFalse(service.supportsRemoteAction("usage.getAdeStats"))
@@ -6915,7 +6920,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertFalse(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
     XCTAssertFalse(service.supportsRemoteAction("cto.setLinearToken"))
@@ -6960,7 +6965,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertTrue(service.supportsRemoteAction("cto.startLinearMobileOAuth"))
     XCTAssertTrue(service.supportsRemoteAction("cto.completeLinearMobileOAuth"))
@@ -7107,7 +7112,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .full)
     XCTAssertEqual(service.hostCompatibilityMissingActions, [])
     XCTAssertTrue(service.supportsRemoteAction("chat.send"))
@@ -7157,7 +7162,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertFalse(service.supportsRemoteAction("work.updateSessionMeta"))
     XCTAssertFalse(service.supportsChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
     XCTAssertFalse(service.canInvokeChatRemoteAction("chat.cancelScheduledWork", sessionId: "chat-1"))
@@ -7199,7 +7204,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertEqual(service.hostCompatibilityMissingActions, ["prs.getMobileGithubDetail"])
     XCTAssertFalse(service.supportsRemoteAction("prs.getMobileGithubDetail"))
@@ -7574,7 +7579,7 @@ final class ADETests: XCTestCase {
       ],
     ])
 
-    XCTAssertEqual(service.connectionState, .syncing)
+    XCTAssertEqual(service.connectionState, .connected)
     XCTAssertEqual(service.hostCompatibilityMode, .limited)
     XCTAssertTrue(service.supportsPersonalChats)
     XCTAssertTrue(service.supportsRemoteAction("personalChats.list"))
@@ -12894,7 +12899,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertFalse(
       laneAllowsLiveActions(
-        connectionState: .syncing,
+        connectionState: .connecting,
         laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil)
       )
     )
@@ -12960,7 +12965,7 @@ final class ADETests: XCTestCase {
     XCTAssertTrue(descendants.message.contains("child lanes"))
   }
 
-  func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrSyncing() {
+  func testLaneAllowsDiffInspectionKeepsCachedTargetsReadableWhileOfflineOrConnecting() {
     XCTAssertTrue(
       laneAllowsDiffInspection(
         connectionState: .disconnected,
@@ -12970,7 +12975,7 @@ final class ADETests: XCTestCase {
     )
     XCTAssertTrue(
       laneAllowsDiffInspection(
-        connectionState: .syncing,
+        connectionState: .connecting,
         laneStatus: SyncDomainStatus(phase: .ready, lastError: nil, lastHydratedAt: nil),
         hasCachedTargets: true
       )
@@ -18760,7 +18765,6 @@ final class ADETests: XCTestCase {
     )
   }
 
-
   func testAssistantPreviewCacheHydratesBuiltChatMessages() {
     let markdown = (1...5000).map { "\($0). Line \($0)" }.joined(separator: "\n")
     let transcript = [
@@ -19370,21 +19374,6 @@ final class ADETests: XCTestCase {
     XCTAssertEqual(resolved, "apps/ios/ADE/Helpers/WorkView.swift")
   }
 
-  func testWorkRunningBannerCopyDescribesMixedLiveSessions() {
-    XCTAssertEqual(
-      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 1),
-      "1 chat needs input, 2 other sessions are live"
-    )
-    XCTAssertEqual(
-      workRunningBannerTitle(liveChatCount: 1, liveTerminalCount: 1, attentionCount: 0),
-      "2 live sessions across chat and terminal"
-    )
-    XCTAssertEqual(
-      workRunningBannerMessage(liveTerminalCount: 1, attentionCount: 0),
-      "The Work tab badge stays visible while live chats or terminal sessions continue running."
-    )
-  }
-
   func testWorkFilesWorkspaceSelectionRequiresMatchingLaneWorkspace() {
     let workspaces = [
       FilesWorkspace(
@@ -19488,7 +19477,6 @@ final class ADETests: XCTestCase {
     XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "shell", runtimeState: "stopped", status: "exited")))
     XCTAssertFalse(isStoppableRuntimeSession(makeTerminalSessionSummary(toolType: "codex-chat", runtimeState: "running", status: "running")))
   }
-
 
   func testWorkFilteredSessionsRetainsStaleStandaloneCliRowsAndChatOwnedShells() {
     let chatSession = makeTerminalSessionSummary(
@@ -23712,12 +23700,14 @@ final class RosterDeltaTests: XCTestCase {
     XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
     XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
     XCTAssertEqual(
-      workSessionGroupsByStatus(
+      workSessionGroups(
+        organization: .byStatus,
         sessions: [settledSession],
         chatSummaries: [:],
-        archivedSessionIds: []
+        archivedSessionIds: [],
+        orderedLanes: []
       ).map(\.id),
-      ["status:settled"]
+      [workSettledSectionId]
     )
 
     var activeSettledSession = settledSession
@@ -23905,7 +23895,6 @@ final class RosterAttentionAndHostAvailabilityTests: XCTestCase {
   func testWorkListShowsEndedStandaloneCliAndHidesOrphanedEndedChildren() {
     let endedCli = session(toolType: "cli", status: "completed", runtimeState: "exited")
     XCTAssertTrue(workSessionShouldAppearInWorkList(endedCli, parentChatSessionIds: []))
-
 
     let orphanedEndedChild = session(
       toolType: "shell",

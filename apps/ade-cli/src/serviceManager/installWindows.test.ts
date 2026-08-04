@@ -37,6 +37,7 @@ import {
   windowsPowerShellCommand,
   windowsRegCommand,
   windowsSchtasksCommand,
+  windowsTaskkillCommand,
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
   renderWindowsServiceLauncher,
 } from "./installWindows";
@@ -406,6 +407,61 @@ describe("Windows background service helpers", () => {
         args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       },
     ]);
+  });
+
+  it.each([
+    { label: "an ordinary install", forceEnv: {} },
+    { label: "a Repair-forced install", forceEnv: { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } },
+  ])("restarts the running supervisor on $label", async ({ forceEnv }) => {
+    // The desktop Repair button sets ADE_FORCE_RUNTIME_SERVICE_RESTART, and
+    // ONLY installLaunchd reads it — it exists to defeat launchd's "unchanged
+    // plist + loaded + responsive => skip" fast path. Windows honours the flag
+    // by construction rather than by reading it: this install has no skip path,
+    // so it always taskkills the supervisor tree and starts a fresh one. Assert
+    // that for BOTH env shapes, so a future "already installed, leave it alone"
+    // optimisation here cannot silently turn Repair into a no-op on Windows.
+    const home = makeTempHome("ade-windows-service-force-restart-");
+    const launcherPath = path.join(home, "brain-service.ps1");
+    fs.writeFileSync(`${launcherPath}.pid.json`, JSON.stringify(readyPidRecord), "utf8");
+    const calls: Array<{ command: string; args: string[] }> = [];
+    const spawnSync = spawnSequence(calls, [
+      { status: 3, stdout: "", stderr: "" },                     // legacy task: absent
+      { status: 3, stdout: "", stderr: "" },                     // channel task: absent
+      { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" }, // Run entry: installed
+      { status: 0, stdout: "", stderr: "" },                     // supervisor probe: running
+      { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill supervisor
+      { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // reg delete
+      { status: 0, stdout: "", stderr: "" },                     // stale same-channel serve scan: none
+      { status: 0, stdout: "SUCCESS: created", stderr: "" },     // reg add
+      { status: 0, stdout: "1234", stderr: "" },                 // start task
+    ]);
+
+    const result = await installWindowsService({
+      ...immediateReadiness,
+      command: serviceCommand,
+      env: { USERDOMAIN: "ADEBOX", USERNAME: "arul", ...forceEnv },
+      launcherPath,
+      serviceName,
+      spawnSync,
+      userName: taskUser,
+    });
+
+    expect(result.ok).toBe(true);
+    // The supervisor is killed on its own, WITHOUT `/T`. The brain is its
+    // child, so a tree kill took the brain down mid-write — no SQLite/CRDT
+    // flush, no lock release — and the next start had to recover from a lock
+    // whose owner never got to release it. The brain is talked down separately
+    // once the supervisor can no longer relaunch it. Repair is still a real
+    // restart, which is what this test exists to protect: the supervisor dies
+    // and a fresh one is started below.
+    expect(calls).toContainEqual({
+      command: windowsTaskkillCommand(),
+      args: ["/PID", String(readyPidRecord.supervisorPid), "/F"],
+    });
+    expect(calls.at(-1)).toEqual({
+      command: windowsPowerShellCommand(),
+      args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
+    });
   });
 
   it("ends and replaces a running channel task before starting the repaired runtime", async () => {

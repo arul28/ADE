@@ -28,15 +28,17 @@ enum CanonicalSessionPhase: Equatable {
 
 /// The states that earn a capsule on a Work row.
 ///
-/// The first three are the attention states — the only ones `badge` has ever
-/// carried, and the only ones that survive on the `CanonicalSessionState` value
-/// so nothing downstream starts treating "Working" as something to act on. The
-/// rest are the descriptive half of the vocabulary, reached through
-/// `workSessionStatusBadge`, which is what the row actually renders.
+/// The first three are the attention states — the ones something downstream may
+/// reasonably treat as "act on this". The rest are the descriptive half of the
+/// vocabulary. All six are reached through `workSessionRowPresentation`, which
+/// is what the row actually renders; the canonical state itself carries only a
+/// phase, so nothing can render a badge without going through that table.
 ///
-/// The truly resting phases (ready / idle / stopped / ended) still earn no
-/// capsule: their story is the neutral dot and the timestamp, and a row must not
-/// shift layout to say "nothing is happening".
+/// Only `stopped` and `ended` earn no capsule: their story is the neutral dot
+/// and the timestamp, and a row must not shift layout to say "nothing is
+/// happening". `ready`/`idle` DO earn one — emerald "Done" — because a session
+/// resting after a turn is a finished outcome the reader has not looked at yet,
+/// which is a different thing from a process that simply stopped existing.
 enum SessionBadgeKind: Equatable {
   case needsYou
   case failed
@@ -63,10 +65,12 @@ struct SessionBadge: Equatable {
   }
 }
 
+/// Deliberately a phase and nothing else. Presentation — the capsule, the dot
+/// hue, the status slot — is derived from the phase by the row layer, so there
+/// is exactly one table turning a phase into words and colours and no second
+/// copy riding along on the state value where it could drift.
 struct CanonicalSessionState: Equatable {
   let phase: CanonicalSessionPhase
-  /// Non-nil ONLY for attention states — capsules never render for calm ones.
-  let badge: SessionBadge?
 }
 
 /// A session still marked running that has produced no output for this long is
@@ -76,24 +80,6 @@ struct CanonicalSessionState: Equatable {
 /// `SESSION_STALE_AFTER_MS` (3 hours); do not reuse other stale semantics
 /// (e.g. the 7-day chat reclassification in `normalizedWorkChatSessionStatus`).
 let sessionStaleAfterSeconds: TimeInterval = 3 * 60 * 60
-
-/// The attention badges, worded and hued by the shared vocabulary rather than
-/// by a second table that could drift away from it.
-private let badgeByKind: [SessionBadgeKind: SessionBadge] = [
-  .needsYou: workSessionBadge(kind: .needsYou, phase: .needsYou),
-  .failed: workSessionBadge(kind: .failed, phase: .failed),
-  .stale: workSessionBadge(kind: .stale, phase: .stale),
-]
-
-private func workSessionBadge(kind: SessionBadgeKind, phase: AccountAttentionPhase) -> SessionBadge {
-  let presentation = ActivityPhaseVocabulary.presentation(for: phase)
-  return SessionBadge(
-    kind: kind,
-    label: presentation.label,
-    tone: presentation.tone,
-    glyph: presentation.glyph
-  )
-}
 
 private func isSilentPast(_ lastActivityAt: String?, now: Date, thresholdSeconds: TimeInterval) -> Bool {
   guard let at = workParsedDate(lastActivityAt) else { return false }
@@ -174,7 +160,7 @@ func workCanonicalSessionState(
   // stale checks below (an agent explicitly asking is actionable regardless).
   // An escalated ask outranks BOTH override values.
   if !pending.isEmpty || providerStructuredInput || !attentionRequested.isEmpty {
-    return CanonicalSessionState(phase: .needsYou, badge: badgeByKind[.needsYou])
+    return CanonicalSessionState(phase: .needsYou)
   }
 
   // 2. Declared settle (or a "settled" override) — honored only AT REST,
@@ -186,7 +172,7 @@ func workCanonicalSessionState(
   let pinnedActive = override == .active
   let atRest = statusLower != "running" || runtimeLower == "idle"
   if !pinnedActive && atRest && (override == .settled || !settled.isEmpty) {
-    return CanonicalSessionState(phase: .settled, badge: nil)
+    return CanonicalSessionState(phase: .settled)
   }
 
   let ended = statusLower != "running"
@@ -195,87 +181,64 @@ func workCanonicalSessionState(
     // failure. Check before exit/runtime failures because disposed sessions are
     // currently persisted with runtimeState "killed" and often exitCode 130.
     if statusLower == "disposed" {
-      return CanonicalSessionState(phase: .stopped, badge: nil)
+      return CanonicalSessionState(phase: .stopped)
     }
 
     // Failure: a non-clean exit, an explicit "failed" persisted status
     // (spawn/setup failures that die before an exit code), or a killed runtime
     // — all deterministic "failed" signals a terminal-backed session reports.
     if let exitCode, exitCode != 0 {
-      return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+      return CanonicalSessionState(phase: .failed)
     }
     if statusLower == "failed" {
-      return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+      return CanonicalSessionState(phase: .failed)
     }
     if runtimeLower == "killed" {
-      return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+      return CanonicalSessionState(phase: .failed)
     }
     // Chats rest between turns unless their last turn failed or their backing
     // runtime detached, which is genuinely ended.
     if chat {
       if !lastTurnFailed.isEmpty {
-        return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+        return CanonicalSessionState(phase: .failed)
       }
       if statusLower == "detached" {
-        return CanonicalSessionState(phase: .ended, badge: nil)
+        return CanonicalSessionState(phase: .ended)
       }
-      return CanonicalSessionState(phase: .ready, badge: nil)
+      return CanonicalSessionState(phase: .ready)
     }
 
     // Process completion is not a lifecycle declaration.
-    return CanonicalSessionState(phase: .ended, badge: nil)
+    return CanonicalSessionState(phase: .ended)
   }
 
   // Running chats keep status "running" when a turn dies, so carry the
   // persisted failure marker ahead of calm running/ready states.
   if chat && !lastTurnFailed.isEmpty {
-    return CanonicalSessionState(phase: .failed, badge: badgeByKind[.failed])
+    return CanonicalSessionState(phase: .failed)
   }
 
   // 5. Stale: running but silent past the threshold.
   if isSilentPast(lastActivityAt, now: now, thresholdSeconds: sessionStaleAfterSeconds) {
-    return CanonicalSessionState(phase: .stale, badge: badgeByKind[.stale])
+    return CanonicalSessionState(phase: .stale)
   }
 
   // Idle chats between turns are ready (calm); idle agent CLIs stay calm here —
   // there is no deterministic ask.
   if runtimeLower == "idle" {
     return chat
-      ? CanonicalSessionState(phase: .ready, badge: nil)
-      : CanonicalSessionState(phase: .idle, badge: nil)
+      ? CanonicalSessionState(phase: .ready)
+      : CanonicalSessionState(phase: .idle)
   }
 
-  return CanonicalSessionState(phase: .running, badge: nil)
-}
-
-// MARK: - Row capsule wiring
-
-/// The one-word attention capsule for a Work session row, backed by the shared
-/// canonical state so the capsule, the Live Activity phase, and notifications
-/// always agree. Returns nil for every calm state — rows must not shift layout
-/// when no capsule renders.
-///
-/// This maps iOS's awaiting derivation (chat summary `awaitingInput`, plus
-/// `awaiting_input` session statuses) onto the canonical "waiting-input" runtime
-/// so a chat blocked on a question/plan/approval reads as needs_you exactly like
-/// `SyncService.isAwaiting`, without touching that derivation.
-func workSessionCapsuleBadge(
-  session: TerminalSessionSummary,
-  summary: AgentChatSessionSummary?,
-  now: Date = Date()
-) -> SessionBadge? {
-  return workCanonicalSessionState(
-    session: session,
-    summary: summary,
-    now: now
-  ).badge
+  return CanonicalSessionState(phase: .running)
 }
 
 // MARK: - The full status vocabulary
 
 /// Canonical phase → the shared Activity phase, so a Work row reads its label
 /// and its hue out of the same table the drawer, the hub strip, and the widget
-/// use. The four resting phases have no Activity phase of their own and are
+/// use. `stopped` and `ended` have no Activity phase of their own and are
 /// carried as additive raw values, which `ActivityPhaseVocabulary` answers with
 /// the quiet neutral presentation they want.
 func workActivityPhase(for phase: CanonicalSessionPhase) -> AccountAttentionPhase {
@@ -286,10 +249,23 @@ func workActivityPhase(for phase: CanonicalSessionPhase) -> AccountAttentionPhas
   case .failed: return .failed
   case .stale: return .stale
   // Settled is a declared "this is finished and filed", which is exactly what
-  // the emerald `completed` presentation says.
+  // the emerald `completed` presentation says. Note that the STATUS SLOT shows
+  // nothing at all for settled — see `workSessionStatusSlot` — but the phase
+  // still needs a hue for the dot and for out-of-context capsules.
   case .settled: return .completed
-  case .ready: return .unrecognized("ready")
-  case .idle: return .unrecognized("idle")
+  // Ready and idle are emerald "Done", not the neutral "Ready"/"Idle" this file
+  // used to ask for. Desktop's `PHASE_PRESENTATION` maps both to
+  // `{label: "Done", tone: "emerald", prominent: true}` and explains why: they
+  // previously shared amber with `needs_you`, which made "finished, go look" and
+  // "blocked, go act" indistinguishable at a glance — the single worst confusion
+  // in the old row. Emerald says the work landed; amber stays reserved for the
+  // one thing that wants a human. A resting session IS an outcome you have not
+  // looked at yet, so it is prominent, not receded.
+  //
+  // The fix lives here rather than in `ActivityPhaseVocabulary`, which is shared
+  // with the widget extension and answers raw wire phases; its neutral
+  // "Ready"/"Idle" entries stay correct for a publisher that sends those words.
+  case .ready, .idle: return .completed
   case .stopped: return .unrecognized("stopped")
   case .ended: return .unrecognized("ended")
   }
@@ -303,42 +279,201 @@ func workSessionIsPlanning(summary: AgentChatSessionSummary?) -> Bool {
   summary?.interactionMode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "plan"
 }
 
-/// The capsule a Work row renders: the full vocabulary, not just the attention
-/// third. Nil for the resting phases, which say what they need to say with the
-/// neutral dot alone.
-func workSessionStatusBadge(
-  session: TerminalSessionSummary,
-  summary: AgentChatSessionSummary?,
-  now: Date = Date()
-) -> SessionBadge? {
-  let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
-  if canonical.phase == .running && workSessionIsPlanning(summary: summary) {
-    return workSessionBadge(kind: .planning, phase: .unrecognized("planning"))
-  }
-  switch canonical.phase {
-  case .needsYou, .failed, .stale:
-    return canonical.badge
-  case .starting, .running:
-    return workSessionBadge(kind: .working, phase: workActivityPhase(for: canonical.phase))
-  case .settled:
-    return workSessionBadge(kind: .done, phase: .completed)
-  case .ready, .idle, .stopped, .ended:
-    return nil
+/// Which capsule identity a phase wears, once planning has already been folded
+/// in by the caller. `stopped`/`ended` have none: their story is the neutral dot
+/// and the timestamp, and a row must not shift layout to say "nothing is
+/// happening".
+private func workSessionBadgeKind(for phase: CanonicalSessionPhase) -> SessionBadgeKind? {
+  switch phase {
+  case .needsYou: return .needsYou
+  case .failed: return .failed
+  case .stale: return .stale
+  case .starting, .running: return .working
+  case .ready, .idle, .settled: return .done
+  case .stopped, .ended: return nil
   }
 }
 
-/// The hue of the row's status dot. Same table as the capsule, so a row whose
-/// capsule says "Working" can never wear a green dot.
-func workSessionRowTone(
+/// The phase half of the status vocabulary: planning folded in, everything else
+/// read out of the shared `ActivityPhaseVocabulary`. Deliberately overlay-blind
+/// — snooze and woke are resolved one level up, in `workSessionStatusSlot`, so
+/// the capsule and the status slot can differ on whether an overlay is allowed
+/// to speak.
+private func workSessionPhasePresentation(
+  phase: CanonicalSessionPhase,
+  isPlanning: Bool
+) -> (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation) {
+  if phase == .running && isPlanning {
+    return (.planning, ActivityPhaseVocabulary.presentation(for: .unrecognized("planning")))
+  }
+  return (
+    workSessionBadgeKind(for: phase),
+    ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: phase))
+  )
+}
+
+/// Everything the row's ONE status slot needs, including the two fields
+/// `SessionBadge` drops: `showsElapsed` (does the label carry a ticking
+/// duration) and `prominent` (does this state pull the eye). Prominence drives
+/// the recede rule — non-prominent rows render at 70% opacity so the few rows
+/// that want a human stand out without a banner.
+///
+/// `kind` is nil where the state has no `SessionBadgeKind` counterpart: the
+/// snoozed and woke overlays are not badge identities, they are what the slot
+/// says instead of the phase.
+struct WorkSessionStatusPresentation: Equatable {
+  let label: String
+  let tone: ActivityTone
+  let glyph: ActivityGlyph?
+  let showsElapsed: Bool
+  let prominent: Bool
+  let kind: SessionBadgeKind?
+}
+
+/// Everything one Work row renders about its state, derived ONCE.
+///
+/// A row needs four answers — the phase, the capsule, the dot hue, the status
+/// slot — and all four fall out of a single `workCanonicalSessionState`. Deriving
+/// them separately meant four passes AND four `Date()` calls per row per rebuild,
+/// so a row rebuilt across a stale or snooze boundary could paint a capsule from
+/// one instant and a status slot from another. One value, one clock.
+struct WorkSessionRowPresentation: Equatable {
+  let phase: CanonicalSessionPhase
+  /// The whole badge, not just its kind: the compact row renders the label and
+  /// tone directly and must not re-derive them from a second table.
+  ///
+  /// Overlay-blind on purpose. This is the out-of-context capsule — a settled
+  /// row still reads "Done" here even though its `status` slot is nil, and a
+  /// snoozed row still reports the state it is actually in. Nil for
+  /// `stopped`/`ended`, which say what they need to say with the neutral dot
+  /// alone.
+  let badge: SessionBadge?
+  /// The hue of the row's status dot. Same derivation as the capsule, so a row
+  /// whose capsule says "Working" can never wear a green dot.
+  let tone: ActivityTone
+  /// The row's ONE status slot. See `workSessionStatusSlot` for the overlay
+  /// precedence this answers, and why settled resolves to nil.
+  let status: WorkSessionStatusPresentation?
+}
+
+/// The one derivation behind every Work row — the phase, the capsule, the dot
+/// hue, and the status slot all come out of this single call, so nothing can
+/// read one of them from a second table or a second clock.
+func workSessionRowPresentation(
   session: TerminalSessionSummary,
   summary: AgentChatSessionSummary?,
   now: Date = Date()
-) -> ActivityTone {
-  let canonical = workCanonicalSessionState(session: session, summary: summary, now: now)
-  if canonical.phase == .running && workSessionIsPlanning(summary: summary) {
-    return ActivityPhaseVocabulary.presentation(for: .unrecognized("planning")).tone
+) -> WorkSessionRowPresentation {
+  let phase = workCanonicalSessionState(session: session, summary: summary, now: now).phase
+  let resolved = workSessionPhasePresentation(
+    phase: phase,
+    isPlanning: workSessionIsPlanning(summary: summary)
+  )
+
+  let badge = resolved.kind.map { kind in
+    SessionBadge(
+      kind: kind,
+      label: resolved.presentation.label,
+      tone: resolved.presentation.tone,
+      glyph: resolved.presentation.glyph
+    )
   }
-  return ActivityPhaseVocabulary.presentation(for: workActivityPhase(for: canonical.phase)).tone
+
+  return WorkSessionRowPresentation(
+    phase: phase,
+    badge: badge,
+    tone: resolved.presentation.tone,
+    status: workSessionStatusSlot(session: session, phase: phase, resolved: resolved, now: now)
+  )
+}
+
+/// The status slot for one Work row, mirroring the desktop
+/// `sessionStatusPresentation()` precedence exactly:
+///
+///   1. `needsYou` outright, ABOVE both overlays — same precedence as the filing
+///      rule in `isSessionFiledAsSnoozed`, so where a row is filed and what it
+///      says can never disagree. Without this an "until I'm asked" snooze
+///      (~100 years) buries the very row whose hand is raised.
+///   2. snoozed — the return ticket IS the status, so the wake label takes the
+///      slot; neutral and not prominent, because a row you deferred is not
+///      asking for anything.
+///   3. woke — it came back early, which is worth the eye: amber and prominent.
+///   4. planning — a presentation fact derived from the chat's interaction mode,
+///      never a canonical phase. Already folded into `resolved` by the caller.
+///   5. the phase table.
+///
+/// Returns nil for `settled`, matching desktop's `null`: a settled row lives in
+/// the collapsed tail where the section itself is the status, and the free slot
+/// belongs to the timestamp — the only thing worth reading down there. This is
+/// deliberate, not a missing case; the row's `badge` still answers "Done" for
+/// callers that need a capsule out of that context.
+private func workSessionStatusSlot(
+  session: TerminalSessionSummary,
+  phase: CanonicalSessionPhase,
+  resolved: (kind: SessionBadgeKind?, presentation: ActivityPhasePresentation),
+  now: Date
+) -> WorkSessionStatusPresentation? {
+  // needsYou skips the overlay gate entirely and falls straight through to the
+  // phase table below, which already says "Needs you" in amber.
+  if phase != .needsYou {
+    if session.isSnoozed(now: now) {
+      return WorkSessionStatusPresentation(
+        // Falling back to the bare word keeps the slot meaningful when the
+        // deadline is missing or unparseable.
+        label: workSnoozeWakeLabel(session.snoozedUntil, now: now) ?? "Snoozed",
+        tone: .neutral,
+        // `ActivityGlyph` carries no snoozed/woke marks — the shared table is
+        // the phase vocabulary and these are overlays. The word is unambiguous.
+        glyph: nil,
+        showsElapsed: false,
+        prominent: false,
+        kind: nil
+      )
+    }
+
+    if session.wokeMarker(now: now) != nil {
+      return WorkSessionStatusPresentation(
+        label: "Woke",
+        tone: .amber,
+        glyph: nil,
+        showsElapsed: false,
+        prominent: true,
+        kind: nil
+      )
+    }
+
+    if phase == .settled { return nil }
+  }
+
+  return WorkSessionStatusPresentation(
+    label: resolved.presentation.label,
+    tone: resolved.presentation.tone,
+    glyph: resolved.presentation.glyph,
+    showsElapsed: resolved.presentation.showsElapsed,
+    prominent: resolved.presentation.prominent,
+    kind: resolved.kind
+  )
+}
+
+/// The italic line-3 preview, with the provenance the renderer needs.
+///
+/// Only `ask` and `note` linkify: those two are prose an agent wrote AT the
+/// reader, where a `#123` or `ABC-123` is a real reference worth tapping. Raw
+/// terminal output, a rolled-up summary, and a goal are all machine-shaped text
+/// where the same token is far more often a coincidence than a link. Mirrors
+/// the desktop `SessionCard.tsx:174-179` split.
+struct WorkSessionPreviewLine: Equatable {
+  enum Source: String, Equatable {
+    case ask
+    case note
+    case output
+    case summary
+    case goal
+  }
+
+  let text: String
+  let linkify: Bool
+  let source: Source
 }
 
 /// Canonical state for a concrete Work row. This is the one bridge from the
@@ -740,29 +875,6 @@ func workSnoozeWakeLabel(
     return remaining < 12 * 3600 ? "wakes in \(Int((remaining / 3600).rounded()))h" : "wakes tomorrow"
   }
   return "wakes in \(max(1, dayDelta))d"
-}
-
-/// Compact glyph + text chip for the snoozed / woke row markers. Deliberately
-/// quieter than `WorkSessionStatusCapsule`: neither is an attention state.
-struct WorkSessionLifecycleTag: View {
-  let symbol: String
-  let text: String
-  let tint: Color
-
-  var body: some View {
-    HStack(spacing: 3) {
-      Image(systemName: symbol)
-        .font(.system(size: 9, weight: .semibold))
-      Text(text)
-        .font(.caption2.weight(.medium))
-        .lineLimit(1)
-    }
-    .foregroundStyle(tint)
-    .padding(.horizontal, 6)
-    .padding(.vertical, 2)
-    .background(tint.opacity(0.12), in: Capsule())
-    .fixedSize()
-  }
 }
 
 /// Small status capsule shown next to a Work row title. The hue comes from the

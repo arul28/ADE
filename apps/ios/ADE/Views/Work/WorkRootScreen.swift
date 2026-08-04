@@ -189,6 +189,11 @@ struct WorkRootScreen: View {
   @State var workViewStateBeforeDeeplink: WorkProjectViewState?
   @State var filterPanelOpen = false
   @State var addLaneSheetPresented = false
+  /// Lane the row menu's "Manage lane" is opening, plus the sibling snapshots
+  /// the Lanes tab's manage sheet needs to resolve parents and colour reuse.
+  /// Both are transient: fetched when the item is tapped, cleared on dismiss.
+  @State var manageLaneTarget: LaneListSnapshot?
+  @State var manageLaneSnapshots: [LaneListSnapshot] = []
 
   var selectedStatus: WorkSessionStatusFilter {
     get { WorkSessionStatusFilter(rawValue: selectedStatusRawValue) ?? .all }
@@ -268,7 +273,7 @@ struct WorkRootScreen: View {
   }
 
   var isLive: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   var isLoadingSkeleton: Bool {
@@ -322,37 +327,26 @@ struct WorkRootScreen: View {
     sessionPresentation.displaySessions
   }
 
-  var liveChatSessions: [TerminalSessionSummary] {
-    sessionPresentation.liveChatSessions
-  }
-
   var hasActiveFilters: Bool {
     selectedStatus != .all
       || selectedLaneId != "all"
       || !searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
   }
 
-  var globalNeedsInputCount: Int {
-    sessionPresentation.globalNeedsInputCount
-  }
-
-  var globalLiveSessionCount: Int {
-    sessionPresentation.globalLiveSessionCount
-  }
-
-  var firstGlobalAttentionSession: TerminalSessionSummary? {
-    guard let id = sessionPresentation.firstGlobalAttentionSessionId else { return nil }
-    return mergedSessions.first { $0.id == id }
-  }
-
-  var firstGlobalLiveSession: TerminalSessionSummary? {
-    guard let id = sessionPresentation.firstGlobalLiveSessionId else { return nil }
-    return mergedSessions.first { $0.id == id }
-  }
+  // No screen-wide live/attention rollup is derived here any more. The counts and
+  // the "first session wanting you" lookups that used to hang off
+  // `WorkRootSessionPresentation` fed only the deleted top-bar pill and its
+  // duplicate chip; the bell's Activity drawer owns that job now, and it reads
+  // the drawer's own model rather than this screen's projection.
 
   var sessionOrganizationBinding: Binding<WorkSessionOrganization> {
     Binding(
-      get: { WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus },
+      // `.byLane`, not `.byStatus`: it is the real default in both the `@State`
+      // above and `WorkProjectViewState.organization`. A fallback that disagrees
+      // lets the rendered groups and the filter chip's selection show different
+      // groupings for a frame whenever the stored raw value is unparseable.
+      // Twin fallback in `WorkRootScreen+Actions.swift`.
+      get: { WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byLane },
       set: {
         restoreWorkViewStateAfterDeeplink()
         sessionOrganizationRaw = $0.rawValue
@@ -437,13 +431,22 @@ struct WorkRootScreen: View {
   }
 
   func pushNewChatRoute() {
-    guard !navigationMutationPending else { return }
     let preferred = selectedLaneId == "all" ? nil : selectedLaneId
+    pushNewChatRoute(preferredLaneId: preferred)
+  }
+
+  /// Same route, with the lane chosen by the caller rather than by the filter —
+  /// the row menu's "Start chat in lane" targets the row's lane, not whatever
+  /// the lane filter happens to be set to.
+  func pushNewChatRoute(preferredLaneId: String?) {
+    guard !navigationMutationPending else { return }
     navigationMutationPending = true
     selectedSessionTransitionId = nil
     Task { @MainActor in
+      // Long-press menu actions fire mid-dismissal; pushing a route into that
+      // animation is what the existing yield below is already guarding against.
       await Task.yield()
-      path.append(WorkNewChatRoute(preferredLaneId: preferred))
+      path.append(WorkNewChatRoute(preferredLaneId: preferredLaneId))
       navigationMutationPending = false
     }
   }
@@ -557,8 +560,6 @@ struct WorkRootScreen: View {
             organization: sessionOrganizationBinding,
             filterOpen: $filterPanelOpen,
             lanes: workOrderedLanes,
-            liveCount: globalLiveSessionCount,
-            needsInputCount: globalNeedsInputCount,
             isLive: isLive,
             onClear: clearWorkFilters,
             onNewChat: pushNewChatRoute,
@@ -621,7 +622,7 @@ struct WorkRootScreen: View {
             .listRowSeparator(.hidden)
           } else {
             ForEach(sessionGroups) { group in
-              workSessionGroupRows(group)
+              workSessionGroupSection(group)
             }
           }
         }
@@ -647,22 +648,15 @@ struct WorkRootScreen: View {
             }
             .accessibilityLabel("Cancel selection")
           } else {
-            if globalLiveSessionCount > 0 || globalNeedsInputCount > 0 {
-              WorkLiveCountPill(
-                liveCount: globalLiveSessionCount,
-                attentionCount: globalNeedsInputCount,
-                onTap: {
-                  guard let target = firstGlobalAttentionSession ?? firstGlobalLiveSession else { return }
-                  if sessionPresentation.displaySessionIds.contains(target.id) {
-                    withAnimation(.snappy) {
-                      proxy.scrollTo(target.id, anchor: .top)
-                    }
-                  } else {
-                    openSession(target)
-                  }
-                }
-              )
-            }
+            // No attention rollup lives here. A tappable count pill used to sit
+            // left of the Linear button and a flat chip repeated the very same
+            // count above the list, so amber — which means "your move" and
+            // nothing else — was spent three times on one screen and the per-row
+            // badge stopped registering. The jump-to-attention affordance already
+            // exists: the bell opens the Activity drawer, which bands needs-you
+            // first with per-session navigation. Do not reintroduce a
+            // replacement here, and do not re-derive the counts that fed it.
+            //
             // Real-Linear-logo button, immediately left of the bell; gated on the
             // active project's Linear connection.
             LinearPaneToolbarButton()
@@ -716,6 +710,20 @@ struct WorkRootScreen: View {
             addLaneSheetPresented = false
             restoreWorkViewStateAfterDeeplink()
             selectedLaneId = createdLaneId
+            await reload(refreshRemote: true)
+          }
+        )
+      }
+      .sheet(item: $manageLaneTarget) { snapshot in
+        LaneManageSheet(
+          snapshot: snapshot,
+          allLaneSnapshots: manageLaneSnapshots,
+          onDeleted: {
+            manageLaneTarget = nil
+            await reload(refreshRemote: true)
+          },
+          onComplete: {
+            manageLaneTarget = nil
             await reload(refreshRemote: true)
           }
         )
@@ -938,87 +946,230 @@ struct WorkRootScreen: View {
       : collapsedSectionIds.contains(group.id)
   }
 
-  @ViewBuilder
-  private func workSessionGroupRows(_ group: WorkSessionGroup) -> some View {
-    // The singleton form: one top-level row in the lane, so the header would be
-    // a divider carrying a name the row already says. The row takes the lane
-    // identity instead (its meta line and its "Go to lane" / PR actions).
-    if group.isHeaderless {
-      ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in
-        workSessionRows(session, showsLaneIdentity: true)
-      }
-    } else {
-      workSessionGroupRowsWithHeader(group)
-    }
+  /// Top-level rows of a group, in display order. Child shells are rendered by
+  /// their parent row, so they are filtered out here.
+  private func workTopLevelSessions(in group: WorkSessionGroup) -> [TerminalSessionSummary] {
+    group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }
+  }
+
+  /// Gutter the lane accent rail occupies: the 1pt rail plus the 8pt gap to the
+  /// card. Rows under a lane header shift right by this much; the rail itself is
+  /// drawn in that gutter, so it costs no card width of its own.
+  private static let workLaneRailGutter: CGFloat = 9
+
+  /// Absolute leading indent of a nested child-shell block, measured from the
+  /// list's own 16pt margin. Held constant whether or not a lane rail is present
+  /// so a nested shell never reads as double-indented under the rail.
+  private static let workChildShellIndent: CGFloat = 30
+
+  /// The `Lane ▸` submenu's wiring. Every entry is a command the Lanes tab
+  /// already sends, so the two surfaces cannot disagree about what a lane action
+  /// does. The two flags are per-command capability gates: a host that does not
+  /// advertise `lanes.updateAppearance` or `lanes.rename` shows no colour or
+  /// manage row at all rather than one that fails on tap.
+  var workLaneMenuActions: WorkSessionLaneMenuActions {
+    WorkSessionLaneMenuActions(
+      colorAvailable: syncService.canInvokeRemoteAction("lanes.updateAppearance"),
+      manageAvailable: syncService.canInvokeRemoteAction("lanes.rename"),
+      onStartChat: startChatInLane,
+      onCopyLaneLink: copyLaneLink,
+      onCopyBranchLink: copyLaneBranchLink,
+      onCopyLinearLink: copyLaneLinearLink,
+      onCopyPath: copyLanePath,
+      onSetColor: setLaneColor,
+      onManage: manageLane
+    )
   }
 
   @ViewBuilder
-  private func workSessionGroupRowsWithHeader(_ group: WorkSessionGroup) -> some View {
+  private func workSessionGroupSection(_ group: WorkSessionGroup) -> some View {
+    // The singleton form: one top-level row in the lane, so the header would be
+    // a divider carrying a name the row already says. The row takes the lane
+    // identity instead (its meta line and its "Go to lane" / PR actions).
+    //
+    // Still a `Section`, headerless: it keeps `listSectionSpacing` in charge of
+    // the gap to the neighbouring lane, and it gives the group an `.id` for the
+    // lane deeplink to scroll to even when there is no header view to carry one.
+    if group.isHeaderless {
+      Section {
+        ForEach(workTopLevelSessions(in: group)) { session in
+          workSessionRows(session, showsLaneIdentity: true)
+        }
+      }
+      .id(group.id)
+    } else {
+      workSessionGroupSectionWithHeader(group)
+    }
+  }
+
+  /// A real `Section` with a `header:`, not a header emitted as an ordinary row.
+  /// `List(.plain)` only pins content passed as a section header — as plain rows
+  /// these scrolled away, which is what made a long lane lose its name.
+  @ViewBuilder
+  private func workSessionGroupSectionWithHeader(_ group: WorkSessionGroup) -> some View {
     let isLaneDeleting = group.laneId.map(syncService.pendingLaneDeletionIds.contains) ?? false
     let collapsed = workGroupIsCollapsed(group)
     let isQuietRow = group.isQuiet && collapsed
-    WorkSidebarSectionHeader(
-      group: group,
-      collapsed: collapsed,
-      onToggle: {
-        withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-          toggleCollapsed(group.isQuiet ? group.quietOpenSectionId : group.id)
-        }
-      },
-      pullRequest: group.isOrphaned ? nil : group.laneId.flatMap { lanePrTagsByLaneId[$0] },
-      onOpenPullRequest: { tag in
-        openLanePullRequest(tag: tag, laneId: group.laneId)
-      },
-      onRefreshOrphanedSessions: group.isOrphaned
-        ? { Task { await refreshFromPullGesture() } }
-        : nil
-    )
-    .disabled(isLaneDeleting)
-    .redacted(reason: isLaneDeleting ? .placeholder : [])
-    .id(group.id)
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-    .listRowInsets(EdgeInsets(
-      top: isQuietRow ? 2 : 8,
-      leading: 16,
-      bottom: isQuietRow ? 0 : 2,
-      trailing: 16
-    ))
+    // Real lane sections get the accent rail; status/time headers span multiple
+    // lanes, so a single lane color would be a lie there.
+    let railColor: Color? = group.laneId == nil
+      ? nil
+      : LaneColorPalette.displayColor(forHex: group.laneColor).opacity(0.35)
 
-    if group.isOrphaned && !collapsed {
-      Text("The lane record is missing from the latest machine snapshot. Refresh to reconcile it. ADE will not delete sessions, branches, worktrees, commits, or pull requests.")
-        .font(.footnote)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .listRowBackground(Color.clear)
-        .listRowSeparator(.hidden)
-        .accessibilityIdentifier("work-orphan-session-explanation")
-    }
-
-    if !collapsed {
-      ForEach(group.sessions.filter { sessionPresentation.topLevelDisplaySessionIds.contains($0.id) }) { session in
-        // An expanded quiet lane holds only settled rows: the full card's
-        // preview line and meta row are about work in flight, of which there is
-        // none here.
-        //
-        // A row under a lane header does not repeat the lane name — the header
-        // two rows up already says it, and the space is worth more as the model.
-        workSessionRows(
-          session,
-          compact: group.isQuiet,
-          showsLaneIdentity: group.laneId == nil
-        )
+    Section {
+      if group.isOrphaned && !collapsed {
+        Text("The lane record is missing from the latest machine snapshot. Refresh to reconcile it. ADE will not delete sessions, branches, worktrees, commits, or pull requests.")
+          .font(.footnote)
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 8)
+          .listRowBackground(Color.clear)
+          .listRowSeparator(.hidden)
+          .accessibilityIdentifier("work-orphan-session-explanation")
       }
+
+      // Collapsed means an empty section body, never a hidden section: the
+      // header has to stay on screen or there is no way back into the group.
+      if !collapsed {
+        ForEach(workTopLevelSessions(in: group)) { session in
+          // An expanded quiet lane holds only settled rows: the full card's
+          // preview line and meta row are about work in flight, of which there is
+          // none here.
+          //
+          // A row under a lane header does not repeat the lane name — the header
+          // two rows up already says it, and the space is worth more as the model.
+          //
+          // Compactness is scoped to LANE groups on purpose. A quiet lane folds
+          // to compact rows because its header still names the lane, but the
+          // Snoozed and Settled shelves span lanes by construction and their
+          // headers name none — and `compactBody` has no lane chip to render.
+          // Folding a shelf to compact would leave three snoozed rows from three
+          // different lanes visually indistinguishable.
+          workSessionRows(
+            session,
+            compact: group.isQuiet && group.laneId != nil,
+            showsLaneIdentity: group.laneId == nil,
+            railColor: railColor
+          )
+        }
+      }
+    } header: {
+      WorkSidebarSectionHeader(
+        group: group,
+        collapsed: collapsed,
+        onToggle: {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            toggleCollapsed(group.isQuiet ? group.quietOpenSectionId : group.id)
+          }
+        },
+        pullRequest: group.isOrphaned ? nil : group.laneId.flatMap { lanePrTagsByLaneId[$0] },
+        onOpenPullRequest: { tag in
+          openLanePullRequest(tag: tag, laneId: group.laneId)
+        },
+        onRefreshOrphanedSessions: group.isOrphaned
+          ? { Task { await refreshFromPullGesture() } }
+          : nil,
+        // Lane-scoped git state belongs to the lane, so it is stated once here
+        // rather than repeated on every row beneath. Orphaned sections have no
+        // lane record to read it from.
+        laneStatus: group.isOrphaned ? nil : group.laneId.flatMap { laneById[$0]?.status }
+      )
+      .disabled(isLaneDeleting)
+      .redacted(reason: isLaneDeleting ? .placeholder : [])
+      // Opaque, not `.clear`: a pinned `List(.plain)` header is transparent by
+      // default, so rows would scroll visibly underneath the lane name. This is
+      // the same token `adeScreenBackground()` paints behind the list.
+      .listRowBackground(ADEColor.pageBackground)
+      .listRowSeparator(.hidden)
+      .listRowInsets(EdgeInsets(
+        top: isQuietRow ? 2 : 8,
+        leading: 16,
+        bottom: isQuietRow ? 0 : 2,
+        trailing: 16
+      ))
     }
+    // On the `Section`, not on the header row: the header is no longer a row of
+    // its own, and the lane deeplink scrolls to this id.
+    .id(group.id)
   }
 
   @ViewBuilder
   private func workSessionRows(
     _ session: TerminalSessionSummary,
     compact: Bool = false,
-    showsLaneIdentity: Bool = true
+    showsLaneIdentity: Bool = true,
+    railColor: Color? = nil
   ) -> some View {
+    sessionListRow(
+      session,
+      compact: compact,
+      showsLaneIdentity: showsLaneIdentity,
+      transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion)
+        ? sessionTransitionNamespace
+        : nil
+    )
+    // The 4pt vertical gap belongs INSIDE the cell, not in `listRowInsets`. With
+    // it in the insets the lane rail is chopped into one 4pt-gapped segment per
+    // row instead of reading as a single line down the lane. Do not move it back.
+    .padding(.vertical, 4)
+    .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
+    .id(session.id)
+    .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+    .listRowBackground(Color.clear)
+    .listRowSeparator(.hidden)
+
+    if let childGroup = sessionPresentation.childGroupsByParentId[session.id] {
+      WorkChildShellSection(
+        group: childGroup,
+        collapsed: collapsedSectionIds.contains(childGroup.collapsedSectionId),
+        onToggle: {
+          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
+            toggleCollapsed(childGroup.collapsedSectionId)
+          }
+        }
+      ) {
+        ForEach(childGroup.children) { child in
+          sessionListRow(
+            child,
+            compact: true,
+            // A child shell sits under its parent row, which already carries the
+            // lane identity — but this matches the previous default and is
+            // stated explicitly so the factory has no implicit callers.
+            showsLaneIdentity: true,
+            transitionNamespace: nil
+          )
+          .id(child.id)
+        }
+      }
+      // The nested shells sit at a fixed 30pt from the list margin whether or not
+      // a lane rail is present: the rail already consumes 9pt of that indent, so
+      // adding the old flat 30 on top of it would push nested shells a second
+      // step right and break the parent/child read.
+      .padding(.leading, Self.workChildShellIndent - 16 - (railColor == nil ? 0 : Self.workLaneRailGutter))
+      .padding(.bottom, 6)
+      .workLaneAccentRail(railColor, gutter: Self.workLaneRailGutter)
+      .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+      .listRowBackground(Color.clear)
+      .listRowSeparator(.hidden)
+    }
+  }
+
+  /// One argument list, two callers (the top-level session row and the child
+  /// shell loop). `WorkSessionListRow` takes ~35 arguments, nearly all of them
+  /// threaded straight off `self`; when they were spelled out at both call
+  /// sites every new callback had to be added twice, and one of the two was
+  /// eventually going to be missed. Only the three arguments that genuinely
+  /// differ between the callers are parameters here.
+  ///
+  /// List-cell concerns (`.id`, `.listRowInsets`, `.listRowBackground`,
+  /// `.listRowSeparator`, the lane accent rail, vertical padding) stay at the
+  /// call sites — those really do differ between the two.
+  private func sessionListRow(
+    _ session: TerminalSessionSummary,
+    compact: Bool,
+    showsLaneIdentity: Bool,
+    transitionNamespace: Namespace.ID?
+  ) -> WorkSessionListRow {
     WorkSessionListRow(
       session: session,
       lane: laneById[session.laneId],
@@ -1028,9 +1179,7 @@ struct WorkRootScreen: View {
         ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: session, lanes: lanes)],
       chatSummary: chatSummaries[session.id],
       isArchived: archivedSessionIds.contains(session.id),
-      transitionNamespace: ADEMotion.allowsMatchedGeometry(reduceMotion: reduceMotion)
-        ? sessionTransitionNamespace
-        : nil,
+      transitionNamespace: transitionNamespace,
       compact: compact,
       showsLaneIdentity: showsLaneIdentity,
       isLaneDeleting: syncService.pendingLaneDeletionIds.contains(session.laneId),
@@ -1051,66 +1200,16 @@ struct WorkRootScreen: View {
       lifecycleAvailable: syncService.supportsSessionLifecycleActions,
       snoozeAvailable: syncService.supportsSessionSnoozeActions,
       onSettle: settleSession,
+      onDismissAndSettle: dismissAndSettleSession,
       onUnsettle: unsettleSession,
       onKeepActive: keepSessionActive,
       onSnooze: snoozeSession,
-      onWake: wakeSession
+      onWake: wakeSession,
+      deleteSessionAvailable: syncService.supportsWorkSessionDeletion,
+      onDeleteSession: deleteWorkSession,
+      onOpenInWeb: openSessionInWeb,
+      laneMenu: workLaneMenuActions
     )
-    .id(session.id)
-    .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
-    .listRowBackground(Color.clear)
-    .listRowSeparator(.hidden)
-
-    if let childGroup = sessionPresentation.childGroupsByParentId[session.id] {
-      WorkChildShellSection(
-        group: childGroup,
-        collapsed: collapsedSectionIds.contains(childGroup.collapsedSectionId),
-        onToggle: {
-          withAnimation(ADEMotion.quick(reduceMotion: reduceMotion)) {
-            toggleCollapsed(childGroup.collapsedSectionId)
-          }
-        }
-      ) {
-        ForEach(childGroup.children) { child in
-          WorkSessionListRow(
-            session: child,
-            lane: laneById[child.laneId],
-            pullRequest: lanePrTagsByLaneId[child.laneId]
-              ?? lanePrTagsByLaneId[resolvedWorkNavigationLaneId(for: child, lanes: lanes)],
-            chatSummary: chatSummaries[child.id],
-            isArchived: archivedSessionIds.contains(child.id),
-            transitionNamespace: nil,
-            compact: true,
-            isLaneDeleting: syncService.pendingLaneDeletionIds.contains(child.laneId),
-            selectedSessionId: $selectedSessionTransitionId,
-            isSelecting: isSelecting,
-            isChecked: selectedSessionIds.contains(child.id),
-            onLongPressSelect: startSelection,
-            onToggleSelect: toggleSelection,
-            onOpen: openSession,
-            onPin: togglePin,
-            onRename: beginRename,
-            onStopRuntime: { session in stopRuntimeTarget = session },
-            onDelete: deleteChatSession,
-            onCopyId: copySessionId,
-            onCopyDeepLink: copySessionDeepLink,
-            onGoToLane: goToLane,
-            onOpenPullRequest: openPullRequest,
-            lifecycleAvailable: syncService.supportsSessionLifecycleActions,
-            snoozeAvailable: syncService.supportsSessionSnoozeActions,
-            onSettle: settleSession,
-            onUnsettle: unsettleSession,
-            onKeepActive: keepSessionActive,
-            onSnooze: snoozeSession,
-            onWake: wakeSession
-          )
-          .id(child.id)
-        }
-      }
-      .listRowInsets(EdgeInsets(top: 0, leading: 30, bottom: 6, trailing: 16))
-      .listRowBackground(Color.clear)
-      .listRowSeparator(.hidden)
-    }
   }
 
   var renamePresentedBinding: Binding<Bool> {
@@ -1141,5 +1240,36 @@ struct WorkRootScreen: View {
     searchText = ""
     selectedLaneId = "all"
     selectedStatus = .all
+  }
+}
+
+private extension View {
+  /// Indents a session cell into a lane section and draws the lane's accent as a
+  /// 1pt rail in the gutter that indent opens up. Desktop's equivalent is `pl-2`
+  /// on the row container plus a rail at `left-1` (`SessionListPane.tsx`).
+  ///
+  /// Deliberately padding + overlay rather than wrapping the row in an `HStack`
+  /// with the rail as a sibling: the geometry is identical, but the session row
+  /// stays the root view of its list cell. `WorkSessionListRow` attaches
+  /// `.swipeActions` and `.contextMenu` to its own body, and burying that body
+  /// inside a container view inside the cell puts those row-level modifiers at
+  /// the mercy of how far SwiftUI propagates them. Keep the row at the root.
+  ///
+  /// A nil color means no rail and no indent — status and time sections span
+  /// several lanes, so there is no single lane color that would be true there.
+  @ViewBuilder
+  func workLaneAccentRail(_ color: Color?, gutter: CGFloat) -> some View {
+    if let color {
+      padding(.leading, gutter)
+        .overlay(alignment: .leading) {
+          // Spans the full cell height, vertical row padding included, so
+          // consecutive rows in a lane read as one unbroken line.
+          Capsule()
+            .fill(color)
+            .frame(width: 1)
+        }
+    } else {
+      self
+    }
   }
 }

@@ -156,6 +156,37 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("accepts the connections brain_repair fact and strips anything beyond the coarse enums", () => {
+    const harness = makeHarness();
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: {
+        feature: "connections",
+        action: "brain_repair",
+        outcome: "failed",
+        error_text: "ENOENT /Users/someone/.ade/secrets/credentials.json.enc",
+      },
+      dedupeKey: "brain_repair:failed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "connections",
+      action: "brain_repair",
+      outcome: "failed",
+    });
+    expect(harness.messages[0]?.properties).not.toHaveProperty("error_text");
+    // Same dedupe key inside the interval: dropped, so a click-loop is bounded.
+    expect(harness.service.capture({
+      event: "ade_feature_used",
+      surface: "desktop",
+      properties: { feature: "connections", action: "brain_repair", outcome: "failed" },
+      dedupeKey: "brain_repair:failed",
+      minimumIntervalMs: 60 * 60 * 1_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("accepts only coarse transactional update telemetry properties", () => {
     const harness = makeHarness();
 
