@@ -55,7 +55,7 @@ export function replaceComposerTriggerSpan(
   };
 }
 
-export type ComposerTokenKind = "file" | "command";
+export type ComposerTokenKind = "file" | "command" | "mention";
 
 export type ComposerTokenRange = {
   start: number;
@@ -73,7 +73,17 @@ const CONFIRMED_TOKEN_RE = /(^|\s)([@/])(\S+)/g;
  */
 export function findConfirmedComposerTokens(
   text: string,
-  confirm: { isFile: (body: string) => boolean; isCommand: (body: string) => boolean },
+  confirm: {
+    isFile: (body: string) => boolean;
+    isCommand: (body: string) => boolean;
+    /**
+     * Optional: `chat:<id>` / `lane:<id>` / `term:<id>` entity pointers. Unlike
+     * files these need no side table to confirm — the prefixed grammar is
+     * self-identifying — so callers that render mention chips can pass a purely
+     * syntactic predicate.
+     */
+    isMention?: (body: string) => boolean;
+  },
 ): ComposerTokenRange[] {
   if (!text) return [];
   const tokens: ComposerTokenRange[] = [];
@@ -81,7 +91,7 @@ export function findConfirmedComposerTokens(
     const start = (match.index ?? 0) + match[1]!.length;
     const body = match[3]!;
     const kind: ComposerTokenKind | null = match[2] === "@"
-      ? (confirm.isFile(body) ? "file" : null)
+      ? (confirm.isMention?.(body) ? "mention" : confirm.isFile(body) ? "file" : null)
       : (confirm.isCommand(body) ? "command" : null);
     if (kind) tokens.push({ start, end: start + 1 + body.length, kind });
   }

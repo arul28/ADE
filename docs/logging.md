@@ -145,6 +145,19 @@ identifier. Reads, menu opens, restores, and deletes are not product events.
 The existing `ade_feature_used` limits cap this at 30 accepted events per minute
 and 140 per UTC day without raising the shared 200-event ceiling.
 
+Composer @-mention expansion records the existing coarse `ade_feature_used`
+event at the expansion owner boundary (`chatMentionService` via the
+`onChatMentionsExpanded` hook, produced by
+`captureChatMentionsExpandedAnalytics`) with `feature: "chat"`,
+`action: "mention_expanded"`, `outcome: "completed"`, and `source: "runtime"`.
+It fires only when a send's text actually gained `<ade-mention>` pointer
+blocks — never per keystroke, per suggestion query, or on the idempotent
+second expansion pass — and carries no mention targets, titles, previews, or
+counts. An installation-wide `chat_mention_expanded` deduplication key with a
+one-hour minimum interval bounds it to at most 24 accepted events per UTC day,
+inside the existing `ade_feature_used` and shared ceilings. The keystroke-rate
+`chat.listMentionSuggestions` read stays untracked by design.
+
 Lane “Archive & Reclaim” records the existing coarse `ade_feature_used`
 mutation fact with `feature: "lanes"` and
 `action: "lanes.archiveAndReclaim"` through the same durable `usage_events`

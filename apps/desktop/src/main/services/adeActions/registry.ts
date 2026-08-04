@@ -32,6 +32,10 @@ import type {
 } from "../../../shared/types/attention";
 import type { ComputerUseOwnerSnapshotArgs } from "../../../shared/types/computerUseArtifacts";
 import type {
+  ChatMentionSuggestArgs,
+  ChatMentionSuggestResult,
+} from "../../../shared/types/chatMentions";
+import type {
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
   AgentChatGetTurnFileDiffArgs,
@@ -625,6 +629,7 @@ export const ADE_ACTION_ALLOWLIST: Partial<Record<AdeActionDomain, readonly stri
     "approveToolUse",
     "codexFuzzyFileSearch",
     "fileSearch",
+    "listMentionSuggestions",
     "handoffSession",
     "prepareCrossMachineHandoff",
     "validateCrossMachineSource",
@@ -1745,6 +1750,23 @@ function buildChatDomainService(runtime: AdeRuntime): OpaqueService | null {
         path: match.path,
         ...(typeof match.score === "number" ? { score: match.score } : {}),
       }));
+    },
+    // Composer @-mention suggestions (chats / lanes / terminals) for the
+    // active project. Roster-only reads; no transcript or PTY work happens
+    // here, so this is safe at keystroke rate.
+    listMentionSuggestions: (args?: unknown): Promise<ChatMentionSuggestResult> => {
+      // Action args cross a process boundary, so narrow rather than cast: only
+      // the two string fields of the contract are forwarded.
+      const record = (args ?? {}) as Record<string, unknown>;
+      const query = typeof record.query === "string" ? record.query : "";
+      const excludeSessionId = typeof record.excludeSessionId === "string"
+        ? record.excludeSessionId
+        : undefined;
+      const suggestArgs: ChatMentionSuggestArgs = {
+        query,
+        ...(excludeSessionId ? { excludeSessionId } : {}),
+      };
+      return agentChatService.listMentionSuggestions(suggestArgs);
     },
     getTurnFileDiff: (args?: AgentChatGetTurnFileDiffArgs) => {
       if (!args) throw new Error("Turn file diff args are required.");

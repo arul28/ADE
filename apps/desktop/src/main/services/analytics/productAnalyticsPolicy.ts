@@ -98,6 +98,7 @@ const ANALYTICS_ONLY_ACTIONS = new Set([
   "header_opened",
   "preferences_changed",
   "brain_repair",
+  "mention_expanded",
 ]);
 
 const EVENT_PROPERTY_KEYS: Record<ProductAnalyticsEventName, ReadonlySet<string>> = {

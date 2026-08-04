@@ -12,6 +12,7 @@ export * from "./prs";
 export * from "./files";
 export * from "./sessions";
 export * from "./chat";
+export * from "./chatMentions";
 export * from "./cto";
 export * from "./computerUseArtifacts";
 export * from "./iosSimulator";

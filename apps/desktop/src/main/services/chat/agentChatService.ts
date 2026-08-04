@@ -374,6 +374,12 @@ import {
   buildChatContextAttachmentPrompt,
   normalizeChatContextAttachments,
 } from "../../../shared/chatContextAttachments";
+import { carryChatMentionBlocks } from "../../../shared/chatMentions";
+import type {
+  ChatMentionSuggestArgs,
+  ChatMentionSuggestResult,
+} from "../../../shared/types/chatMentions";
+import { createChatMentionService, markChatMentionsExpanded } from "./chatMentionService";
 import {
   claudeJsonlToChatEvents,
   codexTurnsToChatEvents,
@@ -6712,10 +6718,16 @@ export function createAgentChatService(args: {
   prService?: ReturnType<typeof createPrService> | null;
   diskPressureMonitor?: DiskPressureMonitor | null;
   getTestService?: () => { listSuites: () => any[]; run: (args: any) => Promise<any>; stop: (args: any) => void; listRuns: (args?: any) => any[]; getLogTail: (args: any) => string } | null;
-  ptyService?: Pick<
-    ReturnType<typeof createPtyService>,
-    "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
-  > | null;
+  ptyService?: (
+    Pick<
+      ReturnType<typeof createPtyService>,
+      "create" | "sendToSession" | "enrichSessions" | "canAcceptScheduledTurn" | "getRuntimeState"
+    >
+    // Optional so narrow test doubles keep compiling; used only by composer
+    // @-mention suggestions/expansion, which degrade to "no terminals" when
+    // the runtime supplies a reduced pty surface.
+    & Partial<Pick<ReturnType<typeof createPtyService>, "listTerminals" | "previewTerminal">>
+  ) | null;
   getAutomationService?: () => AgentChatAutomationService | null;
   getGitService?: () => CtoOperatorToolDeps["gitService"];
   conflictService?: CtoOperatorToolDeps["conflictService"];
@@ -6743,6 +6755,8 @@ export function createAgentChatService(args: {
   onEvent?: (event: AgentChatEventEnvelope) => void;
   /** Low-frequency, content-free hook emitted once when a persisted turn reaches a terminal state. */
   onTurnSettled?: (event: AgentChatTurnSettledEvent) => void;
+  /** Content-free hook fired when a send's composer @-mentions were expanded into pointer blocks. */
+  onChatMentionsExpanded?: (event: { sessionId: string | null }) => void;
   onSessionEnded?: (args: { laneId: string; sessionId: string; exitCode: number | null }) => void;
   onLinearIssueChatLinked?: (args: {
     laneId: string;
@@ -6788,6 +6802,7 @@ export function createAgentChatService(args: {
     createScheduledWorkScheduler = createChatScheduledWorkScheduler,
     onEvent,
     onTurnSettled,
+    onChatMentionsExpanded,
     onSessionEnded,
     onLinearIssueChatLinked,
     getDirtyFileTextForPath,
@@ -31902,8 +31917,15 @@ export function createAgentChatService(args: {
     const contextAttachmentPrompt = providerSlashCommand && !personalSession
       ? ""
       : buildChatContextAttachmentPrompt(publicContextAttachments);
+    // A custom slash command replaces the user's text with the command's own
+    // markdown, which would drop the `<ade-mention>` blocks the send path
+    // already resolved. Carry them over (no-op when the template interpolated
+    // `$ARGUMENTS` and thus already contains them).
+    const slashCommandPromptWithMentions = expandedSlashCommandPrompt != null
+      ? carryChatMentionBlocks(trimmed, expandedSlashCommandPrompt)
+      : null;
     const promptText = providerSlashCommand && !personalSession
-      ? expandedSlashCommandPrompt ?? trimmed
+      ? slashCommandPromptWithMentions ?? trimmed
       : composeLaunchDirectives(trimmed, [
           shouldInjectLaneDirective
             ? buildLaneWorktreeDirective({
@@ -35372,7 +35394,7 @@ export function createAgentChatService(args: {
     },
   ): Promise<void>;
   async function sendMessage(
-    args: AgentChatSendArgs,
+    rawArgs: AgentChatSendArgs,
     options?: {
       awaitDispatch?: boolean;
       awaitBackendDispatch?: boolean;
@@ -35382,6 +35404,14 @@ export function createAgentChatService(args: {
       routeActiveToSteer?: boolean;
     },
   ): Promise<void | AgentChatSteerResult> {
+    // Composer @-mention chips expand here, before any routing decision, so a
+    // fresh turn, a steer, and every provider all receive the same pointer
+    // blocks. Skipped when the caller already prepared the message (the
+    // expansion happened on the pass that produced it).
+    const mentionsExpandedHere = !options?.preparedMessage;
+    const args = mentionsExpandedHere
+      ? await applyChatMentionExpansion(rawArgs)
+      : rawArgs;
     const dispatchStartedAt = Date.now();
     const managed = ensureManagedSession(args.sessionId);
     // Empty sends fall through to prepareSendMessage's no-op path instead of
@@ -35413,7 +35443,7 @@ export function createAgentChatService(args: {
       }
     };
     if (options?.routeActiveToSteer && routableText && canRouteActiveSendToSteer(managed)) {
-      return steerUserMessage({
+      const rerouted = {
         sessionId: args.sessionId,
         text: args.text,
         displayText: args.displayText,
@@ -35423,7 +35453,13 @@ export function createAgentChatService(args: {
         reasoningEffort: args.reasoningEffort,
         executionMode: args.executionMode,
         interactionMode: args.interactionMode,
-      });
+      };
+      // This literal drops the expansion marker the send path stamped, so
+      // re-stamp it: steerWithOptions expands too, and the blocks must not be
+      // appended twice.
+      return steerUserMessage(
+        mentionsExpandedHere ? markChatMentionsExpanded(rerouted) : rerouted,
+      );
     }
     if (await maybeHandleClaudeOutputStyleSlashCommand(args)) return;
     const prepared = options?.preparedMessage ?? prepareSendMessage(args);
@@ -35609,12 +35645,29 @@ export function createAgentChatService(args: {
   };
 
   const steerWithOptions = async (
-    { sessionId, text, displayText, attachments = [], contextAttachments = [], metadata, reasoningEffort, executionMode, interactionMode, dispatchMode }: AgentChatSteerArgs,
+    steerArgs: AgentChatSteerArgs,
     options?: {
       allowPendingInput?: boolean;
       onAcceptedDispatch?: () => void;
     },
   ): Promise<AgentChatSteerResult> => {
+    // Single owner of steer-side @-mention expansion: every steer entry point
+    // (public steer(), steerUserMessage, messageSession, and the daemon action
+    // route) funnels through here, so expanding anywhere else would leave one
+    // of them shipping raw chips. Idempotent via the expansion marker.
+    const expandedArgs = await applyChatMentionExpansion(steerArgs);
+    const {
+      sessionId,
+      text,
+      displayText,
+      attachments = [],
+      contextAttachments = [],
+      metadata,
+      reasoningEffort,
+      executionMode,
+      interactionMode,
+      dispatchMode,
+    } = expandedArgs;
     if (dispatchMode !== undefined && dispatchMode !== "inline" && dispatchMode !== "interrupt") {
       throw new Error(`Unsupported Claude steer dispatch mode: ${String(dispatchMode)}`);
     }
@@ -36014,6 +36067,8 @@ export function createAgentChatService(args: {
   const steerUserMessage = async (
     args: AgentChatSteerArgs,
   ): Promise<AgentChatSteerResult> => {
+    // @-mention expansion happens inside steerWithOptions (the single steer
+    // funnel), not here: this wrapper only owns the turn-marker bookkeeping.
     const managed = ensureManagedSession(args.sessionId);
     const routableMessage = args.text.trim().length > 0
       || (args.attachments?.length ?? 0) > 0
@@ -43168,6 +43223,35 @@ export function createAgentChatService(args: {
     return false;
   };
 
+  // Composer @-mention backend. Roster reads are project-scoped by
+  // construction (this whole service is bound to one project), so mentions can
+  // never point at another project's chats/lanes/terminals.
+  const listTerminalsForMentions = ptyService?.listTerminals?.bind(ptyService);
+  const previewTerminalForMentions = ptyService?.previewTerminal?.bind(ptyService);
+  const chatMentionService = createChatMentionService({
+    listChatSessions: () => listSessions(undefined, { includeArchived: false }),
+    readChatTranscript: (args) => getChatTranscript(args),
+    listLanes: () => laneService.list({ includeArchived: false, includeStatus: false }),
+    listPrs: prService ? () => prService.listAll({}) : null,
+    listTerminals: listTerminalsForMentions ? () => listTerminalsForMentions({}) : null,
+    previewTerminal: previewTerminalForMentions
+      ? (args) => Promise.resolve(previewTerminalForMentions(args))
+      : null,
+    logger,
+    onMentionsExpanded: onChatMentionsExpanded ?? null,
+  });
+
+  const listMentionSuggestions = (
+    args: ChatMentionSuggestArgs = {},
+  ): Promise<ChatMentionSuggestResult> => chatMentionService.listChatMentionSuggestions(args);
+
+  /**
+   * Expand `@chat:` / `@lane:` / `@term:` chips into `<ade-mention>` pointer
+   * blocks. Owned by the mention service; the send and steer paths call it, and
+   * the marker it stamps keeps a send→steer reroute from expanding twice.
+   */
+  const applyChatMentionExpansion = chatMentionService.applyChatMentionExpansion;
+
   return {
     createSession,
     importExternalChatSession,
@@ -43183,6 +43267,7 @@ export function createAgentChatService(args: {
     markCrossMachineHandoff,
     emitAdeCard,
     sendMessage,
+    listMentionSuggestions,
     messageSession,
     createScheduledWork,
     listScheduledWork,

@@ -344,7 +344,11 @@ with the watcher:
 - `add`, `unlink`, `rename` events incrementally update the list
 - `addDir` / `unlinkDir` events invalidate the subtree
 - `fileService.quickOpen({ workspaceId, query, limit, includeIgnored })`
-  runs a scoring pass over the matching index
+  runs a scoring pass over the matching index. An empty query is a valid
+  browse: it returns shallowest-paths-first (`scoreBrowseDepth`) instead of
+  an empty list, which is what the composer `@` menu, TUI palette, iOS, and
+  web clients rely on for the pre-typing state — all four funnel into this
+  one service, so no caller-side empty-query guards should be reintroduced
 - `fileService.searchText({ workspaceId, query, limit, includeIgnored })`
   streams text matches using `ripgrep` fallback if available, otherwise
   a node-side line scanner

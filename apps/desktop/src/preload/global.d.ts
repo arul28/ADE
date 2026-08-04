@@ -179,6 +179,8 @@ import type {
   AgentChatRewindFilesResult,
   AgentChatFileSearchArgs,
   AgentChatFileSearchResult,
+  ChatMentionSuggestArgs,
+  ChatMentionSuggestResult,
   PromptStashCreateArgs,
   PromptStashDeleteArgs,
   PromptStashEntry,
@@ -1793,6 +1795,12 @@ declare global {
           args: AgentChatFileSearchArgs,
           pin?: OpenProjectBinding | null,
         ) => Promise<AgentChatFileSearchResult[]>;
+        // Optional: the webclient adapter's agentChat surface does not
+        // implement it, and callers must degrade to an empty menu section.
+        listMentionSuggestions?: (
+          args: ChatMentionSuggestArgs,
+          pin?: OpenProjectBinding | null,
+        ) => Promise<ChatMentionSuggestResult>;
         promptStashes: {
           list: (
             pin?: OpenProjectBinding | null,

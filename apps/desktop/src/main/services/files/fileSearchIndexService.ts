@@ -72,10 +72,23 @@ function shouldSkipPathPrefix(relPath: string, includeIgnored: boolean): boolean
   return relPath === ".ade" || relPath.startsWith(".ade/");
 }
 
+/** Starting score for the empty-query browse ranking; one point per path segment is deducted. */
+const BROWSE_BASE_SCORE = 100;
+
+/**
+ * Empty query browses the workspace: rank shallower paths first. Both
+ * separators count so Windows-style paths depth-rank identically.
+ */
+function scoreBrowseDepth(normalizedPath: string): number {
+  let depth = 0;
+  for (const ch of normalizedPath) if (ch === "/" || ch === "\\") depth += 1;
+  return Math.max(1, BROWSE_BASE_SCORE - depth);
+}
+
 function scorePath(pathValue: string, query: string): number {
   const normalized = pathValue.toLowerCase();
   const needle = query.toLowerCase().trim();
-  if (!needle) return 0;
+  if (!needle) return scoreBrowseDepth(normalized);
   if (normalized === needle) return 1000;
   if (normalized.endsWith(`/${needle}`) || normalized.endsWith(`\\${needle}`)) return 900;
   const idx = normalized.indexOf(needle);

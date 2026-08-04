@@ -3,6 +3,34 @@ import type { ProductAnalyticsService } from "./productAnalyticsService";
 
 type AgentTurnAnalytics = Pick<ProductAnalyticsService, "captureInternal">;
 
+/**
+ * One coarse adoption fact when a send's composer @-mentions were expanded
+ * into pointer blocks. Identity only — no mention targets, titles, previews,
+ * or counts. The installation-wide dedupe key plus a one-hour minimum interval
+ * bounds this to at most 24 accepted events per UTC day, inside the existing
+ * `ade_feature_used` and shared ceilings.
+ */
+export function captureChatMentionsExpandedAnalytics(args: {
+  analytics: AgentTurnAnalytics;
+  projectId: string;
+  sessionId: string | null;
+}): void {
+  args.analytics.captureInternal({
+    event: "ade_feature_used",
+    surface: "api",
+    projectId: args.projectId,
+    ...(args.sessionId ? { sessionId: args.sessionId } : {}),
+    dedupeKey: "chat_mention_expanded",
+    minimumIntervalMs: 60 * 60_000,
+    properties: {
+      feature: "chat",
+      action: "mention_expanded",
+      outcome: "completed",
+      source: "runtime",
+    },
+  });
+}
+
 export function captureAgentTurnSettledAnalytics(args: {
   analytics: AgentTurnAnalytics;
   projectId: string;

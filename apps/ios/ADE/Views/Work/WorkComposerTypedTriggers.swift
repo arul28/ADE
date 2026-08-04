@@ -273,7 +273,11 @@ final class WorkComposerSuggestionController: ObservableObject {
     didSet {
       // The cached workspace belongs to the previous lane; a stale entry
       // would make @ quick-open search the wrong worktree.
-      if oldValue != laneId { cachedWorkspaceId = nil }
+      if oldValue != laneId {
+        cachedWorkspaceId = nil
+        fileCache.removeAll()
+        fileCacheOrder.removeAll()
+      }
     }
   }
   weak var syncService: SyncService?
@@ -284,6 +288,35 @@ final class WorkComposerSuggestionController: ObservableObject {
 
   private var fetchTask: Task<Void, Never>?
   private var cachedWorkspaceId: String?
+
+  /// Per-lane quick-open results keyed by lowercased query (`""` is the browse
+  /// list). Backspacing through a path is the common case on mobile and every
+  /// prefix has already been fetched, so this turns a sync round-trip per
+  /// keystroke into one per *new* query. Entries expire so a long-lived
+  /// composer can't pin a stale listing after files change on the host.
+  private var fileCache: [String: (items: [WorkComposerSuggestion], at: Date)] = [:]
+  private var fileCacheOrder: [String] = []
+  private static let fileCacheTTL: TimeInterval = 30
+  private static let fileCacheMaxEntries = 32
+
+  private func cachedFiles(_ key: String) -> [WorkComposerSuggestion]? {
+    guard let entry = fileCache[key] else { return nil }
+    guard Date().timeIntervalSince(entry.at) < Self.fileCacheTTL else {
+      fileCache.removeValue(forKey: key)
+      fileCacheOrder.removeAll { $0 == key }
+      return nil
+    }
+    return entry.items
+  }
+
+  private func rememberFiles(_ key: String, _ items: [WorkComposerSuggestion]) {
+    if fileCache[key] == nil { fileCacheOrder.append(key) }
+    fileCache[key] = (items, Date())
+    while fileCacheOrder.count > Self.fileCacheMaxEntries {
+      let oldest = fileCacheOrder.removeFirst()
+      fileCache.removeValue(forKey: oldest)
+    }
+  }
 
   var isVisible: Bool {
     activeMatch != nil && (isLoading || !suggestions.isEmpty)
@@ -325,6 +358,13 @@ final class WorkComposerSuggestionController: ObservableObject {
 
   private func scheduleFileFetch(query: String) {
     fetchTask?.cancel()
+    let cacheKey = query.lowercased()
+    if let cached = cachedFiles(cacheKey) {
+      fetchTask = nil
+      isLoading = false
+      finishFiles(cached)
+      return
+    }
     isLoading = true
     let laneId = laneId
     let sync = syncService
@@ -349,20 +389,22 @@ final class WorkComposerSuggestionController: ObservableObject {
           includeIgnored: true
         )
         guard !Task.isCancelled else { return }
-        await MainActor.run {
-          self.finishFiles(
-            items.map { item in
-              let name = (item.path as NSString).lastPathComponent
-              let dir = (item.path as NSString).deletingLastPathComponent
-              return WorkComposerSuggestion(
-                id: "file:\(item.path)",
-                kind: .at,
-                title: name.isEmpty ? item.path : name,
-                subtitle: dir.isEmpty ? nil : dir,
-                insertText: "@\(item.path)"
-              )
-            }
+        let mapped = items.map { item -> WorkComposerSuggestion in
+          let name = (item.path as NSString).lastPathComponent
+          let dir = (item.path as NSString).deletingLastPathComponent
+          return WorkComposerSuggestion(
+            id: "file:\(item.path)",
+            kind: .at,
+            title: name.isEmpty ? item.path : name,
+            subtitle: dir.isEmpty ? nil : dir,
+            insertText: "@\(item.path)"
           )
+        }
+        await MainActor.run {
+          // Only successful fetches are cached — caching the `[]` from a failed
+          // round-trip would pin an empty list for the whole TTL.
+          self.rememberFiles(cacheKey, mapped)
+          self.finishFiles(mapped)
         }
       } catch {
         guard !Task.isCancelled else { return }

@@ -1448,8 +1448,12 @@ export function createFileService({
 
     async quickOpen(args: FilesQuickOpenArgs): Promise<FilesQuickOpenItem[]> {
       const workspace = resolveWorkspace(args.workspaceId);
+      // An empty query is a browse request, not a no-op: it returns the
+      // workspace's shallowest paths (see `scorePath`) so a bare `@` in any
+      // composer — desktop, TUI, iOS, web — opens a navigable list instead of
+      // "No files found". Callers that genuinely want nothing back on an empty
+      // query still guard on their own side (global search, chat.fileSearch).
       const query = args.query.trim();
-      if (!query) return [];
       const limit = typeof args.limit === "number" ? Math.max(1, Math.min(500, args.limit)) : 120;
       return await indexService.quickOpen({
         workspaceId: args.workspaceId,

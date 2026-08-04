@@ -187,6 +187,41 @@ describe("productAnalyticsService", () => {
     fs.rmSync(harness.root, { recursive: true, force: true });
   });
 
+  it("accepts the chat mention_expanded fact and bounds a mention-heavy day by dedupe", () => {
+    const harness = makeHarness();
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: {
+        feature: "chat",
+        action: "mention_expanded",
+        outcome: "completed",
+        source: "runtime",
+        mention_titles: "Fix login lane, sync debugging chat",
+      },
+      dedupeKey: "chat_mention_expanded",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: true, reason: "accepted" });
+    expect(harness.messages[0]?.properties).toMatchObject({
+      feature: "chat",
+      action: "mention_expanded",
+      outcome: "completed",
+      source: "runtime",
+    });
+    // Entity titles are user text; the sanitizer must strip the unknown key.
+    expect(harness.messages[0]?.properties).not.toHaveProperty("mention_titles");
+    // Second mention-send inside the hour: dropped, so a mention-heavy session
+    // costs at most one accepted event per hour.
+    expect(harness.service.captureInternal({
+      event: "ade_feature_used",
+      surface: "api",
+      properties: { feature: "chat", action: "mention_expanded", outcome: "completed", source: "runtime" },
+      dedupeKey: "chat_mention_expanded",
+      minimumIntervalMs: 60 * 60_000,
+    })).toEqual({ accepted: false, reason: "duplicate" });
+    fs.rmSync(harness.root, { recursive: true, force: true });
+  });
+
   it("accepts only coarse transactional update telemetry properties", () => {
     const harness = makeHarness();
 
