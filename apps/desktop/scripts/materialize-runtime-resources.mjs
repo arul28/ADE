@@ -6,6 +6,7 @@ import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -26,23 +27,18 @@ function currentTarget() {
   return `${platform}-${arch}`;
 }
 
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
 /**
- * Windows npm is a `.cmd` shim, and naming it is not enough: Node has refused
- * to spawn `.cmd`/`.bat` without a shell since CVE-2024-27980, so `execFile`
- * fails with EINVAL. Under a shell the command line is re-parsed, so arguments
- * are quoted here — `cliRoot` and `runtimeRoot` are absolute paths and a
- * developer checkout under "C:\Users\First Last\..." would otherwise split.
+ * Windows npm is a `.cmd` shim, and naming it `npm.cmd` is not enough: Node has
+ * refused to spawn `.cmd`/`.bat` without a shell since CVE-2024-27980, so
+ * `execFile` fails with EINVAL either way. Both measured.
+ *
+ * `resolveNpmInvocation` sidesteps the shim entirely by running npm's own
+ * JavaScript entry point under this process's `node`. No shell means no
+ * command-line re-parsing, so a checkout under "C:\Users\First Last\..." needs
+ * no quoting to survive.
  */
-function npmExecOptions(baseOptions) {
-  if (process.platform !== "win32") return { options: baseOptions, quoteArg: (arg) => arg };
-  return {
-    options: { ...baseOptions, shell: true },
-    quoteArg: (arg) => (/[\s"]/.test(arg) ? `"${String(arg).replace(/"/g, '\\"')}"` : arg),
-  };
+function npmInvocation(args) {
+  return resolveNpmInvocation(args);
 }
 
 function artifactNamesForTarget(target) {
@@ -337,12 +333,7 @@ async function buildHostArtifactsIfNeeded() {
   let stdout = "";
   let stderr = "";
   try {
-    const npmExec = npmExecOptions({
-      cwd: desktopRoot,
-      env,
-      maxBuffer: 100 * 1024 * 1024,
-    });
-    const result = await execFileAsync(npmCommand(), [
+    const npm = npmInvocation([
       "--prefix",
       cliRoot,
       "run",
@@ -352,7 +343,12 @@ async function buildHostArtifactsIfNeeded() {
       target,
       "--out-dir",
       runtimeRoot,
-    ].map(npmExec.quoteArg), npmExec.options);
+    ]);
+    const result = await execFileAsync(npm.command, npm.args, {
+      cwd: desktopRoot,
+      env,
+      maxBuffer: 100 * 1024 * 1024,
+    });
     stdout = result.stdout;
     stderr = result.stderr;
   } catch (error) {

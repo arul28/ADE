@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveNpmInvocation } from "./dev-shared.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
@@ -103,33 +104,21 @@ function parseArgs(argv) {
   return options;
 }
 
-// Node-ecosystem launchers that Windows ships as `.cmd` shims rather than real
-// executables. An allowlist, not "anything without an extension": `git` is also
-// extensionless on the command line but is a genuine `git.exe`, so rewriting it
-// to `git.cmd` would break it.
-const WINDOWS_CMD_SHIM_COMMANDS = new Set(["npm", "npx", "yarn", "pnpm"]);
-
 /**
- * Windows ships npm/npx as `.cmd` shims, which Node cannot spawn by bare name
- * (`ENOENT`) and cannot spawn by `.cmd` name either — that has been rejected
- * outright since CVE-2024-27980 (`EINVAL`). Both were measured here. The shim
- * needs a shell, which is the same conclusion run-windows-test-build.mjs
- * reached. This helper existed only for the macOS path, where the bare name is
- * correct, so the gap surfaced the first time channel packaging ran on Windows.
+ * Windows ships npm as a `.cmd` shim, which Node cannot spawn by bare name
+ * (`ENOENT`) or by its `.cmd` name (`EINVAL`, since CVE-2024-27980) — both
+ * measured. This script only ever ran on macOS, where the bare name is correct,
+ * so the gap surfaced the first time channel packaging ran on Windows.
  *
- * Arguments containing spaces are quoted because `shell: true` re-parses the
- * command line. Every argument here is a literal this script controls, so this
- * is belt-and-braces rather than load-bearing.
+ * `resolveNpmInvocation` is the repo's existing answer: on Windows it runs
+ * npm's own JavaScript entry point under this process's `node`, so there is no
+ * shell in the picture and therefore no re-parsing of paths containing spaces.
+ * Only npm is rewritten — `git` is extensionless on the command line too, but
+ * is a real `git.exe` and must be spawned as-is.
  */
 function resolveRunnableCommand(command, args) {
-  if (process.platform !== "win32" || path.extname(command) || !WINDOWS_CMD_SHIM_COMMANDS.has(command)) {
-    return { command, args, shell: false };
-  }
-  return {
-    command: `${command}.cmd`,
-    args: args.map((arg) => (/[\s"]/.test(arg) ? `"${arg.replace(/"/g, '\\"')}"` : arg)),
-    shell: true,
-  };
+  if (command !== "npm") return { command, args };
+  return resolveNpmInvocation(args);
 }
 
 function run(command, args, options = {}) {
@@ -143,7 +132,6 @@ function run(command, args, options = {}) {
     cwd,
     env,
     stdio: "inherit",
-    shell: invocation.shell,
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
