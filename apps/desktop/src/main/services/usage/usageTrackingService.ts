@@ -82,6 +82,7 @@ import {
   scanOpenCodeLogs,
   sanitizeClaudeProjectPath,
 } from "./ledgers/localUsageLedgers";
+import { isPathInside, pathComparisonKey } from "../shared/pathCompare";
 import {
   collectAdeDatabaseUsageStats,
   type AdeDatabaseUsageStats,
@@ -1109,16 +1110,25 @@ function canonicalProjectRoot(projectRoot: string): string {
   return markerIndex >= 0 ? path.resolve(normalized.slice(0, markerIndex)) : resolved;
 }
 
+/**
+ * Both comparisons here are against paths a *provider* wrote into its own
+ * ledger, not paths ADE controls, so their case is whatever that tool happened
+ * to see. On Windows and macOS the filesystem resolves case-insensitively, so a
+ * bare `===` drops usage data silently — the numbers just come back missing
+ * with no error. The drive letter is the usual culprit (`C:\Users` vs
+ * `c:\users`); `projectKey` inherits the same problem because
+ * `sanitizeClaudeProjectPath` preserves case.
+ */
 function tokenEntryMatchesProject(entry: TokenEntry, projectRoot: string | null | undefined): boolean {
   if (!projectRoot) return false;
   const root = canonicalProjectRoot(projectRoot);
-  if (entry.projectPath) {
-    const candidate = path.resolve(entry.projectPath);
-    if (candidate === root || candidate.startsWith(`${root}${path.sep}`)) return true;
-  }
+  // `root` is already resolved by canonicalProjectRoot; resolve the candidate
+  // to match, since pathCompare normalizes but deliberately does not resolve.
+  if (entry.projectPath && isPathInside(path.resolve(entry.projectPath), root)) return true;
   if (entry.projectKey) {
-    const rootKey = sanitizeClaudeProjectPath(root);
-    if (entry.projectKey === rootKey || entry.projectKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
+    const rootKey = pathComparisonKey(sanitizeClaudeProjectPath(root));
+    const entryKey = pathComparisonKey(entry.projectKey);
+    if (entryKey === rootKey || entryKey.startsWith(`${rootKey}--ade-worktrees-`)) return true;
   }
   return false;
 }

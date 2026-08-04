@@ -102,31 +102,50 @@ export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "st
  *
  * On Unix-like systems, the child is spawned into its own process group and we
  * signal the entire group. On Windows, `taskkill /T` is the closest equivalent.
+ *
+ * Windows note: `taskkill`'s exit code is not evidence that the tree died, in
+ * either direction. Without `/F` it asks each window to close, so a windowless
+ * console process reports 128 ("no running instance") while its children are
+ * very much alive; a 0 only means the requests were dispatched. Treating 0 as
+ * success used to skip the direct-child fallback entirely, and the fallback is
+ * itself only a partial answer — `child.kill()` is `TerminateProcess` on the
+ * leader alone and never touches descendants. So we always do both.
+ *
+ * The tree kill passes `/F` for EVERY signal, including SIGTERM. Deferring the
+ * force to the caller's SIGKILL escalation cannot work: measured on Windows 11,
+ * a non-forced `taskkill /PID <leader> /T` against a windowless console process
+ * exits 128 and kills nothing, then `child.kill("SIGTERM")` — which is a plain
+ * `TerminateProcess` on Windows, not a catchable signal — removes the leader.
+ * By the time the escalation runs, `taskkill /PID <leader> /T /F` reports
+ * `ERROR: The process "<pid>" not found.` and the descendants are unreachable
+ * forever. Nothing is lost by forcing immediately, because the leader never had
+ * a graceful path on Windows to begin with. This matches `terminateProcessTree`
+ * in ./processExecution, which always forces for the same reason.
  */
 export function signalChildProcessTree(child: KillableChildProcess, signal: NodeJS.Signals): boolean {
   const pid = child.pid ?? null;
 
   if (process.platform === "win32") {
+    let treeSignaled = false;
     if (isValidPid(pid)) {
-      const taskkillArgs = ["/PID", String(pid), "/T"];
-      if (signal === "SIGKILL") {
-        taskkillArgs.push("/F");
-      }
+      const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
       try {
-        const result = spawnSync("taskkill", taskkillArgs, {
+        const result = spawnSync("taskkill.exe", taskkillArgs, {
           stdio: "ignore",
           windowsHide: true,
         });
-        if (result.status === 0) return true;
+        treeSignaled = !result.error && result.status === 0;
       } catch {
-        // fall through to direct child signaling
+        // taskkill may be unavailable; the direct child signal below still runs.
       }
     }
+    let childSignaled = false;
     try {
-      return child.kill(signal);
+      childSignaled = child.kill(signal);
     } catch {
-      return false;
+      childSignaled = false;
     }
+    return treeSignaled || childSignaled;
   }
 
   if (isValidPid(pid)) {

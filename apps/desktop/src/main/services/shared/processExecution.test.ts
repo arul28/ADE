@@ -13,6 +13,7 @@ vi.mock("node:child_process", async () => {
 
 import {
   killWindowsProcessTree,
+  preferNativeExecutablePath,
   quoteWindowsCmdArg,
   resolveCliSpawnInvocation,
   resolveWindowsCmdLineInvocation,
@@ -28,6 +29,28 @@ describe("processExecution", () => {
     expect(shouldUseWindowsCmdWrapper("C:\\tools\\codex.bat", "win32")).toBe(true);
     expect(shouldUseWindowsCmdWrapper("C:\\tools\\codex.exe", "win32")).toBe(false);
     expect(shouldUseWindowsCmdWrapper("codex", "linux")).toBe(false);
+  });
+
+  it("prefers a native Windows executable over an npm shim found earlier on PATH", () => {
+    // The shim comes first because %APPDATA%\npm precedes the installer's dir
+    // on PATH — a plain lookup returns it, and a bare .cmd spawn is EINVAL.
+    const candidates = [
+      "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd",
+      "C:\\Users\\me\\AppData\\Roaming\\npm\\claude.ps1",
+      "C:\\Users\\me\\.local\\bin\\claude.exe",
+    ];
+    expect(preferNativeExecutablePath(candidates, "win32")).toBe("C:\\Users\\me\\.local\\bin\\claude.exe");
+    // Shim-only installs still resolve; the caller wraps them instead.
+    expect(preferNativeExecutablePath(candidates.slice(0, 2), "win32"))
+      .toBe("C:\\Users\\me\\AppData\\Roaming\\npm\\claude.cmd");
+    expect(preferNativeExecutablePath([], "win32")).toBeNull();
+  });
+
+  it("leaves POSIX candidate precedence untouched", () => {
+    const candidates = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude.exe"];
+    expect(preferNativeExecutablePath(candidates, "darwin")).toBe("/opt/homebrew/bin/claude");
+    expect(preferNativeExecutablePath(candidates, "linux")).toBe("/opt/homebrew/bin/claude");
+    expect(preferNativeExecutablePath([], "linux")).toBeNull();
   });
 
   it("quotes cmd arguments consistently", () => {
@@ -219,7 +242,12 @@ describe("terminateProcessTree", () => {
     expect(terminateProcessTree(child, "SIGKILL")).toBe(false);
   });
 
-  it("on Windows, calls taskkill for a live child and skips child.kill on success", () => {
+  // A zero exit from taskkill means the kill was dispatched, not that every
+  // descendant is gone, so it must not stand in for signaling the child we
+  // hold. Both run: the tree kill reaches grandchildren that child.kill (a
+  // TerminateProcess on the leader alone) never would, and the direct kill
+  // covers a taskkill that reported success without acting.
+  it("on Windows, calls taskkill for a live child and still calls child.kill on success", () => {
     setPlatform("win32");
     spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: "", stderr: "", error: null });
     const child = fakeChild();
@@ -227,7 +255,37 @@ describe("terminateProcessTree", () => {
     expect(terminateProcessTree(child)).toBe(true);
     expect(spawnSyncMock).toHaveBeenCalledTimes(1);
     expect(spawnSyncMock.mock.calls[0]![1]).toEqual(["/PID", "4321", "/T", "/F"]);
-    expect(child.kill).not.toHaveBeenCalled();
+    expect(child.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("on Windows, reports success when taskkill worked even if child.kill finds it already gone", () => {
+    setPlatform("win32");
+    spawnSyncMock.mockReturnValueOnce({ status: 0, stdout: "", stderr: "", error: null });
+    // taskkill /T /F already reaped the tree, so the leader is gone by now.
+    const child = fakeChild({ kill: vi.fn(() => false) });
+
+    expect(terminateProcessTree(child)).toBe(true);
+  });
+
+  it("on Windows, reports success when taskkill fails but child.kill throws nothing", () => {
+    setPlatform("win32");
+    // taskkill without /F exits 128 against a windowless console process.
+    spawnSyncMock.mockReturnValueOnce({ status: 128, stdout: "", stderr: "", error: null });
+    const child = fakeChild({ kill: vi.fn(() => true) });
+
+    expect(terminateProcessTree(child, "SIGTERM")).toBe(true);
+  });
+
+  it("on Windows, reports failure only when both the tree kill and child.kill fail", () => {
+    setPlatform("win32");
+    spawnSyncMock.mockReturnValueOnce({ status: 128, stdout: "", stderr: "", error: null });
+    const child = fakeChild({
+      kill: vi.fn(() => {
+        throw new Error("ESRCH");
+      }),
+    });
+
+    expect(terminateProcessTree(child, "SIGTERM")).toBe(false);
   });
 
   it("on Windows, falls back to child.kill when taskkill fails", () => {
