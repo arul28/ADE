@@ -887,6 +887,15 @@ async function validatePackagedRuntime(appDir) {
       env: {
         ...process.env,
         ADE_BIN: adeCliBinPath,
+        // This runs the REAL shipped PATH installer, which derives its target
+        // from the shim's directory and persists it to HKCU. The temp dir is
+        // deleted below, but the PATH entry it wrote is not — so every
+        // validation run left a permanent dead `%TEMP%\ade-win-install-*\bin`
+        // in the user's PATH. Six had accumulated on one machine. The real
+        // installer snapshots and restores PATH; this one had no such guard,
+        // so use the installer's own opt-out instead. The --help assertion
+        // below invokes the shim by absolute path and does not need PATH.
+        ADE_SKIP_USER_PATH_UPDATE: "1",
       },
     });
     await assertPathExists(installedCommandPath, "installed ADE CLI shim");
