@@ -669,7 +669,12 @@ test("Windows package smoke requires every bundled provider runtime", () => {
 test("download page gates the Windows release and enables dedicated analytics", () => {
   assert.match(downloadPage, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
   assert.match(downloadPage, /=== "1"/);
-  assert.match(downloadPage, /signed Windows release is approved/);
+  // The page must tell a visitor, in the ungated state, that the installer is
+  // not published and what has to happen first. The exact wording is free to
+  // change; what this pins is that the disclosure exists at all, so nobody can
+  // quietly ship a download card that implies an artifact is available.
+  assert.match(downloadPage, /signed installer ships once the Windows release proof passes/);
+  assert.match(downloadPage, /not published yet/);
   assert.match(downloadPage, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
   assert.match(downloadPage, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
 });
