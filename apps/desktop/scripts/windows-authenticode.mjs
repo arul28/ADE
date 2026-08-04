@@ -43,6 +43,22 @@ export function createAuthenticodeProbe(filePath, baseEnv = process.env) {
     "$result | ConvertTo-Json -Compress",
   ].join("\n");
 
+  // Windows PowerShell 5.1 must not inherit PowerShell 7's PSModulePath. On
+  // GitHub runners every workflow step runs under pwsh, which exports a
+  // PSModulePath whose PS7 Microsoft.PowerShell.Security shadows 5.1's
+  // built-in; 5.1 finds the Core-only module first and fails to load it, so
+  // Get-AuthenticodeSignature dies with "the module could not be loaded" on
+  // every probe -- which is exactly how the first signed release run failed.
+  // Reproduced locally by pointing PSModulePath at a Core-only Security
+  // module. Dropping the variable makes 5.1 rebuild its default module path.
+  const env = {
+    ...baseEnv,
+    [AUTHENTICODE_FILE_PATH_ENV]: normalizedPath,
+  };
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === "psmodulepath") delete env[key];
+  }
+
   return {
     command: "powershell.exe",
     args: [
@@ -52,9 +68,6 @@ export function createAuthenticodeProbe(filePath, baseEnv = process.env) {
       "-Command",
       script,
     ],
-    env: {
-      ...baseEnv,
-      [AUTHENTICODE_FILE_PATH_ENV]: normalizedPath,
-    },
+    env,
   };
 }
