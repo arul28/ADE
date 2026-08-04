@@ -2578,6 +2578,75 @@ describe("ptyService", () => {
       }
     });
 
+    // Regression: Claude Code's Windows TUI never renders the `❯` glyph the
+    // readiness check originally required. Captured from claude.exe under
+    // ConPTY, the only non-ASCII characters in a full startup were box drawing,
+    // so readiness never fired, the initial input was skipped, and the CLI sat
+    // there empty — the user's prompt was gone with only a log line. The box is
+    // what the current TUI actually draws once it accepts input.
+    it("delivers Claude initialInput when the TUI draws its input box instead of a ❯ glyph", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_BOX_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // No ❯ anywhere — exactly what the real CLI emits on Windows.
+        mockPty._emitter.emit("data", [
+          "╭────────────────────────────────────────╮\r\n",
+          "│ > try \"how do I add a dark mode?\"      │\r\n",
+          "╰────────────────────────────────────────╯\r\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).toContain("ADE_CLAUDE_BOX_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not treat a half-drawn Claude banner as an input-ready box", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_UNREADY_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // Top border only: the box is still being painted, and the first-run
+        // "do you trust this folder?" gate draws no box at all.
+        mockPty._emitter.emit("data", "╭──────────────────────────╮\r\n│ Welcome to Claude Code\r\n");
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).not.toContain("ADE_CLAUDE_UNREADY_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("delivers preserved Codex initialInput when the composer appears after a readiness timeout", async () => {
       vi.useFakeTimers();
       try {

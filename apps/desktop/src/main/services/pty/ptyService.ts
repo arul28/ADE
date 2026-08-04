@@ -4239,7 +4239,20 @@ export function createPtyService({
         && (noActiveThreadIndex < 0 || lastPromptIndex > noActiveThreadIndex);
     }
     if (provider === "claude") {
-      return text.includes("❯");
+      // `❯` is the prompt glyph older Claude Code builds drew, and it is still
+      // the fastest signal where it appears. It is not sufficient on its own:
+      // measured against claude.exe 2026-08 under ConPTY on Windows, the glyph
+      // never appears at all — the only non-ASCII characters in a full startup
+      // capture were box drawing. So also accept the composed input box
+      // (`╭───╮` above, `╰───╯` below), which is what the current TUI actually
+      // renders once it is accepting input.
+      //
+      // Both corners are required rather than either: the closing `╰…╯` is only
+      // emitted once the box is fully drawn, so a half-painted frame mid-startup
+      // cannot read as ready. The first-run "do you trust this folder?" gate
+      // draws no box, so it correctly does not match.
+      if (text.includes("❯")) return true;
+      return /╭─+.*╮/s.test(text) && /╰─+.*╯/s.test(text);
     }
     if (provider === "cursor") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
@@ -5547,6 +5560,17 @@ export function createPtyService({
                   return;
                 }
                 if (args.awaitInitialInput || provider !== "codex") {
+                  // Skipping is deliberate and must stay: "not ready" is often
+                  // "a blocking prompt is on screen", and Cursor's workspace
+                  // trust gate or OpenCode's auth gate would otherwise receive
+                  // the user's prompt as its answer. Typing user text into a
+                  // credential dialog is far worse than not sending it.
+                  //
+                  // The cost is that a *wrong* readiness marker also drops the
+                  // prompt, with only this log line to show for it — which is
+                  // how the Windows Claude launch came up blank. The answer is
+                  // to keep the markers honest (see providerReadyMarkerVisible),
+                  // not to send into an unknown screen.
                   logger.warn("pty.initial_input_skipped_not_ready", {
                     ptyId,
                     sessionId,
