@@ -13,6 +13,7 @@ import {
   firstUserTextFromRecords,
   moreCompleteFileCandidate,
   normalizeExternalSessionLimit,
+  normalizeProviderCwd,
   openExternalSessionDb,
   readFilePrefix,
   readJsonlRecords,
@@ -96,7 +97,7 @@ function readCursorChatMeta(sessionDir: string): CursorChatMeta | null {
   const record = text ? asRecord(safeParseJson(text)) : null;
   if (!record) return null;
   return {
-    cwd: asString(record.cwd),
+    cwd: normalizeProviderCwd(asString(record.cwd)),
     title: cleanSessionTitle(asString(record.title)),
     createdAt: asEpochMs(record.createdAtMs),
   };
@@ -394,7 +395,9 @@ function cursorCwdFromRecords(records: unknown[]): string | null {
       ?? asString(payload?.cwd)
       ?? asString(payload?.workspacePath)
       ?? asString(payload?.workspace_path);
-    if (cwd) return cwd;
+    // See `normalizeProviderCwd`: whichever key carried it, the value is a path
+    // the CLI recorded verbatim and may wear Windows' `\\?\` prefix.
+    if (cwd) return normalizeProviderCwd(cwd);
   }
   return null;
 }

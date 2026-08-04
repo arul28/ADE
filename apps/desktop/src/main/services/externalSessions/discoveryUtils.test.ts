@@ -9,9 +9,66 @@ import {
   canonicalCodexRecords,
   countExternalSessionUserMessages,
   firstUserTextFromRecords,
+  cwdIsInScope,
+  normalizeProviderCwd,
+  pathContains,
   recentExternalSessionMessagesFromRecords,
   resolveCursorCwdFromSlug,
 } from "./discoveryUtils";
+
+describe("normalizeProviderCwd", () => {
+  it("keeps a missing cwd missing", () => {
+    // "no cwd recorded" is not the same as "cwd is empty": an unscoped listing
+    // still shows the former.
+    expect(normalizeProviderCwd(null)).toBeNull();
+    expect(normalizeProviderCwd("")).toBeNull();
+  });
+
+  it("leaves a plain path untouched on every platform", () => {
+    const plain = process.platform === "win32" ? "C:\\Users\\arul\\ADE" : "/Users/arul/ADE";
+    expect(normalizeProviderCwd(plain)).toBe(plain);
+  });
+
+  // The `\\?\` transform itself is platform-injectable and covered exhaustively
+  // in shared/pathCompare.test.ts; these two pin the wiring, which is not.
+  it.runIf(process.platform === "win32")("strips the extended-length prefix Codex records", () => {
+    expect(normalizeProviderCwd("\\\\?\\C:\\Users\\arul\\ADE")).toBe("C:\\Users\\arul\\ADE");
+  });
+
+  it.runIf(process.platform !== "win32")("never rewrites a posix path containing backslashes", () => {
+    expect(normalizeProviderCwd("\\\\?\\weird")).toBe("\\\\?\\weird");
+  });
+});
+
+describe("scope containment", () => {
+  const root = process.platform === "win32" ? "C:\\Users\\arul\\ADE" : "/Users/arul/ADE";
+  const child = path.join(root, "apps", "desktop");
+
+  it("accepts a descendant and rejects a name-prefix sibling", () => {
+    expect(pathContains(root, child)).toBe(true);
+    expect(pathContains(root, `${root}-old`)).toBe(false);
+  });
+
+  it("reads parent-first, the opposite of pathCompare's isPathInside", () => {
+    // The two helpers used to share a name with swapped arguments, so a wrong
+    // import compiled cleanly and inverted the answer. Pin the order here.
+    expect(pathContains(root, child)).toBe(true);
+    expect(pathContains(child, root)).toBe(false);
+  });
+
+  it.runIf(process.platform === "win32")("accepts a cwd whose casing differs from the scope root", () => {
+    // PowerShell preserves whatever the user typed after `cd`, and
+    // fs.realpathSync does not canonicalize case on Windows, so the two
+    // spellings reach this check verbatim.
+    expect(cwdIsInScope("c:\\users\\arul\\ade\\apps", [root])).toBe(true);
+  });
+
+  it.runIf(process.platform === "win32")("accepts an extended-length cwd against a plain scope root", () => {
+    // Bug 1 end to end: `path.relative` reads `\\?\C:\` as a UNC root, so before
+    // the strip every Codex session tested as out of scope.
+    expect(cwdIsInScope(`\\\\?\\${child}`, [root])).toBe(true);
+  });
+});
 
 describe("firstUserTextFromRecords", () => {
   it("skips message records with explicit assistant role", () => {
@@ -209,7 +266,14 @@ describe("external session user text", () => {
 
 describe("resolveCursorCwdFromSlug", () => {
   it("uses the filesystem to recover hyphenated and dotted path segments", () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ade-cursor-slug-"));
+    // `.native` matters on Windows: GitHub's runners report `os.tmpdir()` as
+    // `C:\Users\RUNNER~1\...`, an 8.3 short name. The slug is built from the
+    // path, so `~` becomes `-` and the resolver is asked to recover `RUNNER-1`
+    // by reading `C:\Users` -- which lists the long name (`runneradmin`) and
+    // never the alias, so it correctly returns null and the test failed on CI
+    // while passing on any machine with a long TEMP path. Only `.native`
+    // expands 8.3 aliases; plain `realpathSync` preserves them.
+    const root = fs.mkdtempSync(path.join(fs.realpathSync.native(os.tmpdir()), "ade-cursor-slug-"));
     const cwd = path.join(root, "Projects", "my-cool.app", ".ade", "worktrees", "lane-with-hyphen");
     fs.mkdirSync(cwd, { recursive: true });
     try {

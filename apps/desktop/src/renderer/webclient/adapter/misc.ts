@@ -489,7 +489,7 @@ export function createMiscNamespaces(infra: AdapterInfra): MiscNamespaces {
     save: (candidate: unknown) => call<Record<string, unknown>>(
       "projectConfig.save",
       { candidate },
-      unavailableOnHost("This Mac is running an older ADE that can't save these settings."),
+      unavailableOnHost("That machine is running an older ADE that can't save these settings."),
       false,
     ),
     diffAgainstDisk: async () => ({

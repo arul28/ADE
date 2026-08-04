@@ -7,6 +7,7 @@ import { getHeadSha, runGit, runGitOrThrow } from "../git/git";
 import { detachPullRequestRowsByIds, detachPullRequestRowsForLane } from "../prs/pullRequestRowCleanup";
 import { isWithinDir, normalizeBranchName, resolvePathWithinRoot } from "../shared/utils";
 import { fetchRemoteTrackingBranch } from "../shared/remoteTrackingBranch";
+import { pathsEqual } from "../shared/pathCompare";
 import { detectConflictKind } from "../git/gitConflictState";
 import { invalidateProjectPathInspectionCache } from "../projects/projectPathInspector";
 import { shouldLaneTrackParent } from "../../../shared/laneBaseResolution";
@@ -163,6 +164,14 @@ type SessionLinearIssueLinkRow = {
 
 const DEFAULT_LANE_STATUS: LaneStatus = { dirty: false, ahead: 0, behind: 0, remoteBehind: -1, rebaseInProgress: false };
 const LANE_LIST_CACHE_TTL_MS = 10_000;
+/**
+ * How many lanes' git status probes may be in flight at once while building a
+ * lane list. Each lane costs ~6 short-lived `git` processes; running them one
+ * lane at a time made the build scale linearly with lane count (~350 ms/lane
+ * on Windows). Bounded fan-out keeps the process count well under what a
+ * `git worktree list` already implies while removing the serialization.
+ */
+const LANE_STATUS_PREWARM_CONCURRENCY = 8;
 
 /**
  * Proof artifacts a lane owns, so deleting the lane can delete them.
@@ -449,8 +458,13 @@ function worktreeStdout(value: unknown): string {
   return "";
 }
 
-function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
-  const blocks = stdout.split(/\n\n+/).filter(Boolean);
+export function parseGitWorktreePorcelain(stdout: string): GitWorktreeInfo[] {
+  // Blank-line separated records, and the separator has to tolerate CRLF for the
+  // same reason the line split one line below does. Git for Windows emits LF
+  // here today, but a `\r\n\r\n` stream would match nothing, collapse the whole
+  // listing into a single block, and yield exactly one worktree — silently
+  // disabling worktree reconcile rather than failing.
+  const blocks = stdout.split(/(?:\r?\n){2,}/).filter(Boolean);
   const worktrees: GitWorktreeInfo[] = [];
 
   for (const block of blocks) {
@@ -700,8 +714,16 @@ async function detectBranchRef(worktreePath: string, fallback: string): Promise<
   return fallback;
 }
 
-async function computeLaneStatus(worktreePath: string, baseRef: string, branchRef: string): Promise<LaneStatus> {
-  if (!(await isExpectedGitWorktreeRoot(worktreePath))) {
+async function computeLaneStatus(
+  worktreePath: string,
+  baseRef: string,
+  branchRef: string,
+  options: { worktreeRootVerified?: boolean } = {},
+): Promise<LaneStatus> {
+  // Callers that just proved the worktree root pass `worktreeRootVerified` so
+  // the same `rev-parse --show-toplevel` is not spawned twice per lane. Every
+  // other caller keeps the guard.
+  if (options.worktreeRootVerified !== true && !(await isExpectedGitWorktreeRoot(worktreePath))) {
     return cloneLaneStatus(DEFAULT_LANE_STATUS);
   }
 
@@ -1559,11 +1581,40 @@ export function createLaneService({
     );
 
   const laneListCache = new Map<string, { expiresAt: number; rows: LaneSummary[] }>();
+  /**
+   * Coalesces overlapping `listLanes` calls with the same shape. A full build
+   * can take longer than `LANE_LIST_CACHE_TTL_MS`, so on a project with many
+   * lanes the TTL cache never served a hit and every caller — the desktop's
+   * lane list, a phone pull-to-refresh, the periodic snapshot refresh —
+   * started its own build. Several hundred concurrent `git` processes then
+   * starved the runtime that also drives sync. Sharing one in-flight build is
+   * observationally identical to two builds that ran back to back.
+   *
+   * Each entry carries the invalidation epoch its build read lane rows at, so a
+   * caller that arrives after a mutation starts its own build instead of
+   * joining one that predates it.
+   */
+  const laneListInFlight = new Map<string, { epoch: { value: number }; rows: Promise<LaneSummary[]> }>();
+  /**
+   * Bumped by every invalidation. A full build routinely outlives the cache
+   * TTL, so "which invalidation was this data read at?" is the only thing that
+   * separates a publishable result from a pre-mutation one.
+   */
+  let laneListEpoch = 0;
   const rebaseRuns = new Map<string, RebaseRun>();
   const autoLaneIdentityInFlight = new Set<string>();
 
   const invalidateLaneListCache = (): void => {
     laneListCache.clear();
+    // Bump the epoch rather than dropping in-flight builds. A build that has
+    // already read its lane rows must not publish them, so `buildLaneList`
+    // compares the epoch it read at against this one and skips its terminal
+    // `laneListCache.set`; joiners make the same comparison and start their own
+    // build. Clearing the map instead evicted a build's own entry every time
+    // one of its opening repairs invalidated, and every concurrent `listLanes`
+    // then started a second full build — a second worktree recovery, reap, and
+    // residual cleanup racing over the same rows.
+    laneListEpoch += 1;
   };
 
   /**
@@ -1998,6 +2049,31 @@ export function createLaneService({
     canonicalWorktreesDir,
     canonicalPrimaryWorktreePath,
   ]);
+
+  /**
+   * Whether a lane folder sits directly inside ADE's managed worktrees folder,
+   * under either spelling of that folder.
+   *
+   * `worktreesDir` reaches this service through `path.resolve` only, while a
+   * lane adopted from git holds `fs.realpathSync.native` output — and on Windows
+   * those two disagree in ways that have nothing to do with symlinks. Measured
+   * on this machine: `path.resolve` preserves an 8.3 short name
+   * (`C:\Users\me\DOCUME~1\...`) that `realpathSync.native` expands, and it
+   * preserves a lowercase drive letter that `realpathSync.native` normalizes to
+   * `C:`. OneDrive Known Folder Move makes it certain rather than incidental,
+   * because Documents becomes a junction.
+   *
+   * Both spellings name the same directory, so accepting either only ever
+   * re-admits ADE's own worktrees. `pathsEqual` on top of that covers the drive
+   * letter and any other case difference. This is the same "either spelling"
+   * rule the restore path and the residual-cleanup rails already apply; reclaim
+   * comparing against one spelling alone is what made "Archive & Reclaim"
+   * unreachable for lanes ADE itself created.
+   */
+  const isDirectlyInsideManagedWorktreesDir = (normalizedWorktreePath: string): boolean => {
+    const parent = path.dirname(normalizedWorktreePath);
+    return pathsEqual(parent, normalizedWorktreesDir) || pathsEqual(parent, canonicalWorktreesDir);
+  };
 
   // Worktree paths / branch refs with an in-flight `git worktree add`. A new
   // worktree is visible to `git worktree list` before its lane row is
@@ -2708,17 +2784,31 @@ export function createLaneService({
   }> => {
     const statusCache = new Map<string, LaneStatus>();
     const worktreeAvailabilityCache = new Map<string, boolean>();
+    // In-flight maps make the resolver safe to drive concurrently: without
+    // them two overlapping calls for the same lane both miss the value cache
+    // and both spawn the same git probes. Every caller still observes exactly
+    // the value the single underlying probe produced.
+    const worktreeAvailabilityInFlight = new Map<string, Promise<boolean>>();
+    const statusInFlight = new Map<string, Promise<LaneStatus>>();
     const resolveWorktreeAvailable = async (row: LaneRow): Promise<boolean> => {
       const cached = worktreeAvailabilityCache.get(row.id);
       if (cached != null) return cached;
-      const available = await isExpectedGitWorktreeRoot(row.worktree_path);
-      worktreeAvailabilityCache.set(row.id, available);
-      return available;
+      const inFlight = worktreeAvailabilityInFlight.get(row.id);
+      if (inFlight) return await inFlight;
+      const probe = (async () => {
+        const available = await isExpectedGitWorktreeRoot(row.worktree_path);
+        worktreeAvailabilityCache.set(row.id, available);
+        return available;
+      })();
+      worktreeAvailabilityInFlight.set(row.id, probe);
+      try {
+        return await probe;
+      } finally {
+        worktreeAvailabilityInFlight.delete(row.id);
+      }
     };
 
-    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
-      const cached = statusCache.get(laneId);
-      if (cached) return cached;
+    const computeResolvedStatus = async (laneId: string): Promise<LaneStatus> => {
       const row = args.rowsById.get(laneId);
       if (!row) return DEFAULT_LANE_STATUS;
       const worktreeAvailable = await resolveWorktreeAvailable(row);
@@ -2750,18 +2840,37 @@ export function createLaneService({
         }
       }
 
-      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref);
+      // `resolveWorktreeAvailable` above already ran the identical
+      // `rev-parse --show-toplevel` probe for this worktree and returned true,
+      // so computeLaneStatus must not spawn it a second time.
+      const status = await computeLaneStatus(row.worktree_path, baseRef, row.branch_ref, {
+        worktreeRootVerified: true,
+      });
       statusCache.set(laneId, status);
       return status;
+    };
+
+    const resolveStatus = async (laneId: string): Promise<LaneStatus> => {
+      const cached = statusCache.get(laneId);
+      if (cached) return cached;
+      const inFlight = statusInFlight.get(laneId);
+      if (inFlight) return await inFlight;
+      const compute = computeResolvedStatus(laneId);
+      statusInFlight.set(laneId, compute);
+      try {
+        return await compute;
+      } finally {
+        statusInFlight.delete(laneId);
+      }
     };
 
     return { resolveWorktreeAvailable, resolveStatus };
   };
 
-  const listLanes = async ({
-    includeArchived = false,
-    includeStatus = true
-  }: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+  const buildLaneList = async (
+    { includeArchived = false, includeStatus = true }: ListLanesArgs = {},
+    readEpoch?: { value: number },
+  ): Promise<LaneSummary[]> => {
     // Best-effort primary lane bootstrap -- failures should not block listing.
     try {
       await ensurePrimaryLane();
@@ -2809,6 +2918,14 @@ export function createLaneService({
     } catch (err) {
       logger.warn("laneService.backfillLaneBranchProfiles_failed", { error: err instanceof Error ? err.message : String(err) });
     }
+
+    // Every repair above mutates lane state and invalidates as it goes, and
+    // nothing below it has read a lane row yet — so this, not entry into the
+    // function, is the epoch this build's data belongs to. Re-stamping the
+    // in-flight entry keeps joiners on this build rather than starting a second
+    // one over a change this build has already absorbed.
+    const buildEpoch = laneListEpoch;
+    if (readEpoch) readEpoch.value = buildEpoch;
 
     const cacheKey = `arch:${includeArchived ? 1 : 0}|status:${includeStatus ? 1 : 0}`;
     const cached = laneListCache.get(cacheKey);
@@ -2884,6 +3001,36 @@ export function createLaneService({
       logContext: "lane_list",
     });
 
+    // Warm the resolver's caches with bounded concurrency before the ordered
+    // build below. Every lane's status is an independent read-only git probe,
+    // so resolving them one-at-a-time only serialized process startup: on
+    // Windows each `git.exe` launch costs ~35-100 ms and a project with dozens
+    // of lanes spent 20+ s here, on the same event loop that drives phone
+    // sync. The serial loop that follows is unchanged — it now finds every
+    // value already cached and issues no git of its own, so ordering, error
+    // handling, snapshot writes, and results are identical.
+    if (includeStatus && rows.length > 0) {
+      const queue = rows.slice();
+      const workerCount = Math.min(LANE_STATUS_PREWARM_CONCURRENCY, queue.length);
+      await Promise.all(
+        Array.from({ length: workerCount }, async () => {
+          for (;;) {
+            const row = queue.shift();
+            if (!row) return;
+            try {
+              if (await resolveWorktreeAvailable(row)) {
+                await resolveStatus(row.id);
+              }
+              if (row.parent_lane_id) await resolveStatus(row.parent_lane_id);
+            } catch {
+              // Prewarm is best-effort. The ordered loop below re-requests the
+              // same value and keeps the existing per-lane error handling.
+            }
+          }
+        }),
+      );
+    }
+
     const out: LaneSummary[] = [];
     for (const row of rows) {
       try {
@@ -2945,11 +3092,36 @@ export function createLaneService({
         logger.warn("laneService.build_summary_failed", { laneId: row.id, error: err instanceof Error ? err.message : String(err) });
       }
     }
-    laneListCache.set(cacheKey, {
-      expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
-      rows: out.map(cloneLaneSummary)
-    });
+    // Publish only if nothing invalidated while the build ran. The rows above
+    // were read before any such mutation, so caching them would hand back
+    // pre-mutation state — a just-deleted lane, still listed — for a full TTL,
+    // including to the rebuild the mutation itself kicked off.
+    if (laneListEpoch === buildEpoch) {
+      laneListCache.set(cacheKey, {
+        expiresAt: Date.now() + LANE_LIST_CACHE_TTL_MS,
+        rows: out.map(cloneLaneSummary)
+      });
+    }
     return out;
+  };
+
+  const listLanes = async (args: ListLanesArgs = {}): Promise<LaneSummary[]> => {
+    const shapeKey = `arch:${args.includeArchived ?? false ? 1 : 0}|status:${args.includeStatus ?? true ? 1 : 0}`;
+    const joined = laneListInFlight.get(shapeKey);
+    // Join only a build whose rows are as fresh as this call's would be. The
+    // epoch travels with the build instead of the entry being dropped, so the
+    // build's own repairs cannot evict it, while an unrelated mutation still
+    // forces this caller onto a fresh build.
+    if (joined && joined.epoch.value === laneListEpoch) return (await joined.rows).map(cloneLaneSummary);
+    const epoch = { value: laneListEpoch };
+    const rows = buildLaneList(args, epoch);
+    const entry = { epoch, rows };
+    laneListInFlight.set(shapeKey, entry);
+    try {
+      return (await rows).map(cloneLaneSummary);
+    } finally {
+      if (laneListInFlight.get(shapeKey) === entry) laneListInFlight.delete(shapeKey);
+    }
   };
 
   const createWorktreeLane = async (args: {
@@ -5992,7 +6164,7 @@ export function createLaneService({
       // Reclaim only ever removes folders ADE created. That is a property of the
       // path, not of the lane type — a lane pointing anywhere else is blocked
       // below with `worktree_outside_managed_root`.
-      const managedPath = row.lane_type !== "primary" && path.dirname(normalizedWorktree) === normalizedRoot;
+      const managedPath = row.lane_type !== "primary" && isDirectlyInsideManagedWorktreesDir(normalizedWorktree);
       const worktreeExists = managedPath && fs.existsSync(normalizedWorktree);
       const symlinkPath = managedPath
         ? await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)
@@ -6113,7 +6285,7 @@ export function createLaneService({
       if (row.lane_type === "primary") throw new Error("The primary lane cannot be reclaimed.");
       const normalizedRoot = normAbs(worktreesDir);
       const normalizedWorktree = normAbs(row.worktree_path);
-      if (path.dirname(normalizedWorktree) !== normalizedRoot) {
+      if (!isDirectlyInsideManagedWorktreesDir(normalizedWorktree)) {
         throw new Error("The lane folder is outside ADE's managed worktree folder.");
       }
       if (await hasSymlinkInManagedPath(normalizedRoot, normalizedWorktree)) {
@@ -6357,8 +6529,7 @@ export function createLaneService({
       // Either spelling of the worktrees folder counts as managed: a row adopted
       // from git holds the resolved one, and reading that as unmanaged would
       // relocate ADE's own worktree to a freshly named path on restore.
-      const savedPathParent = path.dirname(savedPath);
-      const savedPathIsManaged = savedPathParent === normalizedRoot || savedPathParent === canonicalWorktreesDir;
+      const savedPathIsManaged = isDirectlyInsideManagedWorktreesDir(savedPath);
       const savedPathExists = fs.existsSync(savedPath);
       // Recreation only ever happens inside `.ade/worktrees`. A lane whose
       // folder still exists elsewhere on disk (a worktree the user made) is

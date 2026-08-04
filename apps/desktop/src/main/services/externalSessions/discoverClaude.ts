@@ -8,6 +8,7 @@ import {
   cwdIsInScope,
   isUuidLike,
   normalizeExternalSessionLimit,
+  normalizeProviderCwd,
   readFileWindow,
   readJsonlRecords,
   readJsonlRecordsFromSuffix,
@@ -110,7 +111,10 @@ function claudeScanRecords(filePath: string): {
 
 function latestClaudeCwd(records: unknown[]): string | null {
   for (const item of records.slice().reverse()) {
-    const cwd = asString(asRecord(item)?.cwd);
+    // Normalized here rather than at the call site: this is where a transcript's
+    // own recorded cwd first becomes an ADE value, and a CLI that opened the
+    // workspace through a long-path handle writes the `\\?\` spelling.
+    const cwd = normalizeProviderCwd(asString(asRecord(item)?.cwd));
     if (cwd) return cwd;
   }
   return null;

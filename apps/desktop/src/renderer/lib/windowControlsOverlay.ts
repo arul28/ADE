@@ -19,6 +19,9 @@
  * caption-button width is simply what is left over at the trailing edge.
  */
 
+import { rendererPlatformAttribute } from "./platform";
+import { DEFAULT_ZOOM, zoomFactorForDisplay } from "./zoom";
+
 /**
  * Deliberately not `--shell-header-padding-end`: `data-theme` is set on <html>,
  * <body>, and the shell wrapper, so each of those re-declares the padding
@@ -108,6 +111,63 @@ export function windowsCaptionInsetPx(args: CaptionInsetArgs): number | null {
   if (!Number.isFinite(trailing) || trailing <= 0) return null;
   return Math.round(trailing) + WINDOWS_CAPTION_GUTTER_PX;
 }
+
+/**
+ * The vertical half of the same problem, and the one the overlay rect cannot
+ * answer: `titleBarOverlay` is declared in the main process in DIP, so the
+ * caption strip does not follow renderer zoom or the ADE theme the way the
+ * header underneath it does. Left alone it overhangs into the tab strip when
+ * zoomed out — clicks in the overhang go to the OS, not to ADE — and stays
+ * near-black on the light theme.
+ *
+ * Zoom and theme change independently and neither call site knows the other's
+ * value, so the last of each is held here and both are pushed every time.
+ * macOS is excluded outright: the OS lays out and recolours the traffic lights
+ * itself, and a second source of truth would only fight it.
+ */
+export type TitleBarOverlayTheme = "dark" | "light";
+
+export type TitleBarOverlaySync = (
+  next?: { theme?: TitleBarOverlayTheme; displayZoom?: number },
+) => void;
+
+/**
+ * Build a syncer over its own pair of last-known values.
+ *
+ * A factory rather than two module-scope `let`s: the state is genuinely
+ * long-lived, but bare module state is shared with every test in the file, so
+ * each one has to undo the previous one's writes by hand and the suite quietly
+ * depends on its own ordering. A test builds a fresh syncer instead.
+ */
+export function createTitleBarOverlaySync(): TitleBarOverlaySync {
+  let overlayTheme: TitleBarOverlayTheme = "dark";
+  let overlayDisplayZoom = DEFAULT_ZOOM;
+
+  return (next = {}) => {
+    if (next.theme) overlayTheme = next.theme;
+    if (typeof next.displayZoom === "number" && Number.isFinite(next.displayZoom)) {
+      overlayDisplayZoom = next.displayZoom;
+    }
+    if (rendererPlatformAttribute() !== "win32") return;
+    if (typeof window === "undefined") return;
+    const setOverlay = window.ade?.zoom?.setTitleBarOverlay;
+    if (typeof setOverlay !== "function") return;
+    void Promise.resolve(
+      setOverlay({
+        theme: overlayTheme,
+        zoomFactor: zoomFactorForDisplay(overlayDisplayZoom),
+      }),
+    ).catch(() => {});
+  };
+}
+
+/**
+ * The app's one syncer. Deliberately a single shared instance: the theme comes
+ * from `App`'s `data-theme` effect and the zoom from `AppShell`/`TopBar`, and
+ * they have to accumulate into the same pair of values or each push would reset
+ * the other's input to a default it never had.
+ */
+export const syncWindowsTitleBarOverlay: TitleBarOverlaySync = createTitleBarOverlaySync();
 
 function readOverlay(): WindowControlsOverlayLike | null {
   if (typeof navigator === "undefined") return null;

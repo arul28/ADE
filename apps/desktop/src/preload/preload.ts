@@ -1,6 +1,7 @@
 import { contextBridge, ipcRenderer, webFrame, webUtils } from "electron";
 import { IPC } from "../shared/ipc";
 import { isSyncServiceUnavailableError } from "../shared/runtimeErrors";
+import { resolvePackageChannelFromProcess } from "../shared/packageChannel";
 import { EXTERNAL_FILES_WORKSPACE_ID_PREFIX } from "../shared/types/files";
 import {
   type AttentionItem,
@@ -3484,6 +3485,14 @@ contextBridge.exposeInMainWorld("ade", {
     // Chromium reports "Win32" on Windows on ARM too — and app.getInfo() only
     // answers after an IPC round trip.
     runtimeTarget: { platform: process.platform, arch: process.arch },
+    // Also synchronous, and for the same reason: the shell header decides
+    // whether to draw a channel badge (and whether to raise the early-build
+    // notice) at first paint. Stable is the overwhelmingly common answer and
+    // must not cost an IPC round trip to learn.
+    packageChannel: resolvePackageChannelFromProcess({
+      argv: process.argv,
+      env: process.env,
+    }),
     ping: async (): Promise<"pong"> => ipcRenderer.invoke(IPC.appPing),
     setDockBadgeCount: async (count: number): Promise<{ ok: true }> =>
       ipcRenderer.invoke(IPC.appSetDockBadgeCount, { count }),
@@ -9474,6 +9483,16 @@ contextBridge.exposeInMainWorld("ade", {
     getLevel: (): number => webFrame.getZoomLevel(),
     setLevel: (level: number): void => webFrame.setZoomLevel(level),
     getFactor: (): number => webFrame.getZoomFactor(),
+    /**
+     * Resize/recolour the Windows caption strip so it tracks the renderer's own
+     * header. Windows-only in the main process; on macOS the OS owns traffic
+     * light layout and colour, so this resolves `{ applied: false }`.
+     */
+    setTitleBarOverlay: async (arg: {
+      theme?: "dark" | "light";
+      zoomFactor?: number;
+    }): Promise<{ applied: boolean }> =>
+      ipcRenderer.invoke(IPC.appSetTitleBarOverlay, arg),
     onCommand: (cb: (command: AppZoomCommand) => void) => {
       const listener = (
         _event: Electron.IpcRendererEvent,

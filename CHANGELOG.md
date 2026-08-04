@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.52] - 2026-08-04
+
+### Windows
+
+- ADE runs on Windows as a beta: signed per-channel installers, a no-admin background brain service with a graceful RPC shutdown path, and a beta notice on every launch.
+- `ade code` starts — it was launching on a runtime with no TTY and could not resolve its dependencies out of the app archive.
+- Claude and Droid prompts are no longer dropped; both were passed on the Windows command line, and Claude's readiness marker never matched under ConPTY.
+- Codex sessions are visible and Archive & Reclaim is unblocked; extended-length (`\\?\`) paths made ADE misread its own session directory.
+- Known gaps are enumerated in `docs/development/windows-support.md` as degraded, blocked, or unavailable.
+
+### Fixes
+
+- The credential store no longer destroys the account session when migrating to the OS-backed store; migrated keys are pruned instead of left in both stores.
+- Session deletes route to the machine that owns the session; switching machines rebinds the current tab instead of opening a second one.
+- A CLI or shell launch pinned to another machine is filed under that machine.
+
+### Performance
+
+- The Electron main process no longer blocks ~2s on every status poll, which was the cause of window-drag and button stutter.
+- `listLanes` no longer spawns 7 git processes per lane serially (21s per call on a 58-lane machine); it is now bounded-concurrency with single-flight and a short cache.
+- Claude slash-command discovery is memoized; each call read 2,760 files.
+
+### Web
+
+- The site hero offers macOS, Windows, and iOS directly; the separate download page is removed.
+
+### CI
+
+- Pull requests no longer build the ~40-minute Windows installer. Pushes to `main` still do, because release packaging requires a green `ci-pass` on the exact SHA.
+
 ## [1.2.51] - 2026-08-03
 
 ### Web client
@@ -1352,6 +1382,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial public release.
 
 [Unreleased]: https://github.com/arul28/ADE/compare/v1.2.49...HEAD
+[1.2.52]: https://github.com/arul28/ADE/compare/v1.2.51...v1.2.52
 [1.2.51]: https://github.com/arul28/ADE/compare/v1.2.50...v1.2.51
 [1.2.50]: https://github.com/arul28/ADE/compare/v1.2.49...v1.2.50
 [1.2.49]: https://github.com/arul28/ADE/compare/v1.2.48...v1.2.49

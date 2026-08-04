@@ -17,14 +17,12 @@ export function NotFoundPage() {
               <div className="text-sm font-semibold text-fg">404</div>
               <h1 className="mt-2 text-3xl font-semibold tracking-tight text-fg">Page not found.</h1>
               <p className="mt-3 text-sm leading-relaxed text-muted-fg">
-                The page you’re looking for doesn’t exist. Head back to the landing page or download ADE.
+                The page you’re looking for doesn’t exist. Head back to the landing page, where every
+                download lives.
               </p>
               <div className="mt-6 flex flex-col gap-3 sm:flex-row">
-                <LinkButton to="/" variant="secondary">
-                  Home
-                </LinkButton>
-                <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary">
-                  Download
+                <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary">
+                  Get ADE
                 </LinkButton>
               </div>
             </div>

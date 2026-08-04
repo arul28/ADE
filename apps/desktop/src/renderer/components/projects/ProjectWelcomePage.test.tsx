@@ -312,7 +312,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
     renderWebWelcome(accountSnapshot({ state: "signed_in" }));
 
     expect(
-      await screen.findByText(/No Macs on this account yet/),
+      await screen.findByText(/No machines on this account yet/),
     ).toBeTruthy();
     expect(screen.queryByText("Retry")).toBeNull();
   });
@@ -327,7 +327,7 @@ describe("ProjectWelcomePage web zero-machines state", () => {
 
     expect(await screen.findByText("Couldn't load your machines.")).toBeTruthy();
     expect(screen.getByText("Machine directory returned 403.")).toBeTruthy();
-    expect(screen.queryByText(/No Macs on this account yet/)).toBeNull();
+    expect(screen.queryByText(/No machines on this account yet/)).toBeNull();
 
     fireEvent.click(screen.getByText("Retry"));
     await waitFor(() => expect(retryDirectory).toHaveBeenCalledTimes(1));
@@ -380,7 +380,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
 
     const button = (await screen.findByText("ADD PROJECT")).closest("button");
     expect((button as HTMLButtonElement).disabled).toBe(true);
-    expect((button as HTMLButtonElement).title).toContain("Connect a Mac first");
+    expect((button as HTMLButtonElement).title).toContain("Connect a machine first");
   });
 
   it("explains where projects are added instead of opening a flow that goes nowhere", async () => {
@@ -394,14 +394,14 @@ describe("ProjectWelcomePage web Add project gating", () => {
     fireEvent.click(button as HTMLButtonElement);
 
     expect(
-      await screen.findByText("Projects are added on the Mac that hosts them."),
+      await screen.findByText("Projects are added on the machine that hosts them."),
     ).toBeTruthy();
     expect(screen.getByText(/Open ADE on Mac Studio/)).toBeTruthy();
 
     fireEvent.click(screen.getByText("Got it"));
     await waitFor(() =>
       expect(
-        screen.queryByText("Projects are added on the Mac that hosts them."),
+        screen.queryByText("Projects are added on the machine that hosts them."),
       ).toBeNull(),
     );
   });
@@ -414,7 +414,7 @@ describe("ProjectWelcomePage web Add project gating", () => {
     fireEvent.click(button as HTMLButtonElement);
 
     expect(
-      screen.queryByText("Projects are added on the Mac that hosts them."),
+      screen.queryByText("Projects are added on the machine that hosts them."),
     ).toBeNull();
   });
 });

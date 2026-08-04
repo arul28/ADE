@@ -6,6 +6,7 @@ import {
   resolveWindowsPackageIdentity,
   windowsInstallerArtifactName,
 } from "./windows-package-identity.mjs";
+import { ensureIcnsPng } from "./extract-icns-png.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const desktopRoot = path.resolve(scriptDir, "..");
@@ -96,6 +97,29 @@ if (requireSigning) {
 }
 
 const [, owner, repo] = repositoryMatch;
+
+// Channel branding. The icon is derived from the committed `.icns` rather than
+// committed alongside it, and it has to be a CLI override rather than a
+// package.json edit: validate-win-artifacts.mjs asserts that
+// `build.win.icon` is exactly "build/icon.ico", so writing the channel icon
+// into the config would fail the release contract.
+// electron-builder converts a >=256px PNG into a multi-resolution .ico itself.
+const channelWinIconArgs = (() => {
+  if (packageChannel === "stable") return [];
+  const icns = path.join(desktopRoot, "build", `icon.${packageChannel}.icns`);
+  if (!fs.existsSync(icns)) {
+    throw new Error(
+      `Channel packaging needs build/icon.${packageChannel}.icns to brand the ${packageChannel} installer.`,
+    );
+  }
+  const png = path.join(desktopRoot, "build", `icon.${packageChannel}.png`);
+  const result = ensureIcnsPng(icns, png);
+  if (result.regenerated) {
+    console.log(`[windows-package] Extracted ${result.width}px ${result.type} icon -> build/icon.${packageChannel}.png`);
+  }
+  return [`--config.win.icon=build/icon.${packageChannel}.png`];
+})();
+
 const electronBuilderBin = path.join(
   desktopRoot,
   "node_modules",
@@ -107,6 +131,29 @@ const args = [
   `--config.publish.owner=${owner}`,
   `--config.publish.repo=${repo}`,
   `--config.extraMetadata.adeReleaseRepository=${configuredRepository}`,
+  // The packaged app has to be able to tell which channel it is at RUNTIME, and
+  // on Windows this is the only mechanism that survives packaging. macOS gets
+  // the same value twice - here and through LSEnvironment in the plist - so the
+  // omission was invisible there. Without it every lookup in
+  // readBundledAdePackageChannel() (main.ts) fails: ADE_PACKAGE_CHANNEL is set
+  // for THIS build process only and never reaches the shipped app;
+  // `productName` lives under `build`, which electron-builder strips out of the
+  // packaged package.json; and `name` stays "ade-desktop". The channel then
+  // resolves to null, applyPackagedChannelDefaults() returns early, and an
+  // installed Beta behaves as Stable - claiming ade://, overwriting Stable's
+  // `ade` CLI shim, and driving Stable's brain and ~/.ade data.
+  ...(packageChannel === "stable"
+    ? []
+    : [
+        `--config.extraMetadata.adePackageChannel=${packageChannel}`,
+        `--config.extraMetadata.adeCliName=ade-${packageChannel}`,
+        // Keep each channel's installer, latest.yml, and win-unpacked/ in its
+        // own tree. Installer filenames are already disambiguated, but
+        // latest.yml is not, so a Beta build otherwise overwrites the updater
+        // manifest a Stable build left behind in release/.
+        `--config.directories.output=release-${packageChannel}`,
+      ]),
+  ...channelWinIconArgs,
   `--config.appId=${channelIdentity.appId}`,
   `--config.productName=${channelIdentity.productName}`,
   `--config.win.executableName=${channelIdentity.productName}`,

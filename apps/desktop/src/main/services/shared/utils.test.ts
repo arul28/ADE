@@ -37,6 +37,8 @@ import {
   looksSensitiveKey,
   looksSensitiveValue,
   sanitizeStructuredData,
+  signalChildProcessTree,
+  terminateChildProcessTree,
 } from "./utils";
 
 describe("isRecord", () => {
@@ -700,5 +702,104 @@ describe("sanitizeStructuredData", () => {
     const items = config.items as unknown[];
     expect((items[0] as Record<string, unknown>).token).toBe("[REDACTED]");
     expect(items[1]).toBe("normal text");
+  });
+});
+
+describe("signalChildProcessTree", () => {
+  // On Windows the tree kill is `taskkill /PID <pid> /T /F`, and Windows
+  // recycles pids aggressively. Once Node reports exitCode/signalCode the pid
+  // has been reaped, so signalling it would force-kill whatever process now
+  // holds that number -- and every descendant of it.
+  const killableChild = (overrides: Partial<{
+    pid: number;
+    exitCode: number | null;
+    signalCode: NodeJS.Signals | null;
+  }> = {}) => {
+    const kills: NodeJS.Signals[] = [];
+    return {
+      kills,
+      child: {
+        pid: 999_999,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        stdin: null,
+        stdout: null,
+        stderr: null,
+        kill: (signal?: NodeJS.Signals | number) => {
+          kills.push(signal as NodeJS.Signals);
+          return true;
+        },
+        ...overrides,
+      },
+    };
+  };
+
+  it("refuses a child that already exited", () => {
+    const { child, kills } = killableChild({ exitCode: 0 });
+    expect(signalChildProcessTree(child, "SIGTERM")).toBe(false);
+    expect(kills).toEqual([]);
+  });
+
+  it("refuses a child that was already signalled", () => {
+    const { child, kills } = killableChild({ signalCode: "SIGKILL" });
+    expect(signalChildProcessTree(child, "SIGKILL")).toBe(false);
+    expect(kills).toEqual([]);
+  });
+
+  it("still signals a live child", () => {
+    const { child, kills } = killableChild();
+    signalChildProcessTree(child, "SIGTERM");
+    expect(kills).toContain("SIGTERM");
+  });
+
+  // The guard must read an ABSENT exitCode/signalCode as "not tracked", not as
+  // "already exited". Callers reach this through `as unknown as ChildProcess`
+  // casts the type cannot police, so a bare `!== null` silently stops killing
+  // them and leaks the tree — the failure this function exists to prevent, and
+  // strictly worse than the PID-reuse case the guard is aimed at.
+  it("signals a child whose handle does not expose exitCode or signalCode", () => {
+    const kills: NodeJS.Signals[] = [];
+    const child = {
+      pid: 999_999,
+      stdin: null,
+      stdout: null,
+      stderr: null,
+      kill: (signal?: NodeJS.Signals | number) => {
+        kills.push(signal as NodeJS.Signals);
+        return true;
+      },
+    } as unknown as Parameters<typeof signalChildProcessTree>[0];
+
+    expect(signalChildProcessTree(child, "SIGTERM")).toBe(true);
+    expect(kills).toContain("SIGTERM");
+  });
+});
+
+describe("terminateChildProcessTree", () => {
+  it("skips the delayed force kill when the child left inside the grace window", () => {
+    vi.useFakeTimers();
+    try {
+      const kills: NodeJS.Signals[] = [];
+      const child = {
+        pid: 999_999,
+        exitCode: null as number | null,
+        signalCode: null as NodeJS.Signals | null,
+        stdin: null,
+        stdout: null,
+        stderr: null,
+        kill: (signal?: NodeJS.Signals | number) => {
+          kills.push(signal as NodeJS.Signals);
+          return true;
+        },
+      };
+      terminateChildProcessTree(child, null, 1_500);
+      expect(kills).toContain("SIGTERM");
+      // The child exits during the grace window and its pid is recycled.
+      child.exitCode = 0;
+      vi.advanceTimersByTime(2_000);
+      expect(kills).not.toContain("SIGKILL");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

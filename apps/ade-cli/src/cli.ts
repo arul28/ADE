@@ -545,6 +545,9 @@ function maybeRunBuiltCliFallback(
       env: process.env,
       encoding: "utf8",
       windowsHide: true,
+      // npm is a .cmd shim on Windows; Node refuses to exec it directly
+      // (EINVAL since CVE-2024-27980), so it has to go through cmd.exe.
+      shell: process.platform === "win32",
     });
     if (buildResult.error || buildResult.status !== 0 || !isBuiltCliFresh()) {
       error.details.nextAction =
@@ -3716,6 +3719,9 @@ function looksLikeSocketPathOverride(value: string): boolean {
     value.startsWith("../") ||
     value.startsWith("~") ||
     isAdeRuntimeNamedPipePath(value) ||
+    // Windows absolute paths (C:\... / C:/...) never start with "/", so without
+    // this they would be dropped and left behind as a stray positional.
+    /^[A-Za-z]:[\\/]/.test(value) ||
     value.endsWith(".sock")
   );
 }
@@ -13966,6 +13972,12 @@ function stopHeadlessRpcServer(state: HeadlessRpcServerState): void {
 }
 
 function discoverHeadlessWorktreeSocketPaths(projectRoot: string): string[] {
+  // Windows has no unix domain sockets: `server.listen("<worktree>/.ade/ade.sock")`
+  // fails with EACCES because only `\\.\pipe\...` names are bindable. The mirror
+  // therefore never worked here, and the 500 ms rescan turned that into a
+  // permanent retry loop that re-mkdir'd every worktree `.ade` twice a second.
+  // Give worktree mirrors real named pipes before re-enabling this on win32.
+  if (process.platform === "win32") return [];
   const worktreesDir = path.join(projectRoot, ".ade", "worktrees");
   let entries: string[] = [];
   try {
@@ -15082,7 +15094,7 @@ async function repairMachineRuntimeServiceConnection(args: {
         localRuntime: isLocalRuntimeSocketPath(args.socketPath),
       });
       if (selfShutdownBlock) throw selfShutdownBlock;
-      uninstallRuntimeService();
+      await uninstallRuntimeService();
       client.close();
       return null;
     }
@@ -15549,7 +15561,7 @@ async function runBrainCommand(
 
   if (sub === "restart") {
     const { installRuntimeService, uninstallRuntimeService } = await import("./serviceManager");
-    const stopped = uninstallRuntimeService();
+    const stopped = await uninstallRuntimeService();
     if (isRuntimeSelfShutdownBlockedResult(stopped)) {
       return {
         ok: false,

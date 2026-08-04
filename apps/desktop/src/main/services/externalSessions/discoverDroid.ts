@@ -10,6 +10,7 @@ import {
   firstUserTextFromRecords,
   moreCompleteFileCandidate,
   normalizeExternalSessionLimit,
+  normalizeProviderCwd,
   readJsonlRecords,
   recordWithFile,
   resolveHomeDir,
@@ -140,7 +141,10 @@ export async function discoverDroidSessions(
     // The recorded id can differ from the file name; candidates arrive best-first,
     // so an earlier claim on the same id is the one worth keeping.
     if (recordsById.has(id)) continue;
-    const cwd = asString(first.cwd);
+    // `session_start.cwd` is whatever droid was launched with; on Windows that
+    // can be the `\\?\` extended-length spelling, which no path comparison
+    // downstream understands. See `normalizeProviderCwd`.
+    const cwd = normalizeProviderCwd(asString(first.cwd));
     if (!cwdIsInScope(cwd, args.scopeRoots)) continue;
     const firstUserText = firstUserTextFromRecords(jsonl);
     const firstMessageTimestamp = jsonl

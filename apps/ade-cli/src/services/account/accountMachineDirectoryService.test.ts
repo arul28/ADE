@@ -104,6 +104,38 @@ describe("AccountMachineDirectoryService", () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
+  it("treats an unreadable stored session as unavailable, never as a sign-out", async () => {
+    const fetchImpl = directoryFetch([]);
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({ signedIn: false, userId: null, email: null, name: null, expiresAt: null }),
+      getSessionReadState: () => "unreadable",
+      getAccessToken: vi.fn(async () => "should-not-be-read"),
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl });
+
+    await expect(service.listMachines()).resolves.toMatchObject({
+      state: "unavailable",
+      machines: [],
+    });
+    // The failure must not tell the user to sign in — their session is intact.
+    await expect(service.deleteMachine("mk-studio")).rejects.toThrow(
+      /couldn't read this computer's saved sign-in/i,
+    );
+    await expect(service.renameMachine("mk-studio", "Studio")).rejects.toThrow(
+      /couldn't read this computer's saved sign-in/i,
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("still says 'not signed in' for a genuinely absent session", async () => {
+    const service = new AccountMachineDirectoryService({
+      getStatus: () => ({ signedIn: false, userId: null, email: null, name: null, expiresAt: null }),
+      getSessionReadState: () => "missing",
+      getAccessToken: vi.fn(async () => "should-not-be-read"),
+    }, { directoryBaseUrl: () => "https://directory.example", fetchImpl: directoryFetch([]) });
+
+    await expect(service.deleteMachine("mk-studio")).rejects.toThrow(/Not signed in/);
+  });
+
   it("refreshes a provisioned account token before listing machines", async () => {
     const getAccessToken = vi.fn(async () => "refreshed-account-token");
     const fetchImpl = directoryFetch([machine()]);

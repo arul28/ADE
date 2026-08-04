@@ -116,9 +116,10 @@ GitHub's squash/merge/rebase result has the reviewed tree. Green CI on a later
 head or base does not preserve this binding.
 
 A non-empty gate **blocks the merge** — every row in it is a finding that was
-verified as real and left unfixed, and by `/quality`'s contract the only two
-things that may be there are a product decision the author owes, or a behavior
-change this branch was not asked to make. Both need the author.
+verified as real and left unfixed, and by `/quality`'s contract the only three
+things that may be there are a product decision the author owes, a behavior
+change this branch was not asked to make, or a capability whose Windows parity
+is not achievable. All three need the author.
 
 - Gate rows exist → do not merge. Surface them, state the decision needed, and
   stop with `blocked`. Do not merge and mention them afterwards.
@@ -173,6 +174,28 @@ only user-visible output is the per-iteration status line and the final summary.
   `running` | `ready-stacked` | `done-clean` | `done-max` | `blocked`; it also
   records `mode` and the complete stack binding. Rebase rebates the iteration counter by 2
   (floor 0).
+
+**Windows parity gate.** Windows parity is a default requirement for all new
+code, so this gate runs on **every** lane, not only Windows-labelled ones.
+Before Phase 3c (or `ready-stacked`), confirm the branch's behavior works on the
+Windows build. If any capability on this branch cannot work on Windows and the
+human has not already chosen what to do about it, **stop with `blocked`** — this
+is the one product decision `/ship` never makes for itself, and force-finalize
+does not clear it. `/ship` is autonomous, so "ask" here means exit blocked with
+the question stated, not pause mid-loop. The blocked summary must give, per
+capability:
+
+1. the exact capability that cannot work and the OS-level reason;
+2. whether macOS/Linux keep it;
+3. **hidden** (absent on Windows) vs **disabled with a reason shown** (visible,
+   inert, explained) vs **removed** (deleted from the Windows build), with your
+   recommendation.
+
+Hidden and disabled are different user experiences; the author picks per item.
+A `/quality` gate row with reason three carries this content already — surface
+it verbatim rather than re-deriving it. Never merge a lane whose Windows
+behavior is unknown; unknown is not parity. Failure classes and the canonical
+helpers: `../quality/references/windows-quirks.md`.
 
 **Windows proof gate.** For a Windows-relevant stack entry, require the native
 Windows foundation check to be terminal-green on the bound head. Require the
@@ -321,7 +344,7 @@ self-resume signal. Either:
 | `ready-stacked` | Opt-in stacked layer is green, review-terminal, quality/test-clean, and every mandatory proof scenario is linked to the validated head or validly deferred to a named higher layer. The lane fixed its own layer; the coordinator owns restacking, base retargeting, submission, and landing |
 | `done-clean` | PR merged on main |
 | `done-max` | 5 normal + 1 force-finalize exhausted, merge genuinely blocked |
-| `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, a non-empty `/quality` gate awaiting an author decision, a missing mandatory proof scenario, or a `stack-coordinator-*` escalation |
+| `blocked` | Unrecoverable conflict, gate failure, API error, force-finalize CI failed, a non-empty `/quality` gate awaiting an author decision, an unresolved Windows parity decision (hide / disable / remove), a missing mandatory proof scenario, or a `stack-coordinator-*` escalation |
 
 Always print the final summary (PR, branch, iterations, status, reason,
 per-iteration log, unaddressed items) on exit. Do NOT schedule a wake when

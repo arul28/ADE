@@ -463,6 +463,32 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
     });
 
+    it("keeps the Claude prompt in argv on POSIX and off the command line on Windows", () => {
+      const args = {
+        provider: "claude" as const,
+        permissionMode: "default" as const,
+        initialPrompt: "Ship the %USERPROFILE% fix\nand explain it",
+      };
+
+      withProcessPlatform("darwin", () => {
+        const launch = buildTrackedCliLaunchCommand(args);
+        expect(launch.args).toContain(args.initialPrompt);
+        expect(launch.initialInput).toBeUndefined();
+      });
+
+      // On Windows a bare `claude` that resolves to a shim is spawned through
+      // `cmd.exe /d /s /c "…"`, which expands `%USERPROFILE%`, flattens the
+      // newline to a space, and hard-fails past 8191 characters. The ~2KB
+      // guidance blob already eats a quarter of that budget.
+      withProcessPlatform("win32", () => {
+        const launch = buildTrackedCliLaunchCommand(args);
+        expect(launch.args).not.toContain(args.initialPrompt);
+        expect(launch.startupCommand).not.toContain("Ship the");
+        expect(launch.initialInput).toBe(args.initialPrompt);
+        expect(launch.initialInputDelayMs).toBe(750);
+      });
+    });
+
     it("keeps Claude Code in interactive TUI mode", () => {
       const launch = buildTrackedCliLaunchCommand({
         provider: "claude",
@@ -864,9 +890,11 @@ describe("buildTrackedCliStartupCommand", () => {
       expect(launch.startupCommand).toContain("\\\"reasoningEffort\\\":\\\"high\\\"");
       expect(launch.startupCommand).toContain("\\\"autonomyLevel\\\":\\\"low\\\"");
       expect(launch.env?.[ADE_AGENT_SKILLS_DIRS_ENV]).toContain("agent-skills");
+      // POSIX carries the prompt in argv, where it round-trips intact.
+      expect(launch.initialInput).toBeUndefined();
     });
 
-    it("launches Droid through PowerShell on Windows", () => {
+    it("launches Droid through PowerShell on Windows with the prompt off the command line", () => {
       withProcessPlatform("win32", () => {
         const launch = buildTrackedCliLaunchCommand({
           provider: "droid",
@@ -886,8 +914,16 @@ describe("buildTrackedCliStartupCommand", () => {
         );
         expect(launch.startupCommand).not.toContain("Set-Content");
         expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS");
-        expect(launch.startupCommand).toContain("Run the Droid path.");
         expect(launch.startupCommand).toContain("\"model\":\"claude-sonnet-5\"");
+        // `& 'droid' … '<multi-line>'` reaches a droid.cmd shim truncated at the
+        // first newline, and the ADE preamble is always multi-line, so the whole
+        // prompt used to be lost. It rides the PTY instead now.
+        expect(launch.startupCommand).not.toContain("Run the Droid path.");
+        expect(launch.startupCommand).not.toContain("ADE session guidance");
+        expect(launch.initialInput).toContain("Run the Droid path.");
+        expect(launch.initialInput).toContain("ADE session guidance");
+        expect(launch.initialInput).toContain("\n");
+        expect(launch.initialInputDelayMs).toBe(750);
       });
     });
 
@@ -1071,8 +1107,8 @@ describe("tracked CLI resume helpers", () => {
     expect(replay.env?.OPENCODE_CONFIG_CONTENT).toBeTruthy();
   });
 
-  it("quotes Windows Droid resume values through PowerShell without interpolation", () => {
-    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café";
+  it("keeps the prompt out of the Windows Droid resume command line", () => {
+    const prompt = "Continue in C:\\Program Files\\ADE's $lane %TEMP% & café\nsecond line";
     const launch = buildTrackedCliResumeLaunchCommand({
       provider: "droid",
       targetKind: "session",
@@ -1088,13 +1124,32 @@ describe("tracked CLI resume helpers", () => {
       "Bypass",
       "-Command",
     ]);
-    expect(launch.startupCommand).toContain(
-      "'Continue in C:\\Program Files\\ADE''s $lane %TEMP% & café'",
-    );
+    // Quoting was never the problem: PowerShell hands argv to a droid.cmd shim
+    // that truncates the value at the first newline and expands %TEMP% on the
+    // way through. The resume path re-sends the text over the PTY instead.
+    expect(launch.startupCommand).not.toContain("Continue in");
+    expect(launch.startupCommand).not.toContain("%TEMP%");
+    expect(launch.initialInput).toBe(prompt);
+    expect(launch.startupCommand).toContain("& 'droid' '--settings' $env:ADE_DROID_SETTINGS '--resume' 'droid-session-1'");
     expect(launch.startupCommand).toContain("[System.Text.UTF8Encoding]::new($false)");
     expect(launch.startupCommand).not.toContain("Set-Content");
     expect(launch.startupCommand).not.toContain("$(mktemp");
     expect(launch.startupCommand).not.toContain("ADE_DROID_SETTINGS=\"");
+  });
+
+  it("keeps the POSIX Droid resume prompt in argv", () => {
+    const prompt = "Continue in /repo's $lane\nsecond line";
+    const launch = buildTrackedCliResumeLaunchCommand({
+      provider: "droid",
+      targetKind: "session",
+      targetId: "droid-session-1",
+      launch: { permissionMode: "edit", model: "droid/claude-sonnet-5" },
+    }, { prompt }, { platform: "darwin" });
+
+    expect(launch.command).toBe("/bin/bash");
+    expect(launch.startupCommand).toContain("Continue in /repo");
+    expect(launch.startupCommand).toContain("second line");
+    expect(launch.initialInput).toBeUndefined();
   });
 
   it("rebuilds permission-aware resume commands from metadata", () => {

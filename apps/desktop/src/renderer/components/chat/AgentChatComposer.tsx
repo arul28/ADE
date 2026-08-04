@@ -76,7 +76,7 @@ import { CURSOR_MODE_LABELS } from "../../../shared/cursorModes";
 import { ChatProposedPlanCard } from "./ChatProposedPlanCard";
 import { ChatModelSelectionPendingCard } from "./ChatModelSelectionPendingCard";
 import { ChatCommandMenu, type ChatCommandMenuItem, type ChatCommandMenuHandle } from "./ChatCommandMenu";
-import { modifierKeyLabel } from "../../lib/platform";
+import { isMacPlatform, modifierKeyLabel } from "../../lib/platform";
 import { canOpenInAdeBrowser, openUrlInAdeBrowser } from "../../lib/openExternal";
 import { isWebClientMode } from "../../lib/webClientMode";
 import {
@@ -223,10 +223,19 @@ type PasteShortcutEvent = {
   shiftKey: boolean;
 };
 
-function isMacPlatform(): boolean {
-  return typeof navigator !== "undefined" && /mac/i.test(navigator.platform);
-}
-
+/**
+ * Deliberately macOS-only, and deliberately not `mod = isMac ? meta : ctrl`.
+ *
+ * This arms an 80ms timer that reads the native clipboard if no usable paste
+ * event has landed by then. It is insurance against a macOS-specific hole:
+ * Chromium translates only some NSPasteboard image flavors, so a screenshot or
+ * a Preview copy can produce a paste event carrying neither files nor an
+ * `image/*` item — nothing `handlePaste` can act on. On Windows the clipboard
+ * bitmap formats (CF_DIB/CF_BITMAP) always surface as an `image/png` item, and
+ * `handlePaste`'s `hasImageItem` branch already routes those to the same native
+ * read. Arming this on Ctrl+V would add a timer race to every Windows paste,
+ * text included, to cover a case that cannot occur there.
+ */
 function isMacPasteShortcut(event: PasteShortcutEvent): boolean {
   return (
     isMacPlatform()
@@ -356,7 +365,10 @@ function appControlContextDisplayLabel(item: AppControlContextItem): string {
 
 function appControlContextSourceDescription(item: AppControlContextItem): string {
   if (item.sourceFile) {
-    return `${item.sourceFile.split("/").pop()}${item.sourceLine ? `:${item.sourceLine}` : ""}`;
+    // Split on both separators: unlike the iOS twin above, this path is not
+    // macOS-gated, so `sourceFile` can arrive as a Windows path and a
+    // "/"-only split would print the whole thing instead of the basename.
+    return `${item.sourceFile.split(/[\\/]/).pop()}${item.sourceLine ? `:${item.sourceLine}` : ""}`;
   }
   const candidates = iosMetadataArray(item.metadata.sourceCandidates);
   if (candidates.length) return `${candidates.length} source ${candidates.length === 1 ? "guess" : "guesses"}`;

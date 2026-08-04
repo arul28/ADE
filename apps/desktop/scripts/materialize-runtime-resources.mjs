@@ -6,6 +6,7 @@ import https from "node:https";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -24,10 +25,6 @@ function currentTarget() {
   const platform = process.platform === "darwin" ? "darwin" : process.platform === "linux" ? "linux" : process.platform;
   const arch = process.arch === "x64" ? "x64" : process.arch === "arm64" ? "arm64" : process.arch;
   return `${platform}-${arch}`;
-}
-
-function npmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
 function artifactNamesForTarget(target) {
@@ -322,7 +319,14 @@ async function buildHostArtifactsIfNeeded() {
   let stdout = "";
   let stderr = "";
   try {
-    const result = await execFileAsync(npmCommand(), [
+    // Windows npm is a `.cmd` shim, and naming it `npm.cmd` is not enough: Node
+    // has refused to spawn `.cmd`/`.bat` without a shell since CVE-2024-27980,
+    // so `execFile` fails with EINVAL either way. Both measured.
+    // `resolveNpmInvocation` sidesteps the shim by running npm's own JavaScript
+    // entry point under this process's `node` — no shell, so no command-line
+    // re-parsing, and a checkout under "C:\Users\First Last\..." survives
+    // unquoted.
+    const npm = resolveNpmInvocation([
       "--prefix",
       cliRoot,
       "run",
@@ -332,7 +336,8 @@ async function buildHostArtifactsIfNeeded() {
       target,
       "--out-dir",
       runtimeRoot,
-    ], {
+    ]);
+    const result = await execFileAsync(npm.command, npm.args, {
       cwd: desktopRoot,
       env,
       maxBuffer: 100 * 1024 * 1024,

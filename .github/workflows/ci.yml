@@ -17,6 +17,27 @@ permissions:
   contents: read
 
 jobs:
+  # ── Stage 0: change detection ─────────────────────────────────────────
+  # package-win takes ~40 minutes and ran on every push, so a docs-only
+  # change paid for a full NSIS installer build. This job decides whether
+  # it has to; ci-pass below then distinguishes "skipped because nothing
+  # relevant changed" from "skipped because something upstream broke".
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      package-win: ${{ steps.filter.outputs.package-win }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            package-win:
+              - "apps/desktop/**"
+              - "apps/ade-cli/**"
+              - ".github/workflows/ci.yml"
+              - "!**/*.md"
+
   # ── Stage 1: Install & cache ──────────────────────────────────────────
   install:
     runs-on: ubuntu-latest
@@ -533,6 +554,10 @@ jobs:
           src/main/services/updates/autoUpdateService.test.ts
           src/main/windowAppearance.test.ts
           src/renderer/lib/pathUtils.test.ts
+          src/main/services/shared/pathCompare.test.ts
+          src/main/services/externalSessions/discoveryUtils.test.ts
+          src/main/services/externalSessions/externalSessionsService.test.ts
+          src/main/services/lanes/laneStorageLifecycle.test.ts
 
       # Covers the Windows runtime startup timing and `connectSpawnedRuntime`
       # retry path. This suite spawns real `ade serve` daemons and connects to
@@ -561,7 +586,23 @@ jobs:
           src/main/services/sync/syncService.test.ts
 
   package-win:
-    needs: build-runtime-binaries
+    needs: [changes, build-runtime-binaries]
+    # Never runs on a pull request. Building the NSIS installer takes ~40
+    # minutes, which is not a reasonable price for review feedback, and a PR
+    # cannot ship anything on its own.
+    #
+    # It still runs on every push to main and on dispatch, and that is
+    # load-bearing rather than belt-and-braces: release-core.yml's verify job
+    # requires a ci-pass check run on the exact SHA it builds, so every SHA
+    # that could be released must have had its installer really built. That is
+    # why `github.ref == 'refs/heads/main'` is its own disjunct: on main the
+    # paths filter is deliberately bypassed, so even a docs-only commit builds
+    # the installer. Releasable SHAs are never sampled.
+    if: >-
+      github.event_name != 'pull_request'
+      && (needs.changes.outputs.package-win == 'true'
+        || github.event_name == 'workflow_dispatch'
+        || github.ref == 'refs/heads/main')
     runs-on: windows-latest
     timeout-minutes: 60
     steps:
@@ -663,6 +704,7 @@ jobs:
   ci-pass:
     if: always()
     needs:
+      - changes
       - install
       - secret-scan
       - typecheck-desktop
@@ -687,11 +729,53 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check all jobs passed
+        env:
+          # `toJSON(needs)` IS the `needs:` list above -- one source of truth.
+          # This used to re-enumerate all 21 job names in a bash loop, which
+          # inverted the failure it was meant to prevent: a job added to
+          # `needs:` and forgotten in the loop was never skip-checked, silently
+          # and forever. Deriving the list means it cannot drift.
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          PACKAGE_WIN_CHANGED: ${{ needs.changes.outputs.package-win }}
+          IS_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
-          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]] ||
-             [[ "${{ contains(needs.*.result, 'skipped') }}" == "true" ]] ||
-             [[ "${{ contains(needs.*.result, 'cancelled') }}" == "true" ]]; then
-            echo "::error::One or more required jobs failed, were skipped, or were cancelled"
+          set -euo pipefail
+          # Read the results ONCE into a variable rather than streaming jq
+          # straight into the loop. Under process substitution a jq that fails
+          # or is missing feeds the loop zero lines and the step exits 0 --
+          # fail-open, which is the one outcome a gate must never have. As a
+          # command substitution under `set -e`, jq failing kills the step, and
+          # the emptiness check below catches a well-formed but empty answer.
+          results="$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | "\(.key)=\(.value.result)"')"
+          if [[ -z "$results" ]]; then
+            echo "::error::ci-pass could not read any job results from needs"
             exit 1
           fi
-          echo "All CI jobs passed"
+          failed=0
+          while IFS='=' read -r job result; do
+            case "$result" in
+              success) ;;
+              skipped)
+                # 'skipped' means failure for every job EXCEPT package-win, so a
+                # conditional job added later cannot start passing green while
+                # dead. package-win has exactly two legitimate skips: a pull
+                # request never builds the installer, and a push where the paths
+                # filter proved no packaging input changed.
+                if [[ "$job" != "package-win" ]]; then
+                  echo "::error::${job} was skipped"
+                  failed=1
+                elif [[ "$IS_PULL_REQUEST" != "true" && "$PACKAGE_WIN_CHANGED" == "true" ]]; then
+                  echo "::error::package-win was skipped although packaging inputs changed"
+                  failed=1
+                else
+                  echo "package-win skipped: pull request, or no packaging-relevant paths changed"
+                fi
+                ;;
+              *)
+                echo "::error::${job} did not succeed (${result})"
+                failed=1
+                ;;
+            esac
+          done <<< "$results"
+          if [[ "$failed" != "0" ]]; then exit 1; fi
+          echo "All required CI jobs passed"

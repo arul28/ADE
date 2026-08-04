@@ -340,7 +340,7 @@ export function OpenPage() {
                 >
                   <ArrowUpRight className="mr-1 h-4 w-4" /> Open in ADE
                 </a>
-                <LinkButton to="/download" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
+                <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="secondary">
                   <Download className="mr-1 h-4 w-4" /> Install ADE
                 </LinkButton>
               </div>

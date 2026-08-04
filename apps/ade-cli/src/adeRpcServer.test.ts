@@ -2667,8 +2667,21 @@ describe("adeRpcServer", () => {
 
     expect(response?.isError).toBeUndefined();
     const createCall = fixture.runtime.ptyService.create.mock.calls.at(-1)?.[0];
-    expect(createCall?.args?.at(-1)).toContain("hello?");
-    expect(createCall?.startupCommand).toContain("hello?");
+    if (process.platform === "win32") {
+      // Windows keeps user text off the command line entirely: cmd.exe expands
+      // `%VAR%`, flattens newlines, and dies outright past 8191 characters. The
+      // prompt rides `initialInput` instead, which `createPtyService` — the same
+      // implementation this CLI imports from the desktop — writes over the PTY
+      // once the provider signals ready.
+      expect(createCall?.args?.at(-1)).not.toContain("hello?");
+      expect(createCall?.startupCommand ?? "").not.toContain("hello?");
+      expect(createCall?.initialInput).toContain("hello?");
+    } else {
+      expect(createCall?.args?.at(-1)).toContain("hello?");
+      expect(createCall?.startupCommand).toContain("hello?");
+    }
+    // Either way the prompt is delivered by the launch, never by a separate
+    // post-launch write from this RPC handler.
     expect(fixture.runtime.ptyService.writeBySessionId).not.toHaveBeenCalled();
   });
 

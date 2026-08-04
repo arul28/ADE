@@ -31,6 +31,7 @@ function appInfoWithRuntimeSkew(
 ): AppInfo {
   return {
     appVersion: "1.2.0",
+    packageChannel: "stable",
     isPackaged: true,
     automationsEnabled: true,
     platform: "darwin",

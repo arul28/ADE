@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { resolveCliSpawnInvocation } from "./processExecution";
+import { resolveCliSpawnInvocation, windowsTaskkillCommand } from "./processExecution";
 
 // ── Type guards ─────────────────────────────────────────────────────
 
@@ -72,7 +72,16 @@ export function firstLine(text: string): string {
   return text.split(/\r?\n/)[0]?.trim() ?? "";
 }
 
-type KillableChildProcess = Pick<ChildProcess, "pid" | "kill" | "stdin" | "stdout" | "stderr">;
+/**
+ * `exitCode`/`signalCode` are part of the contract, not incidental: they are the
+ * PID-reuse guard in `signalChildProcessTree`. A caller that hands over an
+ * object without them would defeat that guard silently, so the type demands
+ * them.
+ */
+type KillableChildProcess = Pick<
+  ChildProcess,
+  "pid" | "kill" | "stdin" | "stdout" | "stderr" | "exitCode" | "signalCode"
+>;
 
 function isValidPid(pid: number | null | undefined): pid is number {
   return typeof pid === "number" && Number.isInteger(pid) && pid > 0;
@@ -102,31 +111,66 @@ export function destroyChildProcessStreams(child: Pick<KillableChildProcess, "st
  *
  * On Unix-like systems, the child is spawned into its own process group and we
  * signal the entire group. On Windows, `taskkill /T` is the closest equivalent.
+ *
+ * Windows note: `taskkill`'s exit code is not evidence that the tree died, in
+ * either direction. Without `/F` it asks each window to close, so a windowless
+ * console process reports 128 ("no running instance") while its children are
+ * very much alive; a 0 only means the requests were dispatched. Treating 0 as
+ * success used to skip the direct-child fallback entirely, and the fallback is
+ * itself only a partial answer — `child.kill()` is `TerminateProcess` on the
+ * leader alone and never touches descendants. So we always do both.
+ *
+ * The tree kill passes `/F` for EVERY signal, including SIGTERM. Deferring the
+ * force to the caller's SIGKILL escalation cannot work: measured on Windows 11,
+ * a non-forced `taskkill /PID <leader> /T` against a windowless console process
+ * exits 128 and kills nothing, then `child.kill("SIGTERM")` — which is a plain
+ * `TerminateProcess` on Windows, not a catchable signal — removes the leader.
+ * By the time the escalation runs, `taskkill /PID <leader> /T /F` reports
+ * `ERROR: The process "<pid>" not found.` and the descendants are unreachable
+ * forever. Nothing is lost by forcing immediately, because the leader never had
+ * a graceful path on Windows to begin with. This matches `terminateProcessTree`
+ * in ./processExecution, which always forces for the same reason.
+ *
+ * An already-exited child is refused outright. This is the PID-reuse guard, not
+ * an optimization: once Node reports `exitCode`/`signalCode` the pid has been
+ * reaped and Windows recycles pids aggressively, so `taskkill /PID <pid> /T /F`
+ * would force-kill whatever process now holds that number — and its whole tree.
+ * The guard is unconditional rather than win32-only because `process.kill(-pid)`
+ * against a recycled process group is the same hazard on POSIX; there is nothing
+ * left to signal on either platform.
  */
 export function signalChildProcessTree(child: KillableChildProcess, signal: NodeJS.Signals): boolean {
+  // Coalesce through `?? null`: an ABSENT field means "not tracked", not
+  // "already exited". A bare `!== null` reads `undefined` as exited and refuses
+  // to kill, which silently leaks the whole tree — the exact failure this
+  // function exists to prevent, and the more dangerous direction of the two.
+  // Handles reach here through `as unknown as ChildProcess` casts that the type
+  // cannot police, so only an explicit non-null value counts as proof the pid
+  // was reaped.
+  if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
   const pid = child.pid ?? null;
 
   if (process.platform === "win32") {
+    let treeSignaled = false;
     if (isValidPid(pid)) {
-      const taskkillArgs = ["/PID", String(pid), "/T"];
-      if (signal === "SIGKILL") {
-        taskkillArgs.push("/F");
-      }
+      const taskkillArgs = ["/PID", String(pid), "/T", "/F"];
       try {
-        const result = spawnSync("taskkill", taskkillArgs, {
+        const result = spawnSync(windowsTaskkillCommand(), taskkillArgs, {
           stdio: "ignore",
           windowsHide: true,
         });
-        if (result.status === 0) return true;
+        treeSignaled = !result.error && result.status === 0;
       } catch {
-        // fall through to direct child signaling
+        // taskkill may be unavailable; the direct child signal below still runs.
       }
     }
+    let childSignaled = false;
     try {
-      return child.kill(signal);
+      childSignaled = child.kill(signal);
     } catch {
-      return false;
+      childSignaled = false;
     }
+    return treeSignaled || childSignaled;
   }
 
   if (isValidPid(pid)) {
@@ -156,6 +200,16 @@ export function signalChildProcessTree(child: KillableChildProcess, signal: Node
   return false;
 }
 
+/**
+ * SIGTERM now, SIGKILL after `killAfterMs` if the child is still there.
+ *
+ * The delayed kill is safe against pid reuse because it re-reads the LIVE
+ * `child` object: `signalChildProcessTree` refuses an exited child, so a child
+ * that went away inside the grace window is never force-killed by pid — which
+ * matters because 1.5s is ample time for Windows to hand that pid to someone
+ * else. Callers that keep the returned timer should clear it on exit anyway, so
+ * the timer does not hold the event loop open.
+ */
 export function terminateChildProcessTree(
   child: KillableChildProcess,
   previousKillTimer: NodeJS.Timeout | null = null,

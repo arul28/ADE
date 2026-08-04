@@ -887,6 +887,15 @@ async function validatePackagedRuntime(appDir) {
       env: {
         ...process.env,
         ADE_BIN: adeCliBinPath,
+        // This runs the REAL shipped PATH installer, which derives its target
+        // from the shim's directory and persists it to HKCU. The temp dir is
+        // deleted below, but the PATH entry it wrote is not — so every
+        // validation run left a permanent dead `%TEMP%\ade-win-install-*\bin`
+        // in the user's PATH. Six had accumulated on one machine. The real
+        // installer snapshots and restores PATH; this one had no such guard,
+        // so use the installer's own opt-out instead. The --help assertion
+        // below invokes the shim by absolute path and does not need PATH.
+        ADE_SKIP_USER_PATH_UPDATE: "1",
       },
     });
     await assertPathExists(installedCommandPath, "installed ADE CLI shim");
@@ -948,8 +957,23 @@ async function validateAuthenticodeSignature(filePath, description, expectedIden
   return identity;
 }
 
+/**
+ * Where electron-builder wrote this build.
+ *
+ * Channel builds get their own output tree — `release-beta`, `release-alpha` —
+ * because installer filenames are disambiguated but `latest.yml` and
+ * `win-unpacked/` are not, so a channel build would otherwise overwrite the
+ * updater manifest a Stable build left behind. This has to derive the directory
+ * the same way run-electron-builder.mjs does, or the validator scans an empty
+ * `release/` and reports the build missing when it succeeded.
+ */
+function defaultReleaseDir() {
+  const { packageChannel } = packageIdentity;
+  return path.join(desktopRoot, packageChannel === "stable" ? "release" : `release-${packageChannel}`);
+}
+
 async function validateReleaseArtifacts() {
-  const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? path.join(desktopRoot, "release");
+  const releaseDir = resolveAbsolute(readFlag("--release-dir")) ?? defaultReleaseDir();
   const installerRegex = windowsInstallerPattern(packageIdentity);
   const installerPath =
     resolveAbsolute(readFlag("--installer")) ?? (await findArtifact(releaseDir, installerRegex, "Windows installer"));

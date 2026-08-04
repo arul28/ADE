@@ -210,6 +210,18 @@ function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * `terminatePidGracefully*` now dispatches on platform, because Windows has no
+ * catchable SIGTERM and needs a cooperative RPC shutdown instead. This file is
+ * the launchd manager: everything it terminates is a macOS process, so pin the
+ * POSIX branch rather than letting `process.platform` decide -- otherwise the
+ * cross-platform unit tests for this module take the win32 path when they run
+ * on a Windows host.
+ */
+function launchdTerminateDeps(deps: TerminatePidDeps | undefined): TerminatePidDeps {
+  return { ...deps, platform: deps?.platform ?? "darwin" };
+}
+
 async function sleepAsync(ms: number): Promise<void> {
   // Awaited lifecycle delays must stay referenced: in a standalone CLI the
   // handover polling can be the only pending work, and an unref'd timer lets
@@ -338,7 +350,7 @@ export async function installLaunchdService(
         fs.writeFileSync(servicePath, plist, "utf8");
         if (loaded?.running === true) {
           run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-          await terminatePidGracefullyAsync(loaded.pid, deps.terminateDeps);
+          await terminatePidGracefullyAsync(loaded.pid, launchdTerminateDeps(deps.terminateDeps));
         }
       }
       return {
@@ -349,7 +361,7 @@ export async function installLaunchdService(
         message: `${formatSyncHostSingletonConflictMessage(conflict)} The ${ADE_RUNTIME_SERVICE_NAME} launch agent was updated for this ADE channel and will start when mobile sync is available.`,
       };
     }
-    await terminatePidGracefullyAsync(conflict.owner.pid, deps.terminateDeps);
+    await terminatePidGracefullyAsync(conflict.owner.pid, launchdTerminateDeps(deps.terminateDeps));
   }
 
   if (!plistUnchanged) {
@@ -360,14 +372,17 @@ export async function installLaunchdService(
   // orphaned brain keeps the channel socket and sync lock hostage. Reap the
   // previous service child plus any stale same-channel serve processes
   // before loading the replacement.
-  await terminatePidGracefullyAsync(loaded?.pid ?? null, deps.terminateDeps);
-  const stalePids = listStaleChannelServePids(run, {
+  await terminatePidGracefullyAsync(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps));
+  // A failed scan is not "nothing to reap"; on macOS `ps` is part of the base
+  // system, so a failure here means the host is broken in a way this install
+  // cannot repair. Reaping nothing preserves the pre-existing behaviour.
+  const staleScan = listStaleChannelServePids(run, {
     cliScriptPath: resolveAdeServeCliScriptPath(command),
     primarySocketPath: socketPath,
     excludePids: loaded?.pid ? [loaded.pid] : [],
-  });
-  for (const pid of stalePids) {
-    await terminatePidGracefullyAsync(pid, deps.terminateDeps);
+  }, "darwin");
+  for (const pid of staleScan.ok ? staleScan.pids : []) {
+    await terminatePidGracefullyAsync(pid, launchdTerminateDeps(deps.terminateDeps));
   }
   const load = run("launchctl", ["load", servicePath], { encoding: "utf8" });
   if (load.status !== 0) {
@@ -454,7 +469,7 @@ export function uninstallLaunchdService(deps: LaunchdServiceUninstallDeps = {}):
   run("launchctl", ["bootout", `gui/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["bootout", `user/${uid}/${ADE_RUNTIME_SERVICE_NAME}`], { stdio: "ignore" });
   run("launchctl", ["unload", servicePath], { stdio: "ignore" });
-  terminatePidGracefully(loaded?.pid ?? null, deps.terminateDeps);
+  terminatePidGracefully(loaded?.pid ?? null, launchdTerminateDeps(deps.terminateDeps));
   try { fs.unlinkSync(servicePath); } catch {}
   return {
     ok: true,

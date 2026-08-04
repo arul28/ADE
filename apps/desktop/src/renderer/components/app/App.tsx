@@ -17,6 +17,7 @@ import {
   type InboundDeeplinkDispatchOptions,
   type InboundDeeplinkTarget,
 } from "./InboundDeeplinkModal";
+import { WindowsBetaNoticeHost } from "./WindowsBetaNoticeModal";
 import { ClipboardDeeplinkBanner } from "./ClipboardDeeplinkBanner";
 import { CrossRepoPrBanner } from "./CrossRepoPrBanner";
 import { ProjectRecoveryScreen } from "./ProjectRecoveryScreen";
@@ -29,6 +30,7 @@ import { logRendererDebugEvent } from "../../lib/debugLog";
 import { readStoredProjectRoute, writeStoredProjectRoute } from "./projectRouteStorage";
 import { requestLinearIssueQuickView } from "../../lib/linearIssueQuickViewNavigation";
 import { isWebClientMode } from "../../lib/webClientMode";
+import { syncWindowsTitleBarOverlay } from "../../lib/windowControlsOverlay";
 
 function createPreloadableRoute<TProps extends object>(
   loadModule: () => Promise<{ default: React.ComponentType<TProps> }>,
@@ -1391,6 +1393,9 @@ export function App() {
     // Keep theme consistent for portals mounted outside the app root.
     document.documentElement.setAttribute("data-theme", theme);
     document.body.setAttribute("data-theme", theme);
+    // The Windows caption strip is painted by the OS from a colour ADE hands
+    // it, so it does not inherit `data-theme` the way the header does.
+    syncWindowsTitleBarOverlay({ theme });
   }, [theme]);
 
   return (
@@ -1398,6 +1403,11 @@ export function App() {
       <Router>
         <div data-theme={theme} className="h-full bg-bg text-fg font-sans antialiased selection:bg-accent/30">
           <OnboardingBootstrap />
+          {/* Windows beta notice: shown on every start of every Windows install
+              (Stable included), and re-openable from Settings → About or the
+              header build chip. Renders nothing at all on macOS and Linux, where
+              ADE is GA. */}
+          <WindowsBetaNoticeHost />
           <AppNavigationBridge />
           <CrossRepoPrBanner />
           <ClipboardDeeplinkBanner />

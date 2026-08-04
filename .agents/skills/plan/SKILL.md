@@ -45,6 +45,18 @@ Silently deliberate on what the user asked for. Pull out:
 - Inputs, outputs, edge cases that change behavior.
 - Ambiguities where multiple interpretations exist.
 
+### Windows parity is functional scope
+
+ADE ships on Windows, and Windows parity is a **default requirement** for all new code — part of "done", never a follow-up. So it belongs in Round 1, where scope is decided, not in a later review.
+
+For each capability you are about to lock into **LockedFunctional**, silently check it against `../quality/references/windows-quirks.md` (paths, process launch/kill, local IPC, credentials, shells, capability gates). Three outcomes:
+
+- **Works on Windows** — lock it normally; the quirks file tells the implementer which helper to reach for.
+- **Works with a different Windows implementation** — lock the capability, and record the Windows implementation as part of the requirement so it is not discovered mid-build.
+- **Cannot work on Windows** — this is a user decision, so make it a Round 1 question. State the exact capability and the OS-level reason, whether macOS/Linux keep it, and offer **hidden** (absent on Windows), **disabled with a reason shown** (visible, inert, explained), or **removed** (deleted from the Windows build) as the options, with a recommendation in `tradeoffs`. These are different user experiences, so ask **per capability** — never one blanket question for a batch. The answer joins **LockedFunctional**, and its Windows presentation joins **LockedUI** in Round 2.
+
+Never plan a capability as macOS-only by omission. If a locked item's Windows story is unstated, it is unplanned scope.
+
 Then call **AskUserQuestion** with 1–4 questions that resolve the meaningful ambiguities. Each option should describe a concrete interpretation with its trade-off. Avoid asking the user to write prose — frame everything as concrete choices.
 
 ### Tool reference: AskUserQuestion
@@ -135,7 +147,7 @@ Before sending a UI option or an extra, ask yourself silently: *does this option
 After Round 3 completes with no pending cascades:
 
 1. Print a tight consolidated plan in chat with three sections:
-   - **Functional** — bulleted LockedFunctional.
+   - **Functional** — bulleted LockedFunctional. Every item states its Windows story: works as-is, works via a named Windows implementation, or gated by the user's hide/disable/remove choice.
    - **UI** — bulleted LockedUI with one inline wireframe of the final composed layout.
    - **Extras** — bulleted LockedExtras.
    Keep total under ~50 lines. No filler.

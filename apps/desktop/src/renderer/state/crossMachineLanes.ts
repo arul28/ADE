@@ -244,11 +244,17 @@ export const EMPTY_CROSS_MACHINE_UNION: CrossMachineUnion = {
 /**
  * Immediately projects a foreign launch into its owning machine slice. The
  * periodic union refresh replaces this optimistic summary by stable session id.
+ *
+ * Every optimistic launch has to land on the machine that owns its lane, not on
+ * whichever machine the tab happens to be bound to. Lane ids only resolve
+ * against their own machine's lane list, so a row filed under the wrong machine
+ * has no lane to group under: the sidebar renders it as a loose, laneless
+ * "orphaned session" named by the raw lane UUID. Chats and CLI/shell sessions
+ * both reach this through {@link seedCrossMachineOptimisticSession}.
  */
-export function seedCrossMachineOptimisticChatSession(
-  session: AgentChatSession,
+export function seedCrossMachineOptimisticSession(
+  session: TerminalSessionSummary,
   binding: OpenProjectBinding,
-  laneName?: string | null,
 ): void {
   const store = rootAppStoreApi.getState();
   const existing = Object.values(store.crossMachineLanesByMachineId).find(
@@ -260,12 +266,16 @@ export function seedCrossMachineOptimisticChatSession(
   const machineName = existing?.machineName ?? (
     binding.kind === "remote" ? binding.runtimeName : THIS_MACHINE_NAME
   );
-  const optimistic = buildOptimisticChatSessionSummary({
-    session,
-    laneName: laneName
-      ?? existing?.lanes.find((lane) => lane.id === session.laneId)?.name
-      ?? session.laneId,
-  });
+  // The caller resolved the lane name against the ACTIVE binding's lane list,
+  // which by construction does not contain a foreign lane — so it fell back to
+  // the raw id. The owning slice is the only list that can name it.
+  const optimistic = session.laneName.trim() && session.laneName !== session.laneId
+    ? session
+    : {
+        ...session,
+        laneName: existing?.lanes.find((lane) => lane.id === session.laneId)?.name
+          ?? session.laneName,
+      };
   const pending = pendingForeignOptimisticSessionsByBinding.get(binding.key) ?? new Map();
   pending.set(session.id, { session: optimistic, createdAtMs: Date.now() });
   pendingForeignOptimisticSessionsByBinding.set(binding.key, pending);
@@ -282,6 +292,21 @@ export function seedCrossMachineOptimisticChatSession(
     ],
     error: null,
   });
+}
+
+/** Chat-shaped entry point for {@link seedCrossMachineOptimisticSession}. */
+export function seedCrossMachineOptimisticChatSession(
+  session: AgentChatSession,
+  binding: OpenProjectBinding,
+  laneName?: string | null,
+): void {
+  seedCrossMachineOptimisticSession(
+    buildOptimisticChatSessionSummary({
+      session,
+      laneName: laneName ?? session.laneId,
+    }),
+    binding,
+  );
 }
 
 /** Removes a foreign optimistic row after a successful pinned delete. */

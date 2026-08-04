@@ -56,7 +56,10 @@ export async function installRuntimeService(): Promise<ServiceManagerResult> {
   }
 }
 
-export function uninstallRuntimeService(): ServiceManagerResult {
+// Async only because of win32: the Windows teardown talks the brain down over
+// its JSON-RPC endpoint before forcing anything, and that is a socket round
+// trip. The launchd/systemd branches stay synchronous underneath.
+export async function uninstallRuntimeService(): Promise<ServiceManagerResult> {
   switch (process.platform) {
     case "darwin":
       return uninstallLaunchdService();

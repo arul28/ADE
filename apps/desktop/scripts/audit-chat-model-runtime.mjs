@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { setTimeout as sleep } from "node:timers/promises";
 import WebSocket from "ws";
+import { resolveNpmInvocation } from "../../../scripts/dev-shared.mjs";
 
 const VALID_PROVIDERS = ["claude", "codex", "opencode", "cursor", "droid"];
 const DEFAULT_CODEX_REASONING_EFFORT = "medium";
@@ -920,11 +921,20 @@ function spawnDevApp(options) {
     ADE_PROJECT_ROOT: options.projectRoot,
     NO_DEVTOOLS: "1",
   };
-  const child = cp.spawn("npm", ["run", "dev"], {
+  // Windows npm is a `.cmd` shim: Node cannot spawn it by bare name (ENOENT)
+  // and refuses `.cmd` outright without a shell (EINVAL, CVE-2024-27980).
+  // `resolveNpmInvocation` runs npm's own JavaScript entry point under this
+  // process's `node` instead, so there is no shell to re-parse the command line.
+  const isWindows = process.platform === "win32";
+  const npm = resolveNpmInvocation(["run", "dev"]);
+  const child = cp.spawn(npm.command, npm.args, {
     cwd: desktopRoot,
     env,
-    detached: process.platform !== "win32",
+    // Only POSIX gets its own process group: `stopDevApp` reaches the whole
+    // tree there with a negative-pid kill, and on Windows with `taskkill /T`.
+    detached: !isWindows,
     stdio: ["ignore", "pipe", "pipe"],
+    ...(isWindows ? { windowsHide: true } : {}),
   });
   const logs = [];
   const append = (chunk) => {

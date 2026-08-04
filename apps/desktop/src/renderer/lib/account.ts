@@ -105,6 +105,74 @@ export async function fetchAccountStatus(options?: { force?: boolean }): Promise
   return inFlight;
 }
 
+// ---------------------------------------------------------------------------
+// Account machines — one shared, cached list.
+//
+// The Connections popover unmounts every time it closes, so a per-component
+// fetch starts from nothing on each open: one slow or failed cold call (token
+// refresh + first request to the directory Worker) rendered "we couldn't load
+// your account computers" and an empty machine list, while the Account page —
+// same data, warm — listed them correctly. Keep the last GOOD list here so a
+// later failure degrades to slightly stale instead of to nothing.
+// ---------------------------------------------------------------------------
+
+const MACHINES_TTL_MS = 15_000;
+const UNAVAILABLE_MACHINES: AdeAccountMachinesResult = {
+  state: "unavailable",
+  machines: [],
+  message: null,
+};
+
+let cachedMachines: { value: AdeAccountMachinesResult; fetchedAtMs: number } | null = null;
+let machinesInFlight: Promise<AdeAccountMachinesResult> | null = null;
+
+/** Remember a list fetched elsewhere (the Account page) so the panel opens warm. */
+export function publishAccountMachines(result: AdeAccountMachinesResult): void {
+  if (result.state === "ok") cachedMachines = { value: result, fetchedAtMs: Date.now() };
+}
+
+/** Drop the cache after a mutation (remove/rename) so the next read is authoritative. */
+export function invalidateAccountMachines(): void {
+  cachedMachines = null;
+}
+
+export async function fetchAccountMachines(
+  options?: { force?: boolean },
+): Promise<AdeAccountMachinesResult> {
+  const api = accountApi();
+  if (!api?.listMachines) return UNAVAILABLE_MACHINES;
+  if (
+    !options?.force
+    && cachedMachines
+    && Date.now() - cachedMachines.fetchedAtMs < MACHINES_TTL_MS
+  ) {
+    return cachedMachines.value;
+  }
+  if (machinesInFlight) return machinesInFlight;
+  // A failed refresh must never turn a known list into "no computers yet" —
+  // that reads as a fact about the account, and it is only a fact about this
+  // one request. Signed out is different: it IS authoritative, so it wins.
+  const settle = (result: AdeAccountMachinesResult): AdeAccountMachinesResult => {
+    if (result.state === "ok") {
+      cachedMachines = { value: result, fetchedAtMs: Date.now() };
+      return result;
+    }
+    if (result.state === "signed_out") {
+      cachedMachines = null;
+      return result;
+    }
+    return cachedMachines?.value ?? result;
+  };
+  machinesInFlight = api
+    .listMachines()
+    .then((result) => settle(result ?? UNAVAILABLE_MACHINES))
+    .catch(() => settle(UNAVAILABLE_MACHINES))
+    .finally(() => {
+      machinesInFlight = null;
+    });
+  return machinesInFlight;
+}
+
 /** Push a freshly-known status to every subscriber (after sign-in / sign-out). */
 export function publishAccountStatus(status: AdeAccountStatus): void {
   fetchSerial += 1; // Supersede any in-flight status fetch so it cannot overwrite this.

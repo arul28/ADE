@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { discoverClaudeSlashCommands, resolveClaudeSlashCommandInvocation } from "./claudeSlashCommandDiscovery";
+import {
+  discoverClaudeSlashCommands,
+  invalidateClaudeSlashCommandCache,
+  resolveClaudeSlashCommandInvocation,
+} from "./claudeSlashCommandDiscovery";
 
 let tmpRoot: string;
 let homeRoot: string;
@@ -15,8 +19,63 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  // Each test gets fresh temp roots, so the cache is keyed to a dead path
+  // afterwards — but clear it anyway so nothing leaks between tests.
+  invalidateClaudeSlashCommandCache();
   fs.rmSync(tmpRoot, { recursive: true, force: true });
   fs.rmSync(homeRoot, { recursive: true, force: true });
+});
+
+describe("discovery cache", () => {
+  const writeCommand = (name: string, body: string) => {
+    const dir = path.join(tmpRoot, ".claude", "commands");
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, `${name}.md`), body);
+  };
+
+  it("serves a repeat call from cache instead of re-walking the tree", () => {
+    writeCommand("alpha", "First body.");
+    expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toContain("/alpha");
+
+    // Discovery reads 2,760 files / 22.7MB on a real project, several times per
+    // turn. Within the TTL a second call must not pay that again — so a file
+    // added right after is deliberately not visible yet.
+    writeCommand("beta", "Second body.");
+    expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).not.toContain("/beta");
+  });
+
+  it("picks up new commands once the cache is invalidated", () => {
+    writeCommand("alpha", "First body.");
+    discoverClaudeSlashCommands(tmpRoot);
+    writeCommand("beta", "Second body.");
+
+    invalidateClaudeSlashCommandCache();
+    expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toContain("/beta");
+  });
+
+  it("never hands out the cached array itself", () => {
+    writeCommand("alpha", "First body.");
+    const first = discoverClaudeSlashCommands(tmpRoot);
+    first.length = 0;
+    expect(discoverClaudeSlashCommands(tmpRoot).map((c) => c.name)).toContain("/alpha");
+  });
+
+  it("keys the cache per directory", () => {
+    writeCommand("alpha", "First body.");
+    discoverClaudeSlashCommands(tmpRoot);
+
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), "ade-claude-other-"));
+    try {
+      const otherDir = path.join(other, ".claude", "commands");
+      fs.mkdirSync(otherDir, { recursive: true });
+      fs.writeFileSync(path.join(otherDir, "gamma.md"), "Other body.");
+      const names = discoverClaudeSlashCommands(other).map((c) => c.name);
+      expect(names).toContain("/gamma");
+      expect(names).not.toContain("/alpha");
+    } finally {
+      fs.rmSync(other, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("discoverClaudeSlashCommands", () => {

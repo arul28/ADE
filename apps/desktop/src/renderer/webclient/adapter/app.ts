@@ -23,6 +23,9 @@ export function createAppNamespace(infra: AdapterInfra): AdeNamespace<"app"> {
     async getInfo(): Promise<AppInfo> {
       return {
         appVersion: "web",
+        // The hosted web client is not a packaged channel build; the channel
+        // badge belongs to the desktop app.
+        packageChannel: "stable",
         isPackaged: false,
         // No `automations.*` action is registered host-side, so the builder's
         // saves would resolve against a missing descriptor and vanish. Reporting

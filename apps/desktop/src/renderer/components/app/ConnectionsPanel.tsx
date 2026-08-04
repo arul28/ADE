@@ -27,6 +27,8 @@ import { ConfirmDialog, useConfirmDialog } from "../shared/InlineDialogs";
 import {
   accountAvatarImage,
   accountInitials,
+  fetchAccountMachines,
+  invalidateAccountMachines,
   providerTint,
   useAccountStatus,
 } from "../../lib/account";
@@ -268,17 +270,16 @@ export function ConnectionsPanel({
     return { machines, mobile, web };
   }, [connectionSnapshot, sync.devices]);
 
-  const loadAccountMachines = useCallback(async () => {
-    const api = (window.ade as typeof window.ade & {
-      account?: { listMachines: () => Promise<AdeAccountMachinesResult> };
-    }).account;
-    if (!api?.listMachines) return;
-    try {
-      setAccountMachines(await api.listMachines());
-    } catch {
-      setAccountMachines({ state: "unavailable", machines: [], message: null });
-    }
+  const loadAccountMachines = useCallback(async (options?: { force?: boolean }) => {
+    // Shared cache: the popover unmounts on close, so a per-open fetch would
+    // start cold every time and one slow call would render an empty list.
+    setAccountMachines(await fetchAccountMachines(options));
   }, []);
+
+  const reloadAccountMachines = useCallback(() => {
+    invalidateAccountMachines();
+    void loadAccountMachines({ force: true });
+  }, [loadAccountMachines]);
 
   // Fetch account machines whenever the Machines tab opens (including the first
   // render) without blocking the local saved/discovered rows.
@@ -359,7 +360,7 @@ export function ConnectionsPanel({
             accountMachinesState={accountMachines?.state}
             accountSignedIn={accountStatus.signedIn}
             onAccountRequested={goToAccount}
-            onAccountMachinesChanged={() => void loadAccountMachines()}
+            onAccountMachinesChanged={reloadAccountMachines}
           />
         ) : null}
         {tab === "mobile" ? (

@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import type { AgentChatEventEnvelope, AgentChatFileRef } from "../../../desktop/src/shared/types/chat";
 import { resolveTrustedWindowsTool } from "../lib/trustedWindowsTools";
 
@@ -233,7 +234,9 @@ function normalizeClipboardPathText(value: string): string | null {
   if (!trimmed) return null;
   if (/^file:/i.test(trimmed)) {
     try {
-      return decodeURIComponent(new URL(trimmed).pathname);
+      // fileURLToPath, not `.pathname`: on Windows the pathname of
+      // file:///C:/x.png is "/C:/x.png", which no fs call can resolve.
+      return fileURLToPath(trimmed);
     } catch {
       return null;
     }

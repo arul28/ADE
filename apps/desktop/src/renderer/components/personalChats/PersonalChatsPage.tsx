@@ -659,11 +659,11 @@ export function PersonalChatsPage({ standalone = false }: { standalone?: boolean
   // Machines are named absolutely — the Chats tab runs on whichever machine this
   // window is bound to, so the name is the fact and the picker is the control.
   // In the browser the same picker rebinds the same page, but there is no
-  // "This Mac" to offer: every option is one of the account's Macs, and picking
+  // "This computer" to offer: every option is one of the account's machines, and picking
   // one points the federated adapter's chats surface at it.
   const webMachines = useWebChatsMachines();
   const machineLabel = webMachines
-    ? webMachines.machineLabel ?? "No Mac connected"
+    ? webMachines.machineLabel ?? "No machine connected"
     : isRemote ? projectBinding.runtimeName : LOCAL_MACHINE_NAME;
   const machineId = webMachines
     ? webMachines.machineId ?? ""

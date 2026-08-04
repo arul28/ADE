@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { openKvDb } from "../state/kvDb";
-import { createLaneService } from "./laneService";
+import { createLaneService, parseGitWorktreePorcelain } from "./laneService";
 
 vi.mock("../git/git", () => ({
   getHeadSha: vi.fn(),
@@ -1503,6 +1503,106 @@ describe("laneService list repairs", () => {
       expect(
         db.get<{ lane_id: string }>("select lane_id from lane_branch_profiles where id = ?", ["profile-on-dup"])?.lane_id,
       ).toBe(keeperId);
+    } finally {
+      db.close();
+      fs.rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("laneService list cache invalidation", () => {
+  beforeEach(() => {
+    vi.mocked(getHeadSha).mockReset();
+    vi.mocked(runGit).mockReset();
+    vi.mocked(runGitOrThrow).mockReset();
+  });
+
+  it("does not cache a build whose rows were read before a mid-build invalidation", async () => {
+    const repoRoot = makeTempRepoRoot("ade-lane-service-list-cache-epoch-");
+    const db = await openKvDb(path.join(repoRoot, "kv.sqlite"), createLogger());
+    const now = "2026-03-11T12:00:00.000Z";
+    const alphaPath = path.join(repoRoot, "alpha");
+    const betaPath = path.join(repoRoot, "beta");
+
+    try {
+      db.run(
+        "insert into projects(id, root_path, display_name, default_base_ref, created_at, last_opened_at) values (?, ?, ?, ?, ?, ?)",
+        ["proj-list-cache-epoch", repoRoot, "demo", "main", now, now],
+      );
+      const insertLane = `
+        insert into lanes(
+          id, project_id, name, description, lane_type, base_ref, branch_ref, worktree_path,
+          attached_root_path, is_edit_protected, parent_lane_id, color, icon, tags_json, status, created_at, archived_at
+        ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `;
+      db.run(insertLane, ["lane-main", "proj-list-cache-epoch", "Main", null, "primary", "main", "main", repoRoot, null, 1, null, null, null, null, "active", now, null]);
+      db.run(insertLane, ["lane-alpha", "proj-list-cache-epoch", "Alpha", null, "worktree", "main", "feature/alpha", alphaPath, null, 0, null, null, null, null, "active", now, null]);
+      db.run(insertLane, ["lane-beta", "proj-list-cache-epoch", "Beta", null, "worktree", "main", "feature/beta", betaPath, null, 0, null, null, null, null, "active", now, null]);
+
+      // The first build parks here — after it has read its lane rows, before it
+      // writes the cache — so the test can land a deletion inside the window.
+      let reachedStatusProbe!: () => void;
+      const statusProbeReached = new Promise<void>((resolve) => { reachedStatusProbe = resolve; });
+      let releaseStatusProbe!: () => void;
+      const statusProbeGate = new Promise<void>((resolve) => { releaseStatusProbe = resolve; });
+      let gateArmed = true;
+
+      vi.mocked(runGitOrThrow).mockImplementation(async (args: string[]) => {
+        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" } as any;
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+      vi.mocked(runGit).mockImplementation(async (args: string[], opts?: { cwd?: string }) => {
+        const laneBranchGitStub = defaultLaneBranchGitStub(args);
+        if (laneBranchGitStub) return laneBranchGitStub;
+        const cwd = opts?.cwd ?? repoRoot;
+        if (args[0] === "worktree" && args[1] === "list") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "HEAD") {
+          return { exitCode: 0, stdout: "main\n", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--show-toplevel") {
+          if (cwd === alphaPath && gateArmed) {
+            gateArmed = false;
+            reachedStatusProbe();
+            await statusProbeGate;
+          }
+          return { exitCode: 0, stdout: `${cwd}\n`, stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--verify") return { exitCode: 1, stdout: "", stderr: "" };
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" };
+        if (args[0] === "rev-list" && args[1] === "--left-right") return { exitCode: 0, stdout: "0\t0\n", stderr: "" };
+        if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args.includes("@{upstream}")) {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        if (args[0] === "rev-parse" && args[1] === "--path-format=absolute" && args[2] === "--git-dir") {
+          return { exitCode: 1, stdout: "", stderr: "" };
+        }
+        throw new Error(`Unexpected git call: ${args.join(" ")}`);
+      });
+
+      const service = createLaneService({
+        db,
+        projectRoot: repoRoot,
+        projectId: "proj-list-cache-epoch",
+        defaultBaseRef: "main",
+        worktreesDir: path.join(repoRoot, "worktrees"),
+      });
+
+      const firstList = service.list({ includeStatus: true });
+      await statusProbeReached;
+
+      // What `delete` does to the database, minus the worktree teardown: drop
+      // the lane row, then invalidate.
+      db.run("delete from lanes where id = ?", ["lane-alpha"]);
+      service.invalidateListCache();
+
+      releaseStatusProbe();
+      const before = await firstList;
+      // Sanity: the parked build really did read its rows before the delete, so
+      // the window this test is about actually opened.
+      expect(before.map((lane) => lane.id)).toContain("lane-alpha");
+
+      const after = await service.list({ includeStatus: true });
+      expect(after.map((lane) => lane.id)).not.toContain("lane-alpha");
     } finally {
       db.close();
       fs.rmSync(repoRoot, { recursive: true, force: true });
@@ -6639,5 +6739,44 @@ describe("laneService branch drift", () => {
       service.resolveBranchDrift({ laneId: "lane-child", resolution: "switch-back" }),
     ).rejects.toThrow(/already on its recorded branch/i);
     expect(await service.getBranchDrift({ laneId: "lane-child" })).toBeNull();
+  });
+});
+
+
+describe("parseGitWorktreePorcelain", () => {
+  // The parser resolves each recorded path, so expectations are built the same
+  // way rather than pinned to a posix spelling Windows would rewrite.
+  const repo = path.resolve("/repo");
+  const lane = path.resolve("/repo/.ade/worktrees/lane-a");
+  const LF = [
+    "worktree /repo",
+    "HEAD abc",
+    "branch refs/heads/main",
+    "",
+    "worktree /repo/.ade/worktrees/lane-a",
+    "HEAD def",
+    "branch refs/heads/ade/lane-a",
+    "",
+  ].join("\n");
+
+  it("parses the LF stream git for Windows emits today", () => {
+    const parsed = parseGitWorktreePorcelain(LF);
+    expect(parsed.map((wt) => wt.path)).toEqual([repo, lane]);
+    expect(parsed[1]?.branch).toBe("ade/lane-a");
+  });
+
+  it("parses a CRLF stream into the same worktrees", () => {
+    // The block separator was /\n\n+/ while the line split one line below was
+    // already CRLF-aware. A CRLF stream matched no separator at all, collapsed
+    // the whole listing into a single block, and returned exactly one worktree
+    // — silently disabling worktree reconcile rather than failing.
+    const parsed = parseGitWorktreePorcelain(LF.split("\n").join("\r\n"));
+    expect(parsed.map((wt) => wt.path)).toEqual([repo, lane]);
+    expect(parsed[1]?.branch).toBe("ade/lane-a");
+  });
+
+  it("still parses a bare worktree entry out of a CRLF stream", () => {
+    const parsed = parseGitWorktreePorcelain(["worktree /repo.git", "bare", ""].join("\r\n"));
+    expect(parsed).toEqual([expect.objectContaining({ path: path.resolve("/repo.git"), isBare: true })]);
   });
 });

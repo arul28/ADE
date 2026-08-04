@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { resolveNpmInvocation } from "./dev-shared.mjs";
 
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const currentRepoRoot = path.resolve(scriptDir, "..");
@@ -33,7 +34,9 @@ function usage() {
   process.stdout.write([
     "Usage: node scripts/package-channel.mjs <alpha|beta> [options]",
     "",
-    "Builds a local packaged macOS ADE channel without using the GitHub release workflow.",
+    "Builds a local packaged ADE channel without using the GitHub release workflow.",
+    "macOS produces a .app; Windows produces an NSIS installer, signed when the",
+    "Azure signing environment is present and unsigned otherwise.",
     "",
     "Channels:",
     "  alpha    Builds the current checkout as ADE Alpha.",
@@ -101,13 +104,31 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * Windows ships npm as a `.cmd` shim, which Node cannot spawn by bare name
+ * (`ENOENT`) or by its `.cmd` name (`EINVAL`, since CVE-2024-27980) — both
+ * measured. This script only ever ran on macOS, where the bare name is correct,
+ * so the gap surfaced the first time channel packaging ran on Windows.
+ *
+ * `resolveNpmInvocation` is the repo's existing answer: on Windows it runs
+ * npm's own JavaScript entry point under this process's `node`, so there is no
+ * shell in the picture and therefore no re-parsing of paths containing spaces.
+ * Only npm is rewritten — `git` is extensionless on the command line too, but
+ * is a real `git.exe` and must be spawned as-is.
+ */
+function resolveRunnableCommand(command, args) {
+  if (command !== "npm") return { command, args };
+  return resolveNpmInvocation(args);
+}
+
 function run(command, args, options = {}) {
   const cwd = options.cwd ?? currentRepoRoot;
   const env = options.env ?? process.env;
   const printable = [command, ...args].join(" ");
   process.stdout.write(`[ade] ${cwd}$ ${printable}\n`);
   if (options.dryRun) return;
-  const result = spawnSync(command, args, {
+  const invocation = resolveRunnableCommand(command, args);
+  const result = spawnSync(invocation.command, invocation.args, {
     cwd,
     env,
     stdio: "inherit",
@@ -315,6 +336,68 @@ function adHocSignLocalMacApp(appPath) {
   });
 }
 
+const AZURE_SIGNING_ENV = ["AZURE_TENANT_ID", "AZURE_CLIENT_ID", "AZURE_CLIENT_SECRET"];
+
+/**
+ * Build a channel installer on Windows.
+ *
+ * Unlike the macOS path this does not drive electron-builder directly. The
+ * Windows packaging chain (`dist:win`) also materializes and validates runtime
+ * and whisper resources, runs the artifact preflight, and runs the release
+ * validator afterwards — reimplementing that here would mean maintaining a
+ * second copy of a contract the release path depends on. So the channel is
+ * expressed purely as environment, and the maintained script does the work.
+ *
+ * `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY` + `ADE_WINDOWS_TEST_BUILD` are what
+ * relax the Darwin/Linux remote-runtime sidecar requirement, which a Windows
+ * host cannot satisfy — it cannot build Darwin binaries. The resulting install
+ * therefore cannot bootstrap a remote macOS/Linux runtime; that is a documented
+ * gap of local channel builds, not of Windows itself. CI-built installers carry
+ * the full sidecar set.
+ */
+function buildWindowsChannel(repoRoot, channel, config, env, options) {
+  const missingSigningEnv = AZURE_SIGNING_ENV.filter((name) => !process.env[name]?.trim());
+  const canSign = missingSigningEnv.length === 0 && Boolean(process.env.WINDOWS_SIGNING_EXPECTED_SUBJECT?.trim());
+  const distScript = canSign ? "dist:win:signed" : "dist:win";
+
+  if (canSign) {
+    process.stdout.write("[ade] Azure signing credentials present - building a signed installer.\n");
+  } else {
+    const missing = missingSigningEnv.length > 0
+      ? missingSigningEnv.join(", ")
+      : "WINDOWS_SIGNING_EXPECTED_SUBJECT";
+    process.stdout.write(
+      `[ade] Building UNSIGNED (missing ${missing}). Windows will show a SmartScreen warning on install.\n`,
+    );
+  }
+
+  run("npm", ["--prefix", "apps/desktop", "run", distScript], {
+    cwd: repoRoot,
+    env: {
+      ...env,
+      ADE_WINDOWS_TEST_BUILD: "1",
+      // dist:win:signed reads the Azure service principal from the environment.
+      // It is inherited rather than echoed, so no credential is ever printed by
+      // the `[ade] <cwd>$ <command>` trace above.
+    },
+    dryRun: options.dryRun,
+  });
+
+  if (options.dryRun) return;
+  const outputRoot = path.join(repoRoot, "apps", "desktop", config.outputDir);
+  const installer = fs.existsSync(outputRoot)
+    ? fs.readdirSync(outputRoot).find((name) => /-win-x64\.exe$/.test(name))
+    : null;
+  if (!installer) {
+    fail(`Build finished but no Windows installer was found in ${outputRoot}.`);
+  }
+  process.stdout.write(`\n[ade] Built ${config.productName}: ${path.join(outputRoot, installer)}\n`);
+  process.stdout.write(`[ade] Signed: ${canSign ? "yes" : "no (SmartScreen warning expected)"}\n`);
+  process.stdout.write(`[ade] Bundled CLI name: ${config.cliName}\n`);
+  process.stdout.write(`[ade] Channel ADE_HOME: ${config.adeHome}\n`);
+  process.stdout.write("[ade] Remote macOS/Linux runtimes are unavailable in a local channel build.\n");
+}
+
 function buildChannel(repoRoot, channel, options) {
   const config = CHANNELS[channel];
   ensureRepoRoot(repoRoot, options);
@@ -335,6 +418,12 @@ function buildChannel(repoRoot, channel, options) {
   assertPackageChannelPrereqs(repoRoot, channel, options);
   installApps(repoRoot, options);
   run("npm", ["--prefix", "apps/ade-cli", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
+
+  if (process.platform === "win32") {
+    buildWindowsChannel(repoRoot, channel, config, env, options);
+    return;
+  }
+
   ensureHostRuntimeResources(repoRoot, options, env);
   run("npm", ["--prefix", "apps/desktop", "run", "build"], { cwd: repoRoot, env, dryRun: options.dryRun });
   run("npx", [

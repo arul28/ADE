@@ -120,7 +120,28 @@ permission to fall back to `main`.
 Classify affected behavior across **Windows**, **macOS**, **Linux/headless**,
 **iOS**, and **hosted web**. Mark each host applicable, capability-blocked, or
 not applicable with a concrete reason; do not use one desktop run as proof for
-the matrix. GUI proof requires both (1) direct UI observation and (2) an
+the matrix.
+
+**Windows parity gate (applies to every run).** Windows parity is a default
+requirement for all new code, so **Windows starts as applicable** and only a
+concrete, stated reason moves it to capability-blocked or not-applicable. "The
+diff does not look platform-specific" is not a reason. If any behavior on this
+branch cannot work on Windows, **halt this skill and ask the human** — do not
+write a test that pins the Windows shortfall as intended, and do not mark the
+run complete with a Windows caveat. Present, per item:
+
+1. the exact capability that cannot work and the OS-level reason;
+2. whether macOS/Linux keep it;
+3. the three options — **hidden** (absent on Windows), **disabled with a reason
+   shown** (visible, inert, explained), **removed** (deleted from the Windows
+   build) — with your recommendation.
+
+Hidden and disabled are different user experiences; the human picks per item.
+Once the human decides, the decision itself needs coverage: a test that pins the
+gate (capability reported blocked, control hidden, surface absent) and a test
+that proves the platforms keeping the capability still have it.
+`../quality/references/windows-quirks.md` lists the failure classes worth
+targeting. GUI proof requires both (1) direct UI observation and (2) an
 independent corroborating log, database, process, IPC, or network signal. Bind
 every artifact/link to the exact tested commit SHA and content-tree SHA. A new
 commit or rebase makes prior GUI and Computer Use evidence stale even when the
@@ -570,9 +591,17 @@ Wait for all four parity agents to complete before moving to Verification.
 
 ### Windows parity and Computer Use evidence
 
-If the review scope touches paths, processes, executables, local IPC, native
-SQLite, startup services, or Computer Use, the test summary must include a
-Windows evidence ledger:
+Every run's summary carries a Windows line (see the **Windows parity gate**
+under "Host parity and evidence binding"): either the branch is proven on
+Windows, or the human has decided hide / disable / remove for a named
+capability, or the run is blocked awaiting that decision.
+
+When the review scope touches paths, processes, executables, local IPC, native
+SQLite, startup services, or Computer Use, that line expands into a full Windows
+evidence ledger. Use `../quality/references/windows-quirks.md` to pick what to
+target — case-insensitive path comparison, process-tree termination, pipe
+scoping, file-lock retries, `PATHEXT` resolution, and shell quoting each have a
+named helper whose contract a test can pin.
 
 - Run the narrow contract tests locally with injectable `win32`, `darwin`, and
   `linux` cases. Native Windows CI must repeat the Windows-sensitive files on a
@@ -681,6 +710,7 @@ Quality correctness findings:
 - Or "none — /quality accepted no correctness findings"
 
 Parity:
+- Windows: <proven — evidence | capability "<name>" not achievable: <OS reason>; macOS/Linux <keep|lose> it; recommend <hidden|disabled-with-reason|removed> — AWAITING DECISION> — PASS / blocked
 - Logging/PostHog: <instrumentation/docs/dashboard changes, or explicit not-applicable reason> — privacy + cost gate PASS / blocked
 - Docs: <files updated, or "none required"> — validation PASS / blocked
 - Mobile: <iOS files changed, or "none required"> — validation PASS / blocked
@@ -715,3 +745,7 @@ Mark **completed** only if all of:
 7. `docs/logging.md` exists, was read, and every analytics-applicable change is covered or has an explicit not-applicable rationale.
 8. Every accepted correctness finding from `/quality` appears individually in
    the summary with a named regression test or explicit alternate verification.
+9. The Windows parity line is `PASS` — the branch works on Windows, or a human
+   decision (hidden / disabled-with-reason / removed) is recorded for each named
+   capability and covered by a test. A branch whose Windows behavior is unknown
+   or knowingly broken is **blocked**, never completed.

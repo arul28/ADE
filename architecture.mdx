@@ -26,13 +26,13 @@ flowchart TB
 
 The brain is the source of truth on a machine. It owns lanes, agent chats, terminals, Git operations, PR actions, provider sessions, proof artifacts, the project catalog, and the sync service. It runs every agent — **Claude Code, Codex, Cursor, Factory Droid, and OpenCode** — against the same projects. Because desktop and CLI clients call the same brain, a chat you start in the app and one you start with [`ade code`](/tools/ade-code) operate on the same project state.
 
-The brain installs as a per-user login service (launchd on macOS), so it stays running even when no window is open.
+The brain installs as a per-user login service — launchd on macOS, a per-user startup entry on Windows that needs no administrator rights — so it stays running even when no window is open.
 
 ## Clients
 
 <CardGroup cols={2}>
   <Card title="Desktop app" icon="display">
-    The Electron control plane — windows, navigation, the renderer UI, and Mac-only integrations. Each window attaches to a local brain, or binds to a remote one over SSH.
+    The Electron control plane — windows, navigation, the renderer UI, and platform integrations. Each window attaches to a local brain, or binds to a remote one over SSH. macOS-only integrations such as the Notch and the iOS Simulator drawer are hidden on [Windows](/getting-started/windows).
   </Card>
   <Card title="ade code" icon="rectangle-terminal" href="/tools/ade-code">
     The terminal-native client. Attaches to the same brain — the same lanes, chats, and PRs in a fast TUI.

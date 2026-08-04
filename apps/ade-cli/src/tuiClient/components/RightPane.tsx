@@ -1641,7 +1641,7 @@ function ExternalSessionBrowserPane({
             const brand = theme.provider(session.provider);
             const title = externalSessionRowTitle(session);
             const anchors = externalSessionAnchors(session);
-            const cwd = shortenCwd(session.cwd, 4);
+            const cwd = shortenCwd(session.cwd, { maxSegments: 4 });
             const messageCount = typeof session.messageCount === "number" && Number.isFinite(session.messageCount)
               ? `${compactNumber(session.messageCount)} prompt${session.messageCount === 1 ? "" : "s"}`
               : "prompts ?";
@@ -1716,7 +1716,7 @@ function ExternalSessionBrowserPane({
                   ? theme.color.t1
                   : theme.color.t3;
             const supplemental = ("hint" in action ? action.hint : null)
-              ?? ("foreignCwd" in action && action.foreignCwd ? `Runs in ${shortenCwd(action.foreignCwd, 4)}.` : null);
+              ?? ("foreignCwd" in action && action.foreignCwd ? `Runs in ${shortenCwd(action.foreignCwd, { maxSegments: 4 })}.` : null);
             const hint = ("disabledReason" in action ? action.disabledReason : null)
               ?? [action.description, supplemental].filter(Boolean).join(" ");
             return (

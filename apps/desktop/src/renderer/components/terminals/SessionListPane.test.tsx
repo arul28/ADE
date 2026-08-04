@@ -11,7 +11,7 @@ import { THIS_MACHINE_NAME } from "../../../shared/machineIdentity";
 import { useAppStore, type CrossMachineMachineLanes } from "../../state/appStore";
 import { resetCrossMachineLaneSyncForTest } from "../../state/crossMachineLanes";
 import { setLaneNaming } from "../../state/laneNamingStore";
-import { SessionListPane } from "./SessionListPane";
+import { SessionListPane, shortcutChipLabel } from "./SessionListPane";
 import { laneBoundMachineKey, lanePrCompositeKey } from "./useLanePrs";
 import { ADE_WORK_LANE_DND_MIME } from "./workLaneOrder";
 import { EMPTY_WORK_SESSION_FILTERS } from "./workSessionFilters";
@@ -3363,5 +3363,27 @@ describe("SessionListPane header chevrons", () => {
     const chevron = headerChevron("lane-known");
     expect(chevron.getAttribute("aria-hidden")).toBe("true");
     expect(chevron.getAttribute("tabindex")).toBe("-1");
+  });
+});
+
+describe("shortcutChipLabel", () => {
+  /**
+   * jsdom reports an empty `navigator.platform`, so this is the non-macOS
+   * branch. `Mod` already resolved to Ctrl; a binding that spells the modifier
+   * out did not, and printed a "Meta" key that exists on no Windows keyboard.
+   */
+  it("names the real key when a binding spells the modifier out", () => {
+    expect(shortcutChipLabel("Mod+K")).toBe("Ctrl+K");
+    expect(shortcutChipLabel("Cmd+K")).toBe("Ctrl+K");
+    expect(shortcutChipLabel("Meta+K")).toBe("Ctrl+K");
+    expect(shortcutChipLabel("Command+K")).toBe("Ctrl+K");
+  });
+
+  it("does not print the same modifier twice", () => {
+    expect(shortcutChipLabel("Ctrl+Cmd+K")).toBe("Ctrl+K");
+  });
+
+  it("keeps the other modifiers spelled out", () => {
+    expect(shortcutChipLabel("Mod+Shift+Alt+P")).toBe("Ctrl+Alt+Shift+P");
   });
 });

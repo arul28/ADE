@@ -32,10 +32,33 @@ export function resolveCrossChannelSyncHostConflict(
   return conflict;
 }
 
+/**
+ * This gate runs at the top of `app.whenReady()`, before any window exists, so
+ * everything it does is charged directly against time-to-first-paint.
+ *
+ * On Windows the native listener scan is a full-machine `Get-NetTCPConnection`
+ * joined to `Get-CimInstance Win32_Process` via a PowerShell spawn -- strictly
+ * heavier than the ~2.7s `runtime service-status` round trip measured on this
+ * hardware, with a 15s ceiling. It would run on every packaged launch, since the
+ * lock-file check short-circuits only when it already found a conflict. That is
+ * the same class of pre-paint main-thread block this branch set out to remove.
+ *
+ * So on Windows the gate answers from the lock file alone. The downgrade: a
+ * cross-channel brain that was hard-killed and left a stale lock is not detected
+ * at launch, so two channels can briefly both hold phone sync. Every current
+ * build writes the lock, making that the legacy/crash case only -- and `ade
+ * serve` still runs the full scan when it starts a brain, where the cost is
+ * bounded and nothing is waiting to paint. Documented in
+ * docs/development/windows-support.md.
+ */
 export function detectCrossChannelSyncHostConflict(
   env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
 ): SyncHostSingletonConflict | null {
-  return resolveCrossChannelSyncHostConflict(detectSyncHostSingletonConflict(), env);
+  return resolveCrossChannelSyncHostConflict(
+    detectSyncHostSingletonConflict({ skipListenerScan: platform === "win32" }),
+    env,
+  );
 }
 
 export function buildPackagedSyncHostConflictDialogContent(args: {
@@ -70,6 +93,7 @@ export type PackagedSyncHostLaunchGateDeps = {
   isPackaged: boolean;
   channel: "alpha" | "beta" | null;
   env?: NodeJS.ProcessEnv;
+  platform?: NodeJS.Platform;
   detectConflict?: (env: NodeJS.ProcessEnv) => SyncHostSingletonConflict | null | undefined;
   showDialog?: (content: PackagedSyncHostConflictDialogContent) => void;
   copyToClipboard?: (text: string) => void;
@@ -86,7 +110,11 @@ export function blockPackagedLaunchForCrossChannelSyncConflict(
 
   const rawConflict = deps.detectConflict
     ? deps.detectConflict(env) ?? null
-    : detectSyncHostSingletonConflict();
+    : detectSyncHostSingletonConflict({
+      // See `detectCrossChannelSyncHostConflict` for why Windows answers from
+      // the lock file alone on this path.
+      skipListenerScan: (deps.platform ?? process.platform) === "win32",
+    });
   const conflict = resolveCrossChannelSyncHostConflict(rawConflict, env);
   if (!conflict) return false;
 

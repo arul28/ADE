@@ -1468,8 +1468,13 @@ export function createSyncService(args: SyncServiceArgs) {
         blockingStateText:
           crdtSyncAvailable
             ? "Live chats or terminals must stop first."
+            // `crdtSyncAvailable` is false for two different reasons: the
+            // extension never loaded, or it loaded and failed its runtime
+            // usability check. Naming the DLL asserts the first, so on the
+            // second the user reinstalls ADE and nothing changes. Describe the
+            // capability, and keep the actionable next step.
             : process.platform === "win32"
-              ? "Phone sync is unavailable because crsqlite.dll could not be loaded. Reinstall ADE, then restart it before pairing a device."
+              ? "Phone sync is unavailable because CR-SQLite support could not be initialized. Reinstall ADE, then restart it before pairing a device."
               : "Phone pairing is unavailable because the CRDT database extension is unavailable on this platform.",
       };
     },

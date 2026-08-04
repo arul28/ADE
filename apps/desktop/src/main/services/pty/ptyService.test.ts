@@ -2578,6 +2578,117 @@ describe("ptyService", () => {
       }
     });
 
+    // Regression: Claude Code's Windows TUI never renders the `❯` glyph the
+    // readiness check originally required. Captured from claude.exe under
+    // ConPTY, the only non-ASCII characters in a full startup were box drawing,
+    // so readiness never fired, the initial input was skipped, and the CLI sat
+    // there empty — the user's prompt was gone with only a log line. The box is
+    // what the current TUI actually draws once it accepts input.
+    it("delivers Claude initialInput when the TUI draws its input box instead of a ❯ glyph", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_BOX_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // No ❯ anywhere — exactly what the real CLI emits on Windows.
+        mockPty._emitter.emit("data", [
+          "╭────────────────────────────────────────╮\r\n",
+          "│ > try \"how do I add a dark mode?\"      │\r\n",
+          "╰────────────────────────────────────────╯\r\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).toContain("ADE_CLAUDE_BOX_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("does not treat a half-drawn Claude banner as an input-ready box", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_UNREADY_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // Top border only: the box is still being painted, and the first-run
+        // "do you trust this folder?" gate draws no box at all.
+        mockPty._emitter.emit("data", "╭──────────────────────────╮\r\n│ Welcome to Claude Code\r\n");
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).not.toContain("ADE_CLAUDE_UNREADY_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    // Regression: the readiness check used to be `/╭─+.*╮/s && /╰─+.*╯/s`.
+    // Readiness is evaluated against the visible rows, so the two corners do
+    // have to share a screen — but not a *box*. When a finished box is still on
+    // screen above a box that is only half painted, the old pair matched the
+    // new top border against the old bottom one and read as ready. That is the
+    // dangerous direction: a false ready types the user's prompt into whatever
+    // is actually focused, which here is a dialog that has not finished drawing.
+    it("does not pair a closed Claude box above with a half-drawn box below", async () => {
+      vi.useFakeTimers();
+      try {
+        const { service, mockPty } = createHarness();
+
+        await service.create({
+          laneId: "lane-1",
+          title: "Claude Code",
+          cols: 80,
+          rows: 24,
+          toolType: "claude",
+          command: "claude",
+          args: [],
+          startupCommand: "claude",
+          initialInput: "ADE_CLAUDE_SPLIT_BORDER_MARKER",
+          initialInputReadyTimeoutMs: 20_000,
+        });
+
+        // The previous box's closing border, then a new box that stops after
+        // its opening border. No complete box is on screen.
+        mockPty._emitter.emit("data", [
+          "╰────────────────────────────────────────╯\r\n",
+          "\r\n",
+          "╭────────────────────────────────────────╮\r\n",
+          "│ Do you trust the files in this folder?\r\n",
+        ].join(""));
+        await vi.advanceTimersByTimeAsync(20_500);
+
+        const written = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value)).join("");
+        expect(written).not.toContain("ADE_CLAUDE_SPLIT_BORDER_MARKER");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     it("delivers preserved Codex initialInput when the composer appears after a readiness timeout", async () => {
       vi.useFakeTimers();
       try {
@@ -3194,6 +3305,48 @@ describe("ptyService", () => {
       } finally {
         if (previousAppData == null) delete process.env.APPDATA;
         else process.env.APPDATA = previousAppData;
+        if (previousComSpec == null) delete process.env.ComSpec;
+        else process.env.ComSpec = previousComSpec;
+      }
+    });
+
+    // The bare word `claude` has no extension, so resolveCliSpawnInvocation used
+    // to wrap every Windows launch in `cmd.exe /d /s /c "…"` — which expands
+    // %VAR%, flattens the ~2KB multi-line --append-system-prompt blob to one
+    // line, and dies past 8191 characters. The official installer's claude.exe
+    // spawns directly and argv arrives byte-for-byte.
+    it("launches Claude from the installed claude.exe instead of a cmd.exe wrapper", async () => {
+      setPlatform("win32");
+      const previousProfile = process.env.USERPROFILE;
+      const previousComSpec = process.env.ComSpec;
+      const home = "C:\\Users\\ADE User";
+      const claudePath = path.join(home, ".local", "bin", "claude.exe");
+      process.env.USERPROFILE = home;
+      process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+      mocks.fileStats.set(claudePath, { isDirectory: false, size: 1 });
+      try {
+        const harness = createHarness();
+        const guidance = "ADE guidance\nsecond line with %USERPROFILE% inside";
+        await harness.service.create({
+          laneId: "lane-1",
+          title: "Claude CLI",
+          cols: 80,
+          rows: 24,
+          command: "claude",
+          args: ["--append-system-prompt", guidance],
+          toolType: "claude",
+        });
+
+        const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const [spawnCommand, spawnArgs] = ptyLib.spawn.mock.calls[0] as [string, string | string[]];
+        expect(spawnCommand).toBe(claudePath);
+        // An array (not a verbatim command-line string) is the proof no shell
+        // sits between ADE and Claude.
+        expect(Array.isArray(spawnArgs)).toBe(true);
+        expect(spawnArgs).toContain(guidance);
+      } finally {
+        if (previousProfile == null) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = previousProfile;
         if (previousComSpec == null) delete process.env.ComSpec;
         else process.env.ComSpec = previousComSpec;
       }
@@ -4932,6 +5085,78 @@ describe("ptyService", () => {
         ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
         expect.any(Object),
       );
+    });
+
+    // The Windows Droid resume runs `powershell.exe -Command <line>`, whose
+    // command line reaches a droid.cmd shim truncated at the first newline. The
+    // launch builder now withholds the prompt (surfacing it as `initialInput`),
+    // so the resume path must notice and still write it over the PTY.
+    it("resumes Droid on Windows with the prompt written over the PTY, not the command line", async () => {
+      vi.useFakeTimers();
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-droid-windows",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Droid CLI",
+          startedAt: "2026-07-30T12:00:00.000Z",
+          transcriptPath: "C:\\tmp\\transcripts\\session-droid-windows.log",
+          toolType: "droid",
+          resumeCommand: "droid --resume droid-session-1",
+          resumeMetadata: {
+            provider: "droid",
+            targetKind: "session",
+            targetId: "droid-session-1",
+            launch: { permissionMode: "edit", model: "droid/claude-sonnet-5" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-droid-windows",
+          endedAt: "2026-07-30T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const prompt = "Continue in %TEMP%\nsecond line";
+        const pending = service.sendToSession({
+          sessionId: "session-droid-windows",
+          text: prompt,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "Droid\nWhat do you want to build?\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await expect(pending).resolves.toEqual(expect.objectContaining({
+          sessionId: "session-droid-windows",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const [spawnCommand, spawnArgs] = spawn.mock.calls[0] as [string, string | string[]];
+        expect(spawnCommand).toBe("powershell.exe");
+        expect(String(spawnArgs)).toContain("droid-session-1");
+        expect(String(spawnArgs)).not.toContain("Continue in");
+        expect(String(spawnArgs)).not.toContain("%TEMP%");
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(expect.stringContaining(prompt));
+        // Exactly once. The launch builder surfaces the withheld prompt as
+        // `initialInput`, which on this path is a signal ("the command line
+        // does not carry it") and not a delivery request — the resume path does
+        // its own ready-gated `writeSubmittedText`. `getOrCreateResumeFlight`
+        // therefore does not forward the field to `create()`. Verified with
+        // teeth: adding that one forwarding line makes this assertion fail with
+        // two writes of the same text.
+        const promptWrites = writes.filter((value) => value.includes("second line"));
+        expect(promptWrites).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      }
     });
 
     it("resumes OpenCode on Windows through direct argv and inherited env", async () => {

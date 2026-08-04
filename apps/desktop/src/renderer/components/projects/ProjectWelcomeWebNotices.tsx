@@ -23,7 +23,7 @@ export type WebZeroMachinesNotice = {
 /**
  * What the hosted welcome surface says when it can list no machines.
  *
- * Zero rows can mean "this account really has no Macs" — but it just as easily
+ * Zero rows can mean "this account really has no machines" — but it just as easily
  * means the directory read failed or the session lapsed, and telling those
  * users their account is empty is a lie they cannot act on. The account state,
  * not the row count, decides which sentence they get.
@@ -42,14 +42,14 @@ export function webZeroMachinesNotice(args: {
       return {
         kind: "no_machines",
         headline:
-          "No Macs on this account yet. Open ADE on your Mac and sign in with the same account — it shows up here the moment it does.",
+          "No machines on this account yet. Open ADE on a computer and sign in with the same account — it shows up here the moment it does.",
         detail: null,
         action: null,
       };
     case "signed_out":
       return {
         kind: "signed_out",
-        headline: "Sign in to see the Macs on your account.",
+        headline: "Sign in to see the machines on your account.",
         detail: account.message,
         action: { label: "Sign in", onSelect: args.onSignIn, busy: false },
       };
@@ -74,7 +74,7 @@ export function webZeroMachinesNotice(args: {
       // happened, and offered a Retry for a request already running.
       return {
         kind: "loading",
-        headline: "Looking for your Macs…",
+        headline: "Looking for your machines…",
         detail: null,
         action: null,
       };
@@ -97,7 +97,7 @@ export function webZeroMachinesNotice(args: {
 /**
  * What "Add project" can honestly offer on the hosted client.
  *
- * Adding a project is a filesystem act on the Mac that hosts it, and the web
+ * Adding a project is a filesystem act on the machine that hosts it, and the web
  * adapter has none of the three routes the desktop flow needs: `chooseDirectory`
  * returns null (no native picker in a browser), `getDroppedPath` returns "", and
  * `createLocal`/`clone`/`getDefaultParentDir` are absent, so the fallback proxy
@@ -136,11 +136,11 @@ export function WebAddProjectNotice({
         color: COLORS.textSecondary,
       }}
     >
-      <span>Projects are added on the Mac that hosts them.</span>
+      <span>Projects are added on the machine that hosts them.</span>
       <span style={{ color: COLORS.textDim }}>
         {machineName
-          ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that Mac already has.`
-          : "Open ADE on your Mac to add, create, or clone one. ADE Web opens the projects that Mac already has."}
+          ? `Open ADE on ${machineName} to add, create, or clone one — it shows up here as soon as it does. ADE Web opens the projects that machine already has.`
+          : "Open ADE on the host machine to add, create, or clone one. ADE Web opens the projects that machine already has."}
       </span>
       <button
         type="button"

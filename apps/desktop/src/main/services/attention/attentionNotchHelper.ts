@@ -199,20 +199,23 @@ export class AttentionNotchHelper {
   }
 
   getHealth(): AttentionNotchHealth {
-    if (this.disposed || this.latestSettings?.enabled !== true) {
-      return {
-        state: "disabled",
-        title: "ADE Notch is off",
-        message: "Enable ADE Notch to show account activity on this computer.",
-        recovery: null,
-        surface: null,
-      };
-    }
+    // Platform first. The disabled state tells the user to enable ADE Notch,
+    // which is only actionable where `start()` would accept it - on anything
+    // but macOS that is an instruction to do something impossible.
     if ((this.options.platform ?? process.platform) !== "darwin") {
       return {
         state: "unsupported",
         title: "ADE Notch requires macOS",
         message: "The native ambient surface is available on Mac.",
+        recovery: null,
+        surface: null,
+      };
+    }
+    if (this.disposed || this.latestSettings?.enabled !== true) {
+      return {
+        state: "disabled",
+        title: "ADE Notch is off",
+        message: "Enable ADE Notch to show account activity on this computer.",
         recovery: null,
         surface: null,
       };

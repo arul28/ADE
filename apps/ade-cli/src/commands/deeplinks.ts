@@ -548,10 +548,13 @@ export function runLinearInstall(args: string[], opts: { home?: string; argv0?: 
 
 function resolveAdeBinaryPath(): string {
   // When invoked via the bundled binary, argv[0] is the absolute path. When
-  // run via node, argv[0] is node — fall back to bare `ade` and hope it's on
+  // run via node, argv[0] is node — fall back to a bare name and hope it's on
   // PATH (the Linear coding-tool spawner inherits the user's PATH).
   const argv0 = process.argv[0] ?? "";
-  return /\bade\b/.test(argv0) ? argv0 : "ade";
+  if (/\bade\b/.test(argv0)) return argv0;
+  // On Windows `ade` is a .cmd shim, and Linear's spawner passes the value
+  // straight to CreateProcess — a bare `ade` would not resolve.
+  return process.platform === "win32" ? "ade.cmd" : "ade";
 }
 
 // ---------------------------------------------------------------------------

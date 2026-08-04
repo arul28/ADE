@@ -593,7 +593,20 @@ export function buildTrackedCliLaunchCommand(args: {
     const guidance = buildAdeCliAgentGuidance(skillRoots);
     commandArgs.push("--append-system-prompt", guidance);
     commandArgs.push(...permissionModeToClaudeFlag(permissionMode));
-    if (initialPrompt) {
+    // Windows keeps the user's prompt off argv. ADE launches the bare word
+    // `claude`; the PTY boundary substitutes a real `claude.exe` when it can
+    // find one, but any install that only ships a `.cmd` shim still goes
+    // through `cmd.exe /d /s /c "…"`, which rewrites the command line before
+    // Claude ever sees it. Measured through a real shim: `%USERPROFILE%`
+    // expands (and cannot be escaped — see processExecution.ts), newlines
+    // flatten to spaces, and at 8501 characters the spawn dies outright with
+    // "The command line is too long." The guidance blob is already ~2KB of
+    // that 8191-character budget, so an ordinary pasted prompt reaches the
+    // cliff. Deliver it through the PTY once the TUI is ready instead — the
+    // same transport Codex and Cursor already use. POSIX shells do none of
+    // this rewriting and have no such limit, so they keep the prompt in argv.
+    const promptRidesInArgv = Boolean(initialPrompt) && currentPlatform() !== "win32";
+    if (initialPrompt && promptRidesInArgv) {
       commandArgs.push(initialPrompt);
     }
     // Build a shorter startupCommand for the shell-fallback path that excludes
@@ -607,6 +620,9 @@ export function buildTrackedCliLaunchCommand(args: {
       command: "claude",
       args: commandArgs,
       startupCommand: commandArrayToLine(["claude", ...shellArgs], { platform: "linux" }),
+      ...(initialPrompt && !promptRidesInArgv
+        ? { initialInput: initialPrompt, initialInputDelayMs: 750 }
+        : {}),
       ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
     };
   }
@@ -630,10 +646,7 @@ export function buildTrackedCliLaunchCommand(args: {
     // a ~2.4KB multi-line ADE preamble with the user's text appended, so
     // passing it as argv corrupts it on every Windows launch. Fall back to the
     // post-launch input path that every other Codex model already uses.
-    const platform = typeof process !== "undefined" && typeof process.platform === "string"
-      ? process.platform
-      : "";
-    const usePromptArg = codexModel === "gpt-5.3-codex" && platform !== "win32";
+    const usePromptArg = codexModel === "gpt-5.3-codex" && currentPlatform() !== "win32";
     if (usePromptArg) commandArgs.push(initialInput);
     return {
       command: "codex",
@@ -662,18 +675,31 @@ export function buildTrackedCliLaunchCommand(args: {
 
   if (args.provider === "droid") {
     const prompt = workTabCliPrompt(initialPrompt, skillRoots);
-    const platform = typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
-    if (platform === "win32") {
+    if (currentPlatform() === "win32") {
+      // Windows Droid has to run through `powershell.exe -Command <line>` so the
+      // settings JSON can be written to a temp file before droid starts, and
+      // that transport cannot carry the prompt. Measured against an
+      // npm-installed `droid.cmd`, a multi-line value handed to `& 'droid' …`
+      // arrives TRUNCATED AT THE FIRST NEWLINE — a six-line prompt reached the
+      // shim as its first line and nothing else — while `%TEMP%` expands and, at
+      // a `droid.exe`, embedded `"` are stripped. This is not a quoting defect:
+      // the repo's own stricter quoter (shell.ts `powerShellLegacyNativeValue`)
+      // was measured on the same shim and still lost everything past the first
+      // newline. Argv through a shell is simply the wrong transport, and the ADE
+      // preamble is ~2KB over 16 lines so *every* Windows launch lost the user's
+      // text. Type it into the TUI after launch instead, exactly as Codex and
+      // Cursor already do. POSIX keeps the prompt in argv where it round-trips.
       const startupCommand = droidPowerShellCommand({
         permissionMode,
         model: args.model,
         reasoningEffort: args.reasoningEffort,
-        prompt,
       });
       return {
         command: "powershell.exe",
         args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", startupCommand],
         startupCommand,
+        initialInput: prompt,
+        initialInputDelayMs: 750,
         ...(agentSkillEnv ? { env: agentSkillEnv } : {}),
       };
     }
@@ -705,6 +731,15 @@ export function buildTrackedCliLaunchCommand(args: {
     startupCommand: opencode.startupCommand,
     ...(opencodeEnv ? { env: opencodeEnv } : {}),
   };
+}
+
+/**
+ * This module is shared with the renderer bundle, where `process` may be absent
+ * entirely. Callers only ever compare against `"win32"`, so an unknown host
+ * degrades to the POSIX branch rather than throwing.
+ */
+function currentPlatform(): string {
+  return typeof process !== "undefined" && typeof process.platform === "string" ? process.platform : "";
 }
 
 function normalizeInitialPrompt(value: string | null | undefined): string | null {
@@ -1181,11 +1216,17 @@ export function buildTrackedCliResumeLaunchCommand(
       resumeTarget: targetId || null,
     };
     if ((options.platform ?? process.platform) === "win32") {
-      const startupCommand = droidPowerShellCommand(droidArgs);
+      // Same PowerShell transport as a fresh Windows launch, and the same
+      // reason the prompt cannot ride along: `& 'droid' … '<multi-line>'` is
+      // truncated at the first newline by a `.cmd` shim. The prompt is surfaced
+      // as `initialInput` so the PTY resume path knows it still owes the user a
+      // post-launch write instead of assuming the command line carried it.
+      const startupCommand = droidPowerShellCommand({ ...droidArgs, prompt: undefined });
       return {
         command: "powershell.exe",
         args: ["-NoLogo", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", startupCommand],
         startupCommand,
+        ...(prompt ? { initialInput: prompt } : {}),
       };
     }
     const startupCommand = buildDroidCommandLine(droidArgs);

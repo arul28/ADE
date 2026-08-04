@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import type { DeeplinkEnvelope, DeeplinkOwnership } from "../deeplinks";
+import type { AppPackageChannel } from "../packageChannel";
 import type {
   SyncAccountDirectoryLegDurations,
   SyncAccountDirectoryState,
@@ -76,6 +77,12 @@ export type LocalRuntimeStatus = {
 
 export type AppInfo = {
   appVersion: string;
+  /**
+   * Release channel this build was packaged for. `stable` for every normal
+   * build; `beta`/`alpha` builds keep a separate ADE home and are labelled in
+   * the shell header.
+   */
+  packageChannel: AppPackageChannel;
   isPackaged: boolean;
   automationsEnabled: boolean;
   platform: NodeJS.Platform;

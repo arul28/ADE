@@ -60,6 +60,9 @@ export function SiteHeader() {
 
   const items = useMemo<NavItem[]>(
     () => [
+      // Same order as the home page masthead: reference links first, then the
+      // web client, then the single download entry point.
+      { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
       {
         label: "Web client",
         to: LINKS.webClient,
@@ -67,7 +70,6 @@ export function SiteHeader() {
         analyticsFeature: MARKETING_FEATURES.OPEN_WEB_CLIENT,
         analyticsCta: MARKETING_CTA_LABELS.OPEN_WEB_CLIENT,
       },
-      { label: "Docs", to: LINKS.docs, kind: "external", analyticsFeature: MARKETING_FEATURES.VIEW_DOCS },
     ],
     []
   );
@@ -133,14 +135,17 @@ export function SiteHeader() {
               GitHub
             </a>
 
-            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.NAVBAR} variant="primary" size="sm" target="_blank" rel="noreferrer" className="ml-2">
-              Download for Mac
+            {/* Downloads live in the home hero, one button per platform, so
+                the chrome carries no download entry. This sends a visitor back
+                to the page that has them. */}
+            <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm" className="ml-2">
+              Get ADE
             </LinkButton>
           </nav>
 
           <div className="flex items-center gap-2 md:hidden">
-            <LinkButton to={LINKS.releasesLatest} analyticsFeature={MARKETING_FEATURES.DOWNLOAD_MAC} analyticsCta={MARKETING_CTA_LABELS.DOWNLOAD_MAC} analyticsPosition={MARKETING_CTA_POSITIONS.NAVBAR} variant="primary" size="sm" target="_blank" rel="noreferrer">
-              Mac
+            <LinkButton to="/" analyticsFeature={MARKETING_FEATURES.VIEW_DOWNLOAD_PAGE} variant="primary" size="sm">
+              Get ADE
             </LinkButton>
             <button
               type="button"

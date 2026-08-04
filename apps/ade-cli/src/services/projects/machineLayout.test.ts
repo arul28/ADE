@@ -143,6 +143,33 @@ describe("resolveMachineAdeLayout", () => {
     );
   });
 
+  it.runIf(process.platform === "win32")(
+    "keeps the Windows pipe identity stable across the creation of ADE_HOME",
+    () => {
+      // `canonicalWindowsPath` re-joins the components that do not exist yet.
+      // Joining them verbatim meant `.ADE` hashed one way before the directory
+      // existed and as the on-disk `.ade` after, so a brain started in that
+      // window listened on a pipe every later CLI computed differently: an
+      // orphaned, unreachable runtime.
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ade-pipe-casing-"));
+      const adeHome = path.join(tempRoot, ".ADE");
+      try {
+        const beforeCreation = resolveMachineAdeLayout(
+          { ...arulEnv, ADE_HOME: adeHome },
+          "win32",
+        ).socketPath;
+        fs.mkdirSync(adeHome, { recursive: true });
+        const afterCreation = resolveMachineAdeLayout(
+          { ...arulEnv, ADE_HOME: adeHome },
+          "win32",
+        ).socketPath;
+        expect(afterCreation).toBe(beforeCreation);
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("uses distinct Windows desktop-bridge pipes for channel ADE homes", () => {
     const stable = resolveMachineAdeLayout(
       { ...arulEnv, ADE_HOME: "C:\\Users\\arul\\.ade" },

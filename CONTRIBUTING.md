@@ -27,6 +27,11 @@ restarting your installed app's runtime — follow
 README. Key rule: never aim `dev:desktop --socket` at a runtime you do not want
 `--auto` to shut down; use a fresh per-lane `/tmp/ade-runtime-<lane>.sock`.
 
+On Windows, `npm run dev` uses a per-user named pipe instead of a Unix socket
+path, and ADE runs on Windows 10/11 x64 only. Platform behaviour, the background
+brain contract, and the current gaps are documented in
+[docs/development/windows-support.md](docs/development/windows-support.md).
+
 ## Before Submitting
 
 - Run the smallest relevant checks for your change first
@@ -36,7 +41,9 @@ README. Key rule: never aim `dev:desktop --socket` at a runtime you do not want
 - TypeScript strict mode is enabled
 - Tests use Vitest
 
-## Signed macOS releases
+## Signed releases
+
+### macOS
 
 For ADE's current release path, the correct Apple objects are:
 
@@ -89,6 +96,15 @@ To test the unsigned intermediate app bundle that the CI workflow produces per a
 cd apps/desktop
 npm run dist:mac:dir -- --arm64
 ```
+
+### Windows
+
+Windows release publication is gated on the repository variable
+`ADE_WINDOWS_PUBLIC_RELEASE_ENABLED`. With it unset, the Windows jobs skip
+cleanly and the tagged release ships macOS assets only. The signed Windows path
+requires a pinned Authenticode identity, the same signer for the installer and
+`ADE.exe`, and a trusted RFC3161 timestamp. Pull-request preview builds are
+unsigned and are for internal testing only.
 
 The tagged release workflow should be run from a tag that points at `main`. Push the release tag only after the intended `main` commit is in place.
 

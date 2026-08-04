@@ -28,6 +28,7 @@ import {
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
+  preferNativeExecutablePath,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
@@ -36,7 +37,7 @@ import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./res
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
-  resolveExecutableFromKnownLocations,
+  resolveExecutableCandidatesFromKnownLocations,
   setPathEnvValue,
   splitPathEntries,
 } from "../ai/cliExecutableResolver";
@@ -1111,21 +1112,55 @@ function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolTyp
   return resolveOpenCodeBinaryPath() ?? command;
 }
 
+/**
+ * Bare provider words that ADE puts in `command`, and the executables each one
+ * may actually be installed as on Windows.
+ *
+ * A bare word has no extension, so `resolveCliSpawnInvocation` wraps it in
+ * `cmd.exe /d /s /c "…"` — and cmd rewrites the command line before the CLI
+ * sees argv: measured through a real shim, `%USERPROFILE%` expands and cannot
+ * be escaped, embedded newlines flatten to spaces, and an 8501-character line
+ * fails outright with "The command line is too long." Claude's fresh launch
+ * carries a ~2KB multi-line `--append-system-prompt` blob, so it hit all three.
+ * Resolving the bare word to the installed `.exe` here means the PTY spawns it
+ * directly, `shouldUseWindowsCmdWrapper` returns false, and argv arrives
+ * byte-for-byte. When only a `.cmd`/`.ps1` shim exists the wrapper is still
+ * used and the launch builders keep user text off the command line instead.
+ */
+const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
+  toolTypes: readonly TerminalToolType[];
+  launchCandidates: readonly string[];
+}> = [
+  { toolTypes: ["cursor", "cursor-cli"], launchCandidates: CURSOR_CLI_EXECUTABLES.launchCandidates },
+  { toolTypes: ["claude", "claude-orchestrated"], launchCandidates: ["claude"] },
+  { toolTypes: ["codex", "codex-orchestrated"], launchCandidates: ["codex"] },
+  { toolTypes: ["droid"], launchCandidates: ["droid"] },
+];
+
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
   const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
   if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
-  if (toolType !== "cursor" && toolType !== "cursor-cli") return command;
   const trimmedCommand = command.trim();
-  const basename = trimmedCommand.split(/[\\/]/).pop()?.toLowerCase() ?? "";
-  if (/[\\/]/.test(trimmedCommand)) return command;
-  if (basename !== "cursor-agent" && basename !== "cursor-agent.exe" && basename !== "cursor-agent.cmd" && basename !== "cursor-agent.bat") {
-    return command;
-  }
+  // An explicit path is the caller's choice of install; never second-guess it.
+  if (!trimmedCommand || /[\\/]/.test(trimmedCommand)) return command;
+  const entry = WINDOWS_DIRECT_PROVIDER_EXECUTABLES.find(
+    (candidate) => toolType != null && candidate.toolTypes.includes(toolType),
+  );
+  if (!entry) return command;
+  const basename = trimmedCommand.toLowerCase();
+  const matchesLaunchCandidate = entry.launchCandidates.some((name) =>
+    basename === name
+    || basename === `${name}.exe`
+    || basename === `${name}.cmd`
+    || basename === `${name}.bat`);
+  if (!matchesLaunchCandidate) return command;
   // Cursor has shipped both `cursor-agent` and the legacy `agent` shim on
   // Windows. Resolve the executable at the PTY boundary so fresh launches and
   // durable resume metadata work with either installation layout.
-  for (const candidate of CURSOR_CLI_EXECUTABLES.launchCandidates) {
-    const resolved = resolveExecutableFromKnownLocations(candidate)?.path;
+  for (const candidate of entry.launchCandidates) {
+    const resolved = preferNativeExecutablePath(
+      resolveExecutableCandidatesFromKnownLocations(candidate).map((executable) => executable.path),
+    );
     if (resolved) return resolved;
   }
   return command;
@@ -4176,6 +4211,34 @@ export function createPtyService({
     return needles.reduce((latest, needle) => Math.max(latest, text.lastIndexOf(needle)), -1);
   };
 
+  // The composed Claude input box, matched as a *pair of border lines belonging
+  // to the same box*. Scanning the whole capture with `/╭─+.*╮/s && /╰─+.*╯/s`
+  // instead would pair any top border ever seen with any bottom border ever
+  // seen -- a banner's opening corner plus an unrelated later box's closing one
+  // satisfies it, permanently, from anywhere in the buffer. That matters more
+  // than a missed marker: a false ready delivers the user's prompt into
+  // whatever dialog happens to be on screen, including a credential prompt.
+  const CLAUDE_INPUT_BOX_MAX_LINE_SPAN = 40;
+  const CLAUDE_READY_REGION_CHARS = 8_000;
+
+  const claudeInputBoxVisible = (text: string): boolean => {
+    const lines = text.slice(-CLAUDE_READY_REGION_CHARS).split(/\r?\n/);
+    let openedAt = -1;
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? "";
+      // Whole-line borders: `.` must not cross newlines here, or the two
+      // corners stop being evidence that a box was actually drawn.
+      if (/╭─[^╮\n]*╮/.test(line)) openedAt = index;
+      if (openedAt >= 0
+        && index > openedAt
+        && index - openedAt <= CLAUDE_INPUT_BOX_MAX_LINE_SPAN
+        && /╰─[^╯\n]*╯/.test(line)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
   const providerReadyMarkerVisible = (provider: TerminalResumeProvider, text: string): boolean => {
     const normalized = text.toLowerCase();
     if (provider === "codex") {
@@ -4204,7 +4267,20 @@ export function createPtyService({
         && (noActiveThreadIndex < 0 || lastPromptIndex > noActiveThreadIndex);
     }
     if (provider === "claude") {
-      return text.includes("❯");
+      // `❯` is the prompt glyph older Claude Code builds drew, and it is still
+      // the fastest signal where it appears. It is not sufficient on its own:
+      // measured against claude.exe 2026-08 under ConPTY on Windows, the glyph
+      // never appears at all — the only non-ASCII characters in a full startup
+      // capture were box drawing. So also accept the composed input box
+      // (`╭───╮` above, `╰───╯` below), which is what the current TUI actually
+      // renders once it is accepting input.
+      //
+      // Both corners are required rather than either: the closing `╰…╯` is only
+      // emitted once the box is fully drawn, so a half-painted frame mid-startup
+      // cannot read as ready. The first-run "do you trust this folder?" gate
+      // draws no box, so it correctly does not match.
+      if (text.includes("❯")) return true;
+      return claudeInputBoxVisible(text);
     }
     if (provider === "cursor") {
       const lastBlockerIndex = lastIndexOfAny(normalized, [
@@ -4584,6 +4660,17 @@ export function createPtyService({
         metadataOverrides,
         { platform: "win32" },
       );
+      if (promptAtLaunch && candidate.initialInput !== undefined) {
+        // The Windows builder already refused to put the prompt in argv — Droid
+        // resumes through `powershell.exe -Command <line>`, where a `.cmd` shim
+        // truncates a multi-line value at the first newline. Nothing to rebuild;
+        // just stop claiming the launch delivered the text so the post-launch
+        // PTY write below still happens. `initialInput` is a signal here, not a
+        // delivery request: `getOrCreateResumeFlight` deliberately does not
+        // forward it (see the note there).
+        promptAtLaunch = false;
+        return candidate;
+      }
       if (
         promptAtLaunch
         && candidate.command
@@ -4631,6 +4718,13 @@ export function createPtyService({
       ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
       args: resumeLaunch.args,
       ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
+      // `resumeLaunch.initialInput` is deliberately NOT forwarded. On a fresh
+      // launch it means "deliver this after the TUI starts", and `create()`
+      // does exactly that. On a resume it only records that the builder kept
+      // the prompt off the command line; the caller below already re-sends the
+      // same text through `writeSubmittedText`, which reports delivery failure
+      // to the user instead of logging and moving on. Forwarding it here would
+      // write the prompt twice.
     });
     resumeRuntimeFlights.set(session.id, flight);
     void flight
@@ -5494,6 +5588,17 @@ export function createPtyService({
                   return;
                 }
                 if (args.awaitInitialInput || provider !== "codex") {
+                  // Skipping is deliberate and must stay: "not ready" is often
+                  // "a blocking prompt is on screen", and Cursor's workspace
+                  // trust gate or OpenCode's auth gate would otherwise receive
+                  // the user's prompt as its answer. Typing user text into a
+                  // credential dialog is far worse than not sending it.
+                  //
+                  // The cost is that a *wrong* readiness marker also drops the
+                  // prompt, with only this log line to show for it — which is
+                  // how the Windows Claude launch came up blank. The answer is
+                  // to keep the markers honest (see providerReadyMarkerVisible),
+                  // not to send into an unknown screen.
                   logger.warn("pty.initial_input_skipped_not_ready", {
                     ptyId,
                     sessionId,

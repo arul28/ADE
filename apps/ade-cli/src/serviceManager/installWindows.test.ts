@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  buildWindowsProcessCommandLineQueryArgs,
   renderCommand,
   renderWindowsCommand,
   resolveRuntimeServiceName,
@@ -33,11 +34,11 @@ import {
   resolveWindowsTaskName,
   resolveWindowsTaskUser,
   uninstallWindowsService,
-  WINDOWS_POWERSHELL_COMMAND,
-  WINDOWS_REG_COMMAND,
-  WINDOWS_SCHTASKS_COMMAND,
+  windowsPowerShellCommand,
+  windowsRegCommand,
+  windowsSchtasksCommand,
+  windowsTaskkillCommand,
   WINDOWS_TASK_ACTION_FIELD_SEPARATOR,
-  WINDOWS_TASKKILL_COMMAND,
   renderWindowsServiceLauncher,
 } from "./installWindows";
 
@@ -107,6 +108,14 @@ describe("Windows background service helpers", () => {
     "\"C:\\Program Files\\ADE\\resources\\ade-cli\\cli.cjs\" \"serve\"",
   );
   // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
+  // The install scans for stale same-channel `serve` brains before it registers
+  // the startup entry, the same way the launchd install does. On Windows that
+  // scan is a Win32_Process command-line enumeration, not `ps -axo`.
+  const staleServeScanCall = {
+    command: windowsPowerShellCommand(),
+    args: buildWindowsProcessCommandLineQueryArgs(),
+  };
+  // A legacy `ADE Runtime` task owned by a side-by-side Stable install.
   const stableLegacyAction = taskActionOutput(
     "C:\\Program Files\\ADE Stable\\ADE.exe",
     "\"C:\\Program Files\\ADE Stable\\resources\\ade-cli\\cli.cjs\" \"serve\"",
@@ -114,7 +123,7 @@ describe("Windows background service helpers", () => {
 
   it("builds schtasks create, run, query, and delete arguments without invoking schtasks", () => {
     const renderedCommand = renderWindowsCommand({
-      command: WINDOWS_POWERSHELL_COMMAND,
+      command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
         "-NonInteractive",
@@ -285,7 +294,7 @@ describe("Windows background service helpers", () => {
       );
 
       const bootstrap = spawnChildSync(
-        WINDOWS_POWERSHELL_COMMAND,
+        windowsPowerShellCommand(),
         buildWindowsStartLauncherArgs(launcherPath),
         { encoding: "utf8", windowsHide: true },
       );
@@ -332,6 +341,9 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -369,7 +381,7 @@ describe("Windows background service helpers", () => {
       socketPath: expect.stringMatching(/^\\\\\.\\pipe\\ade-runtime-beta-/),
     }));
     const scheduledCommand = renderWindowsCommand({
-      command: WINDOWS_POWERSHELL_COMMAND,
+      command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
         "-NonInteractive",
@@ -381,16 +393,17 @@ describe("Windows background service helpers", () => {
         launcherPath,
       ],
     });
-    expect(path.win32.isAbsolute(WINDOWS_POWERSHELL_COMMAND)).toBe(true);
-    expect(scheduledCommand).toContain(WINDOWS_POWERSHELL_COMMAND);
+    expect(path.win32.isAbsolute(windowsPowerShellCommand())).toBe(true);
+    expect(scheduledCommand).toContain(windowsPowerShellCommand());
     expect(scheduledCommand.toLowerCase()).not.toMatch(/^powershell\.exe\b/);
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
+      { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
-        command: WINDOWS_POWERSHELL_COMMAND,
+        command: windowsPowerShellCommand(),
         args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       },
     ]);
@@ -416,8 +429,9 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },                     // channel task: absent
       { status: 0, stdout: `    ${taskName}    REG_SZ    x`, stderr: "" }, // Run entry: installed
       { status: 0, stdout: "", stderr: "" },                     // supervisor probe: running
-      { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill /T /F
+      { status: 0, stdout: "SUCCESS", stderr: "" },              // taskkill supervisor
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },     // reg delete
+      { status: 0, stdout: "", stderr: "" },                     // stale same-channel serve scan: none
       { status: 0, stdout: "SUCCESS: created", stderr: "" },     // reg add
       { status: 0, stdout: "1234", stderr: "" },                 // start task
     ]);
@@ -433,12 +447,19 @@ describe("Windows background service helpers", () => {
     });
 
     expect(result.ok).toBe(true);
+    // The supervisor is killed on its own, WITHOUT `/T`. The brain is its
+    // child, so a tree kill took the brain down mid-write — no SQLite/CRDT
+    // flush, no lock release — and the next start had to recover from a lock
+    // whose owner never got to release it. The brain is talked down separately
+    // once the supervisor can no longer relaunch it. Repair is still a real
+    // restart, which is what this test exists to protect: the supervisor dies
+    // and a fresh one is started below.
     expect(calls).toContainEqual({
-      command: WINDOWS_TASKKILL_COMMAND,
-      args: ["/PID", String(readyPidRecord.supervisorPid), "/T", "/F"],
+      command: windowsTaskkillCommand(),
+      args: ["/PID", String(readyPidRecord.supervisorPid), "/F"],
     });
     expect(calls.at(-1)).toEqual({
-      command: WINDOWS_POWERSHELL_COMMAND,
+      command: windowsPowerShellCommand(),
       args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
     });
   });
@@ -451,6 +472,9 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: ended", stderr: "" },
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -467,10 +491,10 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(true);
     expect(calls.slice(0, 4)).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs(taskName) },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs(taskName) },
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
     ]);
     expect(calls.at(-2)?.args).toEqual(expect.arrayContaining(["ADD", "/V", taskName]));
     expect(calls.at(-1)?.args).toEqual(
@@ -487,6 +511,9 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: "SUCCESS: deleted", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -503,10 +530,10 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(true);
     expect(calls.slice(0, 4)).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs("ADE Runtime") },
     ]);
     expect(calls.flatMap((call) => call.args)).not.toContain("ADE Runtime ");
   });
@@ -518,6 +545,9 @@ describe("Windows background service helpers", () => {
       { status: 0, stdout: stableLegacyAction, stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: value not found" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "The operation completed successfully.", stderr: "" },
       { status: 0, stdout: "1234", stderr: "" },
     ]);
@@ -526,7 +556,7 @@ describe("Windows background service helpers", () => {
       "brain-service.ps1",
     );
     const scheduledCommand = renderWindowsCommand({
-      command: WINDOWS_POWERSHELL_COMMAND,
+      command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
         "-NonInteractive",
@@ -552,24 +582,25 @@ describe("Windows background service helpers", () => {
     // The Stable brain is never ended or deleted: no schtasks call names the
     // global legacy task, and the recorded argv proves it.
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
+      { command: windowsRegCommand(), args: buildWindowsRunKeyAddArgs(taskName, scheduledCommand) },
       {
-        command: WINDOWS_POWERSHELL_COMMAND,
+        command: windowsPowerShellCommand(),
         args: buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       },
     ]);
-    expect(calls.filter((call) => call.command === WINDOWS_SCHTASKS_COMMAND)).toEqual([]);
+    expect(calls.filter((call) => call.command === windowsSchtasksCommand())).toEqual([]);
     expect(calls.some((call) => call.args.includes("ADE Runtime") && call.args.includes("/End")))
       .toBe(false);
     expect(calls.some((call) => call.args.includes("ADE Runtime") && call.args.includes("/Delete")))
       .toBe(false);
   });
 
-  it("leaves another channel's legacy scheduled task running when Beta uninstalls", () => {
+  it("leaves another channel's legacy scheduled task running when Beta uninstalls", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
@@ -583,7 +614,7 @@ describe("Windows background service helpers", () => {
     );
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       command: serviceCommand,
       launcherPath,
       serviceName,
@@ -593,12 +624,12 @@ describe("Windows background service helpers", () => {
 
     expect(result.ok).toBe(true);
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
-    expect(calls.filter((call) => call.command === WINDOWS_SCHTASKS_COMMAND)).toEqual([]);
+    expect(calls.filter((call) => call.command === windowsSchtasksCommand())).toEqual([]);
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
 
@@ -626,8 +657,8 @@ describe("Windows background service helpers", () => {
       "Unable to query the legacy ADE Runtime scheduled task: ERROR: access is denied",
     );
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
     ]);
   });
 
@@ -675,9 +706,9 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toContain("legacy ADE Runtime scheduled task");
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
     ]);
   });
 
@@ -687,6 +718,9 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 0, stdout: "SUCCESS: created", stderr: "" },
       // Both job-escaping handovers are unavailable, so the launch falls all the
       // way back to the in-session PowerShell start, which also fails.
@@ -708,7 +742,7 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ADE per-user startup entry was installed, but the background service failed to start: ERROR: access is denied");
     const scheduledCommand = renderWindowsCommand({
-      command: WINDOWS_POWERSHELL_COMMAND,
+      command: windowsPowerShellCommand(),
       args: [
         "-NoProfile",
         "-NonInteractive",
@@ -724,6 +758,7 @@ describe("Windows background service helpers", () => {
       buildWindowsQueryTaskArgs("ADE Runtime"),
       buildWindowsQueryTaskArgs(taskName),
       buildWindowsRunKeyQueryArgs(taskName),
+      buildWindowsProcessCommandLineQueryArgs(),
       buildWindowsRunKeyAddArgs(taskName, scheduledCommand),
       buildWindowsStartTaskArgs(launcherPath, resolveWindowsStartTaskName(taskName)),
       buildWindowsWmiStartArgs(launcherPath),
@@ -738,6 +773,9 @@ describe("Windows background service helpers", () => {
       { status: 3, stdout: "", stderr: "" },
       { status: 3, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "" },
+      // launchd parity: the install now scans for stale same-channel serve
+      // brains before registering. Nothing running.
+      { status: 0, stdout: "", stderr: "" },
       { status: 1, stdout: "", stderr: "ERROR: registration failed" },
     ]);
     const launcherPath = path.join(makeTempHome("ade-windows-service-create-fail-"), "brain-service.ps1");
@@ -753,14 +791,15 @@ describe("Windows background service helpers", () => {
     expect(result.ok).toBe(false);
     expect(result.message).toBe("ERROR: registration failed");
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      expect.objectContaining({ command: WINDOWS_REG_COMMAND, args: expect.arrayContaining(["ADD"]) }),
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      staleServeScanCall,
+      expect.objectContaining({ command: windowsRegCommand(), args: expect.arrayContaining(["ADD"]) }),
     ]);
   });
 
-  it("removes legacy tasks and the per-user startup entry", () => {
+  it("removes legacy tasks and the per-user startup entry", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
@@ -775,7 +814,7 @@ describe("Windows background service helpers", () => {
     const launcherPath = path.join(makeTempHome("ade-windows-service-remove-"), "brain-service.ps1");
     fs.writeFileSync(launcherPath, "old launcher", "utf8");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       command: serviceCommand,
       launcherPath,
       serviceName,
@@ -791,19 +830,19 @@ describe("Windows background service helpers", () => {
       message: "ADE background service startup entry removed.",
     });
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsEndTaskArgs("ADE Runtime") },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs("ADE Runtime") },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyDeleteArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsSchtasksCommand(), args: buildWindowsEndTaskArgs("ADE Runtime") },
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs("ADE Runtime") },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyDeleteArgs(taskName) },
     ]);
     expect(fs.existsSync(launcherPath)).toBe(false);
   });
 
-  it("surfaces scheduled task removal failures", () => {
+  it("surfaces scheduled task removal failures", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 0, stdout: "Ready", stderr: "" },
@@ -812,19 +851,19 @@ describe("Windows background service helpers", () => {
       { status: 1, stdout: "", stderr: "" },
     ]);
 
-    const result = uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
+    const result = await uninstallWindowsService({ serviceName, spawnSync, userName: taskUser });
 
     expect(result.ok).toBe(false);
     expect(result.message).toContain("ERROR: The system cannot find the file specified.");
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_SCHTASKS_COMMAND, args: buildWindowsDeleteTaskArgs(taskName) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsSchtasksCommand(), args: buildWindowsDeleteTaskArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
     ]);
   });
 
-  it("fails uninstall when the scheduled task launcher cannot be removed", () => {
+  it("fails uninstall when the scheduled task launcher cannot be removed", async () => {
     const calls: Array<{ command: string; args: string[] }> = [];
     const spawnSync = spawnSequence(calls, [
       { status: 3, stdout: "", stderr: "" },
@@ -833,7 +872,7 @@ describe("Windows background service helpers", () => {
     ]);
     const launcherPath = makeTempHome("ade-windows-service-launcher-dir-");
 
-    const result = uninstallWindowsService({
+    const result = await uninstallWindowsService({
       launcherPath,
       serviceName,
       spawnSync,
@@ -868,7 +907,7 @@ describe("Windows background service helpers", () => {
     });
     expect(calls).toEqual([
       {
-        command: WINDOWS_POWERSHELL_COMMAND,
+        command: windowsPowerShellCommand(),
         args: buildWindowsQueryTaskArgs(taskName),
         options: expect.objectContaining({ windowsHide: true }),
       },
@@ -940,10 +979,10 @@ describe("Windows background service helpers", () => {
       + "the per-user startup supervisor.",
     );
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskActionArgs("ADE Runtime") },
     ]);
   });
 
@@ -1010,9 +1049,9 @@ describe("Windows background service helpers", () => {
     expect(status).toMatchObject({ ok: true, installed: false, running: false });
     expect(status.message).toBe("ADE background service startup entry is not installed.");
     expect(calls).toEqual([
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs(taskName) },
-      { command: WINDOWS_REG_COMMAND, args: buildWindowsRunKeyQueryArgs(taskName) },
-      { command: WINDOWS_POWERSHELL_COMMAND, args: buildWindowsQueryTaskArgs("ADE Runtime") },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs(taskName) },
+      { command: windowsRegCommand(), args: buildWindowsRunKeyQueryArgs(taskName) },
+      { command: windowsPowerShellCommand(), args: buildWindowsQueryTaskArgs("ADE Runtime") },
     ]);
   });
 
@@ -1055,7 +1094,7 @@ describe("Windows background service helpers", () => {
     () => {
       const missingTaskName = `ADE Runtime Test ${process.pid} ${Date.now()}`;
       const result = spawnChildSync(
-        WINDOWS_POWERSHELL_COMMAND,
+        windowsPowerShellCommand(),
         buildWindowsQueryTaskArgs(missingTaskName),
         { encoding: "utf8" },
       );

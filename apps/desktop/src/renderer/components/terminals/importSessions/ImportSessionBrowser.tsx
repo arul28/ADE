@@ -547,11 +547,14 @@ function ImportSessionRow({
               </>
             ) : null}
             {summary.cwd ? (
+              /* Shortened, not clipped: `truncate` drops the tail, and the
+                 tail is the repo folder — the only part that tells two
+                 sessions apart. Every Windows row read `C:\Users\…\Doc…`. */
               <span
                 className="ml-0.5 max-w-[240px] truncate rounded border border-white/[0.05] bg-white/[0.03] px-1.5 py-px font-mono text-[9.5px] text-muted-fg/60"
                 title={summary.cwd}
               >
-                {summary.cwd}
+                {shortenCwd(summary.cwd, 2)}
               </span>
             ) : null}
           </div>
@@ -723,7 +726,11 @@ function ImportSessionDetail({
           <p className="mt-4 text-[11px] text-muted-fg/60">No conversational preview was recoverable for this session.</p>
         )}
         <dl className="mt-4 grid gap-2 text-[10.5px] sm:grid-cols-2">
-          <div className="min-w-0"><dt className="text-muted-fg/50">Original folder</dt><dd className="truncate font-mono text-muted-fg/80" title={summary.cwd ?? undefined}>{shortenCwd(summary.cwd, 5)}</dd></div>
+          {/* `dir="rtl"` moves the overflow ellipsis to the start of the line
+              so a path that is still too long loses its drive/home prefix
+              rather than the folder that identifies it; the `<bdi>` keeps the
+              path itself reading left-to-right. */}
+          <div className="min-w-0"><dt className="text-muted-fg/50">Original folder</dt><dd className="truncate text-left font-mono text-muted-fg/80" dir="rtl" title={summary.cwd ?? undefined}><bdi dir="ltr">{shortenCwd(summary.cwd, 5)}</bdi></dd></div>
           <div className="min-w-0"><dt className="text-muted-fg/50">Provider session</dt><dd className="truncate font-mono text-muted-fg/80" title={summary.id}>{summary.id}</dd></div>
         </dl>
       </section>

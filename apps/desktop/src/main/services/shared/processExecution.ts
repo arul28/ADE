@@ -1,5 +1,27 @@
 import { spawnSync, type ChildProcess } from "node:child_process";
 import path from "node:path";
+import { resolveTrustedWindowsTool } from "../../../../../ade-cli/src/lib/trustedWindowsTools";
+
+/**
+ * Resolve `taskkill` through the kernel's SystemRoot alias rather than `PATH`.
+ *
+ * A bare `"taskkill.exe"` is PATH-relative, so any writable directory earlier on
+ * PATH than System32 gets to supply the binary the Electron main process runs
+ * to kill process trees. `windows-quirks.md` names `trustedWindowsTools` as the
+ * answer for exactly this.
+ *
+ * Falls back to the PATH spelling if resolution throws, deliberately: refusing
+ * to kill leaks whole process trees, which is the worse of the two failures.
+ * Non-win32 keeps the plain name so cross-platform tests stay deterministic.
+ */
+export function windowsTaskkillCommand(): string {
+  if (process.platform !== "win32") return "taskkill.exe";
+  try {
+    return resolveTrustedWindowsTool("taskkill");
+  } catch {
+    return "taskkill.exe";
+  }
+}
 
 export type SpawnInvocation = {
   command: string;
@@ -74,6 +96,36 @@ export function shouldUseWindowsCmdWrapper(command: string, platform: NodeJS.Pla
   return ext === "" || ext === ".cmd" || ext === ".bat";
 }
 
+/**
+ * Pick the launchable path for a Windows CLI, preferring a native `.exe`.
+ *
+ * Two installs routinely coexist and PATH order decides which a plain lookup
+ * returns: the vendor installer's real binary (Claude Code's Windows installer
+ * writes `%USERPROFILE%\.local\bin\claude.exe`, Droid's writes `droid.exe`) and
+ * a leftover `npm i -g` shim in `%APPDATA%\npm`. They are not interchangeable.
+ * A `.cmd`/`.bat` cannot be spawned at all since CVE-2024-27980 — Node refuses
+ * bare shim spawns with `EINVAL` (errno -4071) — and reaching one through
+ * `cmd.exe` re-parses the command line: measured, `%USERPROFILE%` expands,
+ * newlines flatten to spaces, and an 8501-character line dies with "The command
+ * line is too long." A `.exe` has none of those hazards, so it wins whenever one
+ * exists anywhere in the candidate list, not just in the first directory.
+ *
+ * Off Windows every candidate is equally spawnable, so the caller's own
+ * precedence order is returned untouched.
+ */
+export function preferNativeExecutablePath(
+  candidatePaths: readonly string[],
+  platform: NodeJS.Platform = process.platform,
+): string | null {
+  const first = candidatePaths[0] ?? null;
+  if (platform !== "win32") return first;
+  const native = candidatePaths.find((candidate) => {
+    const ext = path.win32.extname(candidate).toLowerCase();
+    return ext === ".exe" || ext === ".com";
+  });
+  return native ?? first;
+}
+
 export function resolveWindowsCmdInvocation(
   command: string,
   args: string[],
@@ -133,7 +185,7 @@ export function resolveCliSpawnInvocation(
 
 export function windowsTaskkillInvocation(pid: number, options: { force?: boolean } = {}): SpawnInvocation {
   return {
-    command: "taskkill.exe",
+    command: windowsTaskkillCommand(),
     args: ["/PID", String(pid), "/T", ...(options.force ? ["/F"] : [])],
   };
 }
@@ -172,10 +224,24 @@ export function terminateProcessTree(
   onWindowsTaskkillFailure?: (detail: ProcessTreeFailureDetail) => void,
 ): boolean {
   if (process.platform === "win32") {
-    if (child.exitCode !== null || child.signalCode !== null) return false;
-    if (typeof child.pid === "number" && killWindowsProcessTree(child.pid, onWindowsTaskkillFailure)) {
-      return true;
+    // `?? null` for the same reason as `signalChildProcessTree`: an absent
+    // field means "not tracked", and reading it as "already exited" refuses the
+    // kill and leaks the tree.
+    if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) return false;
+    // `taskkill` exiting 0 means the kill was dispatched, not that every
+    // descendant is gone, so it cannot stand in for signaling the child we
+    // actually hold. Run both: the tree kill reaches grandchildren that
+    // `child.kill()` (a `TerminateProcess` on the leader) never would, and the
+    // direct kill covers a `taskkill` that reported success without acting.
+    const treeKilled = typeof child.pid === "number"
+      && killWindowsProcessTree(child.pid, onWindowsTaskkillFailure);
+    let childKilled = false;
+    try {
+      childKilled = child.kill(signal);
+    } catch {
+      childKilled = false;
     }
+    return treeKilled || childKilled;
   }
   try {
     return child.kill(signal);

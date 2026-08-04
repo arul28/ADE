@@ -9,6 +9,43 @@ within the preview boundary.
 Public Windows installers remain disabled until the exact-SHA release proof in
 [`windows-release-proof.md`](./windows-release-proof.md) passes.
 
+## What Windows gets instead
+
+Every capability below behaves differently on Windows than on macOS. The list is
+exhaustive by intent: if a Windows user notices something missing or weaker and
+it is not named here, treat that as a bug, not a known gap.
+
+Three outcomes are possible, and they are not interchangeable. **Degraded** means
+the capability works with a stated cost. **Blocked** means the capability is
+absent and the surface says so. **Unavailable** means the OS offers no route at
+all and the surface does not exist.
+
+| Capability | Outcome | What Windows does | Why |
+| --- | --- | --- | --- |
+| Native OS computer use — screenshot, video, GUI automation | Blocked | App Control over CDP, the built-in Browser, and proof-file ingestion all work. Only OS-level capture is gated. | Backed by `screencapture` and `osascript`. The Windows equivalent is Windows.Graphics.Capture plus UI Automation, which is a separate project. |
+| iOS Simulator drawer, Xcode Preview | Unavailable | Hidden. | Requires macOS and Xcode. |
+| Native Notch | Unavailable | Hidden. | macOS window-server feature with no counterpart. |
+| Claude Code background-job reattach | Degraded | Each follow-up prompt respawns the CLI instead of replying into the live background job. Turns are slower and in-flight context is lost. | Claude Code ships no `control.sock` on Windows, and `os.userInfo().uid` is `-1`, so there is nothing to attach to. |
+| Graceful brain shutdown | Degraded | ADE asks the brain to shut down over its own RPC channel and force-terminates only after the grace window. | Windows has no deliverable `SIGTERM`; `process.kill` is `TerminateProcess`, which no handler can intercept. |
+| Orphan agent recovery | Degraded | Recovery uses the on-disk PID registry and a listening-port scan. | Windows cannot read another process's environment, so the macOS `ps -wwE` environment-tag pass has no equivalent. The port half is implemented. |
+| Claude Code sandbox permission modes | Blocked | Permission modes themselves work; the sandbox does not. | Vendor limitation — Claude Code sandboxing is WSL-2 only. Not an ADE gap. |
+| Credential storage at rest | Degraded | DPAPI through Electron `safeStorage`. | No Keychain. DPAPI is user-scoped rather than per-item ACL'd, so it is a weaker boundary than a Keychain item. |
+| Remote runtime bootstrap from a locally built channel | Blocked | A local `package:beta` build sets `ADE_RUNTIME_RESOURCES_ALLOW_HOST_ONLY=1` and ships no Darwin/Linux sidecars, so it cannot drive a remote macOS or Linux runtime. CI-built installers are unaffected. | Darwin binaries cannot be produced on a Windows host. |
+| Windows as an SSH-bootstrap runtime target | Unavailable | A Windows machine can drive remote runtimes; it cannot be one. | Out of scope for the preview. |
+| Windows ARM64 | Unavailable | x64 only. The Cursor provider is additionally gated on ARM64 even under emulation. | Native and provider payloads are incomplete; `@cursor/sdk` publishes no `win32-arm64` package. |
+| Cross-channel phone-sync launch gate | Degraded | The launch gate answers from the sync-host lock file alone. A brain that was hard-killed and left a stale lock is not detected, so two channels can briefly both hold phone sync. `ade serve` still runs the full scan when it starts a brain. | The listener scan is a full-machine `Get-NetTCPConnection` + `Get-CimInstance` PowerShell query. It runs before any window exists, so on every launch it would block first paint — the cost `lsof` does not carry on macOS. |
+| Symlink-dependent operations | Degraded | Junctions are used where possible. Operations that need a real symlink require Developer Mode or an elevated shell. | Windows restricts symlink creation to administrators unless Developer Mode is on. |
+
+Two things that are **not** downgrades, recorded here because they are commonly
+assumed to be:
+
+- Cursor runs natively on Windows x64. The onboarding flow installs it with
+  `irm 'https://cursor.com/install?win32=true' | iex`; there is no WSL
+  requirement.
+- Reduced-motion preferences are honored. Chromium maps
+  `prefers-reduced-motion` to Settings → Accessibility → Visual effects →
+  Animation effects, so no macOS-only API is involved.
+
 ## Background brain on Windows
 
 The current Windows supervisor is **not a Scheduled Task**. `ade brain start`

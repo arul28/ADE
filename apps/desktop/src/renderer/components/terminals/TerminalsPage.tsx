@@ -23,7 +23,13 @@ import { buildDeeplink } from "../../../shared/deeplinks";
 import { parseGithubRemoteUrl } from "../../../shared/githubRemote";
 import { buildWebClientUrl } from "../../../shared/webClientUrl";
 import type { AgentChatSessionCreatedOptions } from "../chat/AgentChatPane";
-import { canBulkDeleteSession, canBulkStopSession, formatToolTypeLabel, isChatToolType } from "../../lib/sessions";
+import {
+  canBulkDeleteSession,
+  canBulkStopSession,
+  formatSessionActionError,
+  formatToolTypeLabel,
+  isChatToolType,
+} from "../../lib/sessions";
 import { addSessionBesideTarget, removeSessionFromGrids } from "../../lib/workGrid";
 import { buildWorkSessionTilingTree } from "./workSessionTiling";
 import type { DropEdge } from "../ui/paneTreeOps";
@@ -49,6 +55,7 @@ import {
 import { getLaneDeleteStatusLabel } from "../../lib/laneDeleteProgress";
 import { clearSessionWokeMarker } from "./sessionLifecycleActions";
 import { useWorkLaneDeleteProgress } from "./useWorkLaneDeleteProgress";
+import { useRetainedCrossMachineSlices } from "./useWorkMachineRouter";
 import { buildPtyContinuationLaunchFields } from "./cliLaunch";
 import { canonicalInputFromSummary, sessionNeedsYou } from "../../lib/terminalAttention";
 import {
@@ -200,8 +207,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const selectableSessions = useMemo(
-    // Bulk-selection RPCs are deliberately active-binding-only. Foreign rows
-    // keep their per-row pinned actions until the bulk contract can carry pins.
+    // The active binding's own roster, in sidebar order. Range selection and the
+    // keyboard cursor walk THIS list; foreign rows are appended to the lookup
+    // below instead, because their order is owned by their machine's group.
     () => [
       ...work.runningFiltered,
       ...work.awaitingInputFiltered,
@@ -211,13 +219,31 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     [work.awaitingInputFiltered, work.endedFiltered, work.runningFiltered, work.settledFiltered],
   );
 
+  // Rows the sidebar renders from another machine's slice. Bulk actions used to
+  // resolve selections against the active roster alone, so selecting a foreign
+  // row and pressing the header's Delete found nothing to delete and returned
+  // silently — the reported "mass delete does nothing". Every bulk RPC now
+  // carries the owning machine's pin (see `resolveSessionRuntimePin`), so the
+  // contract that kept them out no longer applies.
+  const crossMachineSlices = useRetainedCrossMachineSlices();
+  const selectableSessionsById = useMemo(() => {
+    const byId = new Map<string, TerminalSessionSummary>();
+    for (const session of selectableSessions) byId.set(session.id, session);
+    for (const machine of crossMachineSlices) {
+      for (const session of machine.sessions) {
+        if (!byId.has(session.id)) byId.set(session.id, session);
+      }
+    }
+    return byId;
+  }, [crossMachineSlices, selectableSessions]);
+
   useEffect(() => {
-    const visibleIds = new Set(selectableSessions.map((session) => session.id));
+    const visibleIds = new Set(selectableSessionsById.keys());
     setSelectedSessionIds((prev) => {
       const next = new Set([...prev].filter((id) => visibleIds.has(id)));
       return next.size === prev.size ? prev : next;
     });
-  }, [selectableSessions]);
+  }, [selectableSessionsById]);
 
   const handleSelectSession = useCallback(
     (
@@ -553,14 +579,21 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       setSessionActionError(null);
       setDeletingSessionId(session.id);
-      const deletion = runtimePin
-        ? window.ade.agentChat.delete({ sessionId: session.id }, runtimePin)
+      // A caller supplies a binding only when the row was rendered under a
+      // foreign machine group. Ownership is not a property of where the row was
+      // drawn: the info popover has no binding to pass, and a stale row can sit
+      // in the active roster while its session lives elsewhere. Delete now
+      // resolves the owning machine the same way resume/continue/stop already
+      // do, instead of defaulting to whichever machine the tab is bound to.
+      const pin = runtimePin ?? resolveSessionRuntimePin(session);
+      const deletion = pin
+        ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
         : window.ade.agentChat.delete({ sessionId: session.id });
       void deletion
         .then(async () => {
           invalidateSessionListCache();
-          if (runtimePin) {
-            cancelCrossMachineOptimisticChatSession(runtimePin, session.id);
+          if (pin) {
+            cancelCrossMachineOptimisticChatSession(pin, session.id);
           }
           work.removeSessionFromList(session.id);
           work.closeTab(session.id);
@@ -573,16 +606,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
           console.error("[TerminalsPage] delete chat failed", { sessionId: session.id, err });
-          setSessionActionError(`Delete failed: ${message}`);
+          setSessionActionError(formatSessionActionError(err, "Delete"));
           window.setTimeout(() => setSessionActionError(null), 6000);
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [work],
+    [resolveSessionRuntimePin, work],
   );
 
   const handleDeleteSession = useCallback(
@@ -598,8 +630,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
       setSessionActionError(null);
       setDeletingSessionId(session.id);
-      const deletion = runtimePin
-        ? window.ade.sessions.delete({ sessionId: session.id }, runtimePin)
+      // Same ownership resolution as `handleDeleteChat` — see the note there.
+      const pin = runtimePin ?? resolveSessionRuntimePin(session);
+      const deletion = pin
+        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
         : window.ade.sessions.delete({ sessionId: session.id });
       void deletion
         .then(async () => {
@@ -613,16 +647,15 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           });
         })
         .catch((err: unknown) => {
-          const message = err instanceof Error ? err.message : String(err);
           console.error("[TerminalsPage] delete session failed", { sessionId: session.id, err });
-          setSessionActionError(`Delete failed: ${message}`);
+          setSessionActionError(formatSessionActionError(err, "Delete"));
           window.setTimeout(() => setSessionActionError(null), 6000);
         })
         .finally(() => {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         });
     },
-    [work],
+    [resolveSessionRuntimePin, work],
   );
 
   const handleSettleSession = useCallback((
@@ -634,16 +667,16 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
       try {
         const dismissPendingInput = sessionNeedsYou(canonicalInputFromSummary(session));
         const opts = dismissPendingInput ? { dismissPendingInput: true } : undefined;
-        await (runtimePin
-          ? window.ade.sessions.settle(session.id, opts, runtimePin)
+        const pin = runtimePin ?? resolveSessionRuntimePin(session);
+        await (pin
+          ? window.ade.sessions.settle(session.id, opts, pin)
           : window.ade.sessions.settle(session.id, opts));
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Settle failed: ${message}`);
+        setSessionActionError(formatSessionActionError(err, "Settle"));
         window.setTimeout(() => setSessionActionError(null), 6000);
       }
     })();
-  }, []);
+  }, [resolveSessionRuntimePin]);
 
   const handleStopAndDeleteSession = useCallback(
     (
@@ -665,8 +698,9 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         // The session-delete service stops a running runtime before removing the
         // record, so a single call covers both steps for CLI and shell sessions.
         try {
-          await (runtimePin
-            ? window.ade.sessions.delete({ sessionId: session.id }, runtimePin)
+          const pin = runtimePin ?? resolveSessionRuntimePin(session);
+          await (pin
+            ? window.ade.sessions.delete({ sessionId: session.id }, pin)
             : window.ade.sessions.delete({ sessionId: session.id }));
           invalidateSessionListCache();
           work.removeSessionFromList(session.id);
@@ -677,21 +711,43 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
             console.error("[TerminalsPage] refresh after stop-and-delete failed", { sessionId: session.id, refreshErr });
           });
         } catch (err: unknown) {
-          const message = err instanceof Error ? err.message : String(err);
           console.error("[TerminalsPage] stop-and-delete session failed", { sessionId: session.id, err });
-          setSessionActionError(`Stop and delete failed: ${message}`);
+          setSessionActionError(formatSessionActionError(err, "Stop and delete"));
           window.setTimeout(() => setSessionActionError(null), 6000);
         } finally {
           setDeletingSessionId((current) => (current === session.id ? null : current));
         }
       })();
     },
-    [stopAndDeleteConfirm, work],
+    [resolveSessionRuntimePin, stopAndDeleteConfirm, work],
   );
 
   const selectedSessions = useMemo(
-    () => selectableSessions.filter((session) => selectedSessionIds.has(session.id)),
-    [selectableSessions, selectedSessionIds],
+    () => [...selectedSessionIds]
+      .map((id) => selectableSessionsById.get(id))
+      .filter((session): session is TerminalSessionSummary => session != null),
+    [selectableSessionsById, selectedSessionIds],
+  );
+
+  // One selected row's delete, routed to the machine that owns it. Bulk delete
+  // used to call the unpinned RPC for every row, so a selection spanning
+  // machines sent every id to whichever machine the tab happened to be bound
+  // to — the same misrouting the single-row path had.
+  const deleteSelectedSession = useCallback(
+    async (session: TerminalSessionSummary) => {
+      const pin = resolveSessionRuntimePin(session);
+      if (isChatToolType(session.toolType)) {
+        await (pin
+          ? window.ade.agentChat.delete({ sessionId: session.id }, pin)
+          : window.ade.agentChat.delete({ sessionId: session.id }));
+        if (pin) cancelCrossMachineOptimisticChatSession(pin, session.id);
+        return;
+      }
+      await (pin
+        ? window.ade.sessions.delete({ sessionId: session.id }, pin)
+        : window.ade.sessions.delete({ sessionId: session.id }));
+    },
+    [resolveSessionRuntimePin],
   );
 
   const handleBulkCloseSelected = useCallback(() => {
@@ -731,7 +787,14 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
 
   const handleBulkDeleteSelected = useCallback(() => {
     const deletable = selectedSessions.filter(canBulkDeleteSession);
-    if (!deletable.length) return;
+    if (!deletable.length) {
+      // Never a silent no-op: the header button is only offered when something
+      // is selected, so reaching here means the selection and the deletable set
+      // disagree, and the user is owed a reason rather than a dead button.
+      setSessionActionError("Nothing to delete: stop the selected running sessions first, or use Stop & delete.");
+      window.setTimeout(() => setSessionActionError(null), 6000);
+      return;
+    }
     const confirmed = window.confirm(
       `Delete ${deletable.length} selected session${deletable.length === 1 ? "" : "s"}?\n\nThis permanently removes the selected saved session history from ADE.`,
     );
@@ -742,13 +805,10 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
     void allSettledWithConcurrency(
       deletable,
       BULK_SESSION_DELETE_CONCURRENCY,
-      async (session) => {
-        if (isChatToolType(session.toolType)) {
-          await window.ade.agentChat.delete({ sessionId: session.id });
-          return;
-        }
-        await window.ade.sessions.delete({ sessionId: session.id });
-      },
+      // Every row is routed to the machine that owns it, and each is settled
+      // independently: one row that cannot be deleted must not take the rest of
+      // the batch down with it.
+      (session) => deleteSelectedSession(session),
     )
       .then(async (results) => {
         const failed = results.filter((result) => result.status === "rejected").length;
@@ -768,19 +828,27 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] refresh after bulk delete failed", { refreshErr });
         });
         if (failed > 0) {
-          setSessionActionError(`Delete failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          const firstFailure = results.find((result) => result.status === "rejected");
+          console.error("[TerminalsPage] bulk delete had failures", { failed, firstFailure });
+          setSessionActionError(
+            `${deletable.length - failed} of ${deletable.length} deleted. ${
+              formatSessionActionError(
+                firstFailure?.status === "rejected" ? firstFailure.reason : null,
+                "Delete",
+              )
+            }`,
+          );
           window.setTimeout(() => setSessionActionError(null), 6000);
         }
       })
       .catch((err: unknown) => {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Delete failed: ${message}`);
+        setSessionActionError(formatSessionActionError(err, "Delete"));
         window.setTimeout(() => setSessionActionError(null), 6000);
       })
       .finally(() => {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       });
-  }, [selectedSessions, work]);
+  }, [deleteSelectedSession, selectedSessions, work]);
 
   const handleRefreshOrphanSessions = useCallback(() => {
     setSessionActionError(null);
@@ -819,13 +887,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const results = await allSettledWithConcurrency(
           targets,
           BULK_SESSION_DELETE_CONCURRENCY,
-          async (session) => {
-            if (isChatToolType(session.toolType)) {
-              await window.ade.agentChat.delete({ sessionId: session.id });
-              return;
-            }
-            await window.ade.sessions.delete({ sessionId: session.id });
-          },
+          (session) => deleteSelectedSession(session),
         );
         const failed = results.filter((result) => result.status === "rejected").length;
         const succeededIds = targets
@@ -844,18 +906,26 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
           console.error("[TerminalsPage] refresh after bulk stop-and-delete failed", { refreshErr });
         });
         if (failed > 0) {
-          setSessionActionError(`Stop and delete failed for ${failed} selected session${failed === 1 ? "" : "s"}.`);
+          const firstFailure = results.find((result) => result.status === "rejected");
+          console.error("[TerminalsPage] bulk stop-and-delete had failures", { failed, firstFailure });
+          setSessionActionError(
+            `${targets.length - failed} of ${targets.length} deleted. ${
+              formatSessionActionError(
+                firstFailure?.status === "rejected" ? firstFailure.reason : null,
+                "Stop and delete",
+              )
+            }`,
+          );
           window.setTimeout(() => setSessionActionError(null), 6000);
         }
       } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`Stop and delete failed: ${message}`);
+        setSessionActionError(formatSessionActionError(err, "Stop and delete"));
         window.setTimeout(() => setSessionActionError(null), 6000);
       } finally {
         setDeletingSessionId((current) => (current === "bulk" ? null : current));
       }
     })();
-  }, [selectedSessions, stopAndDeleteConfirm, work]);
+  }, [deleteSelectedSession, selectedSessions, stopAndDeleteConfirm, work]);
 
   const finalizeCliResumeResult = useCallback(
     async (
@@ -899,8 +969,7 @@ export function TerminalsPage({ active = true }: { active?: boolean }) {
         const result = await request(pin);
         await finalizeCliResumeResult(session, pin, result);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        setSessionActionError(`${errorLabel} failed: ${message}`);
+        setSessionActionError(formatSessionActionError(err, errorLabel));
         window.setTimeout(() => setSessionActionError(null), 6000);
         throw err;
       }

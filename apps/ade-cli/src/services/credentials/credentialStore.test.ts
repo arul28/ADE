@@ -522,18 +522,6 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(raw).toContain("ADE_SAFE_STORAGE_CREDENTIALS_V1");
   });
 
-  it("migrates a legacy encrypted-file store to safeStorage and removes the sibling file store", () => {
-    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
-    legacyStore.setSync("linear.token.v1", "lin_secret");
-
-    const store = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
-
-    expect(store.getSync("linear.token.v1")).toBe("lin_secret");
-    expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
-    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
-    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
-  });
-
   it("leaves the brain-readable account session in the legacy file store", () => {
     // The ADE brain (com.ade.runtime) and the CLI cannot read the Electron-only
     // safeStorage file. Migrating the account session into it and deleting the

@@ -25,6 +25,10 @@ import type * as NodePty from "node-pty";
 type NodePtyType = typeof NodePty;
 import { isAdeRuntimeNamedPipePath } from "../shared/adeRuntimeIpc";
 import {
+  PACKAGE_CHANNEL_ARGV_PREFIX,
+  normalizeAppPackageChannel,
+} from "../shared/packageChannel";
+import {
   areAutomationsEnabledForPackagedState,
 } from "../shared/automationAvailability";
 import {
@@ -53,6 +57,8 @@ import { registerPerfIpcHandlers } from "./services/perf/perfIpc";
 import {
   ADE_WINDOWS_APP_USER_MODEL_ID,
   windowChromeOptions,
+  windowsTitleBarOverlay,
+  type WindowsTitleBarOverlayTheme,
 } from "./windowAppearance";
 import { openKvDb } from "./services/state/kvDb";
 import { createRegisteredSyncPeerGate } from "./services/state/syncPeerCompactionGate";
@@ -196,7 +202,10 @@ import {
 import { resolveMachineAdeLayout } from "../../../ade-cli/src/services/projects/machineLayout";
 import { localIpcListenOptions } from "../../../ade-cli/src/services/runtime/localIpcListenOptions";
 import { normalizeProjectRootPath } from "../../../ade-cli/src/services/projects/projectRoots";
-import { getSignedInAccountAccessToken } from "../../../ade-cli/src/services/account/accountAuthService";
+import {
+  ACCOUNT_SESSION_CREDENTIAL_KEY,
+  getSignedInAccountAccessToken,
+} from "../../../ade-cli/src/services/account/accountAuthService";
 import { createPushRelayClient } from "../../../ade-cli/src/services/push/pushRelayClient";
 import { createPushRegistrationStore } from "../../../ade-cli/src/services/push/pushRegistrationStore";
 import { resolvePushRelayStateFile } from "../../../ade-cli/src/services/push/pushPublisherService";
@@ -371,18 +380,23 @@ configureDesktopUserDataPath();
 
 function resolveAutoUpdaterCacheDir(): string {
   const homeDir = os.homedir();
+  // Per channel. Stable keeps the bare name so an existing install's staged
+  // download is not orphaned; a channel build gets its own directory so two
+  // channels cannot stage different versions over each other.
+  const channel = normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL);
+  const cacheDirName = channel ? `${AUTO_UPDATER_CACHE_DIR_NAME}-${channel}` : AUTO_UPDATER_CACHE_DIR_NAME;
   if (process.platform === "win32") {
     return path.join(
       process.env.LOCALAPPDATA || path.join(homeDir, "AppData", "Local"),
-      AUTO_UPDATER_CACHE_DIR_NAME,
+      cacheDirName,
     );
   }
   if (process.platform === "darwin") {
-    return path.join(homeDir, "Library", "Caches", AUTO_UPDATER_CACHE_DIR_NAME);
+    return path.join(homeDir, "Library", "Caches", cacheDirName);
   }
   return path.join(
     process.env.XDG_CACHE_HOME || path.join(homeDir, ".cache"),
-    AUTO_UPDATER_CACHE_DIR_NAME,
+    cacheDirName,
   );
 }
 
@@ -660,6 +674,14 @@ async function createWindow(args: {
       contextIsolation: true,
       nodeIntegration: false,
       webviewTag: true,
+      // The renderer gates the channel badge/notice synchronously at first
+      // paint, so the channel has to arrive without an IPC round trip. argv is
+      // the deterministic carrier: this runs long after
+      // applyPackagedChannelDefaults(), and unlike the inherited environment it
+      // does not depend on when Chromium snapshotted process.env.
+      additionalArguments: [
+        `${PACKAGE_CHANNEL_ARGV_PREFIX}${normalizeAppPackageChannel(process.env.ADE_PACKAGE_CHANNEL)}`,
+      ],
     },
   });
 
@@ -1356,6 +1378,29 @@ app.whenReady().then(async () => {
       }
     }
   };
+
+  // Window chrome: only Windows has a caption strip ADE owns. macOS traffic
+  // lights are laid out and recoloured by the OS, so the renderer's calls are
+  // a no-op there rather than a second, competing source of truth.
+  ipcMain.handle(
+    IPC.appSetTitleBarOverlay,
+    (
+      event,
+      arg: { theme?: WindowsTitleBarOverlayTheme; zoomFactor?: number } = {},
+    ): { applied: boolean } => {
+      if (process.platform !== "win32") return { applied: false };
+      const win = BrowserWindow.fromWebContents(event.sender);
+      if (!win || win.isDestroyed()) return { applied: false };
+      try {
+        win.setTitleBarOverlay(windowsTitleBarOverlay(arg));
+        return { applied: true };
+      } catch {
+        // A window created without `titleBarOverlay` throws rather than
+        // no-opping; nothing else about the window depends on this succeeding.
+        return { applied: false };
+      }
+    },
+  );
 
   ipcMain.handle(IPC.ptyDataSubscriptions, (event, arg: { ptyIds?: unknown } | undefined) => {
     setPtyDataSubscriptionsForSender(
@@ -2230,7 +2275,7 @@ app.whenReady().then(async () => {
       });
       return;
     }
-    const result = uninstallRuntimeService();
+    const result = await uninstallRuntimeService();
     const payload = {
       ok: result.ok,
       serviceName: result.serviceName,
@@ -2262,7 +2307,13 @@ app.whenReady().then(async () => {
     globalStatePath,
     updaterCacheDir: app.isPackaged ? resolveAutoUpdaterCacheDir() : undefined,
     installTargetPath: process.execPath,
-    autoCheckEnabled: app.isPackaged,
+    // Channel builds do not check for updates. There is no per-channel publish
+    // feed yet, so a Beta would poll Stable's `latest.yml` and offer to
+    // "update" itself into a Stable installer — a different appId, a different
+    // ADE home, and an install that would land beside itself rather than over
+    // itself. Rebuild a channel to move it forward until a real per-channel
+    // feed exists.
+    autoCheckEnabled: app.isPackaged && !normalizeAdePackageChannel(process.env.ADE_PACKAGE_CHANNEL),
     beforeQuitAndInstall: prepareAutoUpdateInstall,
     rollbackQuitAndInstall: rollbackAutoUpdateInstall,
     getRuntimeActivitySummary: () => localRuntimePool.activitySummary(),

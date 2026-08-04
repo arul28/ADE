@@ -224,7 +224,23 @@
       "node_modules/@cursor/sdk-darwin-x64/**",
       "node_modules/@cursor/sdk-win32-x64/**",
       "node_modules/sqlite3/**",
-      "vendor/crsqlite/**"
+      "vendor/crsqlite/**",
+      "node_modules/@linear/sdk/**",
+      "node_modules/@modelcontextprotocol/sdk/**",
+      "node_modules/@hono/node-server/**",
+      "node_modules/@xterm/headless/**",
+      "node_modules/@xterm/addon-serialize/**",
+      "node_modules/zod/**",
+      "node_modules/zod-to-json-schema/**",
+      "node_modules/ajv/**",
+      "node_modules/ajv-formats/**",
+      "node_modules/fast-deep-equal/**",
+      "node_modules/fast-uri/**",
+      "node_modules/json-schema-traverse/**",
+      "node_modules/chokidar/**",
+      "node_modules/readdirp/**",
+      "node_modules/node-cron/**",
+      "node_modules/uuid/**"
     ],
     "extraResources": [
       {

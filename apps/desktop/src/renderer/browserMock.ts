@@ -31,6 +31,7 @@
 /* eslint-disable @typescript-eslint/no-explicit-any */
 
 import { getDefaultModelDescriptor } from "../shared/modelRegistry";
+import { normalizeAppPackageChannel, type AppPackageChannel } from "../shared/packageChannel";
 import { deriveSmartLinkPreview } from "../shared/smartLinks";
 import { remoteProjectBindingKey } from "../shared/projectIdentity";
 import {
@@ -60,6 +61,7 @@ import {
   ADE_WELCOME_VIDEO_VERSION,
 } from "../shared/welcomeVideo";
 import { attachBrowserRuntimeBridge } from "./browserRuntimeBridge";
+import { rendererPlatformAttribute } from "./lib/platform";
 
 const noop = () => () => {};
 const resolved =
@@ -74,6 +76,58 @@ const resolvedArg2 =
   <T>(v: T) =>
   async (_a: any, _b: any) =>
     v;
+/**
+ * Reads a preview-only override from the URL (plain query or hash query) and
+ * remembers it in localStorage so it survives in-app navigation.
+ */
+function browserMockOverride(param: string, storageKey: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const search = new URLSearchParams(window.location.search);
+    const hash = window.location.hash;
+    const hashQueryIndex = hash.indexOf("?");
+    const hashSearch = new URLSearchParams(
+      hashQueryIndex >= 0 ? hash.slice(hashQueryIndex + 1) : "",
+    );
+    const fromUrl = search.get(param) ?? hashSearch.get(param);
+    if (fromUrl) {
+      window.localStorage?.setItem(storageKey, fromUrl);
+      return fromUrl;
+    }
+    return window.localStorage?.getItem(storageKey) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The mock is stable by default so the browser preview matches a normal build.
+ * Override it to exercise the channel badge without packaging anything:
+ *   http://localhost:5173/#/work?adeChannel=beta   (or ?adeChannel=beta)
+ *   localStorage.setItem("ade.mock.packageChannel", "alpha")
+ */
+function browserMockPackageChannel(): AppPackageChannel {
+  return normalizeAppPackageChannel(
+    browserMockOverride("adeChannel", "ade.mock.packageChannel"),
+  );
+}
+
+/**
+ * Host platform the preview should pretend to run on. Defaults to the real
+ * browser's platform (so the preview matches the machine you are on) and can be
+ * forced to exercise platform-gated UI — the Windows beta notice above all:
+ *   http://localhost:5173/?adePlatform=win32   (or darwin / linux)
+ *   localStorage.setItem("ade.mock.platform", "darwin")
+ */
+function browserMockPlatform(): string {
+  const forced = browserMockOverride("adePlatform", "ade.mock.platform");
+  const normalized = forced?.trim().toLowerCase();
+  if (normalized === "win32" || normalized === "darwin" || normalized === "linux") {
+    return normalized;
+  }
+  return rendererPlatformAttribute();
+}
+
 const DEFAULT_BROWSER_MOCK_CODEX_MODEL =
   getDefaultModelDescriptor("codex")?.id ?? "openai/gpt-5.6-sol";
 const DEFAULT_BROWSER_MOCK_CLAUDE_MODEL =
@@ -2965,12 +3019,20 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       };
     })(),
     app: {
+      // Mirrors the preload's synchronous channel bridge.
+      packageChannel: browserMockPackageChannel(),
+      // Mirrors the preload's synchronous platform bridge, so platform-gated UI
+      // (the Windows beta notice) can be previewed with ?adePlatform=win32.
+      runtimeTarget: { platform: browserMockPlatform(), arch: "x64" },
       ping: resolved("pong" as const),
       getInfo: resolved({
         appVersion: "0.0.0-browser",
+        packageChannel: browserMockPackageChannel(),
         isPackaged: false,
         automationsEnabled: true,
-        platform: "browser",
+        // Matches the synchronous runtimeTarget bridge above so platform-gated
+        // surfaces (Settings → About's Windows beta row) preview correctly.
+        platform: browserMockPlatform(),
         arch: "web",
         versions: {
           electron: "0.0.0-browser",
@@ -6304,6 +6366,7 @@ if (typeof window !== "undefined" && shouldInstallBrowserMock(window)) {
       getLevel: () => 0,
       setLevel: (_level: number) => {},
       getFactor: () => 1,
+      setTitleBarOverlay: async () => ({ applied: false }),
       onCommand: () => () => {},
     },
     updateCheckForUpdates: resolved(undefined),

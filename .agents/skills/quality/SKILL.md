@@ -5,9 +5,11 @@ description: >-
   correctness/security track and a maintainability/code-judo track run in
   parallel, then a synthesis step dedupes, severity-ranks (Blocker/High/Medium/
   Low), verifies each finding against the real code, and FIXES EVERY VERIFIED
-  FINDING at any severity — re-reviewing until clean. Only findings needing a
-  product decision, or a behavior change this branch was not asked to make,
-  reach the merge-blocking gate. Grounded in ADE's
+  FINDING at any severity — re-reviewing until clean. Windows parity is a
+  default requirement for all new code. Only findings needing a product
+  decision, a behavior change this branch was not asked to make, or a
+  capability whose Windows parity is not achievable, reach the merge-blocking
+  gate. Grounded in ADE's
   own bug classes (runtime-backed null services, daemon action-domain wiring,
   cr-sqlite CRR, IPC contract drift, fast-tier loading).
 ---
@@ -116,8 +118,44 @@ Blocker to hide.
 
 ### Windows parity rules
 
+**Windows parity is a default requirement, not a conditional check.** Every
+change reviewed here must work on the Windows build of ADE. Windows is part of
+"done"; it is never a follow-up. Review every changed file for Windows behavior
+even when the diff looks unrelated to paths or processes — the regressions that
+ship are the ones nobody thought to look for. `references/windows-quirks.md`
+holds the concrete failure classes and the named helper that resolves each one;
+read it before raising or dismissing a Windows finding.
+
+When parity is **not achievable**, stop and gate it (Synthesis step 8, reason
+three). Do not ship a half-working surface and do not quietly gate the whole
+product. The decision procedure:
+
+1. **Name the capability**, not the feature. "Native window screenshot capture",
+   not "Computer Use".
+2. **State the OS-level reason** it cannot work on Windows — the missing API,
+   the absent primitive, the security model. "Not implemented yet" is not a
+   parity blocker; that is work you owe.
+3. **Say what macOS and Linux keep.** If they keep it, this is a per-platform
+   divergence the human must approve, not an implementation detail.
+4. **Present three options with a recommendation:**
+   - **Hidden** — the surface does not exist on Windows. Nothing to discover, no
+     explanation given. Right when the capability is not something a user would
+     look for.
+   - **Disabled with a reason shown** — the control is visible, inert, and says
+     why. Right when a user would otherwise hunt for a missing feature, or when
+     macOS docs/screenshots reference it.
+   - **Removed** — deleted from the Windows build entirely, including its code
+     path, settings, and IPC surface. Right when the half-feature carries real
+     cost to keep.
+
+   Hidden and disabled are different user experiences, so the human picks **per
+   item** — never apply one answer across a batch.
+5. **State the blast radius:** which settings, IPC routes, docs, and tests change
+   under each option.
+
 When the scoped diff touches filesystem paths, process launch, executable
-resolution, IPC, SQLite/native modules, startup services, or Computer Use:
+resolution, IPC, SQLite/native modules, startup services, or Computer Use, these
+additional checks apply:
 
 - Treat Windows as a first-class runtime. Verify drive letters, native and mixed
   separators, UNC paths, quoting, `PATHEXT` and executable discovery. Audit
@@ -147,7 +185,7 @@ resolution, IPC, SQLite/native modules, startup services, or Computer Use:
 
 ### Track A — Correctness & Security (always runs)
 
-Apply both reference files:
+Apply all three reference files:
 
 1. **`references/correctness-security-review.md`** — diff-scoped audit for bugs,
    changes that break existing features (trace cross-app/IPC side effects),
@@ -160,6 +198,10 @@ Apply both reference files:
    CRR constraints, mobile-host compatibility, IPC/preload/shared/renderer
    contract drift, fast-tier loading, Node/test-env gotchas, worktree path
    discipline.
+3. **`references/windows-quirks.md`** — the Windows failure classes ADE has
+   actually hit and the named helper that resolves each one. Windows parity is
+   a default requirement (see **Windows parity rules** above), so this file
+   applies to every diff, not only obviously path-or-process work.
 
 Return prioritized findings. Mark each fix **unambiguous + behavior-preserving**
 (synthesis may auto-apply) or **needs human judgment** (synthesis surfaces it).
@@ -208,16 +250,23 @@ are handled by the synthesis step below, not a separate phase.
    a reason to defer a verified finding or move it to the gate. This catches
    fix-induced correctness regressions and maintainability debt before `/test`
    or `/ship`.
-8. **Gate — the narrow exception, not the escape hatch.** Only two kinds of
+8. **Gate — the narrow exception, not the escape hatch.** Only three kinds of
    accepted finding may go to the gate unfixed:
    - it needs a **product decision you cannot make** (which of two valid
      behaviors the user wants), or
    - the fix is **not behavior-preserving** and changing behavior is not what
-     this branch was asked to do.
+     this branch was asked to do, or
+   - **Windows parity is not achievable** for a capability this branch adds or
+     touches. Halt and ask; do not decide this one yourself. The row must carry
+     the full decision procedure from **Windows parity rules** above: the exact
+     capability, the OS-level reason, whether macOS/Linux keep it, and the
+     hide / disable-with-reason / remove options with your recommendation. A
+     capability that merely *has not been ported yet* is not this reason — that
+     is a fix you owe under step 6.
 
    "Structural", "large", "risky", "pre-existing", "out of scope for this PR",
    and "worth doing deliberately" are **not** gate reasons — those are fixes you
-   owe. If you gate a finding, the report must say which of the two reasons
+   owe. If you gate a finding, the report must say which of the three reasons
    applies and what decision you need. Anything in the Gate table blocks the
    merge until the author resolves it; `/ship` treats a non-empty gate as a stop.
 
@@ -245,10 +294,11 @@ the two permitted reasons — not findings you chose to defer.
 - Re-review passes: [n]
 
 ### Gate (MERGE-BLOCKING — every row needs an author decision)
-Only two reasons belong here: a product decision you cannot make, or a fix that
-is not behavior-preserving on a branch that was not asked to change behavior.
-Empty is the expected outcome. "Structural / large / out of scope" is not a
-gate reason — those get fixed above.
+Only three reasons belong here: a product decision you cannot make; a fix that
+is not behavior-preserving on a branch that was not asked to change behavior; or
+a capability whose Windows parity is not achievable. Empty is the expected
+outcome. "Structural / large / out of scope" is not a gate reason — those get
+fixed above.
 
 When empty, print exactly:
 
@@ -257,7 +307,9 @@ When empty, print exactly:
 Do not print a table. When non-empty, replace `- Empty.` with a table containing
 only real findings and these columns: Severity, file:line, Finding, Which gate
 reason, Decision needed. Never leave an example or placeholder row that another
-skill could mistake for a live gate.
+skill could mistake for a live gate. A Windows-parity row's "Decision needed"
+cell must state the capability, the OS-level reason, macOS/Linux status, and the
+hide / disable-with-reason / remove options with your recommendation.
 
 Next: /test (itemize every accepted correctness finding and give each a named
 regression test or explicit alternate verification).

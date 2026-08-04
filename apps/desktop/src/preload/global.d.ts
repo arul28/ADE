@@ -699,6 +699,7 @@ import type {
   StorageSnapshot,
 } from "../shared/types/storage";
 import type { ProjectRecoveryDiagnosis, ProjectRepairReport } from "../shared/types/recovery";
+import type { AppPackageChannel } from "../shared/packageChannel";
 import type {
   ProductAnalyticsCapture,
   ProductAnalyticsCaptureResult,
@@ -725,6 +726,14 @@ declare global {
          * and first-render decisions.
          */
         runtimeTarget: { platform: string; arch: string };
+        /**
+         * Release channel of this build, captured in preload from the argv the
+         * main process injects. Synchronous for the same reason as
+         * `runtimeTarget`: the shell header gates the channel badge at first
+         * paint. `app.getInfo().packageChannel`
+         * carries the same value for callers that already await it.
+         */
+        packageChannel: AppPackageChannel;
         ping: () => Promise<"pong">;
         setDockBadgeCount: (count: number) => Promise<{ ok: true }>;
         getInfo: () => Promise<AppInfo>;
@@ -2614,6 +2623,10 @@ declare global {
         getLevel: () => number;
         setLevel: (level: number) => void;
         getFactor: () => number;
+        setTitleBarOverlay: (arg: {
+          theme?: "dark" | "light";
+          zoomFactor?: number;
+        }) => Promise<{ applied: boolean }>;
         onCommand: (cb: (command: AppZoomCommand) => void) => () => void;
       };
       cto?: {

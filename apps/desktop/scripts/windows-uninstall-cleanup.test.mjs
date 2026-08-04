@@ -222,7 +222,19 @@ test("Windows bundled CLI wrapper resolves the Beta executable and identity", {
     `""${wrapperPath}" probe-argument"`,
   ], {
     encoding: "utf8",
-    env: { ...process.env, ADE_CLI_JS: probe },
+    // The wrapper only sets the channel identity `if not defined`, so an
+    // ambient ADE_PACKAGE_CHANNEL wins over the bundled `channel` marker —
+    // correct precedence, and exactly what this test must not inherit. A
+    // terminal launched from an installed ADE carries those variables, so
+    // running ADE's own suite from inside ADE would otherwise fail here with
+    // the host channel's identity instead of the fixture's.
+    env: {
+      ...process.env,
+      ADE_CLI_JS: probe,
+      ADE_PACKAGE_CHANNEL: undefined,
+      ADE_DESKTOP_APP_NAME: undefined,
+      ADE_HOME: undefined,
+    },
     windowsVerbatimArguments: true,
   });
 

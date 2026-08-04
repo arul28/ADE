@@ -531,6 +531,18 @@ describe("ADE CLI", () => {
     expect(flagOnly.options.requireSocket).toBe(true);
     expect(flagOnly.options.socketPath).toBeNull();
     expect(flagOnly.command).toEqual(["linear", "issue", "ADE-69"]);
+
+    // Windows absolute paths do not start with "/", so they used to be dropped
+    // and left behind as a stray positional.
+    const windowsPath = parseCliArgs([
+      "--socket",
+      "C:\\Users\\me\\.ade\\runtime",
+      "lanes",
+      "list",
+    ]);
+    expect(windowsPath.options.requireSocket).toBe(true);
+    expect(windowsPath.options.socketPath).toBe("C:\\Users\\me\\.ade\\runtime");
+    expect(windowsPath.command).toEqual(["lanes", "list"]);
   });
 
   it("maps ade code to the terminal Work chat launcher", () => {

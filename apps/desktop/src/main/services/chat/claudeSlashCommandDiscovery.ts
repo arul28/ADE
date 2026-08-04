@@ -2,6 +2,7 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentSkillRootCandidates } from "../../../shared/agentSkillRoots";
+import { pathKey } from "../shared/pathCompare";
 import {
   ancestorConfigRoots,
   discoverMarkdownCommandFiles,
@@ -55,7 +56,51 @@ function skillRootsByPrecedence(cwd: string): string[] {
   return roots;
 }
 
+/**
+ * Discovery walks every `commands` and skill root above `cwd` and reads each
+ * markdown file. Measured on a real project: 2,760 files, 22.7MB, 579-1119ms
+ * per call — and it is called several times per turn (dispatchable commands,
+ * the palette list, project commands) with no caching at all. On Windows that
+ * lands on the single-threaded runtime that also owns the sync socket, so it
+ * delays phone-originated messages, not just the local UI.
+ *
+ * A short TTL rather than mtime checking: detecting a change means walking the
+ * tree, which is the expensive part. The window is small enough that a command
+ * file someone just edited shows up on the next turn.
+ */
+const DISCOVERY_TTL_MS = 5_000;
+const discoveryCache = new Map<string, { at: number; value: DiscoveredClaudeSlashCommand[] }>();
+
+/**
+ * Drop the memo. Only the tests use this — nothing in the app writes a command
+ * file, so there is no production caller that has to beat the TTL.
+ */
+export function invalidateClaudeSlashCommandCache(): void {
+  discoveryCache.clear();
+}
+
 export function discoverClaudeSlashCommands(cwd: string): DiscoveredClaudeSlashCommand[] {
+  // Keyed on `pathKey`, not the raw cwd: `C:\proj` and `c:\proj` are the same
+  // project, and keying on the spelling gives each of them its own entry and
+  // its own full walk — the miss this memo exists to prevent.
+  const key = pathKey(cwd);
+  const now = Date.now();
+  const cached = discoveryCache.get(key);
+  if (cached && now - cached.at < DISCOVERY_TTL_MS) return cached.value.slice();
+  // Nothing else ever removes an entry, so every cwd asked about once would
+  // hold a full command list (22.7MB of files' worth of metadata) for the
+  // process lifetime. A miss is already the slow path; sweep there.
+  for (const [entryKey, entry] of discoveryCache) {
+    if (now - entry.at >= DISCOVERY_TTL_MS) discoveryCache.delete(entryKey);
+  }
+  const value = discoverClaudeSlashCommandsUncached(cwd);
+  discoveryCache.set(key, { at: Date.now(), value });
+  // Callers mutate the array (filter/map chains are fine, but nothing stops a
+  // sort in place), so never hand out the cached instance itself.
+  return value.slice();
+}
+
+function discoverClaudeSlashCommandsUncached(cwd: string): DiscoveredClaudeSlashCommand[] {
   const byName = new Map<string, DiscoveredClaudeSlashCommand>();
 
   for (const root of claudeRootsByPrecedence(cwd)) {

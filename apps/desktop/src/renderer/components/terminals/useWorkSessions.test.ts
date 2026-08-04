@@ -93,6 +93,10 @@ vi.mock("../../lib/sessions", () => ({
   isChatToolType: vi.fn(() => false),
 }));
 
+vi.mock("../../state/crossMachineLanes", () => ({
+  seedCrossMachineOptimisticSession: vi.fn(),
+}));
+
 vi.mock("react-router-dom", () => ({
   useNavigate: vi.fn(() => navigateSpy),
   useLocation: vi.fn(() => routerLocation),
@@ -150,6 +154,7 @@ vi.mock("../../state/appStore", async (importOriginal) => {
 import { buildWorkTabGroupModel, reorderLaneSessionIdsForDisplay, useWorkSessions } from "./useWorkSessions";
 import { forgetWorkPtyLaunchPin, workPtyLaunchPinFor } from "./cliLaunch";
 import { invalidateSessionListCache } from "../../lib/sessionListCache";
+import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
 import { shouldRefreshSessionListForChatEvent } from "../../lib/chatSessionEvents";
 
 // ---------------------------------------------------------------------------
@@ -727,6 +732,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
     // state for every chat whose lane lives on another machine — dropping those
     // updates would silently blank exactly the sessions that feature adds. The
     // question is now whether the pinned binding is still open.
+    //
+    // Where that optimistic row LANDS is a second question, and this test used
+    // to assert the wrong answer (the active binding's roster). A foreign lane
+    // id resolves against no lane the active binding knows, so the sidebar
+    // rendered the row laneless under "Orphaned sessions: <lane uuid>". It now
+    // goes to the owning machine's slice; the closed-pin case is unchanged.
     const otherMachine = {
       kind: "remote",
       key: "remote:target-b:project-b",
@@ -740,7 +751,12 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
 
     fakeAppStoreState = {
       ...fakeAppStoreState,
-      projectBinding: { kind: "local", key: "/fake/project", rootPath: "/fake/project", displayName: "Fake" },
+      projectBinding: {
+        kind: "local",
+        key: "local:/fake/project",
+        rootPath: "/fake/project",
+        displayName: "Fake",
+      },
       openRemoteProjectTabs: [otherMachine],
       openProjectTabRoots: ["/fake/project"],
     };
@@ -761,10 +777,17 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
       });
     });
 
-    // The pinned binding is open but not active — its UI update must land.
-    expect(result.current.sessions).toEqual(expect.arrayContaining([
-      expect.objectContaining({ id: "foreign-open", ptyId: "pty-foreign" }),
+    // The pinned binding is open but not active — its UI update must land, in
+    // the machine slice that owns the lane rather than the active roster.
+    expect(result.current.sessions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: "foreign-open" }),
     ]));
+    expect(seedCrossMachineOptimisticSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "foreign-open", ptyId: "pty-foreign", laneId: "lane-1" }),
+      otherMachine,
+    );
+    // The active binding's lane cursor must not chase a foreign lane id.
+    expect(selectLaneSpy).not.toHaveBeenCalledWith("lane-1");
 
     await act(async () => {
       await result.current.launchPtySession({
@@ -790,9 +813,71 @@ describe("useWorkSessions — refresh-before-focus ordering", () => {
         },
       });
     });
+    // A pin for the ACTIVE binding is still the active roster's own row.
     expect(result.current.sessions).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "local-background", ptyId: "pty-local" }),
     ]));
+  });
+
+  it("groups a foreign-pinned launch under its own machine instead of orphaning it", async () => {
+    // The Windows report: bound to another machine, a CLI/shell launched into
+    // THIS computer's Primary lane appeared as a loose top-level row with no
+    // lane chip, next to "Orphaned sessions: <lane uuid> — The lane record is
+    // missing from the latest runtime snapshot". The lane record was never
+    // missing: the row had been filed against a machine whose lane list cannot
+    // contain that id. Nothing here is platform-specific — the ids never touch
+    // the filesystem — so this holds identically on macOS and Linux.
+    const thisComputer = {
+      kind: "local",
+      key: "local:C:\\Users\\arul2\\Documents\\Programming\\ADE",
+      rootPath: "C:\\Users\\arul2\\Documents\\Programming\\ADE",
+      displayName: "ADE",
+    } as const;
+    fakeAppStoreState = {
+      ...fakeAppStoreState,
+      // The tab is bound to the Mac; `lanes` therefore holds the MAC's lanes,
+      // and the launched lane id belongs to the Windows machine.
+      projectBinding: {
+        kind: "remote",
+        key: "remote:mac-studio:project-mac",
+        targetId: "mac-studio",
+        runtimeName: "Mac Studio",
+        projectId: "project-mac",
+        rootPath: "/Users/admin/Projects/ADE",
+        displayName: "ADE",
+      },
+      lanes: [{ id: "mac-primary", name: "Primary" }],
+      openRemoteProjectTabs: [],
+      openProjectTabRoots: [thisComputer.rootPath],
+    };
+    (window as any).ade.pty.create.mockResolvedValueOnce({
+      sessionId: "windows-cli",
+      ptyId: "pty-win",
+      pid: 7,
+    });
+
+    const { result } = renderHook(() => useWorkSessions());
+    await waitFor(() => {
+      expect(listSessionsCachedMock).toHaveBeenCalled();
+    });
+
+    await act(async () => {
+      await result.current.launchPtySession({
+        laneId: "windows-primary",
+        profile: "claude",
+        title: "Hi, this is a test, say hi",
+        pin: thisComputer as any,
+      });
+    });
+
+    expect(seedCrossMachineOptimisticSession).toHaveBeenCalledWith(
+      expect.objectContaining({ id: "windows-cli", laneId: "windows-primary" }),
+      thisComputer,
+    );
+    // Nothing in the active roster carries a lane the active binding cannot
+    // name — that is exactly what the orphan group renders.
+    const knownLaneIds = new Set(["mac-primary"]);
+    expect(result.current.sessions.filter((session) => !knownLaneIds.has(session.laneId))).toEqual([]);
   });
 
   it("opens a foreign union chat in the Work view without adding it to the local session list", async () => {

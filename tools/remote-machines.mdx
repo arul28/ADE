@@ -44,7 +44,11 @@ ADE adds the remote over SSH using the same connection details you already use f
 
 ## The desktop still drives everything
 
-Connecting a remote does not move ADE off your Mac. The desktop app remains the control plane: you compose prompts, approve diffs, and merge PRs locally, while the agent processes, builds, and tests live on the remote. The remote's own GitHub, Linear, and provider credentials are used for work that happens there.
+Connecting a remote does not move ADE off your own machine. The desktop app remains the control plane: you compose prompts, approve diffs, and merge PRs locally, while the agent processes, builds, and tests live on the remote. The remote's own GitHub, Linear, and provider credentials are used for work that happens there.
+
+<Note>
+Remote machines run macOS or Linux. A Windows desktop can drive them when it is running an installed release build — a locally packaged Windows build ships no macOS or Linux runtime payloads and will refuse. A Windows machine cannot itself be a remote target — ADE cannot bootstrap its runtime onto Windows over SSH. See [ADE on Windows](/getting-started/windows).
+</Note>
 
 <Note>
 `ade code` can attach to the same saved remote machines from a terminal — useful when you are already SSH'd somewhere and want the TUI instead of the desktop window. See [ade code](/tools/ade-code).
