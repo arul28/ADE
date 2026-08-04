@@ -48,6 +48,7 @@ import {
 } from "./cliLaunch";
 import { sortLanesForTabs } from "../lanes/laneUtils";
 import { setPendingSessionAnchor } from "./pendingSessionAnchors";
+import { seedCrossMachineOptimisticSession } from "../../state/crossMachineLanes";
 import {
   useRetainedCrossMachineSlices,
   useWorkMachineRouter,
@@ -433,6 +434,7 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
   const projectRoot = useAppStore(selectActiveProjectRoot);
   const projectStateKey = useAppStore(selectActiveProjectStateKey);
   const isRemoteProject = useAppStore((s) => s.projectBinding?.kind === "remote");
+  const activeBindingKey = useAppStore((s) => s.projectBinding?.key ?? null);
   const lanes = useAppStore((s) => s.lanes);
   const focusSession = useAppStore((s) => s.focusSession);
   const selectLane = useAppStore((s) => s.selectLane);
@@ -1884,16 +1886,32 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
         resumeMetadata: null,
         chatSessionId: null,
       };
-      pendingOptimisticSessionsRef.current.set(result.sessionId, {
-        session: optimisticSession,
-        createdAtMs: Date.now(),
-      });
-      setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+      // A launch pinned to another machine is already owned by the cross-machine
+      // union, so its optimistic row belongs in that machine's slice — the same
+      // split `TerminalsPage.handleOpenChatSession` makes for chats. Filing it in
+      // the active binding's roster instead names it by a lane id only the
+      // OTHER machine can resolve, and the sidebar renders it as a loose,
+      // laneless "orphaned session" row; since #1013 the union also treats the
+      // active roster's ids as claimed, so the same row is suppressed from the
+      // foreign lane group where it does belong.
+      const runtimePin = args.pin ?? null;
+      const belongsToActiveBinding = !runtimePin || runtimePin.key === activeBindingKey;
+      if (belongsToActiveBinding) {
+        pendingOptimisticSessionsRef.current.set(result.sessionId, {
+          session: optimisticSession,
+          createdAtMs: Date.now(),
+        });
+        setSessions((prev) => upsertSessionByStartedAt(prev, optimisticSession));
+      } else {
+        seedCrossMachineOptimisticSession(optimisticSession, runtimePin);
+      }
       // Invalidate all cache entries so other views (e.g. Lanes tab) pick up
       // the new session on their next refresh.
       invalidateSessionListCache();
       if (args.disposition !== "background") {
-        selectLane(args.laneId);
+        // Lane selection is the active binding's own cursor; pointing it at a
+        // lane that lives on another machine selects nothing.
+        if (belongsToActiveBinding) selectLane(args.laneId);
         focusSession(result.sessionId);
         openSessionTab(result.sessionId);
       }
@@ -1904,7 +1922,16 @@ export function useWorkSessions({ active = true }: UseWorkSessionsOptions = {}) 
       void refresh({ showLoading: false, force: true }).catch(() => {});
       return result;
     },
-    [canMutatePinnedProjectUi, focusSession, lanes, machineRouter, openSessionTab, refresh, selectLane],
+    [
+      activeBindingKey,
+      canMutatePinnedProjectUi,
+      focusSession,
+      lanes,
+      machineRouter,
+      openSessionTab,
+      refresh,
+      selectLane,
+    ],
   );
 
   const removeSessionFromList = useCallback((sessionId: string) => {
