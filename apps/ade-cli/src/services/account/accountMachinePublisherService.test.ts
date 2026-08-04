@@ -12,6 +12,11 @@ import {
   DEFAULT_ADE_ACCOUNT_DIRECTORY_URL,
   DEVELOPMENT_ADE_ACCOUNT_DIRECTORY_URL,
 } from "../../../../desktop/src/shared/accountDirectory";
+import type { ProductAnalyticsCapture } from "../../../../desktop/src/shared/types/productAnalytics";
+import {
+  createEpisodeAnalytics,
+  EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
+} from "./episodeAnalytics";
 
 const sharedAccountAuthService = vi.hoisted(() => ({
   getStatus: vi.fn(() => ({
@@ -21,6 +26,7 @@ const sharedAccountAuthService = vi.hoisted(() => ({
   })),
   getAccessToken: vi.fn(async () => "account-token"),
   getSessionReadState: vi.fn(() => "available" as const),
+  getSessionReadFailureReason: vi.fn(() => null),
   onSignedIn: vi.fn(() => () => {}),
 }));
 
@@ -421,6 +427,77 @@ describe("account machine publisher health", () => {
     await service.publishNow();
 
     expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it("captures one account-session-unreadable event per unreadable episode", async () => {
+    let sessionReadState: "available" | "unreadable" = "unreadable";
+    const captureAnalytics = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => ({
+        signedIn: sessionReadState === "available",
+        sessionReadState,
+        sessionReadFailureReason: sessionReadState === "unreadable"
+          ? ("no_keychain_material" as const)
+          : null,
+      }),
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => new Response(null, { status: 204 })),
+      captureAnalytics,
+    });
+
+    await service.publishNow();
+    await service.publishNow();
+
+    expect(captureAnalytics).toHaveBeenCalledTimes(1);
+    expect(captureAnalytics).toHaveBeenCalledWith({
+      event: "ade_account_session_unreadable",
+      surface: "api",
+      properties: { code: "no_keychain_material" },
+      dedupeKey: "account-session-unreadable:no_keychain_material",
+      minimumIntervalMs: 24 * 60 * 60 * 1_000,
+    });
+
+    // A readable session ends the episode, so a genuinely new one reports again.
+    sessionReadState = "available";
+    await service.publishNow();
+    sessionReadState = "unreadable";
+    await service.publishNow();
+
+    expect(captureAnalytics).toHaveBeenCalledTimes(2);
+  });
+
+  it("captures an account-session-unreadable event when the status read throws", async () => {
+    // A throwing status read is the same failure as an "unreadable" one, and
+    // `read_error` is a documented code for it. Reporting only the non-throwing
+    // path left this half of the incident class invisible.
+    const captureAnalytics = vi.fn();
+    const service = createAccountMachinePublisherService({
+      getAccessToken: async () => "account-token",
+      getAccountStatus: () => {
+        throw new Error("credential store unreadable");
+      },
+      getSnapshot: async () => snapshot(),
+      getMachineKey: () => "machine-studio",
+      directoryBaseUrl: () => "https://directory.example",
+      fetchImpl: vi.fn(async () => new Response(null, { status: 204 })),
+      captureAnalytics,
+    });
+
+    await service.publishNow();
+    await service.publishNow();
+
+    expect(service.getPublisherHealth().state).toBe("token_unreadable");
+    expect(captureAnalytics).toHaveBeenCalledTimes(1);
+    expect(captureAnalytics).toHaveBeenCalledWith({
+      event: "ade_account_session_unreadable",
+      surface: "api",
+      properties: { code: "read_error" },
+      dedupeKey: "account-session-unreadable:read_error",
+      minimumIntervalMs: 24 * 60 * 60 * 1_000,
+    });
   });
 
   it("starts a new publish-failure analytics episode after a benign skip", async () => {
@@ -1338,5 +1415,82 @@ describe("account machine registration publisher", () => {
     resolveFetch!(new Response("{}", { status: 200 }));
     await second;
     service.dispose();
+  });
+});
+
+const analyticsFor = (capture: () => ((input: ProductAnalyticsCapture) => void) | undefined) =>
+  createEpisodeAnalytics({
+    event: "ade_publish_failing",
+    dedupePrefix: "publish-failing",
+    capture,
+  });
+
+describe("createEpisodeAnalytics", () => {
+  it("reports once per episode no matter how often the condition is observed", () => {
+    const capture = vi.fn();
+    const episode = analyticsFor(() => capture);
+
+    episode.report({ dedupeValue: 1, properties: { code: "http_error" } });
+    episode.report({ dedupeValue: 1, properties: { code: "http_error" } });
+    episode.report({ dedupeValue: 2, properties: { code: "token_timeout" } });
+
+    expect(capture).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledWith({
+      event: "ade_publish_failing",
+      surface: "api",
+      properties: { code: "http_error" },
+      dedupeKey: "publish-failing:1",
+      minimumIntervalMs: EPISODE_ANALYTICS_MINIMUM_INTERVAL_MS,
+    });
+  });
+
+  it("re-arms only after the condition clears", () => {
+    const capture = vi.fn();
+    const episode = analyticsFor(() => capture);
+
+    episode.report({ dedupeValue: "first", properties: {} });
+    episode.end();
+    episode.report({ dedupeValue: "second", properties: {} });
+    // A repeated clear must not open a second report inside the same episode.
+    episode.end();
+    episode.end();
+    episode.report({ dedupeValue: "third", properties: {} });
+    episode.report({ dedupeValue: "fourth", properties: {} });
+
+    expect(capture.mock.calls.map(([input]) => input.dedupeKey)).toEqual([
+      "publish-failing:first",
+      "publish-failing:second",
+      "publish-failing:third",
+    ]);
+  });
+
+  it("reads the capture handler at report time, not at construction", () => {
+    // The publisher builds its episodes before its options are necessarily
+    // wired up; a handler snapshotted at construction would drop every event.
+    let capture: ((input: ProductAnalyticsCapture) => void) | undefined;
+    const episode = analyticsFor(() => capture);
+
+    episode.report({ dedupeValue: "missed", properties: {} });
+    const late = vi.fn();
+    capture = late;
+    episode.end();
+    episode.report({ dedupeValue: "seen", properties: {} });
+
+    expect(late).toHaveBeenCalledTimes(1);
+    expect(late.mock.calls[0]?.[0].dedupeKey).toBe("publish-failing:seen");
+  });
+
+  it("still consumes the episode when no capture handler is configured", () => {
+    // An absent handler must not leave the episode armed: once the handler
+    // appears mid-episode it would emit for a failure already in progress.
+    let capture: ((input: ProductAnalyticsCapture) => void) | undefined;
+    const episode = analyticsFor(() => capture);
+
+    episode.report({ dedupeValue: "in-progress", properties: {} });
+    const late = vi.fn();
+    capture = late;
+    episode.report({ dedupeValue: "in-progress", properties: {} });
+
+    expect(late).not.toHaveBeenCalled();
   });
 });

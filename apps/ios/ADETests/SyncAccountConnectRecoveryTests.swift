@@ -191,18 +191,11 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
 
   // MARK: - syncAccountMachineNavigationIsCurrent
 
-  /// The bug: `.syncing` is an attached state that every connect path passes
-  /// through, but this gate demanded `.connected` exactly. A link tapped during
-  /// hydration therefore decided we were on the wrong machine and re-paired to
-  /// the machine we were already talking to, tearing down a healthy connection.
-  func testSyncingCountsAsAttachedToTheTargetMachine() {
-    XCTAssertTrue(syncAccountMachineNavigationIsCurrent(
-      targetDeviceId: "host-1",
-      activeHostIdentity: "host-1",
-      connectionState: .syncing
-    ))
-  }
-
+  /// The gate is attachment, not hydration progress. `hello_ok` publishes
+  /// `.connected` before initial hydration finishes, so a link tapped during
+  /// hydration must read as "already on this machine" — the earlier bug here
+  /// re-paired to the machine we were already talking to, tearing down a
+  /// healthy connection.
   func testConnectedCountsAsAttachedToTheTargetMachine() {
     XCTAssertTrue(syncAccountMachineNavigationIsCurrent(
       targetDeviceId: "host-1",
@@ -215,7 +208,7 @@ final class SyncAccountConnectRecoveryTests: XCTestCase {
     XCTAssertFalse(syncAccountMachineNavigationIsCurrent(
       targetDeviceId: "host-2",
       activeHostIdentity: "host-1",
-      connectionState: .syncing
+      connectionState: .connected
     ))
   }
 

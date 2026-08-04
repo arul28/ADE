@@ -135,13 +135,41 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   publish health as a This-Mac indicator (`remoteMachineModel.describePublishHealth`,
   which reads inactive states as "none" and only alarms a real failure after it
   has persisted ~2 minutes), and the app shell reads `lastWedge` for the
-  `BrainRecoveryNotice` banner.
+  `BrainRecoveryNotice` banner. Both `serve --install-service` and
+  `serve --uninstall-service` run through one shared
+  `runServiceManagerCommand` child-process boundary (spawn, output
+  accumulation, single-settle latch, timeout kill, output parse) and differ only
+  in the policy applied to the result. Install is bounded at 60 s and uninstall
+  at 20 s: a wedged installer used to pin `serviceInstallPromise` forever, which
+  blocked every later install and left Repair spinning. `installServiceBestEffort`
+  coalesces concurrent callers onto one child, but a `forceRestart: true` call
+  never coalesces onto a plain install — a background install may skip entirely
+  or may have spawned before the user asked for a restart, so returning its
+  promise would report success without restarting anything. A forced call queues
+  behind whatever is in flight, runs its own forcing install, and becomes the
+  promise later callers coalesce onto.
 - `apps/desktop/src/main/services/runtime/lastFailureStore.ts` — bounded typed
   project/machine failure reports used when the background service exits before
   desktop IPC can obtain a normal runtime error.
 - `apps/desktop/src/main/services/runtime/projectRecoveryService.ts` —
   brain-independent project diagnosis and ordered repair for storage,
-  database, migration, endpoint, and chat continuity failures.
+  database, migration, endpoint, and chat continuity failures. It also owns
+  `restartBrain()`, the machine-scoped restart behind the Connections **Repair**
+  button. Both it and `repair()`'s restart_service/verify_endpoint steps go
+  through one `restartServiceAndWait()` sequence — install, wait up to 20 s for
+  the machine endpoint to rebind, then `ping` — which reports which stage lost
+  rather than the copy, because its two callers phrase the same stage
+  differently (`repair()` speaks in repair steps, `restartBrain()` throws).
+  `force` is more than the install flag: a forced restart is the only caller that
+  actually asked for one, so an install that resolves having *skipped* is a
+  failure for it, and its message becomes "A newer ADE runtime is already
+  running — quit and reopen ADE instead." (the release-build block is passed
+  through verbatim, since it is already written as instructions) rather than the
+  installer's log line. The two are mutually exclusive: `restartBrain()` rejects
+  with "Recovery is already running." while a `repair()` is in flight, because
+  repair stops the service and then does exclusive database work, and
+  reinstalling the brain underneath it would put a writer back on the database
+  mid-check. Repair wins; the button can be pressed again afterwards.
 - `apps/desktop/src/main/services/runtime/machineTrustResetMigration.ts` —
   one-time packaged-release reset of the old machine-connection trust files.
   It preserves account auth, machine identity, pairing PINs, projects, and SSH
@@ -162,7 +190,22 @@ relay payload E2E encryption is planned security work. See the trust boundary in
   (`sync_disabled`, `not_host`, `account_signed_out`, `machine_key_unavailable`,
   …) read as "none", and every other state is a failure that only alarms once it
   has persisted at least `PUBLISH_FAILING_ALARM_MS` (2 min) so a transient blip
-  stays quiet.
+  stays quiet. When that failure is specifically the brain-side unreadable
+  account session (`isBrainAccountSessionFailure`, i.e. `token_unreadable`), the
+  row also mounts the shared `BrainRepairButton` / `useBrainRepair` pair — the
+  same control the Connections This Mac card renders, reading the same publisher
+  health record, with the periodic `getInfo` poll extracted as a named
+  `refreshPublishHealth` so a settled restart re-reads it immediately.
+  Discovery diagnostics are rendered by severity rather than lumped together:
+  `RemoteRuntimeDiscoveryDiagnostic.severity` is `"warning"` (discovery is
+  degraded and worth looking at) or `"info"` (a normal, non-actionable fact
+  about the environment). "Tailscale not installed — LAN discovery only." is
+  `info`, because Tailscale is optional and not having it is not a problem;
+  `tailscale-timeout` and `tailscale-status-failed` remain `warning`. The panel
+  keeps the raw diagnostics array as its one source of truth and derives the
+  warning line and the muted info note from it, so the two cannot drift; a
+  failed `listDiscoveredMachines` call stays a separate string rather than
+  becoming a synthetic diagnostic.
 - `apps/desktop/src/renderer/components/app/projectTabGrouping.ts` — collapses
   the open local and remote tabs into one group per repository, joined on the
   normalized git origin. A project with no resolvable origin is never merged,
@@ -700,7 +743,8 @@ diagnostics with `ADE_ENABLE_DESKTOP_SYNC_HOST=1`.
   connection closed. The destination may still finish. Check that machine
   before retrying; the handoff ID makes an explicit retry reconcile the same
   destination lane/chat rather than automatically replaying the mutation.
-- "Tailscale CLI was not found / timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; install or unblock `tailscale` to add tailnet peers.
+- "Tailscale discovery timed out / failed" warning under the discovered-machines list — surfaced from `discoverLanRuntimes` diagnostics. LAN (Bonjour) discovery still ran; unblock `tailscale` to add tailnet peers. "Tailscale not installed — LAN discovery only." is the `info` variant of the same diagnostic and renders as a muted note rather than a warning: Tailscale is optional, so a plain Mac without it is not in a degraded state.
+- "Repair" next to the This Mac / route-publish failure — this Mac's brain cannot read the stored account session, so it never publishes to the account directory even though the app is signed in. The button restarts `com.ade.runtime` and waits for the replacement to answer; the new process re-reads the keychain from scratch. If it reports "Repair failed — quit and reopen ADE", a newer runtime is usually already running and must not be forced down.
 - Agent provider missing or unauthenticated — use the inline `AgentCliAuthCard` to install or authenticate that provider on the active runtime machine.
 - `lan <host>:<port>: authentication` in the route list — the host was reached and it *rejected* this desktop, so the other routes' `timeout`/`unreachable` entries are noise. The host's `hello_error` message names which of three causes it was: the pairing was removed on that machine, the saved secret no longer matches, or the two machines are signed in to different ADE accounts. The first two are reported identically (an unauthenticated caller must not be told whether a device id exists on that host) and both need a re-pair; only the account mismatch is fixed by signing in.
 

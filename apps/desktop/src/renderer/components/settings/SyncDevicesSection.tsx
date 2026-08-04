@@ -10,6 +10,7 @@ import {
 import { accountDirectorySummary } from "./accountDirectorySummary";
 import { QRCodeSVG } from "qrcode.react";
 import { createPortal } from "react-dom";
+import { isBrainAccountSessionFailure } from "../../../shared/types";
 import type {
   SyncDeviceRuntimeState,
   SyncPeerDeviceType,
@@ -24,6 +25,8 @@ import {
   isProjectRegistrationRequiredError,
 } from "../../../shared/runtimeErrors";
 import { openExternalUrl } from "../../lib/openExternal";
+import { useBrainRepair } from "../../hooks/useBrainRepair";
+import { BrainRepairButton } from "./BrainRepairButton";
 import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import {
   COLORS,
@@ -178,6 +181,9 @@ export function ThisMacCard({
 }) {
   const { status, busy, error, notice, isRemoteBound, boundMachineName } = sync;
   const appInfo = useAppInfoLine();
+  // Restarting the brain is the fix when it cannot read the stored account
+  // session; re-read the snapshot once it settles so the banner clears.
+  const repair = useBrainRepair(sync.refresh);
 
   if (sync.loading) {
     return <div style={helperTextStyle}>Getting connection details…</div>;
@@ -208,6 +214,11 @@ export function ThisMacCard({
   const acceptsConnections = acceptsConnectionsState(status, host);
   const routeLabels = reachableRouteLabels(status);
   const directorySummary = accountDirectorySummary(status, accountSignedIn);
+  // A brain-side unreadable account session is the one directory failure a
+  // restart clears — same test RemoteTargetList runs on its publish health.
+  const showRepair = accountSignedIn
+    && isBrainAccountSessionFailure(status.routeHealth?.accountDirectory?.state)
+    && repair.available;
 
   return (
     <div style={{ ...detailBlockStyle, display: "grid", gap: 12 }}>
@@ -247,7 +258,7 @@ export function ThisMacCard({
               This Mac
             </span>
           </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 2, flexWrap: "wrap" }}>
             {accountSignedIn ? (
               <Cloud
                 size={13}
@@ -269,6 +280,7 @@ export function ThisMacCard({
             >
               {directorySummary.label}
             </span>
+            {showRepair ? <BrainRepairButton repair={repair} height={24} /> : null}
           </div>
         </div>
       </div>

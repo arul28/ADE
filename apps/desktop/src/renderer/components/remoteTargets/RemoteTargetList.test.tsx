@@ -44,6 +44,8 @@ const lanesMock = {
 
 const appMock = {
   writeClipboardText: vi.fn(),
+  getInfo: vi.fn(),
+  restartBackgroundService: vi.fn(),
 };
 
 const accountMock = {
@@ -63,6 +65,7 @@ function installAdeMock(): void {
     relayAvailable: false,
   });
   remoteRuntimeMock.runDoctor.mockResolvedValue({ checks: [] });
+  appMock.getInfo.mockResolvedValue({ localRuntime: null });
   accountMock.getLocalMachineIdentity.mockResolvedValue({ machineKey: "local-mk", deviceId: "local-dev" });
   accountMock.onPairMachineProgress.mockReturnValue(() => {});
   accountMock.renameMachine.mockImplementation(async (machineKey: string, customName: string | null) => ({
@@ -120,6 +123,47 @@ describe("RemoteTargetList", () => {
     vi.clearAllMocks();
     Reflect.deleteProperty(remoteRuntimeMock, "getConnectionSnapshot");
     Reflect.deleteProperty(window, "ade");
+  });
+
+  it("offers Repair on the publish-failing banner only for an unreadable brain session", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.restartBackgroundService.mockResolvedValue(undefined);
+    const publishHealth = {
+      state: "token_unreadable",
+      failingSinceMs: Date.now() - 5 * 60_000,
+      lastLegDurations: { snapshot: null, token: null, http: null },
+    };
+    appMock.getInfo.mockResolvedValue({ localRuntime: { publishHealth } });
+
+    render(<RemoteTargetList />);
+    const repair = await screen.findByRole("button", { name: "Repair" });
+
+    // The brain comes back healthy, so the banner and its button disappear.
+    appMock.getInfo.mockResolvedValue({ localRuntime: null });
+    fireEvent.click(repair);
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Repair" })).toBeNull());
+    expect(appMock.restartBackgroundService).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves the publish-failing banner unrepairable when a restart cannot help", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({ machines: [], diagnostics: [] });
+    installAdeMock();
+    appMock.getInfo.mockResolvedValue({
+      localRuntime: {
+        publishHealth: {
+          state: "http_error",
+          failingSinceMs: Date.now() - 5 * 60_000,
+          lastLegDurations: { snapshot: null, token: null, http: null },
+        },
+      },
+    });
+
+    render(<RemoteTargetList />);
+    expect(await screen.findByText(/route publish failing for 5 min/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Repair" })).toBeNull();
   });
 
   it("pairs a discovered ADE machine with its 6-digit code instead of creating an SSH target", async () => {
@@ -1115,16 +1159,16 @@ describe("RemoteTargetList", () => {
     expect(screen.queryByText(/token=secret/)).toBeNull();
   });
 
-  it("surfaces Tailscale discovery diagnostics separately from empty results", async () => {
+  it("renders an info discovery diagnostic as muted text without a warning glyph", async () => {
     remoteRuntimeMock.listTargets.mockResolvedValue([]);
     remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
       machines: [],
       diagnostics: [
         {
           source: "tailscale",
-          severity: "warning",
+          severity: "info",
           code: "tailscale-unavailable",
-          message: "Tailscale CLI was not found; only LAN discovery ran.",
+          message: "Tailscale not installed — LAN discovery only.",
           detail: "ENOENT",
         },
       ],
@@ -1133,13 +1177,36 @@ describe("RemoteTargetList", () => {
 
     render(<RemoteTargetList />);
 
-    await waitFor(() =>
-      expect(
-        screen.getByText(
-          "Tailscale CLI was not found; only LAN discovery ran.",
-        ),
-      ).toBeTruthy(),
+    const note = await waitFor(() =>
+      screen.getByText("Tailscale not installed — LAN discovery only."),
     );
+    // Not having optional software installed must not wear the warning glyph.
+    expect(note.querySelector("svg")).toBeNull();
+    expect(screen.getByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
+  });
+
+  it("surfaces Tailscale discovery warnings separately from empty results", async () => {
+    remoteRuntimeMock.listTargets.mockResolvedValue([]);
+    remoteRuntimeMock.listDiscoveredMachines.mockResolvedValue({
+      machines: [],
+      diagnostics: [
+        {
+          source: "tailscale",
+          severity: "warning",
+          code: "tailscale-status-failed",
+          message: "Tailscale discovery failed; LAN discovery still ran.",
+          detail: "boom",
+        },
+      ],
+    });
+    installAdeMock();
+
+    render(<RemoteTargetList />);
+
+    const warning = await waitFor(() =>
+      screen.getByText("Tailscale discovery failed; LAN discovery still ran."),
+    );
+    expect(warning.querySelector("svg")).not.toBeNull();
     expect(screen.getByText("No Macs yet. Choose Add machine to connect one.")).toBeTruthy();
   });
 

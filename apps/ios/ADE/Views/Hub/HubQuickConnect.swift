@@ -221,7 +221,7 @@ struct HubQuickConnectSection: View {
     Task { @MainActor in
       await syncService.reconnect(toSavedHost: host)
       connectingId = nil
-      if syncService.connectionState == .connected || syncService.connectionState == .syncing {
+      if syncService.connectionState == .connected {
         ADEHaptics.success()
         onConnectSuccess()
       } else {

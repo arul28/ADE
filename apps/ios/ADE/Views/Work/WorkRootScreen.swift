@@ -268,7 +268,7 @@ struct WorkRootScreen: View {
   }
 
   var isLive: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   var isLoadingSkeleton: Bool {

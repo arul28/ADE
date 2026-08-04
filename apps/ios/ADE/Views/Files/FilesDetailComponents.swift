@@ -125,10 +125,10 @@ struct FilesHeaderStrip: View {
   private var filesBrowserStatusSuffix: String? {
     let phase = syncService.status(for: .files).phase
     let connection = syncService.connectionState
-    if phase == .ready && (connection == .connected || connection == .syncing) {
+    if phase == .ready && connection == .connected {
       return nil
     }
-    if phase == .hydrating || phase == .syncingInitialData || connection == .syncing {
+    if phase == .hydrating || phase == .syncingInitialData {
       return "Syncing"
     }
     if connection == .connecting {

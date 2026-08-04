@@ -209,7 +209,7 @@ struct HubInlineComposer: View {
 
   private var canUploadAttachments: Bool {
     attachmentsAvailable
-      && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+      && syncService.connectionState == .connected
   }
 
   private var canSend: Bool {

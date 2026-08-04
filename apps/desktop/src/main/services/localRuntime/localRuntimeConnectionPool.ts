@@ -81,11 +81,28 @@ type RuntimeServiceManagerOutput = {
   message: string | null;
 };
 
+/**
+ * Outcome of one `serve --install-service` / `serve --uninstall-service` child
+ * run. `timedOut` is its own variant because the child was killed before it
+ * could say anything: there is no exit code or output to interpret.
+ */
+type ServiceManagerCommandResult =
+  | { timedOut: true }
+  | {
+    timedOut: false;
+    code: number | null;
+    stdout: string;
+    stderr: string;
+    parsed: RuntimeServiceManagerOutput | null;
+  };
+
 type LocalRuntimeConnectionPoolOptions = {
   disableSync?: boolean;
   preferServiceRepair?: boolean;
   desktopBridgeAuthToken?: string | null;
   queryServiceStatus?: () => ServiceManagerStatusResult;
+  /** Test seam: bound on `serve --install-service`. Defaults to the module constant. */
+  serviceInstallTimeoutMs?: number;
   onRuntimeStatusChange?: (status: LocalRuntimeStatus) => void;
   /**
    * Invoked when the pool enters or leaves isolated (no-sync fallback) mode.
@@ -97,6 +114,10 @@ type LocalRuntimeConnectionPoolOptions = {
 type LocalRuntimeNodePathOptions = PackagedRuntimeNodePathOptions;
 
 const LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS = 20_000;
+// `serve --install-service` does an unload → reap → load handover, so it is
+// allowed longer than the uninstall — but never forever: a wedged installer
+// used to pin `serviceInstallPromise` and block every later install.
+const LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS = 60_000;
 const LOCAL_RUNTIME_STATUS_REFRESH_TIMEOUT_MS = 2_000;
 const PLACEHOLDER_RUNTIME_VERSION = "0.0.0";
 const LOCAL_RUNTIME_OUTPUT_LINE_MAX_CHARS = 4_000;
@@ -976,9 +997,25 @@ export class LocalRuntimeConnectionPool {
     }
   }
 
+  /**
+   * Installs (or reinstalls) the service login item, coalescing concurrent
+   * callers onto one child process.
+   *
+   * `forceRestart` does not coalesce onto a plain install: a background install
+   * may skip entirely, or may have spawned before the user asked for a restart,
+   * so returning its promise would report success without restarting anything.
+   * A forced call instead queues behind whatever is in flight and then runs its
+   * own forcing install, and becomes the promise later callers coalesce onto.
+   */
   async installServiceBestEffort(options: { forceRestart?: boolean } = {}): Promise<void> {
-    if (this.serviceInstallPromise) return this.serviceInstallPromise;
-    const install = this.runServiceInstallBestEffort(options).finally(() => {
+    const inFlight = this.serviceInstallPromise;
+    if (inFlight && !options.forceRestart) return inFlight;
+    const install: Promise<void> = (inFlight
+      // The queued-behind install ran to settle the earlier caller; its outcome
+      // is that caller's to report, so failures do not skip the forced run.
+      ? inFlight.catch(() => {}).then(() => this.runServiceInstallBestEffort(options))
+      : this.runServiceInstallBestEffort(options)
+    ).finally(() => {
       if (this.serviceInstallPromise === install) this.serviceInstallPromise = null;
     });
     this.serviceInstallPromise = install;
@@ -994,27 +1031,78 @@ export class LocalRuntimeConnectionPool {
    */
   async uninstallServiceBestEffort(): Promise<void> {
     const cliPath = resolveCliScriptPath();
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, [cliPath, "serve", "--uninstall-service"], {
-        env: buildLocalRuntimeNodeEnv(this.appVersion),
+    let result: ServiceManagerCommandResult;
+    try {
+      result = await this.runServiceManagerCommand({
+        cliPath,
+        flag: "--uninstall-service",
+        // A hung `serve --uninstall-service` (e.g. a stuck login-item removal)
+        // must not leave the repair flow waiting forever; the timeout kills the
+        // child so this throws instead of silently proceeding to exclusive
+        // database work.
+        timeoutMs: LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS,
+      });
+    } catch (error) {
+      this.logger.warn("local_runtime.service_uninstall_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+      throw error;
+    }
+    if (result.timedOut) {
+      const message = "ADE service login item removal timed out.";
+      this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, reason: "timeout", message });
+      throw new Error(message);
+    }
+    const { code, stdout: output, stderr: errorOutput, parsed } = result;
+    if (code !== 0 || parsed?.ok === false) {
+      const message = parsed?.message || errorOutput || output || "ADE service login item removal failed.";
+      this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, exitCode: code, message });
+      throw new Error(message);
+    }
+    this.serviceInstallStatus = {
+      state: "not_attempted",
+      attempted: false,
+      path: parsed?.path ?? cliPath,
+      message: parsed?.message || output || "ADE service login item was removed.",
+      exitCode: code,
+      updatedAt: new Date().toISOString(),
+    };
+    this.logger.info("local_runtime.service_uninstall_succeeded", { cliPath, exitCode: code });
+  }
+
+  /**
+   * Runs one `serve <flag>` service-manager child process — the child-process
+   * boundary desktop uses instead of importing ade-cli service-manager code —
+   * and reports what it did. Install and uninstall share every mechanic here
+   * (spawn, output accumulation, single-settle latch, timeout kill, output
+   * parse) and differ only in the policy they apply to the result.
+   *
+   * Rejects when the child cannot be spawned. Resolves `{ timedOut: true }`
+   * once the deadline passes, having killed the child, so neither caller can
+   * wait forever: a wedged installer used to pin `serviceInstallPromise` and
+   * block every later install.
+   */
+  private async runServiceManagerCommand(options: {
+    cliPath: string;
+    flag: "--install-service" | "--uninstall-service";
+    timeoutMs: number;
+    env?: NodeJS.ProcessEnv;
+  }): Promise<ServiceManagerCommandResult> {
+    return await new Promise<ServiceManagerCommandResult>((resolve, reject) => {
+      const child = spawn(process.execPath, [options.cliPath, "serve", options.flag], {
+        env: options.env ?? buildLocalRuntimeNodeEnv(this.appVersion),
         stdio: ["ignore", "pipe", "pipe"],
         detached: false,
       });
       let stdout = "";
       let stderr = "";
       let settled = false;
-      // A hung `serve --uninstall-service` (e.g. a stuck login-item removal)
-      // must not leave the repair flow waiting forever; time it out, kill the
-      // child, and reject so the caller reports a repair failure instead of
-      // silently proceeding to exclusive database work.
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
         try { child.kill("SIGKILL"); } catch { /* child may already be gone */ }
-        const message = "ADE service login item removal timed out.";
-        this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, reason: "timeout", message });
-        reject(new Error(message));
-      }, LOCAL_RUNTIME_SERVICE_UNINSTALL_TIMEOUT_MS);
+        resolve({ timedOut: true });
+      }, options.timeoutMs);
       timer.unref?.();
       child.stdout?.on("data", (chunk) => {
         stdout += chunk.toString("utf8");
@@ -1026,7 +1114,6 @@ export class LocalRuntimeConnectionPool {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
-        this.logger.warn("local_runtime.service_uninstall_failed", { error: error.message });
         reject(error);
       });
       child.once("close", (code) => {
@@ -1034,24 +1121,13 @@ export class LocalRuntimeConnectionPool {
         settled = true;
         clearTimeout(timer);
         const output = stdout.trim();
-        const parsed = parseRuntimeServiceManagerOutput(output);
-        const failed = code !== 0 || parsed?.ok === false;
-        if (failed) {
-          const message = parsed?.message || stderr.trim() || output || "ADE service login item removal failed.";
-          this.logger.warn("local_runtime.service_uninstall_failed", { cliPath, exitCode: code, message });
-          reject(new Error(message));
-          return;
-        }
-        this.serviceInstallStatus = {
-          state: "not_attempted",
-          attempted: false,
-          path: parsed?.path ?? cliPath,
-          message: parsed?.message || output || "ADE service login item was removed.",
-          exitCode: code,
-          updatedAt: new Date().toISOString(),
-        };
-        this.logger.info("local_runtime.service_uninstall_succeeded", { cliPath, exitCode: code });
-        resolve();
+        resolve({
+          timedOut: false,
+          code,
+          stdout: output,
+          stderr: stderr.trim(),
+          parsed: parseRuntimeServiceManagerOutput(output),
+        });
       });
     });
   }
@@ -1131,72 +1207,78 @@ export class LocalRuntimeConnectionPool {
       exitCode: null,
       updatedAt: new Date().toISOString(),
     };
-    await new Promise<void>((resolve) => {
-      const child = spawn(process.execPath, [cliPath, "serve", "--install-service"], {
+    let result: ServiceManagerCommandResult;
+    try {
+      result = await this.runServiceManagerCommand({
+        cliPath,
+        flag: "--install-service",
+        // Mirrors the uninstall guard: a wedged `serve --install-service` must
+        // not leave the install pending forever — that pins
+        // `serviceInstallPromise` and blocks every later install, and leaves
+        // Repair spinning.
+        timeoutMs: this.options.serviceInstallTimeoutMs ?? LOCAL_RUNTIME_SERVICE_INSTALL_TIMEOUT_MS,
         env: {
           ...buildLocalRuntimeNodeEnv(this.appVersion),
           ...(options.forceRestart ? { ADE_FORCE_RUNTIME_SERVICE_RESTART: "1" } : {}),
         },
-        stdio: ["ignore", "pipe", "pipe"],
-        detached: false,
       });
-      let stdout = "";
-      let stderr = "";
-      child.stdout?.on("data", (chunk) => {
-        stdout += chunk.toString("utf8");
-      });
-      child.stderr?.on("data", (chunk) => {
-        stderr += chunk.toString("utf8");
-      });
-      child.once("error", (error) => {
-        this.serviceInstallStatus = {
-          state: "failed",
-          attempted: true,
-          path: cliPath,
-          message: error.message,
-          exitCode: null,
-          updatedAt: new Date().toISOString(),
-        };
-        this.logger.warn("local_runtime.service_install_failed", { error: error.message });
-        resolve();
-      });
-      child.once("close", (code) => {
-        const output = stdout.trim();
-        const errorOutput = stderr.trim();
-        const parsed = parseRuntimeServiceManagerOutput(output);
-        const failed = code !== 0 || parsed?.ok === false;
-        const statusPath = parsed ? parsed.path : cliPath;
-        const payload = {
-          cliPath,
-          servicePath: parsed?.path ?? null,
-          exitCode: code,
-          stdout: output || null,
-          stderr: errorOutput || null,
-        };
-        if (!failed) {
-          this.serviceInstallStatus = {
-            state: "installed",
-            attempted: true,
-            path: statusPath,
-            message: parsed?.message || output || "ADE service login item is installed.",
-            exitCode: code,
-            updatedAt: new Date().toISOString(),
-          };
-          this.logger.info("local_runtime.service_install_succeeded", payload);
-        } else {
-          this.serviceInstallStatus = {
-            state: "failed",
-            attempted: true,
-            path: statusPath,
-            message: parsed?.message || errorOutput || output || "ADE service login item installation failed.",
-            exitCode: code,
-            updatedAt: new Date().toISOString(),
-          };
-          this.logger.warn("local_runtime.service_install_failed", payload);
-        }
-        resolve();
-      });
-    });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.serviceInstallStatus = {
+        state: "failed",
+        attempted: true,
+        path: cliPath,
+        message,
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_failed", { error: message });
+      return;
+    }
+    if (result.timedOut) {
+      const message = "ADE service login item installation timed out.";
+      this.serviceInstallStatus = {
+        state: "failed",
+        attempted: true,
+        path: cliPath,
+        message,
+        exitCode: null,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_failed", { cliPath, reason: "timeout", message });
+      return;
+    }
+    const { code, stdout: output, stderr: errorOutput, parsed } = result;
+    const failed = code !== 0 || parsed?.ok === false;
+    const statusPath = parsed ? parsed.path : cliPath;
+    const payload = {
+      cliPath,
+      servicePath: parsed?.path ?? null,
+      exitCode: code,
+      stdout: output || null,
+      stderr: errorOutput || null,
+    };
+    if (!failed) {
+      this.serviceInstallStatus = {
+        state: "installed",
+        attempted: true,
+        path: statusPath,
+        message: parsed?.message || output || "ADE service login item is installed.",
+        exitCode: code,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.info("local_runtime.service_install_succeeded", payload);
+    } else {
+      this.serviceInstallStatus = {
+        state: "failed",
+        attempted: true,
+        path: statusPath,
+        message: parsed?.message || errorOutput || output || "ADE service login item installation failed.",
+        exitCode: code,
+        updatedAt: new Date().toISOString(),
+      };
+      this.logger.warn("local_runtime.service_install_failed", payload);
+    }
   }
 
   async ensureProject(

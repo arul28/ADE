@@ -276,7 +276,10 @@ struct SettingsPinSheet: View {
       }
 
       guard isSubmitting else { return }
-      if syncService.connectionState == .connected {
+      // Success is "attached to the machine". `isAttached` is the canonical
+      // predicate for that across the app — go through it rather than
+      // re-deriving a comparison here.
+      if syncService.isAttached {
         // Success beat: haptic + a brief checkmark before the sheet dismisses.
         ADEHaptics.success()
         isSubmitting = false

@@ -499,7 +499,11 @@ Renderer — settings:
   loopback / relay candidates. The Phone tab explains QR + PIN and Nearby + PIN,
   while the Web tab is account-sign-in only. It also surfaces the bootstrap
   token for desktop peers, relay/discovery status, and the per-device panels
-  used to forget paired phones or revoke web clients.
+  used to forget paired phones or revoke web clients. When the account-directory
+  state is the brain-side unreadable session (`isBrainAccountSessionFailure`),
+  the card adds a **Repair** button that restarts this Mac's background service
+  and re-reads the snapshot once it settles — see
+  [Sync and multi-device](../sync-and-multi-device/README.md).
 - `apps/desktop/src/renderer/components/app/TopBar.tsx` and
   `ConnectionsPanel.tsx` — the single top-bar Connections control and its
   Machines, Phone, and Web tabs. The Web tab reports connected browser peers

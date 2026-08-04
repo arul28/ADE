@@ -21,7 +21,6 @@ extension LanesTabView {
   var showsLaneLoadingSkeletons: Bool {
     laneSnapshots.isEmpty && (
       syncService.connectionState == .connecting
-        || syncService.connectionState == .syncing
         || laneStatus.phase == .hydrating
         || laneStatus.phase == .syncingInitialData
     )

@@ -355,6 +355,22 @@ export type SyncAccountDirectoryState =
   | "timeout"
   | "transport_error";
 
+/**
+ * True for publish failures caused by the brain's own copy of the account
+ * session being unreadable on this Mac — it could not decrypt the stored
+ * session, could not read account status, or could not read/refresh the
+ * account token. A brain restart is the known remediation: the replacement
+ * process re-reads the keychain from scratch and can decrypt again.
+ *
+ * Deliberately narrow. Network, HTTP, and genuinely-signed-out states are not
+ * fixed by restarting, so offering a repair for them would be a lie.
+ */
+export function isBrainAccountSessionFailure(
+  state: SyncAccountDirectoryState | null | undefined,
+): boolean {
+  return state === "token_unreadable";
+}
+
 export type SyncAccountDirectoryLegDurations = {
   snapshot: number | null;
   token: number | null;

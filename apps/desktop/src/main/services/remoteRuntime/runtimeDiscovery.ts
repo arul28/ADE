@@ -16,6 +16,7 @@ import type {
   RemoteRuntimeDiscoveredMachine,
   RemoteRuntimeDiscoveryDiagnostic,
   RemoteRuntimeDiscoveryResult,
+  RemoteRuntimeDiscoverySeverity,
 } from "../../../shared/types/remoteRuntime";
 
 export const ADE_SYNC_MDNS_SERVICE_TYPE = "ade-sync";
@@ -417,22 +418,28 @@ async function discoverTailscalePeers(timeoutMs = 1_200): Promise<{
       /ENOENT|not found|no such file/i.test(message);
     let code: string;
     let summary: string;
+    let severity: RemoteRuntimeDiscoverySeverity;
     if (timedOut) {
       code = "tailscale-timeout";
       summary = "Tailscale discovery timed out; LAN discovery still ran.";
+      severity = "warning";
     } else if (notFound) {
+      // Tailscale is optional. Not having it installed is a fact about the
+      // machine, not a problem with discovery, so it must not read as a warning.
       code = "tailscale-unavailable";
-      summary = "Tailscale CLI was not found; only LAN discovery ran.";
+      summary = "Tailscale not installed — LAN discovery only.";
+      severity = "info";
     } else {
       code = "tailscale-status-failed";
       summary = "Tailscale discovery failed; LAN discovery still ran.";
+      severity = "warning";
     }
     return {
       machines: [],
       diagnostics: [
         {
           source: "tailscale",
-          severity: "warning",
+          severity,
           code,
           message: summary,
           detail: message || null,

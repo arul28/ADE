@@ -884,7 +884,7 @@ struct SettingsMachinesSection: View {
   }
 
   private var isConnected: Bool {
-    syncService.connectionState == .connected || syncService.connectionState == .syncing
+    syncService.connectionState == .connected
   }
 
   /// Row id of the machine currently attached, so its stale failure — and only

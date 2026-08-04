@@ -554,10 +554,11 @@ prefersReducedSyncLoad: lastError:)` and re-exposed through
 that used to be tangled together:
 
 - `transport: SyncTransportHealth` — `disconnected` / `connecting` /
-  `connected` / `unreachable`. `RemoteConnectionState.syncing` collapses
-  into `connected` because the connection is alive while the runtime streams a
-  catchup batch; only `RemoteConnectionState.error` maps to
-  `unreachable`.
+  `connected` / `unreachable`. `RemoteConnectionState` has no separate
+  "syncing" case: attachment is a fact the moment `hello_ok` is applied, and
+  per-domain hydration progress is carried by `SyncDomainStatus`
+  (`.syncingInitialData`, `.hydrating`) instead. Only
+  `RemoteConnectionState.error` maps to `unreachable`.
 - `load: SyncLoadHealth` — `normal` / `strained`. `strained` is set
   when the transport is connected but `prefersReducedSyncLoad` is on,
   i.e. recent request timeouts have caused the phone to back off
@@ -684,8 +685,6 @@ the Tailscale app (`tailscale://`), falling back to the App Store page.
 
 - Connected, normal load → "Live · ready to sync".
 - Connected, strained load → "Live · machine responding slowly".
-- Connected with `connectionState == .syncing` → "Live · syncing
-  changes".
 - `connecting` → "Connecting to saved machine".
 - `unreachable` → "Unable to reach your machine" plus the
   `lastFailureMessage` banner.
@@ -694,14 +693,16 @@ the Tailscale app (`tailscale://`), falling back to the App Store page.
 
 `SettingsConnectionPresentation.statusLabel` returns "Connected, slow"
 when transport is connected and load is strained, and "Connected"
-otherwise. The legacy "Syncing" label was removed — syncing is just
-a connected transport doing work.
+otherwise. There is no "Syncing" label: syncing is just a connected transport
+doing work, and there is no transport state that means it.
 
 Accessibility: the dot's `accessibilityLabel` describes load strain
-("Connected to <machine>. Machine is responding slowly"), explicit syncing
-work ("Connected to <machine>. Syncing changes"), or plain "Connected to
-<machine>" when neither applies; for transport `unreachable` it appends
-the trimmed `lastFailureMessage`. `accessibilityHint` is "Opens
+("Connected to <machine>. Machine is responding slowly") or plain "Connected to
+<machine>" when it does not apply; for transport `unreachable` it appends
+the trimmed `lastFailureMessage`. `ConnectionHealthPresentation` takes only the
+health value and the host name — it does not see `RemoteConnectionState` at all,
+so no surface can reintroduce a hydration-derived label here.
+`accessibilityHint` is "Opens
 settings to pair or reconnect", and
 `accessibilityShowsLargeContentViewer()` keeps it reachable from
 VoiceOver and Large Content.
@@ -712,8 +713,10 @@ on `RemoteModels.swift`. It surfaces only when a domain is in
 `.failed` phase (so cached rows may still render underneath) and
 offers a single "Retry" action that calls `reload(refreshRemote: true)`.
 The read-only header strip in `FilesHeaderStrip` also appends a
-compact "Syncing" / "Connecting" / "Offline" suffix derived directly
-from `SyncService.connectionState` and `status(for: .files).phase`.
+compact "Syncing" / "Connecting" / "Offline" suffix: "Syncing" comes from the
+Files domain phase (`.hydrating` / `.syncingInitialData`), "Connecting" from
+`connectionState == .connecting`, and everything else falls through to
+"Offline". Hydration progress is read from the domain, not the transport.
 
 ## Architectural pattern
 
@@ -1029,11 +1032,26 @@ row explaining why it would not answer" is the honest steady state. A blocked
 Attention/notification navigation records its reason the same way, so a tap that
 cannot proceed explains itself rather than silently doing nothing.
 
-`SyncService.isAttached` treats `.syncing` as attached, because that is what
-every connect path settles into before reaching `.connected`. The same rule
-applies in `syncAccountMachineNavigationIsCurrent`, so a deeplink tapped
-mid-hydration does not conclude it is on the wrong machine and re-pair to the
-machine it is already talking to.
+`SyncService.isAttached` (`connectionState == .connected`) is the single named
+attachment predicate for the whole app: every surface that asks "did we get on
+the machine?" goes through it rather than re-deriving a comparison, so the
+definition stays in one place if the state machine grows again.
+`SettingsPinSheet` reads PIN-pairing success off it for exactly that reason — it
+used to compare against `.connected` while the connect path was still parked in
+the retired `.syncing`, so a successful pairing reported failure.
+
+Attachment is published at `hello_ok`, not after post-hello restoration.
+`applyHelloPayload` sets `.connected`, and `beginPostHelloAttachment` — the
+shared prologue for `schedulePostHelloWork` and its DEBUG test hook —
+republishes it idempotently. Deferring it to the end of restoration left the app
+unattached for a network round trip on every connect, and permanently whenever
+the generation guard rejected the completion, which every `isAttached` surface
+read as "not connected yet". Only the reconnect-backoff reset stays behind the
+guarded completion: that, not `connectionState`, is what must wait for a
+proven-usable socket. The same attachment test governs
+`syncAccountMachineNavigationIsCurrent`, so a deeplink tapped mid-hydration does
+not conclude it is on the wrong machine and re-pair to the machine it is already
+talking to.
 
 ### Route ranking, route memory, and roaming
 
@@ -1304,7 +1322,12 @@ yet arrived in the catchup batch.
 
 `SettingsPinSheet` on iOS mirrors the desktop PIN sheet and handles
 the entry UX. If the user misreads the digits, the runtime applies
-per-IP rate limiting (5 failures → 10-minute cooldown).
+per-IP rate limiting (5 failures → 10-minute cooldown). The sheet decides
+success with `syncService.isAttached` rather than its own
+`connectionState == .connected` comparison: the canonical attachment predicate
+is the only thing that stays correct as the transport state machine changes, and
+a hand-rolled comparison is exactly what made a *successful* pairing report
+failure while the connect path was parked in the (now retired) `.syncing` state.
 
 ### Browser access
 
@@ -1347,6 +1370,13 @@ deny, restart, or retry checks. Circular and inline accessories use the
 same priority model with compact count/status treatments. The iOS app
 still updates the shared snapshot and calls
 `WidgetCenter.shared.reloadAllTimelines()` after snapshot writes.
+
+The snapshot's `connection` field is a wire vocabulary the widget matches on
+string, not a mirror of `RemoteConnectionState`: `.connected` serializes to
+`"connected"`, `.connecting` to `"syncing"`, and everything else to
+`"disconnected"`. Retiring the app-side `.syncing` case did not remove
+`"syncing"` from that vocabulary, and `ADELockScreenWidget` / `ADESharedTheme`
+still resolve it — do not "clean it up" to match the enum.
 
 Agent rows mirror desktop's shared status vocabulary: blue `Working`, amber
 `Needs you`, emerald `Done`, red `Failed`, and neutral `Stale`. Amber is
@@ -2384,12 +2414,14 @@ different machine's cached limits.
   offline may still enter the existing queue with a stable `commandId`; this
   special case applies only after a live `chat.send` was attempted.
 - **Connection UI must use `SyncConnectionHealth`, not the raw state.**
-  `RemoteConnectionState.syncing` is just transport `connected` doing
-  catchup work, and `RemoteConnectionState.error` carries failure text
-  that should not bleed into a `disconnected` UI. New connection
-  affordances should render off `syncService.connectionHealth` so
-  load-strain and transport failure stay distinct from each other and
-  from background sync work.
+  `RemoteConnectionState` describes transport attachment only — there is
+  deliberately no hydrating/syncing case, and `RemoteConnectionState.error`
+  carries failure text that should not bleed into a `disconnected` UI. New
+  connection affordances should render off `syncService.connectionHealth` so
+  load-strain and transport failure stay distinct from each other, and read
+  hydration progress from `SyncDomainStatus` rather than inventing a transport
+  state for it. Anything asking "are we attached?" uses
+  `SyncService.isAttached`, not its own comparison.
 - **Chat streaming is push, with seq-based resume.** Once a phone
   sends `chat_subscribe`, the runtime fans out `chat_event` envelopes in
   real time from `agentChatService.subscribeToEvents`. Each event

@@ -9,7 +9,15 @@ import {
   EncryptedFileCredentialStore,
   KeytarCredentialStore,
   createDefaultCredentialStore,
+  isFileBackedCredentialKey,
 } from "./credentialStore";
+import { ACCOUNT_SESSION_CREDENTIAL_KEY } from "../account/accountAuthService";
+import { BOOTSTRAP_TOKEN_KEY } from "../sync/brainProjectActionsSyncHandler";
+import {
+  createOsBoundKeyMaterialResolver,
+  resolveMacKeychainMaterialOutcome,
+  type MacKeychainCommands,
+} from "./osBoundKeyMaterial";
 
 let tempDir = "";
 
@@ -178,20 +186,20 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     const osMaterial = Buffer.from("test-os-material");
     const store = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => osMaterial,
+      keyMaterial: { read: () => osMaterial },
     });
 
     store.setSync("linear.token.v1", "lin_secret");
 
     const reloaded = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => osMaterial,
+      keyMaterial: { read: () => osMaterial },
     });
     expect(reloaded.getSync("linear.token.v1")).toBe("lin_secret");
 
     const unbound = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => null,
+      keyMaterial: { read: () => null },
     });
     expect(unbound.getSync("linear.token.v1")).toBeNull();
   });
@@ -200,7 +208,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     const osMaterial = Buffer.from("test-os-material");
     new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => osMaterial,
+      keyMaterial: { read: () => osMaterial },
     }).setSync("github.token.v1", "ghp_async_read");
     const syncProvider = vi.fn(() => {
       throw new Error("synchronous keychain access must not run");
@@ -208,8 +216,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     const asyncProvider = vi.fn(async () => osMaterial);
     const reader = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: syncProvider,
-      keyMaterialProviderAsync: asyncProvider,
+      keyMaterial: { read: syncProvider, readAsync: asyncProvider },
     });
 
     await expect(reader.get("github.token.v1")).resolves.toBe("ghp_async_read");
@@ -226,8 +233,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     });
     const reader = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: syncProvider,
-      keyMaterialProviderAsync: asyncProvider,
+      keyMaterial: { read: syncProvider, readAsync: asyncProvider },
     });
 
     await expect(reader.get("github.token.v1")).resolves.toBeNull();
@@ -242,7 +248,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     const asyncProvider = vi.fn(async () => Buffer.from("unused"));
     const reader = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProviderAsync: asyncProvider,
+      keyMaterial: { read: () => null, readAsync: asyncProvider },
     });
 
     await expect(reader.get("github.token.v1")).rejects.toThrow(
@@ -255,13 +261,13 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
   it("can read legacy machine-key ciphertext before rewriting with OS-bound key material", async () => {
     const legacy = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => null,
+      keyMaterial: { read: () => null },
     });
     legacy.setSync("agent.token", "legacy_secret");
 
     const upgraded = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => Buffer.from("test-os-material"),
+      keyMaterial: { read: () => Buffer.from("test-os-material") },
     });
     expect(upgraded.getSync("agent.token")).toBe("legacy_secret");
     expect(legacy.getSync("agent.token")).toBe("legacy_secret");
@@ -272,10 +278,74 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(legacy.getSync("agent.token")).toBeNull();
   });
 
+  it("re-reads key material once and self-heals a decrypt failure caused by stale cached material", () => {
+    const winner = Buffer.from("os-material-winner");
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => winner },
+    }).setSync("account.session.v1", "session-json");
+
+    // This store cached the secret it minted before the peer's item won the
+    // keychain race, so its first decrypt attempt fails.
+    let material = Buffer.from("os-material-loser");
+    const provider = vi.fn(() => material);
+    const invalidateKeyMaterial = vi.fn(() => {
+      material = winner;
+    });
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: provider, invalidate: invalidateKeyMaterial },
+    });
+
+    expect(store.getSync("account.session.v1")).toBe("session-json");
+    expect(store.getLastReadState()).toBe("available");
+    expect(store.getLastReadFailureReason()).toBeNull();
+    expect(invalidateKeyMaterial).toHaveBeenCalledTimes(1);
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not re-ask for key material on every read while it keeps failing", () => {
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => Buffer.from("os-material-A") },
+    }).setSync("agent.token", "secret");
+
+    let material = Buffer.from("os-material-B");
+    const invalidateKeyMaterial = vi.fn(() => {
+      // Every re-read returns a different-but-still-wrong secret, so the retry
+      // is genuinely attempted and genuinely fails each time.
+      material = Buffer.from(`os-material-B-${invalidateKeyMaterial.mock.calls.length}`);
+    });
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => material, invalidate: invalidateKeyMaterial },
+    });
+
+    expect(() => store.getSync("agent.token")).toThrow();
+    expect(() => store.getSync("agent.token")).toThrow();
+    expect(() => store.getSync("agent.token")).toThrow();
+    expect(invalidateKeyMaterial).toHaveBeenCalledTimes(1);
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("decrypt_failure");
+  });
+
+  it("reports why a read was unreadable", () => {
+    const credentialPath = path.join(tempDir, "credentials.json.enc");
+    fs.writeFileSync(credentialPath, JSON.stringify({ not: "an envelope" }), "utf8");
+    const store = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null },
+    });
+
+    expect(store.getSync("agent.token")).toBeNull();
+    expect(store.getLastReadState()).toBe("unreadable");
+    expect(store.getLastReadFailureReason()).toBe("store_format");
+  });
+
   it("fails safe instead of wiping ciphertext when OS-bound key material rotates", () => {
     const written = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => Buffer.from("os-material-A"),
+      keyMaterial: { read: () => Buffer.from("os-material-A") },
     });
     written.setSync("agent.token", "secret");
 
@@ -287,7 +357,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     // (preserving the ciphertext) instead of silently rewriting an empty store.
     const rotated = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => Buffer.from("os-material-B"),
+      keyMaterial: { read: () => Buffer.from("os-material-B") },
     });
     expect(() => rotated.getSync("agent.token")).toThrow();
     expect(() => rotated.setSync("agent.token", "wiped")).toThrow();
@@ -296,7 +366,7 @@ new EncryptedFileCredentialStore({ secretsDir }).setSync(key, value);
     expect(fs.readFileSync(cipherPath, "utf8")).toBe(before);
     const recovered = new EncryptedFileCredentialStore({
       secretsDir: tempDir,
-      keyMaterialProvider: () => Buffer.from("os-material-A"),
+      keyMaterial: { read: () => Buffer.from("os-material-A") },
     });
     expect(recovered.getSync("agent.token")).toBe("secret");
   });
@@ -311,6 +381,17 @@ describe("ElectronSafeStorageCredentialStore", () => {
       if (!raw.startsWith("safe:")) throw new Error("not a safeStorage payload");
       return raw.slice("safe:".length);
     },
+  };
+
+  /** Writes credentials.json.enc as an Electron-only safeStorage file. */
+  const writeSharedPathSafeStorageFile = (values: Record<string, string>): void => {
+    fs.writeFileSync(
+      path.join(tempDir, "credentials.json.enc"),
+      Buffer.concat([
+        Buffer.from("ADE_SAFE_STORAGE_CREDENTIALS_V1\n"),
+        safeStorage.encryptString(JSON.stringify(values)),
+      ]),
+    );
   };
 
   it("delegates encryption to the injected safeStorage implementation", async () => {
@@ -334,6 +415,146 @@ describe("ElectronSafeStorageCredentialStore", () => {
     expect(fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8")).toContain("safe:");
     expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
     expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(false);
+  });
+
+  it("leaves the brain-readable account session in the legacy file store", () => {
+    // The ADE brain (com.ade.runtime) and the CLI cannot read the Electron-only
+    // safeStorage file. Migrating the account session into it and deleting the
+    // file store is what left a signed-in machine unpublishable.
+    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    legacyStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, "session-json");
+    legacyStore.setSync("sync.bootstrapToken.v1", "bootstrap-token");
+    legacyStore.setSync("linear.token.v1", "lin_secret");
+
+    const store = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+
+    expect(store.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(true);
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
+
+    // The excluded keys stay readable through the file store the brain uses...
+    const brainStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    expect(brainStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe("session-json");
+    expect(brainStore.getSync("sync.bootstrapToken.v1")).toBe("bootstrap-token");
+
+    // ...and never reach the Electron-only file.
+    const safeFile = fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8");
+    expect(safeFile).not.toContain("session-json");
+    expect(safeFile).not.toContain("bootstrap-token");
+  });
+
+  it("prunes migrated duplicates out of the retained legacy file store", () => {
+    // A retained file store used to keep a FULL copy of every migrated key. The
+    // app then rotates the token through safeStorage while the brain and the
+    // CLI keep serving the stale file copy, and revoked secrets stay at rest.
+    const legacyStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    legacyStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, "session-json");
+    legacyStore.setSync("linear.token.v1", "lin_secret");
+    legacyStore.setSync("github.token.v1", "ghp_secret");
+
+    const store = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+
+    expect(store.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(store.getSync("github.token.v1")).toBe("ghp_secret");
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+
+    // The legacy file keeps ONLY what it stays authoritative for.
+    const brainStore = new EncryptedFileCredentialStore({ secretsDir: tempDir });
+    expect(brainStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe("session-json");
+    expect(brainStore.getSync("linear.token.v1")).toBeNull();
+    expect(brainStore.getSync("github.token.v1")).toBeNull();
+    expect(fs.existsSync(path.join(tempDir, ".machine-key"))).toBe(true);
+
+    // Both stores still serve their own keys after the prune.
+    brainStore.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, "session-json-2");
+    expect(store.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(brainStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe("session-json-2");
+  });
+
+  it("aborts the migration instead of destroying an unreadable legacy store", () => {
+    // The migration reads the legacy store WITHOUT allowing a rewrite, and that
+    // read returns {} rather than throwing when nothing can decrypt it. Acting
+    // on that empty view wrote an empty safeStorage file, saw zero retained
+    // keys, and unlinked credentials.json.enc AND .machine-key — every
+    // credential on the machine, gone.
+    const legacyPath = path.join(tempDir, "credentials.json.enc");
+    const machineKeyPath = path.join(tempDir, ".machine-key");
+    const safePath = path.join(tempDir, "credentials.safe.enc");
+    new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => Buffer.from("os-material-A") },
+    }).setSync("linear.token.v1", "lin_secret");
+    const ciphertextBefore = fs.readFileSync(legacyPath, "utf8");
+    const machineKeyBefore = fs.readFileSync(machineKeyPath, "utf8");
+
+    // This process cannot obtain the OS material the ciphertext was sealed with
+    // (locked/denied keychain), so it falls back to the bare machine key, which
+    // does not decrypt either — the exact shape that reads as an empty store.
+    const undecryptableLegacyStore = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => null },
+    });
+    expect(undecryptableLegacyStore.readAllForMigration()).toEqual({});
+    expect(undecryptableLegacyStore.getLastReadState()).toBe("unreadable");
+    const store = new ElectronSafeStorageCredentialStore({
+      secretsDir: tempDir,
+      safeStorage,
+      legacyStore: undecryptableLegacyStore,
+    });
+
+    expect(store.getSync("linear.token.v1")).toBeNull();
+
+    // Nothing written, nothing deleted: the credentials stay recoverable.
+    expect(fs.existsSync(safePath)).toBe(false);
+    expect(fs.readFileSync(legacyPath, "utf8")).toBe(ciphertextBefore);
+    expect(fs.readFileSync(machineKeyPath, "utf8")).toBe(machineKeyBefore);
+    const recovered = new EncryptedFileCredentialStore({
+      secretsDir: tempDir,
+      keyMaterial: { read: () => Buffer.from("os-material-A") },
+    });
+    expect(recovered.getSync("linear.token.v1")).toBe("lin_secret");
+  });
+
+  it("still moves and removes a legacy file that is already safeStorage-encrypted", () => {
+    // Nothing in an Electron-only file is brain-readable, so retaining it would
+    // only leave an undecryptable file behind for the brain to trip over.
+    // Written the way an older app version wrote it, before the file-backed
+    // keys were excluded from safeStorage — today's write path refuses this.
+    writeSharedPathSafeStorageFile({ [ACCOUNT_SESSION_CREDENTIAL_KEY]: "session-json" });
+
+    const dedicatedStore = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+
+    expect(dedicatedStore.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe("session-json");
+    expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(false);
+  });
+
+  it("refuses to write a file-backed credential into the Electron-only file", () => {
+    // The migration keeps these keys in credentials.json.enc because the brain
+    // and the CLI cannot read safeStorage. A writer that puts one into the
+    // Electron-only file signs the brain out of a signed-in machine, so the
+    // write path must fail loudly instead of succeeding invisibly.
+    const store = new ElectronSafeStorageCredentialStore({ secretsDir: tempDir, safeStorage });
+    store.setSync("linear.token.v1", "lin_secret");
+
+    expect(() => store.setSync(ACCOUNT_SESSION_CREDENTIAL_KEY, "session-json"))
+      .toThrow(/file-backed/);
+    expect(() => store.updateSync((values) => {
+      values[BOOTSTRAP_TOKEN_KEY] = "bootstrap-token";
+    })).toThrow(/file-backed/);
+
+    const safeFile = fs.readFileSync(path.join(tempDir, "credentials.safe.enc"), "utf8");
+    expect(safeFile).not.toContain("session-json");
+    expect(safeFile).not.toContain("bootstrap-token");
+    expect(store.getSync("linear.token.v1")).toBe("lin_secret");
+    expect(store.getSync(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBeNull();
+  });
+
+  it("keeps the account-session key excluded from safeStorage migration", () => {
+    expect(isFileBackedCredentialKey(ACCOUNT_SESSION_CREDENTIAL_KEY)).toBe(true);
+    // Asserted against the real constant: renaming it in the sync handler must
+    // fail here instead of silently moving the token into safeStorage.
+    expect(isFileBackedCredentialKey(BOOTSTRAP_TOKEN_KEY)).toBe(true);
+    expect(isFileBackedCredentialKey("linear.token.v1")).toBe(false);
   });
 
   it("migrates a shared-path safeStorage file to the dedicated safeStorage file", () => {
@@ -429,5 +650,171 @@ describe("createDefaultCredentialStore", () => {
 
     expect(await store.get("codex")).toBe("token");
     expect(fs.existsSync(path.join(tempDir, "credentials.json.enc"))).toBe(true);
+  });
+});
+
+describe("resolveMacKeychainMaterialOutcome", () => {
+  const secretFor = (value: string) => Buffer.alloc(32, value[0]).toString("base64");
+
+  it("uses the existing keychain item without writing", () => {
+    const existing = secretFor("existing");
+    const commands: MacKeychainCommands = {
+      find: vi.fn(() => ({ kind: "found" as const, value: existing })),
+      add: vi.fn(() => "created" as const),
+    };
+
+    expect(resolveMacKeychainMaterialOutcome(commands).material?.toString("base64")).toBe(existing);
+    expect(commands.add).not.toHaveBeenCalled();
+  });
+
+  it("adopts the winner when the item appears between find and add", () => {
+    // Two first-run processes race. This one sees "not found", loses the add,
+    // and MUST adopt the peer's secret instead of overwriting it.
+    const winner = secretFor("winner");
+    const find = vi.fn()
+      .mockReturnValueOnce({ kind: "not_found" as const })
+      .mockReturnValueOnce({ kind: "found" as const, value: winner });
+    const add = vi.fn(() => "exists" as const);
+
+    const material = resolveMacKeychainMaterialOutcome({ find, add }).material;
+
+    expect(material?.toString("base64")).toBe(winner);
+    expect(find).toHaveBeenCalledTimes(2);
+    expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  it("converges on one secret when two stores race for a fresh keychain", () => {
+    // Shared keychain: `add` only succeeds for whoever gets there first.
+    let item: string | null = null;
+    const commandsFor = (): MacKeychainCommands => ({
+      find: () => (item == null ? { kind: "not_found" } : { kind: "found", value: item }),
+      add: (secret) => {
+        if (item != null) return "exists";
+        item = secret;
+        return "created";
+      },
+    });
+
+    const first = resolveMacKeychainMaterialOutcome(commandsFor()).material;
+    const second = resolveMacKeychainMaterialOutcome(commandsFor()).material;
+
+    expect(first).not.toBeNull();
+    expect(second?.toString("base64")).toBe(first?.toString("base64"));
+  });
+
+  it("fails closed instead of creating a replacement when the keychain errors", () => {
+    // Timeouts and locked keychains are NOT "the item is missing": minting a
+    // replacement here is what clobbers the peer process's secret.
+    const add = vi.fn(() => "created" as const);
+
+    expect(resolveMacKeychainMaterialOutcome({ find: () => ({ kind: "error" }), add }).material).toBeNull();
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it("returns null when the add fails and the item still cannot be read", () => {
+    const find = vi.fn(() => ({ kind: "not_found" as const }));
+    const add = vi.fn(() => "error" as const);
+
+    expect(resolveMacKeychainMaterialOutcome({ find, add }).material).toBeNull();
+    expect(find).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("createOsBoundKeyMaterialResolver", () => {
+  const material = Buffer.alloc(32, 7);
+
+  it("caches the resolved material instead of re-asking the OS", async () => {
+    const read = vi.fn(() => ({ material }));
+    const resolver = createOsBoundKeyMaterialResolver({
+      read,
+      readAsync: async () => ({ material: null, reason: "unavailable" as const }),
+    });
+
+    expect(resolver.read()).toBe(material);
+    expect(resolver.read()).toBe(material);
+    expect(await resolver.readAsync()).toBe(material);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("still creates the keychain item after repeated read-only not_found misses", async () => {
+    // The read-only path refreshes the miss timestamp on every failed read, and
+    // the creating path is the only one that can mint the item. If a not_found
+    // miss armed the creation backoff, first-run creation would be starved
+    // forever on any machine whose brain polls the session faster than 30s.
+    let now = 1_700_000_000_000;
+    const read = vi.fn(() => ({ material }));
+    const readAsync = vi.fn(async () => ({ material: null, reason: "not_found" as const }));
+    const resolver = createOsBoundKeyMaterialResolver({
+      read,
+      readAsync,
+      now: () => now,
+      negativeCacheMs: 30_000,
+    });
+
+    expect(await resolver.readAsync()).toBeNull();
+    now += 1_000;
+    expect(await resolver.readAsync()).toBeNull();
+    now += 1_000;
+    expect(await resolver.readAsync()).toBeNull();
+
+    expect(resolver.read()).toBe(material);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("suppresses creation while the keychain itself is unavailable", () => {
+    let now = 1_700_000_000_000;
+    const read = vi.fn(() => ({ material: null, reason: "unavailable" as const }));
+    const resolver = createOsBoundKeyMaterialResolver({
+      read,
+      readAsync: async () => ({ material: null, reason: "unavailable" as const }),
+      now: () => now,
+      negativeCacheMs: 30_000,
+    });
+
+    expect(resolver.read()).toBeNull();
+    now += 10_000;
+    expect(resolver.read()).toBeNull();
+    expect(read).toHaveBeenCalledTimes(1);
+
+    // Once the window elapses the wedged keychain is worth one more attempt.
+    now += 31_000;
+    expect(resolver.read()).toBeNull();
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("re-reads the OS after an invalidation even inside the backoff window", () => {
+    let now = 1_700_000_000_000;
+    let current: Buffer | null = null;
+    const read = vi.fn(() => (current
+      ? { material: current }
+      : { material: null, reason: "unavailable" as const }));
+    const resolver = createOsBoundKeyMaterialResolver({
+      read,
+      readAsync: async () => ({ material: null, reason: "unavailable" as const }),
+      now: () => now,
+      negativeCacheMs: 30_000,
+    });
+
+    expect(resolver.read()).toBeNull();
+    current = material;
+    now += 1_000;
+    expect(resolver.read()).toBeNull();
+
+    resolver.invalidate();
+    expect(resolver.read()).toBe(material);
+  });
+
+  it("coalesces concurrent read-only resolutions into one OS call", async () => {
+    const readAsync = vi.fn(async () => ({ material }));
+    const resolver = createOsBoundKeyMaterialResolver({
+      read: () => ({ material: null, reason: "unavailable" as const }),
+      readAsync,
+    });
+
+    const [first, second] = await Promise.all([resolver.readAsync(), resolver.readAsync()]);
+
+    expect(first).toBe(material);
+    expect(second).toBe(material);
+    expect(readAsync).toHaveBeenCalledTimes(1);
   });
 });

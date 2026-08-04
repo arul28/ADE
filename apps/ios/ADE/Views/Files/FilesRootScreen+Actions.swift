@@ -21,7 +21,7 @@ extension FilesRootScreen {
   }
 
   var canUseLiveFileActions: Bool {
-    filesStatus.phase == .ready && (syncService.connectionState == .connected || syncService.connectionState == .syncing)
+    filesStatus.phase == .ready && syncService.connectionState == .connected
   }
 
   var needsRepairing: Bool {
