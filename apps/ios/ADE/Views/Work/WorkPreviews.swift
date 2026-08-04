@@ -752,8 +752,6 @@ private struct WorkRootPreviewHarness: View {
             organization: $organization,
             filterOpen: $filterOpen,
             lanes: WorkPreviewData.rootLanes,
-            liveCount: presentation.globalLiveSessionCount,
-            needsInputCount: presentation.globalNeedsInputCount,
             isLive: true,
             onClear: clearFilters,
             onNewChat: {},
@@ -813,19 +811,10 @@ private struct WorkRootPreviewHarness: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .top, spacing: 0) {
+          // No count pill: the attention rollup is the bell, once, and nowhere
+          // else. See the note where `WorkLiveCountPill` used to be defined.
           ADERootTopBar(title: "Work") {
-            if presentation.globalLiveSessionCount > 0 {
-              WorkLiveCountPill(
-                liveCount: presentation.globalLiveSessionCount,
-                attentionCount: presentation.globalNeedsInputCount,
-                onTap: {
-                  guard let targetId = presentation.firstGlobalLiveSessionId else { return }
-                  withAnimation(.snappy) {
-                    proxy.scrollTo(targetId, anchor: .top)
-                  }
-                }
-              )
-            }
+            EmptyView()
           }
         }
       }

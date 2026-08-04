@@ -2111,6 +2111,16 @@ function buildSessionDomainService(runtime: AdeRuntime): OpaqueService | null {
       const sessionIds = Array.isArray(record.sessionIds)
         ? record.sessionIds.filter((id): id is string => typeof id === "string")
         : [];
+      // The sync remote-command path honours `dismissPendingInput` for a single
+      // session. This bulk action does not, and used to drop the key silently —
+      // so the same argument meant "dismiss the prompt" over sync and nothing at
+      // all here. Fail loudly instead of settling while quietly ignoring half of
+      // what was asked; `session.settleSession` is the path that dismisses.
+      if (record.dismissPendingInput === true) {
+        throw new Error(
+          "session.settleSessions does not dismiss pending input; use session.settleSession for a single session.",
+        );
+      }
       return sessionService.settleSessions(sessionIds);
     },
     unsettleSessions: (args?: unknown) => {

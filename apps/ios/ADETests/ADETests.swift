@@ -23712,12 +23712,14 @@ final class RosterDeltaTests: XCTestCase {
     XCTAssertEqual(settledSession.statusNote, "Shipped the lifecycle mirror")
     XCTAssertEqual(workCanonicalSessionState(session: settledSession, summary: nil).phase, .settled)
     XCTAssertEqual(
-      workSessionGroupsByStatus(
+      workSessionGroups(
+        organization: .byStatus,
         sessions: [settledSession],
         chatSummaries: [:],
-        archivedSessionIds: []
+        archivedSessionIds: [],
+        orderedLanes: []
       ).map(\.id),
-      ["status:settled"]
+      [workSettledSectionId]
     )
 
     var activeSettledSession = settledSession

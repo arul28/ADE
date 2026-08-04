@@ -209,6 +209,14 @@ and in tests.
   first quiets an SDK chat through `agentChatService`, or clears a tracked
   CLI's explicit `ade chat ask` marker through `ptyService`; arbitrary native
   terminal prompts are rejected because ADE cannot answer them truthfully.
+  That dismissal is exported separately as `dismissPendingInputBeforeSettle`
+  so the **bulk** settle paths — which must write through
+  `sessionService.settleSessions` and keep returning the changed-id list — reuse
+  the exact same semantic instead of inventing a second mechanism. It returns
+  false when the row is missing and throws when there is nothing pending to
+  dismiss, which is why the bulk sync command refuses the flag for more than one
+  id (see
+  [remote commands](../sync-and-multi-device/remote-commands.md#registry)).
 - `apps/ade-cli/src/cli.ts`, `apps/ade-cli/src/adeRpcServer.ts` —
   `ade new chat --mode cli` forwards the parent chat id and spawn kind for
   agent providers; `start_cli_session` validates them and persists them in
@@ -1251,23 +1259,40 @@ iOS Work surfaces:
 
 - `apps/ios/ADE/Views/Work/WorkRootScreen.swift`,
   `WorkRootScreen+Actions.swift`, `WorkRootScreen+Selection.swift`, and
-  `WorkRootComponents.swift` — mobile Work list, filters, grouped
-  session rows, and live-count/status pills. Visibility mirrors desktop
+  `WorkRootComponents.swift` — mobile Work list: the one-row header
+  (search + filter funnel + a compose menu holding **New chat** / **New lane**),
+  the filter panel, sticky lane section headers, the child-shell section, and
+  the `WorkSessionListRow` action shell that hangs swipe and context menus off a
+  row. Visibility mirrors desktop
   (`workSessionShouldAppearInWorkList` in `WorkBrowserHelpers.swift`):
   standalone CLI sessions are always listed — **including ended ones**,
   which stay visible and resumable; chat-owned shell rows ride their
   parent chat's entry (an orphaned child whose parent chat isn't listed
   surfaces only while it is actually live). Agent CLI continuation is
   driven by sending text to the durable session, not a standalone
-  row action. The earlier
-  in-list activity feed is gone — running chats surface through the
-  session list and the live-count chip. Work filters, organization, and
+  row action. There is no rollup count anywhere on this screen: attention is
+  stated per row, and the bell's Activity drawer is the only aggregate.
+  Work filters, organization, and
   collapsed-section ids are restored from `WorkViewStateStore` per
   project-plus-host scope; lane deeplinks temporarily frame the list without
   persisting their resets. By-lane groups whose full roster is settled,
   snoozed, or archived use the same inverted `lane-open:<laneId>` marker as
   desktop: collapsed is a thin muted row, while explicit expansion shows
   compact session rows until active work returns.
+- `apps/ios/ADE/Views/Work/WorkSessionRowCard.swift` — the session row card
+  itself (`WorkSessionRow`, its leaf views, and the
+  `WorkSessionRowRenderSignature` equality shim) plus the preview-line helpers
+  (`workSessionRowPreviewSource`, `workLinkifiedPreview`). Split out of
+  `WorkRootComponents.swift`, which keeps the surrounding list chrome. Card
+  surface is neutral — background, border and shadow are reserved for selection
+  and press, never for state, matching desktop `SessionCard.tsx`. See
+  [the iOS companion](../sync-and-multi-device/ios-companion.md#work-session-list-rows).
+- `apps/ios/ADE/Views/Work/WorkSessionGrouping.swift` — the by-lane (default) /
+  by-status / by-time grouping, `WorkViewStateStore`, and the trailing quiet
+  zone: a **Snoozed** shelf above a **Settled** shelf, both collapsed until
+  explicitly opened via an inverted `shelf-open:<id>` marker. By-lane is exempt
+  from the shelves — a settled row still belongs to its lane there, and the
+  per-lane quiet fold already handles it.
 - `apps/ios/ADE/Views/Work/TerminalSessionScreen.swift` and
   `SwiftTermSessionView.swift` — full-screen SwiftTerm-backed terminal
   surface for CLI sessions. It subscribes with `sinceOffset`, applies

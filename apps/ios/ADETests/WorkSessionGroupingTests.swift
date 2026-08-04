@@ -286,6 +286,265 @@ final class WorkSessionGroupingTests: XCTestCase {
     )
   }
 
+  // MARK: - The quiet zone
+
+  /// Every list closes the same way: Snoozed above Settled. Snoozed work is
+  /// dated and will re-enter the live rows, settled work is finished, so the
+  /// shelf nearer the live rows is the one that comes back.
+  func testByStatusClosesWithSnoozedAboveSettled() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-live", laneId: lane.id),
+        makeSession(id: "s-settled", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+        makeSession(
+          id: "s-snoozed",
+          laneId: lane.id,
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+      ],
+      lanes: [lane],
+      organization: .byStatus
+    )
+
+    XCTAssertEqual(
+      presentation.sessionGroups.map(\.id),
+      ["status:running", workSnoozedSectionId, workSettledSectionId]
+    )
+    XCTAssertEqual(presentation.sessionGroups.last?.sessions.map(\.id), ["s-settled"])
+  }
+
+  func testByTimeClosesWithSnoozedAboveSettled() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-live", laneId: lane.id),
+        makeSession(id: "s-settled", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+        makeSession(
+          id: "s-snoozed",
+          laneId: lane.id,
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+      ],
+      lanes: [lane],
+      organization: .byTime
+    )
+
+    XCTAssertEqual(
+      Array(presentation.sessionGroups.map(\.id).suffix(2)),
+      [workSnoozedSectionId, workSettledSectionId]
+    )
+    XCTAssertFalse(
+      presentation.sessionGroups.dropLast(2).contains { $0.sessions.contains { $0.id == "s-settled" } },
+      "a lifted settled row must not also remain in its time bucket"
+    )
+  }
+
+  /// By-lane has no global settled shelf on purpose: a settled row still belongs
+  /// to its lane, and lifting settled rows out globally would leave lanes empty
+  /// and make the per-lane quiet fold unreachable.
+  func testByLaneKeepsSettledRowsInsideTheirLane() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-live", laneId: lane.id),
+        makeSession(id: "s-settled", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+      ],
+      lanes: [lane],
+      organization: .byLane
+    )
+
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a"])
+    XCTAssertEqual(presentation.sessionGroups.first?.sessions.map(\.id), ["s-live", "s-settled"])
+    XCTAssertFalse(presentation.sessionGroups.contains { $0.isShelf })
+  }
+
+  /// The fold this exemption exists to protect.
+  func testByLaneStillFoldsAnAllQuietLane() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-1", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+        makeSession(id: "s-2", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-90))),
+      ],
+      lanes: [lane],
+      organization: .byLane
+    )
+
+    XCTAssertEqual(presentation.sessionGroups.map(\.id), ["lane:lane-a"])
+    XCTAssertEqual(presentation.sessionGroups.first?.isQuiet, true)
+    XCTAssertEqual(presentation.sessionGroups.first?.isShelf, false)
+  }
+
+  /// `collapsedSectionIds` lists what IS collapsed, so it cannot express
+  /// "collapsed by default". Both shelves therefore record the opposite fact
+  /// under a `shelf-open:` marker, and stay collapsed while it is absent.
+  func testQuietShelvesAreCollapsedUntilTheirOpenMarkerIsPresent() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-settled", laneId: lane.id, settledAt: iso(now.addingTimeInterval(-60))),
+        makeSession(
+          id: "s-snoozed",
+          laneId: lane.id,
+          snoozedUntil: iso(now.addingTimeInterval(3600)),
+          snoozedAt: iso(now.addingTimeInterval(-60))
+        ),
+      ],
+      lanes: [lane],
+      organization: .byStatus
+    )
+
+    let shelves = presentation.sessionGroups.filter(\.isShelf)
+    XCTAssertEqual(shelves.map(\.id), [workSnoozedSectionId, workSettledSectionId])
+    XCTAssertEqual(
+      shelves.map(\.quietOpenSectionId),
+      ["shelf-open:status:snoozed", "shelf-open:status:settled"]
+    )
+    // A shelf renders through the quiet-header form, which is what makes the
+    // inverted marker the one the toggle writes.
+    XCTAssertTrue(shelves.allSatisfy(\.isQuiet))
+
+    // Untouched: no marker, so both are collapsed. Explicitly opened: marker
+    // present, and it survives a relaunch because it is what gets persisted.
+    var collapsed = workParseCollapsedSectionIds("")
+    XCTAssertTrue(shelves.allSatisfy { !collapsed.contains($0.quietOpenSectionId) })
+    collapsed.insert("shelf-open:status:settled")
+    XCTAssertEqual(
+      shelves.filter { collapsed.contains($0.quietOpenSectionId) }.map(\.id),
+      [workSettledSectionId]
+    )
+
+    // The shelf namespace must stay clear of the per-lane sweep, which only
+    // scans `lane-open:` and would otherwise treat a shelf as a stale lane.
+    XCTAssertFalse(shelves.contains { $0.quietOpenSectionId.hasPrefix("lane-open:") })
+  }
+
+  // MARK: - One clock per grouping pass
+
+  /// By-status used to read the wall clock while every sibling filing path (the
+  /// shelf lift, `workLaneGroupIsQuiet`, `isFiledAsSnoozed`) threaded the
+  /// caller's. This row is calm at `now` and silent past the stale threshold a
+  /// few hours later, so the two clocks file it under different headers — which
+  /// is exactly what a single threaded clock has to prevent.
+  func testByStatusFilesAgainstTheInjectedClock() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let calm = makeSession(
+      id: "s-1",
+      laneId: lane.id,
+      runtimeState: "idle",
+      chatIdleSinceAt: iso(now.addingTimeInterval(-60))
+    )
+
+    XCTAssertEqual(
+      workSessionGroups(
+        organization: .byStatus,
+        sessions: [calm],
+        chatSummaries: [:],
+        archivedSessionIds: [],
+        orderedLanes: [lane],
+        now: now
+      ).map(\.id),
+      ["status:done"]
+    )
+
+    XCTAssertEqual(
+      workSessionGroups(
+        organization: .byStatus,
+        sessions: [calm],
+        chatSummaries: [:],
+        archivedSessionIds: [],
+        orderedLanes: [lane],
+        now: now.addingTimeInterval(sessionStaleAfterSeconds + 60)
+      ).map(\.id),
+      ["status:running"]
+    )
+  }
+
+  /// The contract the shared clock exists for: one session, one instant, the
+  /// same verdict on both paths. Settled here, so by-status lifts it onto the
+  /// quiet shelf and by-lane folds its lane into the quiet form — two shapes,
+  /// one reading of the row.
+  func testByStatusAndByLaneAgreeOnTheSameSessionAtTheSameInstant() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let settled = makeSession(
+      id: "s-1",
+      laneId: lane.id,
+      settledAt: iso(now.addingTimeInterval(-60))
+    )
+
+    let byStatus = workSessionGroups(
+      organization: .byStatus,
+      sessions: [settled],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertEqual(byStatus.map(\.id), [workSettledSectionId])
+    XCTAssertEqual(byStatus.first?.isQuiet, true)
+    XCTAssertEqual(byStatus.first?.sessions.map(\.id), ["s-1"])
+
+    let byLane = workSessionGroups(
+      organization: .byLane,
+      sessions: [settled],
+      chatSummaries: [:],
+      archivedSessionIds: [],
+      orderedLanes: [lane],
+      now: now
+    )
+    XCTAssertEqual(byLane.map(\.id), ["lane:lane-a"])
+    XCTAssertEqual(byLane.first?.isQuiet, true)
+    XCTAssertEqual(byLane.first?.sessions.map(\.id), ["s-1"])
+  }
+
+  // MARK: - Finished is not "Your move"
+
+  /// Ready and idle are emerald "Done" — finished, unseen. Filing them under
+  /// the amber "Your move" header is the exact confusion the shared vocabulary
+  /// exists to kill: amber must mean a session blocked on the user, nothing else.
+  func testReadyAndIdleLandInDoneAndNeedsYouStaysInYourMove() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-needs-you", laneId: lane.id, pendingInputItemId: "item-1"),
+        // A chat resting between turns is `.ready`.
+        makeSession(id: "s-ready", laneId: lane.id, runtimeState: "idle"),
+        // The same shape on a non-chat tool is `.idle`.
+        makeSession(id: "s-idle", laneId: lane.id, toolType: "codex", runtimeState: "idle"),
+      ],
+      lanes: [lane],
+      organization: .byStatus
+    )
+
+    let sessionIdsBySectionId = Dictionary(
+      uniqueKeysWithValues: presentation.sessionGroups.map { ($0.id, $0.sessions.map(\.id)) }
+    )
+    XCTAssertEqual(sessionIdsBySectionId["status:awaiting"], ["s-needs-you"])
+    XCTAssertEqual(sessionIdsBySectionId["status:done"]?.sorted(), ["s-idle", "s-ready"])
+  }
+
+  /// Done sits between the row that wants you and the rows that are over.
+  func testDoneIsOrderedAfterYourMoveAndBeforeEnded() {
+    let lane = makeLane(id: "lane-a", name: "feature/one")
+    let presentation = makePresentation(
+      sessions: [
+        makeSession(id: "s-needs-you", laneId: lane.id, pendingInputItemId: "item-1"),
+        makeSession(id: "s-ready", laneId: lane.id, runtimeState: "idle"),
+        makeSession(id: "s-ended", laneId: lane.id, toolType: "codex", status: "detached", runtimeState: "exited"),
+      ],
+      lanes: [lane],
+      organization: .byStatus
+    )
+
+    XCTAssertEqual(
+      presentation.sessionGroups.map(\.id),
+      ["status:awaiting", "status:done", "status:ended"]
+    )
+  }
+
   // MARK: - Offline machine banner
 
   func testOfflineBannerSurfacesOneEntryPerMachineInThisProject() {
@@ -332,7 +591,8 @@ final class WorkSessionGroupingTests: XCTestCase {
     sessions: [TerminalSessionSummary],
     lanes: [LaneSummary],
     pinnedLaneIds: Set<String> = [],
-    searchText: String = ""
+    searchText: String = "",
+    organization: WorkSessionOrganization = .byLane
   ) -> WorkRootSessionPresentation {
     buildWorkRootSessionPresentation(
       sessions: sessions,
@@ -342,7 +602,7 @@ final class WorkSessionGroupingTests: XCTestCase {
       selectedStatus: .all,
       selectedLaneId: "all",
       searchText: searchText,
-      organization: .byLane,
+      organization: organization,
       orderedLanes: lanes,
       pinnedLaneIds: pinnedLaneIds,
       now: now
@@ -369,10 +629,15 @@ final class WorkSessionGroupingTests: XCTestCase {
     id: String,
     laneId: String,
     title: String = "Session",
+    toolType: String = "codex-chat",
     status: String = "running",
     runtimeState: String = "running",
     settledAt: String? = nil,
-    chatSessionId: String? = nil
+    snoozedUntil: String? = nil,
+    snoozedAt: String? = nil,
+    chatSessionId: String? = nil,
+    pendingInputItemId: String? = nil,
+    chatIdleSinceAt: String? = nil
   ) -> TerminalSessionSummary {
     TerminalSessionSummary(
       id: id,
@@ -383,13 +648,15 @@ final class WorkSessionGroupingTests: XCTestCase {
       pinned: false,
       manuallyNamed: nil,
       goal: nil,
-      toolType: "codex-chat",
+      toolType: toolType,
       title: title,
       status: status,
       startedAt: iso(now.addingTimeInterval(-300)),
       endedAt: nil,
       archivedAt: nil,
       settledAt: settledAt,
+      snoozedUntil: snoozedUntil,
+      snoozedAt: snoozedAt,
       exitCode: nil,
       transcriptPath: "",
       headShaStart: nil,
@@ -399,8 +666,9 @@ final class WorkSessionGroupingTests: XCTestCase {
       runtimeState: settledAt == nil ? runtimeState : "idle",
       resumeCommand: nil,
       resumeMetadata: nil,
-      chatIdleSinceAt: nil,
-      chatSessionId: chatSessionId
+      chatIdleSinceAt: chatIdleSinceAt,
+      chatSessionId: chatSessionId,
+      pendingInputItemId: pendingInputItemId
     )
   }
 

@@ -2,6 +2,20 @@ import SwiftUI
 import UIKit
 import AVKit
 
+/// Mirrors desktop `shared/webClientUrl.ts`: the web client serves the same
+/// https deeplinks `ade-app.dev/open` does, from its own origin. Kept as a
+/// string swap on an existing link rather than a second URL builder so the two
+/// forms cannot drift.
+private let workWebClientHost = "app.ade-app.dev"
+
+func workWebClientURL(for link: String) -> URL? {
+  guard var components = URLComponents(string: link) else { return nil }
+  components.scheme = "https"
+  components.host = workWebClientHost
+  components.port = nil
+  return components.url
+}
+
 private struct WorkPersistedProjectionLoad {
   let sessions: [TerminalSessionSummary]
   let lanes: [LaneSummary]
@@ -52,7 +66,10 @@ extension WorkRootScreen {
     let outputSearchBySessionId = workSessionOutputSearchIndexBySessionId(
       buffers: searchTextSnapshot.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? [:] : syncService.terminalBuffers
     )
-    let organization = WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byStatus
+    // `.byLane` is the real default (`WorkProjectViewState.organization`); an
+    // unparseable value must land on the same one the filter chip shows, or the
+    // rendered groups and the chip disagree until the next write.
+    let organization = WorkSessionOrganization(rawValue: sessionOrganizationRaw) ?? .byLane
     // A pin is an explicit "keep this where I can see it": it lifts the lane to
     // the top tier and keeps its header, singleton or not. Same store the Lanes
     // tab writes, so one pin means one thing across both surfaces.
@@ -435,6 +452,16 @@ extension WorkRootScreen {
     }
   }
 
+  /// Desktop's "Dismiss & settle": clears the row's pending prompt as part of
+  /// settling it. Only ever called for a row the menu resolved as needs-you —
+  /// the host rejects the dismiss flag on a row with nothing pending, so it is
+  /// a distinct action rather than a flag the caller may guess at.
+  func dismissAndSettleSession(_ session: TerminalSessionSummary) {
+    runSessionLifecycle { [syncService] in
+      try await syncService.settleSession(sessionId: session.id, dismissPendingInput: true)
+    }
+  }
+
   func unsettleSession(_ session: TerminalSessionSummary) {
     runSessionLifecycle { [syncService] in
       try await syncService.unsettleSession(sessionId: session.id)
@@ -680,6 +707,124 @@ extension WorkRootScreen {
       } catch {
         ADEHaptics.error()
         errorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  /// Delete a CLI or shell session. The host command already stops a live
+  /// runtime first (`deleteTerminalSessionWithRuntimeCleanup`), so the same call
+  /// serves both "Stop & delete" and "Delete session" — the label differs
+  /// because the consequence does, not the transport.
+  func deleteWorkSession(_ session: TerminalSessionSummary) {
+    Task {
+      do {
+        try await syncService.deleteWorkSession(sessionId: session.id)
+        await reload(refreshRemote: true)
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  /// Opens this session in the hosted web client. No host command is involved:
+  /// the URL is the same https deeplink the copy action produces, re-homed on
+  /// the web client's origin exactly like desktop's `buildWebClientUrl`.
+  func openSessionInWeb(_ session: TerminalSessionSummary) {
+    let laneId = resolvedWorkNavigationLaneId(for: session, lanes: lanes)
+    let lane = lanes.first(where: { $0.id == laneId })
+    let pullRequest = pullRequests.first(where: { $0.laneId == laneId })
+    let link = workSessionDeepLink(
+      sessionId: session.id,
+      laneId: laneId,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest)
+    )
+    guard let url = workWebClientURL(for: link) else { return }
+    UIApplication.shared.open(url)
+  }
+
+  // MARK: - Lane submenu actions
+  //
+  // The lane half of a session row's long-press menu. Every command here is one
+  // the Lanes tab already sends; nothing new reaches the host from this menu.
+
+  func startChatInLane(_ lane: LaneSummary) {
+    pushNewChatRoute(preferredLaneId: lane.id)
+  }
+
+  func copyLaneLink(_ lane: LaneSummary) {
+    let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
+    UIPasteboard.general.string = LaneDeeplinkHelpers.laneLink(
+      laneId: lane.id,
+      envelope: LaneDeeplinkHelpers.envelope(lane: lane, pullRequest: pullRequest),
+      form: .ade
+    )
+  }
+
+  /// The cross-machine form: a branch link identifies work by repo and branch,
+  /// so it resolves on any machine that has the repo. It needs an owner/name,
+  /// which only a known PR carries here — without one, desktop falls back to the
+  /// lane link rather than copying nothing, and so does this.
+  func copyLaneBranchLink(_ lane: LaneSummary) {
+    let branch = normalizedPrBranchName(lane.branchRef)
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    let pullRequest = pullRequests.first(where: { $0.laneId == lane.id })
+    guard !branch.isEmpty,
+          let owner = pullRequest?.repoOwner, !owner.isEmpty,
+          let name = pullRequest?.repoName, !name.isEmpty else {
+      copyLaneLink(lane)
+      return
+    }
+    UIPasteboard.general.string = LaneDeeplinkHelpers.branchLink(
+      repoOwner: owner,
+      repoName: name,
+      branch: branch
+    )
+  }
+
+  func copyLaneLinearLink(_ lane: LaneSummary) {
+    guard let url = primaryLaneLinearIssue(for: lane)?.url, !url.isEmpty else { return }
+    UIPasteboard.general.string = url
+  }
+
+  func copyLanePath(_ lane: LaneSummary) {
+    UIPasteboard.general.string = lane.worktreePath
+  }
+
+  /// An empty string clears the colour: `lanes.updateAppearance` reads "" as
+  /// "unset", which is the same contract the Lanes tab's swatch row uses.
+  func setLaneColor(_ lane: LaneSummary, hex: String?) {
+    Task {
+      do {
+        try await syncService.updateLaneAppearance(lane.id, color: hex ?? "")
+        await reload(refreshRemote: true)
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = error.localizedDescription
+      }
+    }
+  }
+
+  /// Presents the Lanes tab's own manage sheet rather than a Work-local copy, so
+  /// rename / archive / delete cannot drift between the two surfaces. The
+  /// snapshot it needs carries runtime state the Work projection does not hold,
+  /// so it is fetched on demand; the sheet only appears once it resolves.
+  func manageLane(_ lane: LaneSummary) {
+    Task { @MainActor in
+      // Context-menu actions fire before iOS finishes dismissing the menu.
+      // Presenting a sheet into that dismissal drops it silently.
+      try? await Task.sleep(for: .milliseconds(450))
+      do {
+        let snapshots = try await syncService.fetchLaneListSnapshots(includeArchived: true)
+        guard let snapshot = snapshots.first(where: { $0.lane.id == lane.id }) else {
+          actionErrorMessage = "That lane is no longer on this machine."
+          return
+        }
+        manageLaneSnapshots = snapshots
+        manageLaneTarget = snapshot
+      } catch {
+        ADEHaptics.error()
+        actionErrorMessage = error.localizedDescription
       }
     }
   }

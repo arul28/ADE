@@ -273,6 +273,21 @@ tools) — it is not a desktop-only capability.
 `session.settleSession` routes through the shared `settleTerminalSession`
 transaction, so `dismissPendingInput` behaves identically to desktop.
 
+`session.settleSessions` accepts the same optional `dismissPendingInput` flag —
+this is the action mobile actually uses, because the singular
+`session.settleSession` is not in the mobile compatibility lists. When the flag
+is set the handler first runs `dismissPendingInputBeforeSettle`
+(`apps/desktop/src/main/services/sessions/settleTerminalSession.ts`, extracted
+from `settleTerminalSession` so bulk and single paths share one dismissal
+semantic), then performs the normal `settleSessions` write, so the reply stays
+the changed-id list clients match on. The flag is **rejected when more than one
+session id is sent**: the dismissal mutates as it goes and throws for a row with
+nothing pending, so a mixed batch would dismiss the first *k−1* rows, throw on
+the *k*-th, and settle none of them. Rejecting the combination up front is
+cheaper than a half-applied batch; generalizing it requires making the dismiss
+loop atomic first. The flag is additive, so a host that predates it ignores it
+and simply settles the row, leaving the pending prompt in place.
+
 Snooze deadlines arrive from clients with no local clock authority, so the
 registry validates them rather than trusting them: `parseRemoteSnoozeDeadline`
 accepts either `untilIso` or `snoozedUntil` and validates the instant,
