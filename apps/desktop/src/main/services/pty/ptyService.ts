@@ -28,6 +28,7 @@ import {
 import { runGit } from "../git/git";
 import { resolveOpenCodeBinaryPath } from "../opencode/openCodeBinaryManager";
 import {
+  preferNativeExecutablePath,
   resolveCliSpawnInvocation,
   shouldUseWindowsCmdWrapper,
   windowsTaskkillInvocation,
@@ -36,7 +37,7 @@ import type { ResourceAttributionRoot, ResourceAttributionRootKind } from "./res
 import {
   augmentProcessPathWithShellAndKnownCliDirs,
   getPathEnvValue,
-  resolveExecutableFromKnownLocations,
+  resolveExecutableCandidatesFromKnownLocations,
   setPathEnvValue,
   splitPathEntries,
 } from "../ai/cliExecutableResolver";
@@ -1111,21 +1112,55 @@ function resolveDirectOpenCodeCommand(command: string, toolType: TerminalToolTyp
   return resolveOpenCodeBinaryPath() ?? command;
 }
 
+/**
+ * Bare provider words that ADE puts in `command`, and the executables each one
+ * may actually be installed as on Windows.
+ *
+ * A bare word has no extension, so `resolveCliSpawnInvocation` wraps it in
+ * `cmd.exe /d /s /c "…"` — and cmd rewrites the command line before the CLI
+ * sees argv: measured through a real shim, `%USERPROFILE%` expands and cannot
+ * be escaped, embedded newlines flatten to spaces, and an 8501-character line
+ * fails outright with "The command line is too long." Claude's fresh launch
+ * carries a ~2KB multi-line `--append-system-prompt` blob, so it hit all three.
+ * Resolving the bare word to the installed `.exe` here means the PTY spawns it
+ * directly, `shouldUseWindowsCmdWrapper` returns false, and argv arrives
+ * byte-for-byte. When only a `.cmd`/`.ps1` shim exists the wrapper is still
+ * used and the launch builders keep user text off the command line instead.
+ */
+const WINDOWS_DIRECT_PROVIDER_EXECUTABLES: ReadonlyArray<{
+  toolTypes: readonly TerminalToolType[];
+  launchCandidates: readonly string[];
+}> = [
+  { toolTypes: ["cursor", "cursor-cli"], launchCandidates: CURSOR_CLI_EXECUTABLES.launchCandidates },
+  { toolTypes: ["claude", "claude-orchestrated"], launchCandidates: ["claude"] },
+  { toolTypes: ["codex", "codex-orchestrated"], launchCandidates: ["codex"] },
+  { toolTypes: ["droid"], launchCandidates: ["droid"] },
+];
+
 function resolveDirectProviderCommand(command: string, toolType: TerminalToolType | null): string {
   const openCodeCommand = resolveDirectOpenCodeCommand(command, toolType);
   if (process.platform !== "win32" || openCodeCommand !== command) return openCodeCommand;
-  if (toolType !== "cursor" && toolType !== "cursor-cli") return command;
   const trimmedCommand = command.trim();
-  const basename = trimmedCommand.split(/[\\/]/).pop()?.toLowerCase() ?? "";
-  if (/[\\/]/.test(trimmedCommand)) return command;
-  if (basename !== "cursor-agent" && basename !== "cursor-agent.exe" && basename !== "cursor-agent.cmd" && basename !== "cursor-agent.bat") {
-    return command;
-  }
+  // An explicit path is the caller's choice of install; never second-guess it.
+  if (!trimmedCommand || /[\\/]/.test(trimmedCommand)) return command;
+  const entry = WINDOWS_DIRECT_PROVIDER_EXECUTABLES.find(
+    (candidate) => toolType != null && candidate.toolTypes.includes(toolType),
+  );
+  if (!entry) return command;
+  const basename = trimmedCommand.toLowerCase();
+  const matchesLaunchCandidate = entry.launchCandidates.some((name) =>
+    basename === name
+    || basename === `${name}.exe`
+    || basename === `${name}.cmd`
+    || basename === `${name}.bat`);
+  if (!matchesLaunchCandidate) return command;
   // Cursor has shipped both `cursor-agent` and the legacy `agent` shim on
   // Windows. Resolve the executable at the PTY boundary so fresh launches and
   // durable resume metadata work with either installation layout.
-  for (const candidate of CURSOR_CLI_EXECUTABLES.launchCandidates) {
-    const resolved = resolveExecutableFromKnownLocations(candidate)?.path;
+  for (const candidate of entry.launchCandidates) {
+    const resolved = preferNativeExecutablePath(
+      resolveExecutableCandidatesFromKnownLocations(candidate).map((executable) => executable.path),
+    );
     if (resolved) return resolved;
   }
   return command;
@@ -4584,6 +4619,17 @@ export function createPtyService({
         metadataOverrides,
         { platform: "win32" },
       );
+      if (promptAtLaunch && candidate.initialInput !== undefined) {
+        // The Windows builder already refused to put the prompt in argv — Droid
+        // resumes through `powershell.exe -Command <line>`, where a `.cmd` shim
+        // truncates a multi-line value at the first newline. Nothing to rebuild;
+        // just stop claiming the launch delivered the text so the post-launch
+        // PTY write below still happens. `initialInput` is a signal here, not a
+        // delivery request: `getOrCreateResumeFlight` deliberately does not
+        // forward it (see the note there).
+        promptAtLaunch = false;
+        return candidate;
+      }
       if (
         promptAtLaunch
         && candidate.command
@@ -4631,6 +4677,13 @@ export function createPtyService({
       ...(resumeLaunch.command ? { command: resumeLaunch.command } : {}),
       args: resumeLaunch.args,
       ...(resumeLaunch.env ? { env: resumeLaunch.env } : {}),
+      // `resumeLaunch.initialInput` is deliberately NOT forwarded. On a fresh
+      // launch it means "deliver this after the TUI starts", and `create()`
+      // does exactly that. On a resume it only records that the builder kept
+      // the prompt off the command line; the caller below already re-sends the
+      // same text through `writeSubmittedText`, which reports delivery failure
+      // to the user instead of logging and moving on. Forwarding it here would
+      // write the prompt twice.
     });
     resumeRuntimeFlights.set(session.id, flight);
     void flight

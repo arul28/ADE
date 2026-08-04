@@ -3199,6 +3199,48 @@ describe("ptyService", () => {
       }
     });
 
+    // The bare word `claude` has no extension, so resolveCliSpawnInvocation used
+    // to wrap every Windows launch in `cmd.exe /d /s /c "…"` — which expands
+    // %VAR%, flattens the ~2KB multi-line --append-system-prompt blob to one
+    // line, and dies past 8191 characters. The official installer's claude.exe
+    // spawns directly and argv arrives byte-for-byte.
+    it("launches Claude from the installed claude.exe instead of a cmd.exe wrapper", async () => {
+      setPlatform("win32");
+      const previousProfile = process.env.USERPROFILE;
+      const previousComSpec = process.env.ComSpec;
+      const home = "C:\\Users\\ADE User";
+      const claudePath = path.join(home, ".local", "bin", "claude.exe");
+      process.env.USERPROFILE = home;
+      process.env.ComSpec = "C:\\Windows\\System32\\cmd.exe";
+      mocks.fileStats.set(claudePath, { isDirectory: false, size: 1 });
+      try {
+        const harness = createHarness();
+        const guidance = "ADE guidance\nsecond line with %USERPROFILE% inside";
+        await harness.service.create({
+          laneId: "lane-1",
+          title: "Claude CLI",
+          cols: 80,
+          rows: 24,
+          command: "claude",
+          args: ["--append-system-prompt", guidance],
+          toolType: "claude",
+        });
+
+        const ptyLib = harness.loadPty.mock.results.at(-1)?.value as { spawn: ReturnType<typeof vi.fn> };
+        const [spawnCommand, spawnArgs] = ptyLib.spawn.mock.calls[0] as [string, string | string[]];
+        expect(spawnCommand).toBe(claudePath);
+        // An array (not a verbatim command-line string) is the proof no shell
+        // sits between ADE and Claude.
+        expect(Array.isArray(spawnArgs)).toBe(true);
+        expect(spawnArgs).toContain(guidance);
+      } finally {
+        if (previousProfile == null) delete process.env.USERPROFILE;
+        else process.env.USERPROFILE = previousProfile;
+        if (previousComSpec == null) delete process.env.ComSpec;
+        else process.env.ComSpec = previousComSpec;
+      }
+    });
+
     it("preserves an explicit Windows Cursor executable override", async () => {
       setPlatform("win32");
       const explicitPath = "D:\\Custom Tools\\Cursor\\cursor-agent.cmd";
@@ -4932,6 +4974,78 @@ describe("ptyService", () => {
         ["--noprofile", "--norc", "-lc", "cursor-agent --force --model composer-2.5-fast --continue"],
         expect.any(Object),
       );
+    });
+
+    // The Windows Droid resume runs `powershell.exe -Command <line>`, whose
+    // command line reaches a droid.cmd shim truncated at the first newline. The
+    // launch builder now withholds the prompt (surfacing it as `initialInput`),
+    // so the resume path must notice and still write it over the PTY.
+    it("resumes Droid on Windows with the prompt written over the PTY, not the command line", async () => {
+      vi.useFakeTimers();
+      const originalPlatform = process.platform;
+      Object.defineProperty(process, "platform", { value: "win32", configurable: true });
+      try {
+        const { service, sessionService, mockPty, loadPty } = createHarness();
+        sessionService.create({
+          sessionId: "session-droid-windows",
+          laneId: "lane-1",
+          ptyId: null,
+          tracked: true,
+          title: "Droid CLI",
+          startedAt: "2026-07-30T12:00:00.000Z",
+          transcriptPath: "C:\\tmp\\transcripts\\session-droid-windows.log",
+          toolType: "droid",
+          resumeCommand: "droid --resume droid-session-1",
+          resumeMetadata: {
+            provider: "droid",
+            targetKind: "session",
+            targetId: "droid-session-1",
+            launch: { permissionMode: "edit", model: "droid/claude-sonnet-5" },
+          },
+        });
+        sessionService.end({
+          sessionId: "session-droid-windows",
+          endedAt: "2026-07-30T12:30:00.000Z",
+          exitCode: 0,
+          status: "completed",
+        });
+
+        const prompt = "Continue in %TEMP%\nsecond line";
+        const pending = service.sendToSession({
+          sessionId: "session-droid-windows",
+          text: prompt,
+        });
+        await vi.advanceTimersByTimeAsync(0);
+        mockPty._emitter.emit("data", "Droid\nWhat do you want to build?\n");
+        await vi.advanceTimersByTimeAsync(2_000);
+
+        await expect(pending).resolves.toEqual(expect.objectContaining({
+          sessionId: "session-droid-windows",
+          resumed: true,
+          reusedExistingRuntime: false,
+        }));
+
+        const spawn = (loadPty.mock.results[0]?.value as any).spawn;
+        const [spawnCommand, spawnArgs] = spawn.mock.calls[0] as [string, string | string[]];
+        expect(spawnCommand).toBe("powershell.exe");
+        expect(String(spawnArgs)).toContain("droid-session-1");
+        expect(String(spawnArgs)).not.toContain("Continue in");
+        expect(String(spawnArgs)).not.toContain("%TEMP%");
+        const writes = vi.mocked(mockPty.write).mock.calls.map(([value]) => String(value));
+        expect(writes).toContainEqual(expect.stringContaining(prompt));
+        // Exactly once. The launch builder surfaces the withheld prompt as
+        // `initialInput`, which on this path is a signal ("the command line
+        // does not carry it") and not a delivery request — the resume path does
+        // its own ready-gated `writeSubmittedText`. `getOrCreateResumeFlight`
+        // therefore does not forward the field to `create()`. Verified with
+        // teeth: adding that one forwarding line makes this assertion fail with
+        // two writes of the same text.
+        const promptWrites = writes.filter((value) => value.includes("second line"));
+        expect(promptWrites).toHaveLength(1);
+      } finally {
+        vi.useRealTimers();
+        Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+      }
     });
 
     it("resumes OpenCode on Windows through direct argv and inherited env", async () => {

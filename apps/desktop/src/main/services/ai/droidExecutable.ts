@@ -1,5 +1,6 @@
 import type { DetectedAuth } from "./authDetector";
-import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
+import { resolveExecutableCandidatesFromKnownLocations } from "./cliExecutableResolver";
+import { preferNativeExecutablePath } from "../shared/processExecution";
 
 export type DroidExecutableResolution = {
   path: string;
@@ -32,7 +33,16 @@ export function resolveDroidExecutable(args?: {
     return { path: authPath, source: "auth" };
   }
 
-  const resolved = resolveExecutableFromKnownLocations("droid", env);
+  // The Droid chat SDK hands this path straight to `spawn()` with no shell
+  // (`ProcessTransport.connect()`), and since CVE-2024-27980 Node refuses a bare
+  // `.cmd`/`.bat` spawn with `EINVAL` (errno -4071) — a session whose only
+  // resolution was `%APPDATA%\npm\droid.cmd` died on the first message. Where a
+  // real `droid.exe` is installed alongside the shim, prefer it so nothing has
+  // to be wrapped at all; the spawn patch in droidSdkWindowsHide.ts covers the
+  // shim-only installs that remain.
+  const candidates = resolveExecutableCandidatesFromKnownLocations("droid", env);
+  const preferred = preferNativeExecutablePath(candidates.map((candidate) => candidate.path));
+  const resolved = candidates.find((candidate) => candidate.path === preferred);
   if (resolved) {
     return {
       path: resolved.path,
