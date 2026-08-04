@@ -70,11 +70,12 @@ export const AUTO_LANE_IDENTITY_JSON_SCHEMA = {
  *
  * "not supported with/when" covers the account-rejects-this-model 400
  * ("The 'x' model is not supported when using Codex with a ChatGPT account").
- * It deliberately excludes "not supported for/on/by", which describe a single
- * model lacking a capability — those must still retry a sibling model.
+ * It deliberately excludes "not supported for/on/by", "model not found", and
+ * "does not exist", which describe a single unavailable model or a capability
+ * it lacks — those must still retry a sibling model on the same provider.
  */
 const PROVIDER_LEVEL_NAMING_FAILURE_PATTERN =
-  /enoent|eacces|spawn\b|not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|api[_ -]?key|credential|not supported (?:with|when)|unsupported model|model[_ -]?not[_ -]?found|does not exist|insufficient|quota|rate limit/i;
+  /enoent|eacces|spawn\b|command not found|no such file|unauthor|unauthenticated|not (?:logged in|authenticated)|\b40[13]\b|api[_ -]?key|credential|not supported (?:with|when)|insufficient|quota|rate limit/i;
 
 export function isProviderLevelNamingFailure(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error ?? "");
@@ -84,9 +85,16 @@ export function isProviderLevelNamingFailure(error: unknown): boolean {
 /**
  * Build the ordered model chain naming walks: the caller's preferred models
  * first, then a model from a provider none of them belong to, then a sibling on
- * the leading provider. A cross-provider candidate is always reachable, so an
- * outage confined to one provider cannot end naming outright.
+ * the leading provider.
+ *
+ * The cross-provider candidate is spliced in ahead of the third preference so
+ * it always falls inside the attempt budget. Otherwise three same-provider
+ * preferences failing transiently — a timeout, a hang-up, none of them
+ * provider-level — would spend the whole budget before naming ever tried
+ * another provider, which is the outage this chain exists to survive.
  */
+const MAX_NAMING_ATTEMPTS = 3;
+
 export function buildNamingModelCandidates(args: {
   availableModels: ModelDescriptor[];
   /** Ordered preference list; unavailable and duplicate ids are dropped. */
@@ -121,15 +129,15 @@ export function buildNamingModelCandidates(args: {
       && resolveProviderGroupForModel(entry) === primaryProvider,
   )?.id;
 
+  const crossProviderSlot = Math.min(preferred.length, MAX_NAMING_ATTEMPTS - 1);
   return availableInOrder([
-    ...preferred,
+    ...preferred.slice(0, crossProviderSlot),
     crossProviderFallback,
+    ...preferred.slice(crossProviderSlot),
     sameProviderFallback,
     args.availableModels.find((entry) => !preferred.includes(entry.id))?.id,
   ]);
 }
-
-const MAX_NAMING_ATTEMPTS = 3;
 
 export type NamingAttemptFailure = {
   descriptor: ModelDescriptor;

@@ -1597,6 +1597,14 @@ function createService(overrides: Record<string, unknown> = {}) {
   return { service, logger, laneService, sessionService, projectConfigService, aiIntegrationService };
 }
 
+async function waitFor(condition: () => boolean, timeoutMs = 5_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!condition()) {
+    if (Date.now() > deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 function installAutoTitleAuth(): void {
   // Auto-titling is skipped outright when no model is reachable.
   vi.mocked(detectAllAuth).mockResolvedValue([
@@ -13473,6 +13481,7 @@ describe("createAgentChatService", () => {
       // which is exactly the race that used to overwrite their title and clear
       // the manuallyNamed flag.
       aiIntegrationService.summarizeTerminal.mockImplementation(async () => {
+        if (renameDuringNaming) return { text: "Model Picked That" } as never;
         renameDuringNaming = service.updateSession({
           sessionId: session.id,
           title: "User Picked This",
@@ -13484,11 +13493,13 @@ describe("createAgentChatService", () => {
 
       await service.sendMessage({ sessionId: session.id, text: "Build me a new feature" });
       await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "done");
-      for (let i = 0; i < 40 && !renameDuringNaming; i += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 25));
-      }
+      await waitFor(() => Boolean(renameDuringNaming));
       await renameDuringNaming;
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      // Wait for the clobber itself rather than a fixed delay: pre-fix code
+      // writes the model title as soon as the naming call resolves, so this
+      // returns immediately when the regression is present and costs a bounded
+      // wait when it is not.
+      await waitFor(() => sessionService.get(session.id)?.title === "Model Picked That", 1_000);
 
       expect(renameDuringNaming, "auto-title never ran, so the race was not exercised").not.toBeNull();
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();
@@ -13516,7 +13527,7 @@ describe("createAgentChatService", () => {
       const session = await service.createSession({ laneId: "lane-1", provider: "claude", model: "sonnet" });
       await service.sendMessage({ sessionId: session.id, text: "Rewrite the lane naming fallback chain" });
       await waitForEvent(events, (event): event is AgentChatEventEnvelope => event.event.type === "done");
-      await new Promise((resolve) => setTimeout(resolve, 50));
+      await waitFor(() => (sessionService.get(session.id)?.title ?? "") !== "Claude Chat");
 
       const title = sessionService.get(session.id)?.title ?? "";
       expect(aiIntegrationService.summarizeTerminal).toHaveBeenCalled();

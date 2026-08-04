@@ -40,6 +40,14 @@ describe("isProviderLevelNamingFailure", () => {
     expect(isProviderLevelNamingFailure(new Error("json schema is not supported by this model"))).toBe(false);
     expect(isProviderLevelNamingFailure(new Error("socket hang up"))).toBe(false);
   });
+
+  it("does not condemn the provider when one model is unavailable", () => {
+    // A single retired or unrecognized model says nothing about its siblings.
+    expect(isProviderLevelNamingFailure(new Error("model_not_found"))).toBe(false);
+    expect(isProviderLevelNamingFailure(new Error("The model `gpt-x` does not exist"))).toBe(false);
+    // The binary genuinely being absent is still provider-level.
+    expect(isProviderLevelNamingFailure(new Error("codex: command not found"))).toBe(true);
+  });
 });
 
 describe("buildNamingModelCandidates", () => {
@@ -52,6 +60,29 @@ describe("buildNamingModelCandidates", () => {
     expect(candidates.slice(0, 2)).toEqual([OPENAI_MODELS[0]?.id, OPENAI_MODELS[1]?.id]);
     expect(candidates.some((id) => id.startsWith("anthropic/"))).toBe(true);
     expect(new Set(candidates).size).toBe(candidates.length);
+  });
+
+  it("keeps the cross-provider candidate inside the attempt budget", async () => {
+    // Three same-provider preferences failing transiently must not spend the
+    // whole budget before naming ever tries another provider.
+    const preferred = OPENAI_MODELS.slice(0, 3).map((descriptor) => descriptor.id);
+    expect(preferred).toHaveLength(3);
+    const candidates = buildNamingModelCandidates({ availableModels: ALL_MODELS, preferred });
+
+    expect(candidates.indexOf(candidates.find((id) => id.startsWith("anthropic/"))!)).toBeLessThan(3);
+
+    const attempted: string[] = [];
+    const { result } = await runNamingAcrossProviders<string>(candidates, {
+      run: async (descriptor) => {
+        attempted.push(descriptor.id);
+        if (descriptor.id.startsWith("openai/")) throw new Error("socket hang up");
+        return "Cross Provider Wins";
+      },
+      onFailure: vi.fn(),
+    });
+
+    expect(result).toBe("Cross Provider Wins");
+    expect(attempted.some((id) => id.startsWith("anthropic/"))).toBe(true);
   });
 
   it("drops unavailable and duplicate preferences instead of attempting them", () => {
