@@ -2358,6 +2358,16 @@ export class LocalRuntimeConnectionPool {
           initializeTimeoutMs: probeTimeoutMs,
         });
       } catch (error) {
+        // A compatibility error here is about OUR child and nothing else: the
+        // `expectedPid` check above runs first and throws a different error when
+        // the socket is still owned by someone else, so reaching this branch
+        // means the runtime that answered IS the process we just spawned. Its
+        // version, build hash, and role cannot change while we poll, so retrying
+        // only burns the whole deadline - 10s here, 30s on Windows - and then
+        // discards the typed error, and with it the pid, runtimeVersion, and
+        // runtimeBuildHash the caller needs to explain the skew or start an
+        // isolated runtime. Fail fast and keep the type.
+        if (error instanceof LocalRuntimeCompatibilityError) throw error;
         lastError = error instanceof Error ? error : new Error(String(error));
       }
       const retryDelayMs = Math.min(
