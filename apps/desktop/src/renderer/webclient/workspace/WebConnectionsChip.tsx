@@ -1,4 +1,5 @@
-import React, { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { createPortal } from "react-dom";
 import {
   CaretDown,
   CircleNotch,
@@ -102,6 +103,25 @@ export function WebConnectionsChip() {
   const [renameValue, setRenameValue] = useState("");
   const [error, setError] = useState<string | null>(null);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const popoverRef = useRef<HTMLDivElement | null>(null);
+
+  /**
+   * Where the portaled popover goes, measured from the chip. The header's
+   * trailing strip clips its own overflow so it cannot slide under the Windows
+   * caption buttons at narrow widths — which also clips anything rendered
+   * inline below the header. The desktop Connections panel already escapes
+   * through a body portal for exactly this reason; this popover does the same,
+   * so it needs explicit coordinates instead of `absolute` in the chip.
+   */
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
+  const measureAnchor = useCallback(() => {
+    const rect = rootRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setAnchor({
+      top: rect.bottom + 8,
+      right: Math.max(8, window.innerWidth - rect.right),
+    });
+  }, []);
 
   const machines = useWebMachines();
 
@@ -151,8 +171,18 @@ export function WebConnectionsChip() {
 
   useEffect(() => {
     if (!open) return;
+    measureAnchor();
+    window.addEventListener("resize", measureAnchor);
+    return () => window.removeEventListener("resize", measureAnchor);
+  }, [open, measureAnchor]);
+
+  useEffect(() => {
+    if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
+      // The popover lives in a body portal, so it is outside rootRef's subtree
+      // and needs its own containment check or every click inside it closes it.
       if (rootRef.current?.contains(event.target as Node)) return;
+      if (popoverRef.current?.contains(event.target as Node)) return;
       setOpen(false);
       setMenuKey(null);
     };
@@ -234,13 +264,14 @@ export function WebConnectionsChip() {
         <CaretDown size={9} weight="bold" className="shrink-0 opacity-70" />
       </button>
 
-      {open ? (
+      {open && anchor ? createPortal(
         <div
+          ref={popoverRef}
           role="dialog"
           aria-label="Machines"
           data-ade-web-connections
-          className="absolute right-0 top-[calc(100%+8px)] z-50 w-[300px] overflow-hidden"
-          style={POPOVER_SURFACE}
+          className="fixed z-[70] w-[300px] overflow-hidden"
+          style={{ ...POPOVER_SURFACE, top: anchor.top, right: anchor.right }}
         >
           <div className="max-h-[320px] overflow-auto p-2">
             {machines.length === 0 ? (
@@ -293,7 +324,8 @@ export function WebConnectionsChip() {
           >
             To add a machine: sign in to ADE on it.
           </div>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );
