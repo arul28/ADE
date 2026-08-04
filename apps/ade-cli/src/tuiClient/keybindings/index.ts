@@ -456,9 +456,16 @@ export function keybindingsEditorCommand(
   platform: NodeJS.Platform,
 ): { command: string; args: string[] } {
   const editorParts = editor ? splitEditorCommand(editor) : [];
-  const command = editorParts[0] || (platform === "darwin" ? "open" : "xdg-open");
-  const args = editorParts.length ? [...editorParts.slice(1), filePath] : [filePath];
-  return { command, args };
+  if (editorParts.length) {
+    return { command: editorParts[0], args: [...editorParts.slice(1), filePath] };
+  }
+  if (platform === "darwin") return { command: "open", args: [filePath] };
+  // Windows has no xdg-open. Hand the file to the native shell association the
+  // same way `ade open` does, as a single argv value (spawn runs shell:false).
+  if (platform === "win32") {
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler", filePath] };
+  }
+  return { command: "xdg-open", args: [filePath] };
 }
 
 // Quote-aware split so VISUAL/EDITOR values like `emacsclient -a ""` or

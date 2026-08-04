@@ -126,6 +126,23 @@ describe("keybindings", () => {
       command: "open",
       args: ["/tmp/keybindings.json"],
     });
+    expect(keybindingsEditorCommand("/tmp/keybindings.json", undefined, "linux")).toEqual({
+      command: "xdg-open",
+      args: ["/tmp/keybindings.json"],
+    });
+  });
+
+  it("opens the keybindings file with the native handler on Windows", () => {
+    // xdg-open does not exist on Windows; without this the /keybindings open
+    // action failed silently (spawn errors are swallowed).
+    expect(keybindingsEditorCommand("C:\\Users\\me\\.ade\\keybindings.json", undefined, "win32")).toEqual({
+      command: "rundll32.exe",
+      args: ["url.dll,FileProtocolHandler", "C:\\Users\\me\\.ade\\keybindings.json"],
+    });
+    expect(keybindingsEditorCommand("C:\\keybindings.json", "code --wait", "win32")).toEqual({
+      command: "code",
+      args: ["--wait", "C:\\keybindings.json"],
+    });
   });
 
   it("preserves quoted segments in VISUAL/EDITOR values", () => {

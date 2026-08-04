@@ -893,11 +893,23 @@ function openExternalUrl(url: string, notice: (message: string, tone?: LocalNoti
       // Fall through to the platform opener.
     }
   }
-  const command = process.platform === "darwin" ? "open" : process.platform === "linux" ? "xdg-open" : null;
-  if (!command) return false;
-  spawn(command, [trimmed], { stdio: "ignore", detached: true }).unref();
+  const platformOpener = resolvePlatformUrlOpener();
+  if (!platformOpener) return false;
+  spawn(platformOpener.command, [...platformOpener.args, trimmed], { stdio: "ignore", detached: true }).unref();
   notice("Opening link in browser…", "info");
   return true;
+}
+
+// Windows has no `open`/`xdg-open`. Hand the URL to the native protocol handler
+// as a single argv value: OAuth and deeplink URLs routinely contain `&` and `%`,
+// which `cmd /c start` would split or expand even with shell:false.
+function resolvePlatformUrlOpener(): { command: string; args: string[] } | null {
+  if (process.platform === "darwin") return { command: "open", args: [] };
+  if (process.platform === "win32") {
+    return { command: "rundll32.exe", args: ["url.dll,FileProtocolHandler"] };
+  }
+  if (process.platform === "linux") return { command: "xdg-open", args: [] };
+  return null;
 }
 
 async function openActivityDeepLink(
@@ -928,14 +940,10 @@ async function openActivityDeepLink(
       return false;
     }
   }
-  const command = process.platform === "darwin"
-    ? "open"
-    : process.platform === "linux"
-      ? "xdg-open"
-      : null;
-  if (!command) return false;
+  const platformOpener = resolvePlatformUrlOpener();
+  if (!platformOpener) return false;
   return await new Promise<boolean>((resolve) => {
-    const child = spawn(command, [trimmed], {
+    const child = spawn(platformOpener.command, [...platformOpener.args, trimmed], {
       stdio: "ignore",
       detached: true,
     });
@@ -1763,12 +1771,17 @@ function writeClipboardText(text: string): boolean {
 }
 
 function editPromptInExternalEditor(initialText: string): string | null {
-  const editor = process.env.VISUAL || process.env.EDITOR || "vi";
+  // `vi` does not exist on Windows; notepad is the only editor guaranteed present.
+  const editor = process.env.VISUAL || process.env.EDITOR
+    || (process.platform === "win32" ? "notepad" : "vi");
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ade-code-prompt-"));
   const filePath = path.join(dir, "prompt.md");
   try {
     fs.writeFileSync(filePath, initialText, "utf8");
-    const result = spawnSync(editor, [filePath], {
+    // shell:true does not quote argv on Windows, and tmpdir() sits under
+    // C:\Users\<name>\... which may contain a space. Quote the path ourselves.
+    const editorArg = process.platform === "win32" ? `"${filePath}"` : filePath;
+    const result = spawnSync(editor, [editorArg], {
       stdio: "inherit",
       shell: true,
       env: process.env,
@@ -2377,6 +2390,32 @@ export function isPromptCursorOnLastVisualRow(value: string, width: number, curs
   return promptVisualRowIndexForCursor(rows, clampPromptCursor(value, cursor)) >= rows.length - 1;
 }
 
+// Agent CLIs ship as npm shims on Windows (`claude.cmd`, `codex.cmd`, ...).
+// Node cannot spawn those by bare name (ENOENT) nor by `.cmd` path without a
+// shell (EINVAL, CVE-2024-27980), so resolve through `where` and route batch
+// shims through cmd.exe with quoted argv — `shell: true` does not quote for us.
+function resolveWindowsSpawnTarget(
+  command: string,
+  args: string[],
+): { command: string; args: string[]; shell: boolean } {
+  if (process.platform !== "win32") return { command, args, shell: false };
+  const lookup = spawnSync("where", [command], { encoding: "utf8", windowsHide: true });
+  const resolved = lookup.status === 0
+    ? (lookup.stdout ?? "").split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+    : undefined;
+  if (!resolved) {
+    // Preserve the bare name so callers keep seeing ENOENT and can fall through
+    // to the next candidate command.
+    return { command, args, shell: false };
+  }
+  if (!/\.(cmd|bat)$/i.test(resolved)) return { command: resolved, args, shell: false };
+  return {
+    command: `"${resolved}"`,
+    args: args.map((arg) => (/[\s&|<>^"]/.test(arg) ? `"${arg}"` : arg)),
+    shell: true,
+  };
+}
+
 function runInteractiveTerminalCommand(command: string, args: string[], cwd: string): Promise<number | null> {
   return new Promise((resolve, reject) => {
     const stdin = process.stdin as NodeJS.ReadStream & { isRaw?: boolean; setRawMode?: (mode: boolean) => void };
@@ -2385,10 +2424,12 @@ function runInteractiveTerminalCommand(command: string, args: string[], cwd: str
       stdin.setRawMode(false);
     }
     process.stdout.write("\n");
-    const child = spawn(command, args, {
+    const target = resolveWindowsSpawnTarget(command, args);
+    const child = spawn(target.command, target.args, {
       cwd,
       stdio: "inherit",
       env: process.env,
+      shell: target.shell,
     });
     const restore = () => {
       if (typeof stdin.setRawMode === "function") {
