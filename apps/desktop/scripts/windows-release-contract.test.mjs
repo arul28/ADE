@@ -672,16 +672,20 @@ test("Windows package smoke requires every bundled provider runtime", () => {
   assert.match(winArtifactValidator, /droidSdkCreateSession/);
 });
 
-test("the site gates the Windows release and enables dedicated analytics", () => {
-  assert.match(heroDownloads, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED/);
-  assert.match(heroDownloads, /=== "1"/);
-  // Ungated, the Windows CTA must not read as an available download, and must
-  // say what has to happen first. Wording is free to change; what this pins is
-  // that the disclosure exists at all, so nobody can quietly ship a Windows
-  // button implying an artifact is there. The label itself is checked because
-  // it is the only thing most visitors read.
-  assert.match(heroDownloads, /signed installer ships once the Windows release proof passes/);
-  assert.match(heroDownloads, /Windows \(beta\)/);
+test("the Windows download is permanently live and carries dedicated analytics", () => {
+  // The site-side gate existed so a Windows button could never imply an
+  // artifact that was not published. v1.2.52 shipped the signed installer, so
+  // the gate is retired: the button now pins the opposite invariant -- a
+  // permanent, ungated link straight to the latest release. If Windows assets
+  // ever have to be pulled, take the button out; do not resurrect the flag,
+  // because a dead env var reads as "off by accident" forever.
+  assert.doesNotMatch(heroDownloads, /VITE_ADE_WINDOWS_DOWNLOAD_ENABLED\s*===/);
+  assert.match(heroDownloads, /Download for Windows/);
+  // The Windows anchor specifically (its href sits directly above its
+  // analytics attribute) must point at the latest release, not the list.
+  assert.match(
+    heroDownloads,
+    /href=\{LINKS\.releasesLatest\}\s*\n\s*data-ade-analytics-feature=\{MARKETING_FEATURES\.DOWNLOAD_WINDOWS\}/,
+  );
   assert.match(heroDownloads, /MARKETING_FEATURES\.DOWNLOAD_WINDOWS/);
-  assert.match(heroDownloads, /WINDOWS_DOWNLOAD_ENABLED \? LINKS\.releasesLatest : LINKS\.releases/);
 });
