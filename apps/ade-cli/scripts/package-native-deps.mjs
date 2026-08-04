@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { pipeline } from "node:stream/promises";
 import { createGzip } from "node:zlib";
 import { spawn } from "node:child_process";
+import { shouldCopyPackageEntry } from "./native-deps-entry-filter.mjs";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const nodeModulesRoot = path.join(packageRoot, "node_modules");
@@ -103,39 +104,6 @@ function isPackageForOtherTarget(packageName, target) {
   const { platform, arch } = targetParts(target);
   const normalizedTargetPlatform = platform === "win32" ? "windows" : platform;
   return targetPlatform !== normalizedTargetPlatform || packageTarget.arch !== arch;
-}
-
-function nodePtyPrebuildTarget(target) {
-  const { platform, arch } = targetParts(target);
-  if (platform === "darwin") return `darwin-${arch}`;
-  if (platform === "linux") return `linux-${arch}`;
-  return target;
-}
-
-function shouldCopyPackageEntry(packageName, sourceRoot, entry, target) {
-  const relative = path.relative(sourceRoot, entry).split(path.sep).join("/");
-  if (!relative || relative.startsWith("..")) return true;
-
-  if (packageName === "node-pty") {
-    if (relative.startsWith("prebuilds/")) {
-      // The fs.cp filter receives the target directory entry itself
-      // (e.g. "prebuilds/darwin-arm64") with no trailing slash. Returning
-      // false for that entry would skip the ENTIRE subtree (pty.node +
-      // spawn-helper), shipping an empty prebuilds/ and breaking PTY in the
-      // remote runtime. Match the exact dir name as well as its contents.
-      const prebuildDir = `prebuilds/${nodePtyPrebuildTarget(target)}`;
-      return relative === "prebuilds" || relative === prebuildDir || relative.startsWith(`${prebuildDir}/`);
-    }
-    if (relative.startsWith("build/")) {
-      return target.startsWith("linux-");
-    }
-  }
-
-  if (packageName === "opencode-ai" && relative === "bin/opencode.exe" && !target.startsWith("win32-")) {
-    return false;
-  }
-
-  return true;
 }
 
 async function collectRuntimePackages(target) {

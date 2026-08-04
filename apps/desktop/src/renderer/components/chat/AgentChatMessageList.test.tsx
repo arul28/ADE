@@ -16,23 +16,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-vi.mock("lottie-react", () => ({
-  useLottie: () => ({
-    View: null,
-    play: () => {},
-    stop: () => {},
-    pause: () => {},
-    setSpeed: () => {},
-    goToAndStop: () => {},
-    goToAndPlay: () => {},
-    setDirection: () => {},
-    getDuration: () => 0,
-    destroy: () => {},
-    animationItem: null,
-  }),
-  default: () => null,
-}));
-
 vi.mock("@lobehub/icons", () => {
   const brand = () => {
     const Component = () => null;

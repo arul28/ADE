@@ -676,12 +676,14 @@ npm --prefix apps/ade-cli run build:static -- --target <target> --out-dir ../des
 For headless machines that can run an SSH server but have no desktop, the runtime can be installed directly from a release. Windows 10 22H2 and Windows 11 x64 machines can install the standalone brain locally or be bootstrapped through Windows OpenSSH Server. Release publishing includes `install.sh`, `install.ps1`, `SHA256SUMS`, the `ade-<platform-arch>` binaries (with `.exe` for Windows), and matching native dependency archives. Desktop bootstrap uploads bundled runtime artifacts on first connect, verifies size and SHA-256 through native platform tools, and launches `ade rpc --stdio` with the channel-specific ADE home. Windows SSH bootstrap requires PowerShell 5.1 or newer and `tar.exe`; WSL, ARM64, and Windows Server are not supported in Windows v1.
 
 ```bash
-curl -fsSL https://github.com/arul28/ADE/releases/latest/download/install.sh | sh
+curl -fsSL https://ade-app.dev/install.sh | sh
 ```
 
 ```powershell
-irm https://github.com/arul28/ADE/releases/latest/download/install.ps1 | iex
+irm https://ade-app.dev/install.ps1 | iex
 ```
+
+These are the promoted URLs; `apps/web/api/install.ts` serves them by proxying the same release assets, so `https://github.com/arul28/ADE/releases/latest/download/install.sh` remains equivalent and is what the scripts fall back to for the binaries themselves.
 
 `install.sh` (lives at `apps/ade-cli/scripts/install-runtime.sh`):
 
@@ -701,6 +703,11 @@ Environment overrides:
 - `ADE_HOME=/path/to/.ade` — alternate per-machine state root.
 
 After install, the headless machine can already serve clients. Desktop ADE on a developer laptop adds it as a remote target; `ade code` works on the headless machine itself.
+
+There are two ways to make that machine reachable, and they are independent:
+
+- **SSH remote target** — the desktop bootstraps and tunnels to it. No account involved. Covered by the rest of this document.
+- **Account-published machine** — run `ade connect` (or `ade connect --headless` over SSH, where no browser is available) on the box itself. It signs in, installs the per-user login service, and waits for the machine's row to reach the account directory, after which desktop, the web client, and iOS can all reach it without SSH. The install scripts offer to run this for you at the end. See `apps/ade-cli/README.md` §"ADE account auth" for the three-step contract and why the brain must stay running for the machine to stay published.
 
 Headless hosts update through the same binary, without requiring the desktop app:
 

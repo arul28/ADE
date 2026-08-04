@@ -58,6 +58,36 @@ installer has passed the clean standard-user Windows checks, which the
 publishing anything. Validate version-to-version automatic updating after two
 signed Windows releases exist.
 
+## Artifact size limits
+
+`MacUpdater` hands the downloaded ZIP to native Squirrel.Mac, which buffers the
+whole archive into one contiguous `CFData` grown by doubling. Past 1 GiB that
+asks for a 2 GiB reallocation, which Chromium's PartitionAlloc refuses: the app
+dies with `EXC_BREAKPOINT` about a minute after launch, before the user can even
+decline the update. v1.2.52 shipped a 1054 MB arm64 ZIP and did exactly that.
+
+Two defenses, both below the cliff:
+
+| Layer | Limit | Where |
+| --- | --- | --- |
+| CI, primary | 800 MiB per macOS ZIP; 900 MiB per Windows installer | `apps/desktop/scripts/artifact-size-budget.cjs`, enforced post-packaging by `npm run assert:artifact-size` in both release jobs |
+| Runtime, backstop | 800 MiB reported artifact size on darwin | `exceedsMacUpdateArtifactLimit` in `autoUpdateErrors.ts`, checked before `downloadUpdate()` |
+
+The runtime guard refuses the download with an `artifact_too_large` error rather
+than letting Squirrel crash the app. It matches the CI budget, so an artifact
+that passed CI can never trip it. If release metadata omits the size the update
+is allowed through — the CI gate is the real defense, and a malformed manifest
+must not block every update.
+
+The Windows cap is a bloat tripwire, not a crash guard: the NSIS installer is
+streamed to disk and run as an external process, so nothing buffers it whole.
+
+The root cause of the 1054 MB ZIP was foreign-platform runtime payloads. Each
+packaging job now pins `ADE_RUNTIME_TARGET` to the single target it builds, and
+the desktop bundle carries only that target's `ade-<target>` sidecar. Every
+target is still published as a standalone release asset, so `ade brain update`
+and the standalone installers are unaffected.
+
 ## Required-space estimate
 
 Release metadata reports compressed archive size, not expanded application
@@ -76,6 +106,7 @@ labels this value as an estimate rather than an exact installer requirement.
 
 | Failure | Observation path | Snapshot classification | Cache policy |
 | --- | --- | --- | --- |
+| Artifact size preflight (macOS) | Synchronous ADE check before download | `artifact_too_large` at the download phase | Nothing downloaded; no cache to preserve |
 | Capacity preflight | Synchronous ADE check before download/install | `insufficient_space` with measured free/required bytes and affected path | Preserve only after a verified download |
 | `ENOSPC` | Synchronous throw, rejected download, or updater `error` event | `disk_full` at the active phase | Preserve a verified download; clear incomplete download data |
 | `EDQUOT` | Rejected download or updater `error` event | `quota` at the active phase | Same as `ENOSPC` |

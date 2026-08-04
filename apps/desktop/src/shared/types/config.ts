@@ -1165,6 +1165,38 @@ export interface AiCustomProviderConfig {
   models: string[];
 }
 
+/**
+ * Renderer-facing state of the pinned agent-CLI cache. ADE fetches codex,
+ * claude-code and opencode into a machine cache at runtime instead of bundling
+ * them, so onboarding has to be able to say "still downloading" and "download
+ * failed, retry" rather than "not detected".
+ *
+ * Mirrors AgentToolState in main/services/tools/agentToolsCacheService.ts; the
+ * IPC handler is annotated with these types so the two cannot drift.
+ */
+export type AgentToolCacheStatus = "installed" | "fetching" | "missing" | "failed";
+
+export type AgentToolCacheState = {
+  /** Pinned tool name as it appears in the tools manifest, e.g. "claude-code". */
+  tool: string;
+  status: AgentToolCacheStatus;
+  /** 0-100 while fetching and the total size is known, else null. */
+  percent: number | null;
+  /** ToolErrorKind from ade-cli/src/services/tools/errors.ts when status is "failed". */
+  errorKind: string | null;
+};
+
+export type AgentToolsCacheSnapshot = {
+  tools: AgentToolCacheState[];
+  /** True while any tool is still being fetched. */
+  fetching: boolean;
+};
+
+export const EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT: AgentToolsCacheSnapshot = {
+  tools: [],
+  fetching: false,
+};
+
 export type AiSettingsStatus = {
   mode: "guest" | "subscription";
   availableProviders: {
@@ -1185,7 +1217,8 @@ export type AiSettingsStatus = {
   runtimeConnections?: AiRuntimeConnections;
   availableModelIds?: ModelId[];
   opencodeBinaryInstalled?: boolean;
-  opencodeBinarySource?: "user-installed" | "bundled" | "missing";
+  /** Mirrors OpenCodeBinarySource in main/services/opencode/openCodeBinaryManager.ts. */
+  opencodeBinarySource?: "user-installed" | "tools-cache" | "bundled" | "missing";
   opencodeInventoryError?: string | null;
   opencodeProviders?: Array<{ id: string; name: string; connected: boolean; modelCount: number }>;
   /** True when opencodeProviders came from the persisted disk cache rather than a live/warm probe. */

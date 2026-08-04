@@ -36,8 +36,16 @@ export const MARKETING_FEATURES = {
   GET_STARTED: "get_started",
   OPEN_IN_DESKTOP: "open_in_desktop",
   PAIR_IN_WEB_CLIENT: "pair_in_web_client",
-  COPY_INSTALL_COMMAND: "copy_install_command",
-  COPY_SOURCE_COMMAND: "copy_source_command",
+  // Install dialog. The dialog captures its own open event so every trigger
+  // (hero, back cover, header, footer) reports the same feature regardless of
+  // which CTA label it also carries.
+  INSTALL_DIALOG_MAC: "install_dialog_mac",
+  INSTALL_DIALOG_WINDOWS: "install_dialog_windows",
+  INSTALL_DIALOG_LINUX: "install_dialog_linux",
+  COPY_INSTALL_COMMAND_MAC: "copy_install_command_mac",
+  COPY_INSTALL_COMMAND_WINDOWS: "copy_install_command_windows",
+  COPY_INSTALL_COMMAND_LINUX: "copy_install_command_linux",
+  COPY_BREW_COMMAND: "copy_brew_command",
   DEMO_GRID_VIEW: "demo_grid_view",
   DEMO_SUBAGENTS: "demo_subagents",
   DEMO_AUTO_CREATE_WORKTREES: "demo_auto_create_worktrees",
@@ -56,9 +64,15 @@ export const MARKETING_FEATURES = {
 export type MarketingFeature = (typeof MARKETING_FEATURES)[keyof typeof MARKETING_FEATURES];
 
 export const MARKETING_CTA_LABELS = {
+  // Triggers that open the install dialog.
   DOWNLOAD_MAC: "download_for_mac",
   DOWNLOAD_WINDOWS: "download_for_windows",
   DOWNLOAD_IOS: "download_for_ios",
+  // Direct-download buttons inside the install dialog. Architecture is always
+  // an explicit visitor choice, never sniffed, so each one is its own label.
+  DOWNLOAD_MAC_ARM64: "download_mac_arm64",
+  DOWNLOAD_MAC_X64: "download_mac_x64",
+  DOWNLOAD_WINDOWS_X64: "download_windows_x64",
   GET_STARTED_FREE: "get_started_free",
   OPEN_WEB_CLIENT: "open_web_client",
 } as const;
@@ -70,6 +84,7 @@ export const MARKETING_CTA_POSITIONS = {
   NAVBAR: "navbar",
   FOOTER: "footer",
   DOWNLOAD_PAGE: "download_page",
+  INSTALL_DIALOG: "install_dialog",
 } as const;
 
 export type MarketingCtaPosition =

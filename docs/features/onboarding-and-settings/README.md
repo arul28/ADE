@@ -843,12 +843,28 @@ Current behavior:
 ### Headless install
 
 For machines without a desktop install (CI workers, remote
-SSH-attached runtimes), the ADE runtime and `ade` CLI install via
-`curl -fsSL .../install.sh | sh`. The script downloads the static
-`ade-<platform-arch>` binary plus its native dependency archive, drops
-the binary in `$ADE_INSTALL_DIR` (or `~/.local/bin`), extracts native
-modules under `~/.ade/runtime/<arch>/`, and best-effort registers the
-login service. See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md)
+SSH-attached runtimes, Linux servers), the ADE runtime and `ade` CLI
+install via one command:
+
+```bash
+curl -fsSL https://ade-app.dev/install.sh | sh     # macOS, Linux
+irm https://ade-app.dev/install.ps1 | iex          # Windows PowerShell
+```
+
+The script downloads the static `ade-<platform-arch>` binary plus its
+native dependency archive, drops the binary in `$ADE_INSTALL_DIR` (or
+`~/.local/bin`), extracts native modules under `~/.ade/runtime/<arch>/`,
+and best-effort registers the login service. No Node or npm is required —
+the binary is a Node SEA.
+
+On an interactive terminal the script then offers to run `ade connect`,
+which signs the machine in, ensures the login service, and publishes the
+machine to the account directory so desktop, web, and iOS can reach it.
+Use `ade connect --headless` when there is no browser. Non-interactive
+contexts skip the prompts and print the follow-up commands;
+`ADE_INSTALL_NO_PROMPT=1` (or `-NoPrompt`) opts out explicitly.
+
+See [`apps/ade-cli/README.md`](../../../apps/ade-cli/README.md)
 for the full flow and environment overrides.
 
 ### CTO first-run setup

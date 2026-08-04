@@ -22,15 +22,19 @@ ADE is generally available on macOS and runs in **beta on Windows**. The Windows
 
 ## Install
 
-The Windows installer is a **per-user NSIS installer**. It does not ask for administrator rights, installs into your user profile, and adds the app, the `ade` CLI, `ade code`, and the background ADE brain.
+Download the [**signed Windows installer**](https://ade-app.dev/download/windows), or install from PowerShell:
+
+```powershell
+irm https://ade-app.dev/install.ps1 | iex
+```
+
+The installer is a **per-user NSIS installer**. It does not ask for administrator rights, installs into your user profile, and adds the app, the `ade` CLI, `ade code`, and the background ADE brain.
 
 The brain runs from a per-user startup entry, so it comes back at your next sign-in without a service install or an elevated shell.
 
-<Warning>
-Public Windows downloads are not published yet. The signed installer ships once the Windows release proof passes; until then the [releases page](https://github.com/arul28/ADE/releases) lists macOS assets only, and the Windows build is available by building from source.
-</Warning>
-
-Check the [download page](https://ade-app.dev/download) for current status. Pull-request preview builds are unsigned and are for internal testing, not general use.
+<Note>
+Pull-request preview builds are unsigned and are for internal testing, not general use. Install from the link above or the PowerShell one-liner to get the signed build.
+</Note>
 
 ## What is different from macOS
 
@@ -57,7 +61,7 @@ Check the [download page](https://ade-app.dev/download) for current status. Pull
 
 Two more boundaries worth knowing before you plan around them:
 
-- **Remote machines work in one direction.** A Windows machine can drive a remote macOS or Linux runtime over SSH, provided you installed a released build. Windows cannot be the *target* of an SSH bootstrap — you cannot point another machine's ADE at a Windows box.
+- **Remote machines work both ways.** A Windows machine can drive a remote macOS, Linux, or Windows runtime over SSH, provided you installed a released build. Windows can also *be* the target: ADE bootstraps its runtime onto Windows 10 22H2 and Windows 11 x64 boxes over OpenSSH Server, which needs PowerShell 5.1 or newer and the built-in `tar.exe`. WSL, ARM64, and Windows Server are not supported targets.
 - **Some operations need real symlinks.** ADE uses junctions where it can. The rest require Developer Mode or an elevated shell, which Windows requires for symlink creation.
 
 Anything else that looks weaker or missing on Windows is a bug worth reporting, not a known gap.

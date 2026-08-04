@@ -46,6 +46,35 @@ download() {
   fi
 }
 
+# Like download(), but a failure is reported to the caller instead of aborting
+# the install. Used only for the optional desktop-app upsell, which must never
+# turn a successful runtime install into a failed one.
+try_download() {
+  try_url="$1"
+  try_out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL "$try_url" -o "$try_out" 2>/dev/null
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q "$try_url" -O "$try_out" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
+# The desktop app zip is ~1GB, so show a progress bar rather than appearing to
+# hang. stdout/stderr still point at the terminal under `curl | sh`.
+try_download_progress() {
+  try_url="$1"
+  try_out="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --progress-bar "$try_url" -o "$try_out"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --show-progress "$try_url" -O "$try_out"
+  else
+    return 1
+  fi
+}
+
 sha256_file() {
   file="$1"
   if command -v sha256sum >/dev/null 2>&1; then
@@ -109,6 +138,53 @@ asset_url() {
   else
     printf 'https://github.com/%s/releases/download/%s/%s\n' "$repo" "$version" "$name"
   fi
+}
+
+sha512_base64_file() {
+  # electron-updater manifests carry base64 SHA-512, not hex SHA-256, so the
+  # desktop app is verified against latest-mac.yml rather than SHA256SUMS
+  # (which only covers the standalone runtime assets).
+  sha_file="$1"
+  if command -v openssl >/dev/null 2>&1; then
+    openssl dgst -sha512 -binary "$sha_file" | openssl base64 -A
+  elif command -v shasum >/dev/null 2>&1 && command -v xxd >/dev/null 2>&1 &&
+    command -v base64 >/dev/null 2>&1; then
+    shasum -a 512 "$sha_file" | awk '{ print $1 }' | xxd -r -p | base64 | tr -d '\n'
+  else
+    return 1
+  fi
+}
+
+# Prompts must come from the terminal: under `curl | sh` the script's own stdin
+# is the download pipe, so reading it would consume the script or see EOF.
+tty_is_usable() {
+  # Must actually open /dev/tty, not just test its permission bits: a process
+  # with no controlling terminal (CI, a detached installer) still sees a
+  # world-readable /dev/tty node, but every open of it fails with ENXIO. A
+  # permission test would report a usable terminal and the prompts would hang
+  # or read EOF.
+  ( exec 3</dev/tty ) >/dev/null 2>&1 || return 1
+  ( exec 3>/dev/tty ) >/dev/null 2>&1 || return 1
+  return 0
+}
+
+# ask <question> <default:y|n>; 0 = yes, 1 = no.
+ask() {
+  ask_question="$1"
+  ask_default="$2"
+  if [ "$ask_default" = "y" ]; then
+    ask_hint="[Y/n]"
+  else
+    ask_hint="[y/N]"
+  fi
+  printf '%s %s ' "$ask_question" "$ask_hint" >/dev/tty
+  ask_reply=""
+  IFS= read -r ask_reply </dev/tty || ask_reply=""
+  case "$ask_reply" in
+    [Yy] | [Yy][Ee][Ss]) return 0 ;;
+    [Nn] | [Nn][Oo]) return 1 ;;
+    *) [ "$ask_default" = "y" ] ;;
+  esac
 }
 
 choose_install_dir() {
@@ -181,6 +257,157 @@ fi
 
 printf 'ADE runtime installed: %s\n' "$dest_dir/ade"
 case ":$PATH:" in
-  *":$dest_dir:"*) ;;
-  *) printf 'Add %s to PATH to run ade from new shells.\n' "$dest_dir" ;;
+  *":$dest_dir:"*)
+    ade_cmd="ade"
+    ;;
+  *)
+    ade_cmd="$dest_dir/ade"
+    printf 'Add %s to PATH to run ade from new shells.\n' "$dest_dir"
+    ;;
 esac
+
+# Under `curl | sh` the script's stdin is the download pipe, so every prompt --
+# and every command that prompts -- must be wired to /dev/tty instead. With no
+# tty (CI, automation) the interactive steps are skipped and printed as
+# follow-up commands.
+interactive=0
+if [ "${ADE_INSTALL_NO_PROMPT:-}" != "1" ] && tty_is_usable; then
+  interactive=1
+fi
+
+# The agent CLIs (Codex, Claude Code, OpenCode) are pinned but not bundled --
+# the installer fetches them into the shared machine cache so the first agent
+# run is not a surprise multi-hundred-megabyte download. Non-fatal by design:
+# the brain retries this in the background on every `ade serve`, so a flaky
+# network here costs nothing but the wait.
+ensure_agent_tools() {
+  printf '\nFetching pinned agent CLIs (Codex, Claude Code, OpenCode)...\n'
+  if "$dest_dir/ade" tools ensure --text; then
+    return 0
+  fi
+  printf 'ade install: could not fetch the agent CLIs now; ADE will fetch them on first run.\n' >&2
+  return 0
+}
+
+offer_sign_in() {
+  if [ "$interactive" -ne 1 ]; then
+    printf '\nNext: run `%s connect` to link this machine to your ADE account.\n' "$ade_cmd"
+    return 0
+  fi
+
+  printf '\n'
+  if ! ask 'Sign in to link this machine to your ADE account?' y; then
+    printf 'Skipped. Run `%s connect` later to link this machine.\n' "$ade_cmd"
+    return 0
+  fi
+
+  # `ade connect` inherits the terminal, so its own prompts and the browser /
+  # device-code flow work normally.
+  if "$dest_dir/ade" connect </dev/tty; then
+    return 0
+  fi
+  printf 'ade install: sign-in did not finish. Run `%s connect` to try again.\n' "$ade_cmd" >&2
+  return 0
+}
+
+# macOS desktop app upsell. The published SHA256SUMS covers only the standalone
+# runtime assets, so the app zip is verified against the base64 SHA-512 in
+# latest-mac.yml -- the same digest electron-updater checks.
+desktop_manifest_entry() {
+  awk -v arch="$cpu" '
+    $1 == "-" && $2 == "url:" { url = $3; next }
+    $1 == "sha512:" {
+      if (url != "" && url ~ ("-" arch "\\.zip$")) { print url; print $2; found = 1; exit }
+      url = ""
+      next
+    }
+    END { if (!found) exit 1 }
+  ' "$1"
+}
+
+offer_desktop_app() {
+  [ "$(uname -s)" = "Darwin" ] || return 0
+
+  desktop_manifest="$tmp_dir/latest-mac.yml"
+  try_download "$(asset_url "latest-mac.yml")" "$desktop_manifest" || return 0
+  desktop_entry="$(desktop_manifest_entry "$desktop_manifest")" || return 0
+  desktop_zip="$(printf '%s\n' "$desktop_entry" | sed -n 1p)"
+  desktop_sha="$(printf '%s\n' "$desktop_entry" | sed -n 2p)"
+  [ -n "$desktop_zip" ] && [ -n "$desktop_sha" ] || return 0
+
+  if [ "$interactive" -ne 1 ]; then
+    printf 'Desktop app for macOS: %s\n' "$(asset_url "$desktop_zip")"
+    return 0
+  fi
+
+  apps_dir="/Applications"
+  [ -w "$apps_dir" ] || apps_dir="$HOME/Applications"
+  installed_app="$apps_dir/ADE.app"
+
+  printf '\n'
+  if [ -e "$installed_app" ]; then
+    if ! ask "Replace the existing ADE desktop app at $installed_app?" n; then
+      return 0
+    fi
+  elif ! ask 'Install the ADE desktop app for macOS? (about 1 GB download)' y; then
+    # The site is a single-page app whose only routes are /, /open, /pair,
+    # /privacy and /terms (apps/web/src/app/SiteRoutes.tsx); every other path
+    # renders NotFoundPage. The homepage carries the install modal, so link
+    # there rather than at a /download path that does not exist.
+    printf 'Skipped. Download it later from https://ade-app.dev\n'
+    return 0
+  fi
+
+  printf 'Downloading %s\n' "$desktop_zip"
+  if ! try_download_progress "$(asset_url "$desktop_zip")" "$tmp_dir/$desktop_zip"; then
+    printf 'ade install: could not download the desktop app; the ADE runtime is still installed.\n' >&2
+    return 0
+  fi
+  desktop_actual="$(sha512_base64_file "$tmp_dir/$desktop_zip")" || {
+    printf 'ade install: cannot verify the desktop app on this system; skipping it.\n' >&2
+    return 0
+  }
+  if [ "$desktop_actual" != "$desktop_sha" ]; then
+    printf 'ade install: checksum mismatch for %s; skipping the desktop app.\n' "$desktop_zip" >&2
+    return 0
+  fi
+
+  desktop_stage="$tmp_dir/desktop"
+  rm -rf "$desktop_stage"
+  mkdir -p "$desktop_stage"
+  if ! ditto -x -k "$tmp_dir/$desktop_zip" "$desktop_stage" 2>/dev/null; then
+    printf 'ade install: could not expand the desktop app archive; skipping it.\n' >&2
+    return 0
+  fi
+  [ -d "$desktop_stage/ADE.app" ] || {
+    printf 'ade install: desktop app archive did not contain ADE.app; skipping it.\n' >&2
+    return 0
+  }
+
+  # Move the existing app aside rather than deleting it first, so a failed
+  # promotion leaves the user's working app in place.
+  mkdir -p "$apps_dir"
+  desktop_backup="$tmp_dir/ADE.app.previous"
+  rm -rf "$desktop_backup"
+  if [ -e "$installed_app" ] && ! mv "$installed_app" "$desktop_backup"; then
+    printf 'ade install: could not replace %s; skipping the desktop app.\n' "$installed_app" >&2
+    return 0
+  fi
+  if ! mv "$desktop_stage/ADE.app" "$installed_app"; then
+    if [ -e "$desktop_backup" ]; then
+      mv "$desktop_backup" "$installed_app" || true
+    fi
+    printf 'ade install: could not install the desktop app into %s.\n' "$apps_dir" >&2
+    return 0
+  fi
+  rm -rf "$desktop_backup"
+  printf 'ADE desktop app installed: %s\n' "$installed_app"
+  open "$installed_app" 2>/dev/null || true
+  return 0
+}
+
+ensure_agent_tools
+offer_sign_in
+offer_desktop_app
+
+printf '\nDone. Try: %s connect --status --text\n' "$ade_cmd"

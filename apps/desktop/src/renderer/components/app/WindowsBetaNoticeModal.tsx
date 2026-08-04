@@ -247,7 +247,7 @@ export function WindowsBetaNoticeModal({
             }}
           >
             Day-to-day work — lanes, chats, terminals, PRs — is expected to hold up. Some corners
-            are rougher here than on macOS or Linux, and a few are still missing. When something
+            are rougher here than on macOS, and a few are still missing. When something
             breaks, reporting it is what closes the gap.
           </div>
 

@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
 import type { DetectedAuth } from "./authDetector";
+import { cachedToolEntryPath } from "../../../../../ade-cli/src/services/tools/cacheLookup";
 import { resolveExecutableFromKnownLocations } from "./cliExecutableResolver";
 import {
   getClaudeNativeBinaryFileName,
@@ -10,7 +11,7 @@ import {
 
 export type ClaudeCodeExecutableResolution = {
   path: string;
-  source: "env" | "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
+  source: "env" | "tools-cache" | "bundled" | "auth" | "path" | "common-dir" | "fallback-command";
 };
 
 function findClaudeAuthPath(auth?: DetectedAuth[]): string | null {
@@ -107,6 +108,20 @@ export function resolveClaudeCodeExecutable(args?: {
   const envPath = env.CLAUDE_CODE_EXECUTABLE_PATH?.trim();
   if (envPath) {
     return { path: envPath, source: "env" };
+  }
+
+  // The pinned tools cache is the packaged app's real source for this binary:
+  // the platform packages are no longer bundled, the brain fetches them on
+  // first run, and both processes reach them through this one lookup. A miss
+  // (dev checkout, pre-fetch, or a target the manifest does not pin) falls
+  // through to the bundled copy, so a source checkout keeps working untouched.
+  const cachedPath = cachedToolEntryPath("claude-code", {
+    env,
+    platform: args?.platform,
+    arch: args?.arch,
+  });
+  if (cachedPath && isExecutablePath(cachedPath)) {
+    return { path: cachedPath, source: "tools-cache" };
   }
 
   const bundledPath = resolveBundledClaudeCodeExecutable(args);

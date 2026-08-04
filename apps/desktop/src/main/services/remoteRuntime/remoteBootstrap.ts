@@ -24,6 +24,11 @@ import {
   normalizeRemoteTargetRoutes,
   type RemoteTargetRegistry,
 } from "./remoteTargetRegistry";
+import {
+  RemoteSidecarFetchError,
+  resolveRemoteRuntimeSidecars,
+  type RemoteSidecarDeps,
+} from "./remoteSidecarCache";
 
 export function normalizeRemoteArch(raw: string): {
   platform: "darwin" | "linux";
@@ -424,6 +429,59 @@ function bundledNativeDepsPath(resourcesPath: string, archLabel: string): string
       return false;
     }
   }) ?? null;
+}
+
+/**
+ * The runtime binary + native dependency archive to install on the remote.
+ *
+ * Desktop bundles carry only their own build's sidecar, so provisioning a
+ * machine of a different platform/arch falls back to this release's published
+ * assets (verified against its SHA256SUMS, cached per version). A remote that
+ * already runs a usable ADE never blocks on that fetch; a first-time
+ * provisioning that cannot get bytes does.
+ */
+export async function resolveBootstrapRuntimeSidecars(args: {
+  resourcesPath: string;
+  archLabel: string;
+  appVersion: string;
+  remoteRuntimeVersion: string | null;
+  bundledBinary: string | null;
+  sidecarDeps?: RemoteSidecarDeps;
+}): Promise<{ binaryPath: string | null; nativeDepsPath: string | null }> {
+  const bundledNativeDeps = bundledNativeDepsPath(args.resourcesPath, args.archLabel);
+  if (args.bundledBinary) {
+    return { binaryPath: args.bundledBinary, nativeDepsPath: bundledNativeDeps };
+  }
+  // The remote already runs exactly what this desktop would install. Skipping
+  // here keeps steady-state reconnects entirely offline.
+  if (args.remoteRuntimeVersion && args.remoteRuntimeVersion === args.appVersion) {
+    return { binaryPath: null, nativeDepsPath: null };
+  }
+  try {
+    const resolved = await resolveRemoteRuntimeSidecars({
+      archLabel: args.archLabel,
+      appVersion: args.appVersion,
+      bundledBinaryPath: null,
+      bundledNativeDepsPath: bundledNativeDeps,
+    }, args.sidecarDeps);
+    return { binaryPath: resolved.binaryPath, nativeDepsPath: resolved.nativeDepsPath };
+  } catch (error) {
+    const fetchError = error instanceof RemoteSidecarFetchError ? error : null;
+    // Checksum failures are never survivable: refuse rather than install bytes
+    // that do not match what the release published.
+    const survivable = fetchError !== null
+      && fetchError.kind !== "checksum"
+      && (fetchError.kind === "unavailable" || Boolean(args.remoteRuntimeVersion));
+    if (!survivable) throw error;
+    console.warn("remote_runtime.sidecar_fetch_failed", {
+      arch: args.archLabel,
+      appVersion: args.appVersion,
+      kind: fetchError.kind,
+      url: fetchError.url,
+      detail: fetchError.message,
+    });
+    return { binaryPath: null, nativeDepsPath: null };
+  }
 }
 
 function bundledPtyHostWorkerPath(resourcesPath: string, localBinaryPath: string | null): string | null {
@@ -2041,15 +2099,24 @@ async function bootstrapWindowsRemoteRuntime(args: {
   const preferredLayout = resolveWindowsRemoteRuntimeLayout(platform.userProfile);
   let layout = preferredLayout;
   let identity = await readWindowsRuntimeIdentity(ssh, layout);
-  const localBinary = bundledRuntimePath(request.resourcesPath, platform.label);
-  const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
-  const localNativeDeps = bundledNativeDepsPath(request.resourcesPath, platform.label);
-  const localPtyHostWorker = bundledPtyHostWorkerPath(request.resourcesPath, localBinary);
-  const localAgentSkillsRoot = bundledAgentSkillsPath(request.resourcesPath, localBinary);
+  const bundledBinary = bundledRuntimePath(request.resourcesPath, platform.label);
+  const localPtyHostWorker = bundledPtyHostWorkerPath(request.resourcesPath, bundledBinary);
+  const localAgentSkillsRoot = bundledAgentSkillsPath(request.resourcesPath, bundledBinary);
   const installedVersion = selectRemoteRuntimeVersion({
     markerVersion: identity.markerVersion,
     executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
   });
+  const sidecars = await resolveBootstrapRuntimeSidecars({
+    resourcesPath: request.resourcesPath,
+    archLabel: platform.label,
+    appVersion: request.appVersion,
+    remoteRuntimeVersion: installedVersion,
+    bundledBinary,
+    sidecarDeps: request.sidecarDeps,
+  });
+  const localBinary = sidecars.binaryPath;
+  const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
+  const localNativeDeps = sidecars.nativeDepsPath;
   const shouldUploadRuntime = Boolean(localBinary && localBinarySha256 && shouldUploadBundledRuntime({
     localBinaryAvailable: true,
     executableVersion: normalizeRuntimeVersion(identity.executableVersion ?? ""),
@@ -2254,6 +2321,8 @@ export async function bootstrapRemoteRuntime(args: {
   resourcesPath: string;
   appVersion: string;
   pairedStore?: DesktopPairedMachineStore;
+  /** Test seam for the release-asset sidecar fetch (transport + cache root). */
+  sidecarDeps?: RemoteSidecarDeps;
 }): Promise<{ client: RuntimeRpcClient; result: RemoteRuntimeConnectResult; ssh: Client }> {
   const {
     client: ssh,
@@ -2279,15 +2348,13 @@ export async function bootstrapRemoteRuntime(args: {
       markerVersion: markedRuntimeVersion,
       executableVersion: executableRuntimeVersion,
     });
-    const localBinary = bundledRuntimePath(args.resourcesPath, arch.label);
-    const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
-    const nativeDepsBundle = bundledNativeDepsPath(args.resourcesPath, arch.label);
-    const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, localBinary);
+    const bundledBinary = bundledRuntimePath(args.resourcesPath, arch.label);
+    const localPtyHostWorker = bundledPtyHostWorkerPath(args.resourcesPath, bundledBinary);
     const localPtyHostWorkerSha256 = localPtyHostWorker ? hashRuntimeBinary(localPtyHostWorker) : null;
-    const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, localBinary);
+    const localAgentSkillsRoot = bundledAgentSkillsPath(args.resourcesPath, bundledBinary);
     let remoteBinaryMatchesLocal: boolean | null = null;
 
-    if (!localBinary && !executableRuntimeVersion) {
+    if (!bundledBinary && !executableRuntimeVersion) {
       for (const candidateLayout of resolveRemoteRuntimeLayoutCandidates().filter((candidate) => candidate.homeDirName !== layout.homeDirName)) {
         const candidateIdentity = await readRemoteRuntimeIdentity(ssh, candidateLayout);
         const candidateExecutableVersion = candidateIdentity.executableVersion;
@@ -2304,6 +2371,18 @@ export async function bootstrapRemoteRuntime(args: {
         break;
       }
     }
+
+    const sidecars = await resolveBootstrapRuntimeSidecars({
+      resourcesPath: args.resourcesPath,
+      archLabel: arch.label,
+      appVersion: args.appVersion,
+      remoteRuntimeVersion: runtimeVersion,
+      bundledBinary,
+      sidecarDeps: args.sidecarDeps,
+    });
+    const localBinary = sidecars.binaryPath;
+    const localBinarySha256 = localBinary ? hashRuntimeBinary(localBinary) : null;
+    const nativeDepsBundle = sidecars.nativeDepsPath;
 
     let runtimeUploaded = false;
     if (localBinary && localBinarySha256 && runtimeVersion === args.appVersion) {

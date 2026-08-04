@@ -275,6 +275,7 @@ import { LocalRuntimeConnectionPool } from "./services/localRuntime/localRuntime
 import { createSyncService } from "./services/sync/syncService";
 import { blockPackagedLaunchForCrossChannelSyncConflict } from "./services/sync/packagedSyncHostLaunchGate";
 import { createAutoUpdateService } from "./services/updates/autoUpdateService";
+import { createAgentToolsCacheService } from "./services/tools/agentToolsCacheService";
 import { DEFAULT_RELEASE_REPOSITORY } from "./services/updates/autoUpdateVersions";
 import { cleanupStaleTempArtifacts } from "./services/runtime/tempCleanupService";
 import type { Logger } from "./services/logging/logger";
@@ -2330,6 +2331,23 @@ app.whenReady().then(async () => {
       app.exit(0);
     },
   });
+  // Pinned agent tools are fetched, not bundled. The brain kicks its own
+  // background fetch on `ade serve`, but the desktop app can be launched
+  // against a brain that is already running (or one that failed its fetch), so
+  // it kicks its own coalesced pass and owns the UI-facing progress state.
+  // Source checkouts still resolve these from node_modules, so this is
+  // packaged-only rather than a dev-loop download.
+  const agentToolsCacheService = createAgentToolsCacheService({
+    logger: updateLogger,
+    productAnalyticsService,
+  });
+  if (app.isPackaged && process.env.NODE_ENV !== "test" && process.env.ADE_DISABLE_TOOLS_FETCH !== "1") {
+    void agentToolsCacheService.ensureMissing().catch(() => {
+      // Per-tool failures are already recorded on the snapshot and in the log;
+      // a rejected kick must never take down app startup.
+    });
+  }
+
   const shouldRefreshRuntimeServiceAfterUpdate =
     app.isPackaged
     && process.env.NODE_ENV !== "test"
@@ -6332,6 +6350,13 @@ app.whenReady().then(async () => {
       win.webContents.send(IPC.updateEvent, snapshot);
     });
   });
+  // Onboarding shows live fetch progress for the pinned agent CLIs; push it the
+  // same way update progress is pushed rather than making the renderer poll.
+  agentToolsCacheService.onStateChange((snapshot) => {
+    BrowserWindow.getAllWindows().forEach((win) => {
+      win.webContents.send(IPC.aiToolsCacheEvent, snapshot);
+    });
+  });
 
   const firstOpenWindowProjectRoot = (): string | null => {
     for (const win of BrowserWindow.getAllWindows()) {
@@ -7111,6 +7136,9 @@ app.whenReady().then(async () => {
       const ctx = getActiveContext();
       if (!ctx.autoUpdateService) {
         ctx.autoUpdateService = autoUpdateService;
+      }
+      if (!ctx.agentToolsCacheService) {
+        ctx.agentToolsCacheService = agentToolsCacheService;
       }
       if (!ctx.updateInstallImpactProvider) {
         ctx.updateInstallImpactProvider = () => collectUpdateInstallImpactBounded();

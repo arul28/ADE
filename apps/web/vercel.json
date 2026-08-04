@@ -40,6 +40,22 @@
       "destination": "/api/open"
     },
     {
+      "source": "/install.sh",
+      "destination": "/api/install?script=sh"
+    },
+    {
+      "source": "/install.ps1",
+      "destination": "/api/install?script=ps1"
+    },
+    {
+      "source": "/download/brain/:target",
+      "destination": "/api/download?kind=brain&target=:target"
+    },
+    {
+      "source": "/download/:slug",
+      "destination": "/api/download?kind=app&slug=:slug"
+    },
+    {
       "source": "/pair",
       "destination": "/pair/index.html"
     },

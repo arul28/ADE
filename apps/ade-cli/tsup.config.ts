@@ -6,11 +6,9 @@ import path from "node:path";
 const external = [
   "@anthropic-ai/claude-agent-sdk",
   "@cursor/sdk",
-  "@wize-logic/nodejs-rfb",
   "chokidar",
   "node-pty",
   "node:sqlite",
-  "sql.js",
   "sqlite3",
   "zod",
 ];

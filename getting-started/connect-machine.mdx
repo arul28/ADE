@@ -1,0 +1,122 @@
+---
+title: "Connect a machine"
+description: "Run ade connect to put a machine on your ADE account — then reach it from desktop, the web, and iOS. Includes running the ADE brain headless on a Linux server."
+icon: "server"
+---
+
+ADE's engine is the **brain** — an always-on, machine-owned process that holds your projects, lanes, agent chats, and Git state. The desktop app, `ade code`, the web client, and the iOS app are all *clients* of a brain.
+
+That split is what makes this possible: install the brain on a machine, connect it to your account, and drive it from anywhere. A Linux build server with 64 cores can be the machine that runs your agents while you review diffs from your phone.
+
+## `ade connect`
+
+`ade connect` is the one command that puts a machine on your account. It runs three idempotent steps and reports each one:
+
+<Steps>
+  <Step title="Account">
+    Reuses a valid session, or signs you in. A browser-capable machine opens a loopback OAuth callback; SSH sessions and display-less hosts get a copy-paste device code instead.
+  </Step>
+  <Step title="Service">
+    Installs and starts this platform's login service if it is not already running — launchd on macOS, a systemd user service on Linux, a per-user startup entry on Windows. None of them need an elevated shell.
+  </Step>
+  <Step title="Machine">
+    Waits for this machine's row to reach your account directory. Once it lands, the machine is reachable from ADE desktop, the [web client](https://app.ade-app.dev), and iOS.
+  </Step>
+</Steps>
+
+```bash
+ade connect                  # sign in, install the service, publish this machine
+ade connect --status --text  # report the three steps, change nothing
+ade connect --headless       # force the copy-paste device flow
+ade connect --no-login       # service only — stay local and LAN-only
+ade connect --no-service     # account only — do not install the login service
+ade connect --timeout 120    # seconds to wait for the machine row (default 60)
+```
+
+Re-running `ade connect` on an already-connected machine changes nothing and just prints status, so it is safe in a provisioning script.
+
+<Note>
+Output is JSON by default so scripts and agents can consume it. Add `--text` for a human-readable summary.
+</Note>
+
+<Warning>
+The brain is what publishes the machine and keeps it reachable — it re-registers every 30 seconds while running. If you skip the service step with `--no-service`, or stop the brain, the machine goes offline in the directory. The account directory marks a machine `online` only within a 90-second window of its last heartbeat.
+</Warning>
+
+## The brain on a Linux server
+
+Linux runs the brain, not a desktop app — and that is the point. There is no ADE desktop app for Linux, and none is needed.
+
+<Steps>
+  <Step title="Install the brain">
+    On any x64 or arm64 Linux box:
+
+    ```bash
+    curl -fsSL https://ade-app.dev/install.sh | sh
+    ```
+
+    The script downloads a self-contained runtime binary, verifies it against the published checksums, and installs it under `~/.ade`. There is no Node or npm prerequisite. Add `~/.ade/bin` to your `PATH` — the installer prints the line but does not edit your shell profile.
+
+    The systemd user service is registered only when a systemd user session is available. On a box without one, start the brain yourself and keep it running.
+  </Step>
+  <Step title="Connect it">
+    Over SSH there is no browser, so use the device flow:
+
+    ```bash
+    ade connect --headless
+    ```
+
+    The CLI prints a verification URL and a short code. Complete it in a browser on any device.
+  </Step>
+  <Step title="Open a project on it">
+    Register a repository that lives on that box:
+
+    ```bash
+    ade init          # add the current directory as a project
+    ade projects list --text
+    ```
+  </Step>
+  <Step title="Drive it from anywhere">
+    The machine now appears in ADE desktop, at [app.ade-app.dev](https://app.ade-app.dev), and in the iOS app. Create lanes, run agents, review diffs, and merge PRs from any of them — the work executes on the Linux box, against its filesystem and its own GitHub, Linear, and provider credentials.
+  </Step>
+</Steps>
+
+You can also stay on the box and use the terminal UI directly:
+
+```bash
+ade code
+```
+
+## Non-interactive hosts
+
+For CI and unattended agents, do the interactive sign-in once on a machine that has a browser, mint a durable credential, and hand it to the headless host:
+
+```bash
+ade account token create
+```
+
+Store the result in your secret manager and expose it as `ADE_ACCOUNT_TOKEN` to the ADE brain or runtime on the target machine. ADE never logs this value.
+
+The install scripts detect that no terminal is attached and skip their prompts, printing the follow-up commands instead. Set `ADE_INSTALL_NO_PROMPT=1` (or pass `-NoPrompt` to `install.ps1`) to opt out explicitly.
+
+## Undoing it
+
+```bash
+ade logout                      # sign out — undoes the account half of connect
+ade runtime uninstall-service   # remove the login service
+```
+
+ADE accounts are optional. Local `ade code`, project, lane, and phone-pairing workflows keep working while signed out.
+
+## Remote machines over SSH, instead
+
+`ade connect` publishes a machine to your account so any client can reach it. If you would rather not involve an account at all, a desktop window can bind directly to a brain on another machine over SSH — ADE bootstraps the runtime on the far side on first connect.
+
+<CardGroup cols={2}>
+  <Card title="Remote machines" icon="server" href="/tools/remote-machines">
+    Drive a repository on another box over SSH, with the desktop as the control plane.
+  </Card>
+  <Card title="ade CLI" icon="terminal" href="/reference/cli">
+    The full typed control plane, including every `ade connect` flag.
+  </Card>
+</CardGroup>

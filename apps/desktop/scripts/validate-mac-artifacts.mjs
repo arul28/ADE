@@ -7,6 +7,13 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import asar from "@electron/asar";
 import { parse as parseYaml } from "yaml";
 import packagedAdeCliResourcesModule from "./packaged-ade-cli-resources.cjs";
+import runtimeResourceTargets from "./runtime-resource-targets.cjs";
+import {
+  runtimeFetchedToolPackageNames,
+  RUNTIME_FETCHED_TOOL_EXPLANATION,
+} from "./runtime-fetched-tool-packages.mjs";
+
+const { RUNTIME_TARGETS, runtimeBinaryNameForTarget } = runtimeResourceTargets;
 
 const execFileAsync = promisify(execFile);
 
@@ -206,13 +213,12 @@ async function assertExecutable(targetPath, description) {
 
 async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArch) {
   const runtimeRoot = path.join(resourcesPath, "runtime");
-  // Per-arch builds bundle ONLY their own darwin sidecar (afterPack prunes the
-  // other arch). Universal builds keep both darwin sidecars.
+  // A macOS bundle carries ONLY its own darwin sidecar; universal carries both
+  // darwin arches. Every other target -- including win32-x64, which used to ride
+  // along and cost ~500 MB of the update zip -- must be absent.
   const requiredTargets =
     expectedArch === "universal" ? ["darwin-arm64", "darwin-x64"] : [`darwin-${expectedArch}`];
-  const excludedTargets = ["darwin-arm64", "darwin-x64", "linux-arm64", "linux-x64"].filter(
-    (target) => !requiredTargets.includes(target),
-  );
+  const excludedTargets = RUNTIME_TARGETS.filter((target) => !requiredTargets.includes(target));
   await assertPathExists(runtimeRoot, `remote runtime bundle directory for ${description}`);
   for (const requiredTarget of requiredTargets) {
     const binaryPath = path.join(runtimeRoot, `ade-${requiredTarget}`);
@@ -233,7 +239,7 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
     }
   }
   for (const target of excludedTargets) {
-    await assertPathMissing(path.join(runtimeRoot, `ade-${target}`), `non-target remote runtime binary ${target} for ${description}`);
+    await assertPathMissing(path.join(runtimeRoot, runtimeBinaryNameForTarget(target)), `non-target remote runtime binary ${target} for ${description}`);
     await assertPathMissing(path.join(runtimeRoot, `ade-${target}.native.tar.gz`), `non-target remote runtime native archive ${target} for ${description}`);
   }
   const runtimeEntries = await fs.readdir(runtimeRoot, { withFileTypes: true });
@@ -248,17 +254,57 @@ async function assertRemoteRuntimeBundle(resourcesPath, description, expectedArc
   }
 }
 
-async function assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch) {
-  // Per-arch builds bundle ONLY their own arch's OpenCode binary (electron-builder
-  // excludes the non-target arch's optional native dep). Require just that one;
-  // we don't assert the other arch is absent (a harmless extra copy must not fail
-  // the release).
-  const arches = expectedArch === "universal" ? ["arm64", "x64"] : [expectedArch];
-  for (const arch of arches) {
-    const binaryPath = path.join(nodeModulesPath, `opencode-darwin-${arch}`, "bin", "opencode");
-    await assertPathExists(binaryPath, `bundled OpenCode runtime binary for ${description}`);
-    await assertExecutable(binaryPath, `bundled OpenCode runtime binary for ${description}`);
+/**
+ * The packaged smoke used to require source === "bundled" for all three agent
+ * CLIs. That expectation is now inverted: "bundled" means the packaging
+ * exclusions regressed and the build is shipping payload the resolver would
+ * never have reached anyway (the tools cache is consulted first). Everything
+ * else - a populated cache, a user install, or the not-yet-fetched fallback - is
+ * a working resolver.
+ */
+function assertFetchedToolResolution(label, source, executablePath) {
+  if (typeof source !== "string" || source.trim().length === 0) {
+    throw new Error(`[release:mac] Packaged smoke did not report a ${label} executable source`);
   }
+  if (source === "bundled") {
+    throw new Error(
+      `[release:mac] ${label} resolved to a bundled copy (source="bundled") at ${String(executablePath)}; `
+      + `the packaged app must not carry the native platform packages. ${RUNTIME_FETCHED_TOOL_EXPLANATION}`,
+    );
+  }
+  console.log(`[release:mac] ${label} executable resolved from "${source}".`);
+}
+
+/**
+ * Codex, Claude Code and OpenCode native platform packages are fetched into the
+ * machine tools cache at runtime, so none of them may ship - not even the
+ * on-target arch. The JS entry points still must, and are checked here too:
+ * over-broad `!` exclusions in build.files would take the SDK out with the
+ * native siblings, and that breaks the product rather than merely bloating it.
+ */
+async function assertNoRuntimeFetchedToolPackages(nodeModulesPath, description) {
+  const offenders = [];
+  for (const packageName of runtimeFetchedToolPackageNames) {
+    const packagePath = path.join(nodeModulesPath, ...packageName.split("/"));
+    try {
+      await fs.access(packagePath);
+      offenders.push(packagePath);
+    } catch {
+      // absent, as required
+    }
+  }
+  if (offenders.length > 0) {
+    throw new Error(
+      `[release:mac] ${description} ships ${offenders.length} runtime-fetched agent tool package(s):\n  `
+      + `${offenders.join("\n  ")}\n${RUNTIME_FETCHED_TOOL_EXPLANATION}`,
+    );
+  }
+  await assertPathExists(path.join(nodeModulesPath, "opencode-ai"), `bundled OpenCode JS launcher for ${description}`);
+  await assertPathExists(path.join(nodeModulesPath, "@openai", "codex"), `bundled Codex JS launcher for ${description}`);
+  await assertPathExists(
+    path.join(nodeModulesPath, "@anthropic-ai", "claude-agent-sdk"),
+    `bundled Claude Agent SDK for ${description}`,
+  );
 }
 
 async function assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch) {
@@ -521,7 +567,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   await assertPathExists(nodePtyModulePath, "unpacked node-pty module");
   await assertPathExists(smokeScriptPath, "unpacked packaged runtime smoke script");
   await assertBundledAttentionNotch(resourcesPath, description);
-  await assertBundledOpenCodeRuntime(nodeModulesPath, description, expectedArch);
+  await assertNoRuntimeFetchedToolPackages(nodeModulesPath, description);
   await assertBundledCrsqliteRuntime(unpackedPath, description, expectedArch);
   const adeCliTuiContents = await fs.readFile(adeCliTuiPath, "utf8");
   for (const token of ["__dirname", "__filename"]) {
@@ -571,11 +617,7 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (typeof payload?.claudeExecutablePath !== "string" || payload.claudeExecutablePath.trim().length === 0) {
     throw new Error("[release:mac] Packaged smoke did not report a Claude executable path");
   }
-  if (payload?.claudeExecutableSource !== "bundled") {
-    throw new Error(
-      `[release:mac] Packaged smoke expected bundled Claude, got ${String(payload?.claudeExecutableSource)} at ${payload.claudeExecutablePath}`
-    );
-  }
+  assertFetchedToolResolution("Claude", payload?.claudeExecutableSource, payload?.claudeExecutablePath);
   if (pathReferencesPackedAsar(payload.claudeExecutablePath)) {
     throw new Error(
       `[release:mac] Packaged smoke resolved Claude to a packed app.asar path instead of app.asar.unpacked: ${payload.claudeExecutablePath}`
@@ -600,11 +642,8 @@ async function validatePackagedRuntime(appPath, description, expectedArch, optio
   if (payload?.openCodeExecutable !== "function") {
     throw new Error(`[release:mac] Packaged smoke expected OpenCode executable resolver to be available, got ${String(payload?.openCodeExecutable)}`);
   }
-  if (payload?.openCodeExecutableSource !== "bundled") {
-    throw new Error(
-      `[release:mac] Packaged smoke expected bundled OpenCode, got ${String(payload?.openCodeExecutableSource)} at ${String(payload?.openCodeExecutablePath)}`
-    );
-  }
+  assertFetchedToolResolution("OpenCode", payload?.openCodeExecutableSource, payload?.openCodeExecutablePath);
+  assertFetchedToolResolution("Codex", payload?.codexExecutableSource, payload?.codexExecutablePath);
 
   const { stdout: adeCliHelp } = await execFileAsync(adeCliBinPath, ["--help"], {
     cwd: resourcesPath,

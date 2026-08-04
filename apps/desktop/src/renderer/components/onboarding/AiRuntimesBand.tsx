@@ -1,11 +1,14 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type {
+  AgentToolCacheState,
+  AgentToolsCacheSnapshot,
   AiClaudeAvailability,
   AiConfig,
   AiFeatureKey,
   AiSettingsStatus,
 } from "../../../shared/types";
-import { ArrowUpRight, Check, Copy, Key } from "@phosphor-icons/react";
+import { EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT } from "../../../shared/types";
+import { ArrowsClockwise, ArrowUpRight, Check, Copy, Key } from "@phosphor-icons/react";
 import { ClaudeLogo, CodexLogo, CursorAgentLogo, OpenCodeLogo } from "../terminals/ToolLogos";
 import { DroidLogo, ProviderLogo } from "../shared/ProviderLogos";
 import { COLORS, SANS_FONT, MONO_FONT } from "../lanes/laneDesignTokens";
@@ -17,6 +20,7 @@ import { useCopyToClipboard } from "../../hooks/useCopyToClipboard";
 import { docs } from "../../onboarding/docsLinks";
 import { InputPopover } from "./InputPopover";
 import { RescanButton } from "./RescanButton";
+import { Button } from "../ui/Button";
 import { BRAND, CARD_BASE, SECTION_LABEL, brandCard } from "./onboardingTheme";
 
 type FeatureKey = AiFeatureKey | "auto_title";
@@ -34,6 +38,12 @@ type RuntimeMeta = {
   installCommand?: string;
   /** Shell command to sign in once the CLI is installed. */
   authCommand?: string;
+  /**
+   * Pinned tool ADE fetches into the machine cache for this runtime, if any.
+   * Cursor and Droid are user-installed, so they have none and keep the plain
+   * detected/not-detected treatment.
+   */
+  toolName?: string;
 };
 
 // Factory publishes a PowerShell installer for its native Windows build; the
@@ -57,11 +67,11 @@ export function cursorInstallCommand(platform = rendererPlatformAttribute()): st
 }
 
 const RUNTIMES: RuntimeMeta[] = [
-  { id: "claude", label: "Claude Code", brand: BRAND.claude, Logo: ClaudeLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @anthropic-ai/claude-code", authCommand: "claude /login" },
-  { id: "codex", label: "Codex", brand: BRAND.codex, Logo: CodexLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @openai/codex", authCommand: "codex login" },
+  { id: "claude", label: "Claude Code", brand: BRAND.claude, Logo: ClaudeLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @anthropic-ai/claude-code", authCommand: "claude /login", toolName: "claude-code" },
+  { id: "codex", label: "Codex", brand: BRAND.codex, Logo: CodexLogo, docsUrl: docs.multiAgentSetup, installCommand: "npm install -g @openai/codex", authCommand: "codex login", toolName: "codex" },
   { id: "cursor", label: "Cursor", brand: BRAND.cursor, Logo: CursorAgentLogo, docsUrl: docs.multiAgentSetup, installCommand: cursorInstallCommand() },
   { id: "droid", label: "Factory Droid", brand: BRAND.droid, Logo: DroidLogo, docsUrl: "https://docs.factory.ai/cli/getting-started/quickstart", installCommand: DROID_INSTALL_COMMAND, authCommand: "droid login" },
-  { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup },
+  { id: "opencode", label: "OpenCode", brand: BRAND.opencode, Logo: OpenCodeLogo, docsUrl: docs.multiAgentSetup, toolName: "opencode" },
 ];
 
 /**
@@ -72,6 +82,70 @@ const RUNTIMES: RuntimeMeta[] = [
 export function availableRuntimes(): RuntimeMeta[] {
   if (cursorProviderAvailable()) return RUNTIMES;
   return RUNTIMES.filter((rt) => rt.id !== "cursor");
+}
+
+/**
+ * The fetch state ADE is in for this runtime's pinned tool, or null when the
+ * runtime is not fetched, is already ready, or the cache has nothing to say.
+ * A stale `failed` must never shout over a runtime that resolved anyway (a
+ * user-installed CLI on PATH satisfies the runtime without the cache).
+ */
+export function runtimeToolState(
+  meta: Pick<RuntimeMeta, "toolName">,
+  snapshot: AgentToolsCacheSnapshot | null,
+  phase: RuntimePhase,
+): AgentToolCacheState | null {
+  if (!meta.toolName || !snapshot || phase === "ready") return null;
+  const state = snapshot.tools.find((tool) => tool.tool === meta.toolName) ?? null;
+  if (!state || state.status === "installed" || state.status === "missing") return null;
+  return state;
+}
+
+/** Branch on `kind`, never on message text — see ade-cli/src/services/tools/errors.ts. */
+const TOOL_ERROR_TEXT: Record<string, string> = {
+  network: "Download failed — check your connection",
+  "disk-space": "Not enough disk space to unpack",
+  integrity: "Download failed its checksum check",
+  "lock-timeout": "Another ADE is already downloading this",
+  "unsupported-target": "No pinned build for this platform",
+};
+
+export function toolFetchFailureText(errorKind: string | null): string {
+  return (errorKind ? TOOL_ERROR_TEXT[errorKind] : null) ?? "Download failed";
+}
+
+/** Same percent rounding the update pill uses, so the two never disagree. */
+function percentLabel(percent: number | null): string | null {
+  if (percent == null || !Number.isFinite(percent)) return null;
+  return `${Math.max(0, Math.min(100, Math.round(percent)))}%`;
+}
+
+/** Initial read plus live pushes from the main-process tools cache. */
+function useAgentToolsCache(): AgentToolsCacheSnapshot {
+  const [snapshot, setSnapshot] = useState<AgentToolsCacheSnapshot>(EMPTY_AGENT_TOOLS_CACHE_SNAPSHOT);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    void window.ade.ai.getToolsCache?.()
+      .then((next) => {
+        if (!cancelled) setSnapshot(next);
+      })
+      .catch(() => {
+        // Best effort only; live events will fill in.
+      });
+
+    const unsubscribe = window.ade.ai.onToolsCacheEvent?.((next) => {
+      if (!cancelled) setSnapshot(next);
+    });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, []);
+
+  return snapshot;
 }
 
 const FEATURES: Array<{ key: FeatureKey; label: string }> = [
@@ -103,6 +177,23 @@ export function AiRuntimesBand() {
   }, []);
 
   useEffect(() => { void refresh(); }, [refresh]);
+
+  const toolsCache = useAgentToolsCache();
+  const wasFetching = useRef(false);
+  // A finished fetch changes what is on disk, so the readiness scan behind these
+  // cards is stale the moment the last tool lands. Re-scan instead of leaving
+  // the user staring at "Not detected" until they hit Rescan themselves.
+  useEffect(() => {
+    if (wasFetching.current && !toolsCache.fetching) void refresh(true);
+    wasFetching.current = toolsCache.fetching;
+  }, [toolsCache.fetching, refresh]);
+
+  const retryToolFetch = useCallback(() => {
+    // Coalesced in the main process; progress lands through the push events.
+    void window.ade.ai.ensureToolsCache?.().catch(() => {
+      // Failures are already on the snapshot.
+    });
+  }, []);
 
   const runtimes = useMemo(() => availableRuntimes(), []);
 
@@ -217,7 +308,14 @@ export function AiRuntimesBand() {
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 180px), 1fr))", gap: 12 }}>
         {runtimes.map((rt) => (
-          <RuntimeCard key={rt.id} meta={rt} status={status} onSaveCursorKey={saveCursorKey} />
+          <RuntimeCard
+            key={rt.id}
+            meta={rt}
+            status={status}
+            toolsCache={toolsCache}
+            onRetryToolFetch={retryToolFetch}
+            onSaveCursorKey={saveCursorKey}
+          />
         ))}
       </div>
 
@@ -269,17 +367,37 @@ export function AiRuntimesBand() {
 }
 
 function RuntimeCard({
-  meta, status, onSaveCursorKey,
+  meta, status, toolsCache, onRetryToolFetch, onSaveCursorKey,
 }: {
   meta: RuntimeMeta;
   status: AiSettingsStatus | null;
+  toolsCache: AgentToolsCacheSnapshot;
+  onRetryToolFetch: () => void;
   onSaveCursorKey: (key: string) => Promise<{ ok: boolean; message?: string }>;
 }) {
   const phase = getPhase(meta, status);
-  const tone = getTone(phase);
+  const toolState = runtimeToolState(meta, toolsCache, phase);
+  const tone = toolState ? getToolTone(toolState) : getTone(phase);
   const { Logo } = meta;
-  const detail = getDetailText(meta, status, phase);
-  const cta = getCta(meta, status, phase, onSaveCursorKey);
+  const detail = toolState
+    ? (toolState.status === "fetching"
+      ? <FetchProgress percent={toolState.percent} />
+      : toolFetchFailureText(toolState.errorKind))
+    : getDetailText(meta, status, phase);
+  // Mid-fetch there is nothing for the user to do; a failed fetch keeps the
+  // manual install path below the retry so a permanently broken download is
+  // never a dead end.
+  const baseCta = toolState?.status === "fetching"
+    ? null
+    : getCta(meta, status, phase, onSaveCursorKey);
+  const cta = toolState?.status === "failed"
+    ? (
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        <RetryFetchButton onClick={onRetryToolFetch} />
+        {baseCta}
+      </div>
+    )
+    : baseCta;
   return (
     <div style={brandCard(meta.brand, { padding: 12, display: "flex", flexDirection: "column" })}>
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
@@ -345,6 +463,40 @@ function getPhase(meta: RuntimeMeta, status: AiSettingsStatus | null): RuntimePh
   if (conn?.runtimeAvailable) return "ready";
   if (conn?.runtimeDetected || conn?.authAvailable) return "auth";
   return "missing";
+}
+
+function getToolTone(state: AgentToolCacheState): { color: string; label: string } {
+  return state.status === "fetching"
+    ? { color: COLORS.accent, label: "Fetching" }
+    : { color: COLORS.danger, label: "Fetch failed" };
+}
+
+/**
+ * Same treatment the update pill uses while downloading: a spinning glyph, the
+ * verb, and a dimmer percent that simply disappears when the size is unknown.
+ */
+function FetchProgress({ percent }: { percent: number | null }) {
+  const label = percentLabel(percent);
+  return (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+      <ArrowsClockwise size={11} weight="bold" className="animate-spin" />
+      <span>Fetching…</span>
+      {label ? <span style={{ fontSize: 10.5, color: COLORS.textDim }}>{label}</span> : null}
+    </span>
+  );
+}
+
+function RetryFetchButton({ onClick }: { onClick: () => void }) {
+  return (
+    <div style={{ display: "flex" }}>
+      <Button size="sm" variant="ghost" onClick={onClick}>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+          <ArrowsClockwise size={12} weight="bold" />
+          Retry download
+        </span>
+      </Button>
+    </div>
+  );
 }
 
 function getTone(phase: RuntimePhase): { color: string; label: string } {

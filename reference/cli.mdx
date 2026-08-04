@@ -86,6 +86,29 @@ ade lanes list --json   # stable JSON for scripts and agents
     ```
   </Accordion>
 
+  <Accordion title="Account & machines" icon="user">
+    Link this machine to your ADE account so you can reach it from ADE desktop,
+    the web client, and iOS. `ade connect` is idempotent — re-running it on a
+    connected machine just prints status.
+
+    ```bash
+    ade connect                             # sign in, install the service, publish this machine
+    ade connect --status --text             # report the three steps, change nothing
+    ade connect --headless                  # copy-paste device flow (SSH, no browser)
+    ade connect --no-login                  # service only; stay local/LAN-only
+    ade connect --no-service                # account only; skip the login service
+    ade connect --timeout 120               # seconds to wait for the machine row (default 60)
+    ade login                               # sign in without touching the service
+    ade machines list --text                # machines registered to this account
+    ade logout                              # undo the account half of connect
+    ```
+
+    The machine row is published by the running brain, not by this command — so
+    the brain must stay running for the machine to remain reachable. Full
+    walkthrough, including running the brain on a Linux server:
+    [Connect a machine](/getting-started/connect-machine).
+  </Accordion>
+
   <Accordion title="Brain & pairing" icon="microchip">
     Control the machine-owned ADE runtime (the brain) and pair a phone.
 

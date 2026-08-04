@@ -7,6 +7,32 @@ const MIB = 1024 * 1024;
 const DEFAULT_UPDATE_DOWNLOAD_BYTES = 512 * MIB;
 const UPDATE_SPACE_HEADROOM_BYTES = 512 * MIB;
 
+// electron-updater's MacUpdater hands the downloaded zip to native Squirrel.Mac,
+// which buffers the whole archive into one contiguous CFData grown by doubling.
+// Past 1 GiB that asks for a 2 GiB reallocation, which Chromium's PartitionAlloc
+// refuses: the app dies with EXC_BREAKPOINT roughly a minute after launch,
+// before the user can decline the update. Refusing the download is strictly
+// better than crashing. CI's 800 MiB artifact budget is the primary defense and
+// this matches it, so a build that passed CI can never trip this guard.
+export const MAC_UPDATE_ARTIFACT_MAX_BYTES = 800 * MIB;
+
+export const MAC_UPDATE_ARTIFACT_TOO_LARGE_MESSAGE =
+  "This update is too large for macOS to install safely.";
+
+/**
+ * Size metadata is advisory: `null` means the feed omitted it, and the CI gate
+ * already guarantees published artifacts are within budget, so allow it through
+ * rather than blocking every update on a malformed manifest.
+ */
+export function exceedsMacUpdateArtifactLimit(
+  platform: NodeJS.Platform,
+  compressedBytes: number | null,
+): boolean {
+  if (platform !== "darwin") return false;
+  const size = finitePositive(compressedBytes);
+  return size != null && size > MAC_UPDATE_ARTIFACT_MAX_BYTES;
+}
+
 export type DiskSpaceInfo = {
   availableBytes: number;
   volumePath: string;
@@ -77,6 +103,9 @@ export function classifyUpdateError(
   const code = errorCode(error);
   const message = errorMessage(error).toLowerCase();
   const phase = /extract|staging|shipit|unpack/.test(message) ? "staging" : fallbackPhase;
+  if (/too large for macos to install/.test(message)) {
+    return { kind: "artifact_too_large", phase };
+  }
   if (code === "ENOSPC" || /no space left|disk(?: is)? full/.test(message)) {
     return { kind: "disk_full", phase };
   }

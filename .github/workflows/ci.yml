@@ -134,7 +134,7 @@ jobs:
       # scripts/validate-docs.test.mjs covers the docs validator that the
       # validate-docs job runs.
       - name: Test release runtime archive, packaging, and docs-validator guards
-        run: node --test apps/ade-cli/scripts/native-archive-verification.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
+        run: node --test apps/ade-cli/scripts/native-archive-verification.test.mjs apps/ade-cli/scripts/native-deps-entry-filter.test.mjs apps/desktop/scripts/mac-runtime-archive-mode.test.mjs apps/desktop/scripts/packaged-ade-cli-resources.test.mjs scripts/validate-docs.test.mjs scripts/validate-platform-gates.test.mjs
 
   typecheck-web:
     needs: install

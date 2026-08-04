@@ -7,6 +7,7 @@ icon: "lightbulb"
 ADE has a small set of ideas. Learn these and the rest of the app becomes easier to follow.
 
 <CardGroup cols={3}>
+  <Card title="Machine" icon="server" href="#machine">A computer running the ADE brain.</Card>
   <Card title="Lane" icon="code-branch" href="#lane">One isolated branch and worktree per task.</Card>
   <Card title="Work" icon="rectangle-terminal" href="#work">The place where chats, terminals, and CLI sessions run.</Card>
   <Card title="Agent chat" icon="comments" href="#agent-chat">A lane-scoped conversation that can edit, run, test, and commit.</Card>
@@ -17,6 +18,12 @@ ADE has a small set of ideas. Learn these and the rest of the app becomes easier
   <Card title="History" icon="clock-rotate-left" href="#history">Searchable record of sessions, commits, and checkpoints.</Card>
   <Card title="iOS companion" icon="mobile-screen" href="#ios-companion">Phone pairing for updates and remote follow-up.</Card>
 </CardGroup>
+
+## Machine
+
+A machine is a computer running the **brain** — ADE's always-on engine. The brain owns your projects, lanes, chats, and Git state, and it runs the agents. Everything you look at is a client of a brain: the desktop app, `ade code`, the web client, and the iOS app.
+
+That split is why a machine does not have to be the computer in front of you. Run [`ade connect`](/getting-started/connect-machine) on a box — your laptop, or a headless Linux server — and it joins your account directory, reachable from every client. On Linux the brain is the whole product; there is no desktop app and none is needed.
 
 ## Lane
 
@@ -52,7 +59,7 @@ History is the searchable project record. It includes chats, terminal sessions, 
 
 ## iOS companion
 
-The iOS app pairs with the desktop runtime. It can mirror useful project state and let you follow work from your phone. The phone does not run agents; your desktop machine remains the execution host.
+The iOS app connects to a machine's brain. Sign in with the same account and your connected machines appear automatically; you can also pair a machine directly without an account. It mirrors useful project state and lets you follow work from your phone. The phone does not run agents — the machine remains the execution host.
 
 ## Local project state
 

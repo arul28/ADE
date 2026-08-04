@@ -8,6 +8,11 @@ const {
   missingRequiredPackagedAdeCliPayloadPaths,
   packagedAdeCliPayloadFiles,
 } = require("./packaged-ade-cli-resources.cjs");
+const {
+  artifactNamesForTarget,
+  diffRuntimeArtifacts,
+  formatRuntimeArtifactDiff,
+} = require("./runtime-resource-targets.cjs");
 
 const appDir = path.resolve(__dirname, "..");
 
@@ -56,89 +61,14 @@ function darwinPackageArchForContext(context) {
   return "darwin-x64";
 }
 
-function copyDirectoryIfPresent(sourcePath, targetPath) {
-  if (!fs.existsSync(sourcePath)) return false;
-  fs.rmSync(targetPath, { recursive: true, force: true });
-  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-  fs.cpSync(sourcePath, targetPath, { recursive: true, force: true });
-  return true;
-}
-
-function openCodeNativePackagesForPlatform(platform) {
-  if (platform === "darwin") return ["opencode-darwin-arm64", "opencode-darwin-x64"];
-  // Windows x64 materializes the `-baseline` build, never `opencode-windows-x64`.
-  // The default x64 build requires AVX2 and aborts with an illegal instruction on
-  // x64 CPUs without it; `-baseline` targets the lower instruction set, is the same
-  // size, and runs everywhere. This list must stay in sync with
-  // OPENCODE_PLATFORM_PACKAGES in src/main/services/opencode/openCodeBinaryManager.ts,
-  // because the resolver only ever looks for the package named there - anything else
-  // materialized here is dead weight the installer still pays for.
-  if (platform === "win32") return ["opencode-windows-x64-baseline", "opencode-windows-arm64"];
-  if (platform === "linux") {
-    return [
-      "opencode-linux-arm64",
-      "opencode-linux-arm64-musl",
-      "opencode-linux-x64",
-      "opencode-linux-x64-baseline",
-      "opencode-linux-x64-baseline-musl",
-      "opencode-linux-x64-musl",
-    ];
-  }
-  return [];
-}
-
-function openCodeBinaryName(platform) {
-  return platform === "win32" ? "opencode.exe" : "opencode";
-}
-
-function ensureOpenCodeRuntimePackages(runtimeRoot, platform) {
-  const sourceNodeModules = path.join(appDir, "node_modules");
-  const targetNodeModules = path.join(runtimeRoot, "node_modules");
-  const copied = [];
-
-  if (copyDirectoryIfPresent(
-    path.join(sourceNodeModules, "opencode-ai"),
-    path.join(targetNodeModules, "opencode-ai"),
-  )) {
-    copied.push("opencode-ai");
-  }
-
-  for (const packageName of openCodeNativePackagesForPlatform(platform)) {
-    if (copyDirectoryIfPresent(
-      path.join(sourceNodeModules, packageName),
-      path.join(targetNodeModules, packageName),
-    )) {
-      copied.push(packageName);
-    }
-  }
-
-  if (!copied.includes("opencode-ai")) {
-    throw new Error(`[afterPack] Missing source OpenCode package: ${path.join(sourceNodeModules, "opencode-ai")}`);
-  }
-
-  const nativePackages = copied.filter((packageName) => (
-    packageName !== "opencode-ai" && packageName.startsWith("opencode-")
-  ));
-  if (nativePackages.length === 0) {
-    throw new Error(`[afterPack] Missing source OpenCode native package for ${platform}: ${sourceNodeModules}`);
-  }
-
-  const binaryName = openCodeBinaryName(platform);
-  for (const packageName of nativePackages) {
-    requireFile(
-      path.join(targetNodeModules, packageName, "bin", binaryName),
-      `bundled OpenCode native binary ${packageName}`,
-    );
-  }
-
-  console.log(`[afterPack] Bundled OpenCode runtime packages: ${copied.join(", ")}`);
-}
-
-function pruneOpenCodeInstallShim(runtimeRoot, platform) {
+// `opencode-ai` ships a 107 MB Windows executable in its own bin/ on every
+// platform. The JS launcher package still ships (the resolver and the ADE CLI
+// both load it), but that payload never does: OpenCode itself comes from the
+// machine tools cache now, on Windows as much as anywhere else.
+function pruneOpenCodeInstallShim(runtimeRoot) {
   const shimPath = path.join("node_modules", "opencode-ai", "bin", "opencode.exe");
   if (removeIfPresent(runtimeRoot, shimPath)) {
-    const reason = platform === "win32" ? "duplicate" : "non-target";
-    console.log(`[afterPack] Pruned ${reason} OpenCode install shim: ${shimPath}`);
+    console.log(`[afterPack] Pruned runtime-fetched OpenCode install shim: ${shimPath}`);
   }
 }
 
@@ -225,68 +155,49 @@ function removeIfPresent(rootPath, relativePath) {
   return true;
 }
 
-// Per-arch builds bundle only their matching remote-runtime sidecar. CI stages
-// BOTH ade-darwin-arm64 and ade-darwin-x64 into resources/runtime; here we drop
-// the non-matching arch so each per-arch app only carries its own (~300 MB
-// saved — the main reason the per-arch update zip fits Squirrel's download
-// path). Universal builds keep both.
-function pruneNonMatchingDarwinRuntimeSidecar(resourcesRoot, context) {
+// The remote-runtime sidecar set a packaged app is allowed to carry. macOS
+// per-arch builds carry only their own darwin sidecar; a universal build carries
+// both darwin arches; Windows carries only win32-x64. Everything else is
+// foreign-platform payload -- carrying all of it is what pushed the v1.2.52
+// macOS update zip to 1054 MB, past the 1 GB Squirrel.Mac CFData cliff.
+function packagedRuntimeTargetsForContext(context, platform) {
+  if (platform === "win32") return ["win32-x64"];
+  if (platform !== "darwin") return [];
   const appOutDir = String(context?.appOutDir || "");
-  if (/mac-universal/.test(appOutDir) || context?.arch === 4) return;
-  const isArm64 = /arm64/.test(appOutDir) || context?.arch === 3;
-  const otherArch = isArm64 ? "x64" : "arm64";
+  if (/mac-universal/.test(appOutDir) || context?.arch === 4) return ["darwin-arm64", "darwin-x64"];
+  return [/arm64/.test(appOutDir) || context?.arch === 3 ? "darwin-arm64" : "darwin-x64"];
+}
+
+// electron-builder's extraResources filter resolves `${arch}` to "universal" on
+// a universal build, so neither darwin sidecar is copied. Stage both here from
+// the same source directory the filter reads.
+function stageMissingUniversalDarwinSidecars(runtimeDir, targets) {
+  if (targets.length < 2) return;
+  const sourceDir = path.join(appDir, "resources", "runtime");
+  for (const name of targets.flatMap((target) => artifactNamesForTarget(target))) {
+    const destinationPath = path.join(runtimeDir, name);
+    if (fs.existsSync(destinationPath)) continue;
+    const sourcePath = path.join(sourceDir, name);
+    requireFile(sourcePath, `staged universal runtime sidecar ${name}`);
+    fs.mkdirSync(runtimeDir, { recursive: true });
+    fs.copyFileSync(sourcePath, destinationPath);
+    console.log(`[afterPack] Staged universal runtime sidecar: ${name}`);
+  }
+}
+
+// Hard gate rather than a prune: the extraResources filter is already scoped per
+// platform and arch, so anything unexpected here means that scoping regressed
+// and the build must fail instead of quietly shipping the extra payload.
+function assertPackagedRuntimeTargets(resourcesRoot, context, platform) {
+  const targets = packagedRuntimeTargetsForContext(context, platform);
+  if (targets.length === 0) return;
   const runtimeDir = path.join(resourcesRoot, "runtime");
-  const pruned = [];
-  for (const name of [`ade-darwin-${otherArch}`, `ade-darwin-${otherArch}.native.tar.gz`]) {
-    if (removeIfPresent(runtimeDir, name)) pruned.push(name);
+  stageMissingUniversalDarwinSidecars(runtimeDir, targets);
+  const diff = diffRuntimeArtifacts(runtimeDir, targets);
+  if (diff.missing.length > 0 || diff.unexpected.length > 0) {
+    throw new Error(`[afterPack] ${formatRuntimeArtifactDiff(runtimeDir, targets, diff)}`);
   }
-  if (pruned.length > 0) {
-    console.log(
-      `[afterPack] Pruned non-target runtime sidecar for ${isArm64 ? "arm64" : "x64"}: ${pruned.join(", ")}`,
-    );
-  }
-}
-
-function claudeNativePackagesToPrune(platform) {
-  const byPlatform = {
-    darwin: [
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-arm64"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-darwin-x64"),
-    ],
-    linux: [
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-arm64-musl"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-linux-x64-musl"),
-    ],
-    win32: [
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
-      path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-x64"),
-    ],
-  };
-  return Object.entries(byPlatform)
-    .filter(([targetPlatform]) => targetPlatform !== platform)
-    .flatMap(([, packages]) => packages);
-}
-
-function codexNativePackagesToPrune(platform) {
-  const byPlatform = {
-    darwin: [
-      path.join("node_modules", "@openai", "codex-darwin-arm64"),
-      path.join("node_modules", "@openai", "codex-darwin-x64"),
-    ],
-    linux: [
-      path.join("node_modules", "@openai", "codex-linux-arm64"),
-      path.join("node_modules", "@openai", "codex-linux-x64"),
-    ],
-    win32: [
-      path.join("node_modules", "@openai", "codex-win32-arm64"),
-      path.join("node_modules", "@openai", "codex-win32-x64"),
-    ],
-  };
-  return Object.entries(byPlatform)
-    .filter(([targetPlatform]) => targetPlatform !== platform)
-    .flatMap(([, packages]) => packages);
+  console.log(`[afterPack] Packaged runtime sidecars for ${targets.join(", ")}: ${diff.actual.join(", ")}`);
 }
 
 function cursorNativePackagesToPrune(platform) {
@@ -308,37 +219,26 @@ function cursorNativePackagesToPrune(platform) {
     .flatMap(([, packages]) => packages);
 }
 
-function openCodeNativePackagesToPrune() {
-  const packages = [
-    "opencode-darwin-arm64",
-    "opencode-darwin-x64",
-    "opencode-darwin-x64-baseline",
-    "opencode-linux-arm64",
-    "opencode-linux-arm64-musl",
-    "opencode-linux-x64",
-    "opencode-linux-x64-baseline",
-    "opencode-linux-x64-baseline-musl",
-    "opencode-linux-x64-musl",
-    "opencode-windows-arm64",
-    "opencode-windows-x64",
-    "opencode-windows-x64-baseline",
-  ];
-  return packages.map((packageName) => path.join("node_modules", packageName));
+// Every native platform variant of Codex, Claude Code and OpenCode -- including
+// the one matching the build target. Unlike the Cursor prune above, which keeps
+// the on-target arch, these three tools have no on-target copy to keep: they are
+// fetched into the machine tools cache at runtime and the resolvers read the
+// cache before they ever look at node_modules.
+function runtimeFetchedToolPackagesToPrune(runtimeFetchedToolPackageNames) {
+  return runtimeFetchedToolPackageNames.map(
+    (packageName) => path.join("node_modules", ...packageName.split("/")),
+  );
 }
 
-function pruneUnneededRuntimePayload(runtimeRoot, platform) {
+function pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPackageNames) {
   const commonNonRuntimePayload = [
-    ...claudeNativePackagesToPrune(platform),
-    ...codexNativePackagesToPrune(platform),
     ...cursorNativePackagesToPrune(platform),
-    ...openCodeNativePackagesToPrune(),
+    ...runtimeFetchedToolPackagesToPrune(runtimeFetchedToolPackageNames),
     path.join("node_modules", "node-pty", "deps"),
     path.join("node_modules", "node-pty", "src"),
   ];
   const win32X64OnlyPayload = platform === "win32"
     ? [
-        path.join("node_modules", "@anthropic-ai", "claude-agent-sdk-win32-arm64"),
-        path.join("node_modules", "@openai", "codex-win32-arm64"),
         path.join("node_modules", "node-pty", "build", "Release", "conpty"),
         path.join("node_modules", "node-pty", "third_party", "conpty", "1.23.251008001", "win10-arm64"),
         path.join("node_modules", "node-pty", "prebuilds", "win32-arm64"),
@@ -393,9 +293,111 @@ function pruneUnneededRuntimePayload(runtimeRoot, platform) {
   }
 }
 
+// Every place a node_modules tree can end up in a packed app: the unpacked
+// sidecar the prune above operates on, the per-arch sidecars a universal build
+// leaves behind, and `resources/app` when asar is disabled.
+function packagedNodeModulesRoots(resourcesRoot, runtimeRoot) {
+  const roots = new Set();
+  if (runtimeRoot) roots.add(path.resolve(runtimeRoot));
+  if (fs.existsSync(resourcesRoot)) {
+    for (const entry of fs.readdirSync(resourcesRoot)) {
+      if (/^app(-[^.]+)?\.asar\.unpacked$/.test(entry) || entry === "app") {
+        roots.add(path.resolve(resourcesRoot, entry));
+      }
+    }
+  }
+  return [...roots].filter((root) => fs.existsSync(root));
+}
+
+function packagedAsarArchives(resourcesRoot) {
+  if (!fs.existsSync(resourcesRoot)) return [];
+  return fs
+    .readdirSync(resourcesRoot)
+    .filter((entry) => /^app(-[^.]+)?\.asar$/.test(entry))
+    .map((entry) => path.join(resourcesRoot, entry));
+}
+
+function readAsarHeader(appAsarPath) {
+  try {
+    return require("@electron/asar").getRawHeader(appAsarPath).header;
+  } catch (error) {
+    throw new Error(
+      `[afterPack] Unable to read ${appAsarPath} to verify runtime-fetched tool packages: `
+      + `${error?.message ?? error}`,
+    );
+  }
+}
+
+function asarContainsPackageDirectory(header, packageName) {
+  let node = header;
+  for (const segment of ["node_modules", ...packageName.split("/")]) {
+    node = node?.files?.[segment];
+    if (!node) return false;
+  }
+  return true;
+}
+
+/**
+ * The regression gate. Pruning alone is not a guarantee: dropping a package from
+ * `asarUnpack` without a matching `!` exclusion in `build.files` moves it *into*
+ * app.asar, where a directory check on the unpacked tree would never see it, and
+ * a new platform variant appearing in the dependency graph would sail straight
+ * through. Both are checked, and both fail the build rather than warn - the whole
+ * point of this change is that these bytes never ship again.
+ */
+function assertNoRuntimeFetchedToolPackages(
+  resourcesRoot,
+  runtimeRoot,
+  runtimeFetchedToolPackageNames,
+  explanation,
+) {
+  const offenders = [];
+
+  for (const root of packagedNodeModulesRoots(resourcesRoot, runtimeRoot)) {
+    for (const packageName of runtimeFetchedToolPackageNames) {
+      const packagePath = path.join(root, "node_modules", ...packageName.split("/"));
+      if (fs.existsSync(packagePath)) offenders.push(packagePath);
+    }
+  }
+
+  for (const appAsarPath of packagedAsarArchives(resourcesRoot)) {
+    const header = readAsarHeader(appAsarPath);
+    for (const packageName of runtimeFetchedToolPackageNames) {
+      if (asarContainsPackageDirectory(header, packageName)) {
+        offenders.push(`${appAsarPath}!/node_modules/${packageName}`);
+      }
+    }
+  }
+
+  if (offenders.length > 0) {
+    throw new Error(
+      `[afterPack] Packaged app ships ${offenders.length} runtime-fetched agent tool package(s) `
+      + `that must not be bundled:\n  ${offenders.join("\n  ")}\n${explanation}\n`
+      + "Fix: remove the package from build.asarUnpack in apps/desktop/package.json and add "
+      + "\"!node_modules/<name>/**\" to build.files. The authoritative name list is "
+      + "RUNTIME_FETCHED_TOOL_PACKAGES in apps/ade-cli/scripts/native-deps-entry-filter.mjs.",
+    );
+  }
+
+  console.log(
+    `[afterPack] Verified ${runtimeFetchedToolPackageNames.length} runtime-fetched agent tool `
+    + "packages are absent from the packaged app",
+  );
+}
+
 module.exports = async function afterPack(context) {
   const platform = context?.electronPlatformName;
   const packageChannel = resolvePackageChannel(context);
+  // Dynamic import because the single source of truth for this list is an ESM
+  // module shared with the brain runtime archive filter and both validators.
+  const {
+    runtimeFetchedToolPackageNames,
+    RUNTIME_FETCHED_TOOL_EXPLANATION,
+  } = await import(
+    require("node:url").pathToFileURL(
+      path.join(__dirname, "runtime-fetched-tool-packages.mjs"),
+    ).href
+  );
   const { runtimeRoot, appBundlePath } = resolveUnpackedRuntimeRoot(context);
   if (!fs.existsSync(runtimeRoot)) {
     throw new Error(`[afterPack] Missing unpacked runtime payload: ${runtimeRoot}`);
@@ -444,13 +446,18 @@ module.exports = async function afterPack(context) {
     requireFile(path.join(resourcesRoot, "ade-cli", "install-path.cmd"), "bundled ADE CLI Windows PATH installer");
   }
 
-  pruneUnneededRuntimePayload(runtimeRoot, platform);
+  pruneUnneededRuntimePayload(runtimeRoot, platform, runtimeFetchedToolPackageNames);
+  assertPackagedRuntimeTargets(resourcesRoot, context, platform);
   if (platform === "darwin") {
-    pruneNonMatchingDarwinRuntimeSidecar(resourcesRoot, context);
     replaceCpuFeaturesNativeAddon(runtimeRoot, context);
   }
-  ensureOpenCodeRuntimePackages(runtimeRoot, platform);
-  pruneOpenCodeInstallShim(runtimeRoot, platform);
+  pruneOpenCodeInstallShim(runtimeRoot);
+  assertNoRuntimeFetchedToolPackages(
+    resourcesRoot,
+    runtimeRoot,
+    runtimeFetchedToolPackageNames,
+    RUNTIME_FETCHED_TOOL_EXPLANATION,
+  );
 
   const normalized = normalizeDesktopRuntimeBinaries(runtimeRoot);
   for (const entry of normalized) {
@@ -472,3 +479,9 @@ module.exports = async function afterPack(context) {
     }
   }
 };
+
+// Exported for after-pack-runtime-fixes.test.mjs. The gate is the whole point of
+// this hook, and the regression it guards against (a package landing inside
+// app.asar) cannot be reproduced by planting a directory in the unpacked tree,
+// so it needs to be reachable without running electron-builder.
+module.exports.assertNoRuntimeFetchedToolPackages = assertNoRuntimeFetchedToolPackages;

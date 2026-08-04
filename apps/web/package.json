@@ -6,10 +6,11 @@
   "scripts": {
     "dev": "vite",
     "dev:detach": "nohup vite >> .vite-dev.log 2>&1 & echo \"Vite detached on http://localhost:4180/ (log: .vite-dev.log)\"",
-    "build": "node scripts/check-entities.mjs && tsc -p tsconfig.json --noEmit && vite build",
+    "build": "node scripts/check-entities.mjs && npm run typecheck && vite build",
     "preview": "vite preview",
-    "test:analytics": "node --experimental-strip-types --test src/lib/marketingAnalytics.test.ts",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "test": "npm run test:analytics",
+    "test:analytics": "node --experimental-strip-types --test src/lib/marketingAnalytics.test.ts api/releaseAssets.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p api/tsconfig.json --noEmit"
   },
   "dependencies": {
     "@lobehub/icons-static-svg": "^1.84.0",

@@ -1,13 +1,19 @@
 import { execFile, spawn, spawnSync, type SpawnOptions } from "node:child_process";
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import { promises as fsp } from "node:fs";
-import http from "node:http";
-import https from "node:https";
 import os from "node:os";
 import path from "node:path";
-import { pipeline } from "node:stream/promises";
 import { promisify } from "node:util";
+import {
+  DEFAULT_ADE_RELEASE_REPO,
+  RELEASE_CHECKSUMS_ASSET,
+  RELEASE_DOWNLOAD_TIMEOUT_MS,
+  downloadReleaseAsset,
+  readSha256SumsFile,
+  releaseAssetUrl,
+  runtimeBinaryAssetName,
+  sha256File,
+} from "../lib/releaseAssets";
 import { resolveMachineAdeLayout } from "../services/projects/machineLayout";
 
 type BrainUpdateExecFile = (
@@ -18,11 +24,10 @@ type BrainUpdateExecFile = (
 
 const execFileAsync = promisify(execFile) as BrainUpdateExecFile;
 
-const DEFAULT_RELEASE_REPO = "arul28/ADE";
-const CHECKSUMS_ASSET = "SHA256SUMS";
+const DEFAULT_RELEASE_REPO = DEFAULT_ADE_RELEASE_REPO;
+const CHECKSUMS_ASSET = RELEASE_CHECKSUMS_ASSET;
 const UPDATE_STATUS_FILE = "update-status.json";
 const UPDATE_USER_AGENT = "ADE brain updater";
-const UPDATE_DOWNLOAD_TIMEOUT_MS = 30_000;
 const SUPPORTED_TARGETS = new Set([
   "darwin-arm64",
   "darwin-x64",
@@ -131,13 +136,10 @@ export function brainUpdateAssetUrl(repo: string, version: string, assetName: st
   if (!/^[A-Za-z0-9][A-Za-z0-9_.-]*\/[A-Za-z0-9][A-Za-z0-9_.-]*$/.test(trimmedRepo)) {
     throw new BrainUpdateUsageError("ADE brain update --repo must be in owner/repo form.");
   }
-  if (!trimmedVersion || trimmedVersion === "latest") {
-    return `https://github.com/${trimmedRepo}/releases/latest/download/${assetName}`;
-  }
-  if (!/^v?[A-Za-z0-9_.-]+$/.test(trimmedVersion)) {
+  if (trimmedVersion && trimmedVersion !== "latest" && !/^v?[A-Za-z0-9_.-]+$/.test(trimmedVersion)) {
     throw new BrainUpdateUsageError("ADE brain update --version must be a release tag such as v1.2.13.");
   }
-  return `https://github.com/${trimmedRepo}/releases/download/${trimmedVersion}/${assetName}`;
+  return releaseAssetUrl(trimmedRepo, trimmedVersion, assetName);
 }
 
 function readValue(args: string[], index: number, flag: string): string {
@@ -310,52 +312,10 @@ async function defaultUpdateStagingDir(runtimeDir: string): Promise<string> {
   return await fsp.mkdtemp(path.join(updatesDir, "update-"));
 }
 
-function resolveDownload(url: string): typeof https | typeof http {
-  if (url.startsWith("https://")) return https;
-  if (url.startsWith("http://")) return http;
-  throw new BrainUpdateUsageError(`Unsupported ADE brain update URL: ${url}`);
-}
-
-async function defaultDownloadFile(url: string, outPath: string, redirects = 0): Promise<void> {
-  if (redirects > 5) {
-    throw new Error(`Too many redirects while downloading ${url}`);
-  }
-  await fsp.mkdir(path.dirname(outPath), { recursive: true });
-  const tmp = `${outPath}.${process.pid}.download`;
-  await new Promise<void>((resolve, reject) => {
-    const request = resolveDownload(url).get(
-      url,
-      { headers: { "user-agent": UPDATE_USER_AGENT }, timeout: UPDATE_DOWNLOAD_TIMEOUT_MS },
-      (response) => {
-        const status = response.statusCode ?? 0;
-        const location = response.headers.location;
-        if (status >= 300 && status < 400 && location) {
-          response.resume();
-          const redirected = new URL(location, url).toString();
-          if (url.startsWith("https://") && !redirected.startsWith("https://")) {
-            reject(new Error(`Refusing insecure redirect from ${url} to ${redirected}`));
-            return;
-          }
-          defaultDownloadFile(redirected, outPath, redirects + 1).then(resolve, reject);
-          return;
-        }
-        if (status !== 200) {
-          response.resume();
-          reject(new Error(`Download failed with HTTP ${status}: ${url}`));
-          return;
-        }
-        pipeline(response, fs.createWriteStream(tmp))
-          .then(() => fsp.rename(tmp, outPath))
-          .then(resolve, reject);
-      },
-    );
-    request.on("timeout", () => {
-      request.destroy(new Error(`Timed out downloading ${url}`));
-    });
-    request.on("error", reject);
-  }).catch(async (error) => {
-    await fsp.rm(tmp, { force: true }).catch(() => undefined);
-    throw error;
+async function defaultDownloadFile(url: string, outPath: string): Promise<void> {
+  await downloadReleaseAsset(url, outPath, {
+    userAgent: UPDATE_USER_AGENT,
+    timeoutMs: RELEASE_DOWNLOAD_TIMEOUT_MS,
   });
 }
 
@@ -444,10 +404,6 @@ export function requestBrainServiceStatus(
   return { ...result, installed };
 }
 
-function runtimeBinaryAssetName(target: string): string {
-  return `ade-${target}${target.startsWith("win32-") ? ".exe" : ""}`;
-}
-
 function installedRuntimeBinaryName(target: string): string {
   return target.startsWith("win32-") ? "ade.exe" : "ade";
 }
@@ -469,23 +425,8 @@ function runtimeSidecarEnv(
   };
 }
 
-function readSha256Sums(filePath: string): Map<string, string> {
-  const sums = new Map<string, string>();
-  const content = fs.readFileSync(filePath, "utf8");
-  for (const rawLine of content.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line || line.startsWith("#")) continue;
-    const match = /^([a-fA-F0-9]{64})\s+\*?(.+)$/.exec(line);
-    if (!match) continue;
-    sums.set(path.basename(match[2].trim()), match[1].toLowerCase());
-  }
-  return sums;
-}
-
 async function verifySha256(filePath: string, expectedHex: string, label: string): Promise<void> {
-  const hash = createHash("sha256");
-  await pipeline(fs.createReadStream(filePath), hash);
-  const actual = hash.digest("hex");
+  const actual = await sha256File(filePath);
   if (actual !== expectedHex.toLowerCase()) {
     throw new Error(`ADE brain update checksum mismatch for ${label}: expected ${expectedHex}, got ${actual}.`);
   }
@@ -498,7 +439,7 @@ async function verifyDownloadedAssetChecksums(args: {
   nativeArchiveName: string;
   nativeArchivePath: string;
 }): Promise<void> {
-  const sums = readSha256Sums(args.checksumPath);
+  const sums = readSha256SumsFile(args.checksumPath);
   const binarySum = sums.get(args.binaryName);
   const nativeArchiveSum = sums.get(args.nativeArchiveName);
   if (!binarySum) {
