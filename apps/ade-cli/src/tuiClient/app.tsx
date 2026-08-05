@@ -1853,6 +1853,14 @@ function providerConnectionDetail(status: AiSettingsStatus | null, provider: Con
   };
 }
 
+/**
+ * `opencodeBinarySource` is a wire enum, not copy. It gained `tools-cache` when
+ * the platform binaries moved out of the app bundle into the shared machine
+ * tools cache, and that value reads as jargon in a readiness row. The others
+ * are already close enough to English to pass through unchanged.
+ */
+const OPENCODE_SOURCE_LABELS: Record<string, string> = { "tools-cache": "ADE-managed" };
+
 function buildProviderReadinessRows(
   status: AiSettingsStatus | null,
   storedApiKeyProviders: string[],
@@ -1872,7 +1880,7 @@ function buildProviderReadinessRows(
     status: status?.opencodeBinaryInstalled ? "ready" : "unavailable",
     detail: status?.opencodeInventoryError
       ?? (status?.opencodeBinaryInstalled
-        ? `${status.opencodeBinarySource ?? "installed"} · ${openCodeDiagnostics?.sharedCount ?? 0} shared runtime`
+        ? `${status.opencodeBinarySource ? OPENCODE_SOURCE_LABELS[status.opencodeBinarySource] ?? status.opencodeBinarySource : "installed"} · ${openCodeDiagnostics?.sharedCount ?? 0} shared runtime`
         : "binary missing"),
     modelCount: opencodeModelCount,
   });

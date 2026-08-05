@@ -654,6 +654,7 @@ const TOP_LEVEL_HELP = `${ADE_BANNER}
     $ ade settings pr-transcript-gists enable      Attach ADE chat transcript links to new PRs
     $ ade settings action <method>                  Call project config actions
     $ ade update status | check | install | dismiss Read auto-update state and drive install
+    $ ade tools status | ensure | gc                Inspect and populate the pinned agent-CLI cache
     $ ade actions list | run | status | wait        Escape hatch for every ADE service action
     $ ade cursor cloud agents | runs | artifacts | repos | models | me
                                                     Drive Cursor Cloud agents via @cursor/sdk

@@ -68,6 +68,14 @@ Main process:
   status, stack detection, existing lane detection, suggested config
   application, plus passive glossary help state. The active renderer
   no longer mounts guided tours.
+- `apps/desktop/src/main/services/tools/agentToolsCacheService.ts` — the
+  desktop half of the pinned agent-tools cache. Kicks a coalesced ensure on
+  packaged launch, one `ensureTools` call per tool so a single failure cannot
+  abandon the rest, GCs superseded versions only after a fully clean pass, and
+  publishes an `AgentToolsCacheSnapshot` (per-tool status, percent, typed
+  `errorKind`) to the AI Runtimes band over IPC. Resolution failures are per
+  tool, never per pass. See
+  [agent-tools-cache.md](./agent-tools-cache.md).
 - `apps/desktop/src/main/services/onboarding/onboardingSuggestedConfig.ts` —
   pure GitHub Actions workflow parsing and suggested test/automation/provider
   config generation for `.ade/ade.yaml`.
@@ -160,7 +168,14 @@ Renderer — onboarding:
 - `apps/desktop/src/renderer/components/onboarding/AiRuntimesBand.tsx`
   — compact setup surface for Claude, Codex, Cursor, Factory Droid, and
   OpenCode. Shows runtime readiness, install / sign-in commands, Cursor API-key
-  entry, helper toggles, and per-helper model pickers.
+  entry, helper toggles, and per-helper model pickers. Claude, Codex, and
+  OpenCode are backed by pinned tools, so the band also subscribes to the
+  agent-tools cache and renders a per-runtime downloading percent or a
+  `kind`-specific failure ("Not enough disk space to unpack", "No pinned build
+  for this platform") with a retry. Cursor and Droid are user-installed and keep
+  the plain detected / not-detected treatment. A cache `failed` never shows for
+  a runtime that resolved anyway — a user's own CLI on PATH satisfies it
+  without the cache.
 - `apps/desktop/src/renderer/components/onboarding/DevToolsRow.tsx`
   — essential local tooling status for git and the terminal `ade` CLI.
 - `apps/desktop/src/renderer/components/onboarding/GitHubCard.tsx`,

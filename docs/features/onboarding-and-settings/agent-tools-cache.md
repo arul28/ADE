@@ -173,6 +173,28 @@ A dead PID only proves the holder is gone when `host` matches
 number. A waiter whose `isSatisfied` predicate goes true mid-wait gets
 `{ kind: "satisfied" }` and does no work.
 
+Both halves of the heartbeat are ownership-checked against the record this
+process wrote. A holder that stalled long enough to be declared stale has
+already had its lock rm'd and recreated by someone else under the same path, so
+an unconditional refresh would keep *their* lock looking fresh for as long as
+this process lives, and an unconditional unlink on `release()` would hand two
+installs the same cache directory. Both compare `pid` + `host` first and no-op
+when the record is foreign. They differ on an *unreadable* record: the heartbeat
+keeps beating (a half-written record is transient and stopping would abandon a
+lock we still hold) while release leaves the file alone (a leftover lock costs
+one stale-takeover cycle; deleting the wrong one costs correctness).
+
+Windows contention does not always surface as `EEXIST`. Deleting a file there
+only unlinks the name once the last handle closes, so a concurrent `O_EXCL`
+create against a delete-pending name fails with `EPERM`/`EACCES`/`EBUSY`.
+`isToolLockContention` treats all three as contention on win32 — a wide window
+here, because a legitimate holder keeps this lock for *minutes* while it
+downloads — and a genuine ACL denial still terminates on its own, as a
+`lock-timeout` naming the holder rather than an unbounded hang. The takeover
+path only retries immediately when the stale lock was actually removed;
+otherwise it falls through to the normal poll so an unremovable lock cannot spin
+a core for the whole 15-minute deadline.
+
 `ensureTools` installs serially on purpose. Running 100-300 MB downloads
 concurrently only trades install latency for a much worse disk-full profile.
 
@@ -205,6 +227,20 @@ Codex is the special case. It is the one tool that cannot be reached by seeding 
 module search path: its binary lives at `vendor/<triple>/bin/codex` and is found
 by a directory probe, never by `NODE_PATH`. The cache therefore has to hand it
 the resolved `entryPath` explicitly.
+
+`cacheLookup.ts` exports one other thing: `pinnedToolFetchPending(name)`, true
+only when this build pins the tool for the current host *and* it is not on disk
+yet. That is the cold first-run window, and it exists so a spawn failure inside
+it can be reworded rather than re-routed — `claudeRuntimeProbe.ts` uses it to
+replace the SDK's raw "not found" with `CLAUDE_RUNTIME_FETCH_PENDING_ERROR`
+("ADE is still downloading the Claude Code runtime"), and only when nothing
+resolved at all. It changes no resolution: a miss still falls through to the
+bundled copy. It is expressed through `resolveTool` rather than re-deriving
+`detectToolTarget` + `findToolPin` + the sentinel, so the predicate cannot drift
+from the resolver, and it never throws — `unsupported-target` and a malformed
+manifest both answer false, because nothing is pending when nothing will ever
+be fetched. The probe deep-imports it rather than going through the barrel,
+which would pull the whole fetch/install stack in with it.
 
 OpenCode's bundled probe walks, in order, `ADE_OPENCODE_BUNDLE_ROOT`, the
 packaged `resourcesPath` roots (`app.asar.unpacked`, `app-<arch>.asar.unpacked`,
@@ -246,8 +282,11 @@ This was verified empirically with a partially-warm cache:
 
 ### Brain startup
 
-`ade serve` calls `startBackgroundAgentToolsFetch` (`apps/ade-cli/src/cli.ts`)
-right after it starts listening. The call is deliberately fire-and-forget: these
+`ade serve` calls `startBackgroundAgentToolsFetch`
+(`apps/ade-cli/src/services/tools/backgroundFetch.ts`, reached from `cli.ts`
+through a dynamic import, so a source-checkout serve never loads the
+install stack at all) right after it starts listening. The call is deliberately
+fire-and-forget: these
 are 100-300 MB downloads, and a machine with a cold cache would otherwise look
 wedged for minutes on first run while RPC went unanswered.
 

@@ -66,7 +66,7 @@ Three ways to put `ade` on a machine:
    - `ADE_HOME=/custom/.ade` — change the per-machine state root.
    - `ADE_INSTALL_NO_PROMPT=1` — skip the interactive sign-in and desktop-app offers.
 
-   After a successful install both scripts offer to run `ade connect`, which links the machine to your ADE account, and then offer the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run). Both desktop downloads are verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. Prompts are read from `/dev/tty` on POSIX because `curl | sh` occupies stdin; when no terminal is attached (CI, automation) both scripts skip the interactive steps and print the follow-up commands instead. `install.ps1` also accepts `-NoPrompt`.
+   After a successful install both scripts run `ade tools ensure` so the pinned agent CLIs (Codex, Claude Code, OpenCode) are in the shared machine cache before the first agent run rather than as a surprise multi-hundred-megabyte download. That step is non-fatal — the brain retries it in the background on every `ade serve`. Then both scripts offer to run `ade connect`, which links the machine to your ADE account, and then offer the desktop app (macOS `.zip` via `ditto`, Windows NSIS installer via a silent per-user `/S` run). Both desktop downloads are verified against the base64 SHA-512 in the electron-updater manifest (`latest-mac.yml` / `latest.yml`) — the published `SHA256SUMS` covers only the standalone runtime assets. Prompts are read from `/dev/tty` on POSIX because `curl | sh` occupies stdin; when no terminal is attached (CI, automation) both scripts skip the interactive steps and print the follow-up commands instead. `install.ps1` also accepts `-NoPrompt`.
 
    For an unpublished Windows proof bundle, run `install.ps1 -AssetDirectory <bundle-directory>` (or set `ADE_RELEASE_ASSET_DIR`) to install the local checksum, executable, and native archive without creating a GitHub Release.
 
@@ -412,6 +412,10 @@ ade machines connect <machine-key> --project ADE
 ade machines hop <device-id> --session chat-1
 ade doctor --json
 ade doctor --online --text                        # also check the latest desktop release over the network
+ade tools status --text                           # pinned agent CLIs: installed version + entry path per tool, plus the machine tools root
+ade tools ensure --text                           # fetch whatever this build pins and is missing (no names = all); streams progress to stderr
+ade tools ensure codex --text                     # one tool; an unknown name is a usage error listing the pinned set
+ade tools gc --dry-run --text                     # drop cached versions this build no longer pins (keeps the newest superseded one)
 ade projects list --text
 ade projects inspect /path/to/checkout --json   # classify a path (repo root vs linked/ADE-managed worktree) and find its owning project + existing lane
 ade init
@@ -589,6 +593,14 @@ GitHub reads try credentials in environment → ADE GitHub App → GitHub CLI �
 stored PAT order. Writes skip the read-only GitHub App. `github.getStatus`
 reports the active read/write sources, per-credential failure/cooldown state,
 fallback details, and any background-refresh pause without exposing tokens.
+
+`ade tools` is deliberately not backed by a service action. The pinned-tool cache
+is a property of the machine's filesystem, not of a project runtime, so the
+command calls `src/services/tools/` in-process and works on a headless box with
+no desktop and no brain running. The desktop's `agentToolsCacheService` is the
+same module behind an IPC snapshot feed for onboarding; there is nothing for
+`ade actions run` to reach that `ade tools status|ensure|gc` does not already
+cover.
 
 Use typed commands first. They validate common arguments and provide stable JSON fields or readable text summaries. Use `ade help <command> <subcommand>` for exact flags, `ade actions list --text` to discover the full service-backed action catalog, and `ade actions run <domain.action>` only when there is no typed command for the workflow yet. For stored project credentials, prefer `ade secrets`; `list` is metadata-only and `get --text` prints the secret value, so agents should read only the named secret the user asked for and avoid logging it.
 

@@ -79,6 +79,13 @@ that passed CI can never trip it. If release metadata omits the size the update
 is allowed through — the CI gate is the real defense, and a malformed manifest
 must not block every update.
 
+`artifact_too_large` is the one kind that is never recovered from message text.
+The preflight raised the failure itself, so it passes `kind` to
+`setErrorSnapshot` explicitly and `classifyUpdateError` is skipped entirely;
+message-sniffing stays reserved for the opaque errors electron-updater emits.
+Round-tripping ADE's own wording back through a regex would have made the
+classification hostage to a copy edit.
+
 The Windows cap is a bloat tripwire, not a crash guard: the NSIS installer is
 streamed to disk and run as an external process, so nothing buffers it whole.
 
